@@ -63,7 +63,7 @@ pub use native_caf::{
 pub use policy::{AnimationPolicy, ExportFeature, FeatureStatus, PARITY_MATRIX};
 pub use rig::{
     CompiledSkeleton, RigError, RigReport, VerifiedWeights, export_rigged_character_fbx,
-    export_rigged_character_glb, parse_compiled_skeleton, remap_verified_weights, rigged_glb_bytes,
+    export_rigged_character_glb, export_rigged_character_fbx_textured, parse_compiled_skeleton, remap_verified_weights, rigged_glb_bytes,
 };
 pub use scene::{
     LevelScene, PlacedObject, SceneError, Transform, export_edited_layer, load_level_scene,
