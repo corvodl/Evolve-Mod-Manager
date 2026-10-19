@@ -332,9 +332,10 @@ impl Operation {
             Self::IndexProjects(root, stage) => {
                 discover_projects(&root, &stage).map(Completed::Projects)
             }
-            Self::BuildRawProject(project, projects, stage) =>
+            Self::BuildRawProject(project, projects, stage) => {
                 modding_projects::build_single_raw(&project, &projects, &stage)
-                    .map(|(entry, target)| Completed::RebuiltSigned(entry, target)),
+                    .map(|(entry, target)| Completed::RebuiltSigned(entry, target))
+            }
             Self::InspectDependencies(inventory, relative) => {
                 inspect_dependencies(&inventory, &relative)
                     .map(Completed::Dependencies)
@@ -951,9 +952,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::ModdingBuild => {
-            let Some(project) = state.modding_selected.and_then(|i|
-                state.modding_projects.as_ref().and_then(|projects| projects.get(i))
-            ) else {
+            let Some(project) = state.modding_selected.and_then(|i| {
+                state
+                    .modding_projects
+                    .as_ref()
+                    .and_then(|projects| projects.get(i))
+            }) else {
                 state.status = "Select a verified editable project first.".into();
                 return Task::none();
             };
@@ -961,11 +965,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "The Rust builder currently supports exactly one changed raw member per project. Multi-entry and CryXmlB rebuilds still require the Qt manager.".into();
                 return Task::none();
             }
-            return launch(state, Operation::BuildRawProject(
-                project.clone(),
-                PathBuf::from(&state.preferences.projects),
-                PathBuf::from(&state.preferences.stage),
-            ));
+            return launch(
+                state,
+                Operation::BuildRawProject(
+                    project.clone(),
+                    PathBuf::from(&state.preferences.projects),
+                    PathBuf::from(&state.preferences.stage),
+                ),
+            );
         }
         Message::ModdingUnpackPak => {
             let source = PathBuf::from(&state.input);
@@ -1935,7 +1942,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let stage = PathBuf::from(&state.preferences.stage);
             let key = match modding_keys::public_key(&stage) {
                 Ok(path) => path,
-                Err(error) => { state.status = error; return Task::none(); }
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
             };
             let basename = match modding_keys::signed_basename(&source) {
                 Ok(name) => name,
@@ -1951,7 +1961,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let stage = PathBuf::from(&state.preferences.stage);
             let key = match modding_keys::public_key(&stage) {
                 Ok(path) => path,
-                Err(error) => { state.status = error; return Task::none(); }
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
             };
             let basename = match modding_keys::signed_basename(&source) {
                 Ok(name) => name,
@@ -2633,7 +2646,9 @@ fn view(state: &State) -> Element<'_, Message> {
         text("EVOLVE / MOD MANAGER").size(18),
         text(format!("  /  {}", page.title())).size(12),
         space().width(Fill),
-        button("Help").on_press(Message::Navigate(Page::Instructions)).style(button::secondary),
+        button("Help")
+            .on_press(Message::Navigate(Page::Instructions))
+            .style(button::secondary),
         button("Activity")
             .on_press(Message::ToggleActivity)
             .style(button::secondary),
@@ -2653,8 +2668,12 @@ fn view(state: &State) -> Element<'_, Message> {
             text_input("Local asset folder, .pak or .dds path...", &state.input)
                 .on_input(Message::InputChanged)
                 .width(Fill),
-            button("Scan folder").on_press(Message::StartScan).style(button::secondary),
-            button("Open Asset Viewer").on_press(Message::OpenViewer).style(button::secondary),
+            button("Scan folder")
+                .on_press(Message::StartScan)
+                .style(button::secondary),
+            button("Open Asset Viewer")
+                .on_press(Message::OpenViewer)
+                .style(button::secondary),
         ]
         .spacing(8),
         row![
@@ -2683,13 +2702,15 @@ fn view(state: &State) -> Element<'_, Message> {
         ]
         .spacing(8),
         row![
-            text("PAK signing: use the selected stage's local mykeys/ resources.")
-                .size(12),
-            button("Verify signed PAK").style(button::secondary)
+            text("PAK signing: use the selected stage's local mykeys/ resources.").size(12),
+            button("Verify signed PAK")
+                .style(button::secondary)
                 .on_press(Message::StartSignedInspection),
-            button("Extract signed PAK").style(button::secondary)
+            button("Extract signed PAK")
+                .style(button::secondary)
                 .on_press(Message::StartSignedExtraction),
-        ].spacing(8),
+        ]
+        .spacing(8),
     ]
     .spacing(9);
 
@@ -2987,7 +3008,9 @@ fn view(state: &State) -> Element<'_, Message> {
                     .on_input(Message::InputChanged)
                     .width(Fill),
                 button("Scan Folder").on_press(Message::StartScan),
-                button("Open Asset Viewer").on_press(Message::OpenViewer).style(button::secondary),
+                button("Open Asset Viewer")
+                    .on_press(Message::OpenViewer)
+                    .style(button::secondary),
                 button(if state.show_advanced_tools {
                     "Hide Archive Tools"
                 } else {
