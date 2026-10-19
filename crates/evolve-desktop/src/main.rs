@@ -7,6 +7,7 @@ mod level_workspace;
 mod private_pages;
 mod settings;
 mod textured;
+mod uv_preview;
 mod updater;
 mod viewer_inspector;
 mod viewport;
@@ -197,6 +198,7 @@ struct State {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ViewerTab {
     Model,
+    Uv,
     Dependencies,
     Compare,
 }
