@@ -252,7 +252,14 @@ enum Operation {
     ResolveMaterial(PathBuf, PathBuf),
     LoadCaf(PathBuf),
     RiggedGlb(PathBuf, PathBuf, PathBuf),
-    RiggedFbx(PathBuf, PathBuf, PathBuf, Option<PathBuf>, Option<PathBuf>, PathBuf),
+    RiggedFbx(
+        PathBuf,
+        PathBuf,
+        PathBuf,
+        Option<PathBuf>,
+        Option<PathBuf>,
+        PathBuf,
+    ),
     ConvertMotion(PathBuf, PathBuf, PathBuf, PathBuf),
     LoadGlbMotion(PathBuf),
     InspectCdf(PathBuf),
@@ -2007,8 +2014,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     PathBuf::from(&state.blender_path),
                     (!state.diffuse_input.trim().is_empty())
                         .then(|| PathBuf::from(&state.diffuse_input)),
-                    (!state.caf_path.trim().is_empty())
-                        .then(|| PathBuf::from(&state.caf_path)),
+                    (!state.caf_path.trim().is_empty()).then(|| PathBuf::from(&state.caf_path)),
                     PathBuf::from(&state.output),
                 ),
             );
