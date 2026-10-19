@@ -106,15 +106,15 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("fake.dds");
         fs::write(&source, b"original").unwrap();
-        let key = key(&source).unwrap();
+        let original_key = key(&source).unwrap();
         let info = DdsInfo {
             schema: 1, width: 2, height: 2, mipmaps: 1,
             format: DdsFormat::Rgba32, streaming_parts: 1, top_mip_bytes: 16,
         };
         let image = Arc::new(RgbaImage::new(2, 2));
         let mut cache = PreviewCache::default();
-        cache.insert(key.clone(), info, image.clone());
-        let (_, reused) = cache.lookup(&key).unwrap();
+        cache.insert(original_key.clone(), info, image.clone());
+        let (_, reused) = cache.lookup(&original_key).unwrap();
         assert!(Arc::ptr_eq(&image, &reused));
         fs::write(&source, b"modified-changed-size").unwrap();
         assert!(cache.lookup(&key(&source).unwrap()).is_none());
