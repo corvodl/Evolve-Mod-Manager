@@ -216,6 +216,7 @@ struct State {
     health_checking: bool,
     health_report: Option<system_health::Snapshot>,
     library_catalog: Option<ImportedLibrary>,
+    library_startup_loading: bool,
     library_selected: Option<usize>,
     library_root: String,
     library_import_source: String,
@@ -1218,7 +1219,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     ),
                 );
             }
-            if page == Page::AssetLibrary && state.library_catalog.is_none() {
+            if page == Page::AssetLibrary
+                && state.library_catalog.is_none()
+                && !state.library_startup_loading
+            {
                 let root = PathBuf::from(&state.library_root);
                 if root.is_dir() {
                     return launch(state, Operation::LoadImportedLibrary(root));
@@ -1517,9 +1521,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.library_show_configuration = !state.library_show_configuration;
         }
         Message::StartupLibraryIndexed(expected, result) => {
+            state.library_startup_loading = false;
             // Ignore a startup read that finished after the user changed
-            // the configured library root in Advanced Settings.
-            if PathBuf::from(&state.library_root) != expected {
+            // the root or explicitly loaded a newer catalog.
+            if PathBuf::from(&state.library_root) != expected || state.library_catalog.is_some() {
                 return Task::none();
             }
             match result {
@@ -1540,6 +1545,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::LibraryRefresh => {
+            if state.library_startup_loading {
+                state.status = "Indexing the detected Asset Library in the background...".into();
+                return Task::none();
+            }
             if !PathBuf::from(&state.library_root).is_dir() {
                 state.library_catalog = None;
                 state.library_selection.clear();
@@ -4387,8 +4396,9 @@ impl Desktop {
             size: iced::Size::new(1440.0, 900.0),
             ..window::Settings::default()
         });
-        let state = initial_state();
+        let mut state = initial_state();
         let library_root = PathBuf::from(&state.library_root);
+        state.library_startup_loading = library_root.is_dir();
         // Independent read-only indexing: don't block Modding, updates,
         // previews or Settings with the global worker busy flag.
         let startup = if library_root.is_dir() {
