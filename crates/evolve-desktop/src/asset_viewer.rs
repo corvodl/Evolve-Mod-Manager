@@ -105,7 +105,9 @@ fn viewport(state: &State) -> Element<'_, Message> {
             "No model loaded"
         })
         .size(12),
-        text(state.auto_resource_note.as_str()).size(11).color(MUTED),
+        text(state.auto_resource_note.as_str())
+            .size(11)
+            .color(MUTED),
     ]
     .spacing(2);
     let main: Element<'_, Message> = if let Some(mesh) = &state.model {
