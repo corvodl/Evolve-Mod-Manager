@@ -43,6 +43,8 @@ pub struct Primitive {
     points:Vec<Vertex>,
     indices:Vec<u32>,
     diffuse:Option<Arc<image::RgbaImage>>,
+    mesh_identity:usize,
+    texture_identity:usize,
 }
 impl<Message> shader::Program<Message> for Scene {
     type State=();
@@ -88,7 +90,9 @@ impl<Message> shader::Program<Message> for Scene {
                 normal,
             });
         }
-        Primitive{points,indices:data.indices.clone(),diffuse:self.diffuse.clone()}
+        Primitive{points,indices:data.indices.clone(),diffuse:self.diffuse.clone(),
+            mesh_identity:Arc::as_ptr(&self.mesh) as usize,
+            texture_identity:self.diffuse.as_ref().map_or(0,|t|Arc::as_ptr(t) as usize)}
     }
 }
 
@@ -98,6 +102,10 @@ pub struct Pipeline {
     vertex:wgpu::Buffer,
     index:wgpu::Buffer,
     index_count:u32,
+    vertex_capacity:usize,
+    index_capacity:usize,
+    last_mesh_identity:usize,
+    last_texture_identity:usize,
     texture:wgpu::Texture,
     view:wgpu::TextureView,
     sampler:wgpu::Sampler,
@@ -209,7 +217,9 @@ impl Pipeline {
             mapped_at_creation:false,
         });
         let depth=Self::depth_view(device,(1,1));
-        Self{render_pipeline,layout,vertex,index,index_count:0,texture,view,
+        Self{render_pipeline,layout,vertex,index,index_count:0,
+            vertex_capacity:32,index_capacity:4,last_mesh_identity:0,last_texture_identity:usize::MAX,
+            texture,view,
             sampler,group,depth,depth_dimensions:(1,1)}
     }
     fn prepare_scene(&mut self,device:&wgpu::Device,queue:&wgpu::Queue,size:(u32,u32),
@@ -219,41 +229,56 @@ impl Pipeline {
             self.depth_dimensions=size;
         }
         if !primitive.points.is_empty()&&!primitive.indices.is_empty(){
-            // Fresh exact geometry buffers. The renderer is currently an
-            // experimental viewer, capped by the core parser's byte limits.
-            self.vertex=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
-                label:Some("Validated original CrChF vertices"),
-                contents:bytemuck::cast_slice(&primitive.points),
-                usage:wgpu::BufferUsages::VERTEX,
-            });
-            self.index=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
-                label:Some("Validated original CryEngine triangle indices"),
-                contents:bytemuck::cast_slice(&primitive.indices),
-                usage:wgpu::BufferUsages::INDEX,
-            });
+            let vertex_bytes=bytemuck::cast_slice(&primitive.points);
+            if vertex_bytes.len()>self.vertex_capacity{
+                self.vertex=device.create_buffer(&wgpu::BufferDescriptor{
+                    label:Some("CryEngine source GPU vertex stream"),
+                    size:vertex_bytes.len() as u64,
+                    usage:wgpu::BufferUsages::VERTEX|wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation:false,
+                });
+                self.vertex_capacity=vertex_bytes.len();
+            }
+            queue.write_buffer(&self.vertex,0,vertex_bytes);
             self.index_count=primitive.indices.len() as u32;
+            if primitive.mesh_identity!=self.last_mesh_identity {
+                let bytes=bytemuck::cast_slice(&primitive.indices);
+                if bytes.len()>self.index_capacity {
+                    self.index=device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
+                        label:Some("Unchanged CryEngine triangle index stream"),
+                        contents:bytes,usage:wgpu::BufferUsages::INDEX,
+                    });
+                    self.index_capacity=bytes.len();
+                }else{
+                    queue.write_buffer(&self.index,0,bytes);
+                }
+                self.last_mesh_identity=primitive.mesh_identity;
+            }
         }else{self.index_count=0;}
-        let (w,h,bytes)=if let Some(image)=primitive.diffuse.as_ref(){
-            (image.width(),image.height(),image.as_raw().as_slice())
-        }else{(1,1,&[210u8,205,205,255][..])};
-        self.texture=device.create_texture_with_data(queue,&wgpu::TextureDescriptor{
-            label:Some("Original high-resolution DDS diffuse pixels"),
-            size:wgpu::Extent3d{width:w.max(1),height:h.max(1),depth_or_array_layers:1},
-            mip_level_count:1,sample_count:1,
-            dimension:wgpu::TextureDimension::D2,
-            format:wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage:wgpu::TextureUsages::TEXTURE_BINDING|wgpu::TextureUsages::COPY_DST,
-            view_formats:&[],
-        },TextureDataOrder::LayerMajor,bytes);
-        self.view=self.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        self.group=device.create_bind_group(&wgpu::BindGroupDescriptor{
-            label:Some("Actual CryEngine DDS diffuse binding"),
-            layout:&self.layout,
-            entries:&[
-                wgpu::BindGroupEntry{binding:0,resource:wgpu::BindingResource::TextureView(&self.view)},
-                wgpu::BindGroupEntry{binding:1,resource:wgpu::BindingResource::Sampler(&self.sampler)},
-            ],
-        });
+        if primitive.texture_identity!=self.last_texture_identity {
+            let (w,h,bytes)=if let Some(image)=primitive.diffuse.as_ref(){
+                (image.width(),image.height(),image.as_raw().as_slice())
+            }else{(1,1,&[210u8,205,205,255][..])};
+            self.texture=device.create_texture_with_data(queue,&wgpu::TextureDescriptor{
+                label:Some("Original highest-resolution DDS GPU texture"),
+                size:wgpu::Extent3d{width:w.max(1),height:h.max(1),depth_or_array_layers:1},
+                mip_level_count:1,sample_count:1,
+                dimension:wgpu::TextureDimension::D2,
+                format:wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage:wgpu::TextureUsages::TEXTURE_BINDING|wgpu::TextureUsages::COPY_DST,
+                view_formats:&[],
+            },TextureDataOrder::LayerMajor,bytes);
+            self.view=self.texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.group=device.create_bind_group(&wgpu::BindGroupDescriptor{
+                label:Some("Exact CryEngine DDS texture sampler group"),
+                layout:&self.layout,
+                entries:&[
+                    wgpu::BindGroupEntry{binding:0,resource:wgpu::BindingResource::TextureView(&self.view)},
+                    wgpu::BindGroupEntry{binding:1,resource:wgpu::BindingResource::Sampler(&self.sampler)},
+                ],
+            });
+            self.last_texture_identity=primitive.texture_identity;
+        }
     }
     fn render_scene(&self,encoder:&mut wgpu::CommandEncoder,target:&wgpu::TextureView,
         clip:Rectangle<u32>){
