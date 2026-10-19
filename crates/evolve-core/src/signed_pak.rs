@@ -597,10 +597,8 @@ fn scan_cdr_entry(data: &[u8], path: &str) -> Result<usize, SignedPakError> {
             .and_then(|v|v.checked_add(e)).and_then(|v|v.checked_add(c))
             .ok_or(SignedPakError::Limits)?;
         let raw=data.get(at+46..at+46+n).ok_or(SignedPakError::Limits)?;
-        if raw==path.as_bytes() {
-            if match_at.replace(at).is_some() {
-                return Err(SignedPakError::Format("ambiguous signed entry".into()));
-            }
+        if raw == path.as_bytes() && match_at.replace(at).is_some() {
+            return Err(SignedPakError::Format("ambiguous signed entry".into()));
         }
         at=end;
     }
