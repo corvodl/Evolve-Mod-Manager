@@ -54,6 +54,57 @@ fn status_card<'a>(label: &'static str, value: String) -> Element<'a, Message> {
     surface(column![text(label).size(13), text(value).size(12).color(MUTED),].spacing(8)).into()
 }
 
+fn health_entry<'a>(title: &'static str, value: &str) -> Element<'a, Message> {
+    surface(column![
+        text(title).size(13),
+        text(value.to_owned()).size(12).color(MUTED),
+    ].spacing(6)).into()
+}
+
+fn health_panel(state: &State) -> Element<'_, Message> {
+    let heading = button(if state.health_expanded {
+        "⌄ System Health   ·   On-demand diagnostics"
+    } else {
+        "› System Health   ·   On-demand diagnostics"
+    })
+    .on_press(Message::ToggleSystemHealth)
+    .style(button::secondary)
+    .width(Fill);
+    if !state.health_expanded {
+        return heading.into();
+    }
+    let check = row![
+        button(if state.health_checking { "Checking..." } else { "Check System Health" })
+            .on_press_maybe((!state.health_checking).then_some(Message::CheckSystemHealth)),
+        text("Read-only until you choose an explicit operation").size(12).color(MUTED),
+    ].spacing(12);
+    if let Some(result) = &state.health_report {
+        column![
+            heading,
+            text("Checks are opt-in. Firewall, registry, dumps and cleanup settings are never changed.")
+                .size(12).color(MUTED),
+            check,
+            row![
+                health_entry("Windows Firewall", &result.firewall),
+                health_entry("Game Process", &result.game_process),
+            ].spacing(10),
+            row![
+                health_entry("Crash Dumps & Support", &result.dumps),
+                health_entry("Storage & Backups", &result.storage),
+            ].spacing(10),
+            health_entry("Game Environment", &result.environment),
+            health_entry("Recovery & Projects", &result.recovery),
+        ].spacing(10).into()
+    } else {
+        column![
+            heading,
+            text("Nothing is scanned while this panel is closed. Select Check System Health to run read-only checks.")
+                .size(12).color(MUTED),
+            check,
+        ].spacing(9).into()
+    }
+}
+
 pub(super) fn home(state: &State) -> Element<'_, Message> {
     let hero = surface(column![
         text("EVOLVE STAGE 2  /  MODDING WORKSPACE").size(12).color(ACCENT),
@@ -161,7 +212,7 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         column![
             hero,
             quick,
-            surface(text("System Health   ·   On-demand diagnostics").size(12)),
+            health_panel(state),
             row![entries, status].spacing(14),
         ]
         .spacing(20)
