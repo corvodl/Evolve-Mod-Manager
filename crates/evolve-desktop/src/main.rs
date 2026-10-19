@@ -1,5 +1,6 @@
 //! Native wgpu-backed desktop shell. Asset operations use blocking workers, so
 //! file I/O/decompression never runs in the interactive Iced view/update path.
+mod asset_cache;
 mod asset_library_page;
 mod asset_viewer;
 mod developer_auth;
@@ -36,6 +37,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}};
 use std::time::Duration;
 use textured::Scene as TexturedScene;
+use asset_cache::{PreviewCache, SharedCache, decoded_dds};
 use updater::{
     ReleaseUpdate, UpdateChannel, discover_update, download_installer, launch_verified_installer,
 };
@@ -195,6 +197,7 @@ struct State {
     level_zoom: f32,
     scan_cancel: Option<Arc<AtomicBool>>,
     scan_indexed: Option<Arc<AtomicUsize>>,
+    preview_cache: SharedCache,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,9 +222,9 @@ enum Operation {
     Scan(PathBuf, Arc<AtomicBool>, Arc<AtomicUsize>),
     InspectPak(PathBuf),
     InspectDds(PathBuf),
-    LoadDiffuse(PathBuf),
-    LoadNormal(PathBuf),
-    LoadEmissive(PathBuf),
+    LoadDiffuse(PathBuf, SharedCache),
+    LoadNormal(PathBuf, SharedCache),
+    LoadEmissive(PathBuf, SharedCache),
     ResolveMaterial(PathBuf, PathBuf),
     LoadCaf(PathBuf),
     RiggedGlb(PathBuf, PathBuf, PathBuf),
@@ -273,9 +276,9 @@ enum Completed {
     Inventory(Inventory),
     Pak(PakInventory),
     Texture(DdsInfo),
-    Diffuse(DdsInfo, ::image::RgbaImage),
-    Normal(DdsInfo, ::image::RgbaImage),
-    Emissive(DdsInfo, ::image::RgbaImage),
+    Diffuse(DdsInfo, Arc<::image::RgbaImage>),
+    Normal(DdsInfo, Arc<::image::RgbaImage>),
+    Emissive(DdsInfo, Arc<::image::RgbaImage>),
     MaterialResolved(
         MaterialReport,
         Option<::image::RgbaImage>,
@@ -397,15 +400,12 @@ impl Operation {
                     report, diffuse, normal, emissive,
                 ))
             }
-            Self::LoadNormal(source) => decode_dds_rgba(&source)
-                .map(|(info, image)| Completed::Normal(info, image))
-                .map_err(|e| e.to_string()),
-            Self::LoadEmissive(source) => decode_dds_rgba(&source)
-                .map(|(info, image)| Completed::Emissive(info, image))
-                .map_err(|e| e.to_string()),
-            Self::LoadDiffuse(source) => decode_dds_rgba(&source)
-                .map(|(info, image)| Completed::Diffuse(info, image))
-                .map_err(|e| e.to_string()),
+            Self::LoadNormal(source, cache) => decoded_dds(&cache, &source)
+                .map(|(info, image)| Completed::Normal(info, image)),
+            Self::LoadEmissive(source, cache) => decoded_dds(&cache, &source)
+                .map(|(info, image)| Completed::Emissive(info, image)),
+            Self::LoadDiffuse(source, cache) => decoded_dds(&cache, &source)
+                .map(|(info, image)| Completed::Diffuse(info, image)),
             Self::InspectDds(source) => inspect_dds(&source)
                 .map(Completed::Texture)
                 .map_err(|e| e.to_string()),
@@ -1619,7 +1619,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             return launch(
                 state,
-                Operation::LoadNormal(PathBuf::from(&state.normal_input)),
+                Operation::LoadNormal(PathBuf::from(&state.normal_input), state.preview_cache.clone()),
             );
         }
         Message::StartEmissiveLoad => {
@@ -1630,7 +1630,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             return launch(
                 state,
-                Operation::LoadEmissive(PathBuf::from(&state.emissive_input)),
+                Operation::LoadEmissive(PathBuf::from(&state.emissive_input), state.preview_cache.clone()),
             );
         }
         Message::StartDiffuseLoad => {
@@ -1641,7 +1641,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             return launch(
                 state,
-                Operation::LoadDiffuse(PathBuf::from(&state.diffuse_input)),
+                Operation::LoadDiffuse(PathBuf::from(&state.diffuse_input), state.preview_cache.clone()),
             );
         }
         Message::StartDdsInspection => {
@@ -1982,7 +1982,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         "GPU normal map loaded: {} × {} ({:?}) in linear color space. Tangents derive from original UV0.",
                         info.width, info.height, info.format
                     );
-                    state.normal_map = Some(Arc::new(pixels));
+                    state.normal_map = Some(pixels);
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::Emissive(info, pixels)) => {
@@ -1990,7 +1990,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         "GPU emissive map loaded: {} × {} ({:?}). MTL GlowAmount is not inferred.",
                         info.width, info.height, info.format
                     );
-                    state.emissive_map = Some(Arc::new(pixels));
+                    state.emissive_map = Some(pixels);
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::Diffuse(info, pixels)) => {
@@ -1999,7 +1999,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         info.width, info.height, info.format
                     );
                     state.status = state.diffuse_status.clone();
-                    state.diffuse = Some(Arc::new(pixels));
+                    state.diffuse = Some(pixels);
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::Texture(texture)) => {
