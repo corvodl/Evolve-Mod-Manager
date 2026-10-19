@@ -22,19 +22,19 @@ use asset_cache::{SharedCache, decoded_dds};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph, ImportedLibrary,
-    ImportedPak, Inventory, LevelScene, LibraryImportReport, LibraryReferenceStatus, MaterialReport, ModProfile, ModelInfo,
-    NativeCafMotion, PakInventory, ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport,
-    SignedPakInfo, StageTransaction, TerrainInfo, add_mod_to_profile, apply_profile_stage,
-    apply_stage_pak, batch_stage_status, compare_assets, convert_glb_to_fbx,
-    convert_original_motion, create_mod_profile, decode_dds_rgba, export_dds_png,
-    export_level_scene_glb, export_rigged_character_fbx_textured_animated,
+    ImportedPak, Inventory, LevelScene, LibraryImportReport, LibraryReferenceStatus,
+    MaterialReport, ModProfile, ModelInfo, NativeCafMotion, PakInventory, ProfileCatalog,
+    ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo, StageTransaction, TerrainInfo,
+    add_mod_to_profile, apply_profile_stage, apply_stage_pak, batch_stage_status, compare_assets,
+    convert_glb_to_fbx, convert_original_motion, create_mod_profile, decode_dds_rgba,
+    export_dds_png, export_level_scene_glb, export_rigged_character_fbx_textured_animated,
     export_rigged_character_glb, extract_legacy_pak, extract_signed_pak, import_signed_library_pak,
     import_stage_pak, imported_archive_files, imported_library, initialize_stage, inspect_dds,
     inspect_dependencies, inspect_legacy_pak, inspect_signed_pak, list_mod_profiles,
     load_level_scene, plan_mod_profile, read_cdf, read_material, read_model, read_native_caf,
     read_static_cdf_assembly, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry,
-    resolve_cdf, resolve_imported_reference, resolve_materials, restore_profile_stage, restore_stage, scan_directory,
-    scan_directory_with_progress, stage_status,
+    resolve_cdf, resolve_imported_reference, resolve_materials, restore_profile_stage,
+    restore_stage, scan_directory, scan_directory_with_progress, stage_status,
 };
 use iced::widget::{
     button, canvas, column, container, image, row, scrollable, shader, slider, space, svg, text,
@@ -469,16 +469,30 @@ impl Operation {
                                 continue;
                             }
                             texture.resolution = match resolve_imported_reference(
-                                imported_root, &texture.authored_path, build_label.as_deref()
-                            ).map_err(|e| e.to_string())? {
+                                imported_root,
+                                &texture.authored_path,
+                                build_label.as_deref(),
+                            )
+                            .map_err(|e| e.to_string())?
+                            {
                                 LibraryReferenceStatus::Missing => AssetResolution::Missing,
-                                LibraryReferenceStatus::Found(hit) =>
-                                    AssetResolution::Found(hit.absolute_path),
-                                LibraryReferenceStatus::Ambiguous(hits) => AssetResolution::Ambiguous(
-                                    hits.into_iter()
-                                        .map(|hit| format!("{} [{}] / {}", hit.archive_name, hit.archive_id, hit.relative_path))
-                                        .collect()
-                                ),
+                                LibraryReferenceStatus::Found(hit) => {
+                                    AssetResolution::Found(hit.absolute_path)
+                                }
+                                LibraryReferenceStatus::Ambiguous(hits) => {
+                                    AssetResolution::Ambiguous(
+                                        hits.into_iter()
+                                            .map(|hit| {
+                                                format!(
+                                                    "{} [{}] / {}",
+                                                    hit.archive_name,
+                                                    hit.archive_id,
+                                                    hit.relative_path
+                                                )
+                                            })
+                                            .collect(),
+                                    )
+                                }
                             };
                         }
                     }
@@ -507,12 +521,11 @@ impl Operation {
                     };
                     let metadata = std::fs::symlink_metadata(&source).map_err(|e| e.to_string())?;
                     let canonical = std::fs::canonicalize(&source).map_err(|e| e.to_string())?;
-                    let within_local = canonical.starts_with(
-                        std::fs::canonicalize(&root).map_err(|e| e.to_string())?
-                    );
+                    let within_local = canonical
+                        .starts_with(std::fs::canonicalize(&root).map_err(|e| e.to_string())?);
                     let within_imported = if let Some(ref library_root) = imported_root {
                         canonical.starts_with(
-                            std::fs::canonicalize(library_root).map_err(|e| e.to_string())?
+                            std::fs::canonicalize(library_root).map_err(|e| e.to_string())?,
                         )
                     } else {
                         false
@@ -2146,11 +2159,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Operation::ResolveMaterial(
                     PathBuf::from(&state.material_input),
                     PathBuf::from(&state.assets_root),
-                    state.library_catalog.as_ref()
+                    state
+                        .library_catalog
+                        .as_ref()
                         .map(|catalog| PathBuf::from(&catalog.root)),
-                    state.library_by_build.then(|| state.library_catalog.as_ref()
-                        .and_then(|catalog| catalog.builds.get(state.library_build_index))
-                        .cloned()).flatten(),
+                    state
+                        .library_by_build
+                        .then(|| {
+                            state
+                                .library_catalog
+                                .as_ref()
+                                .and_then(|catalog| catalog.builds.get(state.library_build_index))
+                                .cloned()
+                        })
+                        .flatten(),
                 ),
             );
         }
