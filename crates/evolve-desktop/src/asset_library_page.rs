@@ -210,7 +210,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 rows = rows.push(archive_row(
                     index,
                     archive,
-                    state.library_selected == Some(index),
+                    state.library_selection.indices.contains(&index),
                 ));
                 shown += 1;
             }
@@ -272,7 +272,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         button("Preview Files").on_press_maybe(selected.map(|_| Message::LibraryPreview)),
         button("Edit / Add to Mod Project"),
         text(if selected.is_some() {
-            "Original PAK files are protected. Editable project copies are not yet available in Rust."
+            "Shift: range • Ctrl: toggle. Library originals are protected; editable project copies are not yet available."
         } else {
             "Select an imported archive to preview its extracted files."
         }).size(12).color(MUTED),
