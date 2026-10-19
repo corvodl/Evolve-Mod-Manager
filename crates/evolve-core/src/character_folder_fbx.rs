@@ -85,13 +85,19 @@ pub fn export_flat_cdf_parts_fbx(
         return Err("Original skeleton is missing or ambiguous".into());
     };
     let skeleton = verified_file(&root, &skeleton_relative)?;
-    let caf = caf.map(|path| {
-        let relative = path.strip_prefix(&root)
-            .map_err(|_| "CAF must be from the indexed original asset root".to_owned())?;
-        verified_file(&root, &relative.to_string_lossy())
-    }).transpose()?;
+    let caf = caf
+        .map(|path| {
+            let relative = path
+                .strip_prefix(&root)
+                .map_err(|_| "CAF must be from the indexed original asset root".to_owned())?;
+            verified_file(&root, &relative.to_string_lossy())
+        })
+        .transpose()?;
     if let Some(ref clip) = caf {
-        if !clip.extension().is_some_and(|v| v.eq_ignore_ascii_case("caf")) {
+        if !clip
+            .extension()
+            .is_some_and(|v| v.eq_ignore_ascii_case("caf"))
+        {
             return Err("Only verified original CAF Actions are supported".into());
         }
     }
@@ -122,8 +128,14 @@ pub fn export_flat_cdf_parts_fbx(
     for (filename, mesh) in attachments {
         let output = stage.path().join(&filename);
         export_rigged_character_fbx_textured_animated(
-            &mesh, &skeleton, blender, None, caf.as_deref(), &output,
-        ).map_err(|e| format!("CDF part {filename} cannot be exported: {e}"))?;
+            &mesh,
+            &skeleton,
+            blender,
+            None,
+            caf.as_deref(),
+            &output,
+        )
+        .map_err(|e| format!("CDF part {filename} cannot be exported: {e}"))?;
         exported.push(filename);
     }
     // A complete stage is made visible only after every part verifies.
@@ -134,7 +146,9 @@ pub fn export_flat_cdf_parts_fbx(
     }
     if let Err(error) = fs::rename(&stage_path, destination) {
         let _ = fs::remove_dir_all(&stage_path);
-        return Err(format!("Unable to publish complete character export: {error}"));
+        return Err(format!(
+            "Unable to publish complete character export: {error}"
+        ));
     }
     Ok(FlatCdfFbxReport {
         files: exported,
@@ -163,9 +177,16 @@ mod tests {
         fs::write(&cdf, br#"<CharacterDefinition><Model File="characters/missing.chr"/><AttachmentList><Attachment Type="CA_SKIN" AName="Body" Binding="characters/missing.skin"/></AttachmentList></CharacterDefinition>"#).unwrap();
         let inventory = crate::scan_directory(input.path()).unwrap();
         let destination = output.path().join("character");
-        assert!(export_flat_cdf_parts_fbx(
-            &cdf, &inventory, Path::new("Blender.exe"), &destination, None
-        ).is_err());
+        assert!(
+            export_flat_cdf_parts_fbx(
+                &cdf,
+                &inventory,
+                Path::new("Blender.exe"),
+                &destination,
+                None
+            )
+            .is_err()
+        );
         assert!(!destination.exists());
     }
 
@@ -176,9 +197,10 @@ mod tests {
         fs::write(&cdf, b"invalid").unwrap();
         let inventory = crate::scan_directory(input.path()).unwrap();
         let target = input.path().join("exported");
-        assert!(export_flat_cdf_parts_fbx(
-            &cdf, &inventory, Path::new("Blender.exe"), &target, None
-        ).is_err());
+        assert!(
+            export_flat_cdf_parts_fbx(&cdf, &inventory, Path::new("Blender.exe"), &target, None)
+                .is_err()
+        );
         assert!(!target.exists());
     }
 }
