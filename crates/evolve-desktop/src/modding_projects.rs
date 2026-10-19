@@ -363,7 +363,6 @@ pub fn unpack_raw_project(
         .create_new(true)
         .open(output.join(".evolve-pak-workspace.json"))
         .map_err(|e| e.to_string())?;
-    use std::io::Write;
     serde_json::to_writer_pretty(&mut writer, &manifest).map_err(|e| e.to_string())?;
     writer.sync_all().map_err(|e| e.to_string())?;
     fs::remove_file(sentinel).map_err(|e| e.to_string())?;
