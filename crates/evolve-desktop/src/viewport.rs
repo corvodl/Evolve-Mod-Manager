@@ -3,7 +3,7 @@
 //! no claim of full shader-based character rendering.
 use evolve_core::RenderMesh;
 use iced::widget::canvas::{self, Path, Stroke};
-use iced::{Color, Point, Rectangle, Renderer, Theme, mouse};
+use iced::{Color, Event, Point, Rectangle, Renderer, Theme, mouse};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -12,10 +12,24 @@ pub struct MeshViewport {
     pub yaw: f32,
     pub pitch: f32,
     pub zoom: f32,
+    pub pan_x: f32,
+    pub pan_y: f32,
+    pub shift: bool,
 }
 
-impl<Message> canvas::Program<Message> for MeshViewport {
-    type State = ();
+impl canvas::Program<super::Message> for MeshViewport {
+    type State = super::view_navigation::Navigation;
+    fn update(
+        &self,
+        state: &mut Self::State,
+        event: &Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<super::Message>> {
+        state.handle(event, bounds, cursor, self.shift)
+            .map(super::view_navigation::message)
+            .map(|message| canvas::Action::publish(message).and_capture())
+    }
     fn draw(
         &self,
         _state: &Self::State,
@@ -58,8 +72,8 @@ impl<Message> canvas::Program<Message> for MeshViewport {
             let vertical = z * pitch_cos - depth * pitch_sin;
             let behind = z * pitch_sin + depth * pitch_cos;
             let perspective = (2.5 - behind).max(0.1);
-            let rx = bounds.width * 0.5 + horiz * scale / perspective;
-            let ry = bounds.height * 0.5 - vertical * scale / perspective;
+            let rx = bounds.width * (0.5 + self.pan_x * 0.5) + horiz * scale / perspective;
+            let ry = bounds.height * (0.5 - self.pan_y * 0.5) - vertical * scale / perspective;
             if rx.is_finite() && ry.is_finite() {
                 Some(Point::new(rx, ry))
             } else {
