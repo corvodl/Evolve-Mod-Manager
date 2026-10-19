@@ -85,12 +85,25 @@ mod tests {
     #[test]
     fn ignores_unstarted_moves_and_unfocused_scroll() {
         let mut nav = Navigation::default();
-        let bounds = Rectangle { x: 0.0, y: 0.0, width: 200.0, height: 200.0 };
-        let event = Event::Mouse(mouse::Event::CursorMoved { position: Point::new(10.0, 12.0) });
-        assert!(nav.handle(&event, bounds, mouse::Cursor::Unavailable, false).is_none());
+        let bounds = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 200.0,
+        };
+        let event = Event::Mouse(mouse::Event::CursorMoved {
+            position: Point::new(10.0, 12.0),
+        });
+        assert!(
+            nav.handle(&event, bounds, mouse::Cursor::Unavailable, false)
+                .is_none()
+        );
         let wheel = Event::Mouse(mouse::Event::WheelScrolled {
             delta: mouse::ScrollDelta::Lines { x: 0.0, y: 1.0 },
         });
-        assert!(nav.handle(&wheel, bounds, mouse::Cursor::Unavailable, false).is_none());
+        assert!(
+            nav.handle(&wheel, bounds, mouse::Cursor::Unavailable, false)
+                .is_none()
+        );
     }
 }
