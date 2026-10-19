@@ -5,16 +5,11 @@
 //! This is a local UI gate, NOT a security boundary against someone who can
 //! modify the executable or perform offline password guesses.
 
-use argon2::{
-    Argon2,
-    PasswordHash,
-    PasswordVerifier,
-};
+use argon2::{Argon2, PasswordHash, PasswordVerifier};
 
 // PHC format: Argon2id v19, 64 MiB, three iterations, one lane, random salt.
 // The source contains a one-way verifier only. Do not add plaintext fixtures.
-const DEVELOPER_VERIFIER: &str =
-    "$argon2id$v=19$m=65536,t=3,p=1$7rV5JYtexiPG99mNjtK4NQ$HBfF9eoyudPzPaWzfdcQmTIKtiJTf/vDaMSb012ryAk";
+const DEVELOPER_VERIFIER: &str = "$argon2id$v=19$m=65536,t=3,p=1$7rV5JYtexiPG99mNjtK4NQ$HBfF9eoyudPzPaWzfdcQmTIKtiJTf/vDaMSb012ryAk";
 
 pub(super) fn verify(password: &str) -> bool {
     let Ok(parsed) = PasswordHash::new(DEVELOPER_VERIFIER) else {
