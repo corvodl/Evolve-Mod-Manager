@@ -2378,6 +2378,11 @@ fn view(state: &State) -> Element<'_, Message> {
         page,
         Page::Files | Page::AssetLibrary | Page::Models | Page::Levels
     );
+    let advanced: Element<'_, Message> = if state.show_advanced_tools {
+        container(location).into()
+    } else {
+        container(text("")).into()
+    };
     let tools: Element<'_, Message> = if show_tools {
         column![
             row![
@@ -2394,11 +2399,7 @@ fn view(state: &State) -> Element<'_, Message> {
                 .on_press(Message::ToggleAdvancedTools),
             ]
             .spacing(8),
-            if state.show_advanced_tools {
-                container(location).into()
-            } else {
-                container(column![]).into()
-            },
+            advanced,
         ]
         .spacing(7)
         .into()
