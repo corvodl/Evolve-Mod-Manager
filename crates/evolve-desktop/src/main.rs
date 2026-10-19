@@ -3,6 +3,7 @@
 mod textured;
 mod viewport;
 mod settings;
+mod updater;
 use evolve_core::{
     AnimatedGlb, AssetEntry, CdfDefinition, ConvertedMotion, DdsInfo, Inventory, LevelScene,
     ModelInfo, NativeCafMotion, PakInventory, RenderMesh, RigReport, SignedPakInfo, TerrainInfo,
