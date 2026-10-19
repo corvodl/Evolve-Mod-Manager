@@ -97,6 +97,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let menu_details: Element<'_, Message> = match state.library_menu {
         Some("File") => row![
             button("Refresh catalog").on_press(Message::LibraryRefresh),
+            button("Import signed PAK…").on_press(Message::LibraryToggleConfiguration),
             button("Configure folder").on_press(Message::LibraryToggleConfiguration),
         ]
         .spacing(8)
@@ -142,8 +143,15 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     .on_input(Message::LibraryRootChanged).width(Fill),
                 button("Load Library").on_press(Message::LibraryRefresh),
             ].spacing(8),
-            text("The Rust manager reads the original private manager's imported PAK manifests without altering any files. Importing NEW signed PAKs into this catalog is still being ported; use the private manager for imports until that workflow is verified.")
+            text("Import one existing signed/encrypted Stage 2 PAK into a new private-manager-compatible Asset Library entry. The configured stage's local verification key is found automatically; the source PAK and existing imports are never modified.")
                 .size(12).color(MUTED),
+            row![
+                text_input("Full path to a local Stage 2 .pak...", &state.library_import_source)
+                    .on_input(Message::LibraryImportSourceChanged).width(Fill),
+                button("Import signed PAK").style(button::primary)
+                    .on_press(Message::LibraryImportStart),
+            ].spacing(8),
+            text("Only signed Stage 2 PAKs are supported by this importer. Historical/ordinary ZIP imports, batch cancellation, and editable project copies remain separate work.").size(11).color(MUTED),
             button("Advanced archive tools in Modding").on_press(Message::Navigate(Page::Files)),
         ].spacing(8)).padding(12)));
     }
