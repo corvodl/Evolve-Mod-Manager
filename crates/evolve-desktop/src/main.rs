@@ -1042,6 +1042,25 @@ fn launch(state: &mut State, operation: Operation) -> Task<Message> {
 /// staged original. A replacement's filename alone is never sufficient.
 /// Only a single material-slot, uniquely resolved original diffuse stream is
 /// eligible as an automatic FBX texture input. The user can still override it.
+/// Select the source build from the private manager's readable
+/// `<PAK name>__<20-char id>/files` folder and build-collections.json.
+/// An archive can belong to multiple snapshots; that is not proof of one
+/// build, so only a single exact membership is selected automatically.
+fn resource_build(state: &State) -> Option<String> {
+    let catalog = state.library_catalog.as_ref()?;
+    if state.library_by_build {
+        return catalog.builds.get(state.library_build_index).cloned();
+    }
+    let source = Path::new(&state.inventory.as_ref()?.root);
+    if source.file_name()? != "files" {
+        return None;
+    }
+    let archive_folder = source.parent()?;
+    let archive = catalog.archives.iter()
+        .find(|item| Path::new(&item.directory) == archive_folder)?;
+    (archive.builds.len() == 1).then(|| archive.builds[0].clone())
+}
+
 fn verified_export_diffuse(state: &State, report: &MaterialReport) -> Option<PathBuf> {
     if report.slots != 1 {
         return None;
@@ -2152,16 +2171,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .library_catalog
                         .as_ref()
                         .map(|c| PathBuf::from(&c.root)),
-                    state
-                        .library_by_build
-                        .then(|| {
-                            state
-                                .library_catalog
-                                .as_ref()
-                                .and_then(|c| c.builds.get(state.library_build_index))
-                                .cloned()
-                        })
-                        .flatten(),
+                    resource_build(state),
                     PathBuf::from(&state.converter_path),
                 );
                 return launch(state, operation);
@@ -2185,16 +2195,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .library_catalog
                     .as_ref()
                     .map(|c| PathBuf::from(&c.root)),
-                state
-                    .library_by_build
-                    .then(|| {
-                        state
-                            .library_catalog
-                            .as_ref()
-                            .and_then(|c| c.builds.get(state.library_build_index))
-                            .cloned()
-                    })
-                    .flatten(),
+                resource_build(state),
             );
             return launch(state, operation);
         }
@@ -2251,16 +2252,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .library_catalog
                         .as_ref()
                         .map(|catalog| PathBuf::from(&catalog.root)),
-                    state
-                        .library_by_build
-                        .then(|| {
-                            state
-                                .library_catalog
-                                .as_ref()
-                                .and_then(|catalog| catalog.builds.get(state.library_build_index))
-                                .cloned()
-                        })
-                        .flatten(),
+                    resource_build(state),
                 )
             } else {
                 state.status =
@@ -2694,16 +2686,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .library_catalog
                         .as_ref()
                         .map(|catalog| PathBuf::from(&catalog.root)),
-                    state
-                        .library_by_build
-                        .then(|| {
-                            state
-                                .library_catalog
-                                .as_ref()
-                                .and_then(|catalog| catalog.builds.get(state.library_build_index))
-                                .cloned()
-                        })
-                        .flatten(),
+                    resource_build(state),
                 ),
             );
         }
@@ -3420,16 +3403,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                                     .library_catalog
                                     .as_ref()
                                     .map(|c| PathBuf::from(&c.root)),
-                                state
-                                    .library_by_build
-                                    .then(|| {
-                                        state
-                                            .library_catalog
-                                            .as_ref()
-                                            .and_then(|c| c.builds.get(state.library_build_index))
-                                            .cloned()
-                                    })
-                                    .flatten(),
+                                resource_build(state),
                             );
                             state.auto_material_pending = true;
                             return launch(state, operation);
@@ -3650,16 +3624,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                                     .library_catalog
                                     .as_ref()
                                     .map(|c| PathBuf::from(&c.root)),
-                                state
-                                    .library_by_build
-                                    .then(|| {
-                                        state
-                                            .library_catalog
-                                            .as_ref()
-                                            .and_then(|c| c.builds.get(state.library_build_index))
-                                            .cloned()
-                                    })
-                                    .flatten(),
+                                resource_build(state),
                             );
                             return launch(state, operation);
                         }
