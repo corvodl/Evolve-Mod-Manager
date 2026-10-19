@@ -53,6 +53,26 @@ Do not convert an internal Rust prototype into a public production release just 
 - Preview Files verifies that each manifest-listed file still resides in its imported archive folder with its expected length, then opens the established separate native Asset Viewer window; original library files stay protected.
 - **Still unfinished:** a new-PAK import wizard that generates permanent library manifests, full browse-by-build management, large-list virtualization, editable project copy workflow and source-hash audit on every preview. The Import PAKs control currently exposes the library-folder setup/help panel; it must not be reported as an implemented source archive importer. The Edit / Add to Mod Project action stays disabled until copy-on-write project creation is supported.
 
+## Rust/Iced/wgpu interactive GUI improvements (development preview)
+
+The following are **new implementation work**, not a claim of complete Qt parity:
+
+| Capability | Implemented in the preview | Still required |
+|---|---|---|
+| GPU character preview | Existing source-textured wgpu renderer, wireframe switch, camera persistence, GPU-backed UV0 visualization preserving tiling | Per-part GPU selection, skinned 3D animation, multiple material slots, full CDF equipment composition, real-time shadows and faithful transparency |
+| Asset Library responsiveness | Catalog filtering cached on search/build changes; bounded page rendering instead of generating all rows, background index and scanned-file progress | Truly virtual scrolling, thumbnail workers, 40 GiB stress benchmarks and sustained frame-time tests |
+| CAF/DBA animation timeline | Real sampled CAF or validated converted GLB scrubbing, speed range 0.1–3.0×, loop control and saved animation options | DBA direct playback, layered track mixer, verified bone bindings and actions applied to skinned meshes |
+| Level Editor | GPU-backed 2D placement overview from source transform coordinates, point-picking, hierarchy, object details, zoom and bounded culling | GPU instanced 3D geometry, terrain material rendering, object transform gizmos, full editor undo/redo |
+| Workspace layout | Separate native viewer window, adjustable explorer ratio, saved camera/panel and playback settings | Fully detachable and dockable panels, independent multi-tab workspaces, complete keyboard shortcuts |
+| Asset dependency explorer | Authored CDF and MTL dependency edges rendered in a node diagram with found/missing/ambiguous diagnostics | Multi-hop PAK/material/animation edges, per-node navigation and automatic correction tools |
+| Original vs modified compare | Read-only complete SHA-256 and DDS dimension comparison | Visual pixel/UV/geometry diff modes |
+| Shared GPU asset memory | Per-process bounded in-memory DDS LRU reused across windows, source metadata invalidation and retained Arc image ownership | Multi-device GPU texture pool, cache telemetry and profiling |
+| Background jobs | Worker thread operations; cancellable read-only directory indexing with exact file counts | Progress/cancel/rollback support per archive export/rebuild and all operations |
+| Drag/drop and diagnostics | Native file/folder drop dispatch with protected Asset Library context and inline inspection statuses | Drag-out, batch selections, all-format previews |
+| Appearance | Private-like charcoal Home cards, compact controls and red primary action accents | Full per-widget theme audit, focus accessibility and actual-frame rendering comparisons |
+
+All source libraries stay read-only. New PAK installation/rebuilding must keep its existing transaction and restore checks. Missing features remain gated and must be tested against representative Stage 2 assets before public 1.0.
+
 ## Desktop GUI parity — private manager reference
 
 - The private v1.3.5 manager is the design reference: dark charcoal surfaces, compact red-accent icon rail, top breadcrumb, Home hero/status dashboard, Instructions, Asset Library, Modding, What's New, Credits and password-gated Developer. Bottom rail is Play with Mods, Play without Mods and Settings. Playback shortcuts deliberately remain disabled until the installed-game launch and recovery implementation is verified.
