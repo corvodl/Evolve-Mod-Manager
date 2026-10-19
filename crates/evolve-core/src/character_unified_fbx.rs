@@ -7,7 +7,7 @@ use crate::inventory::Inventory;
 use crate::materials::{read_material, resolve_materials};
 use crate::model::read_model;
 use crate::native_caf::read_native_caf;
-use crate::rig::{embed_diffuse_png_glb, rigged_glb_bytes, rigged_glb_bytes_with_caf};
+use crate::rig::{embed_verified_maps_png_glb, rigged_glb_bytes, rigged_glb_bytes_with_caf};
 use image::ImageEncoder;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -134,13 +134,21 @@ fn plan_parts(
     Ok((skeleton, skeleton_ref, skin_set, parts))
 }
 
-/// Only use one authored diffuse map in an unambiguous single-slot material.
-/// Multiple submaterials and authored overrides are intentionally not guessed.
-fn exact_single_slot_diffuse(
+#[derive(Default)]
+struct AuthoredMaps {
+    diffuse: Option<PathBuf>,
+    normal: Option<PathBuf>,
+    emissive: Option<PathBuf>,
+}
+
+/// Resolve actual MTL texture roles, never the first same-named DDS found
+/// somewhere else. Multiple submaterials need the original subset map and
+/// are left untextured rather than painted with an incorrect atlas.
+fn exact_single_slot_maps(
     root: &Path,
     mesh_path: &Path,
     inventory: &Inventory,
-) -> Result<Option<PathBuf>, String> {
+) -> Result<AuthoredMaps, String> {
     let material = mesh_path.with_extension("mtl");
     let rel = material
         .strip_prefix(root)
@@ -148,7 +156,7 @@ fn exact_single_slot_diffuse(
     let candidate = rel.to_string_lossy().replace('\\', "/");
     let found = match resolve_virtual(inventory, &candidate) {
         AssetResolution::Found(path) => path,
-        AssetResolution::Missing => return Ok(None),
+        AssetResolution::Missing => return Ok(AuthoredMaps::default()),
         AssetResolution::Ambiguous(_) => {
             return Err(format!("Ambiguous authored CDF material: {candidate}"));
         }
@@ -156,28 +164,55 @@ fn exact_single_slot_diffuse(
     let document = read_material(&input_file(root, &found)?)
         .map_err(|e| format!("Invalid authored material {candidate}: {e}"))?;
     if document.slots.len() != 1 {
-        return Ok(None);
+        return Ok(AuthoredMaps::default());
     }
     let resolved = resolve_materials(inventory, &document);
-    let diffuse = resolved
-        .textures
-        .iter()
-        .filter(|t| t.role == "diffuse")
-        .collect::<Vec<_>>();
-    if diffuse.is_empty() {
-        return Ok(None);
+    let mut maps = AuthoredMaps::default();
+    for item in &resolved.textures {
+        let target = match item.role.as_str() {
+            "diffuse" => &mut maps.diffuse,
+            "normal" | "normals" | "bumpmap" => &mut maps.normal,
+            "emissive" | "emittance" | "emission" | "glow" => &mut maps.emissive,
+            _ => continue,
+        };
+        if target.is_some() {
+            return Err(format!("Multiple original {} layers in {candidate}", item.role));
+        }
+        match &item.resolution {
+            AssetResolution::Found(path) => *target = Some(input_file(root, path)?),
+            AssetResolution::Missing => (),
+            AssetResolution::Ambiguous(_) => {
+                return Err(format!("Ambiguous authored {} in {candidate}", item.authored_path));
+            }
+        }
     }
-    if diffuse.len() != 1 {
-        return Err(format!("Multiple authored diffuse textures in {candidate}"));
+    Ok(maps)
+}
+
+fn authored_png(path: &Path, normal_map: bool) -> Result<Vec<u8>, String> {
+    let (info, mut rgba) = crate::dds::decode_dds_rgba(path)
+        .map_err(|e| format!("Could not decode original DDS {}: {e}", path.display()))?;
+    if normal_map && info.format == crate::dds::DdsFormat::Bc5 {
+        // BC5 contains tangent-space signed XY. glTF expects normal RGB;
+        // reconstruct the nonnegative source Z, leaving UV0 unchanged.
+        for px in rgba.pixels_mut() {
+            let x = (f32::from(px[0]) / 255.0) * 2.0 - 1.0;
+            let y = (f32::from(px[1]) / 255.0) * 2.0 - 1.0;
+            let z = (1.0 - x * x - y * y).max(0.0).sqrt();
+            px[2] = (((z + 1.0) * 0.5) * 255.0).round().clamp(0.0, 255.0) as u8;
+            px[3] = 255;
+        }
     }
-    match &diffuse[0].resolution {
-        AssetResolution::Found(path) => input_file(root, path).map(Some),
-        AssetResolution::Missing => Ok(None),
-        AssetResolution::Ambiguous(_) => Err(format!(
-            "Ambiguous authored diffuse {} in {candidate}",
-            diffuse[0].authored_path
-        )),
-    }
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(
+            rgba.as_raw(),
+            rgba.width(),
+            rgba.height(),
+            image::ExtendedColorType::Rgba8,
+        )
+        .map_err(|e| format!("Cannot encode original DDS to PNG: {e}"))?;
+    Ok(png)
 }
 
 /// Make ONE armature-bound FBX from original CDF attachments only when every
@@ -268,19 +303,16 @@ pub fn export_unified_cdf_fbx(
         vertices = vertices
             .checked_add(verified.weighted_vertices)
             .ok_or("Vertex count overflow")?;
-        if let Some(dds_path) = exact_single_slot_diffuse(&root, original, inventory)? {
-            let (_info, rgba) = crate::dds::decode_dds_rgba(&dds_path)
-                .map_err(|e| format!("CDF part {name}: authored DDS decode: {e}"))?;
-            let mut png = Vec::new();
-            image::codecs::png::PngEncoder::new(&mut png)
-                .write_image(
-                    rgba.as_raw(),
-                    rgba.width(),
-                    rgba.height(),
-                    image::ExtendedColorType::Rgba8,
-                )
-                .map_err(|e| format!("CDF part {name}: PNG encoding: {e}"))?;
-            glb = embed_diffuse_png_glb(&glb, &png).map_err(|e| e.to_string())?;
+        let maps = exact_single_slot_maps(&root, original, inventory)?;
+        let diffuse = maps.diffuse.as_deref().map(|f| authored_png(f, false)).transpose()?;
+        let normal = maps.normal.as_deref().map(|f| authored_png(f, true)).transpose()?;
+        let emissive = maps.emissive.as_deref().map(|f| authored_png(f, false)).transpose()?;
+        if diffuse.is_some() || normal.is_some() || emissive.is_some() {
+            glb = embed_verified_maps_png_glb(
+                &glb, diffuse.as_deref(), normal.as_deref(), emissive.as_deref(),
+            ).map_err(|e| format!("CDF part {name} original maps: {e}"))?;
+        }
+        if diffuse.is_some() {
             diffuse_textured_parts += 1;
         }
         let staged = work.path().join(format!("part-{index:03}.glb"));
