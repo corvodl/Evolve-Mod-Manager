@@ -2975,8 +2975,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.auto_clips.len(),
                         state.auto_resource_note
                     );
-                    if let Some(source) = resources.material {
-                        if let Some(inv) = &state.inventory {
+                    if let Some(source) = resources.material
+                        && let Some(inv) = &state.inventory
+                    {
                             let operation = Operation::ResolveMaterial(
                                 source,
                                 PathBuf::from(&inv.root),
@@ -2997,7 +2998,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             );
                             state.auto_material_pending = true;
                             return launch(state, operation);
-                        }
                     }
                     if let Some(idle) = state.auto_idle_pending.take() {
                         return launch(state, Operation::LoadCaf(idle));
