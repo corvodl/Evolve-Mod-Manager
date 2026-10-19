@@ -196,6 +196,7 @@ struct State {
     playback_speed: f32,
     playback_loop: bool,
     viewer_wireframe: bool,
+    light_strength: f32,
     level_filter: String,
     level_selected: Option<usize>,
     level_zoom: f32,
@@ -602,6 +603,7 @@ enum Message {
     PlaybackSpeedChanged(f32),
     PlaybackLoopChanged,
     ViewerToggleWireframe,
+    LightStrengthChanged(f32),
     LevelSelect(usize),
     LevelFilterChanged(String),
     LevelZoomChanged(f32),
@@ -1002,6 +1004,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::PlaybackSpeedChanged(value) => state.playback_speed = value.clamp(0.1, 3.0),
         Message::PlaybackLoopChanged => state.playback_loop = !state.playback_loop,
         Message::ViewerToggleWireframe => state.viewer_wireframe = !state.viewer_wireframe,
+        Message::LightStrengthChanged(value) => state.light_strength = value.clamp(0.1, 2.0),
         Message::LevelSelect(index) => {
             if state
                 .level_scene
@@ -1017,6 +1020,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.preferences.viewer_split = state.viewer_split;
             state.preferences.viewer_show_inspector = state.viewer_show_inspector;
             state.preferences.viewer_wireframe = state.viewer_wireframe;
+            state.preferences.light_strength = state.light_strength;
             state.preferences.animation_speed = state.playback_speed;
             state.preferences.animation_loop = state.playback_loop;
             state.preferences.saved_yaw = state.yaw;
@@ -2638,10 +2642,12 @@ fn view(state: &State) -> Element<'_, Message> {
                             mesh:mesh.clone(),diffuse:state.diffuse.clone(),
                             normal_map:state.normal_map.clone(),emissive:state.emissive_map.clone(),
                             yaw:state.yaw,pitch:state.pitch,zoom:state.zoom,
+                            light_strength:state.light_strength,
                         }).width(Fill).height(Length::Fixed(400.)).into()
                     }else{
                         canvas(MeshViewport{
                             mesh:mesh.clone(),yaw:state.yaw,pitch:state.pitch,zoom:state.zoom,
+                            light_strength:state.light_strength,
                         }).width(Fill).height(Length::Fixed(400.)).into()
                     };
                     display
@@ -2762,10 +2768,12 @@ fn view(state: &State) -> Element<'_, Message> {
                         mesh:mesh.clone(),diffuse:state.diffuse.clone(),
                             normal_map:state.normal_map.clone(),emissive:state.emissive_map.clone(),
                         yaw:state.yaw,pitch:state.pitch,zoom:state.zoom.max(0.2),
+                            light_strength:state.light_strength,
                     }).width(Fill).height(Length::Fixed(400.)).into()
                 }else{
                     canvas(MeshViewport{
                         mesh:mesh.clone(),yaw:state.yaw,pitch:state.pitch,zoom:state.zoom.max(0.2),
+                            light_strength:state.light_strength,
                     }).width(Fill).height(Length::Fixed(400.)).into()
                 };
                 display
@@ -2901,6 +2909,7 @@ fn initial_state() -> State {
         playback_speed: 1.0,
         viewer_split: 0.67,
         level_zoom: 1.0,
+        light_strength: 1.0,
         viewer_explorer_visible: true,
         ..State::default()
     };
@@ -2912,6 +2921,7 @@ fn initial_state() -> State {
                 result.viewer_split = saved.viewer_split;
                 result.viewer_show_inspector = saved.viewer_show_inspector;
                 result.viewer_wireframe = saved.viewer_wireframe;
+                result.light_strength = saved.light_strength;
                 result.playback_speed = saved.animation_speed;
                 result.playback_loop = saved.animation_loop;
                 result.yaw = saved.saved_yaw;
