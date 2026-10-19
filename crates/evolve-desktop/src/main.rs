@@ -2,7 +2,8 @@
 //! file I/O/decompression never runs in the interactive Iced view/update path.
 use evolve_core::{
     AssetEntry, CdfDefinition, DdsInfo, Inventory, PakInventory, export_dds_png,
-    extract_legacy_pak, inspect_dds, inspect_legacy_pak, read_cdf, rebuild_legacy_pak, scan_directory,
+    extract_legacy_pak, inspect_dds, inspect_legacy_pak, read_cdf, rebuild_legacy_pak,
+    scan_directory,
 };
 use iced::widget::{button, column, container, row, scrollable, text, text_input};
 use iced::{Element, Fill, Task, Theme};
@@ -96,9 +97,11 @@ impl Operation {
             Self::ExtractPak(source, dest) => extract_legacy_pak(&source, &dest)
                 .map(|pak| Completed::Extracted(pak.entries.len(), dest))
                 .map_err(|e| e.to_string()),
-            Self::RebuildPak(source, overrides, dest) => rebuild_legacy_pak(&source, &overrides, &dest)
-                .map(|report| Completed::Rebuilt(report.changed_entries, dest))
-                .map_err(|e| e.to_string()),
+            Self::RebuildPak(source, overrides, dest) => {
+                rebuild_legacy_pak(&source, &overrides, &dest)
+                    .map(|report| Completed::Rebuilt(report.changed_entries, dest))
+                    .map_err(|e| e.to_string())
+            }
             Self::ExportPng(source, dest) => export_dds_png(&source, &dest)
                 .map(|info| Completed::ExportedPng(info, dest))
                 .map_err(|e| e.to_string()),
@@ -317,10 +320,15 @@ fn view(state: &State) -> Element<'_, Message> {
                 .width(Fill),
             button("Extract PAK").on_press(Message::StartExtract),
             button("Export DDS → PNG").on_press(Message::StartPngExport),
-        ].spacing(8),
+        ]
+        .spacing(8),
         row![
-            text_input("Folder containing exact original PAK member replacements...", &state.replacements)
-                .on_input(Message::ReplacementsChanged).width(Fill),
+            text_input(
+                "Folder containing exact original PAK member replacements...",
+                &state.replacements
+            )
+            .on_input(Message::ReplacementsChanged)
+            .width(Fill),
             button("Rebuild unsigned PAK").on_press(Message::StartRebuild),
         ]
         .spacing(8),
