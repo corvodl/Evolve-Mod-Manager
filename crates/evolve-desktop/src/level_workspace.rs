@@ -233,9 +233,12 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             text_input("Filter layer, object or model...", &state.level_filter)
                 .on_input(Message::LevelFilterChanged),
             scrollable(outliner).height(Length::Fixed(240.0)),
-            text(format!("{visible} matching placements · {} selected · Shift range / Ctrl toggle", state.level_selection.indices.len()))
-                .size(12)
-                .color(MUTED),
+            text(format!(
+                "{visible} matching placements · {} selected · Shift range / Ctrl toggle",
+                state.level_selection.indices.len()
+            ))
+            .size(12)
+            .color(MUTED),
             details,
         ]
         .spacing(7)
