@@ -132,6 +132,8 @@ fn storage(state: &State) -> Element<'_, Message> {
                 text_input("Projects folder", &state.preferences.projects).on_input(Message::PreferenceProjects),
                 text("Asset Library").size(12),
                 text_input("Asset Library folder", &state.preferences.asset_library_root).on_input(Message::PreferenceAssets),
+                text("Current editor workspace").size(12),
+                text_input("Current workspace", &state.preferences.current_workspace).on_input(Message::PreferenceWorkspace),
                 text("Paths are saved only when you select Save Settings; no data is automatically moved.").size(11).color(MUTED),
             ].spacing(6).into()
         } else {
