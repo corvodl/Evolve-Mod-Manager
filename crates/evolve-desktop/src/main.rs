@@ -17,10 +17,10 @@ mod viewer_inspector;
 mod viewport;
 use asset_cache::{SharedCache, decoded_dds};
 use evolve_core::{
-    AnimatedGlb, AnimationPolicy, AssetComparison, AssetResolution, BatchJournal,
-    CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph, ImportedLibrary,
-    ImportedPak, Inventory, LevelScene, MaterialReport, ModProfile, ModelInfo, NativeCafMotion,
-    PakInventory, ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo,
+    AnimatedGlb, AnimationPolicy, AssetComparison, AssetResolution, BatchJournal, CdfDefinition,
+    CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph, ImportedLibrary, ImportedPak,
+    Inventory, LevelScene, MaterialReport, ModProfile, ModelInfo, NativeCafMotion, PakInventory,
+    ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo,
     StageTransaction, TerrainInfo, add_mod_to_profile, apply_profile_stage, apply_stage_pak,
     batch_stage_status, compare_assets, convert_glb_to_fbx, convert_original_motion,
     create_mod_profile, decode_dds_rgba, export_dds_png, export_level_scene_glb,
@@ -339,9 +339,10 @@ impl Operation {
                 modding_projects::build_single_raw(&project, &projects, &stage)
                     .map(|(entry, target)| Completed::RebuiltSigned(entry, target))
             }
-            Self::UnpackRawProject(projects, stage, source) =>
+            Self::UnpackRawProject(projects, stage, source) => {
                 modding_projects::unpack_raw_project(&projects, &stage, &source)
-                    .map(|(path, count)| Completed::UnpackedProject(path, count)),
+                    .map(|(path, count)| Completed::UnpackedProject(path, count))
+            }
             Self::InspectDependencies(inventory, relative) => {
                 inspect_dependencies(&inventory, &relative)
                     .map(Completed::Dependencies)
@@ -921,7 +922,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 if modding_keys::staged_target(
                     PathBuf::from(&state.preferences.stage).as_path(),
                     &candidate,
-                ).is_ok() {
+                )
+                .is_ok()
+                {
                     state.selected = Some(index);
                     state.input = candidate.to_string_lossy().into_owned();
                     state.status = format!("Selected original staged PAK: {}", entry.relative_path);
@@ -985,12 +988,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Select a signed staged original PAK in the archive browser.".into();
                 return Task::none();
             }
-            state.status = "Creating an editable raw project from the verified signed PAK...".into();
-            return launch(state, Operation::UnpackRawProject(
-                PathBuf::from(&state.preferences.projects),
-                PathBuf::from(&state.preferences.stage),
-                PathBuf::from(&state.input),
-            ));
+            state.status =
+                "Creating an editable raw project from the verified signed PAK...".into();
+            return launch(
+                state,
+                Operation::UnpackRawProject(
+                    PathBuf::from(&state.preferences.projects),
+                    PathBuf::from(&state.preferences.stage),
+                    PathBuf::from(&state.input),
+                ),
+            );
         }
         Message::LibraryRootChanged(value) => {
             state.library_root = value;
@@ -2103,19 +2110,26 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         "Unpacked {count} original assets into a new raw editing project; originals unchanged."
                     );
                     state.modding_pending_focus = Some(path);
-                    return launch(state, Operation::IndexProjects(
-                        PathBuf::from(&state.preferences.projects),
-                        PathBuf::from(&state.preferences.stage),
-                    ));
+                    return launch(
+                        state,
+                        Operation::IndexProjects(
+                            PathBuf::from(&state.preferences.projects),
+                            PathBuf::from(&state.preferences.stage),
+                        ),
+                    );
                 }
                 Ok(Completed::Projects(projects)) => {
                     let focus = state.modding_pending_focus.take();
-                    let previous = focus.clone().or_else(|| state.modding_selected.and_then(|i|
-                        state.modding_projects.as_ref().and_then(|old| old.get(i))
-                    ).map(|p| p.workspace.clone()));
-                    state.modding_selected = previous.and_then(|path|
-                        projects.iter().position(|p| p.workspace == path)
-                    );
+                    let previous = focus.clone().or_else(|| {
+                        state
+                            .modding_selected
+                            .and_then(|i| {
+                                state.modding_projects.as_ref().and_then(|old| old.get(i))
+                            })
+                            .map(|p| p.workspace.clone())
+                    });
+                    state.modding_selected =
+                        previous.and_then(|path| projects.iter().position(|p| p.workspace == path));
                     state.status = format!("Loaded {} editable project(s).", projects.len());
                     state.modding_projects = Some(projects);
                     if let Some(path) = focus {
