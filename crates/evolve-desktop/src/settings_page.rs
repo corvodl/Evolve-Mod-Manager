@@ -149,16 +149,42 @@ fn storage(state: &State) -> Element<'_, Message> {
     .into()
 }
 
+const REQUIRED_SHARED: [&str; 6] = [
+    "characters_hunters_shared.pak",
+    "characters_hunters_shared_ts.pak",
+    "characters_monsters_shared.pak",
+    "characters_monsters_shared_ts.pak",
+    "characters_creatures_shared.pak",
+    "characters_creatures_shared_ts.pak",
+];
+const REQUIRED_ANIMATIONS: [&str; 3] = [
+    "animationscaf.pak",
+    "animationsconfig.pak",
+    "animationsdba.pak",
+];
+fn required_reference_counts(names: impl IntoIterator<Item = String>) -> (usize, usize) {
+    let present = names.into_iter().map(|name| name.to_ascii_lowercase())
+        .collect::<std::collections::HashSet<_>>();
+    (
+        REQUIRED_SHARED.iter().filter(|name| present.contains(**name)).count(),
+        REQUIRED_ANIMATIONS.iter().filter(|name| present.contains(**name)).count(),
+    )
+}
+
 fn library(state: &State) -> Element<'_, Message> {
     let archive_count = state
         .library_catalog
         .as_ref()
         .map_or(0, |c| c.archives.len());
     let total = state.library_catalog.as_ref().map_or(0, |c| c.total_bytes);
+    let reference_counts = state.library_catalog.as_ref().map(|catalog| {
+        required_reference_counts(catalog.archives.iter().map(|archive| archive.name.clone()))
+    });
     panel(column![
         text("EXTRACTED PAK LIBRARY").size(15),
         text("Reference PAKs for characters, textures, animations and levels. The location is detected automatically from the saved manager profile.").size(12).color(MUTED),
         text(format!("{} imported archives • {} stored", archive_count, if state.library_catalog.is_some() { mib(total) } else { "Not indexed yet".into() })).size(12),
+        text(reference_counts.map_or("Shared references: —  •  Animation references: —".to_string(), |(shared, animations)| format!("Shared references: {shared}/6  •  Animation references: {animations}/3"))).size(12),
         text(if state.library_root.is_empty() { "Default Asset Library location could not be detected" } else { state.library_root.as_str() }).size(11).color(MUTED),
         button("Manage Asset Library / Add PAKs…").on_press(Message::Navigate(Page::AssetLibrary)).width(Fill).style(button::secondary),
     ].spacing(10)).into()
@@ -209,4 +235,20 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             button("Save Settings").on_press(Message::SavePreferences).style(button::primary)
         ].spacing(8)
     ].spacing(12).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn shared_and_animation_archive_readiness_counts_unique_exact_names() {
+        let (shared, animations) = required_reference_counts([
+            "characters_monsters_shared.pak".to_owned(),
+            "CHARACTERS_MONSTERS_SHARED.PAK".to_owned(),
+            "animationscaf.pak".to_owned(),
+            "animationsconfig.pak".to_owned(),
+            "fake_characters_monsters_shared.pak".to_owned(),
+        ]);
+        assert_eq!((shared, animations), (1, 2));
+    }
 }
