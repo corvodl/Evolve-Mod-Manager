@@ -457,7 +457,11 @@ pub fn export_edited_layers(
     }
     let mut requested = HashMap::new();
     for (guid, transform) in edits {
-        if guid.is_empty() || requested.insert(guid.to_ascii_lowercase(), transform.normalize()?).is_some() {
+        if guid.is_empty()
+            || requested
+                .insert(guid.to_ascii_lowercase(), transform.normalize()?)
+                .is_some()
+        {
             return Err(SceneError::NoMatchingGuid);
         }
     }
@@ -475,7 +479,12 @@ pub fn export_edited_layers(
         &bytes,
     )])?;
     if requested.keys().any(|guid| {
-        parsed.objects.iter().filter(|object| &object.id == guid).count() != 1
+        parsed
+            .objects
+            .iter()
+            .filter(|object| &object.id == guid)
+            .count()
+            != 1
     }) {
         return Err(SceneError::NoMatchingGuid);
     }
@@ -629,7 +638,10 @@ mod tests {
         assert_eq!(changed.objects[1].world.position, [15.0, 17.0, 19.0]);
         assert_eq!(original.objects[1].world.position, [5.0, 7.0, 9.0]);
         let restored = edit_level_transform(&changed, "parent", original.objects[0].local).unwrap();
-        assert_eq!(restored.objects[1].world.position, original.objects[1].world.position);
+        assert_eq!(
+            restored.objects[1].world.position,
+            original.objects[1].world.position
+        );
     }
 
     #[test]
@@ -647,14 +659,22 @@ mod tests {
             &source,
             &dest,
             &[("p".into(), changed), ("c".into(), changed)],
-        ).unwrap();
+        )
+        .unwrap();
         let result = load_level_scene(&dest).unwrap();
         assert_eq!(result.objects[0].local.position, changed.position);
         assert_eq!(result.objects[1].local.position, changed.position);
         assert_eq!(result.objects[1].world.position, [6.0, 8.0, 10.0]);
         assert_eq!(fs::read(&source).unwrap(), bytes);
         assert!(export_edited_layers(&source, &dest, &[("p".into(), changed)]).is_err());
-        assert!(export_edited_layers(&source, &dir.path().join("bad.lyr"), &[("missing".into(), changed)]).is_err());
+        assert!(
+            export_edited_layers(
+                &source,
+                &dir.path().join("bad.lyr"),
+                &[("missing".into(), changed)]
+            )
+            .is_err()
+        );
     }
 
     #[test]
