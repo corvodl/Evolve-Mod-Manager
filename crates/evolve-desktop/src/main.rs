@@ -745,7 +745,6 @@ enum Message {
     StartRebuild,
     StartPngExport,
     Finished(Result<Completed, String>),
-    Select(usize),
 }
 
 fn launch(state: &mut State, operation: Operation) -> Task<Message> {
@@ -1892,38 +1891,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::PitchChanged(value) => state.pitch = value,
         Message::ZoomChanged(value) => state.zoom = value,
         Message::SearchChanged(query) => state.search = query,
-        Message::Select(index) => {
-            let query = state.search.to_ascii_lowercase();
-            let visible: Vec<usize> = state
-                .inventory
-                .as_ref()
-                .map(|inventory| {
-                    inventory
-                        .entries
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(i, row)| {
-                            (query.is_empty()
-                                || row.relative_path.to_ascii_lowercase().contains(&query))
-                            .then_some(i)
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            if visible.contains(&index) {
-                state.file_selection.click(
-                    &visible,
-                    index,
-                    state.keyboard_modifiers.shift(),
-                    state.keyboard_modifiers.control(),
-                );
-                state.selected = state.file_selection.primary_after(index);
-            } else {
-                state.selected = Some(index);
-                state.file_selection.clear();
-                state.file_selection.click(&[index], index, false, false);
-            }
-        }
         Message::StartScan => {
             let source = PathBuf::from(&state.input);
             return begin_scan(state, source);
