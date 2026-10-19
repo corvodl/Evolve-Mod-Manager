@@ -863,18 +863,31 @@ fn refresh_library_matches(state: &mut State) {
 fn refresh_viewer_rows(state: &mut State) {
     // Geometry and animation frames must not re-sort the Asset Library.
     let rows: Vec<(usize, &str, u64)> = if let Some(inv) = &state.inventory {
-        inv.entries.iter().enumerate()
-            .map(|(i, e)| (i, e.relative_path.as_str(), e.byte_size)).collect()
+        inv.entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (i, e.relative_path.as_str(), e.byte_size))
+            .collect()
     } else if let Some(pak) = &state.signed_pak {
-        pak.entries.iter().enumerate()
-            .map(|(i, e)| (i, e.path.as_str(), e.size)).collect()
+        pak.entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (i, e.path.as_str(), e.size))
+            .collect()
     } else if let Some(pak) = &state.pak {
-        pak.entries.iter().enumerate()
-            .map(|(i, e)| (i, e.path.as_str(), e.size)).collect()
-    } else { Vec::new() };
+        pak.entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (i, e.path.as_str(), e.size))
+            .collect()
+    } else {
+        Vec::new()
+    };
     state.viewer_rows = explorer_tree::visible_rows(
         rows.iter().map(|(i, path, size)| (*i, *path, *size)),
-        &state.viewer_search, &state.viewer_collapsed, 350,
+        &state.viewer_search,
+        &state.viewer_collapsed,
+        350,
     );
 }
 
@@ -1382,12 +1395,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ViewerSearchChanged(filter) => {
             state.viewer_search = filter;
             refresh_viewer_rows(state);
-        },
+        }
         Message::ViewerSelectFile(index) => {
-            let visible: Vec<usize> = state.viewer_rows.iter()
-                .filter_map(|row| row.index).collect();
-            state.file_selection.click(&visible, index,
-                state.keyboard_modifiers.shift(), state.keyboard_modifiers.control());
+            let visible: Vec<usize> = state
+                .viewer_rows
+                .iter()
+                .filter_map(|row| row.index)
+                .collect();
+            state.file_selection.click(
+                &visible,
+                index,
+                state.keyboard_modifiers.shift(),
+                state.keyboard_modifiers.control(),
+            );
             state.selected = state.file_selection.primary_after(index);
         }
         Message::ViewerToggleFolder(path) => {
