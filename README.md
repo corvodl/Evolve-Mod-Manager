@@ -13,7 +13,9 @@ Independent Windows desktop modding toolkit rewrite using **Rust**, **Iced 0.14*
 - **CDF XML character-definition inspection**, retaining explicit skeleton, CA_SKIN/CA_SKIN_UNIQUE attachments, and skin-set references. An ambiguity-aware asset resolver refuses to guess among duplicate workspace references.
 - Off-thread filesystem operations in the GUI, Rust unit tests, and Linux + Windows CI checks.
 
-**Not yet implemented:** Stage 2 signed/encrypted PAK decryption, signature verification, re-signing or repacking; installed-game modification or mod launch/restore; CDF geometry and skinning; GPU mesh rendering; CAF/DBA animation decoding; Blender/FBX/level export; GFX editor, profiles, updater and Windows installer. This preview is **not** a replacement for the current production manager.
+**New experimental modules on this branch:** signed Stage 2 PAK RSA-PSS verification and Twofish decrypt/extract (requires the exact user-supplied RSA public DER key and original signed PAK basename); CryTek/CrChF source mesh geometry and original UV0 preservation; Blender-importable source GLB/OBJ; an orbiting GPU-composited wireframe viewport; CDF inspection; CAF metadata and chrparams references; validated converted GLB keyframe sampling; external Blender GLB-to-binary-FBX conversion with optional animations **OFF by default**; Level Editor terrain decoding/OBJ and mission/LYR placed-object hierarchy inspection and new-file transform edits. These paths require **real-game correctness testing** before release.
+
+**Not yet implemented:** Stage 2 signed PAK re-signing, modified archive injection/rollback, complete CDF character assembly and skeletal weighting, in-manager GPU materials, direct CAF/DBA controller playback, full rigged/source-authentic character FBX, complete textured Blender level scenes, GFX editor, profiles, updater and Windows installer. This preview is **not** a replacement for the current production manager.
 
 ## Build on Windows
 
@@ -33,9 +35,14 @@ cargo run -p evolve-core --bin evolve-cli -- pak rebuild "C:\Archives\Legacy.pak
 cargo run -p evolve-core --bin evolve-cli -- dds info "C:\Assets\body.dds.0"
 cargo run -p evolve-core --bin evolve-cli -- dds png "C:\Assets\body.dds.0" "C:\Exports\body.png"
 cargo run -p evolve-core --bin evolve-cli -- cdf inspect "C:\Assets\character.cdf" "character-info.json"
+cargo run -p evolve-core --bin evolve-cli -- model glb "C:\Assets\model.cgf" "C:\Exports\model.glb"
+cargo run -p evolve-core --bin evolve-cli -- terrain obj "C:\Assets\Heightmap.dat" "C:\Exports\terrain.obj"
+cargo run -p evolve-core --bin evolve-cli -- level inspect "C:\Assets\mission_mission0.xml" "level.json"
+cargo run -p evolve-core --bin evolve-cli -- signed inspect "C:\Archives\libs.pak" "C:\Keys\original-public.der" "libs.pak" "verified.json"
+cargo run -p evolve-core --bin evolve-cli -- fbx export "C:\Exports\verified.glb" "C:\Program Files\Blender Foundation\Blender 4.2\blender.exe" "C:\Exports\body.fbx"
 ```
 
-Extraction output must be an **absent folder**; PNG and JSON outputs must be **new files**. The operations refuse existing outputs rather than overwriting them. Replacement files must match existing members of an ordinary ZIP PAK. Encrypted Stage 2 PAK support remains unfinished.
+Extraction output must be an **absent folder**; PNG and JSON outputs must be **new files**. The operations refuse existing outputs rather than overwriting them. Replacement files must match existing members of an ordinary ZIP PAK. Signed Stage 2 PAK verification/extraction is experimental and requires a trusted public key and original basename; Stage 2 archive rewriting/signing is not supported.
 
 ## Public release policy
 
