@@ -6,7 +6,7 @@ pub mod dds;
 pub mod inventory;
 pub mod policy;
 
-pub use archive::{PakError, PakInventory, PakMember, extract_legacy_pak, inspect_legacy_pak};
+pub use archive::{PakError, PakInventory, PakMember, RebuildReport, extract_legacy_pak, inspect_legacy_pak, rebuild_legacy_pak};
 pub use cdf::{
     AssetResolution, CdfAttachment, CdfDefinition, CdfDependencyReport, CdfError, parse_cdf,
     read_cdf, resolve_cdf, resolve_virtual,
