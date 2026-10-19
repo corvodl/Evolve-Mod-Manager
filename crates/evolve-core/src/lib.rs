@@ -81,8 +81,8 @@ pub use rig::{
     export_rigged_character_glb, parse_compiled_skeleton, remap_verified_weights, rigged_glb_bytes,
 };
 pub use scene::{
-    LevelScene, PlacedObject, SceneError, Transform, export_edited_layer, load_level_scene,
-    parse_level_scene,
+    LevelScene, PlacedObject, SceneError, Transform, edit_level_transform, export_edited_layer,
+    export_edited_layers, load_level_scene, parse_level_scene,
 };
 pub use signed_pak::{
     SignedEntry, SignedPakError, SignedPakInfo, SignedRebuildReport, extract_signed_pak,
