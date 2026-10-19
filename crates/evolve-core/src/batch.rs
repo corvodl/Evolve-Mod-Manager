@@ -49,22 +49,31 @@ pub struct BatchJournal {
 }
 
 fn validate(journal: &BatchJournal) -> Result<(), BatchError> {
-    if journal.schema != 1 || journal.entries.is_empty() || journal.entries.len() > 500 ||
-        journal.id.len() != 32 || !journal.id.bytes().all(|c| c.is_ascii_hexdigit()) ||
-        journal.profile_id.len() != 32 ||
-        !journal.profile_id.bytes().all(|c| c.is_ascii_hexdigit()) {
+    if journal.schema != 1
+        || journal.entries.is_empty()
+        || journal.entries.len() > 500
+        || journal.id.len() != 32
+        || !journal.id.bytes().all(|c| c.is_ascii_hexdigit())
+        || journal.profile_id.len() != 32
+        || !journal.profile_id.bytes().all(|c| c.is_ascii_hexdigit())
+    {
         return Err(BatchError::Invalid("Invalid batch header".into()));
     }
     let mut found = HashSet::new();
     for item in &journal.entries {
-        if target_name(&item.target)? != item.target ||
-            !found.insert(item.target.to_lowercase()) ||
-            item.original_sha256.len() != 64 ||
-            item.replacement_sha256.len() != 64 ||
-            !item.original_sha256.bytes().all(|b| b.is_ascii_hexdigit()) ||
-            !item.replacement_sha256.bytes().all(|b| b.is_ascii_hexdigit())
+        if target_name(&item.target)? != item.target
+            || !found.insert(item.target.to_lowercase())
+            || item.original_sha256.len() != 64
+            || item.replacement_sha256.len() != 64
+            || !item.original_sha256.bytes().all(|b| b.is_ascii_hexdigit())
+            || !item
+                .replacement_sha256
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit())
         {
-            return Err(BatchError::Invalid("Invalid batch entry or target collision".into()));
+            return Err(BatchError::Invalid(
+                "Invalid batch entry or target collision".into(),
+            ));
         }
     }
     Ok(())
@@ -73,7 +82,9 @@ fn history(root: &Path, journal: &BatchJournal) -> Result<PathBuf, BatchError> {
     let dir = root.join(HISTORY).join(&journal.id);
     let meta = fs::symlink_metadata(&dir)?;
     if !meta.file_type().is_dir() || meta.file_type().is_symlink() {
-        return Err(BatchError::Invalid("Recovery folder is not a real directory".into()));
+        return Err(BatchError::Invalid(
+            "Recovery folder is not a real directory".into(),
+        ));
     }
     Ok(dir)
 }
@@ -85,7 +96,9 @@ fn read_journal(root: &Path) -> Result<Option<BatchJournal>, BatchError> {
         Err(e) => return Err(e.into()),
     };
     if !meta.file_type().is_file() || meta.len() > 128 * 1024 {
-        return Err(BatchError::Invalid("Recovery journal is not a bounded regular file".into()));
+        return Err(BatchError::Invalid(
+            "Recovery journal is not a bounded regular file".into(),
+        ));
     }
     let journal: BatchJournal = serde_json::from_slice(&fs::read(file)?)?;
     validate(&journal)?;
@@ -125,11 +138,15 @@ pub fn apply_profile_stage(
         schema: 1,
         id: format!("{:032x}", rand::random::<u128>()),
         profile_id: profile_id.into(),
-        entries: plan.mods.iter().map(|m| BatchEntry {
-            target: m.target.clone(),
-            original_sha256: String::new(),
-            replacement_sha256: m.sha256.clone(),
-        }).collect(),
+        entries: plan
+            .mods
+            .iter()
+            .map(|m| BatchEntry {
+                target: m.target.clone(),
+                original_sha256: String::new(),
+                replacement_sha256: m.sha256.clone(),
+            })
+            .collect(),
     };
     let batch_root = root.join(HISTORY);
     if !batch_root.exists() {
@@ -169,7 +186,9 @@ pub fn apply_profile_stage(
         )?;
         fs::rename(dir.join(format!("incoming-{i}.pak")), &target)?;
         if digest(&target)? != item.replacement_sha256 {
-            return Err(BatchError::Invalid("Staged bytes failed post-write validation".into()));
+            return Err(BatchError::Invalid(
+                "Staged bytes failed post-write validation".into(),
+            ));
         }
     }
     Ok(tx)
@@ -193,10 +212,14 @@ pub fn restore_profile_stage(stage: &Path) -> Result<BatchJournal, BatchError> {
             }
             let current = digest(&target)?;
             if current != item.original_sha256 && current != item.replacement_sha256 {
-                return Err(BatchError::Invalid("Unexpected third-party change to staged PAK".into()));
+                return Err(BatchError::Invalid(
+                    "Unexpected third-party change to staged PAK".into(),
+                ));
             }
         } else if digest(&dir.join(format!("displaced-{i}.pak")))? != item.original_sha256 {
-            return Err(BatchError::Invalid("Missing displaced original backup".into()));
+            return Err(BatchError::Invalid(
+                "Missing displaced original backup".into(),
+            ));
         }
     }
     for (i, item) in tx.entries.iter().enumerate() {
@@ -207,22 +230,32 @@ pub fn restore_profile_stage(stage: &Path) -> Result<BatchJournal, BatchError> {
         let restoring = dir.join(format!("restoring-{i}.pak"));
         if fs::symlink_metadata(&restoring).is_ok() {
             if digest(&restoring)? != item.original_sha256 {
-                return Err(BatchError::Invalid("Interrupted restore copy differs".into()));
+                return Err(BatchError::Invalid(
+                    "Interrupted restore copy differs".into(),
+                ));
             }
         } else {
-            copy_checked(&dir.join(format!("before-{i}.pak")), &restoring, &item.original_sha256)?;
+            copy_checked(
+                &dir.join(format!("before-{i}.pak")),
+                &restoring,
+                &item.original_sha256,
+            )?;
         }
         if target.exists() {
             // Keep a recovered modified PAK for debugging rather than deleting it.
             let replaced = dir.join(format!("modified-{i}.pak"));
             if replaced.exists() {
-                return Err(BatchError::Invalid("Existing modified backup needs inspection".into()));
+                return Err(BatchError::Invalid(
+                    "Existing modified backup needs inspection".into(),
+                ));
             }
             fs::rename(&target, replaced)?;
         }
         fs::rename(restoring, &target)?;
         if digest(&target)? != item.original_sha256 {
-            return Err(BatchError::Invalid("Restored original bytes failed verification".into()));
+            return Err(BatchError::Invalid(
+                "Restored original bytes failed verification".into(),
+            ));
         }
     }
     fs::remove_file(root.join(JOURNAL))?;
@@ -244,14 +277,25 @@ mod tests {
             id: "1".repeat(32),
             profile_id: "2".repeat(32),
             entries: vec![
-                BatchEntry { target: "first.pak".into(), original_sha256: String::new(), replacement_sha256: String::new() },
-                BatchEntry { target: "second.pak".into(), original_sha256: String::new(), replacement_sha256: String::new() },
+                BatchEntry {
+                    target: "first.pak".into(),
+                    original_sha256: String::new(),
+                    replacement_sha256: String::new(),
+                },
+                BatchEntry {
+                    target: "second.pak".into(),
+                    original_sha256: String::new(),
+                    replacement_sha256: String::new(),
+                },
             ],
         };
         let backup = root.join(HISTORY).join(&tx.id);
         fs::create_dir_all(&backup).unwrap();
         let mut tx = tx;
-        for (i, content) in [b"first".as_slice(), b"second".as_slice()].iter().enumerate() {
+        for (i, content) in [b"first".as_slice(), b"second".as_slice()]
+            .iter()
+            .enumerate()
+        {
             let original = root.join("paks").join(&tx.entries[i].target);
             fs::write(&original, content).unwrap();
             tx.entries[i].original_sha256 = digest(&original).unwrap();
