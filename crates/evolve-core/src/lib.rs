@@ -81,4 +81,7 @@ pub use batch::{
     restore_profile_stage,
 };
 
-pub use materials::{MaterialDocument, MaterialError, MaterialReport, MaterialSlot, ResolvedTexture, TextureReference, parse_material, read_material, resolve_materials};
+pub use materials::{
+    MaterialDocument, MaterialError, MaterialReport, MaterialSlot, ResolvedTexture,
+    TextureReference, parse_material, read_material, resolve_materials,
+};
