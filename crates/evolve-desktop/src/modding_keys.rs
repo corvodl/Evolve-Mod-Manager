@@ -42,12 +42,16 @@ pub fn signing_keys(stage: &Path) -> Result<KeyContext, String> {
 /// Signed CryPAK basename is the actual file name; never a user-entered guess.
 /// Reject directories or names which could escape a staging path.
 pub fn signed_basename(path: &Path) -> Result<String, String> {
-    let name = path.file_name().and_then(|s| s.to_str())
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
         .ok_or("Choose a named .pak archive")?;
     if !name.to_ascii_lowercase().ends_with(".pak")
         || name.len() > 240
-        || name.contains('/') || name.contains('\\')
-        || name == "." || name == ".."
+        || name.contains('/')
+        || name.contains('\\')
+        || name == "."
+        || name == ".."
     {
         return Err("Choose an actual .pak archive filename".into());
     }
@@ -59,19 +63,20 @@ pub fn signed_basename(path: &Path) -> Result<String, String> {
 pub fn staged_target(stage: &Path, source: &Path) -> Result<String, String> {
     let root = fs::canonicalize(stage.join("paks"))
         .map_err(|_| "Configure a prepared signing stage with a paks/ directory")?;
-    let metadata = fs::symlink_metadata(source)
-        .map_err(|_| "Choose an existing staged original PAK")?;
+    let metadata =
+        fs::symlink_metadata(source).map_err(|_| "Choose an existing staged original PAK")?;
     if !metadata.file_type().is_file() {
         return Err("A staged PAK must be an actual regular file".into());
     }
-    let chosen = fs::canonicalize(source)
-        .map_err(|_| "Cannot resolve the staged PAK")?;
+    let chosen = fs::canonicalize(source).map_err(|_| "Cannot resolve the staged PAK")?;
     let relative = chosen.strip_prefix(&root)
         .map_err(|_| "The chosen PAK is not inside the configured stage/paks; select its exact staged original")?;
     let label = relative.to_string_lossy().replace('\\', "/");
     // Validate against the same allowed member path policy as the core.
     if !label.to_ascii_lowercase().ends_with(".pak")
-        || label.split('/').any(|piece| piece.is_empty() || piece == "." || piece == "..")
+        || label
+            .split('/')
+            .any(|piece| piece.is_empty() || piece == "." || piece == "..")
     {
         return Err("Invalid staged target path".into());
     }
