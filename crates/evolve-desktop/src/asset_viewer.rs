@@ -308,7 +308,10 @@ fn viewport(state: &State) -> Element<'_, Message> {
 /// long Windows paths from consuming the entire viewer's right-hand pane.
 fn compact_source_name(source: &str) -> String {
     let mut parts = source.trim_end_matches(['\\', '/']).rsplit(['\\', '/']);
-    let file = parts.next().filter(|part| !part.is_empty()).unwrap_or("No source selected");
+    let file = parts
+        .next()
+        .filter(|part| !part.is_empty())
+        .unwrap_or("No source selected");
     let parent = parts.next().filter(|part| !part.is_empty());
     let short = match parent {
         Some(folder) if !folder.ends_with(':') => format!("{folder} / {file}"),
@@ -448,7 +451,8 @@ fn explorer(state: &State) -> Element<'_, Message> {
                         let is_dds = filename.to_ascii_lowercase().ends_with(".dds")
                             || filename.to_ascii_lowercase().ends_with(".dds.0");
                         let is_model = [".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cdf"]
-                            .iter().any(|extension| filename.to_ascii_lowercase().ends_with(extension));
+                            .iter()
+                            .any(|extension| filename.to_ascii_lowercase().ends_with(extension));
                         panel(
                             column![
                                 row![
