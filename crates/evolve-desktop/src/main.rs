@@ -3916,12 +3916,21 @@ impl Desktop {
                 if finished {
                     self.state.modding_open_editor_when_scanned = false;
                 }
+                let automatic_activity = !was_busy
+                    && self.state.busy
+                    && self.state.preferences.show_activity_on_tasks
+                    && self.activity_id.is_none();
+                let activity = if automatic_activity {
+                    self.open_activity()
+                } else {
+                    Task::none()
+                };
                 if opens_model && self.viewer_id.is_none() {
                     let open = self.open_viewer();
                     self.state.viewer_from_library = launched_from_library;
-                    Task::batch([command, open])
+                    Task::batch([command, open, activity])
                 } else {
-                    command
+                    Task::batch([command, activity])
                 }
             }
         }
