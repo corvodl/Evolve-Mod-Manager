@@ -109,6 +109,8 @@ def main():
     check(len(result_arms) == 1 and len(result_arms[0].data.bones) == bone_count,
           "round-trip lost original skeleton")
     check(len(result_meshes) >= len(parts), "round-trip lost character parts")
+    if animate:
+        check(bool(bpy.data.actions), "FBX round-trip lost the verified CAF Action")
     for mesh in result_meshes:
         verify_mesh(mesh, result_arms[0])
     print(json.dumps({"parts": len(parts), "bones": bone_count,
