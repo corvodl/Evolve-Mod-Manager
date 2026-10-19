@@ -25,18 +25,10 @@ struct CachedImage {
     image: Arc<RgbaImage>,
     bytes: u64,
 }
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct PreviewCache {
     entries: VecDeque<CachedImage>,
     bytes: u64,
-}
-impl Default for PreviewCache {
-    fn default() -> Self {
-        Self {
-            entries: VecDeque::new(),
-            bytes: 0,
-        }
-    }
 }
 pub type SharedCache = Arc<Mutex<PreviewCache>>;
 
@@ -92,10 +84,10 @@ impl PreviewCache {
 /// invalidates a cached entry; only current decoded pixels remain in memory.
 pub fn decoded_dds(cache: &SharedCache, path: &Path) -> Result<(DdsInfo, Arc<RgbaImage>), String> {
     let before = key(path)?;
-    if let Ok(mut cache) = cache.lock() {
-        if let Some(found) = cache.lookup(&before) {
-            return Ok(found);
-        }
+    if let Ok(mut cache) = cache.lock()
+        && let Some(found) = cache.lookup(&before)
+    {
+        return Ok(found);
     }
     let (info, pixels) = decode_dds_rgba(path).map_err(|e| e.to_string())?;
     if key(path)? != before {
