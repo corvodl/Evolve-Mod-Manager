@@ -882,11 +882,19 @@ pub fn export_rigged_character_glb(
 /// Attach a real source DDS diffuse to the already verified rigged GLB,
 /// with the highest decoded DDS mip embedded in the GLB BIN chunk. The
 /// original UV0 accessor and all skeleton/accessor data are untouched.
-pub(crate) fn embed_diffuse_png_glb(source: &[u8], png: &[u8]) -> Result<Vec<u8>, RigError> {
-    if source.len() < 28 || &source[..4] != b"glTF" || png.is_empty() {
-        return Err(RigError::Invalid(
-            "Expected a complete rigged GLB and PNG".into(),
-        ));
+/// Bind uniquely resolved original DDS image layers to the verified UV0
+/// without touching any skeleton, animation or geometry accessor. Images have
+/// been decoded to PNG by the caller; ambiguous material slots fail upstream.
+pub(crate) fn embed_verified_maps_png_glb(
+    source: &[u8],
+    diffuse: Option<&[u8]>,
+    normal: Option<&[u8]>,
+    emissive: Option<&[u8]>,
+) -> Result<Vec<u8>, RigError> {
+    if source.len() < 28 || &source[..4] != b"glTF"
+        || [diffuse, normal, emissive].iter().all(|map| map.is_none())
+    {
+        return Err(RigError::Invalid("Expected a rigged GLB and source PNG map".into()));
     }
     let json_size =
         u32::from_le_bytes(source[12..16].try_into().map_err(|_| RigError::Limits)?) as usize;
@@ -894,38 +902,49 @@ pub(crate) fn embed_diffuse_png_glb(source: &[u8], png: &[u8]) -> Result<Vec<u8>
     let mut document: Value =
         serde_json::from_slice(source.get(20..document_end).ok_or(RigError::Limits)?)?;
     if document["meshes"][0]["primitives"][0]["attributes"]["TEXCOORD_0"].is_null()
-        || document["skins"]
-            .as_array()
-            .is_none_or(|skins| skins.is_empty())
-        || document["images"]
-            .as_array()
-            .is_some_and(|images| !images.is_empty())
+        || document["skins"].as_array().is_none_or(|skins| skins.is_empty())
+        || document["images"].as_array().is_some_and(|images| !images.is_empty())
         || document["buffers"][0]["byteLength"].as_u64().is_none()
     {
-        return Err(RigError::Invalid(
-            "Cannot bind one authored diffuse to an untextured or mixed GLB".into(),
-        ));
+        return Err(RigError::Invalid("Cannot bind images to an unverified rig/UV0".into()));
     }
     let bin_at = document_end.checked_add(8).ok_or(RigError::Limits)?;
     if source.get(document_end + 4..document_end + 8) != Some(b"BIN\0") {
         return Err(RigError::Invalid("Missing GLB binary chunk".into()));
     }
     let mut binary = source.get(bin_at..).ok_or(RigError::Limits)?.to_vec();
-    let view = add_view(&mut binary, &mut document, png, None)?;
-    document["images"] = json!([{
-        "name":"Original highest resolution DDS diffuse",
-        "mimeType":"image/png",
-        "bufferView":view
-    }]);
-    document["textures"] = json!([{"source":0}]);
-    document["materials"] = json!([{
-        "name":"Original resolved DDS diffuse",
-        "pbrMetallicRoughness":{
-            "baseColorTexture":{"index":0},
-            "metallicFactor":0.0,
-            "roughnessFactor":1.0
+    let mut images = Vec::new();
+    let mut textures = Vec::new();
+    let mut material = json!({
+        "name":"Original authored CryEngine material slot",
+        "pbrMetallicRoughness":{"metallicFactor":0.0,"roughnessFactor":1.0}
+    });
+    for (role, data) in [
+        ("diffuse", diffuse),
+        ("normal", normal),
+        ("emissive", emissive),
+    ] {
+        let Some(png) = data else { continue };
+        if png.is_empty() {
+            return Err(RigError::Invalid("Original authored map has no PNG bytes".into()));
         }
-    }]);
+        let view = add_view(&mut binary, &mut document, png, None)?;
+        images.push(json!({"name":format!("Original {role} DDS"),"mimeType":"image/png","bufferView":view}));
+        let index = textures.len();
+        textures.push(json!({"source":index}));
+        match role {
+            "diffuse" => material["pbrMetallicRoughness"]["baseColorTexture"] = json!({"index":index}),
+            "normal" => material["normalTexture"] = json!({"index":index}),
+            "emissive" => {
+                material["emissiveTexture"] = json!({"index":index});
+                material["emissiveFactor"] = json!([1.0,1.0,1.0]);
+            }
+            _ => unreachable!(),
+        }
+    }
+    document["images"] = json!(images);
+    document["textures"] = json!(textures);
+    document["materials"] = json!([material]);
     document["meshes"][0]["primitives"][0]["material"] = json!(0);
     while !binary.len().is_multiple_of(4) {
         binary.push(0);
@@ -953,6 +972,10 @@ pub(crate) fn embed_diffuse_png_glb(source: &[u8], png: &[u8]) -> Result<Vec<u8>
     output.extend_from_slice(b"BIN\0");
     output.extend_from_slice(&binary);
     Ok(output)
+}
+
+fn embed_diffuse_png_glb(source: &[u8], png: &[u8]) -> Result<Vec<u8>, RigError> {
+    embed_verified_maps_png_glb(source, Some(png), None, None)
 }
 
 /// Produce the same verified skinned FBX as the ordinary export, but embed an
