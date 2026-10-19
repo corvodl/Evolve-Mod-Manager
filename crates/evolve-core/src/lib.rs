@@ -7,6 +7,7 @@ pub mod dds;
 pub mod fbx;
 pub mod inventory;
 pub mod model;
+pub mod glb;
 pub mod policy;
 pub mod scene;
 pub mod signed_pak;
@@ -30,6 +31,7 @@ pub use inventory::{
     AssetEntry, AssetKind, Inventory, InventoryError, MAX_ENTRIES, scan_directory,
     write_inventory_json,
 };
+pub use glb::{GlbError, geometry_glb_bytes, export_model_glb};
 pub use model::{
     ModelError, ModelInfo, RenderMesh, export_model_obj, parse_model_bytes, read_model,
 };
