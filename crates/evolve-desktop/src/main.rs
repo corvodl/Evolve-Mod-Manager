@@ -29,14 +29,14 @@ use asset_cache::{SharedCache, decoded_dds};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph,
-    FlatCdfFbxReport, ImportedLibrary, ImportedPak, Inventory, LevelScene, LibraryImportReport,
+    FlatCdfFbxReport, ImportedLibrary, ImportedPak, Inventory, LevelScene, LibraryBatchImportReport,
     LibraryReferenceStatus, MaterialReport, ModProfile, ModelInfo, NativeCafMotion, PakInventory,
     ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo,
     StageTransaction, TerrainInfo, add_mod_to_profile, apply_profile_stage, apply_stage_pak,
     batch_stage_status, compare_assets, convert_glb_to_fbx, convert_original_motion,
     create_mod_profile, decode_dds_rgba, export_dds_png, export_flat_cdf_parts_fbx,
     export_level_scene_glb, export_rigged_character_fbx_textured_animated,
-    export_rigged_character_glb, extract_legacy_pak, extract_signed_pak, import_signed_library_pak,
+    export_rigged_character_glb, extract_legacy_pak, extract_signed_pak, import_signed_library_selection,
     import_stage_pak, imported_archive_files, imported_library, initialize_stage, inspect_dds,
     inspect_dependencies, inspect_legacy_pak, inspect_signed_pak, list_mod_profiles,
     load_level_scene, plan_mod_profile, read_cdf, read_material, read_model, read_native_caf,
@@ -351,7 +351,7 @@ enum Completed {
     ImportedRawProjectMember(bool, String, PathBuf),
     RestoredRawProjectMember(bool, String, PathBuf),
     ImportedLibrary(ImportedLibrary),
-    ImportedSignedLibrary(LibraryImportReport, ImportedLibrary),
+    ImportedSignedLibrary(LibraryBatchImportReport, ImportedLibrary),
     ImportedPakFiles(Inventory),
     Dependencies(DependencyGraph),
     Comparison(AssetComparison),
@@ -450,7 +450,7 @@ impl Operation {
                 if !root.exists() {
                     std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
                 }
-                let report = import_signed_library_pak(&root, &source, &key)?;
+                let report = import_signed_library_selection(&root, &source, &key)?;
                 let catalog = imported_library(&root).map_err(|e| e.to_string())?;
                 Ok(Completed::ImportedSignedLibrary(report, catalog))
             }
@@ -1578,7 +1578,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::LibraryImportStart => {
             if state.library_import_source.trim().is_empty() {
                 state.status =
-                    "Select a local signed Stage 2 PAK to import. The Asset Library location is detected automatically.".into();
+                    "Select a signed Stage 2 PAK or folder of PAKs to import. The Asset Library location is detected automatically.".into();
                 state.library_show_configuration = true;
                 return Task::none();
             }
@@ -3273,17 +3273,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                 }
                 Ok(Completed::ImportedSignedLibrary(report, catalog)) => {
-                    state.status = if report.already_imported {
-                        format!(
-                            "{} already imported: {} verified original files",
-                            report.archive, report.files
-                        )
-                    } else {
-                        format!(
-                            "Imported {} into Asset Library: {} verified files, {} bytes; original PAK unchanged.",
-                            report.archive, report.files, report.bytes
-                        )
-                    };
+                    let already = report.imported.iter().filter(|r| r.already_imported).count();
+                    let added = report.imported.len() - already;
+                    let failed = report.failed.len();
+                    let details = report.failed.iter().take(3).map(|f| {
+                        format!("{}: {}", f.archive, f.reason)
+                    }).collect::<Vec<_>>().join("; ");
+                    state.status = format!(
+                        "Asset Library import: {added} new, {already} already verified, {failed} failed. Originals unchanged.{}",
+                        if details.is_empty() { String::new() } else { format!(" {details}") }
+                    );
                     state.library_root = catalog.root.clone();
                     state.preferences.asset_library_root = catalog.root.clone();
                     state.library_catalog = Some(catalog);
