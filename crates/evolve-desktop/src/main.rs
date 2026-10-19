@@ -1594,7 +1594,7 @@ fn view(state: &State) -> Element<'_, Message> {
                     }
                     scrollable(items).height(Length::Fixed(155.)).into()
                 } else {
-                    text("Read and resolve a CDF to inspect exact attachments; ambiguous matches are never selected automatically.").into()
+                    Element::<Message>::from(text("Read and resolve a CDF to inspect exact attachments; ambiguous matches are never selected automatically."))
                 },
                 row![
                     text_input("Exact DDS diffuse (.dds or .dds.0) path...",&state.diffuse_input)
