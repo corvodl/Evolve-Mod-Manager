@@ -128,8 +128,14 @@ impl<Message> shader::Program<Message> for Scene {
             emissive: self.emissive.clone(),
             mesh_identity: Arc::as_ptr(&self.mesh) as usize,
             texture_identity: self.diffuse.as_ref().map_or(0, |t| Arc::as_ptr(t) as usize),
-            normal_identity: self.normal_map.as_ref().map_or(0, |t| Arc::as_ptr(t) as usize),
-            emissive_identity: self.emissive.as_ref().map_or(0, |t| Arc::as_ptr(t) as usize),
+            normal_identity: self
+                .normal_map
+                .as_ref()
+                .map_or(0, |t| Arc::as_ptr(t) as usize),
+            emissive_identity: self
+                .emissive
+                .as_ref()
+                .map_or(0, |t| Arc::as_ptr(t) as usize),
         }
     }
 }
@@ -328,12 +334,20 @@ impl Pipeline {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         // Linear normal maps, sRGB emissive color maps; no speculative texture matching.
         let (normal_texture, normal_view) = Self::upload_map(
-            device, queue, None, &[128, 128, 255, 255],
-            wgpu::TextureFormat::Rgba8Unorm, "Neutral surface normal",
+            device,
+            queue,
+            None,
+            &[128, 128, 255, 255],
+            wgpu::TextureFormat::Rgba8Unorm,
+            "Neutral surface normal",
         );
         let (emissive_texture, emissive_view) = Self::upload_map(
-            device, queue, None, &[0, 0, 0, 255],
-            wgpu::TextureFormat::Rgba8UnormSrgb, "No source emission",
+            device,
+            queue,
+            None,
+            &[0, 0, 0, 255],
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            "No source emission",
         );
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Evolve actual texture sampler group"),
