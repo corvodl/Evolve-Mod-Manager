@@ -15,63 +15,105 @@ const PAGE_SIZE: usize = 110;
 fn panel<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Container<'a, Message> {
     container(content).width(Fill).style(|_| container::Style {
         background: Some(Background::Color(PANEL)),
-        border: Border { color: EDGE, width: 1.0, radius: 5.0.into() },
+        border: Border {
+            color: EDGE,
+            width: 1.0,
+            radius: 5.0.into(),
+        },
         ..container::Style::default()
     })
 }
 
 fn header_cell(label: &'static str, width: u16) -> Element<'static, Message> {
-    text(label).size(13).width(Length::FillPortion(width)).into()
+    text(label)
+        .size(13)
+        .width(Length::FillPortion(width))
+        .into()
 }
 
 fn archive_row<'a>(
     index: usize,
     archive: &'a evolve_core::ImportedPak,
-    selected: bool
+    selected: bool,
 ) -> Element<'a, Message> {
-    let folder = Path::new(&archive.source).parent()
+    let folder = Path::new(&archive.source)
+        .parent()
         .map(|parent| parent.to_string_lossy().to_string())
         .unwrap_or_default();
     let content = row![
-        text(archive.group.as_str()).size(12).width(Length::FillPortion(3)),
+        text(archive.group.as_str())
+            .size(12)
+            .width(Length::FillPortion(3)),
         text(folder).size(12).width(Length::FillPortion(4)),
-        text(archive.description.as_str()).size(12).width(Length::FillPortion(5)),
-        text(archive.name.as_str()).size(12).width(Length::FillPortion(4)),
-        text(format!("{}", archive.entries)).size(12).width(Length::FillPortion(1)),
-    ].spacing(9).align_y(iced::Center);
-    let item = button(content).padding([7, 8]).width(Fill)
+        text(archive.description.as_str())
+            .size(12)
+            .width(Length::FillPortion(5)),
+        text(archive.name.as_str())
+            .size(12)
+            .width(Length::FillPortion(4)),
+        text(format!("{}", archive.entries))
+            .size(12)
+            .width(Length::FillPortion(1)),
+    ]
+    .spacing(9)
+    .align_y(iced::Center);
+    let item = button(content)
+        .padding([7, 8])
+        .width(Fill)
         .style(button::text)
         .on_press(Message::LibrarySelect(index));
-    container(item).width(Fill).style(move |_| container::Style {
-        background: Some(Background::Color(if selected { Color::from_rgb(0.26, 0.18, 0.22) }
-            else if index % 2 == 0 { PANEL } else { Color::from_rgb(0.185, 0.193, 0.211) })),
-        ..container::Style::default()
-    }).into()
+    container(item)
+        .width(Fill)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(if selected {
+                Color::from_rgb(0.26, 0.18, 0.22)
+            } else if index % 2 == 0 {
+                PANEL
+            } else {
+                Color::from_rgb(0.185, 0.193, 0.211)
+            })),
+            ..container::Style::default()
+        })
+        .into()
 }
 
 pub(super) fn view(state: &State) -> Element<'_, Message> {
     let library = state.library_catalog.as_ref();
-    let selected = state.library_selected
+    let selected = state
+        .library_selected
         .and_then(|i| library.and_then(|c| c.archives.get(i)));
 
     let menu = row![
-        button("File").on_press(Message::LibraryMenu("File")).style(button::text),
-        button("View").on_press(Message::LibraryMenu("View")).style(button::text),
-        button("Tools").on_press(Message::LibraryMenu("Tools")).style(button::text),
-    ].spacing(8);
+        button("File")
+            .on_press(Message::LibraryMenu("File"))
+            .style(button::text),
+        button("View")
+            .on_press(Message::LibraryMenu("View"))
+            .style(button::text),
+        button("Tools")
+            .on_press(Message::LibraryMenu("Tools"))
+            .style(button::text),
+    ]
+    .spacing(8);
     let menu_details: Element<'_, Message> = match state.library_menu {
         Some("File") => row![
             button("Refresh catalog").on_press(Message::LibraryRefresh),
             button("Configure folder").on_press(Message::LibraryToggleConfiguration),
-        ].spacing(8).into(),
+        ]
+        .spacing(8)
+        .into(),
         Some("View") => row![
             button("All Assets").on_press(Message::LibrarySetByBuild(false)),
             button("By Build").on_press(Message::LibrarySetByBuild(true)),
-        ].spacing(8).into(),
+        ]
+        .spacing(8)
+        .into(),
         Some("Tools") => row![
             button("Preview selected PAK").on_press(Message::LibraryPreview),
             button("Open Modding").on_press(Message::Navigate(Page::Files)),
-        ].spacing(8).into(),
+        ]
+        .spacing(8)
+        .into(),
         _ => text("").into(),
     };
 
@@ -110,29 +152,53 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let by_build = state.library_by_build;
     let build = library.and_then(|c| c.builds.get(state.library_build_index));
     let tabs = row![
-        button("All Assets").style(if !by_build { button::primary } else { button::text })
+        button("All Assets")
+            .style(if !by_build {
+                button::primary
+            } else {
+                button::text
+            })
             .on_press(Message::LibrarySetByBuild(false)),
-        button("By Build").style(if by_build { button::primary } else { button::text })
+        button("By Build")
+            .style(if by_build {
+                button::primary
+            } else {
+                button::text
+            })
             .on_press(Message::LibrarySetByBuild(true)),
         space().width(Fill),
         if by_build {
-            button(text(build.map_or("No build snapshots".to_owned(), |s| format!("Build: {s}  ▾"))))
-                .on_press(Message::LibraryNextBuild)
+            button(text(build.map_or("No build snapshots".to_owned(), |s| {
+                format!("Build: {s}  ▾")
+            })))
+            .on_press(Message::LibraryNextBuild)
         } else {
             button("All imported PAKs").on_press(Message::LibrarySetByBuild(false))
         },
-    ].spacing(12);
+    ]
+    .spacing(12);
     layout = layout.push(tabs);
-    layout = layout.push(text(if by_build {
-        "Imported archives associated with the selected build snapshot"
-    } else {
-        "All imported archives across snapshots"
-    }).size(12).color(MUTED));
-    layout = layout.push(row![
-        text_input("Search imported PAKs, names, folders...", &state.library_search)
-            .on_input(Message::LibrarySearchChanged).width(Fill),
-        button("Refresh").on_press(Message::LibraryRefresh),
-    ].spacing(8));
+    layout = layout.push(
+        text(if by_build {
+            "Imported archives associated with the selected build snapshot"
+        } else {
+            "All imported archives across snapshots"
+        })
+        .size(12)
+        .color(MUTED),
+    );
+    layout = layout.push(
+        row![
+            text_input(
+                "Search imported PAKs, names, folders...",
+                &state.library_search
+            )
+            .on_input(Message::LibrarySearchChanged)
+            .width(Fill),
+            button("Refresh").on_press(Message::LibraryRefresh),
+        ]
+        .spacing(8),
+    );
 
     let mut rows = column![].spacing(0);
     let needle = state.library_search.to_lowercase();
@@ -144,7 +210,8 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 continue;
             }
             let folder = archive.source.to_lowercase();
-            if !needle.is_empty() && !archive.name.to_lowercase().contains(&needle)
+            if !needle.is_empty()
+                && !archive.name.to_lowercase().contains(&needle)
                 && !archive.description.to_lowercase().contains(&needle)
                 && !archive.group.to_lowercase().contains(&needle)
                 && !folder.contains(&needle)
@@ -152,42 +219,58 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 continue;
             }
             if matching / PAGE_SIZE == state.library_page {
-                rows = rows.push(archive_row(index, archive, state.library_selected == Some(index)));
+                rows = rows.push(archive_row(
+                    index,
+                    archive,
+                    state.library_selected == Some(index),
+                ));
                 shown += 1;
             }
             matching += 1;
         }
     }
     if matching == 0 {
-        rows = rows.push(container(
-            text(if library.is_none() {
-                "Load your existing extracted Asset Library folder to browse imported PAKs."
-            } else if by_build && build.is_none() {
-                "No build snapshot is available. Use All Assets or import snapshot metadata."
-            } else {
-                "No imported PAKs match this search."
-            }).size(13).color(MUTED)
-        ).padding(18));
+        rows = rows.push(
+            container(
+                text(if library.is_none() {
+                    "Load your existing extracted Asset Library folder to browse imported PAKs."
+                } else if by_build && build.is_none() {
+                    "No build snapshot is available. Use All Assets or import snapshot metadata."
+                } else {
+                    "No imported PAKs match this search."
+                })
+                .size(13)
+                .color(MUTED),
+            )
+            .padding(18),
+        );
     }
-    let table_heading = container(row![
-        header_cell("Dependency Group   ↟", 3),
-        header_cell("Folder", 4),
-        header_cell("Description", 5),
-        header_cell("File", 4),
-        header_cell("Extracted", 1),
-    ].spacing(9).padding([10, 8])).style(|_| container::Style {
+    let table_heading = container(
+        row![
+            header_cell("Dependency Group   ↟", 3),
+            header_cell("Folder", 4),
+            header_cell("Description", 5),
+            header_cell("File", 4),
+            header_cell("Extracted", 1),
+        ]
+        .spacing(9)
+        .padding([10, 8]),
+    )
+    .style(|_| container::Style {
         background: Some(Background::Color(HEADER)),
         ..container::Style::default()
-    }).width(Fill);
+    })
+    .width(Fill);
     let pages = matching.div_ceil(PAGE_SIZE).max(1);
-    let table = panel(column![
-        table_heading,
-        scrollable(rows).height(Fill),
-    ].spacing(0).height(Fill));
+    let table = panel(
+        column![table_heading, scrollable(rows).height(Fill),]
+            .spacing(0)
+            .height(Fill),
+    );
     layout = layout.push(table.height(Fill));
-    let (count, bytes, ignored) = library.map(|c|
-        (c.archives.len(), c.total_bytes, c.ignored)
-    ).unwrap_or((0, 0, 0));
+    let (count, bytes, ignored) = library
+        .map(|c| (c.archives.len(), c.total_bytes, c.ignored))
+        .unwrap_or((0, 0, 0));
     layout = layout.push(row![
         text(format!(
             "{count} imported PAKs • {:.1} GiB manifest-listed extraction • read-only previews{}",
