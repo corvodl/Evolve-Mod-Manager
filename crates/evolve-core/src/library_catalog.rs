@@ -477,6 +477,41 @@ mod tests {
     }
 
     #[test]
+    fn unrelated_missing_extracted_files_do_not_break_exact_texture_lookup() {
+        let root = tempfile::tempdir().unwrap();
+        for (id, name, record, data) in [
+            ("11111111111111111111", "broken.pak", "unrelated/not_here.dds", None),
+            ("22222222222222222222", "textures.pak", "characters/hunters/merc_tech/tech_3p.dds.0", Some(b"valid".as_slice())),
+        ] {
+            let folder = root.path().join(format!("{name}__{id}"));
+            fs::create_dir_all(&folder).unwrap();
+            if let Some(bytes) = data {
+                let target = folder.join("files").join(record);
+                fs::create_dir_all(target.parent().unwrap()).unwrap();
+                fs::write(target, bytes).unwrap();
+            }
+            fs::write(
+                folder.join("asset-library.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version": 1, "name": name, "source": "C:/game/archive.pak",
+                    "entries": [{"path": record, "bytes": 5}]
+                })).unwrap()
+            ).unwrap();
+        }
+        let found = resolve_imported_reference(
+            root.path(), "characters/hunters/merc_tech/tech_3p.tif", None
+        ).unwrap();
+        assert!(matches!(found, LibraryReferenceStatus::Found(hit)
+            if hit.archive_name == "textures.pak"
+                && hit.absolute_path.ends_with("tech_3p.dds.0")));
+        // The full archive file browser still refuses incomplete archives.
+        let catalog = imported_library(root.path()).unwrap();
+        assert!(catalog.archives.iter().any(|archive|
+            archive.name == "broken.pak"
+                && imported_archive_files(archive).is_err()));
+    }
+
+    #[test]
     fn reads_existing_imports_without_changing_them() {
         let temp = tempfile::tempdir().unwrap();
         let folder = temp
