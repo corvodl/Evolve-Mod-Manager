@@ -40,7 +40,7 @@ fn archive_row<'a>(
         text(format!("{}", archive.entries)).size(12).width(Length::FillPortion(1)),
     ].spacing(9).align_y(iced::Center);
     let item = button(content).padding([7, 8]).width(Fill)
-        .style(if selected { button::primary } else { button::text })
+        .style(button::text)
         .on_press(Message::LibrarySelect(index));
     container(item).width(Fill).style(move |_| container::Style {
         background: Some(Background::Color(if selected { Color::from_rgb(0.26, 0.18, 0.22) }
