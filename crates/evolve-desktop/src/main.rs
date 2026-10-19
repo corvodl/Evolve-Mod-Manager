@@ -7,14 +7,14 @@ mod viewport;
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssetEntry, AssetResolution, CdfDefinition, CdfDependencyReport,
     ConvertedMotion, DdsInfo, Inventory, LevelScene, ModProfile, ModelInfo, NativeCafMotion,
-    PakInventory, ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo,
-    StageTransaction, TerrainInfo, add_mod_to_profile, apply_stage_pak, convert_glb_to_fbx,
+    PakInventory, ProfileCatalog, ProfileMod, ProfilePlan, BatchJournal, RenderMesh, RigReport, SignedPakInfo,
+    StageTransaction, TerrainInfo, add_mod_to_profile, apply_profile_stage, apply_stage_pak, batch_stage_status, convert_glb_to_fbx,
     convert_original_motion, create_mod_profile, decode_dds_rgba, export_dds_png,
     export_level_scene_glb, export_rigged_character_fbx, export_rigged_character_glb,
     extract_legacy_pak, extract_signed_pak, import_stage_pak, initialize_stage, inspect_dds,
     inspect_legacy_pak, inspect_signed_pak, list_mod_profiles, load_level_scene, plan_mod_profile,
     read_cdf, read_model, read_native_caf, read_terrain, rebuild_legacy_pak,
-    rebuild_signed_pak_entry, resolve_cdf, restore_stage, scan_directory, stage_status,
+    rebuild_signed_pak_entry, resolve_cdf, restore_profile_stage, restore_stage, scan_directory, stage_status,
 };
 use iced::widget::{
     button, canvas, column, container, image, row, scrollable, shader, slider, svg, text,
@@ -176,6 +176,9 @@ enum Operation {
     CreateProfile(PathBuf, String),
     AddProfileMod(PathBuf, String, PathBuf, String, PathBuf, PathBuf, String),
     PlanProfile(PathBuf, String, PathBuf, PathBuf),
+    ApplyProfile(PathBuf, String, PathBuf, PathBuf),
+    RecoverProfile(PathBuf),
+    StatusProfile(PathBuf),
     ExtractPak(PathBuf, PathBuf),
     RebuildPak(PathBuf, PathBuf, PathBuf),
     ExportPng(PathBuf, PathBuf),
@@ -212,6 +215,9 @@ enum Completed {
     ProfileCreated(ModProfile),
     ProfileAdded(ProfileMod),
     ProfilePlanned(ProfilePlan),
+    ProfileApplied(BatchJournal),
+    ProfileRecovered(BatchJournal),
+    ProfileStatus(Option<BatchJournal>),
     Extracted(usize, PathBuf),
     Rebuilt(usize, PathBuf),
     ExportedPng(DdsInfo, PathBuf),
@@ -327,6 +333,17 @@ impl Operation {
                 .map_err(|e| e.to_string())?;
                 Ok(Completed::RebuiltSigned(result.changed_entry, dest))
             }
+            Self::ApplyProfile(stage, id, original, new_public) => {
+                apply_profile_stage(&stage, &id, &original, &new_public)
+                    .map(Completed::ProfileApplied)
+                    .map_err(|e| e.to_string())
+            }
+            Self::RecoverProfile(stage) => restore_profile_stage(&stage)
+                .map(Completed::ProfileRecovered)
+                .map_err(|e| e.to_string()),
+            Self::StatusProfile(stage) => batch_stage_status(&stage)
+                .map(Completed::ProfileStatus)
+                .map_err(|e| e.to_string()),
             Self::ListProfiles(root) => list_mod_profiles(&root)
                 .map(Completed::ProfileCatalog)
                 .map_err(|e| e.to_string()),
@@ -424,6 +441,9 @@ enum Message {
     StartProfileCreate,
     StartProfileAdd,
     StartProfilePlan,
+    StartProfileApply,
+    StartProfileRecover,
+    StartProfileStatus,
     DiffuseInputChanged(String),
     NormalInputChanged(String),
     EmissiveInputChanged(String),
@@ -680,6 +700,39 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::StageTargetChanged(value) => state.stage_target = value,
         Message::ProfileNameChanged(value) => state.profile_name = value,
         Message::SelectProfile(value) => state.profile_id = value,
+        Message::StartProfileRecover => {
+            if state.preferences.stage.trim().is_empty() {
+                state.status = "Choose an isolated offline stage to recover.".into();
+                return Task::none();
+            }
+            return launch(state, Operation::RecoverProfile(
+                PathBuf::from(&state.preferences.stage)
+            ));
+        }
+        Message::StartProfileStatus => {
+            if state.preferences.stage.trim().is_empty() {
+                state.status = "Choose an isolated offline stage.".into();
+                return Task::none();
+            }
+            return launch(state, Operation::StatusProfile(
+                PathBuf::from(&state.preferences.stage)
+            ));
+        }
+        Message::StartProfileApply => {
+            if [
+                &state.preferences.stage, &state.profile_id,
+                &state.public_key, &state.signing_public,
+            ].iter().any(|v| v.trim().is_empty()) {
+                state.status = "Choose profile ID, isolated stage and original/new public signing keys.".into();
+                return Task::none();
+            }
+            return launch(state, Operation::ApplyProfile(
+                PathBuf::from(&state.preferences.stage),
+                state.profile_id.clone(),
+                PathBuf::from(&state.public_key),
+                PathBuf::from(&state.signing_public),
+            ));
+        }
         Message::StartProfileList => {
             if state.preferences.stage.trim().is_empty() {
                 state.status = "Choose an isolated PAK stage first.".into();
@@ -1365,6 +1418,32 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         dir.display()
                     );
                 }
+                Ok(Completed::ProfileStatus(tx)) => {
+                    state.profile_feedback = if let Some(tx) = tx {
+                        format!("Recovery required: profile {} has {} staged PAKs in journal {}.",
+                            tx.profile_id, tx.entries.len(), tx.id)
+                    } else {
+                        "No multi-PAK recovery transaction pending.".into()
+                    };
+                    state.status = state.profile_feedback.clone();
+                    state.page = Some(Page::Files);
+                }
+                Ok(Completed::ProfileApplied(tx)) => {
+                    state.profile_feedback = format!(
+                        "Applied {} signed mod PAKs to ISOLATED offline stage only. Transaction {} requires recovery before another profile.",
+                        tx.entries.len(), tx.id
+                    );
+                    state.status = state.profile_feedback.clone();
+                    state.page = Some(Page::Files);
+                }
+                Ok(Completed::ProfileRecovered(tx)) => {
+                    state.profile_feedback = format!(
+                        "Restored {} original PAKs from verified offline batch backups.",
+                        tx.entries.len()
+                    );
+                    state.status = state.profile_feedback.clone();
+                    state.page = Some(Page::Files);
+                }
                 Ok(Completed::ProfileCatalog(catalog)) => {
                     let count = catalog.profiles.len();
                     state.profile_catalog = Some(catalog);
@@ -1738,6 +1817,11 @@ fn view(state: &State) -> Element<'_, Message> {
                         .on_input(Message::SelectProfile).width(Fill),
                     button("Add signed PAK").on_press(Message::StartProfileAdd),
                     button("Verify profile").on_press(Message::StartProfilePlan),
+                ].spacing(8),
+                row![
+                    button("Apply to offline stage").on_press(Message::StartProfileApply),
+                    button("Check batch recovery").on_press(Message::StartProfileStatus),
+                    button("Restore staged profile").on_press(Message::StartProfileRecover),
                 ].spacing(8),
                 text("Profile add uses the signed replacement path, relative PAK target, both public DER keys and basename above. No profile is installed automatically."),
                 text(state.profile_feedback.as_str()).size(13),
