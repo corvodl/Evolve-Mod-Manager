@@ -209,6 +209,7 @@ struct State {
     modding_menu: Option<&'static str>,
     modding_advanced: bool,
     modding_profiles: bool,
+    modding_open_editor_when_scanned: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -940,6 +941,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             }
             state.input = root.to_string_lossy().into_owned();
+            state.modding_open_editor_when_scanned = true;
             return begin_scan(state, root);
         }
         Message::ModdingReviewChanges => {
@@ -2163,6 +2165,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.pak = None;
                     state.signed_pak = None;
                     state.texture = None;
+                    state.model = None;
+                    state.diffuse = None;
+                    state.normal_map = None;
+                    state.emissive_map = None;
                     state.selected = None;
                     state.page = Some(Page::Files);
                 }
@@ -3190,12 +3196,18 @@ impl Desktop {
                 }
             }
             message => {
+                let project_scan_done = self.state.modding_open_editor_when_scanned
+                    && matches!(&message, Message::Finished(Ok(Completed::Inventory(_))));
+                let finished = matches!(&message, Message::Finished(_));
                 let opens_model = matches!(
                     &message,
                     Message::Finished(Ok(Completed::Model(_) | Completed::ImportedPakFiles(_)))
-                );
+                ) || project_scan_done;
                 let launched_from_library = self.state.page == Some(Page::AssetLibrary);
                 let command = update(&mut self.state, message);
+                if finished {
+                    self.state.modding_open_editor_when_scanned = false;
+                }
                 if opens_model && self.viewer_id.is_none() {
                     let open = self.open_viewer();
                     self.state.viewer_from_library = launched_from_library;
