@@ -22,13 +22,13 @@ use asset_cache::{SharedCache, decoded_dds};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph, ImportedLibrary,
-    ImportedPak, Inventory, LevelScene, MaterialReport, ModProfile, ModelInfo, NativeCafMotion,
+    ImportedPak, Inventory, LevelScene, LibraryImportReport, MaterialReport, ModProfile, ModelInfo, NativeCafMotion,
     PakInventory, ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo,
     StageTransaction, TerrainInfo, add_mod_to_profile, apply_profile_stage, apply_stage_pak,
     batch_stage_status, compare_assets, convert_glb_to_fbx, convert_original_motion,
     create_mod_profile, decode_dds_rgba, export_dds_png, export_level_scene_glb,
     export_rigged_character_fbx_textured_animated, export_rigged_character_glb, extract_legacy_pak,
-    extract_signed_pak, import_stage_pak, imported_archive_files, imported_library,
+    extract_signed_pak, import_signed_library_pak, import_stage_pak, imported_archive_files, imported_library,
     initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_signed_pak,
     list_mod_profiles, load_level_scene, plan_mod_profile, read_cdf, read_material, read_model,
     read_native_caf, read_static_cdf_assembly, read_terrain, rebuild_legacy_pak,
@@ -191,6 +191,7 @@ struct State {
     library_catalog: Option<ImportedLibrary>,
     library_selected: Option<usize>,
     library_root: String,
+    library_import_source: String,
     library_search: String,
     library_by_build: bool,
     library_build_index: usize,
@@ -243,6 +244,7 @@ enum Operation {
     RestoreRawProjectMember(ProjectRow, PathBuf, String),
     UnpackRawProject(PathBuf, PathBuf, PathBuf),
     LoadImportedLibrary(PathBuf),
+    ImportSignedLibrary(PathBuf, PathBuf, PathBuf),
     OpenImportedPak(ImportedPak),
     InspectDependencies(Inventory, String),
     CompareAssets(PathBuf, PathBuf),
@@ -310,6 +312,7 @@ enum Completed {
     ImportedRawProjectMember(bool, String, PathBuf),
     RestoredRawProjectMember(bool, String, PathBuf),
     ImportedLibrary(ImportedLibrary),
+    ImportedSignedLibrary(LibraryImportReport, ImportedLibrary),
     ImportedPakFiles(Inventory),
     Dependencies(DependencyGraph),
     Comparison(AssetComparison),
@@ -397,6 +400,11 @@ impl Operation {
             Self::LoadImportedLibrary(root) => imported_library(&root)
                 .map(Completed::ImportedLibrary)
                 .map_err(|e| e.to_string()),
+            Self::ImportSignedLibrary(root, source, key) => {
+                let report = import_signed_library_pak(&root, &source, &key)?;
+                let catalog = imported_library(&root).map_err(|e| e.to_string())?;
+                Ok(Completed::ImportedSignedLibrary(report, catalog))
+            }
             Self::OpenImportedPak(pak) => imported_archive_files(&pak)
                 .map(Completed::ImportedPakFiles)
                 .map_err(|e| e.to_string()),
@@ -653,6 +661,8 @@ impl Operation {
 enum Message {
     Navigate(Page),
     LibraryRootChanged(String),
+    LibraryImportSourceChanged(String),
+    LibraryImportStart,
     LibrarySearchChanged(String),
     LibraryMenu(&'static str),
     ModdingMenu(&'static str),
@@ -1207,6 +1217,33 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     PathBuf::from(&state.preferences.projects),
                     PathBuf::from(&state.preferences.stage),
                     PathBuf::from(&state.input),
+                ),
+            );
+        }
+        Message::LibraryImportSourceChanged(path) => {
+            state.library_import_source = path;
+        }
+        Message::LibraryImportStart => {
+            if state.library_root.trim().is_empty()
+                || state.library_import_source.trim().is_empty()
+            {
+                state.status = "Specify an existing AssetLibrary directory and signed Stage 2 PAK file first.".into();
+                state.library_show_configuration = true;
+                return Task::none();
+            }
+            let key = match modding_keys::public_key(PathBuf::from(&state.preferences.stage).as_path()) {
+                Ok(key) => key,
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
+            };
+            return launch(
+                state,
+                Operation::ImportSignedLibrary(
+                    PathBuf::from(&state.library_root),
+                    PathBuf::from(&state.library_import_source),
+                    key,
                 ),
             );
         }
@@ -2471,6 +2508,24 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.modding_open_editor_when_scanned = true;
                         return begin_scan(state, path.join("files"));
                     }
+                }
+                Ok(Completed::ImportedSignedLibrary(report, catalog)) => {
+                    state.status = if report.already_imported {
+                        format!("{} already imported: {} verified original files", report.archive, report.files)
+                    } else {
+                        format!("Imported {} into Asset Library: {} verified files, {} bytes; original PAK unchanged.",
+                            report.archive, report.files, report.bytes)
+                    };
+                    state.library_root = catalog.root.clone();
+                    state.preferences.asset_library_root = catalog.root.clone();
+                    state.library_catalog = Some(catalog);
+                    state.library_selection.clear();
+                    state.library_selected = None;
+                    state.library_page = 0;
+                    state.library_show_configuration = false;
+                    refresh_library_matches(state);
+                    state.page = Some(Page::AssetLibrary);
+                    persist_preferences(state);
                 }
                 Ok(Completed::ImportedLibrary(catalog)) => {
                     let count = catalog.archives.len();
