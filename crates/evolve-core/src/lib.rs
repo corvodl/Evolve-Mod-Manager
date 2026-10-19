@@ -5,6 +5,7 @@ pub mod archive;
 pub mod asset_compare;
 pub mod batch;
 pub mod cdf;
+pub mod character_assembly;
 pub mod converter;
 pub mod dds;
 pub mod dependency_graph;
@@ -33,6 +34,7 @@ pub use archive::{
     rebuild_legacy_pak,
 };
 pub use asset_compare::{AssetComparison, AssetFingerprint, CompareError, compare_assets};
+pub use character_assembly::{AssemblyError, AssemblyReport, combine_source_meshes, read_static_cdf_assembly};
 pub use cdf::{
     AssetResolution, CdfAttachment, CdfDefinition, CdfDependencyReport, CdfError, parse_cdf,
     read_cdf, resolve_cdf, resolve_virtual,
