@@ -4,7 +4,7 @@ use super::{Message, State};
 use evolve_core::LevelScene;
 use iced::widget::canvas::{self, Path, Stroke};
 use iced::widget::{
-    button, canvas as canvas_widget, column, container, row, scrollable, text, text_input,
+    button, canvas as canvas_widget, column, row, scrollable, text, text_input,
 };
 use iced::{Color, Element, Fill, Length, Point, Rectangle, Renderer, Theme, mouse};
 use std::sync::Arc;
@@ -109,15 +109,15 @@ impl canvas::Program<Message> for SceneOverview {
     fn update(
         &self,
         _state: &mut Self::State,
-        event: canvas::Event,
+        event: &iced::Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
-    ) -> (canvas::event::Status, Option<Message>) {
+    ) -> Option<canvas::Action<Message>> {
         if !matches!(
             event,
             canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
         ) {
-            return (canvas::event::Status::Ignored, None);
+            return None;
         }
         let Some(point) = cursor.position_in(bounds) else {
             return (canvas::event::Status::Ignored, None);
@@ -129,7 +129,7 @@ impl canvas::Program<Message> for SceneOverview {
             if obj.hidden {
                 continue;
             }
-            let world = self.point(obj.world.position, bounds);
+            let world = self.point(obj.world.position, bounds, center, extent);
             let d = (world.x - point.x).powi(2) + (world.y - point.y).powi(2);
             if d < distance {
                 distance = d;
@@ -137,12 +137,9 @@ impl canvas::Program<Message> for SceneOverview {
             }
         }
         if distance <= 144.0 {
-            (
-                canvas::event::Status::Captured,
-                nearest.map(Message::LevelSelect),
-            )
+            nearest.map(|index| canvas::Action::publish(Message::LevelSelect(index)).and_capture())
         } else {
-            (canvas::event::Status::Ignored, None)
+            None
         }
     }
 }
