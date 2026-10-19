@@ -79,13 +79,17 @@ impl Operation {
     fn execute(self) -> Result<Completed, String> {
         match self {
             Self::Scan(source) => scan_directory(&source)
-                .map(Completed::Inventory).map_err(|e| e.to_string()),
+                .map(Completed::Inventory)
+                .map_err(|e| e.to_string()),
             Self::InspectPak(source) => inspect_legacy_pak(&source)
-                .map(Completed::Pak).map_err(|e| e.to_string()),
+                .map(Completed::Pak)
+                .map_err(|e| e.to_string()),
             Self::InspectDds(source) => inspect_dds(&source)
-                .map(Completed::Texture).map_err(|e| e.to_string()),
+                .map(Completed::Texture)
+                .map_err(|e| e.to_string()),
             Self::InspectCdf(source) => read_cdf(&source)
-                .map(Completed::Character).map_err(|e| e.to_string()),
+                .map(Completed::Character)
+                .map_err(|e| e.to_string()),
             Self::ExtractPak(source, dest) => extract_legacy_pak(&source, &dest)
                 .map(|pak| Completed::Extracted(pak.entries.len(), dest))
                 .map_err(|e| e.to_string()),
@@ -208,7 +212,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Ok(Completed::Character(character)) => {
                     state.status = format!(
                         "CDF: {} | {} validated skin/CHR attachment(s)",
-                        character.skeleton, character.attachments.len()
+                        character.skeleton,
+                        character.attachments.len()
                     );
                     state.character = Some(character);
                     state.page = Some(Page::Models);
