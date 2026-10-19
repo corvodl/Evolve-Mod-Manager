@@ -436,9 +436,8 @@ mod tests {
         let original = fs::canonicalize(root.join("hunter.skin")).unwrap();
         let compiled = preferred_compiled_mesh(root, &original, &inventory).unwrap();
         assert!(compiled.ends_with("hunter.skinm"));
-        let diffuse = exact_single_slot_diffuse(root, &compiled, &inventory)
-            .unwrap()
-            .unwrap();
+        let diffuse = exact_single_slot_maps(root, &compiled, &inventory)
+            .unwrap().diffuse.unwrap();
         assert!(diffuse.ends_with("hunter.dds.0"));
         assert_eq!(fs::read(original).unwrap(), b"original binding");
     }
@@ -454,10 +453,8 @@ mod tests {
         let inventory = crate::scan_directory(root).unwrap();
         let mesh = fs::canonicalize(root.join("hunter.skinm")).unwrap();
         assert!(
-            exact_single_slot_diffuse(root, &mesh, &inventory)
-                .unwrap()
-                .is_none()
-        );
+            exact_single_slot_maps(root, &mesh, &inventory)
+                .unwrap().diffuse.is_none());
     }
 
     #[test]
