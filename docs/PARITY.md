@@ -199,3 +199,28 @@ atomic flat whole-character FBX exports with correctly embedded assets, and
 native right-click file operations; these are **not complete** in the public
 rewrite. Test each using real permitted Stage 2 assets and Blender before
 changing these labels or authorizing v1.0.
+
+
+## October 19 — file actions and flat CDF FBX staging
+
+- The native Asset Viewer file list now accepts a right-click on indexed
+  files. Its action panel exposes Preview, exact verified file-path copy,
+  Windows Explorer reveal, dependency inspection, DDS-to-PNG export, a
+  manually verified single-mesh FBX action, and protected-original restore
+  only in editable Modding workspaces. Right-click does not start an expensive
+  model load; stale, missing and escaped paths are rejected.
+- **Experimental flat CDF attachment FBX export:** selected default CDF skin
+  attachments and the original skeleton must resolve exactly in the indexed
+  folder. Every attachment is exported as a separately rigged FBX using the
+  existing validated Blender bridge. If *any* part fails, the staging folder
+  is discarded and the final export directory remains absent. The workflow
+  cannot write inside the indexed original asset root and produces no nested
+  `assemblies`, `textures` or `animations` directories.
+- An explicitly opted-in, compatible original CAF may be embedded in each
+  FBX; this is **not** automatic per-character CAF/DBA action harvesting.
+  The current flat export is multiple per-part FBX files, **not** one unified
+  painting-ready character FBX and **not** fully textured/multimaterial.
+  No per-part diffuse materials are guessed. Full character rendering,
+  deformation, embedded complete texture sets and unified root FBX remain
+  release blockers.
+
