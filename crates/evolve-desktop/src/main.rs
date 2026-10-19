@@ -1519,7 +1519,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             refresh_viewer_rows(state);
         }
         Message::ViewerOpenStaticCdf(index) => {
-            let valid = state.inventory.as_ref()
+            let valid = state
+                .inventory
+                .as_ref()
                 .and_then(|inventory| inventory.entries.get(index))
                 .is_some_and(|entry| entry.relative_path.to_ascii_lowercase().ends_with(".cdf"));
             if !valid {
