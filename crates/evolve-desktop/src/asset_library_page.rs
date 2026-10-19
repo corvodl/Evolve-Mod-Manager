@@ -116,7 +116,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             .on_press(Message::LibrarySetByBuild(true)),
         space().width(Fill),
         if by_build {
-            button(text(build.map_or("No build snapshots".to_owned(), |s| format!("Build: {s}  ▾")))
+            button(text(build.map_or("No build snapshots".to_owned(), |s| format!("Build: {s}  ▾"))))
                 .on_press(Message::LibraryNextBuild)
         } else {
             button("All imported PAKs").on_press(Message::LibrarySetByBuild(false))
