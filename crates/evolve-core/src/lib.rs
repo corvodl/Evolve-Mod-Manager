@@ -1,6 +1,7 @@
 //! Core boundary for the Rust rewrite.
 //! All game data is local and opt-in. No assets are embedded or downloaded.
 pub mod animation;
+pub mod batch;
 pub mod archive;
 pub mod cdf;
 pub mod converter;
@@ -73,3 +74,5 @@ pub use profiles::{
     create_mod_profile, delete_mod_profile, enable_profile_mod, list_mod_profiles,
     plan_mod_profile,
 };
+
+pub use batch::{BatchEntry, BatchError, BatchJournal, apply_profile_stage, batch_stage_status, restore_profile_stage};
