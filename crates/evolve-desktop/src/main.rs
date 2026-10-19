@@ -141,6 +141,7 @@ struct State {
     auto_clips: Vec<auto_resources::AutoClip>,
     auto_resource_note: String,
     auto_clip_filter: String,
+    export_include_animation: bool,
     auto_idle_pending: Option<PathBuf>,
     auto_material_pending: bool,
     caf_path: String,
@@ -807,6 +808,7 @@ enum Message {
     ViewerPreviewSelected,
     ViewerAutoClip(usize),
     ViewerAutoClipFilter(String),
+    ViewerToggleExportAnimations,
     ViewerPreviewStaticCdf,
     ViewerOpenStaticCdf(usize),
     StartDependencyInspection,
@@ -1847,6 +1849,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return launch(state, Operation::BuildStaticCdf(source, inventory.clone()));
         }
         Message::ViewerAutoClipFilter(value) => state.auto_clip_filter = value,
+        Message::ViewerToggleExportAnimations => {
+            state.export_include_animation = !state.export_include_animation;
+        }
         Message::ViewerAutoClip(index) => {
             let Some(clip) = state.auto_clips.get(index) else {
                 return Task::none();
@@ -2459,7 +2464,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     PathBuf::from(&state.blender_path),
                     (!state.diffuse_input.trim().is_empty())
                         .then(|| PathBuf::from(&state.diffuse_input)),
-                    (!state.caf_path.trim().is_empty()).then(|| PathBuf::from(&state.caf_path)),
+                    (state.export_include_animation && !state.caf_path.trim().is_empty())
+                        .then(|| PathBuf::from(&state.caf_path)),
                     PathBuf::from(&state.output),
                 ),
             );
@@ -3185,6 +3191,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.model = Some(Arc::new(mesh));
                     state.auto_clips.clear();
                     state.auto_clip_filter.clear();
+                    state.export_include_animation = false;
                     state.auto_idle_pending = None;
                     state.auto_material_pending = false;
                     state.skeleton_path.clear();
