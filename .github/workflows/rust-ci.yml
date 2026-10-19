@@ -59,6 +59,17 @@ jobs:
           Copy-Item docs/PARITY.md (Join-Path $output "PARITY.md")
           Compress-Archive -LiteralPath $output -DestinationPath "dist/EvolveModManager-Rust-Preview.zip" -CompressionLevel Optimal -Force
           if (!(Test-Path "dist/EvolveModManager-Rust-Preview.zip")) { throw "Missing portable preview" }
+      - name: Capture genuine Iced application screenshot (if interactive desktop exists)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          ./scripts/capture-window.ps1 -Executable "target/release/evolve-mod-manager.exe" -Output "dist/EvolveModManager-Rust-Window.png"
+      - name: Upload genuine screenshot separately (if captured)
+        uses: actions/upload-artifact@v4
+        with:
+          name: EvolveModManager-Rust-Actual-Window
+          path: dist/EvolveModManager-Rust-Window.png
+          if-no-files-found: warn
       - name: Upload portable preview (not a public release)
         uses: actions/upload-artifact@v4
         with:
