@@ -97,7 +97,7 @@ pub fn inspect(game_path: &str, stage_path: &str, projects_path: &str) -> Snapsh
             dumps: "WER crash dump settings are not modified or enumerated by the Rust preview."
                 .into(),
             storage: "Disk free space and orphaned-swap cleanup are not yet implemented.".into(),
-        };
+        }
     }
     #[cfg(not(windows))]
     {
