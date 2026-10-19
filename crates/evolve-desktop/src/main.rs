@@ -1524,7 +1524,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.library_startup_loading = false;
             // Ignore a startup read that finished after the user changed
             // the root or explicitly loaded a newer catalog.
-            if PathBuf::from(&state.library_root) != expected || state.library_catalog.is_some() {
+            if Path::new(&state.library_root) != expected.as_path() || state.library_catalog.is_some() {
                 return Task::none();
             }
             match result {
