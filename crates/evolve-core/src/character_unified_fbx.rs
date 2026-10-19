@@ -39,10 +39,14 @@ fn input_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
     let target = root.join(relative);
     let meta = fs::symlink_metadata(&target).map_err(|e| e.to_string())?;
     let path = fs::canonicalize(target).map_err(|e| e.to_string())?;
-    if !meta.file_type().is_file() || meta.len() == 0
-        || meta.len() > MAX_SOURCE || !path.starts_with(root)
+    if !meta.file_type().is_file()
+        || meta.len() == 0
+        || meta.len() > MAX_SOURCE
+        || !path.starts_with(root)
     {
-        return Err(format!("Unsafe, unsupported or oversized source: {relative}"));
+        return Err(format!(
+            "Unsafe, unsupported or oversized source: {relative}"
+        ));
     }
     Ok(path)
 }
@@ -50,7 +54,13 @@ fn input_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
 fn safe_part_name(raw: &str) -> Result<String, String> {
     let filtered = raw
         .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') { ch } else { '_' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
         .collect::<String>();
     if filtered.is_empty() || filtered.len() > 90 || filtered.chars().all(|c| c == '_') {
         return Err("CDF contains an invalid part name".into());
@@ -58,11 +68,15 @@ fn safe_part_name(raw: &str) -> Result<String, String> {
     Ok(filtered)
 }
 
-fn plan_parts(source: &Path, inventory: &Inventory) -> Result<(PathBuf, String, Option<String>, Vec<(String, PathBuf)>), String> {
+fn plan_parts(
+    source: &Path,
+    inventory: &Inventory,
+) -> Result<(PathBuf, String, Option<String>, Vec<(String, PathBuf)>), String> {
     let root = fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
     let original = fs::symlink_metadata(source).map_err(|e| e.to_string())?;
     let actual = fs::canonicalize(source).map_err(|e| e.to_string())?;
-    if !original.file_type().is_file() || original.len() > 16 * 1024 * 1024
+    if !original.file_type().is_file()
+        || original.len() > 16 * 1024 * 1024
         || !actual.starts_with(&root)
     {
         return Err("CDF must be a regular indexed original file".into());
@@ -149,12 +163,16 @@ pub fn export_unified_cdf_fbx(
 ) -> Result<UnifiedCdfFbxReport, String> {
     let root = fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
     if !destination.is_absolute()
-        || !destination.extension().is_some_and(|e| e.eq_ignore_ascii_case("fbx"))
+        || !destination
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("fbx"))
         || fs::symlink_metadata(destination).is_ok()
     {
         return Err("Choose a NEW absolute .fbx destination".into());
     }
-    let parent = destination.parent().ok_or("FBX destination has no parent")?;
+    let parent = destination
+        .parent()
+        .ok_or("FBX destination has no parent")?;
     let meta = fs::symlink_metadata(parent).map_err(|e| e.to_string())?;
     let parent = fs::canonicalize(parent).map_err(|e| e.to_string())?;
     if !meta.file_type().is_dir() || parent.starts_with(&root) {
@@ -162,21 +180,29 @@ pub fn export_unified_cdf_fbx(
     }
     let exe = fs::symlink_metadata(blender).map_err(|e| e.to_string())?;
     if !exe.file_type().is_file()
-        || !blender.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe"))
+        || !blender
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("exe"))
     {
         return Err("Choose an explicitly installed Blender.exe".into());
     }
     let (skeleton, skeleton_ref, skin_set, parts) = plan_parts(source, inventory)?;
     let skeleton_bytes = fs::read(&skeleton).map_err(|e| e.to_string())?;
-    let motion = caf.map(|path| {
-        let relative = path.strip_prefix(&root)
-            .map_err(|_| "Optional CAF must be under the original indexed assets".to_owned())?;
-        if !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("caf")) {
-            return Err("Only an original .caf can be embedded".into());
-        }
-        let selected = input_file(&root, &relative.to_string_lossy())?;
-        read_native_caf(&selected).map_err(|e| e.to_string())
-    }).transpose()?;
+    let motion = caf
+        .map(|path| {
+            let relative = path
+                .strip_prefix(&root)
+                .map_err(|_| "Optional CAF must be under the original indexed assets".to_owned())?;
+            if !path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("caf"))
+            {
+                return Err("Only an original .caf can be embedded".into());
+            }
+            let selected = input_file(&root, &relative.to_string_lossy())?;
+            read_native_caf(&selected).map_err(|e| e.to_string())
+        })
+        .transpose()?;
 
     let work = tempfile::Builder::new()
         .prefix(".evolve-unified-character-")
@@ -224,19 +250,29 @@ pub fn export_unified_cdf_fbx(
         labels.push(name.clone());
     }
     let manifest = work.path().join("parts.json");
-    fs::write(&manifest, serde_json::to_vec(&json!({
-        "parts":entries, "include_animation":motion.is_some()
-    })).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    fs::write(
+        &manifest,
+        serde_json::to_vec(&json!({
+            "parts":entries, "include_animation":motion.is_some()
+        }))
+        .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
     let script = work.path().join("unify.py");
-    fs::write(&script, include_str!("blender_character_fbx.py"))
-        .map_err(|e| e.to_string())?;
+    fs::write(&script, include_str!("blender_character_fbx.py")).map_err(|e| e.to_string())?;
     let temp_fbx = work.path().join("character.fbx");
     let mut child = Command::new(blender)
-        .arg("--background").arg("--factory-startup")
-        .arg("--python").arg(&script).arg("--")
-        .arg(&manifest).arg(&temp_fbx)
-        .stdout(Stdio::null()).stderr(Stdio::null())
-        .spawn().map_err(|e| e.to_string())?;
+        .arg("--background")
+        .arg("--factory-startup")
+        .arg("--python")
+        .arg(&script)
+        .arg("--")
+        .arg(&manifest)
+        .arg(&temp_fbx)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
     let start = Instant::now();
     loop {
         match child.try_wait().map_err(|e| e.to_string())? {
@@ -256,11 +292,18 @@ pub fn export_unified_cdf_fbx(
     if header != FBX_HEADER || file.metadata().map_err(|e| e.to_string())?.len() < 256 {
         return Err("Blender did not produce a verified binary FBX".into());
     }
-    let mut publish = tempfile::Builder::new().prefix(".fbx-validated-")
-        .tempfile_in(&parent).map_err(|e| e.to_string())?;
+    let mut publish = tempfile::Builder::new()
+        .prefix(".fbx-validated-")
+        .tempfile_in(&parent)
+        .map_err(|e| e.to_string())?;
     std::io::copy(&mut file, &mut publish).map_err(|e| e.to_string())?;
-    publish.as_file_mut().sync_all().map_err(|e| e.to_string())?;
-    publish.persist_noclobber(destination).map_err(|e| e.error.to_string())?;
+    publish
+        .as_file_mut()
+        .sync_all()
+        .map_err(|e| e.to_string())?;
+    publish
+        .persist_noclobber(destination)
+        .map_err(|e| e.error.to_string())?;
     Ok(UnifiedCdfFbxReport {
         original_skeleton: skeleton_ref,
         selected_skin_set: skin_set,
@@ -293,7 +336,9 @@ mod tests {
         let inv = crate::scan_directory(root.path()).unwrap();
         assert!(plan_parts(&cdf, &inv).is_err());
         let target = output.path().join("character.fbx");
-        assert!(export_unified_cdf_fbx(&cdf, &inv, Path::new("Blender.exe"), &target, None).is_err());
+        assert!(
+            export_unified_cdf_fbx(&cdf, &inv, Path::new("Blender.exe"), &target, None).is_err()
+        );
         assert!(!target.exists());
     }
 }
