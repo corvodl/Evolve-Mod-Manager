@@ -5,14 +5,15 @@ mod textured;
 mod updater;
 mod viewport;
 use evolve_core::{
-    AnimatedGlb, AnimationPolicy, AssetEntry, AssetResolution, CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, Inventory,
-    LevelScene, ModelInfo, NativeCafMotion, PakInventory, RenderMesh, RigReport, SignedPakInfo,
-    StageTransaction, TerrainInfo, apply_stage_pak, convert_glb_to_fbx, convert_original_motion,
-    decode_dds_rgba, export_dds_png, export_level_scene_glb, export_rigged_character_fbx,
-    export_rigged_character_glb, extract_legacy_pak, extract_signed_pak, import_stage_pak,
-    initialize_stage, inspect_dds, inspect_legacy_pak, inspect_signed_pak, load_level_scene,
-    read_cdf, read_model, read_native_caf, read_terrain, rebuild_legacy_pak,
-    rebuild_signed_pak_entry, resolve_cdf, restore_stage, scan_directory, stage_status,
+    AnimatedGlb, AnimationPolicy, AssetEntry, AssetResolution, CdfDefinition, CdfDependencyReport,
+    ConvertedMotion, DdsInfo, Inventory, LevelScene, ModelInfo, NativeCafMotion, PakInventory,
+    RenderMesh, RigReport, SignedPakInfo, StageTransaction, TerrainInfo, apply_stage_pak,
+    convert_glb_to_fbx, convert_original_motion, decode_dds_rgba, export_dds_png,
+    export_level_scene_glb, export_rigged_character_fbx, export_rigged_character_glb,
+    extract_legacy_pak, extract_signed_pak, import_stage_pak, initialize_stage, inspect_dds,
+    inspect_legacy_pak, inspect_signed_pak, load_level_scene, read_cdf, read_model,
+    read_native_caf, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry, resolve_cdf,
+    restore_stage, scan_directory, stage_status,
 };
 use iced::widget::{
     button, canvas, column, container, image, row, scrollable, shader, slider, svg, text,
@@ -281,7 +282,10 @@ impl Operation {
             Self::ResolveCdf(source, asset_root) => {
                 let definition = read_cdf(&source).map_err(|e| e.to_string())?;
                 let inventory = scan_directory(&asset_root).map_err(|e| e.to_string())?;
-                Ok(Completed::CharacterDependencies(resolve_cdf(&inventory, &definition)))
+                Ok(Completed::CharacterDependencies(resolve_cdf(
+                    &inventory,
+                    &definition,
+                )))
             }
             Self::InspectCdf(source) => read_cdf(&source)
                 .map(Completed::Character)
@@ -856,14 +860,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Select a source tangent-space normal DDS (BC5 recommended).".into();
                 return Task::none();
             }
-            return launch(state, Operation::LoadNormal(PathBuf::from(&state.normal_input)));
+            return launch(
+                state,
+                Operation::LoadNormal(PathBuf::from(&state.normal_input)),
+            );
         }
         Message::StartEmissiveLoad => {
             if state.emissive_input.trim().is_empty() {
-                state.status = "Select the exact source emissive DDS; no color tint will be guessed.".into();
+                state.status =
+                    "Select the exact source emissive DDS; no color tint will be guessed.".into();
                 return Task::none();
             }
-            return launch(state, Operation::LoadEmissive(PathBuf::from(&state.emissive_input)));
+            return launch(
+                state,
+                Operation::LoadEmissive(PathBuf::from(&state.emissive_input)),
+            );
         }
         Message::StartDiffuseLoad => {
             if state.diffuse_input.trim().is_empty() {
@@ -885,10 +896,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Select character CDF and extracted Asset Library root.".into();
                 return Task::none();
             }
-            return launch(state, Operation::ResolveCdf(
-                PathBuf::from(&state.input),
-                PathBuf::from(&state.assets_root),
-            ));
+            return launch(
+                state,
+                Operation::ResolveCdf(
+                    PathBuf::from(&state.input),
+                    PathBuf::from(&state.assets_root),
+                ),
+            );
         }
         Message::StartCdfInspection => {
             let source = PathBuf::from(&state.input);
