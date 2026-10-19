@@ -683,9 +683,12 @@ impl Operation {
                 let motion = read_native_caf(&file).map_err(|e| e.to_string())?;
                 Ok(Completed::DeclaredClip(index, virtual_path, motion))
             }
-            Self::InspectModel(source) => read_model(&source)
-                .map(Completed::Model)
-                .map_err(|e| e.to_string()),
+            Self::InspectModel(source) => {
+                let render_source = preferred_render_source(&source);
+                read_model(&render_source)
+                    .map(Completed::Model)
+                    .map_err(|e| format!("{}: {e}", render_source.display()))
+            },
             Self::InspectLevel(source) => load_level_scene(&source)
                 .map(Completed::Level)
                 .map_err(|e| e.to_string()),
@@ -1044,6 +1047,31 @@ fn launch(state: &mut State, operation: Operation) -> Task<Message> {
 /// staged original. A replacement's filename alone is never sufficient.
 /// Only a single material-slot, uniquely resolved original diffuse stream is
 /// eligible as an automatic FBX texture input. The user can still override it.
+/// Compiled CryEngine .skin/.chr files can carry skeletal data while their
+/// original render positions live in a same-folder .skinm/.chrm companion.
+/// The private GPU viewer checks those companions first. Never basename
+/// search or select a different archive's unrelated mesh.
+fn preferred_render_source(source: &Path) -> PathBuf {
+    let Some(extension) = source.extension().and_then(|value| value.to_str()) else {
+        return source.to_path_buf();
+    };
+    let companion_extension = if extension.eq_ignore_ascii_case("skin") {
+        "skinm"
+    } else if extension.eq_ignore_ascii_case("chr") {
+        "chrm"
+    } else {
+        return source.to_path_buf();
+    };
+    let sidecar = source.with_extension(companion_extension);
+    // Do not follow links or use an unverified sidecar from another directory.
+    if let Ok(meta) = std::fs::symlink_metadata(&sidecar)
+        && meta.file_type().is_file()
+    {
+        return sidecar;
+    }
+    source.to_path_buf()
+}
+
 /// Select the source build from the private manager's readable
 /// `<PAK name>__<20-char id>/files` folder and build-collections.json.
 /// An archive can belong to multiple snapshots; that is not proof of one
@@ -4762,6 +4790,21 @@ mod project_edit_tests {
         let _task = update(&mut state, Message::ViewerSelectFile(2));
         assert!(!state.busy);
         assert_eq!(state.file_selection.indices.len(), 3);
+    }
+
+    #[test]
+    fn compiled_skin_prefers_exact_regular_render_companion() {
+        let dir = tempfile::tempdir().unwrap();
+        let skin = dir.path().join("tech_3p_lod1.skin");
+        let skinm = dir.path().join("tech_3p_lod1.skinm");
+        std::fs::write(&skin, b"skeleton without render positions").unwrap();
+        assert_eq!(preferred_render_source(&skin), skin);
+        std::fs::write(&skinm, b"original geometry stream").unwrap();
+        assert_eq!(preferred_render_source(&skin), skinm);
+        let other = dir.path().join("unrelated.skinm");
+        std::fs::write(other, b"unrelated").unwrap();
+        std::fs::remove_file(&skinm).unwrap();
+        assert_eq!(preferred_render_source(&skin), skin);
     }
 
     #[test]
