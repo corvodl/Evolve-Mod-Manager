@@ -414,59 +414,72 @@ fn add_accessor(
     Ok(access.len() - 1)
 }
 
-
 /// glTF animated nodes require TRS rather than a baked matrix. Decompose only
 /// verified rigid (no shear/mirror/scale) bind-space transforms, or refuse the
 /// animation instead of corrupting bone orientations.
 fn rigid_trs(matrix: &Value) -> Result<([f32; 3], [f32; 4]), RigError> {
-    let values = matrix.as_array().ok_or_else(|| RigError::Invalid("Missing source bone matrix".into()))?;
+    let values = matrix
+        .as_array()
+        .ok_or_else(|| RigError::Invalid("Missing source bone matrix".into()))?;
     if values.len() != 16 {
-        return Err(RigError::Invalid("Expected a 4×4 source bone matrix".into()));
+        return Err(RigError::Invalid(
+            "Expected a 4×4 source bone matrix".into(),
+        ));
     }
     let mut m = [0.0f32; 16];
     for (dst, value) in m.iter_mut().zip(values) {
         *dst = value.as_f64().ok_or(RigError::Limits)? as f32;
-        if !dst.is_finite() { return Err(RigError::Limits); }
+        if !dst.is_finite() {
+            return Err(RigError::Limits);
+        }
     }
     for axis in 0..3 {
         let base = axis * 4;
         let squared = m[base..base + 3].iter().map(|x| x * x).sum::<f32>();
         if (squared - 1.0).abs() > 0.02 {
-            return Err(RigError::Invalid("Animated bind transform has unsupported scale".into()));
+            return Err(RigError::Invalid(
+                "Animated bind transform has unsupported scale".into(),
+            ));
         }
     }
     for a in 0..3 {
         for b in a + 1..3 {
             let dot = (0..3).map(|c| m[a * 4 + c] * m[b * 4 + c]).sum::<f32>();
             if dot.abs() > 0.02 {
-                return Err(RigError::Invalid("Animated bind transform has unsupported shear".into()));
+                return Err(RigError::Invalid(
+                    "Animated bind transform has unsupported shear".into(),
+                ));
             }
         }
     }
-    let (a,b,c,d,e,f,g,h,i) = (m[0],m[4],m[8],m[1],m[5],m[9],m[2],m[6],m[10]);
-    let determinant = a*(e*i-f*h)-b*(d*i-f*g)+c*(d*h-e*g);
+    let (a, b, c, d, e, f, g, h, i) = (m[0], m[4], m[8], m[1], m[5], m[9], m[2], m[6], m[10]);
+    let determinant = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
     if determinant < 0.98 {
-        return Err(RigError::Invalid("Animated bind transform is mirrored/non-rigid".into()));
+        return Err(RigError::Invalid(
+            "Animated bind transform is mirrored/non-rigid".into(),
+        ));
     }
     let trace = a + e + i;
-    let [x,y,z,w] = if trace > 0.0 {
+    let [x, y, z, w] = if trace > 0.0 {
         let t = 2.0 * (trace + 1.0).sqrt();
-        [(h - f)/t, (c - g)/t, (d - b)/t, 0.25*t]
+        [(h - f) / t, (c - g) / t, (d - b) / t, 0.25 * t]
     } else if a > e && a > i {
         let t = 2.0 * (1.0 + a - e - i).sqrt();
-        [0.25*t, (b + d)/t, (c + g)/t, (h - f)/t]
+        [0.25 * t, (b + d) / t, (c + g) / t, (h - f) / t]
     } else if e > i {
         let t = 2.0 * (1.0 + e - a - i).sqrt();
-        [(b + d)/t, 0.25*t, (f + h)/t, (c - g)/t]
+        [(b + d) / t, 0.25 * t, (f + h) / t, (c - g) / t]
     } else {
         let t = 2.0 * (1.0 + i - a - e).sqrt();
-        [(c + g)/t, (f + h)/t, 0.25*t, (d - b)/t]
+        [(c + g) / t, (f + h) / t, 0.25 * t, (d - b) / t]
     };
-    let len = (x*x+y*y+z*z+w*w).sqrt();
+    let len = (x * x + y * y + z * z + w * w).sqrt();
     if len < 0.98 || !len.is_finite() {
-        return Err(RigError::Invalid("Cannot recover rigid source bone quaternion".into()));
+        return Err(RigError::Invalid(
+            "Cannot recover rigid source bone quaternion".into(),
+        ));
     }
-    Ok(([m[12], m[13], m[14]], [x/len,y/len,z/len,w/len]))
+    Ok(([m[12], m[13], m[14]], [x / len, y / len, z / len, w / len]))
 }
 
 fn add_native_channel(
@@ -482,26 +495,45 @@ fn add_native_channel(
     start_frame: f32,
     fps: f32,
 ) -> Result<(), RigError> {
-    if frames.is_empty() { return Ok(()); }
-    if frames.len() > 8192 || values.len() != frames.len() * dimensions
-        || !frames.iter().all(|frame| frame.is_finite() && *frame >= start_frame)
+    if frames.is_empty() {
+        return Ok(());
+    }
+    if frames.len() > 8192
+        || values.len() != frames.len() * dimensions
+        || !frames
+            .iter()
+            .all(|frame| frame.is_finite() && *frame >= start_frame)
         || !frames.windows(2).all(|pair| pair[0] < pair[1])
         || !values.iter().all(|v| v.is_finite())
     {
-        return Err(RigError::Invalid("Unsupported CAF channel timestamps or samples".into()));
+        return Err(RigError::Invalid(
+            "Unsupported CAF channel timestamps or samples".into(),
+        ));
     }
-    let seconds = frames.iter().map(|frame| (frame - start_frame)/fps).collect::<Vec<_>>();
-    if !seconds.iter().all(|value| value.is_finite() && *value <= 1200.0) {
-        return Err(RigError::Invalid("CAF channel exceeds supported animation duration".into()));
+    let seconds = frames
+        .iter()
+        .map(|frame| (frame - start_frame) / fps)
+        .collect::<Vec<_>>();
+    if !seconds
+        .iter()
+        .all(|value| value.is_finite() && *value <= 1200.0)
+    {
+        return Err(RigError::Invalid(
+            "CAF channel exceeds supported animation duration".into(),
+        ));
     }
-    let mut t_bytes = Vec::with_capacity(seconds.len()*4);
-    for sample in &seconds { t_bytes.extend_from_slice(&sample.to_le_bytes()); }
+    let mut t_bytes = Vec::with_capacity(seconds.len() * 4);
+    for sample in &seconds {
+        t_bytes.extend_from_slice(&sample.to_le_bytes());
+    }
     let time_view = add_view(binary, doc, &t_bytes, None)?;
     let time_acc = add_accessor(doc, time_view, 5126, seconds.len(), "SCALAR", false)?;
     doc["accessors"][time_acc]["min"] = json!([seconds[0]]);
-    doc["accessors"][time_acc]["max"] = json!([seconds[seconds.len()-1]]);
-    let mut v_bytes = Vec::with_capacity(values.len()*4);
-    for sample in values { v_bytes.extend_from_slice(&sample.to_le_bytes()); }
+    doc["accessors"][time_acc]["max"] = json!([seconds[seconds.len() - 1]]);
+    let mut v_bytes = Vec::with_capacity(values.len() * 4);
+    for sample in values {
+        v_bytes.extend_from_slice(&sample.to_le_bytes());
+    }
     let samples_view = add_view(binary, doc, &v_bytes, None)?;
     let kind = if dimensions == 4 { "VEC4" } else { "VEC3" };
     let samples_acc = add_accessor(doc, samples_view, 5126, frames.len(), kind, false)?;
@@ -522,57 +554,102 @@ fn attach_native_caf(
     first: usize,
     motion: &NativeCafMotion,
 ) -> Result<(), RigError> {
-    if motion.additive || motion.controllers.is_empty() || motion.controllers.len() > 1024
+    if motion.additive
+        || motion.controllers.is_empty()
+        || motion.controllers.len() > 1024
         || !(1.0..=240.0).contains(&motion.fps)
-        || !motion.start_frame.is_finite() || !motion.end_frame.is_finite()
+        || !motion.start_frame.is_finite()
+        || !motion.end_frame.is_finite()
         || motion.end_frame < motion.start_frame
     {
-        return Err(RigError::Invalid("Unsupported additive or invalid native CAF clip".into()));
+        return Err(RigError::Invalid(
+            "Unsupported additive or invalid native CAF clip".into(),
+        ));
     }
     let mut matching = HashMap::new();
     for (i, name) in skeleton.names.iter().enumerate() {
         let crc = crc32fast::hash(name.to_ascii_lowercase().as_bytes());
         if matching.insert(crc, i).is_some() {
-            return Err(RigError::Invalid("Ambiguous original skeleton bone CRC".into()));
+            return Err(RigError::Invalid(
+                "Ambiguous original skeleton bone CRC".into(),
+            ));
         }
     }
     let mut seen = HashSet::new();
     let mut samplers = Vec::new();
     let mut channels = Vec::new();
     for controller in &motion.controllers {
-        let bone = *matching.get(&controller.bone_crc32)
-            .ok_or_else(|| RigError::Invalid(format!("CAF controller CRC {:08x} has no exact skeleton match",controller.bone_crc32)))?;
+        let bone = *matching.get(&controller.bone_crc32).ok_or_else(|| {
+            RigError::Invalid(format!(
+                "CAF controller CRC {:08x} has no exact skeleton match",
+                controller.bone_crc32
+            ))
+        })?;
         if !seen.insert(bone) {
-            return Err(RigError::Invalid("Duplicate native CAF controller for one bone".into()));
+            return Err(RigError::Invalid(
+                "Duplicate native CAF controller for one bone".into(),
+            ));
         }
         let node = first + bone;
         let (translation, rotation) = rigid_trs(&doc["nodes"][node]["matrix"])?;
-        doc["nodes"][node].as_object_mut().ok_or(RigError::Limits)?.remove("matrix");
+        doc["nodes"][node]
+            .as_object_mut()
+            .ok_or(RigError::Limits)?
+            .remove("matrix");
         doc["nodes"][node]["translation"] = json!(translation);
         doc["nodes"][node]["rotation"] = json!(rotation);
         doc["nodes"][node]["scale"] = json!([1.0, 1.0, 1.0]);
         if !controller.rotation_times.is_empty() {
-            let mut values = Vec::with_capacity(controller.rotations.len()*4);
+            let mut values = Vec::with_capacity(controller.rotations.len() * 4);
             for q in &controller.rotations {
-                let len = q.iter().map(|x|x*x).sum::<f32>().sqrt();
+                let len = q.iter().map(|x| x * x).sum::<f32>().sqrt();
                 if !(0.95..=1.05).contains(&len) {
                     return Err(RigError::Invalid("Invalid source CAF quaternion".into()));
                 }
-                values.extend(q.iter().map(|x| x/len));
+                values.extend(q.iter().map(|x| x / len));
             }
-            add_native_channel(doc,binary,&mut samplers,&mut channels,node,"rotation",
-                &controller.rotation_times,&values,4,motion.start_frame,motion.fps)?;
+            add_native_channel(
+                doc,
+                binary,
+                &mut samplers,
+                &mut channels,
+                node,
+                "rotation",
+                &controller.rotation_times,
+                &values,
+                4,
+                motion.start_frame,
+                motion.fps,
+            )?;
         }
         if !controller.position_times.is_empty() {
-            let values = controller.positions.iter().flat_map(|p|p.iter().copied()).collect::<Vec<_>>();
-            add_native_channel(doc,binary,&mut samplers,&mut channels,node,"translation",
-                &controller.position_times,&values,3,motion.start_frame,motion.fps)?;
+            let values = controller
+                .positions
+                .iter()
+                .flat_map(|p| p.iter().copied())
+                .collect::<Vec<_>>();
+            add_native_channel(
+                doc,
+                binary,
+                &mut samplers,
+                &mut channels,
+                node,
+                "translation",
+                &controller.position_times,
+                &values,
+                3,
+                motion.start_frame,
+                motion.fps,
+            )?;
         }
     }
     if channels.is_empty() {
-        return Err(RigError::Invalid("Native CAF contained no verified animated channels".into()));
+        return Err(RigError::Invalid(
+            "Native CAF contained no verified animated channels".into(),
+        ));
     }
-    doc["animations"] = json!([{"name":"Verified original native CAF","samplers":samplers,"channels":channels}]);
+    doc["animations"] =
+        json!([{"name":"Verified original native CAF","samplers":samplers,"channels":channels}]);
     doc["extras"]["animations_embedded"] = json!(true);
     Ok(())
 }
@@ -889,7 +966,12 @@ pub fn export_rigged_character_fbx_textured(
     destination: &Path,
 ) -> Result<(RigReport, FbxReport), RigError> {
     export_rigged_character_fbx_textured_animated(
-        mesh_source, skeleton_source, blender, diffuse, None, destination
+        mesh_source,
+        skeleton_source,
+        blender,
+        diffuse,
+        None,
+        destination,
     )
 }
 
@@ -912,10 +994,12 @@ pub fn export_rigged_character_fbx_textured_animated(
     let mesh = read_model(mesh_source)?;
     let mesh_data = fs::read(mesh_source)?;
     let skeleton_data = fs::read(skeleton_source)?;
-    let motion = native_caf.map(|file| {
-        crate::native_caf::read_native_caf(file)
-            .map_err(|e| RigError::Invalid(format!("Original native CAF: {e}")))
-    }).transpose()?;
+    let motion = native_caf
+        .map(|file| {
+            crate::native_caf::read_native_caf(file)
+                .map_err(|e| RigError::Invalid(format!("Original native CAF: {e}")))
+        })
+        .transpose()?;
     let (mut output, report) = if let Some(motion) = &motion {
         rigged_glb_bytes_with_caf(&mesh, &mesh_data, &skeleton_data, motion)?
     } else {
@@ -939,8 +1023,12 @@ pub fn export_rigged_character_fbx_textured_animated(
     let glb = temp.path().join("verified-textured-rig.glb");
     fs::write(&glb, &output)?;
     let exported = convert_glb_to_fbx(
-        blender, &glb, destination,
-        AnimationPolicy { embed_verified_animations: motion.is_some() }
+        blender,
+        &glb,
+        destination,
+        AnimationPolicy {
+            embed_verified_animations: motion.is_some(),
+        },
     )?;
     Ok((report, exported))
 }
