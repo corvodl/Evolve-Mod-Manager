@@ -1,6 +1,7 @@
 //! Safe command-line functions shared with the desktop application.
 use evolve_core::{
-    Transform, export_dds_png, export_edited_layer, export_model_obj, export_terrain_obj,
+    AnimatedGlb, AnimationPolicy, inspect_caf_file, animation_references,
+    convert_glb_to_fbx, Transform, export_dds_png, export_edited_layer, export_model_obj, export_terrain_obj,
     extract_legacy_pak, extract_signed_pak, inspect_dds, inspect_legacy_pak, inspect_signed_pak,
     load_level_scene, read_cdf, read_model, read_terrain, rebuild_legacy_pak, scan_directory,
     write_inventory_json,
@@ -28,6 +29,10 @@ fn usage() -> String {
         "  evolve-cli dds info <texture.dds|texture.dds.0> [dds-info.json]",
         "  evolve-cli dds png <texture.dds|texture.dds.0> <new-output.png>",
         "  evolve-cli cdf inspect <character.cdf> [cdf-info.json]",
+        "  evolve-cli anim caf <motion.caf> [caf-info.json]",
+        "  evolve-cli anim catalog <character.chrparams> [catalog.json]",
+        "  evolve-cli anim clips <animated.glb> [clips.json]",
+        "  evolve-cli fbx export <rigged.glb> <Blender.exe> <new.fbx> [--animations]",
         "  evolve-cli signed inspect <original.pak> <public-key.der> <signed-basename> [info.json]",
         "  evolve-cli signed extract <original.pak> <public-key.der> <signed-basename> <new-folder>",
         "  evolve-cli model inspect <model.cgf|model.skin> [model-info.json]",
@@ -146,6 +151,22 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
         }
         return Ok(());
     }
+    if verb == OsStr::new("fbx") && subcommand == OsStr::new("export") {
+        let blender: PathBuf = pop(&mut args)?.into();
+        let dest: PathBuf = pop(&mut args)?.into();
+        let embed = match args.next() {
+            None => false,
+            Some(flag) if flag == OsStr::new("--animations") => true,
+            _ => return Err(usage()),
+        };
+        no_extra(&mut args)?;
+        let info = convert_glb_to_fbx(&blender, &source, &dest, AnimationPolicy {
+            embed_verified_animations: embed
+        }).map_err(|e| e.to_string())?;
+        println!("Blender FBX created: {} bytes, animations enabled: {}",
+            info.output_size, info.animations_included);
+        return Ok(());
+    }
     if verb == OsStr::new("level") && subcommand == OsStr::new("edit") {
         let output: PathBuf = pop(&mut args)?.into();
         let guid = pop(&mut args)?.into_string().map_err(|_| usage())?;
@@ -218,6 +239,22 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
             report.changed_entries,
             new_pak.display()
         );
+    } else if verb == OsStr::new("anim") && subcommand == OsStr::new("caf") {
+        let info=inspect_caf_file(&source).map_err(|e|e.to_string())?;
+        println!("CAF chunk metadata: {} chunk(s), additive: {}",info.chunks,info.additive);
+        if let Some(path)=output{write_report(&info,&path)?;}
+    } else if verb == OsStr::new("anim") && subcommand == OsStr::new("catalog") {
+        let xml=fs::read(&source).map_err(|e|e.to_string())?;
+        let refs=animation_references(&xml).map_err(|e|e.to_string())?;
+        println!("Character animation references: {}",refs.len());
+        if let Some(path)=output{write_report(&refs,&path)?;}
+    } else if verb == OsStr::new("anim") && subcommand == OsStr::new("clips") {
+        let timeline=AnimatedGlb::read(&source).map_err(|e|e.to_string())?;
+        let clips=timeline.list_clips();
+        for clip in &clips {
+            println!("{}: {:.3} seconds, {} channels",clip.name,clip.duration,clip.channels);
+        }
+        if let Some(path)=output{write_report(&clips,&path)?;}
     } else if verb == OsStr::new("model") && subcommand == OsStr::new("inspect") {
         let mesh = read_model(&source).map_err(|e| e.to_string())?;
         println!(
