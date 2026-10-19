@@ -1251,7 +1251,7 @@ mod tests {
         extract_signed_pak(&batch_output, &new_public_file, "sample.pak", &batch_extract).unwrap();
         assert_eq!(fs::read(batch_extract.join("example.caf")).unwrap(), fs::read(&replacement).unwrap());
         let duplicate_output = batch_dir.join("duplicate").join("sample.pak");
-        fs::create_dir(&batch_dir.join("duplicate")).unwrap();
+        fs::create_dir(batch_dir.join("duplicate")).unwrap();
         assert!(rebuild_signed_pak_entries(
             &archive, &key, &new_private_file, &new_public_file,
             "sample.pak",
