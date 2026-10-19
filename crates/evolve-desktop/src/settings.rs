@@ -284,7 +284,11 @@ mod tests {
         assert_eq!(saved.file_explorer_side, "Left");
         assert!(!saved.viewer_explorer_visible);
 
-        fs::write(&file, r#"{"file_explorer_side":"Right","viewer_split":0.65}"#).unwrap();
+        fs::write(
+            &file,
+            r#"{"file_explorer_side":"Right","viewer_split":0.65}"#,
+        )
+        .unwrap();
         assert!(load_from(&file).unwrap().viewer_explorer_visible);
     }
 
