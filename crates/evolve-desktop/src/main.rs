@@ -614,7 +614,7 @@ fn check_updates_task(channel: UpdateChannel) -> Task<Message> {
 fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::Navigate(page) => state.page = Some(page),
-        Message::OpenViewer | Message::ViewerOpened(_) | Message::WindowClosed(_) => {},
+        Message::OpenViewer | Message::ViewerOpened(_) | Message::WindowClosed(_) => {}
         Message::ViewerMenu(section) => {
             state.viewer_menu = if section.is_empty() || state.viewer_menu == Some(section) {
                 None
@@ -633,10 +633,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ViewerSearchChanged(filter) => state.viewer_search = filter,
         Message::ViewerPreviewSelected => {
             let Some(inventory) = &state.inventory else {
-                state.status = "Extract the PAK into an isolated folder and index it to preview files.".into();
+                state.status =
+                    "Extract the PAK into an isolated folder and index it to preview files.".into();
                 return Task::none();
             };
-            let Some(relative) = state.selected.and_then(|index| inventory.entries.get(index)) else {
+            let Some(relative) = state
+                .selected
+                .and_then(|index| inventory.entries.get(index))
+            else {
                 state.status = "Select an extracted file in the explorer first.".into();
                 return Task::none();
             };
@@ -649,12 +653,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     && std::fs::symlink_metadata(&source)
                         .is_ok_and(|meta| meta.file_type().is_file())
             ) {
-                state.status = "Selected file is missing or escaped the indexed root; rescan before preview.".into();
+                state.status =
+                    "Selected file is missing or escaped the indexed root; rescan before preview."
+                        .into();
                 return Task::none();
             }
             state.input = source.to_string_lossy().to_string();
             let filename = relative.relative_path.to_ascii_lowercase();
-            let operation = if [".skin", ".skinm", ".chr", ".cgf"].iter().any(|s| filename.ends_with(s)) {
+            let operation = if [".skin", ".skinm", ".chr", ".cgf"]
+                .iter()
+                .any(|s| filename.ends_with(s))
+            {
                 Operation::InspectModel(source)
             } else if filename.ends_with(".cdf") {
                 Operation::InspectCdf(source)
@@ -665,11 +674,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             } else if filename.ends_with(".mtl") {
                 Operation::ResolveMaterial(source, PathBuf::from(&inventory.root))
             } else {
-                state.status = "Selected asset type is not supported by the native preview yet.".into();
+                state.status =
+                    "Selected asset type is not supported by the native preview yet.".into();
                 return Task::none();
             };
             return launch(state, operation);
-        },
+        }
         Message::PreferenceDensity => {
             state.preferences.ui_density = if state.preferences.ui_density == "Compact" {
                 "Comfortable".into()
@@ -2347,7 +2357,11 @@ impl Desktop {
             ..window::Settings::default()
         });
         (
-            Self { state: initial_state(), main_id, viewer_id: None },
+            Self {
+                state: initial_state(),
+                main_id,
+                viewer_id: None,
+            },
             opened.map(Message::ViewerOpened),
         )
     }
@@ -2444,7 +2458,8 @@ impl Desktop {
             Subscription::none()
         };
         let startup = if self.state.preferences.automatic_update_checks
-            && !self.state.startup_update_checked {
+            && !self.state.startup_update_checked
+        {
             iced::time::every(Duration::from_millis(500)).map(|_| Message::CheckUpdates)
         } else {
             Subscription::none()
