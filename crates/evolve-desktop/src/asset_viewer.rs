@@ -103,6 +103,9 @@ fn viewport(state: &State) -> Element<'_, Message> {
                 pitch: state.pitch,
                 zoom: state.zoom.max(0.2),
                 light_strength: state.light_strength,
+                pan_x: state.pan_x,
+                pan_y: state.pan_y,
+                shift: state.keyboard_modifiers.shift(),
             })
             .width(Fill)
             .height(Fill)
@@ -113,6 +116,9 @@ fn viewport(state: &State) -> Element<'_, Message> {
                 yaw: state.yaw,
                 pitch: state.pitch,
                 zoom: state.zoom.max(0.2),
+                pan_x: state.pan_x,
+                pan_y: state.pan_y,
+                shift: state.keyboard_modifiers.shift(),
             })
             .width(Fill)
             .height(Fill)
@@ -139,7 +145,8 @@ fn viewport(state: &State) -> Element<'_, Message> {
     };
 
     let toolbar = row![
-        button("Orbit").on_press(Message::ViewerResetCamera),
+        button("Reset Camera").on_press(Message::ViewerResetCamera),
+        text("MMB orbit · Shift+MMB pan · Wheel zoom").size(11),
         text("Light").size(12),
         slider(
             0.1..=2.0,
