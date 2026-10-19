@@ -230,6 +230,18 @@ fn explorer(state: &State) -> Element<'_, Message> {
                 .on_press(Message::Select(index)),
             );
         }
+    } else if let Some(signed) = &state.signed_pak {
+        total = signed.entries.len();
+        for (index, entry) in signed.entries.iter().enumerate()
+            .filter(|(_, file)| file.path.to_ascii_lowercase().contains(&filter))
+            .take(350)
+        {
+            rows = rows.push(button(row![
+                text(entry.path.as_str()).size(12).width(Fill),
+                text(format!("{} KiB", entry.size.div_ceil(1024))).size(12).width(90),
+            ].spacing(7)).width(Fill).padding(5).style(button::text)
+                .on_press(Message::Select(index)));
+        }
     } else if let Some(pak) = &state.pak {
         total = pak.entries.len();
         for (index, entry) in pak
@@ -264,9 +276,8 @@ fn explorer(state: &State) -> Element<'_, Message> {
         );
     }
     let source = state
-        .pak
-        .as_ref()
-        .map(|pak| pak.source_file.as_str())
+        .signed_pak.as_ref().map(|pak| pak.archive_name.as_str())
+        .or_else(|| state.pak.as_ref().map(|pak| pak.source_file.as_str()))
         .or_else(|| state.inventory.as_ref().map(|inv| inv.root.as_str()))
         .unwrap_or("No source selected");
 
