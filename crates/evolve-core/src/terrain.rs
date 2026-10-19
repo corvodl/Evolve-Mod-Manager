@@ -220,10 +220,10 @@ pub fn export_terrain_obj(mesh: &TerrainMesh, destination: &Path) -> Result<(), 
             writeln!(output, "vn {:.9} {:.9} {:.9}", normal[0], normal[1], normal[2])?;
         }
         for triangle in mesh.indices.chunks_exact(3) {
-            let parts = triangle.map(|idx| {
-                let one = idx + 1;
+            let parts = triangle.iter().map(|idx| {
+                let one = *idx + 1;
                 format!("{one}/{one}/{one}")
-            });
+            }).collect::<Vec<_>>();
             writeln!(output, "f {} {} {}", parts[0], parts[1], parts[2])?;
         }
         output.sync_all()?;

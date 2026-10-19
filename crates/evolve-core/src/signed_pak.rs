@@ -78,9 +78,9 @@ fn read_u32(data: &[u8], at: usize) -> Result<u32, SignedPakError> {
 }
 
 fn parse_public_key(bytes: &[u8]) -> Result<RsaPublicKey, SignedPakError> {
-    let key = RsaPublicKey::from_pkcs1_der(bytes)
-        .or_else(|_| RsaPublicKey::from_public_key_der(bytes))
-        .map_err(|_| SignedPakError::Crypto("invalid RSA public key DER".into()))?;
+    let key = RsaPublicKey::from_pkcs1_der(bytes).ok()
+        .or_else(|| RsaPublicKey::from_public_key_der(bytes).ok())
+        .ok_or_else(|| SignedPakError::Crypto("invalid RSA public key DER".into()))?;
     if key.size() != RSA_BYTES {
         return Err(SignedPakError::Crypto("expected 1024-bit original/custom RSA public key".into()));
     }
@@ -94,7 +94,7 @@ fn unwrap_key(wrapped: &[u8], pubkey: &RsaPublicKey) -> Result<[u8; 16], SignedP
         return Err(SignedPakError::Crypto("invalid wrapped key size".into()));
     }
     let ciphertext = BigUint::from_bytes_be(wrapped);
-    if ciphertext >= *pubkey.n() {
+    if &ciphertext >= pubkey.n() {
         return Err(SignedPakError::Crypto("RSA representative outside modulus".into()));
     }
     let encoded = ciphertext.modpow(pubkey.e(), pubkey.n()).to_bytes_be();
@@ -408,7 +408,8 @@ mod tests {
         let iv = [29u8; 16];
         let bytes = (0..32789).map(|n| (n % 251) as u8).collect::<Vec<_>>();
         let encrypted = crypt_bytes(&bytes, &key, iv).unwrap();
-        let mut reader = CtrRead::new(encrypted.chunks(7).flat_map(|c| c.iter().copied()).collect::<Vec<u8>>().as_slice(), &key, iv);
+        let fragmented = encrypted.chunks(7).flat_map(|c| c.iter().copied()).collect::<Vec<u8>>();
+        let mut reader = CtrRead::new(fragmented.as_slice(), &key, iv);
         let mut result = Vec::new();
         reader.read_to_end(&mut result).unwrap();
         assert_eq!(result, bytes);
