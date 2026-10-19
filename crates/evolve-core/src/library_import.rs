@@ -345,7 +345,12 @@ pub fn import_signed_library_selection(
             .unwrap_or_default()
             .to_string_lossy()
             .to_ascii_lowercase()
-            .cmp(&b.file_name().unwrap_or_default().to_string_lossy().to_ascii_lowercase())
+            .cmp(
+                &b.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_ascii_lowercase(),
+            )
             .then_with(|| a.cmp(b))
     });
 
@@ -386,8 +391,11 @@ mod tests {
         for index in 0..65 {
             fs::write(source.join(format!("source_{index:02}.pak")), b"fake").unwrap();
         }
-        assert!(import_signed_library_selection(&library, &source, Path::new("unused"))
-            .unwrap_err().contains("64 PAKs"));
+        assert!(
+            import_signed_library_selection(&library, &source, Path::new("unused"))
+                .unwrap_err()
+                .contains("64 PAKs")
+        );
         assert_eq!(fs::read_dir(&library).unwrap().count(), 0);
     }
 
@@ -407,7 +415,10 @@ mod tests {
         assert_eq!(report.failed.len(), 1);
         assert_eq!(report.failed[0].archive, "invalid.pak");
         assert!(!report.failed[0].reason.is_empty());
-        assert_eq!(fs::read(source.join("invalid.pak")).unwrap(), b"not a signed PAK");
+        assert_eq!(
+            fs::read(source.join("invalid.pak")).unwrap(),
+            b"not a signed PAK"
+        );
         assert_eq!(fs::read_dir(&library).unwrap().count(), 0);
     }
 
