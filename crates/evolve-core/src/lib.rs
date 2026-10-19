@@ -7,11 +7,11 @@ pub mod dds;
 pub mod fbx;
 pub mod glb;
 pub mod inventory;
+pub mod level_export;
 pub mod model;
 pub mod native_caf;
 pub mod policy;
 pub mod scene;
-pub mod level_export;
 pub mod signed_pak;
 pub mod terrain;
 
@@ -34,6 +34,7 @@ pub use inventory::{
     AssetEntry, AssetKind, Inventory, InventoryError, MAX_ENTRIES, scan_directory,
     write_inventory_json,
 };
+pub use level_export::{LevelExportError, LevelExportReport, export_level_scene_glb};
 pub use model::{
     ModelError, ModelInfo, RenderMesh, export_model_obj, parse_model_bytes, read_model,
 };
@@ -41,15 +42,13 @@ pub use native_caf::{
     CafController, NativeCafError, NativeCafMotion, decode_native_caf, read_native_caf,
 };
 pub use policy::{AnimationPolicy, ExportFeature, FeatureStatus, PARITY_MATRIX};
-pub use level_export::{LevelExportError, LevelExportReport, export_level_scene_glb};
 pub use scene::{
     LevelScene, PlacedObject, SceneError, Transform, export_edited_layer, load_level_scene,
     parse_level_scene,
 };
 pub use signed_pak::{
-    SignedRebuildReport, rebuild_signed_pak_entry,
-    SignedEntry, SignedPakError, SignedPakInfo, extract_signed_pak, inspect_signed_pak,
-    open_verified_signed_pak,
+    SignedEntry, SignedPakError, SignedPakInfo, SignedRebuildReport, extract_signed_pak,
+    inspect_signed_pak, open_verified_signed_pak, rebuild_signed_pak_entry,
 };
 pub use terrain::{
     TerrainError, TerrainInfo, TerrainMesh, decode_terrain_bytes, export_terrain_obj, read_terrain,

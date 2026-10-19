@@ -3,11 +3,15 @@
 mod viewport;
 use evolve_core::{
     AssetEntry, CdfDefinition, DdsInfo, Inventory, LevelScene, ModelInfo, PakInventory, RenderMesh,
-    SignedPakInfo, TerrainInfo, export_dds_png, extract_legacy_pak, extract_signed_pak,
-    inspect_dds, inspect_legacy_pak, inspect_signed_pak, load_level_scene, read_cdf, read_model,
-    read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry, export_level_scene_glb, scan_directory,
+    SignedPakInfo, TerrainInfo, export_dds_png, export_level_scene_glb, extract_legacy_pak,
+    extract_signed_pak, inspect_dds, inspect_legacy_pak, inspect_signed_pak, load_level_scene,
+    read_cdf, read_model, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry,
+    scan_directory,
 };
-use iced::widget::{button, canvas, column, container, image, row, scrollable, slider, svg, text, text_input, tooltip};
+use iced::widget::{
+    button, canvas, column, container, image, row, scrollable, slider, svg, text, text_input,
+    tooltip,
+};
 use iced::{Element, Fill, Length, Task, Theme};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -98,7 +102,16 @@ enum Operation {
     InspectTerrain(PathBuf),
     InspectSignedPak(PathBuf, PathBuf, String),
     ExtractSignedPak(PathBuf, PathBuf, String, PathBuf),
-    RebuildSignedPak(PathBuf, PathBuf, PathBuf, PathBuf, String, String, PathBuf, PathBuf),
+    RebuildSignedPak(
+        PathBuf,
+        PathBuf,
+        PathBuf,
+        PathBuf,
+        String,
+        String,
+        PathBuf,
+        PathBuf,
+    ),
     ExportLevelGlb(PathBuf, PathBuf, Option<PathBuf>, PathBuf),
     ExtractPak(PathBuf, PathBuf),
     RebuildPak(PathBuf, PathBuf, PathBuf),
@@ -172,15 +185,37 @@ impl Operation {
             Self::InspectCdf(source) => read_cdf(&source)
                 .map(Completed::Character)
                 .map_err(|e| e.to_string()),
-            Self::RebuildSignedPak(src,old_pub,signing_key,new_pub,name,member,replacement,dest) => {
-                let result=rebuild_signed_pak_entry(&src,&old_pub,&signing_key,&new_pub,&name,&member,&replacement,&dest)
-                    .map_err(|e|e.to_string())?;
-                Ok(Completed::RebuiltSigned(result.changed_entry,dest))
+            Self::RebuildSignedPak(
+                src,
+                old_pub,
+                signing_key,
+                new_pub,
+                name,
+                member,
+                replacement,
+                dest,
+            ) => {
+                let result = rebuild_signed_pak_entry(
+                    &src,
+                    &old_pub,
+                    &signing_key,
+                    &new_pub,
+                    &name,
+                    &member,
+                    &replacement,
+                    &dest,
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(Completed::RebuiltSigned(result.changed_entry, dest))
             }
-            Self::ExportLevelGlb(src,root,terrain,dest) => {
-                let result=export_level_scene_glb(&src,&root,terrain.as_deref(),&dest)
-                    .map_err(|e|e.to_string())?;
-                Ok(Completed::LevelExported(result.exported_mesh_resources,result.exported_mesh_instances,dest))
+            Self::ExportLevelGlb(src, root, terrain, dest) => {
+                let result = export_level_scene_glb(&src, &root, terrain.as_deref(), &dest)
+                    .map_err(|e| e.to_string())?;
+                Ok(Completed::LevelExported(
+                    result.exported_mesh_resources,
+                    result.exported_mesh_instances,
+                    dest,
+                ))
             }
             Self::ExtractPak(source, dest) => extract_legacy_pak(&source, &dest)
                 .map(|pak| Completed::Extracted(pak.entries.len(), dest))
@@ -325,31 +360,58 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::StartSignedRebuild => {
-            if [&state.input,&state.public_key,&state.signing_private,&state.signing_public,
-                &state.signed_name,&state.signed_entry,&state.signed_replacement,&state.output]
-                .iter().any(|v|v.trim().is_empty()) {
+            if [
+                &state.input,
+                &state.public_key,
+                &state.signing_private,
+                &state.signing_public,
+                &state.signed_name,
+                &state.signed_entry,
+                &state.signed_replacement,
+                &state.output,
+            ]
+            .iter()
+            .any(|v| v.trim().is_empty())
+            {
                 state.status="Choose the source PAK, both public keys, local private key, exact entry, replacement, and NEW output PAK.".into();
                 return Task::none();
             }
-            return launch(state,Operation::RebuildSignedPak(
-                PathBuf::from(&state.input),PathBuf::from(&state.public_key),
-                PathBuf::from(&state.signing_private),PathBuf::from(&state.signing_public),
-                state.signed_name.clone(),state.signed_entry.clone(),
-                PathBuf::from(&state.signed_replacement),PathBuf::from(&state.output),
-            ));
+            return launch(
+                state,
+                Operation::RebuildSignedPak(
+                    PathBuf::from(&state.input),
+                    PathBuf::from(&state.public_key),
+                    PathBuf::from(&state.signing_private),
+                    PathBuf::from(&state.signing_public),
+                    state.signed_name.clone(),
+                    state.signed_entry.clone(),
+                    PathBuf::from(&state.signed_replacement),
+                    PathBuf::from(&state.output),
+                ),
+            );
         }
         Message::StartLevelGlbExport => {
-            if state.input.trim().is_empty() || state.assets_root.trim().is_empty()
-                || state.output.trim().is_empty(){
+            if state.input.trim().is_empty()
+                || state.assets_root.trim().is_empty()
+                || state.output.trim().is_empty()
+            {
                 state.status="Select level XML/LYR, exact extracted game assets root, and a NEW .glb output.".into();
                 return Task::none();
             }
-            let terrain=if state.terrain_source.trim().is_empty(){None}
-                else{Some(PathBuf::from(&state.terrain_source))};
-            return launch(state,Operation::ExportLevelGlb(
-                PathBuf::from(&state.input),PathBuf::from(&state.assets_root),
-                terrain,PathBuf::from(&state.output),
-            ));
+            let terrain = if state.terrain_source.trim().is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(&state.terrain_source))
+            };
+            return launch(
+                state,
+                Operation::ExportLevelGlb(
+                    PathBuf::from(&state.input),
+                    PathBuf::from(&state.assets_root),
+                    terrain,
+                    PathBuf::from(&state.output),
+                ),
+            );
         }
         Message::StartExtract => {
             if state.output.trim().is_empty() {
@@ -459,14 +521,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         info.total_expanded_bytes
                     );
                 }
-                Ok(Completed::RebuiltSigned(name,dir)) => {
-                    state.status=format!("Rebuilt and verified signed PAK entry {} into {}. Source unchanged; offline test required.",
-                        name,dir.display());
+                Ok(Completed::RebuiltSigned(name, dir)) => {
+                    state.status = format!(
+                        "Rebuilt and verified signed PAK entry {} into {}. Source unchanged; offline test required.",
+                        name,
+                        dir.display()
+                    );
                 }
-                Ok(Completed::LevelExported(meshes,placements,dest)) => {
-                    state.status=format!("Exported Blender scene GLB: {meshes} verified models, {placements} placements: {}",
-                        dest.display());
-                    state.page=Some(Page::Levels);
+                Ok(Completed::LevelExported(meshes, placements, dest)) => {
+                    state.status = format!(
+                        "Exported Blender scene GLB: {meshes} verified models, {placements} placements: {}",
+                        dest.display()
+                    );
+                    state.page = Some(Page::Levels);
                 }
                 Ok(Completed::ExtractedSigned(count, dir)) => {
                     state.status = format!(
@@ -523,31 +590,50 @@ fn view(state: &State) -> Element<'_, Message> {
     // hamburger button or whole-sidebar hover expansion.
     let navigation = Page::ALL.into_iter().fold(
         column![
-            image(image::Handle::from_bytes(include_bytes!("../../../assets/hunt.png").to_vec()))
-                .width(45)
-                .height(45),
-        ].spacing(16),
+            image(image::Handle::from_bytes(
+                include_bytes!("../../../assets/hunt.png").to_vec()
+            ))
+            .width(45)
+            .height(45),
+        ]
+        .spacing(16),
         |items, item| {
             let active = page == item;
             let nav_button = button(svg(item.icon()).width(24).height(24))
                 .width(50)
                 .height(48)
                 .padding(12)
-                .style(if active { button::danger } else { button::secondary })
+                .style(if active {
+                    button::danger
+                } else {
+                    button::secondary
+                })
                 .on_press(Message::Navigate(item));
-            items.push(tooltip(nav_button, text(item.title()), tooltip::Position::Right))
+            items.push(tooltip(
+                nav_button,
+                text(item.title()),
+                tooltip::Position::Right,
+            ))
         },
     );
     let sidebar = container(navigation.padding(10).spacing(11)).width(72);
     let headline = row![
-        image(image::Handle::from_bytes(include_bytes!("../../../assets/hunt.png").to_vec()))
-            .width(46)
-            .height(46),
+        image(image::Handle::from_bytes(
+            include_bytes!("../../../assets/hunt.png").to_vec()
+        ))
+        .width(46)
+        .height(46),
         column![
             text("EVOLVE / MOD MANAGER").size(22),
-            text(format!("{}  •  Rust / Iced / wgpu development preview", page.title())).size(12),
-        ].spacing(5),
-    ].spacing(14);
+            text(format!(
+                "{}  •  Rust / Iced / wgpu development preview",
+                page.title()
+            ))
+            .size(12),
+        ]
+        .spacing(5),
+    ]
+    .spacing(14);
 
     let location = column![
         row![
@@ -770,14 +856,18 @@ fn main() -> iced::Result {
     let _supported_backends = wgpu::Backends::PRIMARY;
     iced::application(State::default, update, view)
         .title("Evolve Mod Manager — Rust Development Preview")
-        .theme(|_state: &State| Theme::custom("Evolve Black/Red",
-            iced::theme::Palette {
-                background: iced::Color::from_rgb8(15, 15, 18),
-                text: iced::Color::from_rgb8(234, 234, 236),
-                primary: iced::Color::from_rgb8(205, 52, 59),
-                success: iced::Color::from_rgb8(70, 170, 130),
-                warning: iced::Color::from_rgb8(233, 170, 80),
-                danger: iced::Color::from_rgb8(205, 52, 59),
-            }))
+        .theme(|_state: &State| {
+            Theme::custom(
+                "Evolve Black/Red",
+                iced::theme::Palette {
+                    background: iced::Color::from_rgb8(15, 15, 18),
+                    text: iced::Color::from_rgb8(234, 234, 236),
+                    primary: iced::Color::from_rgb8(205, 52, 59),
+                    success: iced::Color::from_rgb8(70, 170, 130),
+                    warning: iced::Color::from_rgb8(233, 170, 80),
+                    danger: iced::Color::from_rgb8(205, 52, 59),
+                },
+            )
+        })
         .run()
 }

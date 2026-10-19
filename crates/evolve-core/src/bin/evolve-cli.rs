@@ -1,10 +1,11 @@
 //! Safe command-line functions shared with the desktop application.
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, Transform, animation_references, convert_glb_to_fbx,
-    export_dds_png, export_edited_layer, export_model_glb, export_model_obj, export_terrain_obj,
-    extract_legacy_pak, extract_signed_pak, inspect_caf_file, inspect_dds, inspect_legacy_pak,
-    inspect_signed_pak, load_level_scene, read_cdf, read_model, read_terrain, rebuild_legacy_pak,
-    scan_directory, write_inventory_json, rebuild_signed_pak_entry, export_level_scene_glb,
+    export_dds_png, export_edited_layer, export_level_scene_glb, export_model_glb,
+    export_model_obj, export_terrain_obj, extract_legacy_pak, extract_signed_pak, inspect_caf_file,
+    inspect_dds, inspect_legacy_pak, inspect_signed_pak, load_level_scene, read_cdf, read_model,
+    read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry, scan_directory,
+    write_inventory_json,
 };
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
@@ -128,45 +129,68 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
         let old_public: PathBuf = pop(&mut args)?.into();
         let new_private: PathBuf = pop(&mut args)?.into();
         let new_public: PathBuf = pop(&mut args)?.into();
-        let basename=pop(&mut args)?.into_string().map_err(|_|usage())?;
-        let member=pop(&mut args)?.into_string().map_err(|_|usage())?;
-        let replacement:PathBuf=pop(&mut args)?.into();
-        let destination:PathBuf=pop(&mut args)?.into();
+        let basename = pop(&mut args)?.into_string().map_err(|_| usage())?;
+        let member = pop(&mut args)?.into_string().map_err(|_| usage())?;
+        let replacement: PathBuf = pop(&mut args)?.into();
+        let destination: PathBuf = pop(&mut args)?.into();
         no_extra(&mut args)?;
-        let report=rebuild_signed_pak_entry(
-            &source,&old_public,&new_private,&new_public,&basename,&member,
-            &replacement,&destination,
-        ).map_err(|e|e.to_string())?;
-        println!("Re-signed and independently verified {} ({} -> {} bytes)",
-            report.changed_entry,report.original_bytes,report.replacement_bytes);
-        println!("Output: {}. Original PAK was not modified.",destination.display());
+        let report = rebuild_signed_pak_entry(
+            &source,
+            &old_public,
+            &new_private,
+            &new_public,
+            &basename,
+            &member,
+            &replacement,
+            &destination,
+        )
+        .map_err(|e| e.to_string())?;
+        println!(
+            "Re-signed and independently verified {} ({} -> {} bytes)",
+            report.changed_entry, report.original_bytes, report.replacement_bytes
+        );
+        println!(
+            "Output: {}. Original PAK was not modified.",
+            destination.display()
+        );
         return Ok(());
     }
     if verb == OsStr::new("level") && subcommand == OsStr::new("glb") {
-        let library:PathBuf=pop(&mut args)?.into();
-        let destination:PathBuf=pop(&mut args)?.into();
-        let terrain:Option<PathBuf>=args.next().map(Into::into);
+        let library: PathBuf = pop(&mut args)?.into();
+        let destination: PathBuf = pop(&mut args)?.into();
+        let terrain: Option<PathBuf> = args.next().map(Into::into);
         no_extra(&mut args)?;
-        let report=export_level_scene_glb(&source,&library,terrain.as_deref(),&destination)
-            .map_err(|e|e.to_string())?;
-        println!("Blender GLB scene: {} model resources, {} placed meshes, {} metadata-only nodes",
-            report.exported_mesh_resources,report.exported_mesh_instances,report.metadata_only_objects);
-        println!("Output: {} ({} bytes). Geometry-only export.",destination.display(),report.output_bytes);
+        let report = export_level_scene_glb(&source, &library, terrain.as_deref(), &destination)
+            .map_err(|e| e.to_string())?;
+        println!(
+            "Blender GLB scene: {} model resources, {} placed meshes, {} metadata-only nodes",
+            report.exported_mesh_resources,
+            report.exported_mesh_instances,
+            report.metadata_only_objects
+        );
+        println!(
+            "Output: {} ({} bytes). Geometry-only export.",
+            destination.display(),
+            report.output_bytes
+        );
         return Ok(());
     }
     if verb == OsStr::new("level") && subcommand == OsStr::new("fbx") {
-        let library:PathBuf=pop(&mut args)?.into();
-        let blender:PathBuf=pop(&mut args)?.into();
-        let destination:PathBuf=pop(&mut args)?.into();
-        let terrain:Option<PathBuf>=args.next().map(Into::into);
+        let library: PathBuf = pop(&mut args)?.into();
+        let blender: PathBuf = pop(&mut args)?.into();
+        let destination: PathBuf = pop(&mut args)?.into();
+        let terrain: Option<PathBuf> = args.next().map(Into::into);
         no_extra(&mut args)?;
-        let tmp=tempfile::tempdir().map_err(|e|e.to_string())?;
-        let glb=tmp.path().join("map.glb");
-        export_level_scene_glb(&source,&library,terrain.as_deref(),&glb)
-            .map_err(|e|e.to_string())?;
-        let report=convert_glb_to_fbx(&blender,&glb,&destination,AnimationPolicy::default())
-            .map_err(|e|e.to_string())?;
-        println!("Blender map scene FBX: {} bytes, source geometry only.",report.output_size);
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let glb = tmp.path().join("map.glb");
+        export_level_scene_glb(&source, &library, terrain.as_deref(), &glb)
+            .map_err(|e| e.to_string())?;
+        let report = convert_glb_to_fbx(&blender, &glb, &destination, AnimationPolicy::default())
+            .map_err(|e| e.to_string())?;
+        println!(
+            "Blender map scene FBX: {} bytes, source geometry only.",
+            report.output_size
+        );
         return Ok(());
     }
     if verb == OsStr::new("signed") {
