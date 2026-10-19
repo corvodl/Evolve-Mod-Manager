@@ -935,7 +935,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ModdingOpenProject => {
             if state.busy {
-                state.status = "Wait for the current asset operation before opening another project.".into();
+                state.status =
+                    "Wait for the current asset operation before opening another project.".into();
                 return Task::none();
             }
             let Some(project) = state
