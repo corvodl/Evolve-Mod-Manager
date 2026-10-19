@@ -118,7 +118,7 @@ impl canvas::Program<Message> for SceneOverview {
             return None;
         }
         let Some(point) = cursor.position_in(bounds) else {
-            return (canvas::event::Status::Ignored, None);
+            return None;
         };
         let mut nearest = None;
         let mut distance = f32::INFINITY;
