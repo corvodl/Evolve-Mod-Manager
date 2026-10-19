@@ -10,6 +10,7 @@ evolve-core = { path = "../evolve-core" }
 iced = { version = "0.14", features = ["wgpu", "tokio"] }
 # Explicitly match iced_wgpu 0.14's GPU API generation.
 wgpu = "27.0"
+tokio = { version = "1", features = ["rt"] }
 
 [lints]
 workspace = true

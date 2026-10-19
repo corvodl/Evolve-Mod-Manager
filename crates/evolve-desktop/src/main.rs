@@ -1,7 +1,10 @@
-//! Native desktop shell. GPU-powered Iced UI; custom CryEngine scene rendering
-//! will be added once format parity and asset safety checks are complete.
-use evolve_core::{AssetEntry, Inventory, scan_directory};
-use iced::widget::{Space, button, column, container, row, scrollable, text, text_input};
+//! Native wgpu-backed desktop shell. Asset operations use blocking workers, so
+//! file I/O/decompression never runs in the interactive Iced view/update path.
+use evolve_core::{
+    AssetEntry, DdsInfo, Inventory, PakInventory, decode_dds_rgba, export_dds_png,
+    extract_legacy_pak, inspect_dds, inspect_legacy_pak, scan_directory,
+};
+use iced::widget::{button, column, container, row, scrollable, text, text_input};
 use iced::{Element, Fill, Task, Theme};
 use std::path::PathBuf;
 
@@ -17,19 +20,16 @@ enum Page {
 
 impl Page {
     const ALL: [Self; 6] = [
-        Self::Home,
-        Self::Files,
-        Self::AssetLibrary,
-        Self::Models,
-        Self::Levels,
-        Self::Settings,
+        Self::Home, Self::Files, Self::AssetLibrary,
+        Self::Models, Self::Levels, Self::Settings,
     ];
+
     fn title(self) -> &'static str {
         match self {
             Self::Home => "Home",
             Self::Files => "Modding",
             Self::AssetLibrary => "Asset Library",
-            Self::Models => "Models & Exports",
+            Self::Models => "Textures & Models",
             Self::Levels => "Level Editor",
             Self::Settings => "Settings",
         }
@@ -39,172 +39,301 @@ impl Page {
 #[derive(Default)]
 struct State {
     input: String,
+    output: String,
     search: String,
     page: Option<Page>,
     inventory: Option<Inventory>,
+    pak: Option<PakInventory>,
+    texture: Option<DdsInfo>,
     selected: Option<usize>,
     status: String,
-    scanning: bool,
+    busy: bool,
+}
+
+#[derive(Debug, Clone)]
+enum Operation {
+    Scan(PathBuf),
+    InspectPak(PathBuf),
+    InspectDds(PathBuf),
+    ExtractPak(PathBuf, PathBuf),
+    ExportPng(PathBuf, PathBuf),
+}
+
+#[derive(Debug, Clone)]
+enum Completed {
+    Inventory(Inventory),
+    Pak(PakInventory),
+    Texture(DdsInfo),
+    Extracted(usize, PathBuf),
+    ExportedPng(DdsInfo, PathBuf),
+}
+
+impl Operation {
+    fn execute(self) -> Result<Completed, String> {
+        match self {
+            Self::Scan(source) => scan_directory(&source)
+                .map(Completed::Inventory).map_err(|e| e.to_string()),
+            Self::InspectPak(source) => inspect_legacy_pak(&source)
+                .map(Completed::Pak).map_err(|e| e.to_string()),
+            Self::InspectDds(source) => inspect_dds(&source)
+                .map(Completed::Texture).map_err(|e| e.to_string()),
+            Self::ExtractPak(source, dest) => extract_legacy_pak(&source, &dest)
+                .map(|pak| Completed::Extracted(pak.entries.len(), dest))
+                .map_err(|e| e.to_string()),
+            Self::ExportPng(source, dest) => export_dds_png(&source, &dest)
+                .map(|info| Completed::ExportedPng(info, dest))
+                .map_err(|e| e.to_string()),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 enum Message {
     Navigate(Page),
     InputChanged(String),
+    OutputChanged(String),
     SearchChanged(String),
-    Scan,
-    Scanned(Result<Inventory, String>),
+    StartScan,
+    StartPakInspection,
+    StartDdsInspection,
+    StartExtract,
+    StartPngExport,
+    Finished(Result<Completed, String>),
     Select(usize),
+}
+
+fn launch(state: &mut State, operation: Operation) -> Task<Message> {
+    if state.busy {
+        return Task::none();
+    }
+    state.busy = true;
+    state.status = "Working on explicitly selected local files...".into();
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || operation.execute())
+                .await
+                .map_err(|e| format!("Worker failed: {e}"))?
+        },
+        Message::Finished,
+    )
 }
 
 fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::Navigate(page) => state.page = Some(page),
         Message::InputChanged(input) => state.input = input,
+        Message::OutputChanged(output) => state.output = output,
         Message::SearchChanged(query) => state.search = query,
         Message::Select(index) => state.selected = Some(index),
-        Message::Scan if !state.scanning => {
-            state.scanning = true;
-            state.selected = None;
-            let root = PathBuf::from(state.input.trim());
-            return Task::perform(
-                async move { scan_directory(&root).map_err(|err| err.to_string()) },
-                Message::Scanned,
-            );
+        Message::StartScan => return launch(state, Operation::Scan(PathBuf::from(&state.input))),
+        Message::StartPakInspection => {
+            return launch(state, Operation::InspectPak(PathBuf::from(&state.input)));
         }
-        Message::Scan => {}
-        Message::Scanned(result) => {
-            state.scanning = false;
+        Message::StartDdsInspection => {
+            return launch(state, Operation::InspectDds(PathBuf::from(&state.input)));
+        }
+        Message::StartExtract => {
+            if state.output.trim().is_empty() {
+                state.status = "Choose a NEW extraction directory first.".into();
+                return Task::none();
+            }
+            return launch(state, Operation::ExtractPak(
+                PathBuf::from(&state.input),
+                PathBuf::from(&state.output),
+            ));
+        }
+        Message::StartPngExport => {
+            if state.output.trim().is_empty() {
+                state.status = "Choose a NEW output PNG file first.".into();
+                return Task::none();
+            }
+            return launch(state, Operation::ExportPng(
+                PathBuf::from(&state.input),
+                PathBuf::from(&state.output),
+            ));
+        }
+        Message::Finished(result) => {
+            state.busy = false;
             match result {
-                Ok(inventory) => {
+                Ok(Completed::Inventory(inventory)) => {
                     state.status = format!(
-                        "{} local files indexed without modification.",
-                        inventory.entries.len()
+                        "{} files indexed; no originals modified.", inventory.entries.len()
                     );
                     state.inventory = Some(inventory);
+                    state.pak = None;
+                    state.texture = None;
+                    state.selected = None;
                     state.page = Some(Page::Files);
                 }
-                Err(reason) => state.status = format!("Scan failed: {reason}"),
+                Ok(Completed::Pak(pak)) => {
+                    state.status = format!(
+                        "Validated ordinary ZIP PAK: {} members ({} bytes expanded).",
+                        pak.entries.len(),
+                        pak.total_bytes
+                    );
+                    state.pak = Some(pak);
+                    state.selected = None;
+                    state.page = Some(Page::Files);
+                }
+                Ok(Completed::Texture(texture)) => {
+                    state.status = format!(
+                        "DDS: {} × {} • {:?} • {} mipmaps • {} fragment(s)",
+                        texture.width, texture.height,
+                        texture.format, texture.mipmaps, texture.streaming_parts
+                    );
+                    state.texture = Some(texture);
+                    state.page = Some(Page::Models);
+                }
+                Ok(Completed::Extracted(count, folder)) => {
+                    state.status = format!(
+                        "Extracted {count} validated ZIP-compatible PAK entries to {}",
+                        folder.display()
+                    );
+                }
+                Ok(Completed::ExportedPng(info, target)) => {
+                    state.status = format!(
+                        "Exported {} × {} highest-resolution DDS mip to {}",
+                        info.width, info.height, target.display()
+                    );
+                }
+                Err(e) => state.status = format!("Operation refused: {e}"),
             }
         }
     }
     Task::none()
 }
 
-fn asset_row<'a>(index: usize, entry: &'a AssetEntry) -> Element<'a, Message> {
-    button(
-        row![
-            text(entry.kind.display()).width(130),
-            text(entry.relative_path.as_str()).width(Fill),
-            text(format!("{} B", entry.byte_size)),
-        ]
-        .spacing(12),
-    )
-    .width(Fill)
-    .on_press(Message::Select(index))
-    .into()
+fn file_row<'a>(index: usize, entry: &'a AssetEntry) -> Element<'a, Message> {
+    button(row![
+        text(entry.kind.display()).width(130),
+        text(entry.relative_path.as_str()).width(Fill),
+        text(format!("{} B", entry.byte_size)),
+    ].spacing(12)).width(Fill).on_press(Message::Select(index)).into()
 }
 
 fn view(state: &State) -> Element<'_, Message> {
     let page = state.page.unwrap_or(Page::Home);
     let navigation = Page::ALL.into_iter().fold(
-        column![text("EVOLVE").size(26), text("MOD MANAGER").size(14)].spacing(12),
-        |content, item| {
-            content.push(
-                button(text(item.title()))
-                    .width(Fill)
-                    .on_press(Message::Navigate(item)),
-            )
-        },
+        column![text("EVOLVE").size(26), text("MOD MANAGER").size(14)].spacing(10),
+        |content, item| content.push(
+            button(text(item.title())).width(Fill).on_press(Message::Navigate(item))
+        ),
     );
-    let sidebar = container(navigation.spacing(10).padding(16)).width(205);
-
+    let sidebar = container(navigation.padding(16).spacing(10)).width(205);
     let headline = column![
         text(page.title()).size(26),
-        text("Rust + Iced / wgpu foundation | development preview").size(13),
-    ]
-    .spacing(6);
+        text("Rust + Iced / wgpu | development preview 0.1").size(13),
+    ].spacing(6);
 
-    let location = row![
-        text_input(
-            "Enter a local extracted PAK or game asset folder...",
-            &state.input
-        )
-        .on_input(Message::InputChanged)
-        .width(Fill),
-        button("Scan directory").on_press(Message::Scan),
-    ]
-    .spacing(8);
+    let location = column![
+        row![
+            text_input("Local asset folder, .pak or .dds path...", &state.input)
+                .on_input(Message::InputChanged).width(Fill),
+            button("Scan folder").on_press(Message::StartScan),
+        ].spacing(8),
+        row![
+            button("Inspect ZIP PAK").on_press(Message::StartPakInspection),
+            button("Inspect DDS").on_press(Message::StartDdsInspection),
+        ].spacing(8),
+        row![
+            text_input("New output directory or .png filename...", &state.output)
+                .on_input(Message::OutputChanged).width(Fill),
+            button("Extract PAK").on_press(Message::StartExtract),
+            button("Export DDS → PNG").on_press(Message::StartPngExport),
+        ].spacing(8),
+    ].spacing(9);
 
     let workspace: Element<'_, Message> = match page {
         Page::Home => column![
-            text("Local game assets stay on this computer.").size(19),
-            text("Start by scanning a directory. This preview inventories files; it does not modify PAKs, install mods, or claim complete export parity."),
-            text("Production 1.0 is gated on feature-parity tests and real Windows builds."),
+            text("Inspect local CryEngine assets safely.").size(19),
+            text("ZIP-compatible 2012 PAKs can be inspected/extracted; signed Stage 2 CryPAKs are NOT supported by the new Rust extractor yet."),
+            text("DDS top-mipmap PNG export supports BC1/2/3/4/5 and 32-bit RGB(A); complete split-stream sets are reconstructed first."),
+            text("Mod installation, 3D scenes and Blender FBX export still need porting."),
         ].spacing(14).into(),
         Page::Files | Page::AssetLibrary => {
-            let mut items = column![].spacing(3);
-            if let Some(inventory) = &state.inventory {
-                let needle = state.search.to_lowercase();
-                for (index, entry) in inventory.entries.iter().enumerate()
-                    .filter(|(_, entry)| entry.relative_path.to_lowercase().contains(&needle))
+            let mut rows = column![].spacing(3);
+            let needle = state.search.to_lowercase();
+            let selected_name;
+            if let Some(pak) = &state.pak {
+                for (index, entry) in pak.entries.iter().enumerate()
+                    .filter(|(_, e)| e.path.to_lowercase().contains(&needle))
                     .take(350)
                 {
-                    items = items.push(asset_row(index, entry));
+                    rows = rows.push(button(row![
+                        text(entry.path.as_str()).width(Fill),
+                        text(format!("{} B", entry.size)),
+                    ].spacing(8)).width(Fill).on_press(Message::Select(index)));
                 }
+                selected_name = state.selected
+                    .and_then(|n| pak.entries.get(n))
+                    .map(|e| format!("Member: {} / {} bytes / ZIP method {}", e.path, e.size, e.method))
+                    .unwrap_or_else(|| format!("Archive: {}", pak.source_file));
+            } else if let Some(inventory) = &state.inventory {
+                for (index, entry) in inventory.entries.iter().enumerate()
+                    .filter(|(_, e)| e.relative_path.to_lowercase().contains(&needle))
+                    .take(350)
+                {
+                    rows = rows.push(file_row(index, entry));
+                }
+                selected_name = state.selected
+                    .and_then(|n| inventory.entries.get(n))
+                    .map(|e| format!("Asset: {} / {} bytes", e.relative_path, e.byte_size))
+                    .unwrap_or_else(|| format!("Local directory: {}", inventory.root));
+            } else {
+                selected_name = "Scan a folder or inspect a ZIP-compatible PAK to see files.".to_owned();
             }
-            let details = state.inventory.as_ref()
-                .and_then(|i| state.selected.and_then(|n| i.entries.get(n)))
-                .map(|e| format!("Selected: {} | {} | {} bytes", e.relative_path, e.kind.display(), e.byte_size))
-                .unwrap_or_else(|| "Select an indexed asset to inspect its type and size.".to_owned());
             column![
-                text_input("Filter indexed files...", &state.search).on_input(Message::SearchChanged),
-                text(details).size(14),
-                scrollable(items).height(Fill),
-                text("Preview shows up to 350 matching rows; the full inventory remains in memory.").size(12),
+                text_input("Search indexed filenames...", &state.search)
+                    .on_input(Message::SearchChanged),
+                text(selected_name).size(14),
+                scrollable(rows).height(Fill),
+                text("Showing up to 350 matching rows; data remains available for filtering.").size(12),
             ].spacing(10).into()
         }
-        Page::Models => column![
-            text("Model export parity").size(19),
-            text("Planned: CDF assemblies, rigged FBX, highest-resolution DDS, UV0, 1P/3P equipment and monster stage scenes."),
-            text("Verified animation Actions will be optional and disabled by default. Native FBX conversion is NOT available in this preview."),
-        ].spacing(14).into(),
+        Page::Models => {
+            let description = if let Some(texture) = &state.texture {
+                format!(
+                    "DDS: {} × {} | {:?} | {} mip(s) | {} part(s) | top mip {} bytes",
+                    texture.width, texture.height, texture.format,
+                    texture.mipmaps, texture.streaming_parts, texture.top_mip_bytes
+                )
+            } else {
+                "Select a local DDS and choose Inspect DDS.".to_owned()
+            };
+            column![
+                text("Texture inspection and original top-mip export").size(19),
+                text(description),
+                text("PNG export preserves BC5 channels without pretending to reconstruct normal-map shading."),
+                text("GPU character viewer, skeletal animation preview and complete FBX conversion remain unported."),
+            ].spacing(14).into()
+        }
         Page::Levels => column![
             text("Level Editor").size(19),
-            text("CryEngine map/terrain parsing, dependency resolution, GPU visualization, and Blender scene export are pending."),
+            text("CryEngine terrain, placement and material dependency parsing, interactive wgpu scenes, and Blender scene export are pending."),
         ].spacing(14).into(),
         Page::Settings => column![
-            text("Safety policy").size(19),
-            text("No writes to installed game files. No network updates or hidden background import. No game keys shipped."),
-            text("Renderer: Iced 0.14 with the wgpu 27 backend; the 3D pipeline is not yet implemented."),
+            text("Workspace safety").size(19),
+            text("The new PAK extractor never overwrites an existing destination and stages output before publishing it."),
+            text("Only a directory you explicitly enter can receive extraction files. Stage 2 signed PAK import/mod injection are disabled."),
+            text("All expensive file operations run outside the UI thread."),
         ].spacing(14).into(),
     };
 
     let body = column![
         headline,
         location,
-        text(if state.scanning {
-            "Scanning..."
-        } else {
-            state.status.as_str()
-        })
-        .size(13),
+        text(if state.busy { "Working..." } else { state.status.as_str() }).size(13),
         workspace,
-        Space::new().height(0),
     ]
     .spacing(16)
     .padding(20)
     .width(Fill)
     .height(Fill);
-
     container(row![sidebar, body].height(Fill))
-        .width(Fill)
-        .height(Fill)
-        .into()
+        .width(Fill).height(Fill).into()
 }
 
 fn main() -> iced::Result {
-    // wgpu 27 is intentionally kept aligned with Iced's GPU renderer.
     let _supported_backends = wgpu::Backends::PRIMARY;
     iced::application(State::default, update, view)
         .title("Evolve Mod Manager — Rust Development Preview")
