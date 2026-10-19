@@ -1021,7 +1021,10 @@ fn begin_scan(state: &mut State, source: PathBuf) -> Task<Message> {
 fn verified_viewer_file(state: &State) -> Result<PathBuf, String> {
     let inventory = state.inventory.as_ref().ok_or("No indexed local files")?;
     let selected = state.selected.ok_or("No file selected")?;
-    let entry = inventory.entries.get(selected).ok_or("Selection is stale")?;
+    let entry = inventory
+        .entries
+        .get(selected)
+        .ok_or("Selection is stale")?;
     let root = std::fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
     let candidate = PathBuf::from(&inventory.root).join(&entry.relative_path);
     let metadata = std::fs::symlink_metadata(&candidate).map_err(|e| e.to_string())?;
@@ -1887,7 +1890,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ViewerContextFile(index) => {
             // Right click selects a file without triggering an expensive decode.
-            if state.inventory.as_ref().and_then(|inv| inv.entries.get(index)).is_none()
+            if state
+                .inventory
+                .as_ref()
+                .and_then(|inv| inv.entries.get(index))
+                .is_none()
                 || !state.viewer_rows.iter().any(|row| row.index == Some(index))
             {
                 state.viewer_context_index = None;
