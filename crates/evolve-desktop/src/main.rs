@@ -20,6 +20,7 @@ use iced::{Element, Fill, Length, Subscription, Task, Theme};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use settings::{Preferences, load_from, save_to, settings_path};
 use textured::Scene as TexturedScene;
 use viewport::MeshViewport;
 
@@ -108,6 +109,8 @@ struct State {
     selected: Option<usize>,
     status: String,
     busy: bool,
+    preferences: Preferences,
+    settings_status: String,
 }
 
 #[derive(Debug, Clone)]
@@ -308,6 +311,21 @@ enum Message {
     MotionScrub(f32),
     ToggleMotion,
     Tick,
+    PreferenceDensity,
+    PreferenceExplorerSide,
+    PreferenceAppearance,
+    PreferenceReduceMotion,
+    PreferenceSnapshots,
+    PreferenceActivity,
+    PreferenceExperimental,
+    PreferenceAutoUpdates,
+    PreferenceStage(String),
+    PreferenceSwap(String),
+    PreferenceProjects(String),
+    PreferenceAssets(String),
+    PreferenceBlender(String),
+    PreferenceWorkspace(String),
+    SavePreferences,
     AssetsRootChanged(String),
     TerrainSourceChanged(String),
     YawChanged(f32),
@@ -353,9 +371,63 @@ fn launch(state: &mut State, operation: Operation) -> Task<Message> {
     )
 }
 
+fn persist_preferences(state: &mut State) {
+    state.settings_status = match settings_path()
+        .and_then(|path| save_to(&path, &state.preferences))
+    {
+        Ok(()) => "Preferences saved to your Windows user profile.".into(),
+        Err(err) => format!("Preferences could not be saved: {err}"),
+    };
+}
+
 fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::Navigate(page) => state.page = Some(page),
+        Message::PreferenceDensity => {
+            state.preferences.ui_density = if state.preferences.ui_density == "Compact" {
+                "Comfortable".into()
+            } else { "Compact".into() };
+            persist_preferences(state);
+        }
+        Message::PreferenceExplorerSide => {
+            state.preferences.file_explorer_side = if state.preferences.file_explorer_side == "Left" {
+                "Right".into()
+            } else { "Left".into() };
+            persist_preferences(state);
+        }
+        Message::PreferenceAppearance => {
+            state.preferences.appearance_mode = if state.preferences.appearance_mode == "Dark" {
+                "Light".into()
+            } else { "Dark".into() };
+            persist_preferences(state);
+        }
+        Message::PreferenceReduceMotion => {
+            state.preferences.reduce_motion = !state.preferences.reduce_motion;
+            persist_preferences(state);
+        }
+        Message::PreferenceSnapshots => {
+            state.preferences.keep_original_snapshots = !state.preferences.keep_original_snapshots;
+            persist_preferences(state);
+        }
+        Message::PreferenceActivity => {
+            state.preferences.show_activity_on_tasks = !state.preferences.show_activity_on_tasks;
+            persist_preferences(state);
+        }
+        Message::PreferenceExperimental => {
+            state.preferences.experimental_updates = !state.preferences.experimental_updates;
+            persist_preferences(state);
+        }
+        Message::PreferenceAutoUpdates => {
+            state.preferences.automatic_update_checks = !state.preferences.automatic_update_checks;
+            persist_preferences(state);
+        }
+        Message::PreferenceStage(value) => state.preferences.stage = value,
+        Message::PreferenceSwap(value) => state.preferences.swap = value,
+        Message::PreferenceProjects(value) => state.preferences.projects = value,
+        Message::PreferenceAssets(value) => state.preferences.asset_library_root = value,
+        Message::PreferenceBlender(value) => state.preferences.blender_executable = value,
+        Message::PreferenceWorkspace(value) => state.preferences.current_workspace = value,
+        Message::SavePreferences => persist_preferences(state),
         Message::InputChanged(input) => state.input = input,
         Message::OutputChanged(output) => state.output = output,
         Message::ReplacementsChanged(replacements) => state.replacements = replacements,
@@ -1183,13 +1255,54 @@ fn view(state: &State) -> Element<'_, Message> {
             text("Scene GLB includes verified mesh instances and optional terrain. Texture/material, compiled vegetation, scripting and full map fidelity remain gated."),
         ].spacing(14).into(),
         Page::Settings => column![
-            text("Workspace safety").size(19),
-            text("The ZIP-compatible PAK extractor and rebuilder never overwrite existing destinations and stage outputs before publishing them."),
-            text("Only a directory you explicitly enter can receive extraction files. Stage 2 signed PAK import/mod injection are disabled."),
-            text("All expensive file operations run outside the UI thread."),
-        ].spacing(14).into(),
+            text("Settings").size(23),
+            text("UPDATES").size(18),
+            text("Installed version: development preview. Public release checks require approved installer builds."),
+            button(format!("Experimental update channel: {}", if state.preferences.experimental_updates {"Enabled"} else {"Disabled"}))
+                .on_press(Message::PreferenceExperimental),
+            button(format!("Automatic update checks: {}", if state.preferences.automatic_update_checks {"Enabled"} else {"Disabled"}))
+                .on_press(Message::PreferenceAutoUpdates),
+            text("GENERAL & APPEARANCE").size(18),
+            row![
+                button(format!("Appearance: {}",state.preferences.appearance_mode)).on_press(Message::PreferenceAppearance),
+                button(format!("Density: {}",state.preferences.ui_density)).on_press(Message::PreferenceDensity),
+                button(format!("Explorer side: {}",state.preferences.file_explorer_side)).on_press(Message::PreferenceExplorerSide),
+            ].spacing(9),
+            button(format!("Reduce menu animation: {}",state.preferences.reduce_motion))
+                .on_press(Message::PreferenceReduceMotion),
+            text("Theme color overrides, presets and font preference persist in settings.json; dedicated pickers are planned."),
+            text("GAME STORAGE").size(18),
+            text_input("Staging folder", &state.preferences.stage)
+                .on_input(Message::PreferenceStage),
+            text_input("Swap / restoration journal folder", &state.preferences.swap)
+                .on_input(Message::PreferenceSwap),
+            text_input("Projects folder", &state.preferences.projects)
+                .on_input(Message::PreferenceProjects),
+            text_input("Asset Library folder", &state.preferences.asset_library_root)
+                .on_input(Message::PreferenceAssets),
+            text("BLENDER INTEGRATION").size(18),
+            text_input("Blender executable", &state.preferences.blender_executable)
+                .on_input(Message::PreferenceBlender),
+            text("BACKUPS & RECOVERY").size(18),
+            button(format!("Keep permanent original snapshots: {}",state.preferences.keep_original_snapshots))
+                .on_press(Message::PreferenceSnapshots),
+            text("Recovery snapshots are a preference, not an indication that the Rust mod swap is implemented yet."),
+            text("LAUNCH PREFERENCES").size(18),
+            button(format!("Open activity log during tasks: {}",state.preferences.show_activity_on_tasks))
+                .on_press(Message::PreferenceActivity),
+            text("ADVANCED & MAINTENANCE").size(18),
+            text_input("Current workspace",&state.preferences.current_workspace)
+                .on_input(Message::PreferenceWorkspace),
+            button("Save Settings").on_press(Message::SavePreferences),
+            text(state.settings_status.as_str()).size(13),
+        ].spacing(12).into(),
     };
 
+    let workspace: Element<'_, Message> = if page == Page::Settings {
+        scrollable(workspace).height(Fill).into()
+    } else {
+        workspace
+    };
     let body = column![
         headline,
         location,
@@ -1214,6 +1327,18 @@ fn view(state: &State) -> Element<'_, Message> {
 fn initial_state() -> State {
     let mut result = State::default();
     result.zoom = 1.0;
+    if let Ok(path) = settings_path() {
+        match load_from(&path) {
+            Ok(saved) => {
+                result.blender_path = saved.blender_executable.clone();
+                result.assets_root = saved.asset_library_root.clone();
+                result.preferences = saved;
+            }
+            Err(error) => {
+                result.settings_status = format!("Could not read preferences; original file was not overwritten: {error}");
+            }
+        }
+    }
     if let Ok(executable) = std::env::current_exe()
         && let Some(parent) = executable.parent()
     {
@@ -1238,7 +1363,10 @@ fn main() -> iced::Result {
             }
         })
         .title("Evolve Mod Manager — Rust Development Preview")
-        .theme(|_state: &State| {
+        .theme(|state: &State| {
+            if state.preferences.appearance_mode == "Light" {
+                return Theme::Light;
+            }
             Theme::custom(
                 "Evolve Black/Red",
                 iced::theme::Palette {
