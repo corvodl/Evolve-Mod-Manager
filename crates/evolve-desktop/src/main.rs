@@ -7,7 +7,8 @@ use evolve_core::{
     SignedPakInfo, TerrainInfo, export_dds_png, export_level_scene_glb, extract_legacy_pak,
     extract_signed_pak, inspect_dds, inspect_legacy_pak, inspect_signed_pak, load_level_scene,
     read_cdf, read_model, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry,
-    decode_dds_rgba, read_native_caf, NativeCafMotion, scan_directory,
+    decode_dds_rgba, read_native_caf, NativeCafMotion, RigReport,
+    export_rigged_character_glb,export_rigged_character_fbx,scan_directory,
 };
 use iced::widget::{
     button, canvas, column, container, image, row, scrollable, shader, slider, svg, text, text_input,
@@ -79,6 +80,8 @@ struct State {
     diffuse: Option<Arc<::image::RgbaImage>>,
     diffuse_status: String,
     caf_path: String,
+    skeleton_path:String,
+    blender_path:String,
     native_caf: Option<Arc<NativeCafMotion>>,
     motion_time: f32,
     playing: bool,
@@ -108,6 +111,8 @@ enum Operation {
     InspectDds(PathBuf),
     LoadDiffuse(PathBuf),
     LoadCaf(PathBuf),
+    RiggedGlb(PathBuf,PathBuf,PathBuf),
+    RiggedFbx(PathBuf,PathBuf,PathBuf,PathBuf),
     InspectCdf(PathBuf),
     InspectModel(PathBuf),
     InspectLevel(PathBuf),
@@ -137,6 +142,7 @@ enum Completed {
     Texture(DdsInfo),
     Diffuse(DdsInfo,::image::RgbaImage),
     Caf(NativeCafMotion),
+    RiggedExport(RigReport,PathBuf),
     Character(CdfDefinition),
     Model(RenderMesh),
     Level(LevelScene),
@@ -159,6 +165,10 @@ impl Operation {
             Self::InspectPak(source) => inspect_legacy_pak(&source)
                 .map(Completed::Pak)
                 .map_err(|e| e.to_string()),
+            Self::RiggedGlb(mesh,skeleton,dest) => export_rigged_character_glb(&mesh,&skeleton,&dest)
+                .map(|r|Completed::RiggedExport(r,dest)).map_err(|e|e.to_string()),
+            Self::RiggedFbx(mesh,skeleton,blender,dest) => export_rigged_character_fbx(&mesh,&skeleton,&blender,&dest)
+                .map(|(r,_)|Completed::RiggedExport(r,dest)).map_err(|e|e.to_string()),
             Self::LoadCaf(source) => read_native_caf(&source)
                 .map(Completed::Caf).map_err(|e|e.to_string()),
             Self::LoadDiffuse(source) => decode_dds_rgba(&source)
@@ -264,6 +274,8 @@ enum Message {
     SignedReplacementChanged(String),
     DiffuseInputChanged(String),
     CafInputChanged(String),
+    SkeletonChanged(String),
+    BlenderChanged(String),
     MotionScrub(f32),
     ToggleMotion,
     Tick,
@@ -278,6 +290,8 @@ enum Message {
     StartDdsInspection,
     StartDiffuseLoad,
     StartCafLoad,
+    StartRigGlb,
+    StartRigFbx,
     StartCdfInspection,
     StartModelInspection,
     StartLevelInspection,
@@ -323,6 +337,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::SignedReplacementChanged(value) => state.signed_replacement = value,
         Message::DiffuseInputChanged(value) => state.diffuse_input = value,
         Message::CafInputChanged(value) => state.caf_path = value,
+        Message::SkeletonChanged(value)=>state.skeleton_path=value,
+        Message::BlenderChanged(value)=>state.blender_path=value,
         Message::MotionScrub(value) => state.motion_time = value,
         Message::ToggleMotion => state.playing = !state.playing && state.native_caf.is_some(),
         Message::Tick => {
@@ -352,6 +368,28 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::StartPakInspection => {
             let source = PathBuf::from(&state.input);
             return launch(state, Operation::InspectPak(source));
+        }
+        Message::StartRigGlb => {
+            if state.input.trim().is_empty() || state.skeleton_path.trim().is_empty()
+                || state.output.trim().is_empty() {
+                state.status="Choose the original skin mesh, EXACT matching CryEngine skeleton and a NEW .glb output.".into();
+                return Task::none();
+            }
+            return launch(state,Operation::RiggedGlb(
+                PathBuf::from(&state.input),PathBuf::from(&state.skeleton_path),
+                PathBuf::from(&state.output),
+            ));
+        }
+        Message::StartRigFbx => {
+            if state.input.trim().is_empty() || state.skeleton_path.trim().is_empty()
+                || state.blender_path.trim().is_empty() || state.output.trim().is_empty() {
+                state.status="Choose original skin mesh, matching skeleton, Blender executable and NEW .fbx output.".into();
+                return Task::none();
+            }
+            return launch(state,Operation::RiggedFbx(
+                PathBuf::from(&state.input),PathBuf::from(&state.skeleton_path),
+                PathBuf::from(&state.blender_path),PathBuf::from(&state.output),
+            ));
         }
         Message::StartCafLoad => {
             if state.caf_path.trim().is_empty() {
@@ -520,6 +558,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.pak = Some(pak);
                     state.selected = None;
                     state.page = Some(Page::Files);
+                }
+                Ok(Completed::RiggedExport(info,target)) => {
+                    state.status=format!("Rigged Blender-compatible export: {} original bones, {} weighted vertices, {} active joints, {} palettes: {}",
+                        info.bone_count,info.weighted_vertices,info.active_bones,info.subset_count,target.display());
+                    state.page=Some(Page::Models);
                 }
                 Ok(Completed::Caf(motion)) => {
                     state.status=format!("Native CAF decoded: {} controllers at {:.1} FPS; {} seconds. Bind-pose matching is required for mesh animation.",
@@ -862,6 +905,18 @@ fn view(state: &State) -> Element<'_, Message> {
                 } else {
                     text("Select a source .cgf/.chr/.skin file and click Inspect 3D model.").into()
                 },
+                text("Rigged character export — verified original weights").size(18),
+                row![
+                    text_input("Exact original .chr skeleton path...",&state.skeleton_path)
+                        .on_input(Message::SkeletonChanged).width(Fill),
+                    text_input("Blender.exe path for FBX...",&state.blender_path)
+                        .on_input(Message::BlenderChanged).width(Fill),
+                ].spacing(8),
+                row![
+                    button("Export rigged GLB").on_press(Message::StartRigGlb),
+                    button("Export rigged FBX").on_press(Message::StartRigFbx),
+                    text("Uses new output path above. No embedded animations without validated matching tracks."),
+                ].spacing(9),
                 text("Animation controls — exact native CAF tracks").size(18),
                 row![
                     text_input("Select original CAF file...",&state.caf_path)
