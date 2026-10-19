@@ -3802,6 +3802,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.playing = false;
                     state.selected_motion_clip = 0;
                     state.native_caf = None;
+                    state.skin_preview = None;
                     state.glb_motion = Some(Arc::new(motion));
                     state.page = Some(Page::Models);
                 }
@@ -4116,6 +4117,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                     state.terrain = Some(info);
                     state.model = Some(Arc::new(mesh));
+                    state.skin_preview = None;
+                    state.playing = false;
                     state.page = Some(Page::Levels);
                     state.zoom = 1.0;
                 }
@@ -4697,7 +4700,11 @@ fn view(state: &State) -> Element<'_, Message> {
                             state.motion_time,clip.duration_seconds(),clip.controllers.len(),clip.additive,clip.cyclic)),
                         slider(0.0..=clip.duration_seconds().max(0.001),state.motion_time,Message::MotionScrub),
                         text(value),
-                        text("Motion values come directly from CAF keys. They are NOT applied to an unverified skeleton."),
+                        text(if state.skin_preview.is_some() {
+                            "Verified native CAF transforms deform the original weighted mesh in the textured viewport."
+                        } else {
+                            "Native CAF keys decoded; exact original skeleton binding is required before mesh playback."
+                        }),
                     ].spacing(7).into()
                 }else{
                     let placeholder:Element<'_,Message>=text("Choose original CAF to inspect playable controller data. No skeleton guessed.").into();
