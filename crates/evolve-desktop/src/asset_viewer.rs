@@ -3,7 +3,7 @@
 //! Heavy decoding and indexing are run by the main application's worker tasks.
 use super::{MeshViewport, Message, State, TexturedScene, viewer_inspector};
 use iced::widget::{
-    button, canvas, column, container, mouse_area, row, scrollable, shader, slider, text,
+    button, canvas, column, container, mouse_area, row, scrollable, shader, slider, stack, text,
     text_input,
 };
 use iced::{Background, Border, Color, Element, Fill, Length};
@@ -215,23 +215,51 @@ fn viewport(state: &State) -> Element<'_, Message> {
     };
 
     let toolbar = row![
-        button("Reset Camera").on_press(Message::ViewerResetCamera),
-        text("Drag to orbit · Shift+drag/right-drag to pan · Wheel zoom").size(11),
-        text("Light").size(12),
-        slider(
-            0.1..=2.0,
-            state.light_strength.max(0.1),
-            Message::LightStrengthChanged
-        )
-        .width(Length::Fixed(90.0)),
-        text("Yaw").size(12),
-        slider(-180.0..=180.0, state.yaw, Message::YawChanged).width(Length::FillPortion(2)),
-        text("Pitch").size(12),
-        slider(-85.0..=85.0, state.pitch, Message::PitchChanged).width(Length::FillPortion(2)),
-        text("Zoom").size(12),
-        slider(0.2..=4.0, state.zoom.max(0.2), Message::ZoomChanged).width(Length::FillPortion(1)),
+        button("Reset View").on_press(Message::ViewerResetCamera),
+        text("Drag: orbit • Shift+drag/right-drag: pan • Wheel: zoom").size(11),
+        button("−").on_press(Message::ViewerZoomWheel(-2.0)).style(button::secondary),
+        button("+").on_press(Message::ViewerZoomWheel(2.0)).style(button::secondary),
+        text("Studio light").size(11),
+        slider(0.1..=2.0, state.light_strength.max(0.1), Message::LightStrengthChanged)
+            .width(Length::Fixed(90.0)),
     ]
-    .spacing(8);
+    .spacing(8)
+    .align_y(iced::Center);
+
+    // The orientation compass is part of the preview, rather than the
+    // previous yaw/pitch/zoom sliders. It does not cover the model surface
+    // except for its own small button hitboxes.
+    let gizmo = container(
+        column![
+            row![
+                button("Z").on_press(Message::ViewerCameraPreset("Top")).style(button::secondary),
+                button("Iso").on_press(Message::ViewerCameraPreset("Isometric")).style(button::text),
+            ].spacing(3),
+            row![
+                button("−X").on_press(Message::ViewerCameraPreset("Left")).style(button::secondary),
+                button("●").on_press(Message::ViewerCameraPreset("Front")).style(button::primary),
+                button("+X").on_press(Message::ViewerCameraPreset("Right")).style(button::secondary),
+            ].spacing(3),
+            row![
+                button("−Z").on_press(Message::ViewerCameraPreset("Bottom")).style(button::secondary),
+                button("Back").on_press(Message::ViewerCameraPreset("Back")).style(button::text),
+            ].spacing(3),
+        ].spacing(3).align_x(iced::Center),
+    )
+    .padding(7)
+    .style(|_| container::Style {
+        background: Some(Background::Color(Color::from_rgba8(30, 30, 38, 0.86))),
+        border: Border {
+            color: Color::from_rgb8(71, 71, 81),
+            width: 1.0,
+            radius: 9.0.into(),
+        },
+        ..container::Style::default()
+    });
+    let preview = stack![
+        main,
+        container(gizmo).width(Fill).height(Fill).align_right(Fill).align_top(Fill).padding(12),
+    ].width(Fill).height(Fill);
 
     let duration = state
         .native_caf
@@ -278,7 +306,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
     column![
         header,
         toolbar,
-        main,
+        preview,
         panel(container(timeline).padding(5)).height(Length::Fixed(43.0))
     ]
     .spacing(8)
