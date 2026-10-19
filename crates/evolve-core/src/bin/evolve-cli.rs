@@ -2,6 +2,8 @@
 use evolve_core::{
     export_dds_png, extract_legacy_pak, inspect_dds, inspect_legacy_pak, read_cdf,
     rebuild_legacy_pak, scan_directory, write_inventory_json,
+    extract_signed_pak, inspect_signed_pak, read_model, export_model_obj,
+    load_level_scene, read_terrain, export_terrain_obj, export_edited_layer, Transform,
 };
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
@@ -26,8 +28,17 @@ fn usage() -> String {
         "  evolve-cli dds info <texture.dds|texture.dds.0> [dds-info.json]",
         "  evolve-cli dds png <texture.dds|texture.dds.0> <new-output.png>",
         "  evolve-cli cdf inspect <character.cdf> [cdf-info.json]",
+        "  evolve-cli signed inspect <original.pak> <public-key.der> <signed-basename> [info.json]",
+        "  evolve-cli signed extract <original.pak> <public-key.der> <signed-basename> <new-folder>",
+        "  evolve-cli model inspect <model.cgf|model.skin> [model-info.json]",
+        "  evolve-cli model obj <model.cgf|model.skin> <new.obj>",
+        "  evolve-cli terrain inspect <Heightmap.dat> [terrain-info.json]",
+        "  evolve-cli terrain obj <Heightmap.dat> <new-terrain.obj>",
+        "  evolve-cli level inspect <mission.xml|layer.lyr> [scene-info.json]",
+        "  evolve-cli level edit <mission.xml|layer.lyr> <new.xml> <GUID> <x,y,z> [w,x,y,z] [sx,sy,sz]",
         "",
-        "Stage 2 signed/encrypted CryPAKs cannot yet be extracted.",
+        "Signed Stage 2 PAKs require the matching local PUBLIC RSA key and exact signed basename.",
+        "Native Stage 2 re-signing and mod-injection are NOT available.",
         "Outputs are never silently overwritten.",
     ]
     .join("\n")
@@ -43,6 +54,18 @@ fn no_extra(args: &mut std::vec::IntoIter<OsString>) -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+
+fn parse_vector<const N: usize>(value: &OsStr) -> Result<[f32; N], String> {
+    let text=value.to_str().ok_or_else(usage)?;
+    let parts=text.split(',').map(|v|v.parse::<f32>()).collect::<Vec<_>>();
+    if parts.len()!=N {return Err(format!("Expected {N} comma-separated floating point numbers"));}
+    let mut result=[0.0f32;N];
+    for (out,part) in result.iter_mut().zip(parts){
+        *out=part.map_err(|_| "Invalid transform number".to_string())?;
+        if !out.is_finite() || out.abs()>1e8 {return Err("Transform outside safe range".into());}
+    }
+    Ok(result)
 }
 
 fn write_report<T: Serialize>(value: &T, path: &Path) -> Result<(), String> {
@@ -82,6 +105,40 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
     }
     let subcommand = pop(&mut args)?;
     let source: PathBuf = pop(&mut args)?.into();
+    if verb == OsStr::new("signed") {
+        let key: PathBuf = pop(&mut args)?.into();
+        let basename = pop(&mut args)?.into_string()
+            .map_err(|_| "Signed basename must be UTF-8".to_owned())?;
+        let output: Option<PathBuf> = args.next().map(Into::into);
+        no_extra(&mut args)?;
+        if subcommand == OsStr::new("inspect") {
+            let metadata = inspect_signed_pak(&source, &key, &basename).map_err(|e| e.to_string())?;
+            println!("Verified Stage 2 signed PAK: {} entries ({} expanded bytes)",
+                metadata.entries.len(), metadata.total_expanded_bytes);
+            if let Some(path) = output { write_report(&metadata, &path)?; }
+        } else if subcommand == OsStr::new("extract") {
+            let target = output.ok_or_else(usage)?;
+            let result = extract_signed_pak(&source, &key, &basename, &target)
+                .map_err(|e| e.to_string())?;
+            println!("Verified and extracted {} signed entries into {}",result.entries.len(),target.display());
+        } else {
+            return Err(usage());
+        }
+        return Ok(());
+    }
+    if verb == OsStr::new("level") && subcommand == OsStr::new("edit") {
+        let output: PathBuf = pop(&mut args)?.into();
+        let guid = pop(&mut args)?.into_string().map_err(|_| usage())?;
+        let pos = parse_vector::<3>(&pop(&mut args)?)?;
+        let rot = args.next().map(|v| parse_vector::<4>(&v)).transpose()?.unwrap_or([1.,0.,0.,0.]);
+        let scale = args.next().map(|v| parse_vector::<3>(&v)).transpose()?.unwrap_or([1.,1.,1.]);
+        no_extra(&mut args)?;
+        export_edited_layer(&source,&output,&guid,Transform{
+            position:pos, quaternion:rot, scale
+        }).map_err(|e|e.to_string())?;
+        println!("Saved new placement layer without changing source: {}",output.display());
+        return Ok(());
+    }
     let output: Option<PathBuf> = args.next().map(Into::into);
     let extra: Option<PathBuf> = args.next().map(Into::into);
     no_extra(&mut args)?;
@@ -122,6 +179,32 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
             report.changed_entries,
             new_pak.display()
         );
+    } else if verb == OsStr::new("model") && subcommand == OsStr::new("inspect") {
+        let mesh=read_model(&source).map_err(|e|e.to_string())?;
+        println!("{} geometry: {} vertices, {} triangles, UV0={}, normals={}",
+            mesh.info.format,mesh.info.vertex_count,mesh.info.triangle_count,
+            mesh.info.original_uv0,mesh.info.original_normals);
+        if let Some(path)=output {write_report(&mesh.info,&path)?;}
+    } else if verb == OsStr::new("model") && subcommand == OsStr::new("obj") {
+        let mesh=read_model(&source).map_err(|e|e.to_string())?;
+        let target=output.ok_or_else(usage)?;
+        export_model_obj(&mesh,&target).map_err(|e|e.to_string())?;
+        println!("Exported {} original geometry triangles to {}",mesh.info.triangle_count,target.display());
+    } else if verb == OsStr::new("terrain") && subcommand == OsStr::new("inspect") {
+        let mesh=read_terrain(&source,257).map_err(|e|e.to_string())?;
+        println!("Source terrain {}x{}, {} decoded samples, {} visible triangles",
+            mesh.info.width,mesh.info.height,mesh.info.decoded_samples,mesh.indices.len()/3);
+        if let Some(path)=output {write_report(&mesh.info,&path)?;}
+    } else if verb == OsStr::new("terrain") && subcommand == OsStr::new("obj") {
+        let mesh=read_terrain(&source,257).map_err(|e|e.to_string())?;
+        let target=output.ok_or_else(usage)?;
+        export_terrain_obj(&mesh,&target).map_err(|e|e.to_string())?;
+        println!("Blender-compatible terrain OBJ saved: {}",target.display());
+    } else if verb == OsStr::new("level") && subcommand == OsStr::new("inspect") {
+        let scene=load_level_scene(&source).map_err(|e|e.to_string())?;
+        println!("Level object layer: {} placements, {} diagnostics",
+            scene.objects.len(),scene.diagnostics.len());
+        if let Some(path)=output {write_report(&scene,&path)?;}
     } else if verb == OsStr::new("dds") && subcommand == OsStr::new("info") {
         let info = inspect_dds(&source).map_err(|e| e.to_string())?;
         println!(
