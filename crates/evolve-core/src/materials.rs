@@ -74,18 +74,36 @@ fn normalize_texture(raw: &str) -> Result<String, MaterialError> {
 }
 
 fn append_texture(
-    node: &BytesStart<'_>, slots: &mut [MaterialSlot], index: usize
+    node: &BytesStart<'_>,
+    slots: &mut [MaterialSlot],
+    index: usize,
 ) -> Result<(), MaterialError> {
-    let Some(path) = attr(node, b"File")? else { return Ok(()); };
-    if path.trim().is_empty() { return Ok(()); }
+    let Some(path) = attr(node, b"File")? else {
+        return Ok(());
+    };
+    if path.trim().is_empty() {
+        return Ok(());
+    }
     let path = normalize_texture(&path)?;
     let role = attr(node, b"Map")?.unwrap_or_default().to_lowercase();
     if !matches!(
         role.as_str(),
-        "diffuse" | "normals" | "normal" | "bumpmap" |
-        "emittance" | "emissive" | "emission" | "glow" |
-        "decal" | "specular" | "gloss" | "smoothness" |
-        "opacity" | "detail" | "height" | "environment"
+        "diffuse"
+            | "normals"
+            | "normal"
+            | "bumpmap"
+            | "emittance"
+            | "emissive"
+            | "emission"
+            | "glow"
+            | "decal"
+            | "specular"
+            | "gloss"
+            | "smoothness"
+            | "opacity"
+            | "detail"
+            | "height"
+            | "environment"
     ) {
         // Keep unknown semantics out of a guessed GPU slot.
         return Ok(());
@@ -100,9 +118,15 @@ fn append_texture(
 /// Parse explicit root/submaterial texture references, without XXE, DTD or
 /// path traversal. Does not infer values from same-named model files.
 pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
-    if bytes.is_empty() || bytes.len() > MAX_MTL_BYTES ||
-        bytes.windows(9).any(|v| v.eq_ignore_ascii_case(b"<!DOCTYPE")) ||
-        bytes.windows(8).any(|v| v.eq_ignore_ascii_case(b"<!ENTITY")) {
+    if bytes.is_empty()
+        || bytes.len() > MAX_MTL_BYTES
+        || bytes
+            .windows(9)
+            .any(|v| v.eq_ignore_ascii_case(b"<!DOCTYPE"))
+        || bytes
+            .windows(8)
+            .any(|v| v.eq_ignore_ascii_case(b"<!ENTITY"))
+    {
         return Err(MaterialError::Unsafe);
     }
     let mut reader = Reader::from_reader(bytes);
@@ -112,27 +136,43 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
     let mut material_indices: Vec<(usize, usize)> = Vec::new();
     let mut root_seen = false;
     loop {
-        match reader.read_event().map_err(|e| MaterialError::Xml(e.to_string()))? {
+        match reader
+            .read_event()
+            .map_err(|e| MaterialError::Xml(e.to_string()))?
+        {
             Event::Start(node) => {
                 let tag = node.name();
                 let tag = tag.as_ref();
-                if parents.len() >= 64 { return Err(MaterialError::Unsafe); }
+                if parents.len() >= 64 {
+                    return Err(MaterialError::Unsafe);
+                }
                 if parents.is_empty() {
-                    if !tag.eq_ignore_ascii_case(b"Material") &&
-                        !tag.eq_ignore_ascii_case(b"Materials") {
+                    if !tag.eq_ignore_ascii_case(b"Material")
+                        && !tag.eq_ignore_ascii_case(b"Materials")
+                    {
                         return Err(MaterialError::Xml("Expected Material root".into()));
                     }
                     root_seen = true;
                 }
                 if tag.eq_ignore_ascii_case(b"Material") {
-                    if slots.len() >= MAX_SLOTS { return Err(MaterialError::Unsafe); }
-                    let name = attr(&node, b"Name")?.unwrap_or_else(|| format!("Material{}", slots.len()));
+                    if slots.len() >= MAX_SLOTS {
+                        return Err(MaterialError::Unsafe);
+                    }
+                    let name =
+                        attr(&node, b"Name")?.unwrap_or_else(|| format!("Material{}", slots.len()));
                     let shader = attr(&node, b"Shader")?.unwrap_or_default();
-                    slots.push(MaterialSlot { name, shader, maps: Vec::new() });
+                    slots.push(MaterialSlot {
+                        name,
+                        shader,
+                        maps: Vec::new(),
+                    });
                     material_indices.push((parents.len() + 1, slots.len() - 1));
-                } else if tag.eq_ignore_ascii_case(b"Texture") &&
-                    parents.last().is_some_and(|p| p.eq_ignore_ascii_case(b"Textures")) &&
-                    let Some((_, index)) = material_indices.last() {
+                } else if tag.eq_ignore_ascii_case(b"Texture")
+                    && parents
+                        .last()
+                        .is_some_and(|p| p.eq_ignore_ascii_case(b"Textures"))
+                    && let Some((_, index)) = material_indices.last()
+                {
                     append_texture(&node, &mut slots, *index)?;
                 }
                 parents.push(tag.to_vec());
@@ -140,10 +180,15 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
             Event::Empty(node) => {
                 let tag = node.name();
                 let tag = tag.as_ref();
-                if parents.is_empty() { return Err(MaterialError::Xml("Empty XML root".into())); }
-                if tag.eq_ignore_ascii_case(b"Texture") &&
-                    parents.last().is_some_and(|p| p.eq_ignore_ascii_case(b"Textures")) &&
-                    let Some((_, index)) = material_indices.last() {
+                if parents.is_empty() {
+                    return Err(MaterialError::Xml("Empty XML root".into()));
+                }
+                if tag.eq_ignore_ascii_case(b"Texture")
+                    && parents
+                        .last()
+                        .is_some_and(|p| p.eq_ignore_ascii_case(b"Textures"))
+                    && let Some((_, index)) = material_indices.last()
+                {
                     append_texture(&node, &mut slots, *index)?;
                 }
             }
@@ -195,7 +240,9 @@ pub fn resolve_materials(inventory: &Inventory, document: &MaterialDocument) -> 
             let mut found = AssetResolution::Missing;
             for candidate in candidates {
                 found = resolve_virtual(inventory, &candidate);
-                if !matches!(found, AssetResolution::Missing) { break; }
+                if !matches!(found, AssetResolution::Missing) {
+                    break;
+                }
             }
             textures.push(ResolvedTexture {
                 slot: slot.name.clone(),
@@ -205,7 +252,11 @@ pub fn resolve_materials(inventory: &Inventory, document: &MaterialDocument) -> 
             });
         }
     }
-    MaterialReport { schema: 1, textures, slots: document.slots.len() }
+    MaterialReport {
+        schema: 1,
+        textures,
+        slots: document.slots.len(),
+    }
 }
 
 #[cfg(test)]
@@ -226,21 +277,36 @@ mod tests {
         assert!(parse_material(br#"<!DOCTYPE x><Material/>"#).is_err());
         assert!(parse_material(br#"<Material><Textures><Texture Map="Diffuse" File="../bad.dds"/></Textures></Material>"#).is_err());
         let mut inv = Inventory {
-            schema: 1, root: "local".into(), entries: vec![], total_bytes: 0, skipped_symlinks: 0,
+            schema: 1,
+            root: "local".into(),
+            entries: vec![],
+            total_bytes: 0,
+            skipped_symlinks: 0,
         };
         inv.entries.push(AssetEntry {
             relative_path: "Shared/Characters/Kala/body.dds.0".into(),
-            byte_size: 24, kind: AssetKind::Dds,
+            byte_size: 24,
+            kind: AssetKind::Dds,
         });
         let report = resolve_materials(&inv, &m);
         assert_eq!(report.textures.len(), 3);
-        assert!(matches!(report.textures[0].resolution, AssetResolution::Found(_)));
-        assert!(matches!(report.textures[1].resolution, AssetResolution::Missing));
+        assert!(matches!(
+            report.textures[0].resolution,
+            AssetResolution::Found(_)
+        ));
+        assert!(matches!(
+            report.textures[1].resolution,
+            AssetResolution::Missing
+        ));
         inv.entries.push(AssetEntry {
             relative_path: "Other/Characters/Kala/body.dds.0".into(),
-            byte_size: 24, kind: AssetKind::Dds,
+            byte_size: 24,
+            kind: AssetKind::Dds,
         });
         let report = resolve_materials(&inv, &m);
-        assert!(matches!(report.textures[0].resolution, AssetResolution::Ambiguous(_)));
+        assert!(matches!(
+            report.textures[0].resolution,
+            AssetResolution::Ambiguous(_)
+        ));
     }
 }
