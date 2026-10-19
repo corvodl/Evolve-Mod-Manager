@@ -11,6 +11,7 @@ pub mod model;
 pub mod native_caf;
 pub mod policy;
 pub mod scene;
+pub mod level_export;
 pub mod signed_pak;
 pub mod terrain;
 
@@ -40,6 +41,7 @@ pub use native_caf::{
     CafController, NativeCafError, NativeCafMotion, decode_native_caf, read_native_caf,
 };
 pub use policy::{AnimationPolicy, ExportFeature, FeatureStatus, PARITY_MATRIX};
+pub use level_export::{LevelExportError, LevelExportReport, export_level_scene_glb};
 pub use scene::{
     LevelScene, PlacedObject, SceneError, Transform, export_edited_layer, load_level_scene,
     parse_level_scene,
