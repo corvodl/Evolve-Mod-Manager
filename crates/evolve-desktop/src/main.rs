@@ -1952,6 +1952,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::LevelZoomChanged(value) => state.level_zoom = value.clamp(0.3, 3.0),
         Message::ViewerSaveLayout => {
             state.preferences.viewer_split = state.viewer_split;
+            state.preferences.viewer_explorer_visible = state.viewer_explorer_visible;
             state.preferences.viewer_show_inspector = state.viewer_show_inspector;
             state.preferences.viewer_wireframe = state.viewer_wireframe;
             state.preferences.light_strength = state.light_strength;
@@ -1961,7 +1962,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.preferences.saved_pitch = state.pitch;
             state.preferences.saved_zoom = state.zoom;
             persist_preferences(state);
-            state.status = "Viewer layout, camera and animation speed saved.".into();
+            state.status = "Viewer split, explorer visibility, camera and animation speed saved.".into();
         }
         Message::CompareOriginalChanged(path) => {
             state.compare_original = path;
@@ -4427,6 +4428,7 @@ fn initial_state() -> State {
                 result.blender_path = saved.blender_executable.clone();
                 result.assets_root = saved.asset_library_root.clone();
                 result.viewer_split = saved.viewer_split;
+                result.viewer_explorer_visible = saved.viewer_explorer_visible;
                 result.viewer_show_inspector = saved.viewer_show_inspector;
                 result.viewer_wireframe = saved.viewer_wireframe;
                 result.light_strength = saved.light_strength;
@@ -4536,7 +4538,6 @@ impl Desktop {
             return Task::none();
         }
         self.state.viewer_from_library = self.state.page == Some(Page::AssetLibrary);
-        self.state.viewer_explorer_visible = true;
         let (id, opened) = window::open(window::Settings {
             size: iced::Size::new(1550.0, 940.0),
             ..window::Settings::default()
