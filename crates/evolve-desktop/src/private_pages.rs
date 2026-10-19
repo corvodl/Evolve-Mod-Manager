@@ -1,7 +1,7 @@
 //! Private-manager-aligned landing, instructions and informational pages.
 //! Home deliberately does not enumerate PAKs or scan the user's installation.
 use super::{Message, Page, State};
-use iced::widget::{button, column, container, row, scrollable, svg, text};
+use iced::widget::{button, column, container, row, scrollable, svg, text, text_input};
 use iced::{Background, Border, Color, Element, Fill, Length};
 
 const PANEL: Color = Color::from_rgb(0.175, 0.185, 0.202);
