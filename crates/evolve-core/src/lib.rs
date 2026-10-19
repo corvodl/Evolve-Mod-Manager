@@ -3,5 +3,8 @@
 pub mod inventory;
 pub mod policy;
 
-pub use inventory::{scan_directory, write_inventory_json, AssetEntry, AssetKind, Inventory, InventoryError, MAX_ENTRIES};
+pub use inventory::{
+    AssetEntry, AssetKind, Inventory, InventoryError, MAX_ENTRIES, scan_directory,
+    write_inventory_json,
+};
 pub use policy::{AnimationPolicy, ExportFeature, FeatureStatus, PARITY_MATRIX};
