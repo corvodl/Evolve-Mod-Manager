@@ -664,7 +664,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.developer_status = "Invalid or unavailable developer credentials.".into();
             }
         },
-        Message::OpenViewer | Message::ViewerOpened(_) | Message::WindowClosed(_) => {}
+        Message::OpenViewer | Message::ViewerOpened | Message::WindowClosed(_) => {}
         Message::ViewerMenu(section) => {
             state.viewer_menu = if section.is_empty() || state.viewer_menu == Some(section) {
                 None
