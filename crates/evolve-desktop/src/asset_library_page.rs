@@ -98,7 +98,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         Some("File") => row![
             button("Refresh catalog").on_press(Message::LibraryRefresh),
             button("Import signed PAK…").on_press(Message::LibraryToggleConfiguration),
-            button("Configure folder").on_press(Message::LibraryToggleConfiguration),
+            button("Storage settings").on_press(Message::Navigate(Page::Settings)),
         ]
         .spacing(8)
         .into(),
@@ -128,7 +128,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         }),
         menu_details,
         row![
-            button("Import PAKs").style(button::secondary)
+            button("Import PAKs").style(button::primary)
                 .on_press(Message::LibraryToggleConfiguration),
             button("Refresh").on_press(Message::LibraryRefresh),
             space().width(Fill),
@@ -136,15 +136,14 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         ].spacing(9),
     ].spacing(10);
 
-    if state.library_show_configuration || library.is_none() {
+    if state.library_show_configuration {
         layout = layout.push(panel(container(column![
-            text("Asset Library location").size(14),
             row![
-                text_input("Existing extracted AssetLibrary folder...", &state.library_root)
-                    .on_input(Message::LibraryRootChanged).width(Fill),
-                button("Load Library").on_press(Message::LibraryRefresh),
+                text("IMPORT SIGNED STAGE 2 PAK").size(14),
+                space().width(Fill),
+                button("Close").on_press(Message::LibraryToggleConfiguration).style(button::text),
             ].spacing(8),
-            text("Import one existing signed/encrypted Stage 2 PAK into a new private-manager-compatible Asset Library entry. The configured stage's local verification key is found automatically; the source PAK and existing imports are never modified.")
+            text("The Asset Library location is detected automatically. Imports use the configured setup's local verification key; original PAK files are not modified.")
                 .size(12).color(MUTED),
             row![
                 text_input("Full path to a local Stage 2 .pak...", &state.library_import_source)
@@ -152,8 +151,10 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 button("Import signed PAK").style(button::primary)
                     .on_press(Message::LibraryImportStart),
             ].spacing(8),
-            text("Only signed Stage 2 PAKs are supported by this importer. Historical/ordinary ZIP imports, batch cancellation, and editable project copies remain separate work.").size(11).color(MUTED),
-            button("Advanced archive tools in Modding").on_press(Message::Navigate(Page::Files)),
+            row![
+                button("Manage storage location in Settings").on_press(Message::Navigate(Page::Settings)).style(button::text),
+                button("Advanced archive tools in Modding").on_press(Message::Navigate(Page::Files)).style(button::text),
+            ].spacing(8),
         ].spacing(8)).padding(12)));
     }
 
@@ -229,7 +230,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         rows = rows.push(
             container(
                 text(if library.is_none() {
-                    "Load your existing extracted Asset Library folder to browse imported PAKs."
+                    "No imported PAKs at the detected manager Asset Library location. Use Import PAKs to add an archive."
                 } else if by_build && build.is_none() {
                     "No build snapshot is available. Use All Assets or import snapshot metadata."
                 } else {
