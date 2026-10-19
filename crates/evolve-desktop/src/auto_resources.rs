@@ -1,8 +1,8 @@
 //! Exact, read-only local and imported-library dependency discovery for the
 //! model viewer. Never infer an animation from a matching filename alone.
 use evolve_core::{
-    AnimationReference, AssetResolution, Inventory, LibraryReferenceStatus,
-    animation_references, resolve_imported_reference, resolve_virtual,
+    AnimationReference, AssetResolution, Inventory, LibraryReferenceStatus, animation_references,
+    resolve_imported_reference, resolve_virtual,
 };
 use std::path::{Path, PathBuf};
 
@@ -44,10 +44,16 @@ fn exact(
         }
         AssetResolution::Ambiguous(_) => Err(format!("Ambiguous indexed asset: {virtual_name}")),
         AssetResolution::Missing => {
-            let Some(root) = imported else { return Ok(None); };
-            match resolve_imported_reference(root, virtual_name, build).map_err(|e| e.to_string())? {
+            let Some(root) = imported else {
+                return Ok(None);
+            };
+            match resolve_imported_reference(root, virtual_name, build)
+                .map_err(|e| e.to_string())?
+            {
                 LibraryReferenceStatus::Missing => Ok(None),
-                LibraryReferenceStatus::Ambiguous(_) => Err(format!("Ambiguous imported asset: {virtual_name}")),
+                LibraryReferenceStatus::Ambiguous(_) => {
+                    Err(format!("Ambiguous imported asset: {virtual_name}"))
+                }
                 LibraryReferenceStatus::Found(hit) => {
                     let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
                     let path = PathBuf::from(hit.absolute_path);
@@ -68,10 +74,18 @@ fn stems(name: &str) -> Vec<String> {
     let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
     let mut variants = vec![stem.to_string()];
     let lower = stem.to_ascii_lowercase();
-    let stripped_lod = lower.rfind("_lod").and_then(|at| {
-        lower[at + 4..].chars().all(|c| c.is_ascii_digit()).then_some(&stem[..at])
-    }).unwrap_or(stem);
-    if stripped_lod != stem { variants.push(stripped_lod.to_owned()); }
+    let stripped_lod = lower
+        .rfind("_lod")
+        .and_then(|at| {
+            lower[at + 4..]
+                .chars()
+                .all(|c| c.is_ascii_digit())
+                .then_some(&stem[..at])
+        })
+        .unwrap_or(stem);
+    if stripped_lod != stem {
+        variants.push(stripped_lod.to_owned());
+    }
     for ending in ["_3p", "_fp", "_skeleton"] {
         if stripped_lod.to_ascii_lowercase().ends_with(ending) {
             variants.push(stripped_lod[..stripped_lod.len() - ending.len()].to_owned());
@@ -82,17 +96,36 @@ fn stems(name: &str) -> Vec<String> {
 }
 
 fn join(parent: &str, name: &str, ext: &str) -> String {
-    if parent.is_empty() { format!("{name}.{ext}") } else { format!("{parent}/{name}.{ext}") }
+    if parent.is_empty() {
+        format!("{name}.{ext}")
+    } else {
+        format!("{parent}/{name}.{ext}")
+    }
 }
 
 fn idle_priority(name: &str) -> Option<(bool, bool, bool, String)> {
     let n = name.to_ascii_lowercase();
-    if !n.split(|c: char| !c.is_ascii_alphanumeric()).any(|part| part == "idle") {
+    if !n
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|part| part == "idle")
+    {
         return None;
     }
     Some((
-        ["additive", "underwater", "swim", "incap", "jetpack", "aim", "fp_"].iter().any(|p| n.contains(p)),
-        !["stand", "neutral", "relaxed"].iter().any(|p| n.contains(p)),
+        [
+            "additive",
+            "underwater",
+            "swim",
+            "incap",
+            "jetpack",
+            "aim",
+            "fp_",
+        ]
+        .iter()
+        .any(|p| n.contains(p)),
+        !["stand", "neutral", "relaxed"]
+            .iter()
+            .any(|p| n.contains(p)),
         !n.contains("loop"),
         n,
     ))
@@ -136,16 +169,24 @@ pub fn discover(
             configs.push(format!("{base}_skeleton"));
         }
     }
-    configs.dedup_by(|a,b| a.eq_ignore_ascii_case(b));
+    configs.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
     for stem in configs {
         let name = join(parent, &stem, "chrparams");
         match exact(inv, &name, imported, build) {
-            Ok(Some(path)) => { found.config = Some(path); break; }
-            Err(e) => { found.warnings.push(e); break; }
+            Ok(Some(path)) => {
+                found.config = Some(path);
+                break;
+            }
+            Err(e) => {
+                found.warnings.push(e);
+                break;
+            }
             Ok(None) => {}
         }
     }
-    let Some(config) = &found.config else { return found; };
+    let Some(config) = &found.config else {
+        return found;
+    };
     let data = match std::fs::metadata(config).and_then(|m| {
         if m.len() > 5 * 1024 * 1024 {
             Err(std::io::Error::other("chrparams exceeds safe size"))
@@ -154,11 +195,21 @@ pub fn discover(
         }
     }) {
         Ok(raw) => raw,
-        Err(e) => { found.warnings.push(format!("Could not read character animation catalog: {e}")); return found; }
+        Err(e) => {
+            found
+                .warnings
+                .push(format!("Could not read character animation catalog: {e}"));
+            return found;
+        }
     };
     let references = match animation_references(&data) {
         Ok(refs) => refs,
-        Err(e) => { found.warnings.push(format!("Invalid character animation catalog: {e}")); return found; }
+        Err(e) => {
+            found
+                .warnings
+                .push(format!("Invalid character animation catalog: {e}"));
+            return found;
+        }
     };
     // Keep the complete declared catalog in the browser (bounded by parser).
     // Only the best neutral idle is materialized from the imported library by
@@ -168,9 +219,14 @@ pub fn discover(
         let path = if r.kind == "caf" {
             match exact(inv, &r.path, None, None) {
                 Ok(path) => path,
-                Err(e) => { found.warnings.push(e); None }
+                Err(e) => {
+                    found.warnings.push(e);
+                    None
+                }
             }
-        } else { None };
+        } else {
+            None
+        };
         if r.kind == "caf" {
             if let Some(rank) = idle_priority(&r.name) {
                 preferred.push((i, rank));
@@ -184,7 +240,9 @@ pub fn discover(
     }
     preferred.sort_by(|a, b| a.1.cmp(&b.1));
     for (index, rank) in preferred.into_iter().take(4) {
-        if rank.0 { continue; } // additive/contextual idles are never auto-picked
+        if rank.0 {
+            continue;
+        } // additive/contextual idles are never auto-picked
         if found.clips[index].source.is_none() {
             let r: &AnimationReference = &references[index];
             match exact(inv, &r.path, imported, build) {
@@ -210,7 +268,11 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("characters/kala")).unwrap();
         std::fs::write(root.path().join("characters/kala/kala.mtl"), b"<Material/>").unwrap();
-        std::fs::write(root.path().join("characters/kala/other.mtl"), b"<Material/>").unwrap();
+        std::fs::write(
+            root.path().join("characters/kala/other.mtl"),
+            b"<Material/>",
+        )
+        .unwrap();
         let inv = scan_directory(root.path()).unwrap();
         let found = discover("characters/kala/kala_lod0.skin", &inv, None, None);
         assert!(found.material.unwrap().ends_with("kala.mtl"));
