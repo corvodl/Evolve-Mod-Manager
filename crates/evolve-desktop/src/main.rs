@@ -2167,14 +2167,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     "No changed level placements, or more than 128 pending edits.".into();
                 return Task::none();
             }
+            let source = source.clone();
+            let expected_sha = state.level_source_sha.clone();
             return launch(
                 state,
-                Operation::ExportEditedLevel(
-                    source.clone(),
-                    destination,
-                    edits,
-                    state.level_source_sha.clone(),
-                ),
+                Operation::ExportEditedLevel(source, destination, edits, expected_sha),
             );
         }
         Message::ViewerSaveLayout => {
