@@ -1933,7 +1933,7 @@ fn view(state: &State) -> Element<'_, Message> {
     .spacing(13)
     .align_y(iced::Center);
 
-    let location = column![
+    let location: iced::widget::Column<'_, Message> = column![
         row![
             text_input("Local asset folder, .pak or .dds path...", &state.input)
                 .on_input(Message::InputChanged)
