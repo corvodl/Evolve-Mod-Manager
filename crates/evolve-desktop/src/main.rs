@@ -748,6 +748,20 @@ fn launch(state: &mut State, operation: Operation) -> Task<Message> {
     )
 }
 
+/// The target must belong to a selected editable project or to the exact
+/// staged original. A replacement's filename alone is never sufficient.
+fn selected_stage_target(state: &State) -> Result<String, String> {
+    let stage = PathBuf::from(&state.preferences.stage);
+    if let Some(project) = state.modding_selected.and_then(|index|
+        state.modding_projects.as_ref().and_then(|projects| projects.get(index))
+    ) {
+        return modding_keys::staged_target(
+            &stage, &stage.join("paks").join(&project.target)
+        );
+    }
+    modding_keys::staged_target(&stage, PathBuf::from(&state.input).as_path())
+}
+
 fn begin_scan(state: &mut State, source: PathBuf) -> Task<Message> {
     if state.busy {
         return Task::none();
@@ -1456,29 +1470,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::StartProfileApply => {
-            if [
-                &state.preferences.stage,
-                &state.profile_id,
-                &state.public_key,
-                &state.signing_public,
-            ]
-            .iter()
-            .any(|v| v.trim().is_empty())
-            {
-                state.status =
-                    "Choose profile ID, isolated stage and original/new public signing keys."
-                        .into();
+            if state.preferences.stage.trim().is_empty() || state.profile_id.trim().is_empty() {
+                state.status = "Select an offline profile and prepared stage.".into();
                 return Task::none();
             }
-            return launch(
-                state,
-                Operation::ApplyProfile(
-                    PathBuf::from(&state.preferences.stage),
-                    state.profile_id.clone(),
-                    PathBuf::from(&state.public_key),
-                    PathBuf::from(&state.signing_public),
-                ),
-            );
+            let key = match modding_keys::public_key(
+                PathBuf::from(&state.preferences.stage).as_path()
+            ) {
+                Ok(value) => value,
+                Err(error) => { state.status = error; return Task::none(); }
+            };
+            return launch(state, Operation::ApplyProfile(
+                PathBuf::from(&state.preferences.stage), state.profile_id.clone(),
+                key.clone(), key
+            ));
         }
         Message::StartProfileList => {
             if state.preferences.stage.trim().is_empty() {
@@ -1504,58 +1509,43 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::StartProfileAdd => {
-            if [
-                &state.preferences.stage,
-                &state.profile_id,
-                &state.input,
-                &state.stage_target,
-                &state.public_key,
-                &state.signing_public,
-                &state.signed_name,
-            ]
-            .iter()
-            .any(|v| v.trim().is_empty())
-            {
-                state.status = "Select a profile, signed replacement PAK, relative stage target, original/mod public keys, and basename.".into();
+            if state.profile_id.trim().is_empty() || state.input.trim().is_empty() {
+                state.status = "Select a profile and signed replacement file.".into();
                 return Task::none();
             }
-            return launch(
-                state,
-                Operation::AddProfileMod(
-                    PathBuf::from(&state.preferences.stage),
-                    state.profile_id.clone(),
-                    PathBuf::from(&state.input),
-                    state.stage_target.clone(),
-                    PathBuf::from(&state.public_key),
-                    PathBuf::from(&state.signing_public),
-                    state.signed_name.clone(),
-                ),
-            );
+            let target = match selected_stage_target(state) {
+                Ok(target) => target,
+                Err(error) => { state.status = error; return Task::none(); }
+            };
+            let stage = PathBuf::from(&state.preferences.stage);
+            let key = match modding_keys::public_key(&stage) {
+                Ok(key) => key,
+                Err(error) => { state.status = error; return Task::none(); }
+            };
+            let basename = match modding_keys::signed_basename(
+                &stage.join("paks").join(&target)
+            ) {
+                Ok(name) => name,
+                Err(error) => { state.status = error; return Task::none(); }
+            };
+            return launch(state, Operation::AddProfileMod(
+                stage, state.profile_id.clone(), PathBuf::from(&state.input),
+                target, key.clone(), key, basename,
+            ));
         }
         Message::StartProfilePlan => {
-            if [
-                &state.preferences.stage,
-                &state.profile_id,
-                &state.public_key,
-                &state.signing_public,
-            ]
-            .iter()
-            .any(|v| v.trim().is_empty())
-            {
-                state.status =
-                    "Select a profile and both public signing keys for a verified read-only plan."
-                        .into();
+            if state.profile_id.trim().is_empty() {
+                state.status = "Select an offline profile first.".into();
                 return Task::none();
             }
-            return launch(
-                state,
-                Operation::PlanProfile(
-                    PathBuf::from(&state.preferences.stage),
-                    state.profile_id.clone(),
-                    PathBuf::from(&state.public_key),
-                    PathBuf::from(&state.signing_public),
-                ),
-            );
+            let stage = PathBuf::from(&state.preferences.stage);
+            let key = match modding_keys::public_key(&stage) {
+                Ok(key) => key,
+                Err(error) => { state.status = error; return Task::none(); }
+            };
+            return launch(state, Operation::PlanProfile(
+                stage, state.profile_id.clone(), key.clone(), key,
+            ));
         }
         Message::StartStageInit => {
             if state.preferences.stage.trim().is_empty() {
@@ -1578,56 +1568,45 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::StartStageImport => {
-            if [
-                &state.preferences.stage,
-                &state.input,
-                &state.stage_target,
-                &state.public_key,
-                &state.signed_name,
-            ]
-            .iter()
-            .any(|x| x.trim().is_empty())
-            {
-                state.status = "Specify stage root, original PAK, relative target, public key, and signed basename.".into();
-                return Task::none();
-            }
-            return launch(
-                state,
-                Operation::StageImport(
-                    PathBuf::from(&state.preferences.stage),
-                    PathBuf::from(&state.input),
-                    state.stage_target.clone(),
-                    PathBuf::from(&state.public_key),
-                    state.signed_name.clone(),
-                ),
-            );
+            let target = match selected_stage_target(state) {
+                Ok(target) => target,
+                Err(error) => { state.status = error; return Task::none(); }
+            };
+            let stage = PathBuf::from(&state.preferences.stage);
+            let key = match modding_keys::public_key(&stage) {
+                Ok(key) => key,
+                Err(error) => { state.status = error; return Task::none(); }
+            };
+            let basename = match modding_keys::signed_basename(
+                &stage.join("paks").join(&target)
+            ) {
+                Ok(name) => name,
+                Err(error) => { state.status = error; return Task::none(); }
+            };
+            return launch(state, Operation::StageImport(
+                stage, PathBuf::from(&state.input), target, key, basename,
+            ));
         }
         Message::StartStageApply => {
-            if [
-                &state.preferences.stage,
-                &state.input,
-                &state.stage_target,
-                &state.public_key,
-                &state.signing_public,
-                &state.signed_name,
-            ]
-            .iter()
-            .any(|x| x.trim().is_empty())
-            {
-                state.status = "Specify stage, replacement PAK path, relative target, original and new public keys, and signed basename.".into();
-                return Task::none();
-            }
-            return launch(
-                state,
-                Operation::StageApply(
-                    PathBuf::from(&state.preferences.stage),
-                    PathBuf::from(&state.input),
-                    state.stage_target.clone(),
-                    PathBuf::from(&state.public_key),
-                    PathBuf::from(&state.signing_public),
-                    state.signed_name.clone(),
-                ),
-            );
+            let target = match selected_stage_target(state) {
+                Ok(target) => target,
+                Err(error) => { state.status = error; return Task::none(); }
+            };
+            let stage = PathBuf::from(&state.preferences.stage);
+            let key = match modding_keys::public_key(&stage) {
+                Ok(key) => key,
+                Err(error) => { state.status = error; return Task::none(); }
+            };
+            let basename = match modding_keys::signed_basename(
+                &stage.join("paks").join(&target)
+            ) {
+                Ok(name) => name,
+                Err(error) => { state.status = error; return Task::none(); }
+            };
+            return launch(state, Operation::StageApply(
+                stage, PathBuf::from(&state.input), target,
+                key.clone(), key, basename,
+            ));
         }
         Message::StartStageRestore => {
             if state.preferences.stage.trim().is_empty() {
