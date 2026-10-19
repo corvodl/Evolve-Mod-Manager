@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 pub struct AutoClip {
     pub label: String,
     pub kind: String,
+    pub virtual_path: String,
     pub source: Option<PathBuf>,
 }
 
@@ -235,6 +236,7 @@ pub fn discover(
         found.clips.push(AutoClip {
             label: r.name.clone(),
             kind: r.kind.clone(),
+            virtual_path: r.path.clone(),
             source: path,
         });
     }
@@ -256,6 +258,20 @@ pub fn discover(
         }
     }
     found
+}
+
+/// Resolve one explicitly declared CAF on user request. Imported-library
+/// manifests are rechecked here instead of reusing a possibly stale path.
+pub fn resolve_declared(
+    inventory: &Inventory,
+    declared_path: &str,
+    imported: Option<&Path>,
+    build: Option<&str>,
+) -> Result<Option<PathBuf>, String> {
+    if !declared_path.to_ascii_lowercase().ends_with(".caf") {
+        return Err("Only declared CAF paths can be loaded this way".into());
+    }
+    exact(inventory, declared_path, imported, build)
 }
 
 #[cfg(test)]
