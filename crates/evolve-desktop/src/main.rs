@@ -118,6 +118,7 @@ struct State {
     update_status: String,
     available_update: Option<ReleaseUpdate>,
     staged_installer: Option<PathBuf>,
+    startup_update_checked: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -460,6 +461,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::PreferenceWorkspace(value) => state.preferences.current_workspace = value,
         Message::SavePreferences => persist_preferences(state),
         Message::CheckUpdates => {
+            state.startup_update_checked = true;
             state.update_status = "Checking public GitHub Releases for verified updates...".into();
             state.available_update = None;
             state.staged_installer = None;
@@ -1488,11 +1490,19 @@ fn main() -> iced::Result {
     let _supported_backends = wgpu::Backends::PRIMARY;
     iced::application(initial_state, update, view)
         .subscription(|state: &State| {
-            if state.playing {
+            let playback = if state.playing {
                 iced::time::every(Duration::from_millis(40)).map(|_| Message::Tick)
             } else {
                 Subscription::none()
-            }
+            };
+            let startup = if state.preferences.automatic_update_checks
+                && !state.startup_update_checked
+            {
+                iced::time::every(Duration::from_millis(500)).map(|_| Message::CheckUpdates)
+            } else {
+                Subscription::none()
+            };
+            Subscription::batch([playback, startup])
         })
         .title("Evolve Mod Manager — Rust Development Preview")
         .theme(|state: &State| {
@@ -1511,18 +1521,5 @@ fn main() -> iced::Result {
                 },
             )
         })
-        .run_with(|| {
-            let state = initial_state();
-            let task = if state.preferences.automatic_update_checks {
-                let channel = if state.preferences.experimental_updates {
-                    UpdateChannel::Beta
-                } else {
-                    UpdateChannel::Stable
-                };
-                check_updates_task(channel)
-            } else {
-                Task::none()
-            };
-            (state, task)
-        })
+        .run()
 }
