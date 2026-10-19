@@ -7,6 +7,7 @@ pub mod inventory;
 pub mod model;
 pub mod policy;
 pub mod terrain;
+pub mod scene;
 pub mod signed_pak;
 
 pub use archive::{
@@ -24,5 +25,6 @@ pub use inventory::{
     write_inventory_json,
 };
 pub use signed_pak::{SignedPakError, SignedPakInfo, SignedEntry, inspect_signed_pak, extract_signed_pak, open_verified_signed_pak};
+pub use scene::{SceneError, LevelScene, PlacedObject, Transform, parse_level_scene, load_level_scene, export_edited_layer};
 pub use terrain::{TerrainError, TerrainInfo, TerrainMesh, decode_terrain_bytes, export_terrain_obj, read_terrain};
 pub use policy::{AnimationPolicy, ExportFeature, FeatureStatus, PARITY_MATRIX};
