@@ -134,8 +134,8 @@ fn inspect_outputs(
                     .path()
                     .extension()
                     .is_some_and(|v| v.eq_ignore_ascii_case("glb"))
+                    && let Ok(motion) = AnimatedGlb::read(&entry.path())
                 {
-                    if let Ok(motion) = AnimatedGlb::read(&entry.path()) {
                         let names = motion.list_clips();
                         if !names.is_empty() {
                             if clips.len() + names.len() > MAX_TRACKS {
@@ -155,7 +155,6 @@ fn inspect_outputs(
                                     .replace('\\', "/"),
                             );
                         }
-                    }
                 }
             }
         }
