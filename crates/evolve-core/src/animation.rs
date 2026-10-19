@@ -1,15 +1,12 @@
 //! CryEngine CAF/DBA references and verified converter-backed GLB timelines.
 //! Raw CAF/DBA controller decoding is not guessed from chunk headers.
 use crate::archive::safe_member_name;
-use crate::signed_pak::SignedPakError;
-use quick_xml::events::Event;
+use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::io::Read;
+use std::path::Path;
 
 const MAX_CONFIG: usize=2*1024*1024;
 const MAX_GLTF: usize=256*1024*1024;
@@ -70,6 +67,40 @@ pub fn inspect_caf_file(path:&Path)->Result<CafInspection,AnimationError>{
     if !meta.file_type().is_file() || meta.len()>MAX_CAF as u64 {return Err(AnimationError::Unavailable);}
     inspect_caf_bytes(&fs::read(path)?)
 }
+fn handle_animation(
+    e:&BytesStart<'_>, parents:&[Vec<u8>], base:&mut String,
+    items:&mut Vec<AnimationReference>
+)->Result<(),AnimationError>{
+    if !parents.last().is_some_and(|p|p.eq_ignore_ascii_case(b"AnimationList"))
+        || !e.name().as_ref().eq_ignore_ascii_case(b"Animation") {return Ok(());}
+    let mut name=String::new();
+    let mut reference=String::new();
+    for attr in e.attributes(){
+        let attr=attr.map_err(|e|AnimationError::Invalid(e.to_string()))?;
+        let v=attr.unescape_value().map_err(|e|AnimationError::Invalid(e.to_string()))?.into_owned();
+        if attr.key.as_ref().eq_ignore_ascii_case(b"name") {name=v;}
+        else if attr.key.as_ref().eq_ignore_ascii_case(b"path") {reference=v.replace('\\',"/");}
+    }
+    if name.eq_ignore_ascii_case("#filepath"){
+        *base=reference.trim_matches('/').to_owned();
+        return Ok(());
+    }
+    let database=name.eq_ignore_ascii_case("$TracksDatabase");
+    if name.is_empty() || reference.is_empty() || name.contains('*') || reference.contains('*')
+        || (name.starts_with(['#','$']) && !database) {return Ok(());}
+    if let Some(idx)=reference.to_ascii_lowercase().find(".caf (") {reference.truncate(idx+4);}
+    let lower=reference.to_ascii_lowercase();
+    let full=if lower.starts_with("characters/") || lower.starts_with("animations/"){
+        reference
+    }else{format!("{base}/{reference}").trim_start_matches('/').to_string()};
+    if let Ok(path)=safe_member_name(&full){
+        let kind=path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+        if matches!(kind.as_str(),"caf"|"dba"|"bspace"|"comb") && items.len()<MAX_FRAMES {
+            items.push(AnimationReference{name,path,kind,database});
+        }
+    }
+    Ok(())
+}
 pub fn animation_references(bytes:&[u8])->Result<Vec<AnimationReference>,AnimationError>{
     if bytes.is_empty()||bytes.len()>MAX_CONFIG
         || bytes.windows(9).any(|w|w.eq_ignore_ascii_case(b"<!DOCTYPE"))
@@ -78,57 +109,25 @@ pub fn animation_references(bytes:&[u8])->Result<Vec<AnimationReference>,Animati
     }
     let mut reader=Reader::from_reader(bytes);
     let mut base=String::new();
-    let mut parents=Vec::new();
+    let mut parents:Vec<Vec<u8>>=Vec::new();
     let mut items=Vec::new();
     loop {
         match reader.read_event().map_err(|e|AnimationError::Invalid(e.to_string()))? {
-            Event::Start(e)|Event::Empty(e)=>{
-                let tag=e.name().as_ref().to_vec();
-                if parents.last().is_some_and(|p:&Vec<u8>|p.eq_ignore_ascii_case(b"AnimationList"))
-                    && tag.eq_ignore_ascii_case(b"Animation") {
-                    let mut name=String::new();
-                    let mut reference=String::new();
-                    for attr in e.attributes(){
-                        let attr=attr.map_err(|e|AnimationError::Invalid(e.to_string()))?;
-                        let v=attr.unescape_value().map_err(|e|AnimationError::Invalid(e.to_string()))?.into_owned();
-                        match attr.key.as_ref(){
-                            b"name"=>name=v,
-                            b"path"=>reference=v.replace('\\',"/"),
-                            _=>(),
-                        }
-                    }
-                    if name.eq_ignore_ascii_case("#filepath"){
-                        base=reference.trim_matches('/').to_owned();
-                    }else{
-                        let database=name.eq_ignore_ascii_case("$TracksDatabase");
-                        if !name.is_empty() && !reference.is_empty() && !name.contains('*') && !reference.contains('*')
-                            && (!name.starts_with(['#','$']) || database) {
-                            if let Some(caf)=reference.to_ascii_lowercase().find(".caf (") {
-                                reference.truncate(caf+4);
-                            }
-                            let full=if reference.to_ascii_lowercase().starts_with(["characters/","animations/"]){
-                                reference
-                            } else {format!("{}/{}",base,reference).trim_start_matches('/').to_string()};
-                            if let Ok(path)=safe_member_name(&full) {
-                                let kind=path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-                                if matches!(kind.as_str(),"caf"|"dba"|"bspace"|"comb") && items.len()<MAX_FRAMES {
-                                    items.push(AnimationReference{name,path,kind,database});
-                                }
-                            }
-                        }
-                    }
-                }
-                if matches!(reader.read_event(),Ok(Event::Eof)){} // no-op: avoid borrowing temporary event
-                if tag.len()>0 && parents.len()<64 {
-                    // Track direct root/AnimationList nesting only; nested Animation refs are not guessed.
-                }
+            Event::Start(e)=>{
+                handle_animation(&e,&parents,&mut base,&mut items)?;
+                if parents.len()>=64{return Err(AnimationError::Invalid("XML nesting too deep".into()));}
+                parents.push(e.name().as_ref().to_vec());
             }
-            Event::End(_)=>{parents.pop();}
+            Event::Empty(e)=>{
+                handle_animation(&e,&parents,&mut base,&mut items)?;
+            }
+            Event::End(_)=>{if parents.pop().is_none(){return Err(AnimationError::Invalid("unexpected closing XML tag".into()));}}
             Event::DocType(_) | Event::GeneralRef(_)=>return Err(AnimationError::Invalid("unsafe XML entities".into())),
             Event::Eof=>break,
             _=>(),
         }
     }
+    if !parents.is_empty(){return Err(AnimationError::Invalid("truncated XML".into()));}
     Ok(items)
 }
 
@@ -293,11 +292,11 @@ mod tests {
     }
     #[test]
     fn reads_exact_chrparams_catalog(){
-        let xml=br#"<Params><AnimationList><Animation name="#filepath" path="characters/hunters/merc_tech/"/>
+        let xml=br##"<Params><AnimationList><Animation name="#filepath" path="characters/hunters/merc_tech/"/>
           <Animation name="idle" path="animations/tech_idle.caf"/>
           <Animation name="$TracksDatabase" path="animations/tech_3p.dba"/>
           <Animation name="walk*" path="animations/*.caf"/>
-        </AnimationList></Params>"#;
+        </AnimationList></Params>"##;
         let catalog=animation_references(xml).unwrap();
         assert_eq!(catalog.len(),2);
         assert_eq!(catalog[0].name,"idle");
