@@ -1407,15 +1407,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         found,
                         ambiguous
                     );
-                    if let Some(image) = diffuse {
-                        state.diffuse = Some(Arc::new(image));
-                    }
-                    if let Some(image) = normal {
-                        state.normal_map = Some(Arc::new(image));
-                    }
-                    if let Some(image) = emissive {
-                        state.emissive_map = Some(Arc::new(image));
-                    }
+                    // A new authored material must not inherit a previous
+                    // character's maps when the reference is missing/ambiguous.
+                    state.diffuse = diffuse.map(Arc::new);
+                    state.normal_map = normal.map(Arc::new);
+                    state.emissive_map = emissive.map(Arc::new);
                     state.material_report = Some(report);
                     state.page = Some(Page::Models);
                 }
