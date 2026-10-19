@@ -122,7 +122,7 @@ impl shader::Program<super::Message> for Scene {
                 .as_ref()
                 .and_then(|v| v.get(i))
                 .copied()
-                .unwrap_or([0., 0., 1.]);
+                .unwrap_or([0., 0., 0.]); // fragment shader derives face normal from geometry
             let nx = normal[0] * cy - normal[1] * sy;
             let nb = normal[0] * sy + normal[1] * cy;
             normal = [nx, normal[2] * cp - nb * sp, normal[2] * sp + nb * cp];
