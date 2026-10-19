@@ -1,6 +1,6 @@
 //! Interactive viewer inspector: source-grounded dependency diagram and
 //! original-vs-modified diagnostics. No graph edges are inferred from names.
-use super::{Message, State, ViewerTab};
+use super::{Message, State, ViewerTab, uv_preview};
 use evolve_core::{DependencyGraph, DependencyStatus};
 use iced::widget::canvas::{self, Path, Stroke};
 use iced::widget::{
@@ -91,6 +91,7 @@ impl<Message> canvas::Program<Message> for DependencyCanvas {
 pub(super) fn view(state: &State) -> Element<'_, Message> {
     let tabs = row![
         button("MODEL").on_press(Message::ViewerSelectTab(ViewerTab::Model)),
+        button("UV0").on_press(Message::ViewerSelectTab(ViewerTab::Uv)),
         button("DEPENDENCIES").on_press(Message::ViewerSelectTab(ViewerTab::Dependencies)),
         button("COMPARE").on_press(Message::ViewerSelectTab(ViewerTab::Compare)),
         space().width(Fill),
@@ -117,6 +118,31 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 button("Save workspace").on_press(Message::ViewerSaveLayout),
             ].spacing(8),
         ].spacing(6).into(),
+        ViewerTab::Uv => {
+            if let Some(mesh) = &state.model {
+                if let Some(uv) = &mesh.uv0 {
+                    let tiled = uv.iter().filter(|uv| {
+                        uv.iter().any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+                    }).count();
+                    column![
+                        text(format!(
+                            "Source UV0: {} coordinates, {} outside the 0–1 tile (preserved).",
+                            uv.len(), tiled
+                        )).size(12),
+                        canvas_widget(uv_preview::SourceUv { mesh: mesh.clone() })
+                            .width(Fill).height(Length::Fixed(260.0)),
+                        text("Red wireframe displays verified UV0 source triangles. No destructive seam removal or UV reindexing.")
+                            .size(12).color(MUTED),
+                    ].spacing(9).into()
+                } else {
+                    text("No verified UV0 stream in this model; UVs will not be fabricated.")
+                        .size(12).color(MUTED).into()
+                }
+            } else {
+                text("Load a source CryEngine mesh before inspecting UV0.")
+                    .size(12).color(MUTED).into()
+            }
+        }
         ViewerTab::Dependencies => {
             if let Some(report) = &state.dependency_graph {
                 let mut nodes = column![].spacing(4);
