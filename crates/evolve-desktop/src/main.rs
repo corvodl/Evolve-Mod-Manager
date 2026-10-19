@@ -2317,10 +2317,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.library_root = value.clone();
             state.storage_usage = None;
             state.library_catalog = None;
+            state.library_selection.clear();
             state.library_selected = None;
+            state.library_page = 0;
             state.preferences.asset_library_root = value;
+            refresh_library_matches(state);
         }
-        Message::PreferenceBlender(value) => state.preferences.blender_executable = value,
+        Message::PreferenceBlender(value) => {
+            state.blender_path = value.clone();
+            state.preferences.blender_executable = value;
+        }
         Message::PreferenceWorkspace(value) => state.preferences.current_workspace = value,
         Message::SavePreferences => persist_preferences(state),
         Message::CheckUpdates => {
