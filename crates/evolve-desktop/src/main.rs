@@ -137,6 +137,7 @@ struct State {
     page: Option<Page>,
     inventory: Option<Inventory>,
     pak: Option<PakInventory>,
+    signed_pak: Option<SignedPakInfo>,
     texture: Option<DdsInfo>,
     character: Option<CdfDefinition>,
     cdf_dependencies: Option<CdfDependencyReport>,
@@ -1450,6 +1451,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                     state.inventory = Some(inventory);
                     state.pak = None;
+                    state.signed_pak = None;
                     state.texture = None;
                     state.selected = None;
                     state.page = Some(Page::Files);
@@ -1461,6 +1463,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         pak.total_bytes
                     );
                     state.pak = Some(pak);
+                    state.signed_pak = None;
                     state.selected = None;
                     state.page = Some(Page::Files);
                 }
@@ -1648,6 +1651,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         info.entries.len(),
                         info.total_expanded_bytes
                     );
+                    state.signed_pak = Some(info);
+                    state.pak = None;
+                    state.inventory = None;
+                    state.selected = None;
                 }
                 Ok(Completed::RebuiltSigned(name, dir)) => {
                     state.status = format!(
