@@ -55,12 +55,32 @@ fn strip(state: &State) -> Element<'_, Message> {
             button("Toggle File Explorer").on_press(Message::ViewerToggleExplorer),
             button("Reset camera").on_press(Message::ViewerResetCamera),
         ].spacing(8).into(),
-        Some("Model") => row![
-            button("Inspect selected model").on_press(Message::ViewerPreviewSelected),
-            button("Inspect CDF").on_press(Message::StartCdfInspection),
-            button("Preview CDF assembly (static)").on_press(Message::ViewerPreviewStaticCdf),
-            button("Export rigged FBX").on_press(Message::StartRigFbx),
-        ].spacing(8).into(),
+        Some("Model") => column![
+            row![
+                button("Inspect selected model").on_press(Message::ViewerPreviewSelected),
+                button("Inspect CDF").on_press(Message::StartCdfInspection),
+                button("Preview CDF assembly (static)").on_press(Message::ViewerPreviewStaticCdf),
+                button("Export verified rigged FBX").on_press(Message::StartRigFbx),
+            ].spacing(8),
+            text("Blender FBX export requires a verified compiled skeleton and original mesh weights. Source files are never overwritten.").size(12).color(MUTED),
+            row![
+                text_input("NEW FBX destination (absolute path)", &state.output)
+                    .on_input(Message::OutputChanged).width(Fill),
+                text_input("Blender executable", &state.blender_path)
+                    .on_input(Message::BlenderChanged).width(Fill),
+                text_input("Matching skeleton (CDF auto-detected where verified)", &state.skeleton_path)
+                    .on_input(Message::SkeletonChanged).width(Fill),
+            ].spacing(8),
+            row![
+                button(if state.export_include_animation {
+                    "Verified CAF Actions: on"
+                } else {
+                    "Verified CAF Actions: off"
+                }).on_press(Message::ViewerToggleExportAnimations),
+                text_input("Exact CAF path (optional; export opt-in)", &state.caf_path)
+                    .on_input(Message::CafInputChanged).width(Fill),
+            ].spacing(8),
+        ].spacing(7).into(),
         Some("Textures") => row![
             button("Resolve .mtl").on_press(Message::StartMaterialResolve),
             button("Load diffuse").on_press(Message::StartDiffuseLoad),
