@@ -134,7 +134,8 @@ pub fn import_signed_library_pak(
         let doc: serde_json::Value =
             serde_json::from_reader(File::open(&manifest_file).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
-        if doc["source_sha256"].as_str() != Some(before.as_str()) || doc["name"].as_str() != Some(basename)
+        if doc["source_sha256"].as_str() != Some(before.as_str())
+            || doc["name"].as_str() != Some(basename)
         {
             return Err("Existing archive does not match the selected source hash".into());
         }
