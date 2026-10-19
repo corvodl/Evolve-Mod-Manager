@@ -18,12 +18,14 @@ struct SourceKey {
     size: u64,
     modified: SystemTime,
 }
+#[derive(Debug)]
 struct CachedImage {
     key: SourceKey,
     info: DdsInfo,
     image: Arc<RgbaImage>,
     bytes: u64,
 }
+#[derive(Debug)]
 pub struct PreviewCache {
     entries: VecDeque<CachedImage>,
     bytes: u64,
