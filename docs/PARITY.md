@@ -8,7 +8,7 @@ This table tracks **actual Rust implementation state**, not feature mockups. The
 | Historical ZIP-compatible PAK inspect/extract/rebuild | **Implemented subset** | Original archive untouched, bounded CRC-verified extraction, file-path safety |
 | Stage 2 signed/encrypted CryPAK RSA/Twofish | **Experimental: verify and extract implemented, real-game unverified** | Verify signatures and central-directory/local offsets, native decrypted streaming |
 | Signed Stage 2 PAK editing and repacking | **Experimental: exact one-member replacement, re-signing with a user-supplied RSA key and independent verification**; no game-acceptance validation | Golden round-trips and signature verification after patch injection |
-| Staged offline mods, backups and crash-safe restore | **Isolated signed-PAK stage prototype**: CLI and Iced GUI import/apply/status/restore, SHA-256 journal and synthetic signed-PAK integration test; no installed-game launch integration | Journaling and rollback after cancel, crash and power loss |
+| Staged offline mods, backups and crash-safe restore | **Experimental isolated workspace**: single-PAK and multi-PAK profile staging, before/after SHA-256, journals, recovery tests, CLI/GUI controls; no installed-game launch integration | Journaling and rollback after cancel, crash and power loss |
 | Asset Library multi-PAK resolution and provenance | **Initial exact CDF resolver in CLI and GUI**: missing/ambiguous matches are reported, not guessed; no full provenance graph | Cross-PAK matching only when exact and unambiguous |
 | DDS/streaming top mip and BCn → PNG | **Implemented subset** | Golden pixel comparisons, signed BC5, BC6/BC7, console endian/split variants |
 | CDF XML skeleton/attachment parsing | **Implemented subset** | CDF variants, skin sets, dependency graph and verified meshes |
@@ -20,7 +20,7 @@ This table tracks **actual Rust implementation state**, not feature mockups. The
 | GPU model viewer and CryEngine materials | **Partial: Iced/wgpu textured mesh, source UV0, manually provided diffuse, tangent-space normal and emissive DDS; no automatic MTL mapping or skinning** | Real wgpu mesh, high-res DDS, normal/emissive/transparency parity |
 | Level Editor and Blender scene export | **Partial: terrain, XML/LYR object placement, geometry-scene GLB and Blender FBX through converter; incomplete map textures and dependencies** | Correct complete-scene placements, terrain, textures and dependencies |
 | GFX, USM and loose-file editing | **Not ported** | Real-asset read/preview/edit/repack integrity |
-| Settings, mod profiles, signed updater and installer | **Partial: settings migration/persistence, public release check/download and installer/release definitions; game mod profiles not ported** | Versioned releases, recovery, private-data exclusion, tested installs and rollback |
+| Settings, mod profiles, signed updater and installer | **Partial: persisted preferences, verified public update checks and installer, isolated signed-PAK mod profile catalog/planning and batch stage transactions; production game profiles and upgrade tests incomplete** | Versioned releases, recovery, private-data exclusion, tested installs and rollback |
 | Responsive UI and safe long-running jobs | **Partial** | Cancellation, progress, large-input and Windows GUI tests |
 
 ## Release requirements
@@ -44,6 +44,13 @@ Do not convert an internal Rust prototype into a public production release just 
 - **Animations**: source CAF metadata, native CAF controller decoding and time sampling, chrparams indexes, converter-backed DBA clips and GLB preview. Raw DBA decode, verified bone matching and skinning playback, animation layering and FBX Actions remain unfinished.
 - **Levels**: Heightmap.dat terrain decoding, mission/LYR hierarchy and transforms, non-destructive edits, geometry-scene GLB and Blender FBX bridge exposed in Iced. Full material/geometry dependency assembly, normal maps and real-map scene parity remain unported.
 - **Public output**: no user-owned game files, keys, private repository history, secrets or proprietary assets should be committed. Public release tag 1.0 must be gated by full actual parity.
+
+## Isolated mod profiles and recovery (development only)
+
+- Persistent versioned `profiles.json` catalogs live inside a newly initialized offline staging workspace. They store only file references and SHA-256 hashes; they do not copy assets or keys into the Git repository. CLI and Iced support creation, listing, signed-file registration, verifying enabled mods and resolving duplicate targets.
+- Each signed PAK's **own** authenticated basename is used when planning mixed-archive profiles. A source must independently verify against the explicitly provided user-supplied RSA public key; changed hashes and missing/ambiguous targets fail closed.
+- A multi-PAK profile can be applied to its **isolated staging workspace** and restored using a separate recoverable batch journal. Original PAK bytes are preserved and verified before the first modification; single-file transactions are prohibited during an active batch. This does **not** change installed game files.
+- There is no production user-facing mod installation/profile activation yet. Full parity still requires integration with the established game launch/swap workflow, separate backup volume handling, cancellation/progress, offline/online DLL rules, validation with representative original Stage 2 data, installer upgrades and game startup acceptance tests.
 
 ## Windows packaging and settings milestone (experimental)
 
