@@ -5165,6 +5165,38 @@ mod project_edit_tests {
     }
 
     #[test]
+    fn level_transform_changes_are_undoable_without_mutating_original_scene() {
+        let xml = br#"<Objects>
+            <Object Id="parent" Pos="1,2,3"/>
+            <Object Id="child" Parent="parent" Pos="4,5,6"/>
+        </Objects>"#;
+        let scene = evolve_core::parse_level_scene(&[("test.lyr", xml)]).unwrap();
+        let initial = scene.clone();
+        let mut state = State {
+            level_scene: Some(Arc::new(scene)),
+            level_selected: Some(0),
+            ..State::default()
+        };
+        sync_level_fields(&mut state);
+        let _ = update(
+            &mut state,
+            Message::LevelEditPositionChanged("11,12,13".into()),
+        );
+        let _ = update(&mut state, Message::LevelApplyTransform);
+        let actual = state.level_scene.as_ref().unwrap();
+        assert_eq!(actual.objects[1].world.position, [15.0, 17.0, 19.0]);
+        assert_eq!(state.level_undo.len(), 1);
+        assert!(state.level_redo.is_empty());
+        let _ = update(&mut state, Message::LevelUndoTransform);
+        assert_eq!(state.level_scene.as_ref().unwrap().objects[1].world.position, [5.0, 7.0, 9.0]);
+        assert_eq!(state.level_redo.len(), 1);
+        let _ = update(&mut state, Message::LevelRedoTransform);
+        assert_eq!(state.level_scene.as_ref().unwrap().objects[1].world.position, [15.0, 17.0, 19.0]);
+        assert_eq!(initial.objects[1].world.position, [5.0, 7.0, 9.0]);
+        assert_eq!(state.level_original_transforms.len(), 1);
+    }
+
+    #[test]
     fn library_configuration_routes_to_storage_and_preserves_edits_between_tabs() {
         let mut state = State {
             page: Some(Page::AssetLibrary),
