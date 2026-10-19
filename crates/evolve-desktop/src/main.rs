@@ -209,6 +209,7 @@ struct State {
     modding_advanced: bool,
     modding_profiles: bool,
     modding_open_editor_when_scanned: bool,
+    modding_pending_focus: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -224,6 +225,7 @@ enum ViewerTab {
 enum Operation {
     IndexProjects(PathBuf, PathBuf),
     BuildRawProject(ProjectRow, PathBuf, PathBuf),
+    UnpackRawProject(PathBuf, PathBuf, PathBuf),
     LoadImportedLibrary(PathBuf),
     OpenImportedPak(ImportedPak),
     InspectDependencies(Inventory, String),
@@ -279,6 +281,7 @@ enum Operation {
 #[derive(Debug, Clone)]
 enum Completed {
     Projects(Vec<ProjectRow>),
+    UnpackedProject(PathBuf, usize),
     ImportedLibrary(ImportedLibrary),
     ImportedPakFiles(Inventory),
     Dependencies(DependencyGraph),
@@ -336,6 +339,9 @@ impl Operation {
                 modding_projects::build_single_raw(&project, &projects, &stage)
                     .map(|(entry, target)| Completed::RebuiltSigned(entry, target))
             }
+            Self::UnpackRawProject(projects, stage, source) =>
+                modding_projects::unpack_raw_project(&projects, &stage, &source)
+                    .map(|(path, count)| Completed::UnpackedProject(path, count)),
             Self::InspectDependencies(inventory, relative) => {
                 inspect_dependencies(&inventory, &relative)
                     .map(Completed::Dependencies)
@@ -975,49 +981,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::ModdingUnpackPak => {
-            let source = PathBuf::from(&state.input);
-            let basename = match modding_keys::signed_basename(&source) {
-                Ok(value) => value,
-                Err(error) => {
-                    state.status = error;
-                    return Task::none();
-                }
-            };
-            if modding_keys::staged_target(
-                PathBuf::from(&state.preferences.stage).as_path(),
-                &source,
-            )
-            .is_err()
-            {
-                state.status =
-                    "Select a verified staged original PAK, not an arbitrary file.".into();
+            if state.input.trim().is_empty() {
+                state.status = "Select a signed staged original PAK in the archive browser.".into();
                 return Task::none();
             }
-            let key =
-                match modding_keys::public_key(PathBuf::from(&state.preferences.stage).as_path()) {
-                    Ok(key) => key,
-                    Err(error) => {
-                        state.status = error;
-                        return Task::none();
-                    }
-                };
-            let projects = PathBuf::from(&state.preferences.projects);
-            if !projects.is_dir() {
-                state.status = "Configure an existing Projects folder before unpacking.".into();
-                return Task::none();
-            }
-            let label = basename.trim_end_matches(".pak");
-            let unique = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |time| time.as_millis());
-            let dest = projects.join(format!("Unpacked-{}-{}", label, unique));
-            state.status =
-                "Extracting into a NEW read-only files directory (no project manifest yet)..."
-                    .into();
-            return launch(
-                state,
-                Operation::ExtractSignedPak(source, key, basename, dest),
-            );
+            state.status = "Creating an editable raw project from the verified signed PAK...".into();
+            return launch(state, Operation::UnpackRawProject(
+                PathBuf::from(&state.preferences.projects),
+                PathBuf::from(&state.preferences.stage),
+                PathBuf::from(&state.input),
+            ));
         }
         Message::LibraryRootChanged(value) => {
             state.library_root = value;
@@ -2125,15 +2098,30 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.comparison = Some(report);
                     state.viewer_tab = ViewerTab::Compare;
                 }
+                Ok(Completed::UnpackedProject(path, count)) => {
+                    state.status = format!(
+                        "Unpacked {count} original assets into a new raw editing project; originals unchanged."
+                    );
+                    state.modding_pending_focus = Some(path);
+                    return launch(state, Operation::IndexProjects(
+                        PathBuf::from(&state.preferences.projects),
+                        PathBuf::from(&state.preferences.stage),
+                    ));
+                }
                 Ok(Completed::Projects(projects)) => {
-                    let previous = state
-                        .modding_selected
-                        .and_then(|i| state.modding_projects.as_ref().and_then(|old| old.get(i)))
-                        .map(|p| p.workspace.clone());
-                    state.modding_selected =
-                        previous.and_then(|path| projects.iter().position(|p| p.workspace == path));
+                    let focus = state.modding_pending_focus.take();
+                    let previous = focus.clone().or_else(|| state.modding_selected.and_then(|i|
+                        state.modding_projects.as_ref().and_then(|old| old.get(i))
+                    ).map(|p| p.workspace.clone()));
+                    state.modding_selected = previous.and_then(|path|
+                        projects.iter().position(|p| p.workspace == path)
+                    );
                     state.status = format!("Loaded {} editable project(s).", projects.len());
                     state.modding_projects = Some(projects);
+                    if let Some(path) = focus {
+                        state.modding_open_editor_when_scanned = true;
+                        return begin_scan(state, path.join("files"));
+                    }
                 }
                 Ok(Completed::ImportedLibrary(catalog)) => {
                     let count = catalog.archives.len();
