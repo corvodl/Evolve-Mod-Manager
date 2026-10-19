@@ -1140,14 +1140,8 @@ mod tests {
         };
         let workspace = root.path().join("offline-stage");
         initialize_stage(&workspace).unwrap();
-        let original_sha = import_stage_pak(
-            &workspace,
-            &archive,
-            "Game/sample.pak",
-            &key,
-            "sample.pak",
-        )
-        .unwrap();
+        let original_sha =
+            import_stage_pak(&workspace, &archive, "Game/sample.pak", &key, "sample.pak").unwrap();
         let staged = workspace.join("paks/Game/sample.pak");
         assert_eq!(fs::read(&staged).unwrap(), fs::read(&archive).unwrap());
         let journal = apply_stage_pak(
@@ -1162,9 +1156,17 @@ mod tests {
         assert_eq!(journal.before_sha256, original_sha);
         assert_eq!(fs::read(&staged).unwrap(), fs::read(&output).unwrap());
         assert!(stage_status(&workspace).unwrap().is_some());
-        assert!(apply_stage_pak(
-            &workspace, &output, "Game/sample.pak", &key, &new_public_file, "sample.pak"
-        ).is_err());
+        assert!(
+            apply_stage_pak(
+                &workspace,
+                &output,
+                "Game/sample.pak",
+                &key,
+                &new_public_file,
+                "sample.pak"
+            )
+            .is_err()
+        );
         restore_stage(&workspace).unwrap();
         assert!(stage_status(&workspace).unwrap().is_none());
         assert_eq!(fs::read(&staged).unwrap(), fs::read(&archive).unwrap());
