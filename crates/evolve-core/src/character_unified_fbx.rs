@@ -93,10 +93,7 @@ fn safe_part_name(raw: &str) -> Result<String, String> {
 
 type ResolvedCdfParts = (PathBuf, String, Option<String>, Vec<(String, PathBuf)>);
 
-fn plan_parts(
-    source: &Path,
-    inventory: &Inventory,
-) -> Result<ResolvedCdfParts, String> {
+fn plan_parts(source: &Path, inventory: &Inventory) -> Result<ResolvedCdfParts, String> {
     let root = fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
     let original = fs::symlink_metadata(source).map_err(|e| e.to_string())?;
     let actual = fs::canonicalize(source).map_err(|e| e.to_string())?;
@@ -178,13 +175,19 @@ fn exact_single_slot_maps(
             _ => continue,
         };
         if target.is_some() {
-            return Err(format!("Multiple original {} layers in {candidate}", item.role));
+            return Err(format!(
+                "Multiple original {} layers in {candidate}",
+                item.role
+            ));
         }
         match &item.resolution {
             AssetResolution::Found(path) => *target = Some(input_file(root, path)?),
             AssetResolution::Missing => (),
             AssetResolution::Ambiguous(_) => {
-                return Err(format!("Ambiguous authored {} in {candidate}", item.authored_path));
+                return Err(format!(
+                    "Ambiguous authored {} in {candidate}",
+                    item.authored_path
+                ));
             }
         }
     }
@@ -306,13 +309,29 @@ pub fn export_unified_cdf_fbx(
             .checked_add(verified.weighted_vertices)
             .ok_or("Vertex count overflow")?;
         let maps = exact_single_slot_maps(&root, original, inventory)?;
-        let diffuse = maps.diffuse.as_deref().map(|f| authored_png(f, false)).transpose()?;
-        let normal = maps.normal.as_deref().map(|f| authored_png(f, true)).transpose()?;
-        let emissive = maps.emissive.as_deref().map(|f| authored_png(f, false)).transpose()?;
+        let diffuse = maps
+            .diffuse
+            .as_deref()
+            .map(|f| authored_png(f, false))
+            .transpose()?;
+        let normal = maps
+            .normal
+            .as_deref()
+            .map(|f| authored_png(f, true))
+            .transpose()?;
+        let emissive = maps
+            .emissive
+            .as_deref()
+            .map(|f| authored_png(f, false))
+            .transpose()?;
         if diffuse.is_some() || normal.is_some() || emissive.is_some() {
             glb = embed_verified_maps_png_glb(
-                &glb, diffuse.as_deref(), normal.as_deref(), emissive.as_deref(),
-            ).map_err(|e| format!("CDF part {name} original maps: {e}"))?;
+                &glb,
+                diffuse.as_deref(),
+                normal.as_deref(),
+                emissive.as_deref(),
+            )
+            .map_err(|e| format!("CDF part {name} original maps: {e}"))?;
         }
         if diffuse.is_some() {
             diffuse_textured_parts += 1;
