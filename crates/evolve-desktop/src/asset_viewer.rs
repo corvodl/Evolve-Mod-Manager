@@ -361,6 +361,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         .size(12),
         button("Toggle Explorer").on_press(Message::ViewerToggleExplorer),
         button("Save layout").on_press(Message::ViewerSaveLayout),
+        button("Detach Inspector").on_press(Message::OpenInspectorWindow).style(button::secondary),
     ]
     .spacing(14)
     .align_y(iced::Center);
