@@ -689,7 +689,7 @@ impl Operation {
                 read_model(&render_source)
                     .map(Completed::Model)
                     .map_err(|e| format!("{}: {e}", render_source.display()))
-            },
+            }
             Self::InspectLevel(source) => load_level_scene(&source)
                 .map(Completed::Level)
                 .map_err(|e| e.to_string()),
