@@ -4,6 +4,7 @@ pub mod animation;
 pub mod archive;
 pub mod asset_compare;
 pub mod batch;
+pub mod caf_layers;
 pub mod cdf;
 pub mod character_assembly;
 pub mod converter;
@@ -36,6 +37,7 @@ pub use archive::{
     rebuild_legacy_pak,
 };
 pub use asset_compare::{AssetComparison, AssetFingerprint, CompareError, compare_assets};
+pub use caf_layers::{CafLayer, sample_verified_caf_layers};
 pub use cdf::{
     AssetResolution, CdfAttachment, CdfDefinition, CdfDependencyReport, CdfError, parse_cdf,
     read_cdf, resolve_cdf, resolve_virtual,
