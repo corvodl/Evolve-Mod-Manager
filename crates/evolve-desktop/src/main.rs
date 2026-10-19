@@ -20,20 +20,20 @@ mod viewer_inspector;
 mod viewport;
 use asset_cache::{SharedCache, decoded_dds};
 use evolve_core::{
-    AnimatedGlb, AnimationPolicy, AssetComparison, AssetResolution, AssemblyReport, BatchJournal, CdfDefinition,
-    CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph, ImportedLibrary, ImportedPak,
-    Inventory, LevelScene, MaterialReport, ModProfile, ModelInfo, NativeCafMotion, PakInventory,
-    ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo,
+    AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
+    CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph, ImportedLibrary,
+    ImportedPak, Inventory, LevelScene, MaterialReport, ModProfile, ModelInfo, NativeCafMotion,
+    PakInventory, ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo,
     StageTransaction, TerrainInfo, add_mod_to_profile, apply_profile_stage, apply_stage_pak,
     batch_stage_status, compare_assets, convert_glb_to_fbx, convert_original_motion,
     create_mod_profile, decode_dds_rgba, export_dds_png, export_level_scene_glb,
     export_rigged_character_fbx_textured, export_rigged_character_glb, extract_legacy_pak,
     extract_signed_pak, import_stage_pak, imported_archive_files, imported_library,
     initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_signed_pak,
-    list_mod_profiles, load_level_scene, plan_mod_profile, read_cdf, read_material, read_model, read_static_cdf_assembly,
-    read_native_caf, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry, resolve_cdf,
-    resolve_materials, restore_profile_stage, restore_stage, scan_directory,
-    scan_directory_with_progress, stage_status,
+    list_mod_profiles, load_level_scene, plan_mod_profile, read_cdf, read_material, read_model,
+    read_native_caf, read_static_cdf_assembly, read_terrain, rebuild_legacy_pak,
+    rebuild_signed_pak_entry, resolve_cdf, resolve_materials, restore_profile_stage, restore_stage,
+    scan_directory, scan_directory_with_progress, stage_status,
 };
 use iced::widget::{
     button, canvas, column, container, image, row, scrollable, shader, slider, space, svg, text,
@@ -1448,7 +1448,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ViewerPreviewStaticCdf => {
             let Some(inventory) = state.inventory.as_ref() else {
-                state.status = "Index an extracted asset folder before assembling characters.".into();
+                state.status =
+                    "Index an extracted asset folder before assembling characters.".into();
                 return Task::none();
             };
             let Some(entry) = state.selected.and_then(|i| inventory.entries.get(i)) else {
@@ -1456,11 +1457,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             };
             if !entry.relative_path.to_ascii_lowercase().ends_with(".cdf") {
-                state.status = "Static character assembly requires selecting a .cdf definition.".into();
+                state.status =
+                    "Static character assembly requires selecting a .cdf definition.".into();
                 return Task::none();
             }
             let source = PathBuf::from(&inventory.root).join(&entry.relative_path);
-            state.status = "Validating exact CDF parts for a static preview (not a rigged export)...".into();
+            state.status =
+                "Validating exact CDF parts for a static preview (not a rigged export)...".into();
             return launch(state, Operation::BuildStaticCdf(source, inventory.clone()));
         }
         Message::ViewerPreviewSelected => {
@@ -2533,7 +2536,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Ok(Completed::StaticCharacter(mesh, report)) => {
                     state.status = format!(
                         "Static CDF preview: {} exact parts, {} vertices, {} triangles, skin set {:?}. Rigged animation and multi-slot materials not enabled.",
-                        report.original_parts.len(), report.vertices, report.triangles,
+                        report.original_parts.len(),
+                        report.vertices,
+                        report.triangles,
                         report.selected_skin_set,
                     );
                     state.model = Some(Arc::new(mesh));
