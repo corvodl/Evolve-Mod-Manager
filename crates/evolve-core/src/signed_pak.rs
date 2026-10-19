@@ -1285,14 +1285,17 @@ mod tests {
             dual_bytes.extend_from_slice(&local);
             dual_bytes.extend_from_slice(name.as_bytes());
             let member = SignedEntry {
-                path: name.into(), method: 13, flags: 0, crc32: crc,
-                compressed_size: u64::from(size), size: u64::from(size),
+                path: name.into(),
+                method: 13,
+                flags: 0,
+                crc32: crc,
+                compressed_size: u64::from(size),
+                size: u64::from(size),
                 encrypted_data_offset: u64::from(offset) + 30 + name.len() as u64,
             };
             let slot = (!(crc >> 2) & 15) as usize;
-            dual_bytes.extend_from_slice(
-                &crypt_bytes(payload, &keys[slot], entry_iv(&member)).unwrap()
-            );
+            dual_bytes
+                .extend_from_slice(&crypt_bytes(payload, &keys[slot], entry_iv(&member)).unwrap());
             let mut record = [0u8; 46];
             record[..4].copy_from_slice(b"PK\x01\x02");
             record[10..12].copy_from_slice(&13u16.to_le_bytes());
@@ -1308,9 +1311,13 @@ mod tests {
         dual_bytes.extend_from_slice(&crypt_bytes(&dual_cdr, &keys[0], iv).unwrap());
         let mut message = dual_cdr.clone();
         message.extend_from_slice(b"dual.pak");
-        let sig = private.sign_with_rng(
-            &mut OsRng, Pss::new_with_salt::<Sha256>(0), &Sha256::digest(&message)
-        ).unwrap();
+        let sig = private
+            .sign_with_rng(
+                &mut OsRng,
+                Pss::new_with_salt::<Sha256>(0),
+                &Sha256::digest(&message),
+            )
+            .unwrap();
         let mut trailer = comment;
         trailer[11..139].copy_from_slice(&sig);
         let mut end = [0u8; 22];
@@ -1324,7 +1331,13 @@ mod tests {
         dual_bytes.extend_from_slice(&trailer);
         let dual_original = root.path().join("dual.pak");
         fs::write(&dual_original, &dual_bytes).unwrap();
-        assert_eq!(inspect_signed_pak(&dual_original, &key, "dual.pak").unwrap().entries.len(), 2);
+        assert_eq!(
+            inspect_signed_pak(&dual_original, &key, "dual.pak")
+                .unwrap()
+                .entries
+                .len(),
+            2
+        );
         let first = root.path().join("first-new.caf");
         let second = root.path().join("second-new.caf");
         fs::write(&first, b"replacement FIRST with a changed CRC").unwrap();
@@ -1337,15 +1350,27 @@ mod tests {
             ("second.caf".to_owned(), second.clone()),
         ];
         let reports = rebuild_signed_pak_entries(
-            &dual_original, &key, &new_private_file, &new_public_file,
-            "dual.pak", &changes, &dual_output,
-        ).unwrap();
+            &dual_original,
+            &key,
+            &new_private_file,
+            &new_public_file,
+            "dual.pak",
+            &changes,
+            &dual_output,
+        )
+        .unwrap();
         assert_eq!(reports.len(), 2);
         assert_eq!(fs::read(&dual_original).unwrap(), dual_bytes);
         let dual_extracted = root.path().join("dual-extracted");
         extract_signed_pak(&dual_output, &new_public_file, "dual.pak", &dual_extracted).unwrap();
-        assert_eq!(fs::read(dual_extracted.join("first.caf")).unwrap(), fs::read(&first).unwrap());
-        assert_eq!(fs::read(dual_extracted.join("second.caf")).unwrap(), fs::read(&second).unwrap());
+        assert_eq!(
+            fs::read(dual_extracted.join("first.caf")).unwrap(),
+            fs::read(&first).unwrap()
+        );
+        assert_eq!(
+            fs::read(dual_extracted.join("second.caf")).unwrap(),
+            fs::read(&second).unwrap()
+        );
 
         let wrong = inspect_signed_pak(&archive, &key, "different.pak");
         assert!(wrong.is_err(), "signed archive basename is authenticated");
