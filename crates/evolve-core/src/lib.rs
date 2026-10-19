@@ -71,7 +71,8 @@ pub use scene::{
 };
 pub use signed_pak::{
     SignedEntry, SignedPakError, SignedPakInfo, SignedRebuildReport, extract_signed_pak,
-    inspect_signed_pak, open_verified_signed_pak, rebuild_signed_pak_entries, rebuild_signed_pak_entry,
+    inspect_signed_pak, open_verified_signed_pak, rebuild_signed_pak_entries,
+    rebuild_signed_pak_entry,
 };
 pub use terrain::{
     TerrainError, TerrainInfo, TerrainMesh, decode_terrain_bytes, export_terrain_obj, read_terrain,
