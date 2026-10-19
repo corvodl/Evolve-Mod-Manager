@@ -117,11 +117,15 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                         .size(12).color(MUTED),
                 ].spacing(5);
                 for controller in clip.controllers.iter().take(14) {
-                    tracks = tracks.push(text(format!(
-                        "CRC {:08X}: {} translation keys / {} rotation keys",
-                        controller.bone_crc32, controller.positions.len(),
-                        controller.rotations.len()
-                    )).size(12));
+                    tracks = tracks.push(
+                        text(format!(
+                            "CRC {:08X}: {} translation keys / {} rotation keys",
+                            controller.bone_crc32,
+                            controller.positions.len(),
+                            controller.rotations.len()
+                        ))
+                        .size(12),
+                    );
                 }
                 scrollable(tracks).height(Length::Fixed(145.0)).into()
             } else if let Some(animation) = &state.glb_motion {
@@ -149,9 +153,13 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         ViewerTab::Uv => {
             if let Some(mesh) = &state.model {
                 if let Some(uv) = &mesh.uv0 {
-                    let tiled = uv.iter().filter(|uv| {
-                        uv.iter().any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
-                    }).count();
+                    let tiled = uv
+                        .iter()
+                        .filter(|uv| {
+                            uv.iter()
+                                .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+                        })
+                        .count();
                     column![
                         text(format!(
                             "Source UV0: {} coordinates, {} outside the 0–1 tile (preserved).",
@@ -164,11 +172,15 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     ].spacing(9).into()
                 } else {
                     text("No verified UV0 stream in this model; UVs will not be fabricated.")
-                        .size(12).color(MUTED).into()
+                        .size(12)
+                        .color(MUTED)
+                        .into()
                 }
             } else {
                 text("Load a source CryEngine mesh before inspecting UV0.")
-                    .size(12).color(MUTED).into()
+                    .size(12)
+                    .color(MUTED)
+                    .into()
             }
         }
         ViewerTab::Dependencies => {
@@ -176,58 +188,92 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 let mut nodes = column![].spacing(4);
                 for edge in report.edges.iter().take(80) {
                     if let Some(node) = report.nodes.get(edge.to) {
-                        nodes = nodes.push(row![
-                            text(edge.label.as_str()).size(12).width(Length::FillPortion(2)),
-                            text(node.label.as_str()).size(12).width(Length::FillPortion(4)),
-                            text(format!("{:?}", node.status))
-                                .size(12).color(mark(&node.status))
-                                .width(Length::FillPortion(1)),
-                        ].spacing(8));
+                        nodes = nodes.push(
+                            row![
+                                text(edge.label.as_str())
+                                    .size(12)
+                                    .width(Length::FillPortion(2)),
+                                text(node.label.as_str())
+                                    .size(12)
+                                    .width(Length::FillPortion(4)),
+                                text(format!("{:?}", node.status))
+                                    .size(12)
+                                    .color(mark(&node.status))
+                                    .width(Length::FillPortion(1)),
+                            ]
+                            .spacing(8),
+                        );
                     }
                 }
                 column![
                     row![
-                        text(format!("{} explicit references · {} missing · {} ambiguous",
-                            report.edges.len(), report.missing, report.ambiguous)).size(12),
+                        text(format!(
+                            "{} explicit references · {} missing · {} ambiguous",
+                            report.edges.len(),
+                            report.missing,
+                            report.ambiguous
+                        ))
+                        .size(12),
                         button("Refresh").on_press(Message::StartDependencyInspection),
-                    ].spacing(10),
-                    canvas_widget(DependencyCanvas { graph: Arc::new(report.clone()) })
-                        .height(Length::Fixed(156.0)).width(Fill),
+                    ]
+                    .spacing(10),
+                    canvas_widget(DependencyCanvas {
+                        graph: Arc::new(report.clone())
+                    })
+                    .height(Length::Fixed(156.0))
+                    .width(Fill),
                     scrollable(nodes).height(Length::Fixed(105.0)),
-                ].spacing(8).into()
+                ]
+                .spacing(8)
+                .into()
             } else {
                 column![
                     text("Inspect a selected CDF or MTL to see the actual authored references.")
-                        .size(12).color(MUTED),
+                        .size(12)
+                        .color(MUTED),
                     button("Build dependency graph").on_press(Message::StartDependencyInspection),
-                ].spacing(7).into()
+                ]
+                .spacing(7)
+                .into()
             }
         }
         ViewerTab::Compare => {
             let mut rows = column![
                 row![
                     text_input("Original extracted asset...", &state.compare_original)
-                        .on_input(Message::CompareOriginalChanged).width(Fill),
+                        .on_input(Message::CompareOriginalChanged)
+                        .width(Fill),
                     text_input("Modified working copy...", &state.compare_modified)
-                        .on_input(Message::CompareModifiedChanged).width(Fill),
+                        .on_input(Message::CompareModifiedChanged)
+                        .width(Fill),
                     button("Compare").on_press(Message::StartAssetCompare),
-                ].spacing(7),
-            ].spacing(8);
+                ]
+                .spacing(7),
+            ]
+            .spacing(8);
             if let Some(result) = &state.comparison {
-                rows = rows.push(text(if result.identical {
-                    "Identical contents"
-                } else {
-                    "Changed contents (SHA-256 verified)"
-                }).size(14).color(if result.identical { OK } else { WARN }));
-                rows = rows.push(row![
-                    text(format!("Original: {} bytes", result.original.bytes)).size(12),
-                    text(format!("Modified: {} bytes", result.modified.bytes)).size(12),
-                    text(match result.same_dds_dimensions {
-                        Some(true) => "Same DDS dimensions",
-                        Some(false) => "DDS dimensions differ",
-                        None => "No paired DDS dimensions",
-                    }).size(12)
-                ].spacing(16));
+                rows = rows.push(
+                    text(if result.identical {
+                        "Identical contents"
+                    } else {
+                        "Changed contents (SHA-256 verified)"
+                    })
+                    .size(14)
+                    .color(if result.identical { OK } else { WARN }),
+                );
+                rows = rows.push(
+                    row![
+                        text(format!("Original: {} bytes", result.original.bytes)).size(12),
+                        text(format!("Modified: {} bytes", result.modified.bytes)).size(12),
+                        text(match result.same_dds_dimensions {
+                            Some(true) => "Same DDS dimensions",
+                            Some(false) => "DDS dimensions differ",
+                            None => "No paired DDS dimensions",
+                        })
+                        .size(12)
+                    ]
+                    .spacing(16),
+                );
                 rows = rows.push(text("Read-only comparison. Visual pixel and geometry diffs are not implemented yet.")
                     .size(12).color(MUTED));
             } else {
