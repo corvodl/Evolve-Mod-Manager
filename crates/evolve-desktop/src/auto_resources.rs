@@ -17,6 +17,7 @@ pub struct AutoClip {
 #[derive(Clone, Debug, Default)]
 pub struct AutoDiscovery {
     pub material: Option<PathBuf>,
+    pub skeleton: Option<PathBuf>,
     pub material_note: String,
     pub clips: Vec<AutoClip>,
     pub idle: Option<PathBuf>,
@@ -162,6 +163,41 @@ pub fn discover(
     }
     if found.material.is_none() && found.warnings.is_empty() {
         found.material_note = "No verified material for this mesh".into();
+    }
+    // A same-character CDF is allowed to identify a source skeleton only
+    // when the selected model really is that CDF's skeleton or attachment.
+    for base in &bases {
+        let name = join(parent, base, "cdf");
+        let Some(cdf_path) = (match exact(inv, &name, imported, build) {
+            Ok(value) => value,
+            Err(e) => {
+                found.warnings.push(e);
+                break;
+            }
+        }) else { continue; };
+        let cdf = match evolve_core::read_cdf(&cdf_path) {
+            Ok(value) => value,
+            Err(e) => {
+                found.warnings.push(format!("CDF metadata invalid: {e}"));
+                break;
+            }
+        };
+        let key = canonical.to_ascii_lowercase();
+        let key_without_m = key.strip_suffix(".skinm").map(|prefix| format!("{prefix}.skin"));
+        let belongs = cdf.skeleton.eq_ignore_ascii_case(&canonical)
+            || cdf.attachments.iter().any(|a| {
+                a.binding.eq_ignore_ascii_case(&canonical)
+                    || key_without_m.as_ref().is_some_and(|p| a.binding.eq_ignore_ascii_case(p))
+            });
+        if !belongs {
+            continue;
+        }
+        match exact(inv, &cdf.skeleton, imported, build) {
+            Ok(Some(path)) => found.skeleton = Some(path),
+            Ok(None) => found.warnings.push(format!("CDF skeleton not imported: {}", cdf.skeleton)),
+            Err(e) => found.warnings.push(e),
+        }
+        break;
     }
     // Only this character's matching skeleton animation configuration.
     let mut configs = bases.clone();
