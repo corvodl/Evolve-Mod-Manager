@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 const XML_LIMIT: usize = 16 * 1024 * 1024;
 const MAX_SOURCE_BYTES: u64 = 32 * 1024 * 1024 * 1024;
@@ -134,7 +134,7 @@ pub fn import_signed_library_pak(
         let doc: serde_json::Value =
             serde_json::from_reader(File::open(&manifest_file).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
-        if doc["source_sha256"].as_str() != Some(&before) || doc["name"].as_str() != Some(basename)
+        if doc["source_sha256"].as_str() != Some(before.as_str()) || doc["name"].as_str() != Some(basename)
         {
             return Err("Existing archive does not match the selected source hash".into());
         }
@@ -247,7 +247,7 @@ pub fn import_signed_library_pak(
     // A concurrently created target must not be replaced. Windows rename
     // refuses an existing destination; other platforms need an explicit
     // guard as well. Source and existing import directories remain untouched.
-    if fs::symlink_metadata(&target).is_ok() || fs::symlink_metadata(&root.join(&id)).is_ok() {
+    if fs::symlink_metadata(&target).is_ok() || fs::symlink_metadata(root.join(&id)).is_ok() {
         return Err("Import already exists; refresh the Asset Library".into());
     }
     fs::rename(work.path(), &target).map_err(|e| e.to_string())?;
