@@ -17,7 +17,7 @@ mod viewer_inspector;
 mod viewport;
 use asset_cache::{SharedCache, decoded_dds};
 use evolve_core::{
-    AnimatedGlb, AnimationPolicy, AssetComparison, AssetEntry, AssetResolution, BatchJournal,
+    AnimatedGlb, AnimationPolicy, AssetComparison, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph, ImportedLibrary,
     ImportedPak, Inventory, LevelScene, MaterialReport, ModProfile, ModelInfo, NativeCafMotion,
     PakInventory, ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo,
@@ -115,7 +115,6 @@ struct State {
     replacements: String,
     signed_entry: String,
     signed_replacement: String,
-    stage_target: String,
     stage_feedback: String,
     profile_name: String,
     profile_id: String,
@@ -648,7 +647,6 @@ enum Message {
     ReplacementsChanged(String),
     SignedMemberChanged(String),
     SignedReplacementChanged(String),
-    StageTargetChanged(String),
     StartStageInit,
     StartStageStatus,
     StartStageImport,
@@ -868,7 +866,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.modding_selected = Some(index);
                 state.preferences.current_workspace =
                     project.workspace.to_string_lossy().into_owned();
-                state.stage_target = project.target.clone();
                 state.input = PathBuf::from(&state.preferences.stage)
                     .join("paks")
                     .join(&project.target)
@@ -919,7 +916,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     &candidate,
                 ) {
                     state.selected = Some(index);
-                    state.stage_target = relative;
                     state.input = candidate.to_string_lossy().into_owned();
                     state.status = format!("Selected original staged PAK: {}", entry.relative_path);
                 } else {
@@ -1495,7 +1491,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ReplacementsChanged(replacements) => state.replacements = replacements,
         Message::SignedMemberChanged(value) => state.signed_entry = value,
         Message::SignedReplacementChanged(value) => state.signed_replacement = value,
-        Message::StageTargetChanged(value) => state.stage_target = value,
         Message::ProfileNameChanged(value) => state.profile_name = value,
         Message::SelectProfile(value) => state.profile_id = value,
         Message::StartProfileRecover => {
@@ -2540,20 +2535,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
     }
     Task::none()
-}
-
-fn file_row<'a>(index: usize, entry: &'a AssetEntry) -> Element<'a, Message> {
-    button(
-        row![
-            text(entry.kind.display()).width(130),
-            text(entry.relative_path.as_str()).width(Fill),
-            text(format!("{} B", entry.byte_size)),
-        ]
-        .spacing(12),
-    )
-    .width(Fill)
-    .on_press(Message::Select(index))
-    .into()
 }
 
 fn download_action(state: &State) -> Element<'_, Message> {
