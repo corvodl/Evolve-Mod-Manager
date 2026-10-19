@@ -70,7 +70,8 @@ impl shader::Program<super::Message> for Scene {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<shader::Action<super::Message>> {
-        state.handle(event, bounds, cursor, self.shift)
+        state
+            .handle(event, bounds, cursor, self.shift)
             .map(super::view_navigation::message)
             .map(|message| shader::Action::publish(message).and_capture())
     }
