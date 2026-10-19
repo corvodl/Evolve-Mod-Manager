@@ -8,7 +8,7 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
