@@ -3259,7 +3259,11 @@ fn view(state: &State) -> Element<'_, Message> {
                     button::text
                 })
                 .on_press(Message::Navigate(item));
-            items.push(tooltip(nav, text(item.title()).size(11), tooltip::Position::Right))
+            items.push(tooltip(
+                nav,
+                text(item.title()).size(11),
+                tooltip::Position::Right,
+            ))
         });
     let play_mods_icon = svg(svg::Handle::from_memory(
         include_bytes!("../../../assets/nav/play-mods.svg").to_vec(),
