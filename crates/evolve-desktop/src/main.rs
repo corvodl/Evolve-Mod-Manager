@@ -367,8 +367,11 @@ impl Operation {
                     .map(|(entry, target)| Completed::RebuiltSigned(entry, target))
             }
             Self::ImportRawProjectMember(project, projects, member, source) => {
-                modding_projects::import_raw_member(&project, &projects, &member, &source)
-                    .map(|changed| Completed::ImportedRawProjectMember(changed, member, project.workspace))
+                modding_projects::import_raw_member(&project, &projects, &member, &source).map(
+                    |changed| {
+                        Completed::ImportedRawProjectMember(changed, member, project.workspace)
+                    },
+                )
             }
             Self::UnpackRawProject(projects, stage, source) => {
                 modding_projects::unpack_raw_project(&projects, &stage, &source)
@@ -1069,8 +1072,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Asset Library source files are always read-only.".into();
                 return Task::none();
             }
-            let Some(project) = state.modding_selected
-                .and_then(|i| state.modding_projects.as_ref().and_then(|p| p.get(i))).cloned() else {
+            let Some(project) = state
+                .modding_selected
+                .and_then(|i| state.modding_projects.as_ref().and_then(|p| p.get(i)))
+                .cloned()
+            else {
                 state.status = "Open a managed editable project to import a raw member.".into();
                 return Task::none();
             };
@@ -1081,16 +1087,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let expected = std::fs::canonicalize(project.workspace.join("files"));
             let actual = std::fs::canonicalize(&inventory.root);
             if !matches!((expected,actual),(Ok(project),Ok(current)) if project==current) {
-                state.status = "The visible files do not belong to the selected editable project.".into();
+                state.status =
+                    "The visible files do not belong to the selected editable project.".into();
                 return Task::none();
             }
             if state.file_selection.indices.len() != 1 {
                 state.status = "Select exactly one raw asset to import over (Shift/Ctrl selections are supported for inspection).".into();
                 return Task::none();
             }
-            let Some(member) = state.selected
+            let Some(member) = state
+                .selected
                 .and_then(|i| inventory.entries.get(i))
-                .map(|e| e.relative_path.clone()) else {
+                .map(|e| e.relative_path.clone())
+            else {
                 state.status = "Select one manifest-listed extracted file.".into();
                 return Task::none();
             };
@@ -1098,10 +1107,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Choose a separate local replacement file path.".into();
                 return Task::none();
             }
-            return launch(state, Operation::ImportRawProjectMember(
-                project, PathBuf::from(&state.preferences.projects),
-                member, PathBuf::from(&state.editor_replace_source)
-            ));
+            return launch(
+                state,
+                Operation::ImportRawProjectMember(
+                    project,
+                    PathBuf::from(&state.preferences.projects),
+                    member,
+                    PathBuf::from(&state.editor_replace_source),
+                ),
+            );
         }
         Message::ModdingOpenProject => {
             if state.busy {
@@ -2358,15 +2372,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::ImportedRawProjectMember(changed, member, workspace)) => {
                     state.status = if changed {
-                        format!("Imported {member} into isolated project; verified pre-edit backup retained.")
+                        format!(
+                            "Imported {member} into isolated project; verified pre-edit backup retained."
+                        )
                     } else {
                         format!("{member} is already byte-identical to the selected replacement.")
                     };
                     state.modding_pending_focus = Some(workspace);
-                    return launch(state, Operation::IndexProjects(
-                        PathBuf::from(&state.preferences.projects),
-                        PathBuf::from(&state.preferences.stage),
-                    ));
+                    return launch(
+                        state,
+                        Operation::IndexProjects(
+                            PathBuf::from(&state.preferences.projects),
+                            PathBuf::from(&state.preferences.stage),
+                        ),
+                    );
                 }
                 Ok(Completed::UnpackedProject(path, count)) => {
                     state.status = format!(
