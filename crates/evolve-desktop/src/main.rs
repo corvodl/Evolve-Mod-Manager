@@ -1324,9 +1324,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.preferences.automatic_update_checks = !state.preferences.automatic_update_checks;
             persist_preferences(state);
         }
-        Message::PreferenceStage(value) => state.preferences.stage = value,
+        Message::PreferenceStage(value) => { state.preferences.stage = value; state.modding_projects = None; }, 
         Message::PreferenceSwap(value) => state.preferences.swap = value,
-        Message::PreferenceProjects(value) => state.preferences.projects = value,
+        Message::PreferenceProjects(value) => { state.preferences.projects = value; state.modding_projects = None; }, 
         Message::PreferenceAssets(value) => {
             state.library_root = value.clone();
             state.library_catalog = None;
@@ -1860,63 +1860,61 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return launch(state, Operation::InspectTerrain(source));
         }
         Message::StartSignedInspection => {
-            if state.public_key.is_empty() || state.signed_name.is_empty() {
-                state.status =
-                    "Select a local RSA public key and exact original signed basename.".into();
-                return Task::none();
-            }
             let source = PathBuf::from(&state.input);
-            let key = PathBuf::from(&state.public_key);
-            let signed = state.signed_name.clone();
-            return launch(state, Operation::InspectSignedPak(source, key, signed));
+            let stage = PathBuf::from(&state.preferences.stage);
+            let key = match modding_keys::public_key(&stage) {
+                Ok(path) => path,
+                Err(error) => { state.status = error; return Task::none(); }
+            };
+            let basename = match modding_keys::signed_basename(&source) {
+                Ok(name) => name,
+                Err(error) => { state.status = error; return Task::none(); }
+            };
+            return launch(state, Operation::InspectSignedPak(source, key, basename));
         }
         Message::StartSignedExtraction => {
-            if state.public_key.is_empty()
-                || state.signed_name.is_empty()
-                || state.output.is_empty()
-            {
-                state.status = "Select public key, signed basename, and new output folder.".into();
+            let source = PathBuf::from(&state.input);
+            let stage = PathBuf::from(&state.preferences.stage);
+            let key = match modding_keys::public_key(&stage) {
+                Ok(path) => path,
+                Err(error) => { state.status = error; return Task::none(); }
+            };
+            let basename = match modding_keys::signed_basename(&source) {
+                Ok(name) => name,
+                Err(error) => { state.status = error; return Task::none(); }
+            };
+            if state.output.trim().is_empty() {
+                state.status = "Choose a new extraction folder, or use Unpack PAK in Modding to generate one automatically.".into();
                 return Task::none();
             }
-            let source = PathBuf::from(&state.input);
-            let key = PathBuf::from(&state.public_key);
-            let signed = state.signed_name.clone();
-            let output = PathBuf::from(&state.output);
-            return launch(
-                state,
-                Operation::ExtractSignedPak(source, key, signed, output),
-            );
+            return launch(state, Operation::ExtractSignedPak(
+                source, key, basename, PathBuf::from(&state.output)
+            ));
         }
         Message::StartSignedRebuild => {
-            if [
-                &state.input,
-                &state.public_key,
-                &state.signing_private,
-                &state.signing_public,
-                &state.signed_name,
-                &state.signed_entry,
-                &state.signed_replacement,
-                &state.output,
-            ]
-            .iter()
-            .any(|v| v.trim().is_empty())
+            let source = PathBuf::from(&state.input);
+            let stage = PathBuf::from(&state.preferences.stage);
+            let keys = match modding_keys::signing_keys(&stage) {
+                Ok(keys) => keys,
+                Err(error) => { state.status = error; return Task::none(); }
+            };
+            let basename = match modding_keys::signed_basename(&source) {
+                Ok(name) => name,
+                Err(error) => { state.status = error; return Task::none(); }
+            };
+            if state.signed_entry.trim().is_empty()
+                || state.signed_replacement.trim().is_empty()
+                || state.output.trim().is_empty()
             {
-                state.status="Choose the source PAK, both public keys, local private key, exact entry, replacement, and NEW output PAK.".into();
+                state.status = "Select an exact virtual member, a replacement file and a NEW output PAK. Signing keys are resolved automatically.".into();
                 return Task::none();
             }
-            return launch(
-                state,
-                Operation::RebuildSignedPak(
-                    PathBuf::from(&state.input),
-                    PathBuf::from(&state.public_key),
-                    PathBuf::from(&state.signing_private),
-                    PathBuf::from(&state.signing_public),
-                    state.signed_name.clone(),
-                    state.signed_entry.clone(),
-                    PathBuf::from(&state.signed_replacement),
-                    PathBuf::from(&state.output),
-                ),
-            );
+            return launch(state, Operation::RebuildSignedPak(
+                source, keys.public.clone(), keys.private, keys.public,
+                basename, state.signed_entry.clone(),
+                PathBuf::from(&state.signed_replacement),
+                PathBuf::from(&state.output),
+            ));
         }
         Message::StartLevelFbxExport => {
             if [
