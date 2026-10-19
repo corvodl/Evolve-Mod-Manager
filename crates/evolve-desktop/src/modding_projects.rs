@@ -371,16 +371,15 @@ pub fn unpack_raw_project(
     Ok((output, info.entries.len()))
 }
 
-/// Build a single changed *raw* member only. CryXmlB needs a validated
-/// round-trip serializer and multi-entry projects need an atomic multi-patch
-/// rebuild; neither is silently approximated by this operation.
-pub fn build_single_raw(
+/// Build multiple changed raw workspace members into a single signed PAK.
+/// CryXmlB still requires validated semantic serialization and is refused.
+pub fn build_project_raw(
     project: &ProjectRow,
     projects: &Path,
     stage: &Path,
 ) -> Result<(String, PathBuf), String> {
-    if !project.changed_known || project.modified.len() != 1 || project.status != "Modified" {
-        return Err("Rust preview supports rebuilding exactly one verified modified raw member; no partial multi-file builds.".into());
+    if !project.changed_known || project.modified.is_empty() || project.modified.len() > 64 || project.status != "Modified" {
+        return Err("A signed build requires 1–64 verified changed raw members; refresh the project before building.".into());
     }
     let parent = fs::canonicalize(projects).map_err(|e| e.to_string())?;
     if !fs::symlink_metadata(projects).is_ok_and(|m| m.file_type().is_dir()) {
@@ -391,21 +390,18 @@ pub fn build_single_raw(
         return Err("Selected workspace is outside Projects".into());
     }
     let manifest = read_json(&folder.join(".evolve-pak-workspace.json"), 8 * 1024 * 1024)?;
-    let rel = &project.modified[0];
-    if !safe_member(rel) {
-        return Err("Unsafe modified member".into());
-    }
-    let expected = manifest
-        .get("entries")
-        .and_then(Value::as_array)
-        .and_then(|entries| {
-            entries
-                .iter()
-                .find(|entry| entry.get("path").and_then(Value::as_str) == Some(rel.as_str()))
-        })
-        .ok_or("Modified member is absent from the verified original manifest")?;
-    if expected.get("format").and_then(Value::as_str) != Some("raw") {
-        return Err("This CryXmlB/converted member requires semantic round-trip serialization, not raw signed replacement.".into());
+    let records = manifest.get("entries")
+        .and_then(Value::as_array).ok_or("Original manifest has no file records")?;
+    for rel in &project.modified {
+        if !safe_member(rel) {
+            return Err("Unsafe modified member".into());
+        }
+        let expected = records.iter()
+            .find(|entry| entry.get("path").and_then(Value::as_str) == Some(rel.as_str()))
+            .ok_or("Modified member is absent from the verified original manifest")?;
+        if expected.get("format").and_then(Value::as_str) != Some("raw") {
+            return Err("CryXmlB/converted files require semantic round-trip serialization; no partial raw signed build is allowed.".into());
+        }
     }
     let original = stage.join("paks").join(&project.target);
     let relative = super::modding_keys::staged_target(stage, &original)?;
@@ -458,13 +454,17 @@ pub fn build_single_raw(
     {
         return Err("Archive signed basename mismatch".into());
     }
-    let replacement = folder.join("files").join(rel);
     let source_files = fs::canonicalize(folder.join("files")).map_err(|e| e.to_string())?;
-    let canonical = fs::canonicalize(&replacement).map_err(|e| e.to_string())?;
-    if !canonical.starts_with(&source_files)
-        || !fs::symlink_metadata(&replacement).is_ok_and(|m| m.file_type().is_file())
-    {
-        return Err("Replacement is not a regular file inside the selected project".into());
+    let mut replacements = Vec::with_capacity(project.modified.len());
+    for rel in &project.modified {
+        let replacement = folder.join("files").join(rel);
+        let canonical = fs::canonicalize(&replacement).map_err(|e| e.to_string())?;
+        if !canonical.starts_with(&source_files)
+            || !fs::symlink_metadata(&replacement).is_ok_and(|m| m.file_type().is_file())
+        {
+            return Err("Replacement is not a regular file inside the selected project".into());
+        }
+        replacements.push((rel.clone(), replacement));
     }
     let built = parent.join("Built");
     if !built.exists() {
@@ -480,18 +480,12 @@ pub fn build_single_raw(
     let output_folder = built.join(format!("Rust-Raw-{:x}", number));
     fs::create_dir(&output_folder).map_err(|e| e.to_string())?;
     let output = output_folder.join(&basename);
-    let result = evolve_core::rebuild_signed_pak_entry(
-        &original,
-        &keys.public,
-        &keys.private,
-        &keys.public,
-        &basename,
-        rel,
-        &replacement,
-        &output,
+    let result = evolve_core::rebuild_signed_pak_entries(
+        &original, &keys.public, &keys.private, &keys.public,
+        &basename, &replacements, &output,
     );
     match result {
-        Ok(report) => Ok((report.changed_entry, output)),
+        Ok(reports) => Ok((format!("{} modified raw member(s)", reports.len()), output)),
         Err(error) => {
             // The core uses an atomic tempfile on failure. Remove only our
             // new empty output directory, never an existing user's path.
