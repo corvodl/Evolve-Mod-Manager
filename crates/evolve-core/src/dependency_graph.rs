@@ -156,7 +156,10 @@ pub fn inspect_dependencies(
         .iter()
         .find(|entry| entry.relative_path == relative)
         .ok_or(DependencyError::Unsupported)?;
-    if !matches!(record.kind, AssetKind::CharacterDefinition | AssetKind::Material) {
+    if !matches!(
+        record.kind,
+        AssetKind::CharacterDefinition | AssetKind::Material
+    ) {
         return Err(DependencyError::Unsupported);
     }
     let root = PathBuf::from(&inventory.root);
@@ -191,8 +194,8 @@ pub fn inspect_dependencies(
             }
         }
         AssetKind::Material => {
-            let document = parse_material(&bytes)
-                .map_err(|e| DependencyError::Parse(e.to_string()))?;
+            let document =
+                parse_material(&bytes).map_err(|e| DependencyError::Parse(e.to_string()))?;
             add_material(&mut graph, inventory, &document)?;
         }
         _ => return Err(DependencyError::Unsupported),
