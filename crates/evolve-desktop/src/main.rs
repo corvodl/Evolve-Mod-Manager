@@ -1105,6 +1105,46 @@ fn sync_level_fields(state: &mut State) {
     }
 }
 
+fn restore_level_history(state: &mut State, undo: bool) {
+    let entry = if undo {
+        state.level_undo.pop()
+    } else {
+        state.level_redo.pop()
+    };
+    let Some((id, previous)) = entry else {
+        return;
+    };
+    let result = state.level_scene.as_ref().and_then(|scene| {
+        let current = scene.objects.iter().find(|object| object.id == id)?.local;
+        Some((current, evolve_core::edit_level_transform(scene, &id, previous)))
+    });
+    match result {
+        Some((current, Ok(scene))) => {
+            state.level_scene = Some(Arc::new(scene));
+            let other = if undo {
+                &mut state.level_redo
+            } else {
+                &mut state.level_undo
+            };
+            other.push((id, current));
+            sync_level_fields(state);
+            state.status = if undo {
+                "Reverted the last level transform (original layer unchanged).".into()
+            } else {
+                "Reapplied the level transform (original layer unchanged).".into()
+            };
+        }
+        _ => {
+            if undo {
+                state.level_undo.push((id, previous));
+            } else {
+                state.level_redo.push((id, previous));
+            }
+            state.status = "Cannot restore level history; reload the level source.".into();
+        }
+    }
+}
+
 fn launch(state: &mut State, operation: Operation) -> Task<Message> {
     if state.busy {
         return Task::none();
@@ -2016,10 +2056,127 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.level_selection.click(&[index], index, false, false);
                 }
                 state.level_selected = state.level_selection.primary_after(index);
+                sync_level_fields(state);
             }
         }
         Message::LevelFilterChanged(value) => state.level_filter = value,
         Message::LevelZoomChanged(value) => state.level_zoom = value.clamp(0.3, 3.0),
+        Message::LevelEditPositionChanged(value) => state.level_edit_position = value,
+        Message::LevelEditRotationChanged(value) => state.level_edit_rotation = value,
+        Message::LevelEditScaleChanged(value) => state.level_edit_scale = value,
+        Message::LevelEditOutputChanged(value) => state.level_edit_output = value,
+        Message::LevelUndoTransform => restore_level_history(state, true),
+        Message::LevelRedoTransform => restore_level_history(state, false),
+        Message::LevelApplyTransform => {
+            let Some(index) = state.level_selected else {
+                state.status = "Select a placement to edit.".into();
+                return Task::none();
+            };
+            let Some(scene) = &state.level_scene else {
+                state.status = "Inspect the source level first.".into();
+                return Task::none();
+            };
+            let Some(object) = scene.objects.get(index) else {
+                state.status = "Selected level placement is no longer available.".into();
+                return Task::none();
+            };
+            let id = object.id.clone();
+            let previous = object.local;
+            let requested = match level_workspace::parse_transform(
+                &state.level_edit_position,
+                &state.level_edit_rotation,
+                &state.level_edit_scale,
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
+            };
+            match evolve_core::edit_level_transform(scene, &id, requested) {
+                Ok(edited) => {
+                    let applied = edited.objects[index].local;
+                    if applied != previous {
+                        state.level_original_transforms.entry(id.clone()).or_insert(previous);
+                        if state.level_undo.len() >= 64 {
+                            state.level_undo.remove(0);
+                        }
+                        state.level_undo.push((id, previous));
+                        state.level_redo.clear();
+                        state.level_scene = Some(Arc::new(edited));
+                        sync_level_fields(state);
+                        state.status =
+                            "Local transform preview updated; export a separate layer to save it.".into();
+                    }
+                }
+                Err(error) => state.status = format!("Invalid level transform: {error}"),
+            }
+        }
+        Message::LevelExportEdits => {
+            let Some(source) = &state.level_source else {
+                state.status = "Inspect an original level before exporting edits.".into();
+                return Task::none();
+            };
+            let Some(scene) = &state.level_scene else {
+                return Task::none();
+            };
+            let destination = PathBuf::from(state.level_edit_output.trim());
+            if !destination.is_absolute()
+                || destination.extension().and_then(|e| e.to_str()).is_none_or(|extension| {
+                    !extension.eq_ignore_ascii_case("lyr")
+                        && !extension.eq_ignore_ascii_case("xml")
+                })
+                || destination.exists()
+            {
+                state.status = "Choose a NEW absolute .lyr or .xml output file.".into();
+                return Task::none();
+            }
+            let Some(parent) = destination.parent() else {
+                return Task::none();
+            };
+            let parent = match std::fs::canonicalize(parent) {
+                Ok(parent) => parent,
+                Err(error) => {
+                    state.status = format!("Export directory unavailable: {error}");
+                    return Task::none();
+                }
+            };
+            let mut protected = vec![source.parent().unwrap_or(source.as_path()).to_path_buf()];
+            if let Some(inventory) = &state.inventory {
+                protected.push(PathBuf::from(&inventory.root));
+            }
+            if !state.library_root.trim().is_empty() {
+                protected.push(PathBuf::from(&state.library_root));
+            }
+            if protected.iter().any(|root| {
+                std::fs::canonicalize(root).is_ok_and(|root| parent.starts_with(root))
+            }) {
+                state.status = "Export outside the original extracted assets and Asset Library.".into();
+                return Task::none();
+            }
+            let edits = state
+                .level_original_transforms
+                .iter()
+                .filter_map(|(id, original)| {
+                    scene.objects.iter().find(|object| &object.id == id)
+                        .and_then(|object| (object.local != *original).then_some((id.clone(), object.local)))
+                })
+                .collect::<Vec<_>>();
+            if edits.is_empty() || edits.len() > 128 {
+                state.status =
+                    "No changed level placements, or more than 128 pending edits.".into();
+                return Task::none();
+            }
+            return launch(
+                state,
+                Operation::ExportEditedLevel(
+                    source.clone(),
+                    destination,
+                    edits,
+                    state.level_source_sha.clone(),
+                ),
+            );
+        }
         Message::ViewerSaveLayout => {
             state.preferences.viewer_split = state.viewer_split;
             state.preferences.viewer_explorer_visible = state.viewer_explorer_visible;
@@ -3803,16 +3960,29 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::Levels);
                     state.zoom = 1.0;
                 }
-                Ok(Completed::Level(scene)) => {
+                Ok(Completed::Level(scene, source, hash)) => {
                     state.status = format!(
                         "Loaded {} placed level objects; {} diagnostics.",
                         scene.objects.len(),
                         scene.diagnostics.len()
                     );
+                    state.level_source = Some(source);
+                    state.level_source_sha = hash;
                     state.level_scene = Some(Arc::new(scene));
                     state.level_selected = None;
                     state.level_selection.clear();
+                    state.level_original_transforms.clear();
+                    state.level_undo.clear();
+                    state.level_redo.clear();
+                    sync_level_fields(state);
                     state.level_zoom = 1.0;
+                    state.page = Some(Page::Levels);
+                }
+                Ok(Completed::EditedLevelExported(destination, count)) => {
+                    state.status = format!(
+                        "Exported {count} edited placement(s) to {}. Original level unchanged.",
+                        destination.display()
+                    );
                     state.page = Some(Page::Levels);
                 }
                 Ok(Completed::SignedPak(info)) => {
