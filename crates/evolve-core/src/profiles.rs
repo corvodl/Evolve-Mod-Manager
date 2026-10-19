@@ -141,10 +141,10 @@ fn save(stage: &Path, catalog: &ProfileCatalog) -> Result<(), ProfileError> {
     check(catalog)?;
     let dir = root(stage, true)?;
     let path = dir.join("profiles.json");
-    if let Ok(meta) = fs::symlink_metadata(&path) {
-        if !meta.file_type().is_file() {
-            return Err(ProfileError::Invalid("Unsafe catalog target".into()));
-        }
+    if let Ok(meta) = fs::symlink_metadata(&path)
+        && !meta.file_type().is_file()
+    {
+        return Err(ProfileError::Invalid("Unsafe catalog target".into()));
     }
     let mut file = tempfile::NamedTempFile::new_in(&dir)?;
     serde_json::to_writer_pretty(&mut file, catalog)?;
