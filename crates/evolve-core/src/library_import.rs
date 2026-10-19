@@ -252,6 +252,9 @@ pub fn import_signed_library_pak(
     serde_json::to_writer_pretty(&mut file, &manifest).map_err(|e| e.to_string())?;
     file.write_all(b"\n").map_err(|e| e.to_string())?;
     file.sync_all().map_err(|e| e.to_string())?;
+    // Windows does not permit publishing a directory containing a file
+    // handle that is still open in this process.
+    drop(file);
 
     // A concurrently created target must not be replaced. Windows rename
     // refuses an existing destination; other platforms need an explicit
