@@ -5,13 +5,13 @@ use crate::fbx::{FbxError, FbxReport, convert_glb_to_fbx};
 use crate::glb::{GlbError, geometry_glb_bytes};
 use crate::model::{ModelError, RenderMesh, read_model};
 use crate::policy::AnimationPolicy;
+use image::ImageEncoder;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
-use image::ImageEncoder;
 
 const BONES: u32 = 0x08002000;
 const STREAM: u32 = 0x08001016;
@@ -620,19 +620,27 @@ pub fn export_rigged_character_glb(
 /// original UV0 accessor and all skeleton/accessor data are untouched.
 fn embed_diffuse_png_glb(source: &[u8], png: &[u8]) -> Result<Vec<u8>, RigError> {
     if source.len() < 28 || &source[..4] != b"glTF" || png.is_empty() {
-        return Err(RigError::Invalid("Expected a complete rigged GLB and PNG".into()));
+        return Err(RigError::Invalid(
+            "Expected a complete rigged GLB and PNG".into(),
+        ));
     }
-    let json_size = u32::from_le_bytes(source[12..16].try_into().map_err(|_| RigError::Limits)?) as usize;
+    let json_size =
+        u32::from_le_bytes(source[12..16].try_into().map_err(|_| RigError::Limits)?) as usize;
     let document_end = 20usize.checked_add(json_size).ok_or(RigError::Limits)?;
-    let mut document: Value = serde_json::from_slice(
-        source.get(20..document_end).ok_or(RigError::Limits)?
-    )?;
+    let mut document: Value =
+        serde_json::from_slice(source.get(20..document_end).ok_or(RigError::Limits)?)?;
     if document["meshes"][0]["primitives"][0]["attributes"]["TEXCOORD_0"].is_null()
-        || document["skins"].as_array().is_none_or(|skins| skins.is_empty())
-        || document["images"].as_array().is_some_and(|images| !images.is_empty())
+        || document["skins"]
+            .as_array()
+            .is_none_or(|skins| skins.is_empty())
+        || document["images"]
+            .as_array()
+            .is_some_and(|images| !images.is_empty())
         || document["buffers"][0]["byteLength"].as_u64().is_none()
     {
-        return Err(RigError::Invalid("Cannot bind one authored diffuse to an untextured or mixed GLB".into()));
+        return Err(RigError::Invalid(
+            "Cannot bind one authored diffuse to an untextured or mixed GLB".into(),
+        ));
     }
     let bin_at = document_end.checked_add(8).ok_or(RigError::Limits)?;
     if source.get(document_end + 4..document_end + 8) != Some(b"BIN\0") {
@@ -655,12 +663,18 @@ fn embed_diffuse_png_glb(source: &[u8], png: &[u8]) -> Result<Vec<u8>, RigError>
         }
     }]);
     document["meshes"][0]["primitives"][0]["material"] = json!(0);
-    while !binary.len().is_multiple_of(4) { binary.push(0); }
+    while !binary.len().is_multiple_of(4) {
+        binary.push(0);
+    }
     document["buffers"][0]["byteLength"] = json!(binary.len());
     let mut json_bytes = serde_json::to_vec(&document)?;
-    while !json_bytes.len().is_multiple_of(4) { json_bytes.push(b' '); }
-    let full = 28usize.checked_add(json_bytes.len())
-        .and_then(|n| n.checked_add(binary.len())).ok_or(RigError::Limits)?;
+    while !json_bytes.len().is_multiple_of(4) {
+        json_bytes.push(b' ');
+    }
+    let full = 28usize
+        .checked_add(json_bytes.len())
+        .and_then(|n| n.checked_add(binary.len()))
+        .ok_or(RigError::Limits)?;
     if full > MAX_BYTES * 4 || full > u32::MAX as usize {
         return Err(RigError::Limits);
     }
@@ -702,17 +716,20 @@ pub fn export_rigged_character_fbx_textured(
         let (_info, rgba) = crate::dds::decode_dds_rgba(texture_source)
             .map_err(|e| RigError::Invalid(format!("Source diffuse DDS: {e}")))?;
         let mut png = Vec::new();
-        image::codecs::png::PngEncoder::new(&mut png).write_image(
-            rgba.as_raw(), rgba.width(), rgba.height(), image::ExtendedColorType::Rgba8
-        ).map_err(|e| RigError::Invalid(format!("Embedded DDS PNG: {e}")))?;
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(
+                rgba.as_raw(),
+                rgba.width(),
+                rgba.height(),
+                image::ExtendedColorType::Rgba8,
+            )
+            .map_err(|e| RigError::Invalid(format!("Embedded DDS PNG: {e}")))?;
         output = embed_diffuse_png_glb(&output, &png)?;
     }
     let temp = tempfile::tempdir()?;
     let glb = temp.path().join("verified-textured-rig.glb");
     fs::write(&glb, &output)?;
-    let exported = convert_glb_to_fbx(
-        blender, &glb, destination, AnimationPolicy::default()
-    )?;
+    let exported = convert_glb_to_fbx(blender, &glb, destination, AnimationPolicy::default())?;
     Ok((report, exported))
 }
 
@@ -722,9 +739,7 @@ pub fn export_rigged_character_fbx(
     blender: &Path,
     destination: &Path,
 ) -> Result<(RigReport, FbxReport), RigError> {
-    export_rigged_character_fbx_textured(
-        mesh_source, skeleton_source, blender, None, destination
-    )
+    export_rigged_character_fbx_textured(mesh_source, skeleton_source, blender, None, destination)
 }
 #[cfg(test)]
 mod tests {
@@ -780,15 +795,24 @@ mod tests {
         input.extend_from_slice(&[1, 2, 3, 4]);
         let image = b"synthetic-png-payload";
         let output = embed_diffuse_png_glb(&input, image).unwrap();
-        assert_eq!(u32::from_le_bytes(output[8..12].try_into().unwrap()) as usize, output.len());
+        assert_eq!(
+            u32::from_le_bytes(output[8..12].try_into().unwrap()) as usize,
+            output.len()
+        );
         let json_len = u32::from_le_bytes(output[12..16].try_into().unwrap()) as usize;
         let result: Value = serde_json::from_slice(&output[20..20 + json_len]).unwrap();
-        assert_eq!(result["meshes"][0]["primitives"][0]["attributes"]["TEXCOORD_0"], 3);
+        assert_eq!(
+            result["meshes"][0]["primitives"][0]["attributes"]["TEXCOORD_0"],
+            3
+        );
         assert_eq!(result["images"][0]["mimeType"], "image/png");
-        assert_eq!(result["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]["index"], 0);
+        assert_eq!(
+            result["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]["index"],
+            0
+        );
         let off = 20 + json_len + 8 + 4;
         assert_eq!(&output[off..off + image.len()], image);
-        assert_eq!(&input[input.len()-4..], &[1, 2, 3, 4]);
+        assert_eq!(&input[input.len() - 4..], &[1, 2, 3, 4]);
     }
     #[test]
     fn verifies_inverse_bind_and_unchanged_hierarchy() {
