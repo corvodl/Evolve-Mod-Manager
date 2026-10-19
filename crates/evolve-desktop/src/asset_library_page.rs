@@ -200,24 +200,13 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     );
 
     let mut rows = column![].spacing(0);
-    let needle = state.library_search.to_lowercase();
+    // The filter is rebuilt only when inputs change; render one bounded page.
+    let matching = state.library_matches.len();
     let mut shown = 0usize;
-    let mut matching = 0usize;
     if let Some(catalog) = library {
-        for (index, archive) in catalog.archives.iter().enumerate() {
-            if by_build && !build.is_some_and(|label| archive.builds.contains(label)) {
-                continue;
-            }
-            let folder = archive.source.to_lowercase();
-            if !needle.is_empty()
-                && !archive.name.to_lowercase().contains(&needle)
-                && !archive.description.to_lowercase().contains(&needle)
-                && !archive.group.to_lowercase().contains(&needle)
-                && !folder.contains(&needle)
-            {
-                continue;
-            }
-            if matching / PAGE_SIZE == state.library_page {
+        let begin = state.library_page.saturating_mul(PAGE_SIZE);
+        for &index in state.library_matches.iter().skip(begin).take(PAGE_SIZE) {
+            if let Some(archive) = catalog.archives.get(index) {
                 rows = rows.push(archive_row(
                     index,
                     archive,
@@ -225,7 +214,6 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 ));
                 shown += 1;
             }
-            matching += 1;
         }
     }
     if matching == 0 {
