@@ -581,6 +581,8 @@ enum Message {
     LibraryPreviousPage,
     LibraryNextPage,
     OpenViewer,
+    OpenInspectorWindow,
+    InspectorOpened,
     ViewerOpened,
     WindowClosed(window::Id),
     FileDropped(window::Id, PathBuf),
@@ -930,6 +932,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::OpenViewer
+        | Message::OpenInspectorWindow
+        | Message::InspectorOpened
         | Message::ViewerOpened
         | Message::WindowClosed(_)
         | Message::FileDropped(_, _) => {}
@@ -2968,6 +2972,7 @@ struct Desktop {
     state: State,
     main_id: window::Id,
     viewer_id: Option<window::Id>,
+    inspector_id: Option<window::Id>,
 }
 
 impl Desktop {
@@ -2981,6 +2986,7 @@ impl Desktop {
                 state: initial_state(),
                 main_id,
                 viewer_id: None,
+                inspector_id: None,
             },
             opened.map(|_| Message::ViewerOpened),
         )
@@ -3000,9 +3006,25 @@ impl Desktop {
         opened.map(|_| Message::ViewerOpened)
     }
 
+    fn open_inspector(&mut self) -> Task<Message> {
+        if self.inspector_id.is_some() {
+            self.state.viewer_show_inspector = true;
+            return Task::none();
+        }
+        self.state.viewer_show_inspector = true;
+        let (id, opened) = window::open(window::Settings {
+            size: iced::Size::new(950.0, 610.0),
+            ..window::Settings::default()
+        });
+        self.inspector_id = Some(id);
+        opened.map(|_| Message::InspectorOpened)
+    }
+
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::OpenViewer => self.open_viewer(),
+            Message::OpenInspectorWindow => self.open_inspector(),
+            Message::InspectorOpened => Task::none(),
             Message::ViewerOpened => Task::none(),
             Message::FileDropped(id, path) => {
                 if self.viewer_id == Some(id) && self.state.viewer_from_library {
@@ -3019,6 +3041,9 @@ impl Desktop {
                     if self.viewer_id == Some(id) {
                         self.viewer_id = None;
                         self.state.viewer_menu = None;
+                    }
+                    if self.inspector_id == Some(id) {
+                        self.inspector_id = None;
                     }
                     Task::none()
                 }
@@ -3044,6 +3069,9 @@ impl Desktop {
     fn view(&self, id: window::Id) -> Element<'_, Message> {
         if self.viewer_id == Some(id) {
             asset_viewer::view(&self.state)
+        } else if self.inspector_id == Some(id) {
+            container(viewer_inspector::view(&self.state))
+                .padding(12).width(Fill).height(Fill).into()
         } else if id == self.main_id {
             view(&self.state)
         } else {
@@ -3052,7 +3080,9 @@ impl Desktop {
     }
 
     fn title(&self, id: window::Id) -> String {
-        if self.viewer_id == Some(id) {
+        if self.inspector_id == Some(id) {
+            "Evolve Mod Manager — Detached Asset Inspector".into()
+        } else if self.viewer_id == Some(id) {
             let source = std::path::Path::new(&self.state.input)
                 .file_name()
                 .map(|s| s.to_string_lossy().into_owned())
