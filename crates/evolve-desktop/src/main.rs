@@ -1728,19 +1728,34 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 && !state.keyboard_modifiers.control()
                 && !state.busy
                 && state.selected == Some(index)
-                && state.inventory.as_ref().and_then(|inv| inv.entries.get(index))
+                && state
+                    .inventory
+                    .as_ref()
+                    .and_then(|inv| inv.entries.get(index))
                     .is_some_and(|entry| {
-                        [".skin", ".skinm", ".chr", ".cgf", ".cdf", ".dds", ".dds.0", ".caf", ".mtl"]
-                            .iter().any(|ext| entry.relative_path.to_ascii_lowercase().ends_with(ext))
+                        [
+                            ".skin", ".skinm", ".chr", ".cgf", ".cdf", ".dds", ".dds.0", ".caf",
+                            ".mtl",
+                        ]
+                        .iter()
+                        .any(|ext| entry.relative_path.to_ascii_lowercase().ends_with(ext))
                     })
             {
-                let is_cdf = state.inventory.as_ref().and_then(|inv| inv.entries.get(index))
-                    .is_some_and(|entry| entry.relative_path.to_ascii_lowercase().ends_with(".cdf"));
-                return update(state, if is_cdf {
-                    Message::ViewerPreviewStaticCdf
-                } else {
-                    Message::ViewerPreviewSelected
-                });
+                let is_cdf = state
+                    .inventory
+                    .as_ref()
+                    .and_then(|inv| inv.entries.get(index))
+                    .is_some_and(|entry| {
+                        entry.relative_path.to_ascii_lowercase().ends_with(".cdf")
+                    });
+                return update(
+                    state,
+                    if is_cdf {
+                        Message::ViewerPreviewStaticCdf
+                    } else {
+                        Message::ViewerPreviewSelected
+                    },
+                );
             }
         }
         Message::ViewerToggleFolder(path) => {
