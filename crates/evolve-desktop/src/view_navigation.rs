@@ -36,7 +36,8 @@ impl Navigation {
                 None
             }
             Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                let last = self.last.replace(*position)?;
+                let last = self.last?;
+                self.last = Some(*position);
                 let dx = position.x - last.x;
                 let dy = position.y - last.y;
                 if !dx.is_finite() || !dy.is_finite() {
