@@ -107,17 +107,45 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         return tabs.into();
     }
     let content: Element<'_, Message> = match state.viewer_tab {
-        ViewerTab::Model => column![
-            text("Viewer controls").size(14),
-            text("The original CryEngine mesh and UV0 remain unmodified. Camera and panel layout can be saved.")
-                .size(12).color(MUTED),
-            row![
-                button("Inspect CDF/MTL links").on_press(Message::StartDependencyInspection),
-                button(if state.viewer_wireframe { "Shaded view" } else { "Wireframe view" })
-                    .on_press(Message::ViewerToggleWireframe),
-                button("Save workspace").on_press(Message::ViewerSaveLayout),
-            ].spacing(8),
-        ].spacing(6).into(),
+        ViewerTab::Model => {
+            let motion_details: Element<'_, Message> = if let Some(clip) = &state.native_caf {
+                let mut tracks = column![
+                    text(format!("Native CAF • {} controller(s) • {:.2}s • cyclic={} additive={}",
+                        clip.controllers.len(), clip.duration_seconds(), clip.cyclic, clip.additive))
+                        .size(12),
+                    text("Controllers are source bone CRCs, not yet associated with a validated skin hierarchy.")
+                        .size(12).color(MUTED),
+                ].spacing(5);
+                for controller in clip.controllers.iter().take(14) {
+                    tracks = tracks.push(text(format!(
+                        "CRC {:08X}: {} translation keys / {} rotation keys",
+                        controller.bone_crc32, controller.positions.len(),
+                        controller.rotations.len()
+                    )).size(12));
+                }
+                scrollable(tracks).height(Length::Fixed(145.0)).into()
+            } else if let Some(animation) = &state.glb_motion {
+                text(format!(
+                    "Validated converter animation: {} clips and {} source nodes.                      Skeleton binding must be verified for actual skinned playback.",
+                    animation.list_clips().len(), animation.node_names.len()
+                )).size(12).color(MUTED).into()
+            } else {
+                text("Open a native CAF or compatible converted GLB to inspect source animation tracks.")
+                    .size(12).color(MUTED).into()
+            };
+            column![
+                text("Viewer controls").size(14),
+                text("Original CryEngine mesh and UV0 remain unmodified. Camera and panel layout can be saved.")
+                    .size(12).color(MUTED),
+                row![
+                    button("Inspect CDF/MTL links").on_press(Message::StartDependencyInspection),
+                    button(if state.viewer_wireframe { "Shaded view" } else { "Wireframe view" })
+                        .on_press(Message::ViewerToggleWireframe),
+                    button("Save workspace").on_press(Message::ViewerSaveLayout),
+                ].spacing(8),
+                motion_details,
+            ].spacing(6).into()
+        }
         ViewerTab::Uv => {
             if let Some(mesh) = &state.model {
                 if let Some(uv) = &mesh.uv0 {
