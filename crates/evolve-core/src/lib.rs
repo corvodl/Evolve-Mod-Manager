@@ -1,13 +1,13 @@
 //! Core boundary for the Rust rewrite.
 //! All game data is local and opt-in. No assets are embedded or downloaded.
 pub mod animation;
-pub mod asset_compare;
 pub mod archive;
+pub mod asset_compare;
 pub mod batch;
 pub mod cdf;
-pub mod dependency_graph;
 pub mod converter;
 pub mod dds;
+pub mod dependency_graph;
 pub mod fbx;
 pub mod glb;
 pub mod inventory;
@@ -24,11 +24,6 @@ pub mod signed_pak;
 pub mod staging;
 pub mod terrain;
 
-pub use asset_compare::{AssetComparison, AssetFingerprint, CompareError, compare_assets};
-pub use dependency_graph::{
-    DependencyEdge, DependencyError, DependencyGraph, DependencyNode, DependencyStatus,
-    inspect_dependencies,
-};
 pub use animation::{
     AnimatedGlb, AnimationError, AnimationReference, CafInspection, MotionClip, PoseSample,
     animation_references, inspect_caf_bytes, inspect_caf_file,
@@ -37,12 +32,17 @@ pub use archive::{
     PakError, PakInventory, PakMember, RebuildReport, extract_legacy_pak, inspect_legacy_pak,
     rebuild_legacy_pak,
 };
+pub use asset_compare::{AssetComparison, AssetFingerprint, CompareError, compare_assets};
 pub use cdf::{
     AssetResolution, CdfAttachment, CdfDefinition, CdfDependencyReport, CdfError, parse_cdf,
     read_cdf, resolve_cdf, resolve_virtual,
 };
 pub use converter::{ConvertedMotion, ConverterError, convert_original_motion};
 pub use dds::{DdsError, DdsFormat, DdsInfo, decode_dds_rgba, export_dds_png, inspect_dds};
+pub use dependency_graph::{
+    DependencyEdge, DependencyError, DependencyGraph, DependencyNode, DependencyStatus,
+    inspect_dependencies,
+};
 pub use fbx::{FbxError, FbxReport, convert_glb_to_fbx, validate_glb_source};
 pub use glb::{GlbError, export_model_glb, geometry_glb_bytes};
 pub use inventory::{
