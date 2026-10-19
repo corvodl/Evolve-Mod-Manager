@@ -119,21 +119,28 @@ pub fn describe_archive(filename: &str) -> (String, String) {
         let kind = chunks.next().unwrap_or("Characters");
         let words: Vec<_> = chunks.collect();
         let is_texture = words.last() == Some(&"ts");
-        let character = words.iter()
-            .take(words.len().saturating_sub(usize::from(
-                matches!(words.last(), Some(&"data" | &"ts"))
-            )))
+        let character = words
+            .iter()
+            .take(
+                words
+                    .len()
+                    .saturating_sub(usize::from(matches!(words.last(), Some(&"data" | &"ts")))),
+            )
             .map(|part| readable(part))
             .collect::<Vec<_>>()
             .join(" ");
-        let label = if character.is_empty() { readable(kind) }
-            else { format!("{} • {character}", readable(kind)) };
-        let description = if is_texture { format!("{character} Textures") }
-            else if words.last() == Some(&"data") {
-                format!("{character} Models / Skeletons")
-            } else {
-                format!("{character} Archive")
-            };
+        let label = if character.is_empty() {
+            readable(kind)
+        } else {
+            format!("{} • {character}", readable(kind))
+        };
+        let description = if is_texture {
+            format!("{character} Textures")
+        } else if words.last() == Some(&"data") {
+            format!("{character} Models / Skeletons")
+        } else {
+            format!("{character} Archive")
+        };
         return (label, description);
     }
     if stem.starts_with("animations") {
@@ -156,12 +163,17 @@ fn manifests_by_build(root: &Path) -> Result<HashMap<String, Vec<String>>, Libra
     }
     let mut lookup = HashMap::<String, Vec<String>>::new();
     for (id, build) in data.builds {
-        if id == "unassigned" { continue; }
+        if id == "unassigned" {
+            continue;
+        }
         if build.label.len() > 120 || build.members.len() > MAX_ARCHIVES {
             return Err(LibraryError::Limit);
         }
         for member in build.members.keys() {
-            lookup.entry(member.clone()).or_default().push(build.label.clone());
+            lookup
+                .entry(member.clone())
+                .or_default()
+                .push(build.label.clone());
         }
     }
     for labels in lookup.values_mut() {
@@ -193,22 +205,32 @@ pub fn imported_library(root: &Path) -> Result<ImportedLibrary, LibraryError> {
             continue;
         }
         let file_name = entry.file_name().to_string_lossy().to_string();
-        let Some(id) = valid_directory_id(&file_name) else { continue };
+        let Some(id) = valid_directory_id(&file_name) else {
+            continue;
+        };
         let folder = entry.path();
         let bytes = match read_bounded(&folder.join("asset-library.json"), MAX_MANIFEST_BYTES) {
             Ok(bytes) => bytes,
-            Err(_) => { ignored += 1; continue; }
+            Err(_) => {
+                ignored += 1;
+                continue;
+            }
         };
         let manifest: Manifest = match serde_json::from_slice(&bytes) {
             Ok(parsed) => parsed,
-            Err(_) => { ignored += 1; continue; }
+            Err(_) => {
+                ignored += 1;
+                continue;
+            }
         };
-        if manifest.version != 1 || manifest.entries.len() > MAX_MEMBERS
+        if manifest.version != 1
+            || manifest.entries.len() > MAX_MEMBERS
             || manifest.name.len() > 255
             || !manifest.name.to_ascii_lowercase().ends_with(".pak")
-            || manifest.entries.iter().any(|e| {
-                e.path.is_empty() || safe_member_name(&e.path).is_err()
-            })
+            || manifest
+                .entries
+                .iter()
+                .any(|e| e.path.is_empty() || safe_member_name(&e.path).is_err())
         {
             ignored += 1;
             continue;
@@ -228,14 +250,24 @@ pub fn imported_library(root: &Path) -> Result<ImportedLibrary, LibraryError> {
             builds: owners.get(id).cloned().unwrap_or_default(),
         });
     }
-    archives.sort_by(|a, b| a.group.to_lowercase().cmp(&b.group.to_lowercase())
-        .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
-    let mut builds = archives.iter().flat_map(|item| item.builds.iter().cloned())
+    archives.sort_by(|a, b| {
+        a.group
+            .to_lowercase()
+            .cmp(&b.group.to_lowercase())
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    let mut builds = archives
+        .iter()
+        .flat_map(|item| item.builds.iter().cloned())
         .collect::<Vec<_>>();
     builds.sort_unstable();
     builds.dedup();
     Ok(ImportedLibrary {
-        root: root.to_string_lossy().into_owned(), archives, builds, total_bytes, ignored,
+        root: root.to_string_lossy().into_owned(),
+        archives,
+        builds,
+        total_bytes,
+        ignored,
     })
 }
 
@@ -247,10 +279,13 @@ pub fn imported_archive_files(archive: &ImportedPak) -> Result<Inventory, Librar
         return Err(LibraryError::UnsafeArchive);
     }
     let manifest: Manifest = serde_json::from_slice(&read_bounded(
-        &base.join("asset-library.json"), MAX_MANIFEST_BYTES
+        &base.join("asset-library.json"),
+        MAX_MANIFEST_BYTES,
     )?)?;
-    if manifest.version != 1 || manifest.name != archive.name
-        || manifest.entries.len() > MAX_MEMBERS {
+    if manifest.version != 1
+        || manifest.name != archive.name
+        || manifest.entries.len() > MAX_MEMBERS
+    {
         return Err(LibraryError::UnsafeArchive);
     }
     let file_root = base.join("files");
@@ -262,8 +297,7 @@ pub fn imported_archive_files(archive: &ImportedPak) -> Result<Inventory, Librar
     let mut total = 0u64;
     let mut unique = HashSet::new();
     for item in manifest.entries {
-        let name = safe_member_name(&item.path)
-            .map_err(|_| LibraryError::UnsafeArchive)?;
+        let name = safe_member_name(&item.path).map_err(|_| LibraryError::UnsafeArchive)?;
         if !unique.insert(name.to_ascii_lowercase()) {
             return Err(LibraryError::UnsafeArchive);
         }
@@ -277,13 +311,17 @@ pub fn imported_archive_files(archive: &ImportedPak) -> Result<Inventory, Librar
         }
         total = total.saturating_add(item.bytes);
         entries.push(AssetEntry {
-            kind: classify_path(Path::new(&name)), relative_path: name,
+            kind: classify_path(Path::new(&name)),
+            relative_path: name,
             byte_size: item.bytes,
         });
     }
     Ok(Inventory {
-        schema: 1, root: canonical.to_string_lossy().into_owned(),
-        entries, total_bytes: total, skipped_symlinks: 0,
+        schema: 1,
+        root: canonical.to_string_lossy().into_owned(),
+        entries,
+        total_bytes: total,
+        skipped_symlinks: 0,
     })
 }
 
@@ -300,7 +338,9 @@ mod tests {
     #[test]
     fn reads_existing_imports_without_changing_them() {
         let temp = tempfile::tempdir().unwrap();
-        let folder = temp.path().join("characters_hunters_merc_emet_ts.pak__1234567890abcdefabcd");
+        let folder = temp
+            .path()
+            .join("characters_hunters_merc_emet_ts.pak__1234567890abcdefabcd");
         fs::create_dir_all(folder.join("files/textures")).unwrap();
         fs::write(folder.join("files/textures/body.dds"), b"safe").unwrap();
         let contents = r#"{"version":1,"name":"characters_hunters_merc_emet_ts.pak","source":"C:/Game/emets.pak","extracted_bytes":4,"entries":[{"path":"textures/body.dds","bytes":4}]}"#;
@@ -308,9 +348,21 @@ mod tests {
         let catalog = imported_library(temp.path()).unwrap();
         assert_eq!(catalog.archives.len(), 1);
         assert_eq!(catalog.archives[0].entries, 1);
-        assert_eq!(imported_archive_files(&catalog.archives[0]).unwrap().entries.len(), 1);
+        assert_eq!(
+            imported_archive_files(&catalog.archives[0])
+                .unwrap()
+                .entries
+                .len(),
+            1
+        );
         fs::write(folder.join("files/textures/body.dds"), b"tampered").unwrap();
-        assert!(matches!(imported_archive_files(&catalog.archives[0]), Err(LibraryError::Modified)));
-        assert_eq!(fs::read_to_string(folder.join("asset-library.json")).unwrap(), contents);
+        assert!(matches!(
+            imported_archive_files(&catalog.archives[0]),
+            Err(LibraryError::Modified)
+        ));
+        assert_eq!(
+            fs::read_to_string(folder.join("asset-library.json")).unwrap(),
+            contents
+        );
     }
 }
