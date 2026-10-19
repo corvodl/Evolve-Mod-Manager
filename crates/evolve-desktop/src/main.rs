@@ -804,7 +804,7 @@ fn view(state: &State) -> Element<'_, Message> {
                 text(state.diffuse_status.as_str()),
                 if let Some(mesh)=&state.model {
                     let display:Element<'_,Message> = if mesh.uv0.is_some(){
-                        shader(&TexturedScene{
+                        shader(TexturedScene{
                             mesh:mesh.clone(),diffuse:state.diffuse.clone(),
                             yaw:state.yaw,pitch:state.pitch,zoom:state.zoom,
                         }).width(Fill).height(Length::Fixed(400.)).into()
@@ -847,7 +847,7 @@ fn view(state: &State) -> Element<'_, Message> {
             }else{"No placement source inspected.".into()}),
             if let Some(mesh)=&state.model {
                 let display:Element<'_,Message> = if mesh.uv0.is_some(){
-                    shader(&TexturedScene{
+                    shader(TexturedScene{
                         mesh:mesh.clone(),diffuse:state.diffuse.clone(),
                         yaw:state.yaw,pitch:state.pitch,zoom:state.zoom.max(0.2),
                     }).width(Fill).height(Length::Fixed(400.)).into()
