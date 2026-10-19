@@ -170,11 +170,11 @@ fn required_reference_counts(names: impl IntoIterator<Item = String>) -> (usize,
     (
         REQUIRED_SHARED
             .iter()
-            .filter(|name| present.contains(**name))
+            .filter(|name| present.contains(*name))
             .count(),
         REQUIRED_ANIMATIONS
             .iter()
-            .filter(|name| present.contains(**name))
+            .filter(|name| present.contains(*name))
             .count(),
     )
 }
