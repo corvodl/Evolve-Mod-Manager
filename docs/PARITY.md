@@ -8,7 +8,7 @@ This table tracks **actual Rust implementation state**, not feature mockups. The
 | Historical ZIP-compatible PAK inspect/extract/rebuild | **Implemented subset** | Original archive untouched, bounded CRC-verified extraction, file-path safety |
 | Stage 2 signed/encrypted CryPAK RSA/Twofish | **Experimental: verify and extract implemented, real-game unverified** | Verify signatures and central-directory/local offsets, native decrypted streaming |
 | Signed Stage 2 PAK editing and repacking | **Not ported** | Golden round-trips and signature verification after patch injection |
-| Staged offline mods, backups and crash-safe restore | **Not ported** | Journaling and rollback after cancel, crash and power loss |
+| Staged offline mods, backups and crash-safe restore | **Isolated signed-PAK stage prototype**: CLI import/apply/status/restore with SHA-256 and undo journal; no game launch integration | Journaling and rollback after cancel, crash and power loss |
 | Asset Library multi-PAK resolution and provenance | **Initial resolver** | Cross-PAK matching only when exact and unambiguous |
 | DDS/streaming top mip and BCn → PNG | **Implemented subset** | Golden pixel comparisons, signed BC5, BC6/BC7, console endian/split variants |
 | CDF XML skeleton/attachment parsing | **Implemented subset** | CDF variants, skin sets, dependency graph and verified meshes |
