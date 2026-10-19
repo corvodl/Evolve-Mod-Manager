@@ -67,10 +67,24 @@ fn strip(state: &State) -> Element<'_, Message> {
             button("Load normal").on_press(Message::StartNormalLoad),
             button("Load emissive").on_press(Message::StartEmissiveLoad),
         ].spacing(8).into(),
-        Some("Animation") => row![
-            button("Open CAF").on_press(Message::StartCafLoad),
-            button(if state.playing { "Pause" } else { "Play" }).on_press(Message::ToggleMotion),
-        ].spacing(8).into(),
+        Some("Animation") => {
+            let mut clips = column![
+                row![
+                    button("Open CAF").on_press(Message::StartCafLoad),
+                    button(if state.playing { "Pause" } else { "Play" }).on_press(Message::ToggleMotion),
+                    text(format!("{} character-declared animations", state.auto_clips.len())).size(12),
+                ].spacing(8),
+            ].spacing(5);
+            for (index, clip) in state.auto_clips.iter().take(80).enumerate() {
+                let label = format!("{} · {}{}", clip.label, clip.kind.to_ascii_uppercase(), if clip.source.is_none() { " (not extracted)" } else { "" });
+                clips = clips.push(
+                    button(text(label).size(12))
+                        .on_press(Message::ViewerAutoClip(index))
+                        .style(button::text)
+                );
+            }
+            scrollable(clips).height(Length::Fixed(250.0)).into()
+        },
         Some("Tools") => row![
             button("Index extracted files").on_press(Message::StartScan),
             button("Inspect selected asset").on_press(Message::ViewerPreviewSelected),
@@ -91,6 +105,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
             "No model loaded"
         })
         .size(12),
+        text(state.auto_resource_note.as_str()).size(11).color(MUTED),
     ]
     .spacing(2);
     let main: Element<'_, Message> = if let Some(mesh) = &state.model {
@@ -147,7 +162,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
 
     let toolbar = row![
         button("Reset Camera").on_press(Message::ViewerResetCamera),
-        text("MMB orbit · Shift+MMB pan · Wheel zoom").size(11),
+        text("Drag to orbit · Shift+drag/right-drag to pan · Wheel zoom").size(11),
         text("Light").size(12),
         slider(
             0.1..=2.0,
