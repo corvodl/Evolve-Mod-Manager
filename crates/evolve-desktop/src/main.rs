@@ -10,6 +10,7 @@ mod modding_keys;
 mod modding_page;
 mod modding_projects;
 mod private_pages;
+mod selection;
 mod settings;
 mod textured;
 mod updater;
@@ -40,6 +41,7 @@ use iced::widget::{
 use iced::{Element, Fill, Length, Subscription, Task, Theme, window};
 use modding_projects::{ProjectRow, discover_projects};
 use settings::{Preferences, load_from, save_to, settings_path};
+use selection::MultiSelection;
 use std::path::PathBuf;
 use std::collections::HashSet;
 use std::sync::{
@@ -158,6 +160,10 @@ struct State {
     level_scene: Option<Arc<LevelScene>>,
     terrain: Option<TerrainInfo>,
     selected: Option<usize>,
+    file_selection: MultiSelection,
+    project_selection: MultiSelection,
+    library_selection: MultiSelection,
+    keyboard_modifiers: iced::keyboard::Modifiers,
     status: String,
     busy: bool,
     preferences: Preferences,
@@ -631,6 +637,8 @@ enum Message {
     ViewerToggleExplorer,
     ViewerResetCamera,
     ViewerSearchChanged(String),
+    ViewerSelectFile(usize),
+    ModifiersChanged(iced::keyboard::Modifiers),
     ViewerToggleFolder(String),
     ViewerPreviewSelected,
     StartDependencyInspection,
@@ -873,8 +881,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
         }
         Message::ModdingFilterChanged(value) => state.modding_filter = value,
+        Message::ModifiersChanged(modifiers) => state.keyboard_modifiers = modifiers,
         Message::ModdingSelectProject(index) => {
             if let Some(project) = state.modding_projects.as_ref().and_then(|p| p.get(index)) {
+                let query = state.modding_filter.to_ascii_lowercase();
+                let visible: Vec<usize> = state.modding_projects.as_deref().unwrap_or(&[])
+                    .iter().enumerate().filter_map(|(i, p)|
+                        (query.is_empty() || p.label.to_ascii_lowercase().contains(&query)
+                            || p.target.to_ascii_lowercase().contains(&query)
+                            || p.source_build.to_ascii_lowercase().contains(&query))
+                        .then_some(i)
+                    ).take(90).collect();
+                state.project_selection.click(&visible, index,
+                    state.keyboard_modifiers.shift(), state.keyboard_modifiers.control());
+                state.modding_selected = state.project_selection.primary_after(index);
                 state.modding_selected = Some(index);
                 state.preferences.current_workspace =
                     project.workspace.to_string_lossy().into_owned();
@@ -929,7 +949,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 )
                 .is_ok()
                 {
-                    state.selected = Some(index);
+                    let filter = state.search.to_ascii_lowercase();
+                    let visible: Vec<usize> = inventory.entries.iter().enumerate()
+                        .filter(|(_, row)| row.relative_path.to_ascii_lowercase().ends_with(".pak")
+                            && (filter.is_empty() || row.relative_path.to_ascii_lowercase().contains(&filter)))
+                        .map(|(i, _)| i).take(90).collect();
+                    state.file_selection.click(&visible, index,
+                        state.keyboard_modifiers.shift(), state.keyboard_modifiers.control());
+                    state.selected = state.file_selection.primary_after(index);
                     state.input = candidate.to_string_lossy().into_owned();
                     state.status = format!("Selected original staged PAK: {}", entry.relative_path);
                 } else {
@@ -1063,7 +1090,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .as_ref()
                 .is_some_and(|catalog| index < catalog.archives.len())
             {
-                state.library_selected = Some(index);
+                let begin = state.library_page.saturating_mul(110);
+                let visible: Vec<usize> = state.library_matches.iter().skip(begin).take(110).copied().collect();
+                state.library_selection.click(&visible, index,
+                    state.keyboard_modifiers.shift(), state.keyboard_modifiers.control());
+                state.library_selected = state.library_selection.primary_after(index);
             }
         }
         Message::LibraryPreviousPage => {
@@ -1283,6 +1314,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.zoom = 1.0;
         }
         Message::ViewerSearchChanged(filter) => state.viewer_search = filter,
+        Message::ViewerSelectFile(index) => {
+            let records: Vec<(usize, &str, u64)> = if let Some(inv) = &state.inventory {
+                inv.entries.iter().enumerate()
+                    .map(|(i, e)| (i, e.relative_path.as_str(), e.byte_size)).collect()
+            } else if let Some(signed) = &state.signed_pak {
+                signed.entries.iter().enumerate()
+                    .map(|(i, e)| (i, e.path.as_str(), e.size)).collect()
+            } else if let Some(pak) = &state.pak {
+                pak.entries.iter().enumerate()
+                    .map(|(i, e)| (i, e.path.as_str(), e.size)).collect()
+            } else {
+                Vec::new()
+            };
+            let visible: Vec<usize> = explorer_tree::visible_rows(
+                records.iter().map(|(i, path, size)| (*i, *path, *size)),
+                &state.viewer_search, &state.viewer_collapsed, 350,
+            ).into_iter().filter_map(|row| row.index).collect();
+            state.file_selection.click(&visible, index,
+                state.keyboard_modifiers.shift(), state.keyboard_modifiers.control());
+            state.selected = state.file_selection.primary_after(index);
+        },
         Message::ViewerToggleFolder(path) => {
             if !state.viewer_collapsed.insert(path.clone()) {
                 state.viewer_collapsed.remove(&path);
@@ -1786,7 +1838,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::PitchChanged(value) => state.pitch = value,
         Message::ZoomChanged(value) => state.zoom = value,
         Message::SearchChanged(query) => state.search = query,
-        Message::Select(index) => state.selected = Some(index),
+        Message::Select(index) => {
+            let query = state.search.to_ascii_lowercase();
+            let visible: Vec<usize> = state.inventory.as_ref().map(|inventory|
+                inventory.entries.iter().enumerate()
+                    .filter_map(|(i, row)| (query.is_empty() || row.relative_path.to_ascii_lowercase().contains(&query)).then_some(i))
+                    .collect()
+            ).unwrap_or_default();
+            if visible.contains(&index) {
+                state.file_selection.click(&visible, index,
+                    state.keyboard_modifiers.shift(), state.keyboard_modifiers.control());
+                state.selected = state.file_selection.primary_after(index);
+            } else {
+                state.selected = Some(index);
+                state.file_selection.clear();
+                state.file_selection.click(&[index], index, false, false);
+            }
+        },
         Message::StartScan => {
             let source = PathBuf::from(&state.input);
             return begin_scan(state, source);
@@ -2146,6 +2214,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         previous.and_then(|path| projects.iter().position(|p| p.workspace == path));
                     state.status = format!("Loaded {} editable project(s).", projects.len());
                     state.modding_projects = Some(projects);
+                    state.project_selection.clear();
                     if let Some(path) = focus {
                         state.modding_open_editor_when_scanned = true;
                         return begin_scan(state, path.join("files"));
@@ -2159,6 +2228,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.library_root = catalog.root.clone();
                     state.preferences.asset_library_root = catalog.root.clone();
                     state.library_catalog = Some(catalog);
+                    state.library_selection.clear();
                     state.library_selected = None;
                     state.library_page = 0;
                     state.library_menu = None;
@@ -2175,6 +2245,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.input = inventory.root.clone();
                     state.viewer_search.clear();
                     state.inventory = Some(inventory);
+                    state.file_selection.clear();
                     state.pak = None;
                     state.signed_pak = None;
                     state.selected = None;
@@ -2203,6 +2274,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         pak.total_bytes
                     );
                     state.pak = Some(pak);
+                    state.file_selection.clear();
                     state.signed_pak = None;
                     state.selected = None;
                     state.page = Some(Page::Files);
@@ -3315,6 +3387,9 @@ impl Desktop {
             scan_progress,
             window::close_events().map(Message::WindowClosed),
             iced::event::listen_with(|event, _status, id| match event {
+                iced::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers)) => {
+                    Some(Message::ModifiersChanged(modifiers))
+                }
                 iced::Event::Window(window::Event::FileDropped(path)) => {
                     Some(Message::FileDropped(id, path))
                 }
