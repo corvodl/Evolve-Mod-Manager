@@ -7,9 +7,9 @@ use evolve_core::{
     export_model_obj, export_rigged_character_fbx, export_rigged_character_glb, export_terrain_obj,
     extract_legacy_pak, extract_signed_pak, import_stage_pak, initialize_stage, inspect_caf_file,
     inspect_dds, inspect_legacy_pak, inspect_signed_pak, list_mod_profiles, load_level_scene,
-    plan_mod_profile, read_cdf, read_model, read_terrain, rebuild_legacy_pak,
-    rebuild_signed_pak_entry, resolve_cdf, read_material, resolve_materials, restore_profile_stage, restore_stage, scan_directory,
-    stage_status, write_inventory_json,
+    plan_mod_profile, read_cdf, read_material, read_model, read_terrain, rebuild_legacy_pak,
+    rebuild_signed_pak_entry, resolve_cdf, resolve_materials, restore_profile_stage, restore_stage,
+    scan_directory, stage_status, write_inventory_json,
 };
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
