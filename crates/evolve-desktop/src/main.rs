@@ -205,17 +205,13 @@ struct State {
     preview_cache: SharedCache,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum ViewerTab {
+    #[default]
     Model,
     Uv,
     Dependencies,
     Compare,
-}
-impl Default for ViewerTab {
-    fn default() -> Self {
-        Self::Model
-    }
 }
 
 #[derive(Debug, Clone)]
