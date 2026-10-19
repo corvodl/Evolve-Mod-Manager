@@ -25,6 +25,7 @@ pub mod native_caf;
 pub mod policy;
 pub mod profiles;
 pub mod rig;
+pub mod skin_preview;
 pub mod scene;
 pub mod signed_pak;
 pub mod staging;
@@ -77,6 +78,7 @@ pub use native_caf::{
     CafBonePose, CafController, NativeCafError, NativeCafMotion, decode_native_caf, read_native_caf,
 };
 pub use policy::{AnimationPolicy, ExportFeature, FeatureStatus, PARITY_MATRIX};
+pub use skin_preview::VerifiedCafSkin;
 pub use rig::{
     CompiledSkeleton, RigError, RigReport, VerifiedWeights, export_rigged_character_fbx,
     export_rigged_character_fbx_textured, export_rigged_character_fbx_textured_animated,
