@@ -1,14 +1,14 @@
 //! Safe command-line functions shared with the desktop application.
 use evolve_core::{
-    AnimatedGlb, AnimationPolicy, Transform, add_mod_to_profile, animation_references, apply_stage_pak,
-    create_mod_profile, delete_mod_profile, enable_profile_mod, list_mod_profiles, plan_mod_profile,
-    convert_glb_to_fbx, convert_original_motion, export_dds_png, export_edited_layer,
+    AnimatedGlb, AnimationPolicy, Transform, add_mod_to_profile, animation_references,
+    apply_stage_pak, convert_glb_to_fbx, convert_original_motion, create_mod_profile,
+    delete_mod_profile, enable_profile_mod, export_dds_png, export_edited_layer,
     export_level_scene_glb, export_model_glb, export_model_obj, export_rigged_character_fbx,
     export_rigged_character_glb, export_terrain_obj, extract_legacy_pak, extract_signed_pak,
     import_stage_pak, initialize_stage, inspect_caf_file, inspect_dds, inspect_legacy_pak,
-    inspect_signed_pak, load_level_scene, read_cdf, read_model, read_terrain, rebuild_legacy_pak,
-    rebuild_signed_pak_entry, resolve_cdf, restore_stage, scan_directory, stage_status,
-    write_inventory_json,
+    inspect_signed_pak, list_mod_profiles, load_level_scene, plan_mod_profile, read_cdf,
+    read_model, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry, resolve_cdf,
+    restore_stage, scan_directory, stage_status, write_inventory_json,
 };
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
@@ -148,17 +148,30 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
             no_extra(&mut args)?;
             let catalog = list_mod_profiles(&stage).map_err(|e| e.to_string())?;
             for profile in catalog.profiles {
-                println!("{} | {} | {} mod(s)", profile.id, profile.name, profile.mods.len());
+                println!(
+                    "{} | {} | {} mod(s)",
+                    profile.id,
+                    profile.name,
+                    profile.mods.len()
+                );
                 for m in profile.mods {
-                    println!("  {} {} -> {} ({})", m.id, m.source, m.target,
-                        if m.enabled { "enabled" } else { "disabled" });
+                    println!(
+                        "  {} {} -> {} ({})",
+                        m.id,
+                        m.source,
+                        m.target,
+                        if m.enabled { "enabled" } else { "disabled" }
+                    );
                 }
             }
         } else if action == OsStr::new("create") {
             let name = pop(&mut args)?.into_string().map_err(|_| usage())?;
             no_extra(&mut args)?;
             let profile = create_mod_profile(&stage, &name).map_err(|e| e.to_string())?;
-            println!("Created offline mod profile {} ({})", profile.name, profile.id);
+            println!(
+                "Created offline mod profile {} ({})",
+                profile.name, profile.id
+            );
         } else if action == OsStr::new("delete") {
             let id = pop(&mut args)?.into_string().map_err(|_| usage())?;
             no_extra(&mut args)?;
@@ -173,8 +186,15 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
             let basename = pop(&mut args)?.into_string().map_err(|_| usage())?;
             no_extra(&mut args)?;
             let m = add_mod_to_profile(
-                &stage, &id, &mod_file, &relative, &original_key, &mod_key, &basename
-            ).map_err(|e| e.to_string())?;
+                &stage,
+                &id,
+                &mod_file,
+                &relative,
+                &original_key,
+                &mod_key,
+                &basename,
+            )
+            .map_err(|e| e.to_string())?;
             println!("Registered verified mod {} at target {}", m.id, m.target);
         } else if action == OsStr::new("enable") {
             let id = pop(&mut args)?.into_string().map_err(|_| usage())?;
@@ -195,8 +215,11 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
             no_extra(&mut args)?;
             let plan = plan_mod_profile(&stage, &id, &original_key, &mod_key, &basename)
                 .map_err(|e| e.to_string())?;
-            println!("Verified {} enabled signed mods ({} bytes); game unchanged.",
-                plan.mods.len(), plan.total_bytes);
+            println!(
+                "Verified {} enabled signed mods ({} bytes); game unchanged.",
+                plan.mods.len(),
+                plan.total_bytes
+            );
         } else {
             return Err(usage());
         }
