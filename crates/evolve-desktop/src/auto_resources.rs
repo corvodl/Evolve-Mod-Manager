@@ -349,6 +349,42 @@ mod tests {
     }
 
     #[test]
+    fn character_catalog_picks_exact_neutral_idle_and_keeps_other_declared_clips() {
+        let temp = tempfile::tempdir().unwrap();
+        let character = temp.path().join("characters/kala");
+        let animations = character.join("animations/3p");
+        std::fs::create_dir_all(&animations).unwrap();
+        let catalog = br#"<Params><AnimationList>
+            <Animation name="#filepath" path="characters/kala/animations/3p"/>
+            <Animation name="swim_idle" path="swim_idle.caf"/>
+            <Animation name="stand_idle_loop" path="stand_idle_loop.caf"/>
+            <Animation name="walk_forward" path="walk_forward.caf"/>
+        </AnimationList></Params>"#;
+        std::fs::write(character.join("kala.chrparams"), catalog).unwrap();
+        for clip in ["swim_idle.caf", "stand_idle_loop.caf", "walk_forward.caf"] {
+            std::fs::write(animations.join(clip), b"fixture").unwrap();
+        }
+        let inventory = scan_directory(temp.path()).unwrap();
+        let found = discover("characters/kala/kala.skin", &inventory, None, None);
+        assert!(found.config.is_some());
+        assert_eq!(found.clips.len(), 3);
+        assert_eq!(found.clips[1].label, "stand_idle_loop");
+        assert!(found.idle.unwrap().ends_with("stand_idle_loop.caf"));
+        assert!(found.warnings.is_empty(), "{:?}", found.warnings);
+    }
+
+    #[test]
+    fn declared_clip_requires_exact_safe_name() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("selected.caf"), b"fixture").unwrap();
+        let inventory = scan_directory(temp.path()).unwrap();
+        assert!(resolve_declared(&inventory, "selected.caf", None, None).unwrap().is_some());
+        assert!(resolve_declared(&inventory, "other.caf", None, None).unwrap().is_none());
+        assert!(resolve_declared(&inventory, "../selected.caf", None, None).unwrap().is_none());
+        assert!(resolve_declared(&inventory, "selected.dba", None, None).is_err());
+    }
+
+    #[test]
     fn idle_ranking_skips_contextual_motions() {
         assert!(idle_priority("stand_idle_loop").unwrap() < idle_priority("swim_idle").unwrap());
         assert_eq!(idle_priority("walk_forward"), None);
