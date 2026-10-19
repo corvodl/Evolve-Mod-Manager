@@ -76,8 +76,12 @@ fn add_entries<'a>(
             bytes: 0,
         });
         for (index, file) in assemblies {
-            let stem = file.rsplit('/').next().unwrap_or("Character")
-                .trim_end_matches(".cdf").replace('_', " ");
+            let stem = file
+                .rsplit('/')
+                .next()
+                .unwrap_or("Character")
+                .trim_end_matches(".cdf")
+                .replace('_', " ");
             nodes.entry(group.clone()).or_default().push(ExplorerRow {
                 path: format!("{group}/{file}"),
                 name: format!("{stem} • Full Character (verify parts)"),
@@ -173,7 +177,10 @@ mod tests {
         let tree = visible_rows(fixture(), "", &collapsed, 50);
         assert_eq!(tree.len(), 4);
         assert_eq!(tree.last().unwrap().index, Some(2));
-        assert!(tree.iter().any(|r| r.path.starts_with("@assemblies/") && r.index == Some(0)));
+        assert!(
+            tree.iter()
+                .any(|r| r.path.starts_with("@assemblies/") && r.index == Some(0))
+        );
         let found = visible_rows(fixture(), "diffuse.dds", &collapsed, 50);
         assert_eq!(found.last().unwrap().index, Some(1));
         assert_eq!(found.len(), 5);
@@ -182,14 +189,19 @@ mod tests {
     #[test]
     fn virtual_full_character_entry_targets_only_an_original_cdf() {
         let rows = visible_rows(fixture(), "", &HashSet::new(), 100);
-        let character = rows.iter()
-            .find(|row| row.path.starts_with("@assemblies/")).unwrap();
+        let character = rows
+            .iter()
+            .find(|row| row.path.starts_with("@assemblies/"))
+            .unwrap();
         assert_eq!(character.index, Some(0));
         assert!(character.name.contains("Full Character"));
         let mut collapsed = HashSet::new();
         collapsed.insert("@assemblies".into());
-        assert!(!visible_rows(fixture(), "", &collapsed, 100)
-            .iter().any(|row| row.path.starts_with("@assemblies/")));
+        assert!(
+            !visible_rows(fixture(), "", &collapsed, 100)
+                .iter()
+                .any(|row| row.path.starts_with("@assemblies/"))
+        );
     }
 
     #[test]
