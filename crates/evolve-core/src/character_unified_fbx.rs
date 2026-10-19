@@ -367,6 +367,41 @@ mod tests {
     }
 
     #[test]
+    fn exact_compiled_sidecar_and_original_authored_top_mip_are_used() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::write(root.join("hunter.skin"), b"original binding").unwrap();
+        fs::write(root.join("hunter.skinm"), b"compiled stream").unwrap();
+        fs::create_dir(root.join("textures")).unwrap();
+        fs::write(root.join("textures/hunter.dds"), b"lower mip").unwrap();
+        fs::write(root.join("textures/hunter.dds.0"), b"highest mip").unwrap();
+        fs::write(
+            root.join("hunter.mtl"),
+            br#"<Material Name="Hunter"><Textures><Texture Map="Diffuse" File="textures/hunter.tif"/></Textures></Material>"#,
+        ).unwrap();
+        let inventory = crate::scan_directory(root).unwrap();
+        let original = fs::canonicalize(root.join("hunter.skin")).unwrap();
+        let compiled = preferred_compiled_mesh(root, &original, &inventory).unwrap();
+        assert!(compiled.ends_with("hunter.skinm"));
+        let diffuse = exact_single_slot_diffuse(root, &compiled, &inventory).unwrap().unwrap();
+        assert!(diffuse.ends_with("hunter.dds.0"));
+        assert_eq!(fs::read(original).unwrap(), b"original binding");
+    }
+
+    #[test]
+    fn multiple_material_slots_never_become_a_guessed_single_texture() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::write(root.join("hunter.skinm"), b"original stream").unwrap();
+        fs::write(root.join("hunter.mtl"),
+            br#"<Materials><Material Name="body"><Textures><Texture Map="Diffuse" File="textures/body.dds"/></Textures></Material><Material Name="suit"><Textures><Texture Map="Diffuse" File="textures/suit.dds"/></Textures></Material></Materials>"#
+        ).unwrap();
+        let inventory = crate::scan_directory(root).unwrap();
+        let mesh = fs::canonicalize(root.join("hunter.skinm")).unwrap();
+        assert!(exact_single_slot_diffuse(root, &mesh, &inventory).unwrap().is_none());
+    }
+
+    #[test]
     fn missing_original_cdf_never_produces_export() {
         let root = tempfile::tempdir().unwrap();
         let output = tempfile::tempdir().unwrap();
