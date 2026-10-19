@@ -45,6 +45,14 @@ Do not convert an internal Rust prototype into a public production release just 
 - **Levels**: Heightmap.dat terrain decoding, mission/LYR hierarchy and transforms, non-destructive edits, geometry-scene GLB and Blender FBX bridge exposed in Iced. Full material/geometry dependency assembly, normal maps and real-map scene parity remain unported.
 - **Public output**: no user-owned game files, keys, private repository history, secrets or proprietary assets should be committed. Public release tag 1.0 must be gated by full actual parity.
 
+## Desktop GUI parity — private manager reference
+
+- The private v1.3.5 manager is the design reference: dark charcoal surfaces, compact red-accent icon rail, top breadcrumb, Home hero/status dashboard, Instructions, Asset Library, Modding, What's New, Credits and password-gated Developer. Bottom rail is Play with Mods, Play without Mods and Settings. Playback shortcuts deliberately remain disabled until the installed-game launch and recovery implementation is verified.
+- Iced 0.14 uses a multi-window daemon. The **Asset Viewer** opens as a separate native OS window, with a dark menu bar (File/Edit/View/Model/Textures/Animation/Tools/Help), wgpu preview, camera controls, compact native animation timeline, searchable bounded File Explorer on the right, and a status row. Original Asset Library files remain read-only.
+- Supported source .skin/.skinm/.chr/.cgf/.cdf/.dds/.dds.0/.caf/.mtl types can be inspected from an indexed extracted directory. PAK central-directory rows are not directly previewed until extracted, and no separate character full-body assembly is manufactured from a single mesh.
+- Implemented UI controls deliberately do not promise missing engine capabilities. **Still missing**: full CDF character assembly/equipment/gpu skeletal playback, map-based file tree and per-project editing workflow, complete native animation catalog and layer editor, GFX workbench, confirmed in-game launch/restore, production event tooling, and exhaustive original-asset tests.
+- Potential Rust advantages over the legacy Qt implementation: one typed state reducer for all windows, background Tokio workers for decompression/indexing, wgpu reuse across previews, and bounded filtered explorer rendering. Virtualized rows, retained geometry/texture caches and multi-asset tabs require further benchmarks; they are not claimed as shipped.
+
 ## Isolated mod profiles and recovery (development only)
 
 - Persistent versioned `profiles.json` catalogs live inside a newly initialized offline staging workspace. They store only file references and SHA-256 hashes; they do not copy assets or keys into the Git repository. CLI and Iced support creation, listing, signed-file registration, verifying enabled mods and resolving duplicate targets.
