@@ -1,12 +1,11 @@
 //! Safe command-line functions shared with the desktop application.
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, Transform, animation_references, convert_glb_to_fbx,
-    export_rigged_character_glb, export_rigged_character_fbx,
     export_dds_png, export_edited_layer, export_level_scene_glb, export_model_glb,
-    export_model_obj, export_terrain_obj, extract_legacy_pak, extract_signed_pak, inspect_caf_file,
-    inspect_dds, inspect_legacy_pak, inspect_signed_pak, load_level_scene, read_cdf, read_model,
-    read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry, scan_directory,
-    write_inventory_json,
+    export_model_obj, export_rigged_character_fbx, export_rigged_character_glb, export_terrain_obj,
+    extract_legacy_pak, extract_signed_pak, inspect_caf_file, inspect_dds, inspect_legacy_pak,
+    inspect_signed_pak, load_level_scene, read_cdf, read_model, read_terrain, rebuild_legacy_pak,
+    rebuild_signed_pak_entry, scan_directory, write_inventory_json,
 };
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
@@ -232,11 +231,13 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
         let skeleton: PathBuf = pop(&mut args)?.into();
         let output: PathBuf = pop(&mut args)?.into();
         no_extra(&mut args)?;
-        let report=export_rigged_character_glb(&source,&skeleton,&output)
-            .map_err(|e|e.to_string())?;
-        println!("Verified source bind poses/skin weights: {} bones, {} weighted vertices, {} subset palettes",
-            report.bone_count,report.weighted_vertices,report.subset_count);
-        println!("Rigged GLB: {}. Embedded animations: no.",output.display());
+        let report =
+            export_rigged_character_glb(&source, &skeleton, &output).map_err(|e| e.to_string())?;
+        println!(
+            "Verified source bind poses/skin weights: {} bones, {} weighted vertices, {} subset palettes",
+            report.bone_count, report.weighted_vertices, report.subset_count
+        );
+        println!("Rigged GLB: {}. Embedded animations: no.", output.display());
         return Ok(());
     }
     if verb == OsStr::new("rig") && subcommand == OsStr::new("fbx") {
@@ -244,11 +245,16 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
         let blender: PathBuf = pop(&mut args)?.into();
         let output: PathBuf = pop(&mut args)?.into();
         no_extra(&mut args)?;
-        let (rig,fbx)=export_rigged_character_fbx(&source,&skeleton,&blender,&output)
-            .map_err(|e|e.to_string())?;
-        println!("Rigged FBX source: {} bones, {} active, {} weighted vertices.",
-            rig.bone_count,rig.active_bones,rig.weighted_vertices);
-        println!("Rigged Blender FBX: {} bytes. Embedded animations: no.",fbx.output_size);
+        let (rig, fbx) = export_rigged_character_fbx(&source, &skeleton, &blender, &output)
+            .map_err(|e| e.to_string())?;
+        println!(
+            "Rigged FBX source: {} bones, {} active, {} weighted vertices.",
+            rig.bone_count, rig.active_bones, rig.weighted_vertices
+        );
+        println!(
+            "Rigged Blender FBX: {} bytes. Embedded animations: no.",
+            fbx.output_size
+        );
         return Ok(());
     }
     if verb == OsStr::new("model") && subcommand == OsStr::new("fbx") {

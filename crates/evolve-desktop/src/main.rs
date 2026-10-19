@@ -1,25 +1,25 @@
 //! Native wgpu-backed desktop shell. Asset operations use blocking workers, so
 //! file I/O/decompression never runs in the interactive Iced view/update path.
-mod viewport;
 mod textured;
+mod viewport;
 use evolve_core::{
-    AssetEntry, CdfDefinition, DdsInfo, Inventory, LevelScene, ModelInfo, PakInventory, RenderMesh,
-    SignedPakInfo, TerrainInfo, export_dds_png, export_level_scene_glb, extract_legacy_pak,
-    extract_signed_pak, inspect_dds, inspect_legacy_pak, inspect_signed_pak, load_level_scene,
-    read_cdf, read_model, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry,
-    decode_dds_rgba, read_native_caf, NativeCafMotion, RigReport,
-    export_rigged_character_glb,export_rigged_character_fbx,scan_directory,
+    AssetEntry, CdfDefinition, DdsInfo, Inventory, LevelScene, ModelInfo, NativeCafMotion,
+    PakInventory, RenderMesh, RigReport, SignedPakInfo, TerrainInfo, decode_dds_rgba,
+    export_dds_png, export_level_scene_glb, export_rigged_character_fbx,
+    export_rigged_character_glb, extract_legacy_pak, extract_signed_pak, inspect_dds,
+    inspect_legacy_pak, inspect_signed_pak, load_level_scene, read_cdf, read_model,
+    read_native_caf, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry, scan_directory,
 };
 use iced::widget::{
-    button, canvas, column, container, image, row, scrollable, shader, slider, svg, text, text_input,
-    tooltip,
+    button, canvas, column, container, image, row, scrollable, shader, slider, svg, text,
+    text_input, tooltip,
 };
-use iced::{Element, Fill, Length, Task, Theme, Subscription};
+use iced::{Element, Fill, Length, Subscription, Task, Theme};
 use std::path::PathBuf;
-use std::time::Duration;
 use std::sync::Arc;
-use viewport::MeshViewport;
+use std::time::Duration;
 use textured::Scene as TexturedScene;
+use viewport::MeshViewport;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Page {
@@ -80,8 +80,8 @@ struct State {
     diffuse: Option<Arc<::image::RgbaImage>>,
     diffuse_status: String,
     caf_path: String,
-    skeleton_path:String,
-    blender_path:String,
+    skeleton_path: String,
+    blender_path: String,
     native_caf: Option<Arc<NativeCafMotion>>,
     motion_time: f32,
     playing: bool,
@@ -111,8 +111,8 @@ enum Operation {
     InspectDds(PathBuf),
     LoadDiffuse(PathBuf),
     LoadCaf(PathBuf),
-    RiggedGlb(PathBuf,PathBuf,PathBuf),
-    RiggedFbx(PathBuf,PathBuf,PathBuf,PathBuf),
+    RiggedGlb(PathBuf, PathBuf, PathBuf),
+    RiggedFbx(PathBuf, PathBuf, PathBuf, PathBuf),
     InspectCdf(PathBuf),
     InspectModel(PathBuf),
     InspectLevel(PathBuf),
@@ -140,9 +140,9 @@ enum Completed {
     Inventory(Inventory),
     Pak(PakInventory),
     Texture(DdsInfo),
-    Diffuse(DdsInfo,::image::RgbaImage),
+    Diffuse(DdsInfo, ::image::RgbaImage),
     Caf(NativeCafMotion),
-    RiggedExport(RigReport,PathBuf),
+    RiggedExport(RigReport, PathBuf),
     Character(CdfDefinition),
     Model(RenderMesh),
     Level(LevelScene),
@@ -165,14 +165,22 @@ impl Operation {
             Self::InspectPak(source) => inspect_legacy_pak(&source)
                 .map(Completed::Pak)
                 .map_err(|e| e.to_string()),
-            Self::RiggedGlb(mesh,skeleton,dest) => export_rigged_character_glb(&mesh,&skeleton,&dest)
-                .map(|r|Completed::RiggedExport(r,dest)).map_err(|e|e.to_string()),
-            Self::RiggedFbx(mesh,skeleton,blender,dest) => export_rigged_character_fbx(&mesh,&skeleton,&blender,&dest)
-                .map(|(r,_)|Completed::RiggedExport(r,dest)).map_err(|e|e.to_string()),
+            Self::RiggedGlb(mesh, skeleton, dest) => {
+                export_rigged_character_glb(&mesh, &skeleton, &dest)
+                    .map(|r| Completed::RiggedExport(r, dest))
+                    .map_err(|e| e.to_string())
+            }
+            Self::RiggedFbx(mesh, skeleton, blender, dest) => {
+                export_rigged_character_fbx(&mesh, &skeleton, &blender, &dest)
+                    .map(|(r, _)| Completed::RiggedExport(r, dest))
+                    .map_err(|e| e.to_string())
+            }
             Self::LoadCaf(source) => read_native_caf(&source)
-                .map(Completed::Caf).map_err(|e|e.to_string()),
+                .map(Completed::Caf)
+                .map_err(|e| e.to_string()),
             Self::LoadDiffuse(source) => decode_dds_rgba(&source)
-                .map(|(info,image)|Completed::Diffuse(info,image)).map_err(|e|e.to_string()),
+                .map(|(info, image)| Completed::Diffuse(info, image))
+                .map_err(|e| e.to_string()),
             Self::InspectDds(source) => inspect_dds(&source)
                 .map(Completed::Texture)
                 .map_err(|e| e.to_string()),
@@ -337,23 +345,30 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::SignedReplacementChanged(value) => state.signed_replacement = value,
         Message::DiffuseInputChanged(value) => state.diffuse_input = value,
         Message::CafInputChanged(value) => state.caf_path = value,
-        Message::SkeletonChanged(value)=>state.skeleton_path=value,
-        Message::BlenderChanged(value)=>state.blender_path=value,
+        Message::SkeletonChanged(value) => state.skeleton_path = value,
+        Message::BlenderChanged(value) => state.blender_path = value,
         Message::MotionScrub(value) => state.motion_time = value,
         Message::ToggleMotion => state.playing = !state.playing && state.native_caf.is_some(),
         Message::Tick => {
             if state.playing {
-                if let Some(motion)=&state.native_caf {
-                    state.motion_time+=0.04;
-                    let duration=motion.duration_seconds();
-                    if duration <= 0.0 {state.playing=false;}
-                    else if state.motion_time>=duration {
-                        if motion.cyclic {state.motion_time%=duration;}
-                        else{state.motion_time=duration;state.playing=false;}
+                if let Some(motion) = &state.native_caf {
+                    state.motion_time += 0.04;
+                    let duration = motion.duration_seconds();
+                    if duration <= 0.0 {
+                        state.playing = false;
+                    } else if state.motion_time >= duration {
+                        if motion.cyclic {
+                            state.motion_time %= duration;
+                        } else {
+                            state.motion_time = duration;
+                            state.playing = false;
+                        }
                     }
-                }else{state.playing=false;}
+                } else {
+                    state.playing = false;
+                }
             }
-        },
+        }
         Message::AssetsRootChanged(value) => state.assets_root = value,
         Message::TerrainSourceChanged(value) => state.terrain_source = value,
         Message::YawChanged(value) => state.yaw = value,
@@ -370,40 +385,58 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return launch(state, Operation::InspectPak(source));
         }
         Message::StartRigGlb => {
-            if state.input.trim().is_empty() || state.skeleton_path.trim().is_empty()
-                || state.output.trim().is_empty() {
+            if state.input.trim().is_empty()
+                || state.skeleton_path.trim().is_empty()
+                || state.output.trim().is_empty()
+            {
                 state.status="Choose the original skin mesh, EXACT matching CryEngine skeleton and a NEW .glb output.".into();
                 return Task::none();
             }
-            return launch(state,Operation::RiggedGlb(
-                PathBuf::from(&state.input),PathBuf::from(&state.skeleton_path),
-                PathBuf::from(&state.output),
-            ));
+            return launch(
+                state,
+                Operation::RiggedGlb(
+                    PathBuf::from(&state.input),
+                    PathBuf::from(&state.skeleton_path),
+                    PathBuf::from(&state.output),
+                ),
+            );
         }
         Message::StartRigFbx => {
-            if state.input.trim().is_empty() || state.skeleton_path.trim().is_empty()
-                || state.blender_path.trim().is_empty() || state.output.trim().is_empty() {
+            if state.input.trim().is_empty()
+                || state.skeleton_path.trim().is_empty()
+                || state.blender_path.trim().is_empty()
+                || state.output.trim().is_empty()
+            {
                 state.status="Choose original skin mesh, matching skeleton, Blender executable and NEW .fbx output.".into();
                 return Task::none();
             }
-            return launch(state,Operation::RiggedFbx(
-                PathBuf::from(&state.input),PathBuf::from(&state.skeleton_path),
-                PathBuf::from(&state.blender_path),PathBuf::from(&state.output),
-            ));
+            return launch(
+                state,
+                Operation::RiggedFbx(
+                    PathBuf::from(&state.input),
+                    PathBuf::from(&state.skeleton_path),
+                    PathBuf::from(&state.blender_path),
+                    PathBuf::from(&state.output),
+                ),
+            );
         }
         Message::StartCafLoad => {
             if state.caf_path.trim().is_empty() {
                 state.status="Select the original native CAF to inspect/play its exact bone controller tracks.".into();
                 return Task::none();
             }
-            return launch(state,Operation::LoadCaf(PathBuf::from(&state.caf_path)));
+            return launch(state, Operation::LoadCaf(PathBuf::from(&state.caf_path)));
         }
         Message::StartDiffuseLoad => {
-            if state.diffuse_input.trim().is_empty(){
-                state.status="Select an exact original DDS diffuse texture or split-stream set.".into();
+            if state.diffuse_input.trim().is_empty() {
+                state.status =
+                    "Select an exact original DDS diffuse texture or split-stream set.".into();
                 return Task::none();
             }
-            return launch(state, Operation::LoadDiffuse(PathBuf::from(&state.diffuse_input)));
+            return launch(
+                state,
+                Operation::LoadDiffuse(PathBuf::from(&state.diffuse_input)),
+            );
         }
         Message::StartDdsInspection => {
             let source = PathBuf::from(&state.input);
@@ -559,25 +592,37 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.selected = None;
                     state.page = Some(Page::Files);
                 }
-                Ok(Completed::RiggedExport(info,target)) => {
-                    state.status=format!("Rigged Blender-compatible export: {} original bones, {} weighted vertices, {} active joints, {} palettes: {}",
-                        info.bone_count,info.weighted_vertices,info.active_bones,info.subset_count,target.display());
-                    state.page=Some(Page::Models);
+                Ok(Completed::RiggedExport(info, target)) => {
+                    state.status = format!(
+                        "Rigged Blender-compatible export: {} original bones, {} weighted vertices, {} active joints, {} palettes: {}",
+                        info.bone_count,
+                        info.weighted_vertices,
+                        info.active_bones,
+                        info.subset_count,
+                        target.display()
+                    );
+                    state.page = Some(Page::Models);
                 }
                 Ok(Completed::Caf(motion)) => {
-                    state.status=format!("Native CAF decoded: {} controllers at {:.1} FPS; {} seconds. Bind-pose matching is required for mesh animation.",
-                        motion.controllers.len(),motion.fps,motion.duration_seconds());
-                    state.motion_time=0.0;
-                    state.playing=false;
-                    state.native_caf=Some(Arc::new(motion));
-                    state.page=Some(Page::Models);
+                    state.status = format!(
+                        "Native CAF decoded: {} controllers at {:.1} FPS; {} seconds. Bind-pose matching is required for mesh animation.",
+                        motion.controllers.len(),
+                        motion.fps,
+                        motion.duration_seconds()
+                    );
+                    state.motion_time = 0.0;
+                    state.playing = false;
+                    state.native_caf = Some(Arc::new(motion));
+                    state.page = Some(Page::Models);
                 }
-                Ok(Completed::Diffuse(info,pixels)) => {
-                    state.diffuse_status=format!("GPU diffuse loaded: {} × {} highest-resolution pixels ({:?}).",
-                        info.width,info.height,info.format);
-                    state.status=state.diffuse_status.clone();
-                    state.diffuse=Some(Arc::new(pixels));
-                    state.page=Some(Page::Models);
+                Ok(Completed::Diffuse(info, pixels)) => {
+                    state.diffuse_status = format!(
+                        "GPU diffuse loaded: {} × {} highest-resolution pixels ({:?}).",
+                        info.width, info.height, info.format
+                    );
+                    state.status = state.diffuse_status.clone();
+                    state.diffuse = Some(Arc::new(pixels));
+                    state.page = Some(Page::Models);
                 }
                 Ok(Completed::Texture(texture)) => {
                     state.status = format!(
@@ -1024,10 +1069,12 @@ fn view(state: &State) -> Element<'_, Message> {
 fn main() -> iced::Result {
     let _supported_backends = wgpu::Backends::PRIMARY;
     iced::application(State::default, update, view)
-        .subscription(|state:&State|{
+        .subscription(|state: &State| {
             if state.playing {
-                iced::time::every(Duration::from_millis(40)).map(|_|Message::Tick)
-            } else {Subscription::none()}
+                iced::time::every(Duration::from_millis(40)).map(|_| Message::Tick)
+            } else {
+                Subscription::none()
+            }
         })
         .title("Evolve Mod Manager — Rust Development Preview")
         .theme(|_state: &State| {
