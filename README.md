@@ -4,9 +4,17 @@ Independent Windows desktop modding toolkit rewrite using **Rust**, **Iced 0.14*
 
 > **Development preview: 0.1.0 — NOT a 1.0 release.** Only the implemented components listed here work. Porting and validating the complete feature set from the existing manager is an ongoing prerequisite for the first public 1.0.
 
+## Asset Viewer window
+
+On the Modding or Asset Library page choose **Open Asset Viewer**. Inspecting a supported local mesh also opens the native viewer. The right-hand File Explorer lists extracted game files or verified signed Stage 2 PAK members with bounded search results; encrypted members must be explicitly extracted before their contents can be previewed. Select an extracted model (.cgf/.chr/.skin/.skinm), CDF, DDS or CAF entry and choose **Preview selected**.
+
+The viewer is **read-only** when opened from the Asset Library; the original PAK or directory is never edited by preview actions. Full CDF equipment/body assembly, source-faithful skeletal animation, original material/glow parity and the complete private-manager file editor are **not yet implemented**. The Developer page has no bundled password or unsecured bypass; local authorization is configured using `EVOLVE_MOD_MANAGER_DEV_SHA256`, a 64-character lowercase SHA-256 hex digest. The private tool suite is not ported.
+
+The Rust architecture enables nonblocking archive parsing with Tokio worker tasks, shared immutable mesh/texture data between windows, and native wgpu GPU previews. The explorer currently renders a bounded filtered set; full virtualized tree navigation is still planned.
+
 ## Currently implemented in Rust
 
-- Responsive Iced dark desktop shell with navigation, searchable file inventory, PAK member browsing, DDS metadata inspection, and explicit output fields.
+- Private-manager-inspired Iced desktop shell with compact black/red navigation ordered Home, Instructions, Asset Library, Modding, What's New, Credits, Developer (runtime password locked), with Play with Mods, Play without Mods and Settings at the bottom. A separate native **Asset Viewer** window presents the shared wgpu model viewport, explorer, camera tools, menu bar and timeline. Player launch actions remain disabled until safe production integration is complete.
 - Bounded read-only scanning of local CryEngine assets, classification by extension, deterministic results, and an optional JSON inventory report.
 - **Historical ZIP-compatible PAK** inspection, extraction, and rebuild from existing-member replacements (stored and DEFLATE methods), with bounded sizes, unsafe-name and symlink rejection, duplicate detection, CRC-checked streaming, and newly created staging/output folders. Original PAK files are never modified.
 - **DDS texture inspection and highest-resolution PNG export** for BC1, BC2, BC3, unsigned BC4/BC5, and common 32-bit RGBA/BGRA. Supports complete `.dds`, complete `.dds.0`, and fully extracted consecutive `.dds.0`–`.dds.N` mip fragments. BC5 is exported as raw red/green channels rather than simulated normal-map shading.
