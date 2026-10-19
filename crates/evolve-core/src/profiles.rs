@@ -49,7 +49,10 @@ pub struct ProfileCatalog {
 }
 impl Default for ProfileCatalog {
     fn default() -> Self {
-        Self { schema: 1, profiles: vec![] }
+        Self {
+            schema: 1,
+            profiles: vec![],
+        }
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -60,13 +63,17 @@ pub struct ProfilePlan {
 }
 fn root(stage: &Path, require_clear: bool) -> Result<PathBuf, ProfileError> {
     let state = stage_status(stage).map_err(|e| ProfileError::Invalid(e.to_string()))?;
-    if require_clear && state.is_some() { return Err(ProfileError::Pending); }
+    if require_clear && state.is_some() {
+        return Err(ProfileError::Pending);
+    }
     Ok(fs::canonicalize(stage)?)
 }
 fn name(input: &str) -> Result<&str, ProfileError> {
     let value = input.trim();
     if value.len() > 80 || value.is_empty() || value.chars().any(char::is_control) {
-        return Err(ProfileError::Invalid("Expected 1–80 printable characters".into()));
+        return Err(ProfileError::Invalid(
+            "Expected 1–80 printable characters".into(),
+        ));
     }
     Ok(value)
 }
@@ -82,23 +89,30 @@ fn hex(value: &str, len: usize) -> bool {
 }
 fn check(catalog: &ProfileCatalog) -> Result<(), ProfileError> {
     if catalog.schema != 1 || catalog.profiles.len() > 100 {
-        return Err(ProfileError::Invalid("Invalid schema or profile count".into()));
+        return Err(ProfileError::Invalid(
+            "Invalid schema or profile count".into(),
+        ));
     }
     let mut ids = HashSet::new();
     let mut labels = HashSet::new();
     for profile in &catalog.profiles {
-        if !hex(&profile.id, 32) || !ids.insert(profile.id.clone())
+        if !hex(&profile.id, 32)
+            || !ids.insert(profile.id.clone())
             || name(&profile.name)? != profile.name
-            || !labels.insert(profile.name.to_lowercase()) || profile.mods.len() > 500
+            || !labels.insert(profile.name.to_lowercase())
+            || profile.mods.len() > 500
         {
             return Err(ProfileError::Invalid("Invalid profile metadata".into()));
         }
         let mut mod_ids = HashSet::new();
         let mut enabled = HashSet::new();
         for item in &profile.mods {
-            if !hex(&item.id, 32) || !mod_ids.insert(item.id.clone())
-                || !hex(&item.sha256, 64) || target(&item.target)? != item.target
-                || item.source.len() > 4096 || !Path::new(&item.source).is_absolute()
+            if !hex(&item.id, 32)
+                || !mod_ids.insert(item.id.clone())
+                || !hex(&item.sha256, 64)
+                || target(&item.target)? != item.target
+                || item.source.len() > 4096
+                || !Path::new(&item.source).is_absolute()
             {
                 return Err(ProfileError::Invalid("Invalid mod source or ID".into()));
             }
@@ -139,20 +153,33 @@ fn save(stage: &Path, catalog: &ProfileCatalog) -> Result<(), ProfileError> {
     file.persist(path).map_err(|e| ProfileError::Io(e.error))?;
     Ok(())
 }
-fn selected<'a>(catalog: &'a mut ProfileCatalog, id: &str) -> Result<&'a mut ModProfile, ProfileError> {
-    catalog.profiles.iter_mut().find(|p| p.id == id)
+fn selected<'a>(
+    catalog: &'a mut ProfileCatalog,
+    id: &str,
+) -> Result<&'a mut ModProfile, ProfileError> {
+    catalog
+        .profiles
+        .iter_mut()
+        .find(|p| p.id == id)
         .ok_or_else(|| ProfileError::Invalid("Unknown profile ID".into()))
 }
 pub fn create_mod_profile(stage: &Path, title: &str) -> Result<ModProfile, ProfileError> {
     let mut catalog = list_mod_profiles(stage)?;
     let title = name(title)?;
-    if catalog.profiles.len() == 100 ||
-        catalog.profiles.iter().any(|p| p.name.eq_ignore_ascii_case(title)) {
-        return Err(ProfileError::Invalid("Duplicate or too many profiles".into()));
+    if catalog.profiles.len() == 100
+        || catalog
+            .profiles
+            .iter()
+            .any(|p| p.name.eq_ignore_ascii_case(title))
+    {
+        return Err(ProfileError::Invalid(
+            "Duplicate or too many profiles".into(),
+        ));
     }
     let profile = ModProfile {
         id: format!("{:032x}", rand::random::<u128>()),
-        name: title.into(), mods: vec![],
+        name: title.into(),
+        mods: vec![],
     };
     catalog.profiles.push(profile.clone());
     save(stage, &catalog)?;
@@ -176,25 +203,35 @@ fn digest(file: &Path) -> Result<String, ProfileError> {
     let mut buf = [0u8; 128 * 1024];
     loop {
         let read = data.read(&mut buf)?;
-        if read == 0 { break; }
+        if read == 0 {
+            break;
+        }
         hash.update(&buf[..read]);
     }
     Ok(format!("{:x}", hash.finalize()))
 }
 fn verify_pair(
-    stage: &Path, file: &Path, relative: &str, original_key: &Path,
-    mod_key: &Path, basename: &str,
+    stage: &Path,
+    file: &Path,
+    relative: &str,
+    original_key: &Path,
+    mod_key: &Path,
+    basename: &str,
 ) -> Result<(String, u64), ProfileError> {
     let directory = root(stage, true)?;
     let virtual_path = target(relative)?;
     let staged = directory.join("paks").join(&virtual_path);
-    if !fs::symlink_metadata(&staged)?.file_type().is_file() ||
-        !fs::canonicalize(&staged)?.starts_with(directory.join("paks")) {
-        return Err(ProfileError::Invalid("Unsafe or missing stage target".into()));
+    if !fs::symlink_metadata(&staged)?.file_type().is_file()
+        || !fs::canonicalize(&staged)?.starts_with(directory.join("paks"))
+    {
+        return Err(ProfileError::Invalid(
+            "Unsafe or missing stage target".into(),
+        ));
     }
-    if file.file_name() != staged.file_name() ||
-        fs::canonicalize(file)?.starts_with(&directory) {
-        return Err(ProfileError::Invalid("Mod must be external and have target basename".into()));
+    if file.file_name() != staged.file_name() || fs::canonicalize(file)?.starts_with(&directory) {
+        return Err(ProfileError::Invalid(
+            "Mod must be external and have target basename".into(),
+        ));
     }
     let old = inspect_signed_pak(&staged, original_key, basename)
         .map_err(|e| ProfileError::Verify(e.to_string()))?;
@@ -202,67 +239,116 @@ fn verify_pair(
         .map_err(|e| ProfileError::Verify(e.to_string()))?;
     let a: HashSet<_> = old.entries.iter().map(|e| e.path.to_lowercase()).collect();
     let b: HashSet<_> = new.entries.iter().map(|e| e.path.to_lowercase()).collect();
-    if a != b { return Err(ProfileError::Verify("Signed member inventory changed".into())); }
+    if a != b {
+        return Err(ProfileError::Verify(
+            "Signed member inventory changed".into(),
+        ));
+    }
     Ok((digest(file)?, fs::metadata(file)?.len()))
 }
 pub fn add_mod_to_profile(
-    stage: &Path, profile_id: &str, source: &Path, relative: &str,
-    original_key: &Path, mod_key: &Path, basename: &str,
+    stage: &Path,
+    profile_id: &str,
+    source: &Path,
+    relative: &str,
+    original_key: &Path,
+    mod_key: &Path,
+    basename: &str,
 ) -> Result<ProfileMod, ProfileError> {
     let (sha256, _) = verify_pair(stage, source, relative, original_key, mod_key, basename)?;
     let mut catalog = list_mod_profiles(stage)?;
     let profile = selected(&mut catalog, profile_id)?;
-    if profile.mods.len() >= 500 ||
-        profile.mods.iter().any(|m| m.enabled && m.target.eq_ignore_ascii_case(relative)) {
+    if profile.mods.len() >= 500
+        || profile
+            .mods
+            .iter()
+            .any(|m| m.enabled && m.target.eq_ignore_ascii_case(relative))
+    {
         return Err(ProfileError::Collision(relative.into()));
     }
     let item = ProfileMod {
         id: format!("{:032x}", rand::random::<u128>()),
         target: target(relative)?,
         source: fs::canonicalize(source)?.to_string_lossy().into(),
-        sha256, enabled: true,
+        sha256,
+        enabled: true,
     };
     profile.mods.push(item.clone());
     save(stage, &catalog)?;
     Ok(item)
 }
 pub fn enable_profile_mod(
-    stage: &Path, profile_id: &str, mod_id: &str, enabled: bool,
+    stage: &Path,
+    profile_id: &str,
+    mod_id: &str,
+    enabled: bool,
 ) -> Result<(), ProfileError> {
     let mut catalog = list_mod_profiles(stage)?;
     let profile = selected(&mut catalog, profile_id)?;
-    let record = profile.mods.iter().find(|m| m.id == mod_id)
+    let record = profile
+        .mods
+        .iter()
+        .find(|m| m.id == mod_id)
         .ok_or_else(|| ProfileError::Invalid("Unknown mod ID".into()))?;
-    if enabled && profile.mods.iter().any(|m| m.id != mod_id && m.enabled &&
-        m.target.eq_ignore_ascii_case(&record.target)) {
+    if enabled
+        && profile
+            .mods
+            .iter()
+            .any(|m| m.id != mod_id && m.enabled && m.target.eq_ignore_ascii_case(&record.target))
+    {
         return Err(ProfileError::Collision(record.target.clone()));
     }
-    profile.mods.iter_mut().find(|m| m.id == mod_id).expect("validated").enabled = enabled;
+    profile
+        .mods
+        .iter_mut()
+        .find(|m| m.id == mod_id)
+        .expect("validated")
+        .enabled = enabled;
     save(stage, &catalog)
 }
 pub fn plan_mod_profile(
-    stage: &Path, profile_id: &str, original_key: &Path, mod_key: &Path, basename: &str,
+    stage: &Path,
+    profile_id: &str,
+    original_key: &Path,
+    mod_key: &Path,
+    basename: &str,
 ) -> Result<ProfilePlan, ProfileError> {
     let catalog = list_mod_profiles(stage)?;
-    let profile = catalog.profiles.iter().find(|p| p.id == profile_id)
+    let profile = catalog
+        .profiles
+        .iter()
+        .find(|p| p.id == profile_id)
         .ok_or_else(|| ProfileError::Invalid("Unknown profile ID".into()))?;
     let mut mods = Vec::new();
     let mut size = 0u64;
     for item in profile.mods.iter().filter(|m| m.enabled) {
         let (current, bytes) = verify_pair(
-            stage, Path::new(&item.source), &item.target, original_key, mod_key, basename
+            stage,
+            Path::new(&item.source),
+            &item.target,
+            original_key,
+            mod_key,
+            basename,
         )?;
         if current != item.sha256 {
-            return Err(ProfileError::Verify(format!("Changed source for {}", item.target)));
+            return Err(ProfileError::Verify(format!(
+                "Changed source for {}",
+                item.target
+            )));
         }
-        size = size.checked_add(bytes)
+        size = size
+            .checked_add(bytes)
             .ok_or_else(|| ProfileError::Invalid("Plan size overflow".into()))?;
         if size > 16 * 1024 * 1024 * 1024 {
             return Err(ProfileError::Invalid("Plan exceeds safety limit".into()));
         }
         mods.push(item.clone());
     }
-    Ok(ProfilePlan { profile_id: profile_id.into(), mods, total_bytes: size })
+    Ok(ProfilePlan {
+        profile_id: profile_id.into(),
+        mods,
+        total_bytes: size,
+    })
 }
 
 #[cfg(test)]
@@ -279,9 +365,18 @@ mod tests {
         assert_eq!(list_mod_profiles(&stage).unwrap().profiles.len(), 1);
         let file = tmp.path().join("mods.pak");
         fs::write(&file, b"not signed").unwrap();
-        assert!(add_mod_to_profile(
-            &stage, &created.id, &file, "Game/mods.pak", &file, &file, "mods.pak"
-        ).is_err());
+        assert!(
+            add_mod_to_profile(
+                &stage,
+                &created.id,
+                &file,
+                "Game/mods.pak",
+                &file,
+                &file,
+                "mods.pak"
+            )
+            .is_err()
+        );
         delete_mod_profile(&stage, &created.id).unwrap();
         assert!(list_mod_profiles(&stage).unwrap().profiles.is_empty());
         fs::write(stage.join("profiles.json"), b"{invalid").unwrap();
