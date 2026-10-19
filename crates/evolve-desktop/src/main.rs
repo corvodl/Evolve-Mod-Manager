@@ -141,6 +141,7 @@ struct State {
     auto_clips: Vec<auto_resources::AutoClip>,
     auto_resource_note: String,
     auto_idle_pending: Option<PathBuf>,
+    auto_material_pending: bool,
     caf_path: String,
     skeleton_path: String,
     blender_path: String,
@@ -288,6 +289,7 @@ enum Operation {
     ResolveCdf(PathBuf, PathBuf),
     InspectModel(PathBuf),
     DiscoverModelResources(String, Inventory, Option<PathBuf>, Option<String>),
+    LoadDeclaredClip(usize, String, Inventory, Option<PathBuf>, Option<String>),
     InspectLevel(PathBuf),
     InspectTerrain(PathBuf),
     InspectSignedPak(PathBuf, PathBuf, String),
@@ -353,7 +355,8 @@ enum Completed {
     StaticCharacter(RenderMesh, AssemblyReport),
     CharacterDependencies(CdfDependencyReport),
     Model(RenderMesh),
-    ModelResources(auto_resources::AutoDiscovery),
+    ModelResources(String, auto_resources::AutoDiscovery),
+    DeclaredClip(usize, String, NativeCafMotion),
     Level(LevelScene),
     Terrain(RenderMesh, TerrainInfo),
     SignedPak(SignedPakInfo),
@@ -567,12 +570,20 @@ impl Operation {
                 .map(Completed::Texture)
                 .map_err(|e| e.to_string()),
             Self::DiscoverModelResources(relative, inventory, library_root, build) => {
-                Ok(Completed::ModelResources(auto_resources::discover(
+                let discovery = auto_resources::discover(
                     &relative,
                     &inventory,
                     library_root.as_deref(),
                     build.as_deref(),
-                )))
+                );
+                Ok(Completed::ModelResources(relative, discovery))
+            }
+            Self::LoadDeclaredClip(index, virtual_path, inventory, library_root, build) => {
+                let file = auto_resources::resolve_declared(
+                    &inventory, &virtual_path, library_root.as_deref(), build.as_deref()
+                )?.ok_or_else(|| format!("Declared CAF is not available: {virtual_path}"))?;
+                let motion = read_native_caf(&file).map_err(|e| e.to_string())?;
+                Ok(Completed::DeclaredClip(index, virtual_path, motion))
             }
             Self::InspectModel(source) => read_model(&source)
                 .map(Completed::Model)
@@ -1837,11 +1848,24 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "This character references a database or blendspace; native verified DBA playback is not supported yet.".into();
                 return Task::none();
             }
-            let Some(path) = clip.source.clone() else {
-                state.status = "The declared CAF is not yet extracted and verified; no unrelated animation will be substituted.".into();
+            if let Some(path) = clip.source.clone() {
+                return launch(state, Operation::LoadCaf(path));
+            }
+            let Some(inventory) = state.inventory.clone() else {
+                state.status = "Index extracted assets before loading character animations.".into();
                 return Task::none();
             };
-            return launch(state, Operation::LoadCaf(path));
+            let operation = Operation::LoadDeclaredClip(
+                index,
+                clip.virtual_path.clone(),
+                inventory,
+                state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
+                state.library_by_build
+                    .then(|| state.library_catalog.as_ref()
+                        .and_then(|c| c.builds.get(state.library_build_index)).cloned())
+                    .flatten(),
+            );
+            return launch(state, operation);
         }
         Message::ViewerPreviewSelected => {
             if state.busy {
@@ -2925,7 +2949,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.glb_motion = None;
                     state.page = Some(Page::Models);
                 }
-                Ok(Completed::ModelResources(resources)) => {
+                Ok(Completed::ModelResources(relative, resources)) => {
+                    // A new click might have arrived while the index worker ran.
+                    // Never attach another character's maps or CAF catalog.
+                    let still_selected = state.viewer_queued_preview.is_none()
+                        && state.selected.and_then(|i| {
+                            state.inventory.as_ref()?.entries.get(i)
+                        }).is_some_and(|e| e.relative_path.eq_ignore_ascii_case(&relative));
+                    if !still_selected {
+                        state.auto_idle_pending = None;
+                    } else {
                     state.auto_clips = resources.clips;
                     state.auto_idle_pending = resources.idle;
                     state.auto_resource_note = resources.material_note;
@@ -2959,14 +2992,31 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                                     })
                                     .flatten(),
                             );
+                            state.auto_material_pending = true;
                             return launch(state, operation);
                         }
                     }
                     if let Some(idle) = state.auto_idle_pending.take() {
                         return launch(state, Operation::LoadCaf(idle));
                     }
+                    }
+                }
+                Ok(Completed::DeclaredClip(index, virtual_path, motion)) => {
+                    let selected = state.viewer_queued_preview.is_none()
+                        && state.auto_clips.get(index)
+                           .is_some_and(|clip| clip.virtual_path.eq_ignore_ascii_case(&virtual_path));
+                    if selected && !motion.additive {
+                        state.native_caf = Some(Arc::new(motion));
+                        state.glb_motion = None;
+                        state.motion_time = 0.0;
+                        state.playing = false;
+                        state.status = format!("Loaded verified character-declared CAF: {virtual_path}. Skeleton skinning still requires source binding.");
+                    } else if selected {
+                        state.status = "Additive CAF cannot play alone without a compatible base pose.".into();
+                    }
                 }
                 Ok(Completed::MaterialResolved(report, diffuse, normal, emissive)) => {
+                    state.auto_material_pending = false;
                     let found = report
                         .textures
                         .iter()
@@ -3111,6 +3161,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.model = Some(Arc::new(mesh));
                     state.auto_clips.clear();
                     state.auto_idle_pending = None;
+                    state.auto_material_pending = false;
                     state.auto_resource_note =
                         "Discovering verified local textures and character animation references..."
                             .into();
@@ -3349,7 +3400,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         target.display()
                     );
                 }
-                Err(e) => state.status = format!("Operation refused: {e}"),
+                Err(e) => {
+                    state.status = format!("Operation refused: {e}");
+                    if state.auto_material_pending && state.viewer_queued_preview.is_none() {
+                        state.auto_material_pending = false;
+                        if let Some(idle) = state.auto_idle_pending.take() {
+                            return launch(state, Operation::LoadCaf(idle));
+                        }
+                    }
+                }
             }
             // A single worker services both windows; preserve the last click
             // rather than requiring users to click a second time after loading.
