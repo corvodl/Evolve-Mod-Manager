@@ -503,7 +503,7 @@ impl Operation {
                 let cdf = read_cdf(&source).map_err(|e| e.to_string())?;
                 let resolved = resolve_cdf(&inventory, &cdf);
                 Ok(Completed::CharacterResolved(cdf, resolved))
-            },
+            }
             Self::RebuildSignedPak(
                 src,
                 old_pub,
