@@ -22,18 +22,19 @@ use asset_cache::{SharedCache, decoded_dds};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph, ImportedLibrary,
-    ImportedPak, Inventory, LevelScene, LibraryImportReport, MaterialReport, ModProfile, ModelInfo, NativeCafMotion,
-    PakInventory, ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo,
-    StageTransaction, TerrainInfo, add_mod_to_profile, apply_profile_stage, apply_stage_pak,
-    batch_stage_status, compare_assets, convert_glb_to_fbx, convert_original_motion,
-    create_mod_profile, decode_dds_rgba, export_dds_png, export_level_scene_glb,
-    export_rigged_character_fbx_textured_animated, export_rigged_character_glb, extract_legacy_pak,
-    extract_signed_pak, import_signed_library_pak, import_stage_pak, imported_archive_files, imported_library,
-    initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_signed_pak,
-    list_mod_profiles, load_level_scene, plan_mod_profile, read_cdf, read_material, read_model,
-    read_native_caf, read_static_cdf_assembly, read_terrain, rebuild_legacy_pak,
-    rebuild_signed_pak_entry, resolve_cdf, resolve_materials, restore_profile_stage, restore_stage,
-    scan_directory, scan_directory_with_progress, stage_status,
+    ImportedPak, Inventory, LevelScene, LibraryImportReport, MaterialReport, ModProfile, ModelInfo,
+    NativeCafMotion, PakInventory, ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport,
+    SignedPakInfo, StageTransaction, TerrainInfo, add_mod_to_profile, apply_profile_stage,
+    apply_stage_pak, batch_stage_status, compare_assets, convert_glb_to_fbx,
+    convert_original_motion, create_mod_profile, decode_dds_rgba, export_dds_png,
+    export_level_scene_glb, export_rigged_character_fbx_textured_animated,
+    export_rigged_character_glb, extract_legacy_pak, extract_signed_pak, import_signed_library_pak,
+    import_stage_pak, imported_archive_files, imported_library, initialize_stage, inspect_dds,
+    inspect_dependencies, inspect_legacy_pak, inspect_signed_pak, list_mod_profiles,
+    load_level_scene, plan_mod_profile, read_cdf, read_material, read_model, read_native_caf,
+    read_static_cdf_assembly, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry,
+    resolve_cdf, resolve_materials, restore_profile_stage, restore_stage, scan_directory,
+    scan_directory_with_progress, stage_status,
 };
 use iced::widget::{
     button, canvas, column, container, image, row, scrollable, shader, slider, space, svg, text,
@@ -1225,20 +1226,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.library_import_source = path;
         }
         Message::LibraryImportStart => {
-            if state.library_root.trim().is_empty()
-                || state.library_import_source.trim().is_empty()
+            if state.library_root.trim().is_empty() || state.library_import_source.trim().is_empty()
             {
-                state.status = "Specify an existing AssetLibrary directory and signed Stage 2 PAK file first.".into();
+                state.status =
+                    "Specify an existing AssetLibrary directory and signed Stage 2 PAK file first."
+                        .into();
                 state.library_show_configuration = true;
                 return Task::none();
             }
-            let key = match modding_keys::public_key(PathBuf::from(&state.preferences.stage).as_path()) {
-                Ok(key) => key,
-                Err(error) => {
-                    state.status = error;
-                    return Task::none();
-                }
-            };
+            let key =
+                match modding_keys::public_key(PathBuf::from(&state.preferences.stage).as_path()) {
+                    Ok(key) => key,
+                    Err(error) => {
+                        state.status = error;
+                        return Task::none();
+                    }
+                };
             return launch(
                 state,
                 Operation::ImportSignedLibrary(
@@ -2530,10 +2533,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::ImportedSignedLibrary(report, catalog)) => {
                     state.status = if report.already_imported {
-                        format!("{} already imported: {} verified original files", report.archive, report.files)
+                        format!(
+                            "{} already imported: {} verified original files",
+                            report.archive, report.files
+                        )
                     } else {
-                        format!("Imported {} into Asset Library: {} verified files, {} bytes; original PAK unchanged.",
-                            report.archive, report.files, report.bytes)
+                        format!(
+                            "Imported {} into Asset Library: {} verified files, {} bytes; original PAK unchanged.",
+                            report.archive, report.files, report.bytes
+                        )
                     };
                     state.library_root = catalog.root.clone();
                     state.preferences.asset_library_root = catalog.root.clone();
