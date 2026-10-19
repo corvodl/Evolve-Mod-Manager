@@ -36,8 +36,7 @@ impl SceneOverview {
             (high[0] - low[0]).max(high[1] - low[1]).max(1.0),
         )
     }
-    fn point(&self, coords: [f32; 3], bounds: Rectangle) -> Point {
-        let (center, extent) = self.extents();
+    fn point(&self, coords: [f32; 3], bounds: Rectangle, center: [f32; 2], extent: f32) -> Point {
         let scale = bounds.width.min(bounds.height) * 0.80
             * self.zoom.clamp(0.3, 3.0) / extent;
         Point::new(
@@ -64,10 +63,11 @@ impl canvas::Program<Message> for SceneOverview {
             Point::new(bounds.width, bounds.height * 0.5));
         frame.stroke(&axis_x, Stroke::default().with_color(Color::from_rgb(0.24, 0.27, 0.28)));
         frame.stroke(&axis_y, Stroke::default().with_color(Color::from_rgb(0.30, 0.24, 0.26)));
+        let (center, extent) = self.extents();
         let step = self.scene.objects.len().div_ceil(12000).max(1);
         for (index, obj) in self.scene.objects.iter().enumerate().step_by(step) {
             if obj.hidden { continue; }
-            let point = self.point(obj.world.position, bounds);
+            let point = self.point(obj.world.position, bounds, center, extent);
             if point.x < -10.0 || point.y < -10.0
                 || point.x > bounds.width + 10.0 || point.y > bounds.height + 10.0 {
                 continue;
@@ -101,6 +101,7 @@ impl canvas::Program<Message> for SceneOverview {
         };
         let mut nearest = None;
         let mut distance = f32::INFINITY;
+        let (center, extent) = self.extents();
         for (index, obj) in self.scene.objects.iter().enumerate().take(50_000) {
             if obj.hidden { continue; }
             let world = self.point(obj.world.position, bounds);
