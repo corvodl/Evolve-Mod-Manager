@@ -57,8 +57,8 @@ pub use inventory::{
 };
 pub use level_export::{LevelExportError, LevelExportReport, export_level_scene_glb};
 pub use library_catalog::{
-    ImportedLibrary, ImportedPak, LibraryError, describe_archive, imported_archive_files,
-    imported_library,
+    ImportedLibrary, ImportedPak, LibraryError, LibraryReference, LibraryReferenceStatus,
+    describe_archive, imported_archive_files, imported_library, resolve_imported_reference,
 };
 pub use library_import::{LibraryImportReport, import_signed_library_pak};
 pub use model::{
