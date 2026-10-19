@@ -1,12 +1,17 @@
 //! Native wgpu-backed desktop shell. Asset operations use blocking workers, so
 //! file I/O/decompression never runs in the interactive Iced view/update path.
+mod viewport;
+use viewport::MeshViewport;
 use evolve_core::{
+    ModelInfo, RenderMesh, TerrainInfo, LevelScene, SignedPakInfo, read_model, read_terrain,
+    load_level_scene, inspect_signed_pak, extract_signed_pak,
     AssetEntry, CdfDefinition, DdsInfo, Inventory, PakInventory, export_dds_png,
     extract_legacy_pak, inspect_dds, inspect_legacy_pak, read_cdf, rebuild_legacy_pak,
     scan_directory,
 };
-use iced::widget::{button, column, container, row, scrollable, text, text_input};
-use iced::{Element, Fill, Task, Theme};
+use iced::widget::{button, canvas, column, container, row, scrollable, slider, text, text_input};
+use iced::{Element, Fill, Length, Task, Theme};
+use std::sync::Arc;
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -46,12 +51,20 @@ struct State {
     input: String,
     output: String,
     replacements: String,
+    public_key: String,
+    signed_name: String,
+    yaw: f32,
+    pitch: f32,
+    zoom: f32,
     search: String,
     page: Option<Page>,
     inventory: Option<Inventory>,
     pak: Option<PakInventory>,
     texture: Option<DdsInfo>,
     character: Option<CdfDefinition>,
+    model: Option<Arc<RenderMesh>>,
+    level_scene: Option<LevelScene>,
+    terrain: Option<TerrainInfo>,
     selected: Option<usize>,
     status: String,
     busy: bool,
@@ -63,6 +76,11 @@ enum Operation {
     InspectPak(PathBuf),
     InspectDds(PathBuf),
     InspectCdf(PathBuf),
+    InspectModel(PathBuf),
+    InspectLevel(PathBuf),
+    InspectTerrain(PathBuf),
+    InspectSignedPak(PathBuf, PathBuf, String),
+    ExtractSignedPak(PathBuf, PathBuf, String, PathBuf),
     ExtractPak(PathBuf, PathBuf),
     RebuildPak(PathBuf, PathBuf, PathBuf),
     ExportPng(PathBuf, PathBuf),
@@ -74,6 +92,11 @@ enum Completed {
     Pak(PakInventory),
     Texture(DdsInfo),
     Character(CdfDefinition),
+    Model(RenderMesh),
+    Level(LevelScene),
+    Terrain(RenderMesh, TerrainInfo),
+    SignedPak(SignedPakInfo),
+    ExtractedSigned(usize, PathBuf),
     Extracted(usize, PathBuf),
     Rebuilt(usize, PathBuf),
     ExportedPng(DdsInfo, PathBuf),
@@ -91,6 +114,29 @@ impl Operation {
             Self::InspectDds(source) => inspect_dds(&source)
                 .map(Completed::Texture)
                 .map_err(|e| e.to_string()),
+            Self::InspectModel(source) => read_model(&source)
+                .map(Completed::Model).map_err(|e| e.to_string()),
+            Self::InspectLevel(source) => load_level_scene(&source)
+                .map(Completed::Level).map_err(|e|e.to_string()),
+            Self::InspectTerrain(source) => {
+                let terrain = read_terrain(&source, 129).map_err(|e|e.to_string())?;
+                let info = terrain.info.clone();
+                let preview=RenderMesh {
+                    info:ModelInfo {
+                        format:"CryEngine Heightmap.dat".into(), version:1,chunk_count:0,
+                        vertex_count:terrain.vertices.len(),triangle_count:terrain.indices.len()/3,
+                        original_uv0:true,original_normals:true,
+                    },
+                    positions:terrain.vertices,indices:terrain.indices,
+                    uv0:Some(terrain.uv),normals:Some(terrain.normals),
+                };
+                Ok(Completed::Terrain(preview,info))
+            },
+            Self::InspectSignedPak(source,key,name) => inspect_signed_pak(&source,&key,&name)
+                .map(Completed::SignedPak).map_err(|e|e.to_string()),
+            Self::ExtractSignedPak(source,key,name,dest) => extract_signed_pak(&source,&key,&name,&dest)
+                .map(|i|Completed::ExtractedSigned(i.entries.len(),dest))
+                .map_err(|e|e.to_string()),
             Self::InspectCdf(source) => read_cdf(&source)
                 .map(Completed::Character)
                 .map_err(|e| e.to_string()),
@@ -115,11 +161,21 @@ enum Message {
     InputChanged(String),
     OutputChanged(String),
     ReplacementsChanged(String),
+    PublicKeyChanged(String),
+    SignedNameChanged(String),
+    YawChanged(f32),
+    PitchChanged(f32),
+    ZoomChanged(f32),
     SearchChanged(String),
     StartScan,
     StartPakInspection,
     StartDdsInspection,
     StartCdfInspection,
+    StartModelInspection,
+    StartLevelInspection,
+    StartTerrainInspection,
+    StartSignedInspection,
+    StartSignedExtraction,
     StartExtract,
     StartRebuild,
     StartPngExport,
@@ -149,6 +205,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::InputChanged(input) => state.input = input,
         Message::OutputChanged(output) => state.output = output,
         Message::ReplacementsChanged(replacements) => state.replacements = replacements,
+        Message::PublicKeyChanged(key) => state.public_key = key,
+        Message::SignedNameChanged(name) => state.signed_name = name,
+        Message::YawChanged(value) => state.yaw=value,
+        Message::PitchChanged(value) => state.pitch=value,
+        Message::ZoomChanged(value) => state.zoom=value,
         Message::SearchChanged(query) => state.search = query,
         Message::Select(index) => state.selected = Some(index),
         Message::StartScan => {
@@ -166,6 +227,39 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::StartCdfInspection => {
             let source = PathBuf::from(&state.input);
             return launch(state, Operation::InspectCdf(source));
+        }
+        Message::StartModelInspection => {
+            let source=PathBuf::from(&state.input);
+            return launch(state, Operation::InspectModel(source));
+        }
+        Message::StartLevelInspection => {
+            let source=PathBuf::from(&state.input);
+            return launch(state, Operation::InspectLevel(source));
+        }
+        Message::StartTerrainInspection => {
+            let source=PathBuf::from(&state.input);
+            return launch(state, Operation::InspectTerrain(source));
+        }
+        Message::StartSignedInspection => {
+            if state.public_key.is_empty() || state.signed_name.is_empty() {
+                state.status="Select a local RSA public key and exact original signed basename.".into();
+                return Task::none();
+            }
+            let source=PathBuf::from(&state.input);
+            let key=PathBuf::from(&state.public_key);
+            let signed=state.signed_name.clone();
+            return launch(state, Operation::InspectSignedPak(source,key,signed));
+        }
+        Message::StartSignedExtraction => {
+            if state.public_key.is_empty() || state.signed_name.is_empty() || state.output.is_empty() {
+                state.status="Select public key, signed basename, and new output folder.".into();
+                return Task::none();
+            }
+            let source=PathBuf::from(&state.input);
+            let key=PathBuf::from(&state.public_key);
+            let signed=state.signed_name.clone();
+            let output=PathBuf::from(&state.output);
+            return launch(state, Operation::ExtractSignedPak(source,key,signed,output));
         }
         Message::StartExtract => {
             if state.output.trim().is_empty() {
@@ -240,6 +334,35 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.character = Some(character);
                     state.page = Some(Page::Models);
                 }
+                Ok(Completed::Model(mesh)) => {
+                    state.status=format!("Loaded {} source vertices and {} triangles (raw geometry only).",
+                        mesh.info.vertex_count,mesh.info.triangle_count);
+                    state.model=Some(Arc::new(mesh));
+                    state.page=Some(Page::Models);
+                    state.zoom=1.0;
+                }
+                Ok(Completed::Terrain(mesh,info)) => {
+                    state.status=format!("Decoded source terrain {}×{} (stride {}).",
+                        info.width,info.height,info.stride);
+                    state.terrain=Some(info);
+                    state.model=Some(Arc::new(mesh));
+                    state.page=Some(Page::Levels);
+                    state.zoom=1.0;
+                }
+                Ok(Completed::Level(scene)) => {
+                    state.status=format!("Loaded {} placed level objects; {} diagnostics.",
+                        scene.objects.len(),scene.diagnostics.len());
+                    state.level_scene=Some(scene);
+                    state.page=Some(Page::Levels);
+                }
+                Ok(Completed::SignedPak(info)) => {
+                    state.status=format!("Verified signed CryPAK: {} records, {} expanded bytes.",
+                        info.entries.len(),info.total_expanded_bytes);
+                }
+                Ok(Completed::ExtractedSigned(count,dir)) => {
+                    state.status=format!("Extracted {} verified signed records into {}",
+                        count,dir.display());
+                }
                 Ok(Completed::Extracted(count, folder)) => {
                     state.status = format!(
                         "Extracted {count} validated ZIP-compatible PAK entries to {}",
@@ -312,6 +435,7 @@ fn view(state: &State) -> Element<'_, Message> {
             button("Inspect ZIP PAK").on_press(Message::StartPakInspection),
             button("Inspect DDS").on_press(Message::StartDdsInspection),
             button("Inspect CDF").on_press(Message::StartCdfInspection),
+            button("Inspect 3D model").on_press(Message::StartModelInspection),
         ]
         .spacing(8),
         row![
@@ -332,6 +456,14 @@ fn view(state: &State) -> Element<'_, Message> {
             button("Rebuild unsigned PAK").on_press(Message::StartRebuild),
         ]
         .spacing(8),
+        row![
+            text_input("Local signed archive RSA public DER key...",&state.public_key)
+                .on_input(Message::PublicKeyChanged).width(Fill),
+            text_input("Original signed basename (e.g. libs.pak)...",&state.signed_name)
+                .on_input(Message::SignedNameChanged).width(220),
+            button("Verify Stage 2 PAK").on_press(Message::StartSignedInspection),
+            button("Extract signed PAK").on_press(Message::StartSignedExtraction),
+        ].spacing(8),
     ]
     .spacing(9);
 
@@ -340,7 +472,7 @@ fn view(state: &State) -> Element<'_, Message> {
             text("Inspect local CryEngine assets safely.").size(19),
             text("ZIP-compatible 2012 PAKs can be inspected, extracted and rebuilt from exact replacements; signed Stage 2 CryPAKs are NOT supported yet."),
             text("DDS top-mipmap PNG export supports BC1/2/3/4/5 and 32-bit RGB(A); complete split-stream sets are reconstructed first."),
-            text("Mod installation, 3D scenes and Blender FBX export still need porting."),
+            text("Signed PAK verification/extraction, model geometry preview and level source inspection are experimental. Stage 2 signing and full rigged FBX remain unported."),
         ].spacing(14).into(),
         Page::Files | Page::AssetLibrary => {
             let mut rows = column![].spacing(3);
@@ -402,12 +534,50 @@ fn view(state: &State) -> Element<'_, Message> {
                 } else {
                     "CDF: select a local character definition and choose Inspect CDF.".to_owned()
                 }),
-                text("GPU character viewer, skeletal animation preview and complete FBX conversion remain unported."),
+                text("Wireframe views display validated source triangle geometry using Iced's GPU compositing. Skeletal skinning and full materials are not yet ported."),
+                if let Some(mesh)=&state.model {
+                    let canvas:Element<'_,Message> = canvas(MeshViewport{
+                        mesh:mesh.clone(), yaw:state.yaw, pitch:state.pitch, zoom:state.zoom,
+                    }).width(Fill).height(Length::Fixed(400.)).into();
+                    canvas
+                } else {
+                    text("Select a source .cgf/.chr/.skin file and click Inspect 3D model.").into()
+                },
+                row![
+                    text("Orbit"),
+                    slider(-180.0..=180.0,state.yaw,Message::YawChanged).width(Fill),
+                    text("Pitch"),
+                    slider(-85.0..=85.0,state.pitch,Message::PitchChanged).width(Fill),
+                    text("Zoom"),
+                    slider(0.2..=4.0,state.zoom.max(0.2),Message::ZoomChanged).width(Fill),
+                ].spacing(10),
             ].spacing(14).into()
         }
         Page::Levels => column![
-            text("Level Editor").size(19),
-            text("CryEngine terrain, placement and material dependency parsing, interactive wgpu scenes, and Blender scene export are pending."),
+            text("Level source preview").size(19),
+            text("Read Level/LYR or Heightmap.dat without touching installed game assets."),
+            row![
+                button("Read level placements").on_press(Message::StartLevelInspection),
+                button("Load heightmap geometry").on_press(Message::StartTerrainInspection),
+            ].spacing(8),
+            text(if let Some(scene)=&state.level_scene {
+                format!("{} level objects, {} unresolved diagnostics; source transforms preserved.",
+                    scene.objects.len(),scene.diagnostics.len())
+            }else{"No placement source inspected.".into()}),
+            if let Some(mesh)=&state.model {
+                canvas(MeshViewport{
+                    mesh:mesh.clone(), yaw:state.yaw, pitch:state.pitch, zoom:state.zoom.max(0.2),
+                }).width(Fill).height(Length::Fixed(400.)).into()
+            }else{
+                text("Load an original source heightmap to see terrain triangles.").into()
+            },
+            row![
+                text("Yaw"),
+                slider(-180.0..=180.0,state.yaw,Message::YawChanged).width(Fill),
+                text("Pitch"),
+                slider(-85.0..=85.0,state.pitch,Message::PitchChanged).width(Fill),
+            ].spacing(8),
+            text("Full map assembly, terrain materials, live vegetation, and Blender scene export are still being ported."),
         ].spacing(14).into(),
         Page::Settings => column![
             text("Workspace safety").size(19),
