@@ -100,7 +100,7 @@ fn deform(mesh: &RenderMesh, weights: &VerifiedWeights, palette: &[Mat4]) -> Res
 
 /// Keep all original vertex streams and bone tables in memory so frame
 /// scrubbing does not re-read a game PAK or rebuild an entire GLB.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct VerifiedCafSkin {
     mesh: RenderMesh,
     skeleton: CompiledSkeleton,
