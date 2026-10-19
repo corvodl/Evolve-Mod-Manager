@@ -1,18 +1,17 @@
 //! Native wgpu-backed desktop shell. Asset operations use blocking workers, so
 //! file I/O/decompression never runs in the interactive Iced view/update path.
 mod viewport;
-use viewport::MeshViewport;
 use evolve_core::{
-    ModelInfo, RenderMesh, TerrainInfo, LevelScene, SignedPakInfo, read_model, read_terrain,
-    load_level_scene, inspect_signed_pak, extract_signed_pak,
-    AssetEntry, CdfDefinition, DdsInfo, Inventory, PakInventory, export_dds_png,
-    extract_legacy_pak, inspect_dds, inspect_legacy_pak, read_cdf, rebuild_legacy_pak,
-    scan_directory,
+    AssetEntry, CdfDefinition, DdsInfo, Inventory, LevelScene, ModelInfo, PakInventory, RenderMesh,
+    SignedPakInfo, TerrainInfo, export_dds_png, extract_legacy_pak, extract_signed_pak,
+    inspect_dds, inspect_legacy_pak, inspect_signed_pak, load_level_scene, read_cdf, read_model,
+    read_terrain, rebuild_legacy_pak, scan_directory,
 };
 use iced::widget::{button, canvas, column, container, row, scrollable, slider, text, text_input};
 use iced::{Element, Fill, Length, Task, Theme};
-use std::sync::Arc;
 use std::path::PathBuf;
+use std::sync::Arc;
+use viewport::MeshViewport;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Page {
@@ -115,28 +114,39 @@ impl Operation {
                 .map(Completed::Texture)
                 .map_err(|e| e.to_string()),
             Self::InspectModel(source) => read_model(&source)
-                .map(Completed::Model).map_err(|e| e.to_string()),
+                .map(Completed::Model)
+                .map_err(|e| e.to_string()),
             Self::InspectLevel(source) => load_level_scene(&source)
-                .map(Completed::Level).map_err(|e|e.to_string()),
+                .map(Completed::Level)
+                .map_err(|e| e.to_string()),
             Self::InspectTerrain(source) => {
-                let terrain = read_terrain(&source, 129).map_err(|e|e.to_string())?;
+                let terrain = read_terrain(&source, 129).map_err(|e| e.to_string())?;
                 let info = terrain.info.clone();
-                let preview=RenderMesh {
-                    info:ModelInfo {
-                        format:"CryEngine Heightmap.dat".into(), version:1,chunk_count:0,
-                        vertex_count:terrain.vertices.len(),triangle_count:terrain.indices.len()/3,
-                        original_uv0:true,original_normals:true,
+                let preview = RenderMesh {
+                    info: ModelInfo {
+                        format: "CryEngine Heightmap.dat".into(),
+                        version: 1,
+                        chunk_count: 0,
+                        vertex_count: terrain.vertices.len(),
+                        triangle_count: terrain.indices.len() / 3,
+                        original_uv0: true,
+                        original_normals: true,
                     },
-                    positions:terrain.vertices,indices:terrain.indices,
-                    uv0:Some(terrain.uv),normals:Some(terrain.normals),
+                    positions: terrain.vertices,
+                    indices: terrain.indices,
+                    uv0: Some(terrain.uv),
+                    normals: Some(terrain.normals),
                 };
-                Ok(Completed::Terrain(preview,info))
-            },
-            Self::InspectSignedPak(source,key,name) => inspect_signed_pak(&source,&key,&name)
-                .map(Completed::SignedPak).map_err(|e|e.to_string()),
-            Self::ExtractSignedPak(source,key,name,dest) => extract_signed_pak(&source,&key,&name,&dest)
-                .map(|i|Completed::ExtractedSigned(i.entries.len(),dest))
-                .map_err(|e|e.to_string()),
+                Ok(Completed::Terrain(preview, info))
+            }
+            Self::InspectSignedPak(source, key, name) => inspect_signed_pak(&source, &key, &name)
+                .map(Completed::SignedPak)
+                .map_err(|e| e.to_string()),
+            Self::ExtractSignedPak(source, key, name, dest) => {
+                extract_signed_pak(&source, &key, &name, &dest)
+                    .map(|i| Completed::ExtractedSigned(i.entries.len(), dest))
+                    .map_err(|e| e.to_string())
+            }
             Self::InspectCdf(source) => read_cdf(&source)
                 .map(Completed::Character)
                 .map_err(|e| e.to_string()),
@@ -207,9 +217,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ReplacementsChanged(replacements) => state.replacements = replacements,
         Message::PublicKeyChanged(key) => state.public_key = key,
         Message::SignedNameChanged(name) => state.signed_name = name,
-        Message::YawChanged(value) => state.yaw=value,
-        Message::PitchChanged(value) => state.pitch=value,
-        Message::ZoomChanged(value) => state.zoom=value,
+        Message::YawChanged(value) => state.yaw = value,
+        Message::PitchChanged(value) => state.pitch = value,
+        Message::ZoomChanged(value) => state.zoom = value,
         Message::SearchChanged(query) => state.search = query,
         Message::Select(index) => state.selected = Some(index),
         Message::StartScan => {
@@ -229,37 +239,44 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return launch(state, Operation::InspectCdf(source));
         }
         Message::StartModelInspection => {
-            let source=PathBuf::from(&state.input);
+            let source = PathBuf::from(&state.input);
             return launch(state, Operation::InspectModel(source));
         }
         Message::StartLevelInspection => {
-            let source=PathBuf::from(&state.input);
+            let source = PathBuf::from(&state.input);
             return launch(state, Operation::InspectLevel(source));
         }
         Message::StartTerrainInspection => {
-            let source=PathBuf::from(&state.input);
+            let source = PathBuf::from(&state.input);
             return launch(state, Operation::InspectTerrain(source));
         }
         Message::StartSignedInspection => {
             if state.public_key.is_empty() || state.signed_name.is_empty() {
-                state.status="Select a local RSA public key and exact original signed basename.".into();
+                state.status =
+                    "Select a local RSA public key and exact original signed basename.".into();
                 return Task::none();
             }
-            let source=PathBuf::from(&state.input);
-            let key=PathBuf::from(&state.public_key);
-            let signed=state.signed_name.clone();
-            return launch(state, Operation::InspectSignedPak(source,key,signed));
+            let source = PathBuf::from(&state.input);
+            let key = PathBuf::from(&state.public_key);
+            let signed = state.signed_name.clone();
+            return launch(state, Operation::InspectSignedPak(source, key, signed));
         }
         Message::StartSignedExtraction => {
-            if state.public_key.is_empty() || state.signed_name.is_empty() || state.output.is_empty() {
-                state.status="Select public key, signed basename, and new output folder.".into();
+            if state.public_key.is_empty()
+                || state.signed_name.is_empty()
+                || state.output.is_empty()
+            {
+                state.status = "Select public key, signed basename, and new output folder.".into();
                 return Task::none();
             }
-            let source=PathBuf::from(&state.input);
-            let key=PathBuf::from(&state.public_key);
-            let signed=state.signed_name.clone();
-            let output=PathBuf::from(&state.output);
-            return launch(state, Operation::ExtractSignedPak(source,key,signed,output));
+            let source = PathBuf::from(&state.input);
+            let key = PathBuf::from(&state.public_key);
+            let signed = state.signed_name.clone();
+            let output = PathBuf::from(&state.output);
+            return launch(
+                state,
+                Operation::ExtractSignedPak(source, key, signed, output),
+            );
         }
         Message::StartExtract => {
             if state.output.trim().is_empty() {
@@ -335,33 +352,46 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::Model(mesh)) => {
-                    state.status=format!("Loaded {} source vertices and {} triangles (raw geometry only).",
-                        mesh.info.vertex_count,mesh.info.triangle_count);
-                    state.model=Some(Arc::new(mesh));
-                    state.page=Some(Page::Models);
-                    state.zoom=1.0;
+                    state.status = format!(
+                        "Loaded {} source vertices and {} triangles (raw geometry only).",
+                        mesh.info.vertex_count, mesh.info.triangle_count
+                    );
+                    state.model = Some(Arc::new(mesh));
+                    state.page = Some(Page::Models);
+                    state.zoom = 1.0;
                 }
-                Ok(Completed::Terrain(mesh,info)) => {
-                    state.status=format!("Decoded source terrain {}×{} (stride {}).",
-                        info.width,info.height,info.stride);
-                    state.terrain=Some(info);
-                    state.model=Some(Arc::new(mesh));
-                    state.page=Some(Page::Levels);
-                    state.zoom=1.0;
+                Ok(Completed::Terrain(mesh, info)) => {
+                    state.status = format!(
+                        "Decoded source terrain {}×{} (stride {}).",
+                        info.width, info.height, info.stride
+                    );
+                    state.terrain = Some(info);
+                    state.model = Some(Arc::new(mesh));
+                    state.page = Some(Page::Levels);
+                    state.zoom = 1.0;
                 }
                 Ok(Completed::Level(scene)) => {
-                    state.status=format!("Loaded {} placed level objects; {} diagnostics.",
-                        scene.objects.len(),scene.diagnostics.len());
-                    state.level_scene=Some(scene);
-                    state.page=Some(Page::Levels);
+                    state.status = format!(
+                        "Loaded {} placed level objects; {} diagnostics.",
+                        scene.objects.len(),
+                        scene.diagnostics.len()
+                    );
+                    state.level_scene = Some(scene);
+                    state.page = Some(Page::Levels);
                 }
                 Ok(Completed::SignedPak(info)) => {
-                    state.status=format!("Verified signed CryPAK: {} records, {} expanded bytes.",
-                        info.entries.len(),info.total_expanded_bytes);
+                    state.status = format!(
+                        "Verified signed CryPAK: {} records, {} expanded bytes.",
+                        info.entries.len(),
+                        info.total_expanded_bytes
+                    );
                 }
-                Ok(Completed::ExtractedSigned(count,dir)) => {
-                    state.status=format!("Extracted {} verified signed records into {}",
-                        count,dir.display());
+                Ok(Completed::ExtractedSigned(count, dir)) => {
+                    state.status = format!(
+                        "Extracted {} verified signed records into {}",
+                        count,
+                        dir.display()
+                    );
                 }
                 Ok(Completed::Extracted(count, folder)) => {
                     state.status = format!(
@@ -457,13 +487,22 @@ fn view(state: &State) -> Element<'_, Message> {
         ]
         .spacing(8),
         row![
-            text_input("Local signed archive RSA public DER key...",&state.public_key)
-                .on_input(Message::PublicKeyChanged).width(Fill),
-            text_input("Original signed basename (e.g. libs.pak)...",&state.signed_name)
-                .on_input(Message::SignedNameChanged).width(220),
+            text_input(
+                "Local signed archive RSA public DER key...",
+                &state.public_key
+            )
+            .on_input(Message::PublicKeyChanged)
+            .width(Fill),
+            text_input(
+                "Original signed basename (e.g. libs.pak)...",
+                &state.signed_name
+            )
+            .on_input(Message::SignedNameChanged)
+            .width(220),
             button("Verify Stage 2 PAK").on_press(Message::StartSignedInspection),
             button("Extract signed PAK").on_press(Message::StartSignedExtraction),
-        ].spacing(8),
+        ]
+        .spacing(8),
     ]
     .spacing(9);
 

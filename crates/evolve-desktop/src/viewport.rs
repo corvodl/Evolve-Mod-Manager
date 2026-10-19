@@ -3,7 +3,7 @@
 //! no claim of full shader-based character rendering.
 use evolve_core::RenderMesh;
 use iced::widget::canvas::{self, Path, Stroke};
-use iced::{mouse, Color, Point, Rectangle, Renderer, Theme};
+use iced::{Color, Point, Rectangle, Renderer, Theme, mouse};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -25,10 +25,7 @@ impl<Message> canvas::Program<Message> for MeshViewport {
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
-        frame.fill_rectangle(
-            Point::ORIGIN, frame.size(),
-            Color::from_rgb8(19, 19, 24),
-        );
+        frame.fill_rectangle(Point::ORIGIN, frame.size(), Color::from_rgb8(19, 19, 24));
         if bounds.width < 5. || bounds.height < 5. || self.mesh.indices.len() < 3 {
             return vec![frame.into_geometry()];
         }
@@ -45,8 +42,10 @@ impl<Message> canvas::Program<Message> for MeshViewport {
             (minimum[1] + maximum[1]) * 0.5,
             (minimum[2] + maximum[2]) * 0.5,
         ];
-        let extent = (0..3).map(|c| maximum[c] - minimum[c])
-            .fold(0f32, f32::max).max(0.00001);
+        let extent = (0..3)
+            .map(|c| maximum[c] - minimum[c])
+            .fold(0f32, f32::max)
+            .max(0.00001);
         let (yaw_sin, yaw_cos) = self.yaw.to_radians().sin_cos();
         let (pitch_sin, pitch_cos) = self.pitch.to_radians().sin_cos();
         let scale = bounds.width.min(bounds.height) * 0.65 * self.zoom.clamp(0.2, 4.0);
@@ -87,7 +86,9 @@ impl<Message> canvas::Program<Message> for MeshViewport {
         });
         frame.stroke(
             &lines,
-            Stroke::default().with_color(Color::from_rgb8(217, 62, 79)).with_width(0.75),
+            Stroke::default()
+                .with_color(Color::from_rgb8(217, 62, 79))
+                .with_width(0.75),
         );
         vec![frame.into_geometry()]
     }

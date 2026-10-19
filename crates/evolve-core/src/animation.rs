@@ -117,7 +117,9 @@ fn handle_animation(
     base: &mut String,
     out: &mut Vec<AnimationReference>,
 ) -> Result<(), AnimationError> {
-    if !parents.last().is_some_and(|p| p.eq_ignore_ascii_case(b"AnimationList"))
+    if !parents
+        .last()
+        .is_some_and(|p| p.eq_ignore_ascii_case(b"AnimationList"))
         || !element.name().as_ref().eq_ignore_ascii_case(b"Animation")
     {
         return Ok(());
@@ -126,7 +128,8 @@ fn handle_animation(
     let mut reference = String::new();
     for attr in element.attributes() {
         let attr = attr.map_err(|e| AnimationError::Invalid(e.to_string()))?;
-        let value = attr.unescape_value()
+        let value = attr
+            .unescape_value()
             .map_err(|e| AnimationError::Invalid(e.to_string()))?
             .into_owned();
         if attr.key.as_ref().eq_ignore_ascii_case(b"name") {
@@ -141,8 +144,10 @@ fn handle_animation(
     }
     let database = name.eq_ignore_ascii_case("$TracksDatabase");
     let directive = name.starts_with('#') || name.starts_with(char::from(36u8));
-    if name.is_empty() || reference.is_empty()
-        || name.contains('*') || reference.contains('*')
+    if name.is_empty()
+        || reference.is_empty()
+        || name.contains('*')
+        || reference.contains('*')
         || (directive && !database)
     {
         return Ok(());
@@ -154,12 +159,23 @@ fn handle_animation(
     let virtual_path = if lower.starts_with("characters/") || lower.starts_with("animations/") {
         reference
     } else {
-        format!("{base}/{reference}").trim_start_matches('/').to_owned()
+        format!("{base}/{reference}")
+            .trim_start_matches('/')
+            .to_owned()
     };
     if let Ok(path) = safe_member_name(&virtual_path) {
-        let kind = path.rsplit('.').next().unwrap_or_default().to_ascii_lowercase();
+        let kind = path
+            .rsplit('.')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
         if matches!(kind.as_str(), "caf" | "dba" | "bspace" | "comb") && out.len() < MAX_FRAMES {
-            out.push(AnimationReference { name, path, kind, database });
+            out.push(AnimationReference {
+                name,
+                path,
+                kind,
+                database,
+            });
         }
     }
     Ok(())
@@ -321,56 +337,115 @@ fn floats(
     Ok(result)
 }
 impl AnimatedGlb {
-    pub fn read(path:&Path)->Result<Self,AnimationError>{
-        let meta=fs::symlink_metadata(path)?;
-        if !meta.file_type().is_file() || meta.len()>MAX_GLTF as u64 || meta.len()<32 {
+    pub fn read(path: &Path) -> Result<Self, AnimationError> {
+        let meta = fs::symlink_metadata(path)?;
+        if !meta.file_type().is_file() || meta.len() > MAX_GLTF as u64 || meta.len() < 32 {
             return Err(AnimationError::Invalid("invalid GLB input file".into()));
         }
-        let mut file=File::open(path)?;
-        let mut header=[0u8;20];file.read_exact(&mut header)?;
-        if &header[..4]!=b"glTF" || &header[16..20]!=b"JSON" ||
-           u32::from_le_bytes(header[8..12].try_into().map_err(|_|AnimationError::Unavailable)?) as u64!=meta.len(){
+        let mut file = File::open(path)?;
+        let mut header = [0u8; 20];
+        file.read_exact(&mut header)?;
+        if &header[..4] != b"glTF"
+            || &header[16..20] != b"JSON"
+            || u32::from_le_bytes(
+                header[8..12]
+                    .try_into()
+                    .map_err(|_| AnimationError::Unavailable)?,
+            ) as u64
+                != meta.len()
+        {
             return Err(AnimationError::Invalid("invalid GLB header".into()));
         }
-        let json_size=u32::from_le_bytes(header[12..16].try_into().map_err(|_|AnimationError::Unavailable)?) as usize;
-        if json_size>12*1024*1024 || json_size+20>meta.len() as usize{return Err(AnimationError::Invalid("GLB JSON too large".into()));}
-        let mut json=vec![0u8;json_size];file.read_exact(&mut json)?;
-        let doc:serde_json::Value=serde_json::from_slice(&json).map_err(|e|AnimationError::Invalid(e.to_string()))?;
-        let mut marker=[0u8;8];file.read_exact(&mut marker)?;
-        let bytes=u32::from_le_bytes(marker[..4].try_into().map_err(|_|AnimationError::Unavailable)?) as usize;
-        if &marker[4..]!=b"BIN\0" || bytes>MAX_GLTF{return Err(AnimationError::Invalid("GLB BIN chunk unsupported".into()));}
-        let mut binary=vec![0u8;bytes];file.read_exact(&mut binary)?;
-        let nodes=doc["nodes"].as_array().ok_or(AnimationError::Unavailable)?;
-        if nodes.len()>MAX_NODES{return Err(AnimationError::Unavailable);}
-        let names=nodes.iter().enumerate().map(|(i,n)|n["name"].as_str().map(str::to_owned).unwrap_or_else(||format!("Node_{i}"))).collect();
-        let mut clips=Vec::new();
-        if let Some(animations)=doc["animations"].as_array() {
+        let json_size = u32::from_le_bytes(
+            header[12..16]
+                .try_into()
+                .map_err(|_| AnimationError::Unavailable)?,
+        ) as usize;
+        if json_size > 12 * 1024 * 1024 || json_size + 20 > meta.len() as usize {
+            return Err(AnimationError::Invalid("GLB JSON too large".into()));
+        }
+        let mut json = vec![0u8; json_size];
+        file.read_exact(&mut json)?;
+        let doc: serde_json::Value =
+            serde_json::from_slice(&json).map_err(|e| AnimationError::Invalid(e.to_string()))?;
+        let mut marker = [0u8; 8];
+        file.read_exact(&mut marker)?;
+        let bytes = u32::from_le_bytes(
+            marker[..4]
+                .try_into()
+                .map_err(|_| AnimationError::Unavailable)?,
+        ) as usize;
+        if &marker[4..] != b"BIN\0" || bytes > MAX_GLTF {
+            return Err(AnimationError::Invalid("GLB BIN chunk unsupported".into()));
+        }
+        let mut binary = vec![0u8; bytes];
+        file.read_exact(&mut binary)?;
+        let nodes = doc["nodes"].as_array().ok_or(AnimationError::Unavailable)?;
+        if nodes.len() > MAX_NODES {
+            return Err(AnimationError::Unavailable);
+        }
+        let names = nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| {
+                n["name"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("Node_{i}"))
+            })
+            .collect();
+        let mut clips = Vec::new();
+        if let Some(animations) = doc["animations"].as_array() {
             for animation in animations {
-                let samples=animation["samplers"].as_array().ok_or(AnimationError::Unavailable)?;
-                let channels=animation["channels"].as_array().ok_or(AnimationError::Unavailable)?;
-                let mut tracks=Vec::new();
-                let mut duration=0f32;
+                let samples = animation["samplers"]
+                    .as_array()
+                    .ok_or(AnimationError::Unavailable)?;
+                let channels = animation["channels"]
+                    .as_array()
+                    .ok_or(AnimationError::Unavailable)?;
+                let mut tracks = Vec::new();
+                let mut duration = 0f32;
                 for channel in channels {
-                    let sampler=samples.get(json_u(channel,"sampler")?).ok_or(AnimationError::Unavailable)?;
-                    let path=channel["target"]["path"].as_str().unwrap_or("");
-                    let width=match path {"translation"|"scale"=>3,"rotation"=>4,_=>continue};
-                    let target=json_u(&channel["target"],"node")?;
-                    if target>=nodes.len(){return Err(AnimationError::Invalid("channel references unknown bone".into()));}
-                    let times=floats(&doc,&binary,json_u(sampler,"input")?,1)?;
-                    let output=floats(&doc,&binary,json_u(sampler,"output")?,width)?;
-                    if times.len()!=output.len() || times.is_empty()
-                        || times.windows(2).any(|w|w[0]>=w[1]) {return Err(AnimationError::Invalid("track times invalid".into()));}
-                    let interpolation=sampler["interpolation"].as_str().unwrap_or("LINEAR");
-                    if !matches!(interpolation,"LINEAR"|"STEP"){return Err(AnimationError::Invalid("unsupported interpolation".into()));}
-                    duration=duration.max(times.last().map(|v|v[0]).unwrap_or(0.0));
-                    tracks.push(Track{
-                        target,path:path.into(),interp:interpolation.into(),
-                        times:times.into_iter().map(|v|v[0]).collect(),values:output,
+                    let sampler = samples
+                        .get(json_u(channel, "sampler")?)
+                        .ok_or(AnimationError::Unavailable)?;
+                    let path = channel["target"]["path"].as_str().unwrap_or("");
+                    let width = match path {
+                        "translation" | "scale" => 3,
+                        "rotation" => 4,
+                        _ => continue,
+                    };
+                    let target = json_u(&channel["target"], "node")?;
+                    if target >= nodes.len() {
+                        return Err(AnimationError::Invalid(
+                            "channel references unknown bone".into(),
+                        ));
+                    }
+                    let times = floats(&doc, &binary, json_u(sampler, "input")?, 1)?;
+                    let output = floats(&doc, &binary, json_u(sampler, "output")?, width)?;
+                    if times.len() != output.len()
+                        || times.is_empty()
+                        || times.windows(2).any(|w| w[0] >= w[1])
+                    {
+                        return Err(AnimationError::Invalid("track times invalid".into()));
+                    }
+                    let interpolation = sampler["interpolation"].as_str().unwrap_or("LINEAR");
+                    if !matches!(interpolation, "LINEAR" | "STEP") {
+                        return Err(AnimationError::Invalid("unsupported interpolation".into()));
+                    }
+                    duration = duration.max(times.last().map(|v| v[0]).unwrap_or(0.0));
+                    tracks.push(Track {
+                        target,
+                        path: path.into(),
+                        interp: interpolation.into(),
+                        times: times.into_iter().map(|v| v[0]).collect(),
+                        values: output,
                     });
                 }
-                clips.push(Clip{
-                    name:animation["name"].as_str().unwrap_or("unnamed").to_owned(),
-                    duration,tracks,
+                clips.push(Clip {
+                    name: animation["name"].as_str().unwrap_or("unnamed").to_owned(),
+                    duration,
+                    tracks,
                 });
             }
         }

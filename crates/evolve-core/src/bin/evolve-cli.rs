@@ -1,10 +1,10 @@
 //! Safe command-line functions shared with the desktop application.
 use evolve_core::{
-    AnimatedGlb, AnimationPolicy, inspect_caf_file, animation_references,
-    convert_glb_to_fbx, export_model_glb, Transform, export_dds_png, export_edited_layer, export_model_obj, export_terrain_obj,
-    extract_legacy_pak, extract_signed_pak, inspect_dds, inspect_legacy_pak, inspect_signed_pak,
-    load_level_scene, read_cdf, read_model, read_terrain, rebuild_legacy_pak, scan_directory,
-    write_inventory_json,
+    AnimatedGlb, AnimationPolicy, Transform, animation_references, convert_glb_to_fbx,
+    export_dds_png, export_edited_layer, export_model_glb, export_model_obj, export_terrain_obj,
+    extract_legacy_pak, extract_signed_pak, inspect_caf_file, inspect_dds, inspect_legacy_pak,
+    inspect_signed_pak, load_level_scene, read_cdf, read_model, read_terrain, rebuild_legacy_pak,
+    scan_directory, write_inventory_json,
 };
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
@@ -157,14 +157,18 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
         let blender: PathBuf = pop(&mut args)?.into();
         let target: PathBuf = pop(&mut args)?.into();
         no_extra(&mut args)?;
-        let model = read_model(&source).map_err(|e|e.to_string())?;
-        let temp = tempfile::tempdir().map_err(|e|e.to_string())?;
+        let model = read_model(&source).map_err(|e| e.to_string())?;
+        let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
         let intermediate = temp.path().join("source.glb");
-        export_model_glb(&model, &intermediate).map_err(|e|e.to_string())?;
-        let report = convert_glb_to_fbx(&blender, &intermediate, &target, AnimationPolicy::default())
-            .map_err(|e|e.to_string())?;
-        println!("Exported source geometry as {} bytes of FBX (no rigged skeleton inferred): {}",
-            report.output_size,target.display());
+        export_model_glb(&model, &intermediate).map_err(|e| e.to_string())?;
+        let report =
+            convert_glb_to_fbx(&blender, &intermediate, &target, AnimationPolicy::default())
+                .map_err(|e| e.to_string())?;
+        println!(
+            "Exported source geometry as {} bytes of FBX (no rigged skeleton inferred): {}",
+            report.output_size,
+            target.display()
+        );
         return Ok(());
     }
     if verb == OsStr::new("fbx") && subcommand == OsStr::new("export") {
@@ -176,11 +180,19 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
             _ => return Err(usage()),
         };
         no_extra(&mut args)?;
-        let info = convert_glb_to_fbx(&blender, &source, &dest, AnimationPolicy {
-            embed_verified_animations: embed
-        }).map_err(|e| e.to_string())?;
-        println!("Blender FBX created: {} bytes, animations enabled: {}",
-            info.output_size, info.animations_included);
+        let info = convert_glb_to_fbx(
+            &blender,
+            &source,
+            &dest,
+            AnimationPolicy {
+                embed_verified_animations: embed,
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        println!(
+            "Blender FBX created: {} bytes, animations enabled: {}",
+            info.output_size, info.animations_included
+        );
         return Ok(());
     }
     if verb == OsStr::new("level") && subcommand == OsStr::new("edit") {
@@ -256,21 +268,33 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
             new_pak.display()
         );
     } else if verb == OsStr::new("anim") && subcommand == OsStr::new("caf") {
-        let info=inspect_caf_file(&source).map_err(|e|e.to_string())?;
-        println!("CAF chunk metadata: {} chunk(s), additive: {}",info.chunks,info.additive);
-        if let Some(path)=output{write_report(&info,&path)?;}
-    } else if verb == OsStr::new("anim") && subcommand == OsStr::new("catalog") {
-        let xml=fs::read(&source).map_err(|e|e.to_string())?;
-        let refs=animation_references(&xml).map_err(|e|e.to_string())?;
-        println!("Character animation references: {}",refs.len());
-        if let Some(path)=output{write_report(&refs,&path)?;}
-    } else if verb == OsStr::new("anim") && subcommand == OsStr::new("clips") {
-        let timeline=AnimatedGlb::read(&source).map_err(|e|e.to_string())?;
-        let clips=timeline.list_clips();
-        for clip in &clips {
-            println!("{}: {:.3} seconds, {} channels",clip.name,clip.duration,clip.channels);
+        let info = inspect_caf_file(&source).map_err(|e| e.to_string())?;
+        println!(
+            "CAF chunk metadata: {} chunk(s), additive: {}",
+            info.chunks, info.additive
+        );
+        if let Some(path) = output {
+            write_report(&info, &path)?;
         }
-        if let Some(path)=output{write_report(&clips,&path)?;}
+    } else if verb == OsStr::new("anim") && subcommand == OsStr::new("catalog") {
+        let xml = fs::read(&source).map_err(|e| e.to_string())?;
+        let refs = animation_references(&xml).map_err(|e| e.to_string())?;
+        println!("Character animation references: {}", refs.len());
+        if let Some(path) = output {
+            write_report(&refs, &path)?;
+        }
+    } else if verb == OsStr::new("anim") && subcommand == OsStr::new("clips") {
+        let timeline = AnimatedGlb::read(&source).map_err(|e| e.to_string())?;
+        let clips = timeline.list_clips();
+        for clip in &clips {
+            println!(
+                "{}: {:.3} seconds, {} channels",
+                clip.name, clip.duration, clip.channels
+            );
+        }
+        if let Some(path) = output {
+            write_report(&clips, &path)?;
+        }
     } else if verb == OsStr::new("model") && subcommand == OsStr::new("inspect") {
         let mesh = read_model(&source).map_err(|e| e.to_string())?;
         println!(
@@ -294,11 +318,14 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
             target.display()
         );
     } else if verb == OsStr::new("model") && subcommand == OsStr::new("glb") {
-        let model=read_model(&source).map_err(|e|e.to_string())?;
-        let target=output.ok_or_else(usage)?;
-        let bytes=export_model_glb(&model,&target).map_err(|e|e.to_string())?;
-        println!("Exported GLB with exact source triangles and UV0 ({} bytes): {}",
-            bytes,target.display());
+        let model = read_model(&source).map_err(|e| e.to_string())?;
+        let target = output.ok_or_else(usage)?;
+        let bytes = export_model_glb(&model, &target).map_err(|e| e.to_string())?;
+        println!(
+            "Exported GLB with exact source triangles and UV0 ({} bytes): {}",
+            bytes,
+            target.display()
+        );
     } else if verb == OsStr::new("terrain") && subcommand == OsStr::new("inspect") {
         let mesh = read_terrain(&source, 257).map_err(|e| e.to_string())?;
         println!(
