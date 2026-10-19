@@ -115,6 +115,7 @@ struct State {
     pak: Option<PakInventory>,
     texture: Option<DdsInfo>,
     character: Option<CdfDefinition>,
+    cdf_dependencies: Option<CdfDependencyReport>,
     model: Option<Arc<RenderMesh>>,
     level_scene: Option<LevelScene>,
     terrain: Option<TerrainInfo>,
@@ -1195,6 +1196,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.status = format!(
                         "CDF dependencies: {found} exact resolved, {missing} missing, {ambiguous} ambiguous. No filename guessing."
                     );
+                    state.cdf_dependencies = Some(report);
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::Character(character)) => {
@@ -1204,6 +1206,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         character.attachments.len()
                     );
                     state.character = Some(character);
+                    state.cdf_dependencies = None;
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::Model(mesh)) => {
@@ -1582,6 +1585,17 @@ fn view(state: &State) -> Element<'_, Message> {
                         .on_input(Message::AssetsRootChanged).width(Fill),
                     button("Resolve CDF parts").on_press(Message::StartCdfResolve),
                 ].spacing(8),
+                if let Some(dependencies) = &state.cdf_dependencies {
+                    let mut items = column![
+                        text(format!("Skeleton: {:?}", dependencies.skeleton))
+                    ].spacing(4);
+                    for (binding, status) in dependencies.attachments.iter().take(100) {
+                        items = items.push(text(format!("{binding} → {status:?}")));
+                    }
+                    scrollable(items).height(Length::Fixed(155.)).into()
+                } else {
+                    text("Read and resolve a CDF to inspect exact attachments; ambiguous matches are never selected automatically.").into()
+                },
                 row![
                     text_input("Exact DDS diffuse (.dds or .dds.0) path...",&state.diffuse_input)
                         .on_input(Message::DiffuseInputChanged).width(Fill),
