@@ -10,6 +10,7 @@ pub mod fbx;
 pub mod glb;
 pub mod inventory;
 pub mod level_export;
+pub mod materials;
 pub mod model;
 pub mod native_caf;
 pub mod policy;
@@ -79,3 +80,5 @@ pub use batch::{
     BatchEntry, BatchError, BatchJournal, apply_profile_stage, batch_stage_status,
     restore_profile_stage,
 };
+
+pub use materials::{MaterialDocument, MaterialError, MaterialReport, MaterialSlot, ResolvedTexture, TextureReference, parse_material, read_material, resolve_materials};
