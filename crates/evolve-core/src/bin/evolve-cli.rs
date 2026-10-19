@@ -1,11 +1,12 @@
 //! Safe command-line functions shared with the desktop application.
 use evolve_core::{
-    AnimatedGlb, AnimationPolicy, Transform, animation_references, convert_glb_to_fbx,
+    AnimatedGlb, AnimationPolicy, Transform, animation_references, apply_stage_pak, convert_glb_to_fbx,
     convert_original_motion, export_dds_png, export_edited_layer, export_level_scene_glb,
     export_model_glb, export_model_obj, export_rigged_character_fbx, export_rigged_character_glb,
     export_terrain_obj, extract_legacy_pak, extract_signed_pak, inspect_caf_file, inspect_dds,
     inspect_legacy_pak, inspect_signed_pak, load_level_scene, read_cdf, read_model, read_terrain,
     rebuild_legacy_pak, rebuild_signed_pak_entry, scan_directory, write_inventory_json,
+    import_stage_pak, initialize_stage, restore_stage, stage_status,
 };
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
@@ -24,6 +25,11 @@ fn usage() -> String {
     [
         "Usage:",
         "  evolve-cli scan <directory> [inventory.json]",
+        "  evolve-cli stage init <new-isolated-stage>",
+        "  evolve-cli stage status <stage>",
+        "  evolve-cli stage restore <stage>",
+        "  evolve-cli stage import <stage> <original.pak> <target-relative.pak> <public.der> <basename>",
+        "  evolve-cli stage apply <stage> <replacement.pak> <target-relative.pak> <original.der> <replacement.der> <basename>",
         "  evolve-cli pak inspect <legacy.pak> [pak-inventory.json]",
         "  evolve-cli pak extract <legacy.pak> <new-output-directory>",
         "  evolve-cli pak rebuild <legacy.pak> <overrides-folder> <new-output.pak>",
@@ -123,6 +129,48 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
         );
         if let Some(report) = report {
             write_inventory_json(&inventory, &report).map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
+    if verb == OsStr::new("stage") {
+        let action = pop(&mut args)?;
+        let root: PathBuf = pop(&mut args)?.into();
+        if action == OsStr::new("init") {
+            no_extra(&mut args)?;
+            initialize_stage(&root).map_err(|e| e.to_string())?;
+            println!("Created isolated offline PAK workspace: {}", root.display());
+        } else if action == OsStr::new("status") {
+            no_extra(&mut args)?;
+            match stage_status(&root).map_err(|e| e.to_string())? {
+                Some(tx) => println!("Recovery pending for {} ({})", tx.target, tx.id),
+                None => println!("No active stage swap journal"),
+            }
+        } else if action == OsStr::new("restore") {
+            no_extra(&mut args)?;
+            let tx = restore_stage(&root).map_err(|e| e.to_string())?;
+            println!("Restored verified original staged PAK: {}", tx.target);
+        } else if action == OsStr::new("import") {
+            let original: PathBuf = pop(&mut args)?.into();
+            let target = pop(&mut args)?.into_string().map_err(|_| usage())?;
+            let public_key: PathBuf = pop(&mut args)?.into();
+            let basename = pop(&mut args)?.into_string().map_err(|_| usage())?;
+            no_extra(&mut args)?;
+            let digest = import_stage_pak(&root, &original, &target, &public_key, &basename)
+                .map_err(|e| e.to_string())?;
+            println!("Imported verified signed archive into isolated stage (SHA256 {digest})");
+        } else if action == OsStr::new("apply") {
+            let replacement: PathBuf = pop(&mut args)?.into();
+            let target = pop(&mut args)?.into_string().map_err(|_| usage())?;
+            let original_key: PathBuf = pop(&mut args)?.into();
+            let replacement_key: PathBuf = pop(&mut args)?.into();
+            let basename = pop(&mut args)?.into_string().map_err(|_| usage())?;
+            no_extra(&mut args)?;
+            let tx = apply_stage_pak(
+                &root, &replacement, &target, &original_key, &replacement_key, &basename
+            ).map_err(|e| e.to_string())?;
+            println!("Applied staged mod {}; recovery journal {}", tx.target, tx.id);
+        } else {
+            return Err(usage());
         }
         return Ok(());
     }
