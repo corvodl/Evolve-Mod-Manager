@@ -1131,6 +1131,44 @@ mod tests {
         );
         let wrong = inspect_signed_pak(&archive, &key, "different.pak");
         assert!(wrong.is_err(), "signed archive basename is authenticated");
+
+        // Exercise isolated staging and rollback against the same fully signed
+        // synthetic original and re-signed replacement. Nothing in the source
+        // directory or in an installed game path is altered by these actions.
+        use crate::staging::{
+            apply_stage_pak, import_stage_pak, initialize_stage, restore_stage, stage_status,
+        };
+        let workspace = root.path().join("offline-stage");
+        initialize_stage(&workspace).unwrap();
+        let original_sha = import_stage_pak(
+            &workspace,
+            &archive,
+            "Game/sample.pak",
+            &key,
+            "sample.pak",
+        )
+        .unwrap();
+        let staged = workspace.join("paks/Game/sample.pak");
+        assert_eq!(fs::read(&staged).unwrap(), fs::read(&archive).unwrap());
+        let journal = apply_stage_pak(
+            &workspace,
+            &output,
+            "Game/sample.pak",
+            &key,
+            &new_public_file,
+            "sample.pak",
+        )
+        .unwrap();
+        assert_eq!(journal.before_sha256, original_sha);
+        assert_eq!(fs::read(&staged).unwrap(), fs::read(&output).unwrap());
+        assert!(stage_status(&workspace).unwrap().is_some());
+        assert!(apply_stage_pak(
+            &workspace, &output, "Game/sample.pak", &key, &new_public_file, "sample.pak"
+        ).is_err());
+        restore_stage(&workspace).unwrap();
+        assert!(stage_status(&workspace).unwrap().is_none());
+        assert_eq!(fs::read(&staged).unwrap(), fs::read(&archive).unwrap());
+        assert!(inspect_signed_pak(&staged, &key, "sample.pak").is_ok());
     }
     #[test]
     fn validates_user_basename_before_opening_archive() {
