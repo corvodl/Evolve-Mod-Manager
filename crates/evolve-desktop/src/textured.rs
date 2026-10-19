@@ -13,6 +13,8 @@ use std::sync::Arc;
 pub struct Scene {
     pub mesh: Arc<RenderMesh>,
     pub diffuse: Option<Arc<image::RgbaImage>>,
+    pub normal_map: Option<Arc<image::RgbaImage>>,
+    pub emissive: Option<Arc<image::RgbaImage>>,
     pub yaw: f32,
     pub pitch: f32,
     pub zoom: f32,
@@ -24,12 +26,14 @@ struct Vertex {
     xyz: [f32; 3],
     uv: [f32; 2],
     normal: [f32; 3],
+    view_position: [f32; 3],
 }
 impl Vertex {
-    const ATTRS: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
+    const ATTRS: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
         0 => Float32x3,
         1 => Float32x2,
         2 => Float32x3,
+        3 => Float32x3,
     ];
     fn descriptor<'a>() -> wgpu::VertexBufferLayout<'a> {
         wgpu::VertexBufferLayout {
@@ -44,8 +48,12 @@ pub struct Primitive {
     points: Vec<Vertex>,
     indices: Vec<u32>,
     diffuse: Option<Arc<image::RgbaImage>>,
+    normal_map: Option<Arc<image::RgbaImage>>,
+    emissive: Option<Arc<image::RgbaImage>>,
     mesh_identity: usize,
     texture_identity: usize,
+    normal_identity: usize,
+    emissive_identity: usize,
 }
 impl<Message> shader::Program<Message> for Scene {
     type State = ();
@@ -109,14 +117,19 @@ impl<Message> shader::Program<Message> for Scene {
                     .copied()
                     .unwrap_or([0., 0.]),
                 normal,
+                view_position: [xr, yr, depth],
             });
         }
         Primitive {
             points,
             indices: data.indices.clone(),
             diffuse: self.diffuse.clone(),
+            normal_map: self.normal_map.clone(),
+            emissive: self.emissive.clone(),
             mesh_identity: Arc::as_ptr(&self.mesh) as usize,
             texture_identity: self.diffuse.as_ref().map_or(0, |t| Arc::as_ptr(t) as usize),
+            normal_identity: self.normal_map.as_ref().map_or(0, |t| Arc::as_ptr(t) as usize),
+            emissive_identity: self.emissive.as_ref().map_or(0, |t| Arc::as_ptr(t) as usize),
         }
     }
 }
@@ -131,6 +144,12 @@ pub struct Pipeline {
     index_capacity: usize,
     last_mesh_identity: usize,
     last_texture_identity: usize,
+    last_normal_identity: usize,
+    last_emissive_identity: usize,
+    normal_texture: wgpu::Texture,
+    normal_view: wgpu::TextureView,
+    emissive_texture: wgpu::Texture,
+    emissive_view: wgpu::TextureView,
     texture: wgpu::Texture,
     view: wgpu::TextureView,
     sampler: wgpu::Sampler,
@@ -158,6 +177,41 @@ impl Pipeline {
             })
             .create_view(&wgpu::TextureViewDescriptor::default())
     }
+    fn upload_map(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        source: Option<&Arc<image::RgbaImage>>,
+        fallback: &[u8; 4],
+        format: wgpu::TextureFormat,
+        label: &'static str,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let (width, height, bytes) = if let Some(source) = source {
+            (source.width(), source.height(), source.as_raw().as_slice())
+        } else {
+            (1, 1, &fallback[..])
+        };
+        let texture = device.create_texture_with_data(
+            queue,
+            &wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: width.max(1),
+                    height: height.max(1),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            },
+            TextureDataOrder::LayerMajor,
+            bytes,
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        (texture, view)
+    }
     fn new_impl(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Evolve scene diffuse bind layout"),
@@ -176,6 +230,26 @@ impl Pipeline {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
                     count: None,
                 },
             ],
@@ -252,6 +326,15 @@ impl Pipeline {
             &placeholder,
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // Linear normal maps, sRGB emissive color maps; no speculative texture matching.
+        let (normal_texture, normal_view) = Self::upload_map(
+            device, queue, None, &[128, 128, 255, 255],
+            wgpu::TextureFormat::Rgba8Unorm, "Neutral surface normal",
+        );
+        let (emissive_texture, emissive_view) = Self::upload_map(
+            device, queue, None, &[0, 0, 0, 255],
+            wgpu::TextureFormat::Rgba8UnormSrgb, "No source emission",
+        );
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Evolve actual texture sampler group"),
             layout: &layout,
@@ -263,6 +346,14 @@ impl Pipeline {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&normal_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&emissive_view),
                 },
             ],
         });
@@ -289,6 +380,12 @@ impl Pipeline {
             index_capacity: 4,
             last_mesh_identity: 0,
             last_texture_identity: usize::MAX,
+            last_normal_identity: usize::MAX,
+            last_emissive_identity: usize::MAX,
+            normal_texture,
+            normal_view,
+            emissive_texture,
+            emissive_view,
             texture,
             view,
             sampler,
@@ -338,7 +435,10 @@ impl Pipeline {
         } else {
             self.index_count = 0;
         }
-        if primitive.texture_identity != self.last_texture_identity {
+        if primitive.texture_identity != self.last_texture_identity
+            || primitive.normal_identity != self.last_normal_identity
+            || primitive.emissive_identity != self.last_emissive_identity
+        {
             let (w, h, bytes) = if let Some(image) = primitive.diffuse.as_ref() {
                 (image.width(), image.height(), image.as_raw().as_slice())
             } else {
@@ -366,6 +466,22 @@ impl Pipeline {
             self.view = self
                 .texture
                 .create_view(&wgpu::TextureViewDescriptor::default());
+            (self.normal_texture, self.normal_view) = Self::upload_map(
+                device,
+                queue,
+                primitive.normal_map.as_ref(),
+                &[128, 128, 255, 255],
+                wgpu::TextureFormat::Rgba8Unorm,
+                "Source tangent-space normal map",
+            );
+            (self.emissive_texture, self.emissive_view) = Self::upload_map(
+                device,
+                queue,
+                primitive.emissive.as_ref(),
+                &[0, 0, 0, 255],
+                wgpu::TextureFormat::Rgba8UnormSrgb,
+                "Source emission mask",
+            );
             self.group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Exact CryEngine DDS texture sampler group"),
                 layout: &self.layout,
@@ -378,9 +494,19 @@ impl Pipeline {
                         binding: 1,
                         resource: wgpu::BindingResource::Sampler(&self.sampler),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&self.normal_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&self.emissive_view),
+                    },
                 ],
             });
             self.last_texture_identity = primitive.texture_identity;
+            self.last_normal_identity = primitive.normal_identity;
+            self.last_emissive_identity = primitive.emissive_identity;
         }
     }
     fn render_scene(
