@@ -4,7 +4,7 @@
 use half::f16;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, File};
+use std::fs::{self};
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -61,7 +61,8 @@ struct Stream {
     count: usize,
     stride: usize,
 }
-fn validate_chunks(data: &[u8]) -> Result<(String, u32, Vec<(u32, usize, usize, bool)>), ModelError> {
+type ModelChunks = (String, u32, Vec<(u32, usize, usize, bool)>);
+fn validate_chunks(data: &[u8]) -> Result<ModelChunks, ModelError> {
     if data.len() > MAX_BYTES { return Err(ModelError::Limits); }
     let mut out = Vec::new();
     let (format, version, end);
@@ -151,11 +152,9 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
         if !relevant { continue; }
         let header_size = if legacy { 40 } else { 24 };
         if *size<header_size { return Err(ModelError::Format("truncated stream header".into())); }
-        if legacy {
-            if u32at(data,*offset)?!=*ty || u32at(data,*offset+4)?!=0x800
-                || u32at(data,*offset+8)? as usize!=*offset {
-                return Err(ModelError::Format("legacy stream header/table mismatch".into()));
-            }
+        if legacy && (u32at(data,*offset)?!=*ty || u32at(data,*offset+4)?!=0x800
+                || u32at(data,*offset+8)? as usize!=*offset) {
+            return Err(ModelError::Format("legacy stream header/table mismatch".into()));
         }
         let base=offset + if legacy {16} else {0};
         let stream_type=u32at(data,base+4)?;
@@ -272,7 +271,7 @@ pub fn export_model_obj(mesh: &RenderMesh, target: &Path) -> Result<(), ModelErr
         for v in &mesh.positions {writeln!(output,"v {} {} {}",v[0],v[1],v[2])?;}
         if let Some(uvs)=&mesh.uv0 {for uv in uvs {writeln!(output,"vt {} {}",uv[0],uv[1])?;}}
         if let Some(normals)=&mesh.normals {for n in normals {writeln!(output,"vn {} {} {}",n[0],n[1],n[2])?;}}
-        for tri in mesh.indices.chunks_exact(3) {
+        for tri in mesh.indices.as_chunks::<3>().0.iter() {
             let mut corners=Vec::with_capacity(3);
             for idx in tri {
                 let i=idx+1;

@@ -128,7 +128,7 @@ fn parse_raw(source: &[u8]) -> Result<(TerrainInfo, Vec<u16>), TerrainError> {
     if source.get(end..end + NEXT.len()) != Some(NEXT) {
         return Err(TerrainError::Format("missing successor section".into()));
     }
-    let values = source[data_at..end].chunks_exact(2)
+    let values = source[data_at..end].as_chunks::<2>().0.iter()
         .map(|part| u16::from_le_bytes([part[0], part[1]])).collect::<Vec<_>>();
     Ok((TerrainInfo {
         width, height, unit, max_height,
@@ -219,7 +219,7 @@ pub fn export_terrain_obj(mesh: &TerrainMesh, destination: &Path) -> Result<(), 
         for normal in &mesh.normals {
             writeln!(output, "vn {:.9} {:.9} {:.9}", normal[0], normal[1], normal[2])?;
         }
-        for triangle in mesh.indices.chunks_exact(3) {
+        for triangle in mesh.indices.as_chunks::<3>().0.iter() {
             let parts = triangle.iter().map(|idx| {
                 let one = *idx + 1;
                 format!("{one}/{one}/{one}")
