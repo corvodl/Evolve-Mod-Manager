@@ -47,7 +47,14 @@ fn archive_directory(name: &str, id: &str) -> String {
         .chars()
         .take(96)
         .collect::<String>();
-    format!("{}__{id}", if slug.is_empty() { "Imported_PAK" } else { &slug })
+    format!(
+        "{}__{id}",
+        if slug.is_empty() {
+            "Imported_PAK"
+        } else {
+            &slug
+        }
+    )
 }
 
 fn sha_file(file: &Path) -> Result<String, String> {
@@ -83,7 +90,9 @@ pub fn import_signed_library_pak(
     {
         return Err("Select a bounded, non-linked, regular PAK file".into());
     }
-    let basename = source.file_name().and_then(|name| name.to_str())
+    let basename = source
+        .file_name()
+        .and_then(|name| name.to_str())
         .ok_or("Source PAK name is not valid Unicode")?;
     if basename.len() > 240 || !basename.to_ascii_lowercase().ends_with(".pak") {
         return Err("Select a Stage 2 .pak file".into());
@@ -112,30 +121,34 @@ pub fn import_signed_library_pak(
     };
     if let Some(existing) = existing {
         let catalog = imported_library(&root).map_err(|e| e.to_string())?;
-        let item = catalog.archives.iter().find(|a| a.id == id
-            && Path::new(&a.directory) == existing)
+        let item = catalog
+            .archives
+            .iter()
+            .find(|a| a.id == id && Path::new(&a.directory) == existing)
             .ok_or("Conflicting or unfinished Asset Library archive exists; inspect manually")?;
         let manifest_file = existing.join("asset-library.json");
         let manifest_meta = fs::symlink_metadata(&manifest_file).map_err(|e| e.to_string())?;
         if !manifest_meta.file_type().is_file() || manifest_meta.len() > 32 * 1024 * 1024 {
             return Err("Existing library manifest is unsafe".into());
         }
-        let doc: serde_json::Value = serde_json::from_reader(
-            File::open(&manifest_file).map_err(|e| e.to_string())?
-        ).map_err(|e| e.to_string())?;
-        if doc["source_sha256"].as_str() != Some(&before)
-            || doc["name"].as_str() != Some(basename)
+        let doc: serde_json::Value =
+            serde_json::from_reader(File::open(&manifest_file).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        if doc["source_sha256"].as_str() != Some(&before) || doc["name"].as_str() != Some(basename)
         {
             return Err("Existing archive does not match the selected source hash".into());
         }
         let inventory = imported_archive_files(item).map_err(|e| e.to_string())?;
-        let manifest_rows = doc["entries"].as_array()
+        let manifest_rows = doc["entries"]
+            .as_array()
             .ok_or("Existing manifest is missing indexed file records")?;
         if inventory.entries.len() != manifest_rows.len() {
             return Err("Existing library manifest's file count is inconsistent".into());
         }
         for (asset, record) in inventory.entries.iter().zip(manifest_rows) {
-            let expected = record["sha256"].as_str().ok_or("Existing library file lacks SHA-256")?;
+            let expected = record["sha256"]
+                .as_str()
+                .ok_or("Existing library file lacks SHA-256")?;
             if expected.len() != 64
                 || !expected.bytes().all(|b| b.is_ascii_hexdigit())
                 || sha_file(&Path::new(&inventory.root).join(&asset.relative_path))? != expected
@@ -144,8 +157,11 @@ pub fn import_signed_library_pak(
             }
         }
         return Ok(LibraryImportReport {
-            id, archive: basename.into(), files: inventory.entries.len(),
-            bytes: inventory.total_bytes, already_imported: true,
+            id,
+            archive: basename.into(),
+            files: inventory.entries.len(),
+            bytes: inventory.total_bytes,
+            already_imported: true,
         });
     }
 
@@ -153,7 +169,8 @@ pub fn import_signed_library_pak(
     // Failure or panic cleanup is owned by TempDir, leaving root imports intact.
     let work = tempfile::Builder::new()
         .prefix(".evolve-library-import-")
-        .tempdir_in(&root).map_err(|e| e.to_string())?;
+        .tempdir_in(&root)
+        .map_err(|e| e.to_string())?;
     let extracted = work.path().join("files");
     let info = extract_signed_pak(&source, &public_key, basename, &extracted)
         .map_err(|e| e.to_string())?;
@@ -176,7 +193,8 @@ pub fn import_signed_library_pak(
         let mut converted = false;
         if original_meta.len() >= 8 && original_meta.len() <= XML_LIMIT as u64 {
             let mut head = [0u8; 8];
-            File::open(&file).and_then(|mut f| f.read_exact(&mut head))
+            File::open(&file)
+                .and_then(|mut f| f.read_exact(&mut head))
                 .map_err(|e| e.to_string())?;
             if &head == b"CryXmlB\0" {
                 let raw = fs::read(&file).map_err(|e| e.to_string())?;
@@ -186,7 +204,8 @@ pub fn import_signed_library_pak(
             }
         } else if original_meta.len() > XML_LIMIT as u64 {
             let mut head = [0u8; 8];
-            File::open(&file).and_then(|mut f| f.read_exact(&mut head))
+            File::open(&file)
+                .and_then(|mut f| f.read_exact(&mut head))
                 .map_err(|e| e.to_string())?;
             if &head == b"CryXmlB\0" {
                 return Err("Oversized CryXmlB member requires explicit review".into());
@@ -203,7 +222,8 @@ pub fn import_signed_library_pak(
         return Err("Source PAK changed during import; no library entry was published".into());
     }
     let imported_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
         .as_secs();
     let manifest = serde_json::json!({
         "version": 1, "name": basename, "signed_name": basename,
@@ -215,7 +235,9 @@ pub fn import_signed_library_pak(
         "verification": "rsa-pss", "imported_at": imported_at,
         "extracted_bytes": total, "warnings": [], "entries": records,
     });
-    let mut file = fs::OpenOptions::new().create_new(true).write(true)
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
         .open(work.path().join("asset-library.json"))
         .map_err(|e| e.to_string())?;
     serde_json::to_writer_pretty(&mut file, &manifest).map_err(|e| e.to_string())?;
@@ -230,8 +252,11 @@ pub fn import_signed_library_pak(
     }
     fs::rename(work.path(), &target).map_err(|e| e.to_string())?;
     Ok(LibraryImportReport {
-        id, archive: basename.into(), files: records.len(),
-        bytes: total, already_imported: false,
+        id,
+        archive: basename.into(),
+        files: records.len(),
+        bytes: total,
+        already_imported: false,
     })
 }
 
@@ -245,7 +270,10 @@ mod tests {
         assert_eq!(id.len(), 20);
         assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
         assert!(archive_directory(source, &id).ends_with(&format!("__{id}")));
-        assert_eq!(archive_id("SAMPLE.pak", "abcd"), archive_id("sample.pak", "abcd"));
+        assert_eq!(
+            archive_id("SAMPLE.pak", "abcd"),
+            archive_id("sample.pak", "abcd")
+        );
     }
 
     #[test]
