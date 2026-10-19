@@ -712,8 +712,11 @@ impl Operation {
                     .map_err(|e| format!("{}: {e}", render_source.display()))
             }
             Self::InspectLevel(source) => {
-                let scene = load_level_scene(&source).map_err(|e| e.to_string())?;
                 let checksum = level_source_hash(&source)?;
+                let scene = load_level_scene(&source).map_err(|e| e.to_string())?;
+                if level_source_hash(&source)? != checksum {
+                    return Err("Level source changed during inspection; reload it".into());
+                }
                 Ok(Completed::Level(scene, source, checksum))
             }
             Self::ExportEditedLevel(source, destination, edits, expected_sha) => {
