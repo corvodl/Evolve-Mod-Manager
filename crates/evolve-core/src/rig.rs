@@ -888,6 +888,21 @@ pub fn export_rigged_character_fbx_textured(
     diffuse: Option<&Path>,
     destination: &Path,
 ) -> Result<(RigReport, FbxReport), RigError> {
+    export_rigged_character_fbx_textured_animated(
+        mesh_source, skeleton_source, blender, diffuse, None, destination
+    )
+}
+
+/// Strict opt-in CAF: do not claim embedded animations if source bone CRCs
+/// cannot be paired uniquely to the original compiled skeleton.
+pub fn export_rigged_character_fbx_textured_animated(
+    mesh_source: &Path,
+    skeleton_source: &Path,
+    blender: &Path,
+    diffuse: Option<&Path>,
+    native_caf: Option<&Path>,
+    destination: &Path,
+) -> Result<(RigReport, FbxReport), RigError> {
     for file in [mesh_source, skeleton_source] {
         let stat = fs::symlink_metadata(file)?;
         if !stat.file_type().is_file() || stat.len() > MAX_BYTES as u64 {
@@ -897,7 +912,15 @@ pub fn export_rigged_character_fbx_textured(
     let mesh = read_model(mesh_source)?;
     let mesh_data = fs::read(mesh_source)?;
     let skeleton_data = fs::read(skeleton_source)?;
-    let (mut output, report) = rigged_glb_bytes(&mesh, &mesh_data, &skeleton_data)?;
+    let motion = native_caf.map(|file| {
+        crate::native_caf::read_native_caf(file)
+            .map_err(|e| RigError::Invalid(format!("Original native CAF: {e}")))
+    }).transpose()?;
+    let (mut output, report) = if let Some(motion) = &motion {
+        rigged_glb_bytes_with_caf(&mesh, &mesh_data, &skeleton_data, motion)?
+    } else {
+        rigged_glb_bytes(&mesh, &mesh_data, &skeleton_data)?
+    };
     if let Some(texture_source) = diffuse {
         let (_info, rgba) = crate::dds::decode_dds_rgba(texture_source)
             .map_err(|e| RigError::Invalid(format!("Source diffuse DDS: {e}")))?;
@@ -915,7 +938,10 @@ pub fn export_rigged_character_fbx_textured(
     let temp = tempfile::tempdir()?;
     let glb = temp.path().join("verified-textured-rig.glb");
     fs::write(&glb, &output)?;
-    let exported = convert_glb_to_fbx(blender, &glb, destination, AnimationPolicy::default())?;
+    let exported = convert_glb_to_fbx(
+        blender, &glb, destination,
+        AnimationPolicy { embed_verified_animations: motion.is_some() }
+    )?;
     Ok((report, exported))
 }
 
