@@ -27,7 +27,7 @@ use evolve_core::{
     StageTransaction, TerrainInfo, add_mod_to_profile, apply_profile_stage, apply_stage_pak,
     batch_stage_status, compare_assets, convert_glb_to_fbx, convert_original_motion,
     create_mod_profile, decode_dds_rgba, export_dds_png, export_level_scene_glb,
-    export_rigged_character_fbx_textured, export_rigged_character_glb, extract_legacy_pak,
+    export_rigged_character_fbx_textured_animated, export_rigged_character_glb, extract_legacy_pak,
     extract_signed_pak, import_stage_pak, imported_archive_files, imported_library,
     initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_signed_pak,
     list_mod_profiles, load_level_scene, plan_mod_profile, read_cdf, read_material, read_model,
@@ -252,7 +252,7 @@ enum Operation {
     ResolveMaterial(PathBuf, PathBuf),
     LoadCaf(PathBuf),
     RiggedGlb(PathBuf, PathBuf, PathBuf),
-    RiggedFbx(PathBuf, PathBuf, PathBuf, Option<PathBuf>, PathBuf),
+    RiggedFbx(PathBuf, PathBuf, PathBuf, Option<PathBuf>, Option<PathBuf>, PathBuf),
     ConvertMotion(PathBuf, PathBuf, PathBuf, PathBuf),
     LoadGlbMotion(PathBuf),
     InspectCdf(PathBuf),
@@ -387,12 +387,13 @@ impl Operation {
                     .map(|r| Completed::RiggedExport(r, dest))
                     .map_err(|e| e.to_string())
             }
-            Self::RiggedFbx(mesh, skeleton, blender, diffuse, dest) => {
-                export_rigged_character_fbx_textured(
+            Self::RiggedFbx(mesh, skeleton, blender, diffuse, caf, dest) => {
+                export_rigged_character_fbx_textured_animated(
                     &mesh,
                     &skeleton,
                     &blender,
                     diffuse.as_deref(),
+                    caf.as_deref(),
                     &dest,
                 )
                 .map(|(r, _)| Completed::RiggedExport(r, dest))
@@ -2006,6 +2007,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     PathBuf::from(&state.blender_path),
                     (!state.diffuse_input.trim().is_empty())
                         .then(|| PathBuf::from(&state.diffuse_input)),
+                    (!state.caf_path.trim().is_empty())
+                        .then(|| PathBuf::from(&state.caf_path)),
                     PathBuf::from(&state.output),
                 ),
             );
@@ -3064,7 +3067,7 @@ fn view(state: &State) -> Element<'_, Message> {
                 row![
                     button("Export rigged GLB").on_press(Message::StartRigGlb),
                     button("Export rigged FBX").on_press(Message::StartRigFbx),
-                    text("FBX embeds explicitly selected DDS diffuse (Textures); skeletal Actions still need verified matched tracks."),
+                    text("FBX optionally embeds selected DDS diffuse and exact native CAF tracks when bone CRCs match; DBA layering remains unfinished."),
                 ].spacing(9),
                 text("Animation controls — exact native CAF tracks").size(18),
                 row![
