@@ -20,7 +20,7 @@ mod viewer_inspector;
 mod viewport;
 use asset_cache::{SharedCache, decoded_dds};
 use evolve_core::{
-    AnimatedGlb, AnimationPolicy, AssetComparison, AssetResolution, BatchJournal, CdfDefinition,
+    AnimatedGlb, AnimationPolicy, AssetComparison, AssetResolution, AssemblyReport, BatchJournal, CdfDefinition,
     CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph, ImportedLibrary, ImportedPak,
     Inventory, LevelScene, MaterialReport, ModProfile, ModelInfo, NativeCafMotion, PakInventory,
     ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo,
@@ -30,7 +30,7 @@ use evolve_core::{
     export_rigged_character_fbx_textured, export_rigged_character_glb, extract_legacy_pak,
     extract_signed_pak, import_stage_pak, imported_archive_files, imported_library,
     initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_signed_pak,
-    list_mod_profiles, load_level_scene, plan_mod_profile, read_cdf, read_material, read_model,
+    list_mod_profiles, load_level_scene, plan_mod_profile, read_cdf, read_material, read_model, read_static_cdf_assembly,
     read_native_caf, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry, resolve_cdf,
     resolve_materials, restore_profile_stage, restore_stage, scan_directory,
     scan_directory_with_progress, stage_status,
@@ -257,6 +257,7 @@ enum Operation {
     LoadGlbMotion(PathBuf),
     InspectCdf(PathBuf),
     InspectCdfResolved(PathBuf, Inventory),
+    BuildStaticCdf(PathBuf, Inventory),
     ResolveCdf(PathBuf, PathBuf),
     InspectModel(PathBuf),
     InspectLevel(PathBuf),
@@ -318,6 +319,7 @@ enum Completed {
     MotionGlb(AnimatedGlb),
     Character(CdfDefinition),
     CharacterResolved(CdfDefinition, CdfDependencyReport),
+    StaticCharacter(RenderMesh, AssemblyReport),
     CharacterDependencies(CdfDependencyReport),
     Model(RenderMesh),
     Level(LevelScene),
@@ -508,6 +510,11 @@ impl Operation {
                 let resolved = resolve_cdf(&inventory, &cdf);
                 Ok(Completed::CharacterResolved(cdf, resolved))
             }
+            Self::BuildStaticCdf(source, inventory) => {
+                read_static_cdf_assembly(&source, &inventory)
+                    .map(|(mesh, report)| Completed::StaticCharacter(mesh, report))
+                    .map_err(|e| e.to_string())
+            }
             Self::RebuildSignedPak(
                 src,
                 old_pub,
@@ -661,6 +668,7 @@ enum Message {
     ModifiersChanged(iced::keyboard::Modifiers),
     ViewerToggleFolder(String),
     ViewerPreviewSelected,
+    ViewerPreviewStaticCdf,
     StartDependencyInspection,
     CompareOriginalChanged(String),
     CompareModifiedChanged(String),
@@ -1437,6 +1445,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.viewer_collapsed.remove(&path);
             }
             refresh_viewer_rows(state);
+        }
+        Message::ViewerPreviewStaticCdf => {
+            let Some(inventory) = state.inventory.as_ref() else {
+                state.status = "Index an extracted asset folder before assembling characters.".into();
+                return Task::none();
+            };
+            let Some(entry) = state.selected.and_then(|i| inventory.entries.get(i)) else {
+                state.status = "Select an actual .cdf character definition.".into();
+                return Task::none();
+            };
+            if !entry.relative_path.to_ascii_lowercase().ends_with(".cdf") {
+                state.status = "Static character assembly requires selecting a .cdf definition.".into();
+                return Task::none();
+            }
+            let source = PathBuf::from(&inventory.root).join(&entry.relative_path);
+            state.status = "Validating exact CDF parts for a static preview (not a rigged export)...".into();
+            return launch(state, Operation::BuildStaticCdf(source, inventory.clone()));
         }
         Message::ViewerPreviewSelected => {
             let Some(inventory) = &state.inventory else {
@@ -2503,6 +2528,25 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         "CDF dependencies: {found} exact resolved, {missing} missing, {ambiguous} ambiguous. No filename guessing."
                     );
                     state.cdf_dependencies = Some(report);
+                    state.page = Some(Page::Models);
+                }
+                Ok(Completed::StaticCharacter(mesh, report)) => {
+                    state.status = format!(
+                        "Static CDF preview: {} exact parts, {} vertices, {} triangles, skin set {:?}. Rigged animation and multi-slot materials not enabled.",
+                        report.original_parts.len(), report.vertices, report.triangles,
+                        report.selected_skin_set,
+                    );
+                    state.model = Some(Arc::new(mesh));
+                    state.diffuse = None;
+                    state.normal_map = None;
+                    state.emissive_map = None;
+                    state.native_caf = None;
+                    state.glb_motion = None;
+                    state.playing = false;
+                    state.viewer_tab = ViewerTab::Model;
+                    state.zoom = 1.0;
+                    state.pan_x = 0.0;
+                    state.pan_y = 0.0;
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::CharacterResolved(character, report)) => {
