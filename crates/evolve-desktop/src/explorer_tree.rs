@@ -126,7 +126,9 @@ fn walk(
             }
             *seen += 1;
             if item.directory && (filtering || !collapsed.contains(&item.path)) {
-                walk(&item.path, nodes, collapsed, filtering, limit, offset, seen, result);
+                walk(
+                    &item.path, nodes, collapsed, filtering, limit, offset, seen, result,
+                );
             }
         }
     }
