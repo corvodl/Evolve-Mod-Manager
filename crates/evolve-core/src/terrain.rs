@@ -1,8 +1,8 @@
 //! Read-only CryEngine Stage 2 source Heightmap.dat decoding.
 //! Geometry is emitted in source world XY / Z-up coordinates; no geometry
 //! is invented when markers, dimensions or sample boundaries are missing.
-use quick_xml::events::Event;
 use quick_xml::Reader;
+use quick_xml::events::Event;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -46,9 +46,12 @@ pub struct TerrainMesh {
 }
 
 fn get_u32(bytes: &[u8], position: usize) -> Result<u32, TerrainError> {
-    let chunk = bytes.get(position..position + 4)
+    let chunk = bytes
+        .get(position..position + 4)
         .ok_or_else(|| TerrainError::Format("missing u32".into()))?;
-    Ok(u32::from_le_bytes(chunk.try_into().map_err(|_| TerrainError::Limits)?))
+    Ok(u32::from_le_bytes(
+        chunk.try_into().map_err(|_| TerrainError::Limits)?,
+    ))
 }
 
 fn parse_metadata(xml: &[u8]) -> Result<(u32, u32, f32, f32), TerrainError> {
@@ -60,29 +63,46 @@ fn parse_metadata(xml: &[u8]) -> Result<(u32, u32, f32, f32), TerrainError> {
     let mut reader = Reader::from_reader(xml);
     let mut result = None;
     loop {
-        match reader.read_event().map_err(|e| TerrainError::Format(e.to_string()))? {
+        match reader
+            .read_event()
+            .map_err(|e| TerrainError::Format(e.to_string()))?
+        {
             Event::Start(e) | Event::Empty(e) if e.name().as_ref() == b"Heightmap" => {
                 let mut params = [None, None, None, None];
                 for attr in e.attributes() {
                     let attr = attr.map_err(|e| TerrainError::Format(e.to_string()))?;
                     let key = attr.key.as_ref();
                     let index = [b"Width".as_slice(), b"Height", b"UnitSize", b"MaxHeight"]
-                        .iter().position(|name| key == *name);
+                        .iter()
+                        .position(|name| key == *name);
                     if let Some(i) = index {
-                        let value = attr.unescape_value().map_err(|e| TerrainError::Format(e.to_string()))?;
+                        let value = attr
+                            .unescape_value()
+                            .map_err(|e| TerrainError::Format(e.to_string()))?;
                         params[i] = Some(value.to_string());
                     }
                 }
-                let get = |i: usize| params[i].as_deref()
-                    .ok_or_else(|| TerrainError::Format("missing terrain attribute".into()));
+                let get = |i: usize| {
+                    params[i]
+                        .as_deref()
+                        .ok_or_else(|| TerrainError::Format("missing terrain attribute".into()))
+                };
                 let w = get(0)?.parse::<u32>().map_err(|_| TerrainError::Limits)?;
                 let h = get(1)?.parse::<u32>().map_err(|_| TerrainError::Limits)?;
                 let unit = get(2)?.parse::<f32>().map_err(|_| TerrainError::Limits)?;
                 let height = get(3)?.parse::<f32>().map_err(|_| TerrainError::Limits)?;
-                if w < 16 || h < 16 || w > MAX_TERRAIN_DIM || h > MAX_TERRAIN_DIM
-                    || !w.is_power_of_two() || !h.is_power_of_two()
-                    || !unit.is_finite() || !(0.0..=1000.0).contains(&unit) || unit == 0.0
-                    || !height.is_finite() || !(0.0..=65536.0).contains(&height) || height == 0.0
+                if w < 16
+                    || h < 16
+                    || w > MAX_TERRAIN_DIM
+                    || h > MAX_TERRAIN_DIM
+                    || !w.is_power_of_two()
+                    || !h.is_power_of_two()
+                    || !unit.is_finite()
+                    || !(0.0..=1000.0).contains(&unit)
+                    || unit == 0.0
+                    || !height.is_finite()
+                    || !(0.0..=65536.0).contains(&height)
+                    || height == 0.0
                 {
                     return Err(TerrainError::Limits);
                 }
@@ -114,26 +134,41 @@ fn parse_raw(source: &[u8]) -> Result<(TerrainInfo, Vec<u16>), TerrainError> {
     if source.get(section_at..section_at + 4 + SECTION.len())
         != Some([&4u32.to_le_bytes()[..], SECTION].concat().as_slice())
     {
-        return Err(TerrainError::Format("HeightmapData section marker missing".into()));
+        return Err(TerrainError::Format(
+            "HeightmapData section marker missing".into(),
+        ));
     }
     let header_at = section_at + 4 + SECTION.len();
     if get_u32(source, header_at)? as usize != bytes_len
         || get_u32(source, header_at + 4)? as usize != bytes_len
         || get_u32(source, header_at + 8)? != 0
     {
-        return Err(TerrainError::Format("height payload length mismatch".into()));
+        return Err(TerrainError::Format(
+            "height payload length mismatch".into(),
+        ));
     }
     let data_at = header_at + 12;
     let end = data_at.checked_add(bytes_len).ok_or(TerrainError::Limits)?;
     if source.get(end..end + NEXT.len()) != Some(NEXT) {
         return Err(TerrainError::Format("missing successor section".into()));
     }
-    let values = source[data_at..end].as_chunks::<2>().0.iter()
-        .map(|part| u16::from_le_bytes([part[0], part[1]])).collect::<Vec<_>>();
-    Ok((TerrainInfo {
-        width, height, unit, max_height,
-        decoded_samples: values.len(), stride: 1,
-    }, values))
+    let values = source[data_at..end]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|part| u16::from_le_bytes([part[0], part[1]]))
+        .collect::<Vec<_>>();
+    Ok((
+        TerrainInfo {
+            width,
+            height,
+            unit,
+            max_height,
+            decoded_samples: values.len(),
+            stride: 1,
+        },
+        values,
+    ))
 }
 
 fn positions(total: u32, stride: u32) -> Vec<u32> {
@@ -149,7 +184,9 @@ pub fn decode_terrain_bytes(source: &[u8], render_grid: u32) -> Result<TerrainMe
     if !(16..=MAX_RENDER_GRID).contains(&render_grid) {
         return Err(TerrainError::Limits);
     }
-    let stride = (info.width.max(info.height) - 1).div_ceil(render_grid - 1).max(1);
+    let stride = (info.width.max(info.height) - 1)
+        .div_ceil(render_grid - 1)
+        .max(1);
     info.stride = stride;
     let xs = positions(info.width, stride);
     let ys = positions(info.height, stride);
@@ -180,7 +217,10 @@ pub fn decode_terrain_bytes(source: &[u8], render_grid: u32) -> Result<TerrainMe
             }
             vertices.push([x as f32 * info.unit, y as f32 * info.unit, at(x, y)]);
             normals.push(n);
-            uv.push([x as f32 / (info.width - 1) as f32, y as f32 / (info.height - 1) as f32]);
+            uv.push([
+                x as f32 / (info.width - 1) as f32,
+                y as f32 / (info.height - 1) as f32,
+            ]);
         }
     }
     let mut indices = Vec::with_capacity((xs.len() - 1) * (ys.len() - 1) * 6);
@@ -192,7 +232,13 @@ pub fn decode_terrain_bytes(source: &[u8], render_grid: u32) -> Result<TerrainMe
             indices.extend_from_slice(&[a, b, c, b, b + 1, c]);
         }
     }
-    Ok(TerrainMesh { info, vertices, normals, uv, indices })
+    Ok(TerrainMesh {
+        info,
+        vertices,
+        normals,
+        uv,
+        indices,
+    })
 }
 
 pub fn read_terrain(path: &Path, render_grid: u32) -> Result<TerrainMesh, TerrainError> {
@@ -206,8 +252,17 @@ pub fn read_terrain(path: &Path, render_grid: u32) -> Result<TerrainMesh, Terrai
 /// Blender-compatible Wavefront OBJ with original XY, Z-up, UVs and normals.
 /// A full map scene still requires CryEngine object geometry and materials.
 pub fn export_terrain_obj(mesh: &TerrainMesh, destination: &Path) -> Result<(), TerrainError> {
-    let mut output = OpenOptions::new().create_new(true).write(true).open(destination)
-        .map_err(|e| if e.kind() == io::ErrorKind::AlreadyExists { TerrainError::Exists } else { TerrainError::Io(e) })?;
+    let mut output = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(destination)
+        .map_err(|e| {
+            if e.kind() == io::ErrorKind::AlreadyExists {
+                TerrainError::Exists
+            } else {
+                TerrainError::Io(e)
+            }
+        })?;
     let written = (|| -> Result<(), TerrainError> {
         writeln!(output, "# Evolve source heightmap: world XY, Z-up")?;
         for xyz in &mesh.vertices {
@@ -217,13 +272,20 @@ pub fn export_terrain_obj(mesh: &TerrainMesh, destination: &Path) -> Result<(), 
             writeln!(output, "vt {:.9} {:.9}", uv[0], uv[1])?;
         }
         for normal in &mesh.normals {
-            writeln!(output, "vn {:.9} {:.9} {:.9}", normal[0], normal[1], normal[2])?;
+            writeln!(
+                output,
+                "vn {:.9} {:.9} {:.9}",
+                normal[0], normal[1], normal[2]
+            )?;
         }
         for triangle in mesh.indices.as_chunks::<3>().0.iter() {
-            let parts = triangle.iter().map(|idx| {
-                let one = *idx + 1;
-                format!("{one}/{one}/{one}")
-            }).collect::<Vec<_>>();
+            let parts = triangle
+                .iter()
+                .map(|idx| {
+                    let one = *idx + 1;
+                    format!("{one}/{one}/{one}")
+                })
+                .collect::<Vec<_>>();
             writeln!(output, "f {} {} {}", parts[0], parts[1], parts[2])?;
         }
         output.sync_all()?;
@@ -279,7 +341,10 @@ mod tests {
         data.truncate(data.len() - NEXT.len());
         assert!(decode_terrain_bytes(&data, 16).is_err());
         let mut data = sample_data();
-        let idx = data.windows(10).position(|part| part == b"Width=\"16\"").unwrap();
+        let idx = data
+            .windows(10)
+            .position(|part| part == b"Width=\"16\"")
+            .unwrap();
         data[idx + 7] = b'3';
         assert!(decode_terrain_bytes(&data, 16).is_err());
     }
@@ -293,6 +358,9 @@ mod tests {
         let text = fs::read_to_string(&output).unwrap();
         assert!(text.contains("v 0.000000000 2.000000000"));
         assert!(text.contains("\nf 1/1/1 17/17/17 2/2/2\n"));
-        assert!(matches!(export_terrain_obj(&mesh, &output), Err(TerrainError::Exists)));
+        assert!(matches!(
+            export_terrain_obj(&mesh, &output),
+            Err(TerrainError::Exists)
+        ));
     }
 }

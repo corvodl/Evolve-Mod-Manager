@@ -8,7 +8,10 @@ use crate::archive::safe_member_name;
 use cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray};
 use crc32fast::Hasher;
 use flate2::read::DeflateDecoder;
-use rsa::{BigUint, Pss, RsaPublicKey, pkcs1::DecodeRsaPublicKey, pkcs8::DecodePublicKey, traits::PublicKeyParts};
+use rsa::{
+    BigUint, Pss, RsaPublicKey, pkcs1::DecodeRsaPublicKey, pkcs8::DecodePublicKey,
+    traits::PublicKeyParts,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -68,21 +71,30 @@ pub struct VerifiedSignedPak {
 }
 
 fn read_u16(data: &[u8], at: usize) -> Result<u16, SignedPakError> {
-    let bytes = data.get(at..at + 2).ok_or_else(|| SignedPakError::Format("truncated field".into()))?;
+    let bytes = data
+        .get(at..at + 2)
+        .ok_or_else(|| SignedPakError::Format("truncated field".into()))?;
     Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
 }
 
 fn read_u32(data: &[u8], at: usize) -> Result<u32, SignedPakError> {
-    let bytes = data.get(at..at + 4).ok_or_else(|| SignedPakError::Format("truncated field".into()))?;
-    Ok(u32::from_le_bytes(bytes.try_into().map_err(|_| SignedPakError::Limits)?))
+    let bytes = data
+        .get(at..at + 4)
+        .ok_or_else(|| SignedPakError::Format("truncated field".into()))?;
+    Ok(u32::from_le_bytes(
+        bytes.try_into().map_err(|_| SignedPakError::Limits)?,
+    ))
 }
 
 fn parse_public_key(bytes: &[u8]) -> Result<RsaPublicKey, SignedPakError> {
-    let key = RsaPublicKey::from_pkcs1_der(bytes).ok()
+    let key = RsaPublicKey::from_pkcs1_der(bytes)
+        .ok()
         .or_else(|| RsaPublicKey::from_public_key_der(bytes).ok())
         .ok_or_else(|| SignedPakError::Crypto("invalid RSA public key DER".into()))?;
     if key.size() != RSA_BYTES {
-        return Err(SignedPakError::Crypto("expected 1024-bit original/custom RSA public key".into()));
+        return Err(SignedPakError::Crypto(
+            "expected 1024-bit original/custom RSA public key".into(),
+        ));
     }
     Ok(key)
 }
@@ -95,7 +107,9 @@ fn unwrap_key(wrapped: &[u8], pubkey: &RsaPublicKey) -> Result<[u8; 16], SignedP
     }
     let ciphertext = BigUint::from_bytes_be(wrapped);
     if &ciphertext >= pubkey.n() {
-        return Err(SignedPakError::Crypto("RSA representative outside modulus".into()));
+        return Err(SignedPakError::Crypto(
+            "RSA representative outside modulus".into(),
+        ));
     }
     let encoded = ciphertext.modpow(pubkey.e(), pubkey.n()).to_bytes_be();
     if encoded.len() > RSA_BYTES {
@@ -110,17 +124,23 @@ fn unwrap_key(wrapped: &[u8], pubkey: &RsaPublicKey) -> Result<[u8; 16], SignedP
     seed.copy_from_slice(&em[1..33]);
     let db = &em[33..];
     let mask = mgf1(db, 32);
-    for (value, byte) in seed.iter_mut().zip(mask) { *value ^= byte; }
+    for (value, byte) in seed.iter_mut().zip(mask) {
+        *value ^= byte;
+    }
     let mask = mgf1(&seed, db.len());
     let clear = db.iter().zip(mask).map(|(a, b)| a ^ b).collect::<Vec<_>>();
     if clear[..32] != Sha256::digest([])[..] {
         return Err(SignedPakError::Crypto("wrong OAEP label hash".into()));
     }
     let padding = &clear[32..];
-    let position = padding.iter().position(|b| *b == 1)
+    let position = padding
+        .iter()
+        .position(|b| *b == 1)
         .ok_or_else(|| SignedPakError::Crypto("OAEP separator missing".into()))?;
     if padding[..position].iter().any(|b| *b != 0) || padding.len() - position - 1 != 16 {
-        return Err(SignedPakError::Crypto("OAEP padding or secret length invalid".into()));
+        return Err(SignedPakError::Crypto(
+            "OAEP padding or secret length invalid".into(),
+        ));
     }
     let mut key = [0u8; 16];
     key.copy_from_slice(&padding[position + 1..]);
@@ -198,7 +218,12 @@ fn entry_iv(entry: &SignedEntry) -> [u8; 16] {
     bytes
 }
 
-fn parse_cdr(data: &[u8], archive_name: &str, cdr_position: u64, count: usize) -> Result<SignedPakInfo, SignedPakError> {
+fn parse_cdr(
+    data: &[u8],
+    archive_name: &str,
+    cdr_position: u64,
+    count: usize,
+) -> Result<SignedPakInfo, SignedPakError> {
     let mut at = 0usize;
     let mut paths = HashSet::new();
     let mut spans = Vec::new();
@@ -206,24 +231,35 @@ fn parse_cdr(data: &[u8], archive_name: &str, cdr_position: u64, count: usize) -
     let mut total = 0u64;
     for _ in 0..count {
         if data.get(at..at + 4) != Some(b"PK\x01\x02") {
-            return Err(SignedPakError::Format("invalid central directory signature".into()));
+            return Err(SignedPakError::Format(
+                "invalid central directory signature".into(),
+            ));
         }
         let name_length = read_u16(data, at + 28)? as usize;
         let extra_length = read_u16(data, at + 30)? as usize;
         let comment_length = read_u16(data, at + 32)? as usize;
-        let next = at.checked_add(46)
+        let next = at
+            .checked_add(46)
             .and_then(|v| v.checked_add(name_length))
             .and_then(|v| v.checked_add(extra_length))
-            .and_then(|v| v.checked_add(comment_length)).ok_or(SignedPakError::Limits)?;
-        let raw = data.get(at + 46..at + 46 + name_length)
+            .and_then(|v| v.checked_add(comment_length))
+            .ok_or(SignedPakError::Limits)?;
+        let raw = data
+            .get(at + 46..at + 46 + name_length)
             .ok_or_else(|| SignedPakError::Format("truncated signed member name".into()))?;
-        let name = std::str::from_utf8(raw).map_err(|_| SignedPakError::Format("non-UTF8 signed path".into()))?;
-        let path = safe_member_name(name).map_err(|_| SignedPakError::UnsafePath(name.to_string()))?;
+        let name = std::str::from_utf8(raw)
+            .map_err(|_| SignedPakError::Format("non-UTF8 signed path".into()))?;
+        let path =
+            safe_member_name(name).map_err(|_| SignedPakError::UnsafePath(name.to_string()))?;
         if !paths.insert(path.to_lowercase()) {
-            return Err(SignedPakError::UnsafePath("duplicate signed member path".into()));
+            return Err(SignedPakError::UnsafePath(
+                "duplicate signed member path".into(),
+            ));
         }
         if data.get(at..next).is_none() {
-            return Err(SignedPakError::Format("truncated central directory entry".into()));
+            return Err(SignedPakError::Format(
+                "truncated central directory entry".into(),
+            ));
         }
         let flags = read_u16(data, at + 8)?;
         let method = read_u16(data, at + 10)?;
@@ -231,16 +267,26 @@ fn parse_cdr(data: &[u8], archive_name: &str, cdr_position: u64, count: usize) -
         let compressed_size = read_u32(data, at + 20)? as u64;
         let size = read_u32(data, at + 24)? as u64;
         let local_header_offset = read_u32(data, at + 42)? as u64;
-        if !matches!(method, 13 | 14) || extra_length != 0
-            || (method == 13 && compressed_size != size) || size > MAX_ENTRY_BYTES
+        if !matches!(method, 13 | 14)
+            || extra_length != 0
+            || (method == 13 && compressed_size != size)
+            || size > MAX_ENTRY_BYTES
         {
-            return Err(SignedPakError::Format("unsupported signed member method or sizes".into()));
+            return Err(SignedPakError::Format(
+                "unsupported signed member method or sizes".into(),
+            ));
         }
-        let data_offset = local_header_offset.checked_add(30)
-            .and_then(|v| v.checked_add(name_length as u64)).ok_or(SignedPakError::Limits)?;
-        let end = data_offset.checked_add(compressed_size).ok_or(SignedPakError::Limits)?;
+        let data_offset = local_header_offset
+            .checked_add(30)
+            .and_then(|v| v.checked_add(name_length as u64))
+            .ok_or(SignedPakError::Limits)?;
+        let end = data_offset
+            .checked_add(compressed_size)
+            .ok_or(SignedPakError::Limits)?;
         if end > cdr_position || data_offset <= local_header_offset {
-            return Err(SignedPakError::Format("encrypted local payload outside signed bounds".into()));
+            return Err(SignedPakError::Format(
+                "encrypted local payload outside signed bounds".into(),
+            ));
         }
         spans.push((local_header_offset, end));
         total = total.checked_add(size).ok_or(SignedPakError::Limits)?;
@@ -248,18 +294,27 @@ fn parse_cdr(data: &[u8], archive_name: &str, cdr_position: u64, count: usize) -
             return Err(SignedPakError::Limits);
         }
         entries.push(SignedEntry {
-            path, method, flags, crc32, compressed_size, size,
+            path,
+            method,
+            flags,
+            crc32,
+            compressed_size,
+            size,
             encrypted_data_offset: data_offset,
         });
         at = next;
     }
     if at != data.len() {
-        return Err(SignedPakError::Format("unexpected signed directory trailing bytes".into()));
+        return Err(SignedPakError::Format(
+            "unexpected signed directory trailing bytes".into(),
+        ));
     }
     spans.sort_unstable();
     for pair in spans.windows(2) {
         if pair[0].1 > pair[1].0 {
-            return Err(SignedPakError::Format("overlapping encrypted entry ranges".into()));
+            return Err(SignedPakError::Format(
+                "overlapping encrypted entry ranges".into(),
+            ));
         }
     }
     Ok(SignedPakInfo {
@@ -273,16 +328,26 @@ fn parse_cdr(data: &[u8], archive_name: &str, cdr_position: u64, count: usize) -
 
 /// Parse+verify signed metadata and unwrap encryption secrets using a public
 /// key supplied by the local user. Refuses archives with invalid signatures.
-pub fn open_verified_signed_pak(source: &Path, der_public_key: &Path, signed_basename: &str) -> Result<VerifiedSignedPak, SignedPakError> {
-    if signed_basename.is_empty() || !signed_basename.is_ascii() || signed_basename.contains(['/', '\\'])
+pub fn open_verified_signed_pak(
+    source: &Path,
+    der_public_key: &Path,
+    signed_basename: &str,
+) -> Result<VerifiedSignedPak, SignedPakError> {
+    if signed_basename.is_empty()
+        || !signed_basename.is_ascii()
+        || signed_basename.contains(['/', '\\'])
         || !signed_basename.to_ascii_lowercase().ends_with(".pak")
     {
-        return Err(SignedPakError::Format("expected original signed .pak basename".into()));
+        return Err(SignedPakError::Format(
+            "expected original signed .pak basename".into(),
+        ));
     }
     let meta = fs::symlink_metadata(source)?;
     let pub_meta = fs::symlink_metadata(der_public_key)?;
     if !meta.file_type().is_file() || !pub_meta.file_type().is_file() || pub_meta.len() > 8 * 1024 {
-        return Err(SignedPakError::Format("archive/key must be local non-linked regular files".into()));
+        return Err(SignedPakError::Format(
+            "archive/key must be local non-linked regular files".into(),
+        ));
     }
     let pubkey = parse_public_key(&fs::read(der_public_key)?)?;
     let mut file = File::open(source)?;
@@ -297,15 +362,25 @@ pub fn open_verified_signed_pak(source: &Path, der_public_key: &Path, signed_bas
     let (at, count, cd_size, cd_pos) = (0..=tail.len() - 22)
         .rev()
         .find_map(|index| {
-            if tail.get(index..index + 4) != Some(b"PK\x05\x06") { return None; }
-            let disks = (read_u16(&tail, index + 4).ok()?, read_u16(&tail, index + 6).ok()?);
+            if tail.get(index..index + 4) != Some(b"PK\x05\x06") {
+                return None;
+            }
+            let disks = (
+                read_u16(&tail, index + 4).ok()?,
+                read_u16(&tail, index + 6).ok()?,
+            );
             let local_count = read_u16(&tail, index + 8).ok()?;
             let count = read_u16(&tail, index + 10).ok()?;
             let cd_size = read_u32(&tail, index + 12).ok()? as usize;
             let cd_pos = read_u32(&tail, index + 16).ok()? as u64;
             let comment = read_u16(&tail, index + 20).ok()? as usize;
-            if disks != (0, 0) || count != local_count || comment != TRAILER_BYTES
-                || index + 22 + comment != tail.len() { return None; }
+            if disks != (0, 0)
+                || count != local_count
+                || comment != TRAILER_BYTES
+                || index + 22 + comment != tail.len()
+            {
+                return None;
+            }
             Some((index, count as usize, cd_size, cd_pos))
         })
         .ok_or_else(|| SignedPakError::Format("missing terminated signed EOCD".into()))?;
@@ -313,20 +388,30 @@ pub fn open_verified_signed_pak(source: &Path, der_public_key: &Path, signed_bas
         return Err(SignedPakError::Limits);
     }
     let eocd_at = file_len - tail_size + at as u64;
-    let computed_cdr = eocd_at.checked_sub(cd_size as u64).ok_or(SignedPakError::Limits)?;
+    let computed_cdr = eocd_at
+        .checked_sub(cd_size as u64)
+        .ok_or(SignedPakError::Limits)?;
     if computed_cdr != cd_pos {
-        return Err(SignedPakError::Format("signed central directory offset mismatch".into()));
+        return Err(SignedPakError::Format(
+            "signed central directory offset mismatch".into(),
+        ));
     }
     let comment = &tail[at + 22..];
     if comment.get(..6) != Some(b"\x06\x00\x00\x00\x01\x03")
-        || read_u32(comment, 6)? != 133 || read_u32(comment, 139)? != 2181
+        || read_u32(comment, 6)? != 133
+        || read_u32(comment, 139)? != 2181
     {
-        return Err(SignedPakError::Format("unsupported signed comment structure".into()));
+        return Err(SignedPakError::Format(
+            "unsupported signed comment structure".into(),
+        ));
     }
     let iv = unwrap_key(&comment[143..271], &pubkey)?;
     let mut keys = [[0u8; 16]; 16];
     for (i, slot) in keys.iter_mut().enumerate() {
-        *slot = unwrap_key(&comment[272 + i * RSA_BYTES..272 + (i + 1) * RSA_BYTES], &pubkey)?;
+        *slot = unwrap_key(
+            &comment[272 + i * RSA_BYTES..272 + (i + 1) * RSA_BYTES],
+            &pubkey,
+        )?;
     }
     file.seek(SeekFrom::Start(cd_pos))?;
     let mut ciphertext = vec![0u8; cd_size];
@@ -336,20 +421,30 @@ pub fn open_verified_signed_pak(source: &Path, der_public_key: &Path, signed_bas
     signed_message.extend_from_slice(&cdr);
     signed_message.extend_from_slice(signed_basename.as_bytes());
     let digest = Sha256::digest(&signed_message);
-    pubkey.verify(Pss::new_with_salt::<Sha256>(0), &digest, &comment[11..139])
+    pubkey
+        .verify(Pss::new_with_salt::<Sha256>(0), &digest, &comment[11..139])
         .map_err(|_| SignedPakError::Crypto("RSA-PSS SHA256 signature incorrect".into()))?;
     let info = parse_cdr(&cdr, signed_basename, cd_pos, count)?;
     Ok(VerifiedSignedPak { info, keys })
 }
 
-pub fn inspect_signed_pak(source: &Path, der_public_key: &Path, signed_basename: &str) -> Result<SignedPakInfo, SignedPakError> {
+pub fn inspect_signed_pak(
+    source: &Path,
+    der_public_key: &Path,
+    signed_basename: &str,
+) -> Result<SignedPakInfo, SignedPakError> {
     Ok(open_verified_signed_pak(source, der_public_key, signed_basename)?.info)
 }
 
 /// Decrypt/DEFLATE the whole verified PAK using capped streaming, CRC checks,
 /// and an uncommitted temporary directory. Refuses a preexisting output folder.
 /// Encrypted local headers are intentionally NOT interpreted as plaintext ZIP.
-pub fn extract_signed_pak(source: &Path, der_public_key: &Path, signed_basename: &str, destination: &Path) -> Result<SignedPakInfo, SignedPakError> {
+pub fn extract_signed_pak(
+    source: &Path,
+    der_public_key: &Path,
+    signed_basename: &str,
+    destination: &Path,
+) -> Result<SignedPakInfo, SignedPakError> {
     let verified = open_verified_signed_pak(source, der_public_key, signed_basename)?;
     if destination.exists() || fs::symlink_metadata(destination).is_ok() {
         return Err(SignedPakError::UnsafeOutput);
@@ -358,17 +453,26 @@ pub fn extract_signed_pak(source: &Path, der_public_key: &Path, signed_basename:
     if !parent.is_dir() || fs::symlink_metadata(parent)?.file_type().is_symlink() {
         return Err(SignedPakError::UnsafeOutput);
     }
-    let stage = tempfile::Builder::new().prefix(".signed-pak-").tempdir_in(parent)?;
+    let stage = tempfile::Builder::new()
+        .prefix(".signed-pak-")
+        .tempdir_in(parent)?;
     let mut source = File::open(source)?;
     for entry in &verified.info.entries {
         source.seek(SeekFrom::Start(entry.encrypted_data_offset))?;
         let slot = (!(entry.crc32 >> 2) & 15) as usize;
-        let ctr = CtrRead::new((&mut source).take(entry.compressed_size), &verified.keys[slot], entry_iv(entry));
+        let ctr = CtrRead::new(
+            (&mut source).take(entry.compressed_size),
+            &verified.keys[slot],
+            entry_iv(entry),
+        );
         let target = stage.path().join(PathBuf::from(&entry.path));
         if let Some(folder) = target.parent() {
             fs::create_dir_all(folder)?;
         }
-        let mut output = fs::OpenOptions::new().create_new(true).write(true).open(target)?;
+        let mut output = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(target)?;
         let mut hasher = Hasher::new();
         let mut written = 0u64;
         let mut stream: Box<dyn Read + '_> = if entry.method == 14 {
@@ -379,16 +483,24 @@ pub fn extract_signed_pak(source: &Path, der_public_key: &Path, signed_basename:
         let mut buffer = [0u8; 128 * 1024];
         loop {
             let n = stream.read(&mut buffer)?;
-            if n == 0 { break; }
-            written = written.checked_add(n as u64).ok_or(SignedPakError::Limits)?;
+            if n == 0 {
+                break;
+            }
+            written = written
+                .checked_add(n as u64)
+                .ok_or(SignedPakError::Limits)?;
             if written > entry.size {
-                return Err(SignedPakError::Format("expanded signed entry exceeded verified length".into()));
+                return Err(SignedPakError::Format(
+                    "expanded signed entry exceeded verified length".into(),
+                ));
             }
             hasher.update(&buffer[..n]);
             output.write_all(&buffer[..n])?;
         }
         if written != entry.size || hasher.finalize() != entry.crc32 {
-            return Err(SignedPakError::Crypto("decrypted entry length or CRC mismatch".into()));
+            return Err(SignedPakError::Crypto(
+                "decrypted entry length or CRC mismatch".into(),
+            ));
         }
         output.sync_all()?;
     }
@@ -408,7 +520,10 @@ mod tests {
         let iv = [29u8; 16];
         let bytes = (0..32789).map(|n| (n % 251) as u8).collect::<Vec<_>>();
         let encrypted = crypt_bytes(&bytes, &key, iv).unwrap();
-        let fragmented = encrypted.chunks(7).flat_map(|c| c.iter().copied()).collect::<Vec<u8>>();
+        let fragmented = encrypted
+            .chunks(7)
+            .flat_map(|c| c.iter().copied())
+            .collect::<Vec<u8>>();
         let mut reader = CtrRead::new(fragmented.as_slice(), &key, iv);
         let mut result = Vec::new();
         reader.read_to_end(&mut result).unwrap();
