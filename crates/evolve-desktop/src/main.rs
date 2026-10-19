@@ -2,6 +2,7 @@
 //! file I/O/decompression never runs in the interactive Iced view/update path.
 mod asset_library_page;
 mod asset_viewer;
+mod viewer_inspector;
 mod developer_auth;
 mod private_pages;
 mod settings;
@@ -9,15 +10,15 @@ mod textured;
 mod updater;
 mod viewport;
 use evolve_core::{
-    AnimatedGlb, AnimationPolicy, AssetEntry, AssetResolution, BatchJournal, CdfDefinition,
-    CdfDependencyReport, ConvertedMotion, DdsInfo, ImportedLibrary, ImportedPak, Inventory,
+    AnimatedGlb, AnimationPolicy, AssetComparison, AssetEntry, AssetResolution, BatchJournal, CdfDefinition,
+    CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph, ImportedLibrary, ImportedPak, Inventory,
     LevelScene, MaterialReport, ModProfile, ModelInfo, NativeCafMotion, PakInventory,
     ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo,
     StageTransaction, TerrainInfo, add_mod_to_profile, apply_profile_stage, apply_stage_pak,
-    batch_stage_status, convert_glb_to_fbx, convert_original_motion, create_mod_profile,
+    batch_stage_status, compare_assets, convert_glb_to_fbx, convert_original_motion, create_mod_profile,
     decode_dds_rgba, export_dds_png, export_level_scene_glb, export_rigged_character_fbx,
     export_rigged_character_glb, extract_legacy_pak, extract_signed_pak, import_stage_pak,
-    imported_archive_files, imported_library, initialize_stage, inspect_dds, inspect_legacy_pak,
+    imported_archive_files, imported_library, initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak,
     inspect_signed_pak, list_mod_profiles, load_level_scene, plan_mod_profile, read_cdf,
     read_material, read_model, read_native_caf, read_terrain, rebuild_legacy_pak,
     rebuild_signed_pak_entry, resolve_cdf, resolve_materials, restore_profile_stage, restore_stage,
@@ -176,12 +177,34 @@ struct State {
     library_page: usize,
     library_show_configuration: bool,
     library_menu: Option<&'static str>,
+    dependency_graph: Option<DependencyGraph>,
+    comparison: Option<AssetComparison>,
+    compare_original: String,
+    compare_modified: String,
+    viewer_show_inspector: bool,
+    viewer_split: f32,
+    viewer_tab: ViewerTab,
+    playback_speed: f32,
+    playback_loop: bool,
+    viewer_wireframe: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ViewerTab {
+    Model,
+    Dependencies,
+    Compare,
+}
+impl Default for ViewerTab {
+    fn default() -> Self { Self::Model }
 }
 
 #[derive(Debug, Clone)]
 enum Operation {
     LoadImportedLibrary(PathBuf),
     OpenImportedPak(ImportedPak),
+    InspectDependencies(Inventory, String),
+    CompareAssets(PathBuf, PathBuf),
     Scan(PathBuf),
     InspectPak(PathBuf),
     InspectDds(PathBuf),
@@ -234,6 +257,8 @@ enum Operation {
 enum Completed {
     ImportedLibrary(ImportedLibrary),
     ImportedPakFiles(Inventory),
+    Dependencies(DependencyGraph),
+    Comparison(AssetComparison),
     Inventory(Inventory),
     Pak(PakInventory),
     Texture(DdsInfo),
@@ -280,6 +305,16 @@ enum Completed {
 impl Operation {
     fn execute(self) -> Result<Completed, String> {
         match self {
+            Self::InspectDependencies(inventory, relative) => {
+                inspect_dependencies(&inventory, &relative)
+                    .map(Completed::Dependencies)
+                    .map_err(|e| e.to_string())
+            }
+            Self::CompareAssets(original, modified) => {
+                compare_assets(&original, &modified)
+                    .map(Completed::Comparison)
+                    .map_err(|e| e.to_string())
+            }
             Self::LoadImportedLibrary(root) => imported_library(&root)
                 .map(Completed::ImportedLibrary)
                 .map_err(|e| e.to_string()),
@@ -538,6 +573,17 @@ enum Message {
     ViewerResetCamera,
     ViewerSearchChanged(String),
     ViewerPreviewSelected,
+    StartDependencyInspection,
+    CompareOriginalChanged(String),
+    CompareModifiedChanged(String),
+    StartAssetCompare,
+    ViewerToggleInspector,
+    ViewerSplitChanged(f32),
+    ViewerSelectTab(ViewerTab),
+    ViewerSaveLayout,
+    PlaybackSpeedChanged(f32),
+    PlaybackLoopChanged,
+    ViewerToggleWireframe,
     ToggleAdvancedTools,
     ToggleActivity,
     DeveloperPasswordChanged(String),
@@ -819,6 +865,55 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ViewerToggleExplorer => {
             state.viewer_explorer_visible = !state.viewer_explorer_visible;
+        }
+        Message::ViewerToggleInspector => state.viewer_show_inspector = !state.viewer_show_inspector,
+        Message::ViewerSplitChanged(value) => state.viewer_split = value.clamp(0.25, 0.8),
+        Message::ViewerSelectTab(tab) => state.viewer_tab = tab,
+        Message::PlaybackSpeedChanged(value) => state.playback_speed = value.clamp(0.1, 3.0),
+        Message::PlaybackLoopChanged => state.playback_loop = !state.playback_loop,
+        Message::ViewerToggleWireframe => state.viewer_wireframe = !state.viewer_wireframe,
+        Message::ViewerSaveLayout => {
+            state.preferences.viewer_split = state.viewer_split;
+            state.preferences.viewer_show_inspector = state.viewer_show_inspector;
+            state.preferences.viewer_wireframe = state.viewer_wireframe;
+            state.preferences.animation_speed = state.playback_speed;
+            state.preferences.animation_loop = state.playback_loop;
+            state.preferences.saved_yaw = state.yaw;
+            state.preferences.saved_pitch = state.pitch;
+            state.preferences.saved_zoom = state.zoom;
+            persist_preferences(state);
+            state.status = "Viewer layout, camera and animation speed saved.".into();
+        }
+        Message::CompareOriginalChanged(path) => {
+            state.compare_original = path;
+            state.comparison = None;
+        }
+        Message::CompareModifiedChanged(path) => {
+            state.compare_modified = path;
+            state.comparison = None;
+        }
+        Message::StartAssetCompare => {
+            if state.compare_original.is_empty() || state.compare_modified.is_empty() {
+                state.status = "Choose an original and modified asset for read-only comparison.".into();
+                return Task::none();
+            }
+            return launch(state, Operation::CompareAssets(
+                PathBuf::from(&state.compare_original), PathBuf::from(&state.compare_modified)
+            ));
+        }
+        Message::StartDependencyInspection => {
+            let Some(inventory) = &state.inventory else {
+                state.status = "Index extracted assets before inspecting dependencies.".into();
+                return Task::none();
+            };
+            let Some(selected) = state.selected.and_then(|index| inventory.entries.get(index)) else {
+                state.status = "Choose a CDF or MTL in the file explorer first.".into();
+                return Task::none();
+            };
+            state.viewer_tab = ViewerTab::Dependencies;
+            return launch(state, Operation::InspectDependencies(
+                inventory.clone(), selected.relative_path.clone()
+            ));
         }
         Message::ViewerResetCamera => {
             state.yaw = 0.0;
@@ -1288,11 +1383,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     })
                 };
                 if let Some((duration, looping)) = duration {
-                    state.motion_time += 0.04;
+                    state.motion_time += 0.04 * state.playback_speed.max(0.1);
                     if duration <= 0.0 {
                         state.playing = false;
                     } else if state.motion_time >= duration {
-                        if looping {
+                        if looping || state.playback_loop {
                             state.motion_time %= duration;
                         } else {
                             state.motion_time = duration;
@@ -1589,6 +1684,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::Finished(result) => {
             state.busy = false;
             match result {
+                Ok(Completed::Dependencies(graph)) => {
+                    state.status = format!(
+                        "Dependency graph: {} explicit links, {} missing, {} ambiguous.",
+                        graph.edges.len(), graph.missing, graph.ambiguous
+                    );
+                    state.dependency_graph = Some(graph);
+                    state.viewer_tab = ViewerTab::Dependencies;
+                }
+                Ok(Completed::Comparison(report)) => {
+                    state.status = if report.identical {
+                        "Original and modified files are byte-for-byte identical.".into()
+                    } else {
+                        "Modified asset differs from original; neither file was changed.".into()
+                    };
+                    state.comparison = Some(report);
+                    state.viewer_tab = ViewerTab::Compare;
+                }
                 Ok(Completed::ImportedLibrary(catalog)) => {
                     let count = catalog.archives.len();
                     state.status = format!(
