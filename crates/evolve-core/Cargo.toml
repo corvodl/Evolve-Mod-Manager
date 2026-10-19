@@ -12,13 +12,14 @@ thiserror = "2"
 zip = { version = "=2.4.1", default-features = false, features = ["deflate"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 quick-xml = "0.38"
-rsa = "0.9"
+rsa = { version = "0.9", features = ["pem"] }
 sha2 = { version = "0.10", features = ["oid"] }
 twofish = "0.7"
 cipher = "0.4"
 crc32fast = "1"
 flate2 = "1"
 half = "2"
+rand = "0.8"
 tempfile = "3"
 
 [dev-dependencies]
