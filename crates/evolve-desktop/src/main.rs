@@ -2,27 +2,27 @@
 //! file I/O/decompression never runs in the interactive Iced view/update path.
 mod asset_library_page;
 mod asset_viewer;
-mod viewer_inspector;
 mod developer_auth;
 mod private_pages;
 mod settings;
 mod textured;
 mod updater;
+mod viewer_inspector;
 mod viewport;
 use evolve_core::{
-    AnimatedGlb, AnimationPolicy, AssetComparison, AssetEntry, AssetResolution, BatchJournal, CdfDefinition,
-    CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph, ImportedLibrary, ImportedPak, Inventory,
-    LevelScene, MaterialReport, ModProfile, ModelInfo, NativeCafMotion, PakInventory,
-    ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo,
+    AnimatedGlb, AnimationPolicy, AssetComparison, AssetEntry, AssetResolution, BatchJournal,
+    CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph, ImportedLibrary,
+    ImportedPak, Inventory, LevelScene, MaterialReport, ModProfile, ModelInfo, NativeCafMotion,
+    PakInventory, ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo,
     StageTransaction, TerrainInfo, add_mod_to_profile, apply_profile_stage, apply_stage_pak,
-    batch_stage_status, compare_assets, convert_glb_to_fbx, convert_original_motion, create_mod_profile,
-    decode_dds_rgba, export_dds_png, export_level_scene_glb, export_rigged_character_fbx,
-    export_rigged_character_glb, extract_legacy_pak, extract_signed_pak, import_stage_pak,
-    imported_archive_files, imported_library, initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak,
-    inspect_signed_pak, list_mod_profiles, load_level_scene, plan_mod_profile, read_cdf,
-    read_material, read_model, read_native_caf, read_terrain, rebuild_legacy_pak,
-    rebuild_signed_pak_entry, resolve_cdf, resolve_materials, restore_profile_stage, restore_stage,
-    scan_directory, stage_status,
+    batch_stage_status, compare_assets, convert_glb_to_fbx, convert_original_motion,
+    create_mod_profile, decode_dds_rgba, export_dds_png, export_level_scene_glb,
+    export_rigged_character_fbx, export_rigged_character_glb, extract_legacy_pak,
+    extract_signed_pak, import_stage_pak, imported_archive_files, imported_library,
+    initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_signed_pak,
+    list_mod_profiles, load_level_scene, plan_mod_profile, read_cdf, read_material, read_model,
+    read_native_caf, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry, resolve_cdf,
+    resolve_materials, restore_profile_stage, restore_stage, scan_directory, stage_status,
 };
 use iced::widget::{
     button, canvas, column, container, image, row, scrollable, shader, slider, space, svg, text,
@@ -196,7 +196,9 @@ enum ViewerTab {
     Compare,
 }
 impl Default for ViewerTab {
-    fn default() -> Self { Self::Model }
+    fn default() -> Self {
+        Self::Model
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -310,11 +312,9 @@ impl Operation {
                     .map(Completed::Dependencies)
                     .map_err(|e| e.to_string())
             }
-            Self::CompareAssets(original, modified) => {
-                compare_assets(&original, &modified)
-                    .map(Completed::Comparison)
-                    .map_err(|e| e.to_string())
-            }
+            Self::CompareAssets(original, modified) => compare_assets(&original, &modified)
+                .map(Completed::Comparison)
+                .map_err(|e| e.to_string()),
             Self::LoadImportedLibrary(root) => imported_library(&root)
                 .map(Completed::ImportedLibrary)
                 .map_err(|e| e.to_string()),
@@ -866,7 +866,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ViewerToggleExplorer => {
             state.viewer_explorer_visible = !state.viewer_explorer_visible;
         }
-        Message::ViewerToggleInspector => state.viewer_show_inspector = !state.viewer_show_inspector,
+        Message::ViewerToggleInspector => {
+            state.viewer_show_inspector = !state.viewer_show_inspector
+        }
         Message::ViewerSplitChanged(value) => state.viewer_split = value.clamp(0.25, 0.8),
         Message::ViewerSelectTab(tab) => state.viewer_tab = tab,
         Message::PlaybackSpeedChanged(value) => state.playback_speed = value.clamp(0.1, 3.0),
@@ -894,26 +896,35 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::StartAssetCompare => {
             if state.compare_original.is_empty() || state.compare_modified.is_empty() {
-                state.status = "Choose an original and modified asset for read-only comparison.".into();
+                state.status =
+                    "Choose an original and modified asset for read-only comparison.".into();
                 return Task::none();
             }
-            return launch(state, Operation::CompareAssets(
-                PathBuf::from(&state.compare_original), PathBuf::from(&state.compare_modified)
-            ));
+            return launch(
+                state,
+                Operation::CompareAssets(
+                    PathBuf::from(&state.compare_original),
+                    PathBuf::from(&state.compare_modified),
+                ),
+            );
         }
         Message::StartDependencyInspection => {
             let Some(inventory) = &state.inventory else {
                 state.status = "Index extracted assets before inspecting dependencies.".into();
                 return Task::none();
             };
-            let Some(selected) = state.selected.and_then(|index| inventory.entries.get(index)) else {
+            let Some(selected) = state
+                .selected
+                .and_then(|index| inventory.entries.get(index))
+            else {
                 state.status = "Choose a CDF or MTL in the file explorer first.".into();
                 return Task::none();
             };
             state.viewer_tab = ViewerTab::Dependencies;
-            return launch(state, Operation::InspectDependencies(
-                inventory.clone(), selected.relative_path.clone()
-            ));
+            return launch(
+                state,
+                Operation::InspectDependencies(inventory.clone(), selected.relative_path.clone()),
+            );
         }
         Message::ViewerResetCamera => {
             state.yaw = 0.0;
@@ -1687,7 +1698,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Ok(Completed::Dependencies(graph)) => {
                     state.status = format!(
                         "Dependency graph: {} explicit links, {} missing, {} ambiguous.",
-                        graph.edges.len(), graph.missing, graph.ambiguous
+                        graph.edges.len(),
+                        graph.missing,
+                        graph.ambiguous
                     );
                     state.dependency_graph = Some(graph);
                     state.viewer_tab = ViewerTab::Dependencies;
