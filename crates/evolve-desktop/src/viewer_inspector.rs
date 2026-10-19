@@ -1,19 +1,18 @@
 //! Interactive viewer inspector: source-grounded dependency diagram and
 //! original-vs-modified diagnostics. No graph edges are inferred from names.
 use super::{Message, State, ViewerTab, uv_preview};
+use crate::design;
 use evolve_core::{DependencyGraph, DependencyStatus};
 use iced::widget::canvas::{self, Path, Stroke};
 use iced::widget::{
-    button, canvas as canvas_widget, column, container, row, scrollable, space, text, text_input,
+    canvas as canvas_widget, column, container, row, scrollable, space, text,
 };
 use iced::{Color, Element, Fill, Length, Point, Rectangle, Renderer, Theme, mouse};
 use std::sync::Arc;
 
-const MUTED: Color = Color::from_rgb(0.72, 0.76, 0.82);
 const OK: Color = Color::from_rgb(0.26, 0.73, 0.51);
 const BAD: Color = Color::from_rgb(0.94, 0.34, 0.38);
 const WARN: Color = Color::from_rgb(0.93, 0.70, 0.32);
-const BASE: Color = Color::from_rgb(0.17, 0.18, 0.20);
 
 fn mark(status: &DependencyStatus) -> Color {
     match status {
@@ -33,12 +32,12 @@ impl<Message> canvas::Program<Message> for DependencyCanvas {
         &self,
         _state: &Self::State,
         renderer: &Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
-        frame.fill_rectangle(Point::ORIGIN, frame.size(), BASE);
+        frame.fill_rectangle(Point::ORIGIN, frame.size(), design::field(theme));
         let count = self.graph.nodes.len().saturating_sub(1).min(12);
         let root = Point::new(16.0, bounds.height * 0.5 - 24.0);
         frame.fill_rectangle(
@@ -88,14 +87,24 @@ impl<Message> canvas::Program<Message> for DependencyCanvas {
     }
 }
 
+fn tab_button(
+    label: &'static str,
+    tab: ViewerTab,
+    selected: ViewerTab,
+) -> iced::widget::Button<'static, Message> {
+    design::button(label)
+        .style(if tab == selected { design::primary } else { design::secondary })
+        .on_press(Message::ViewerSelectTab(tab))
+}
+
 pub(super) fn view(state: &State) -> Element<'_, Message> {
     let tabs = row![
-        button("MODEL").on_press(Message::ViewerSelectTab(ViewerTab::Model)),
-        button("UV0").on_press(Message::ViewerSelectTab(ViewerTab::Uv)),
-        button("DEPENDENCIES").on_press(Message::ViewerSelectTab(ViewerTab::Dependencies)),
-        button("COMPARE").on_press(Message::ViewerSelectTab(ViewerTab::Compare)),
+        tab_button("MODEL", ViewerTab::Model, state.viewer_tab),
+        tab_button("UV0", ViewerTab::Uv, state.viewer_tab),
+        tab_button("DEPENDENCIES", ViewerTab::Dependencies, state.viewer_tab),
+        tab_button("COMPARE", ViewerTab::Compare, state.viewer_tab),
         space().width(Fill),
-        button(if state.viewer_show_inspector {
+        design::button(if state.viewer_show_inspector {
             "Hide"
         } else {
             "Show"
@@ -114,7 +123,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                         clip.controllers.len(), clip.duration_seconds(), clip.cyclic, clip.additive))
                         .size(12),
                     text("Controllers are source bone CRCs, not yet associated with a validated skin hierarchy.")
-                        .size(12).color(MUTED),
+                        .size(12).style(design::muted),
                 ].spacing(5);
                 for controller in clip.controllers.iter().take(14) {
                     tracks = tracks.push(
@@ -132,20 +141,20 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 text(format!(
                     "Validated converter animation: {} clips and {} source nodes.                      Skeleton binding must be verified for actual skinned playback.",
                     animation.list_clips().len(), animation.node_names.len()
-                )).size(12).color(MUTED).into()
+                )).size(12).style(design::muted).into()
             } else {
                 text("Open a native CAF or compatible converted GLB to inspect source animation tracks.")
-                    .size(12).color(MUTED).into()
+                    .size(12).style(design::muted).into()
             };
             column![
                 text("Viewer controls").size(14),
                 text("Original CryEngine mesh and UV0 remain unmodified. Camera and panel layout can be saved.")
-                    .size(12).color(MUTED),
+                    .size(12).style(design::muted),
                 row![
-                    button("Inspect CDF/MTL links").on_press(Message::StartDependencyInspection),
-                    button(if state.viewer_wireframe { "Shaded view" } else { "Wireframe view" })
+                    design::button("Inspect CDF/MTL links").on_press(Message::StartDependencyInspection),
+                    design::button(if state.viewer_wireframe { "Shaded view" } else { "Wireframe view" })
                         .on_press(Message::ViewerToggleWireframe),
-                    button("Save workspace").on_press(Message::ViewerSaveLayout),
+                    design::button("Save workspace").on_press(Message::ViewerSaveLayout),
                 ].spacing(8),
                 motion_details,
             ].spacing(6).into()
@@ -168,18 +177,18 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                         canvas_widget(uv_preview::SourceUv { mesh: mesh.clone() })
                             .width(Fill).height(Length::Fixed(260.0)),
                         text("Red wireframe displays verified UV0 source triangles. No destructive seam removal or UV reindexing.")
-                            .size(12).color(MUTED),
+                            .size(12).style(design::muted),
                     ].spacing(9).into()
                 } else {
                     text("No verified UV0 stream in this model; UVs will not be fabricated.")
                         .size(12)
-                        .color(MUTED)
+                        .style(design::muted)
                         .into()
                 }
             } else {
                 text("Load a source CryEngine mesh before inspecting UV0.")
                     .size(12)
-                    .color(MUTED)
+                    .style(design::muted)
                     .into()
             }
         }
@@ -214,7 +223,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                             report.ambiguous
                         ))
                         .size(12),
-                        button("Refresh").on_press(Message::StartDependencyInspection),
+                        design::button("Refresh").on_press(Message::StartDependencyInspection),
                     ]
                     .spacing(10),
                     canvas_widget(DependencyCanvas {
@@ -230,8 +239,8 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 column![
                     text("Inspect a selected CDF or MTL to see the actual authored references.")
                         .size(12)
-                        .color(MUTED),
-                    button("Build dependency graph").on_press(Message::StartDependencyInspection),
+                        .style(design::muted),
+                    design::button("Build dependency graph").on_press(Message::StartDependencyInspection),
                 ]
                 .spacing(7)
                 .into()
@@ -240,13 +249,13 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         ViewerTab::Compare => {
             let mut rows = column![
                 row![
-                    text_input("Original extracted asset...", &state.compare_original)
+                    design::text_input("Original extracted asset...", &state.compare_original)
                         .on_input(Message::CompareOriginalChanged)
                         .width(Fill),
-                    text_input("Modified working copy...", &state.compare_modified)
+                    design::text_input("Modified working copy...", &state.compare_modified)
                         .on_input(Message::CompareModifiedChanged)
                         .width(Fill),
-                    button("Compare").on_press(Message::StartAssetCompare),
+                    design::button("Compare").on_press(Message::StartAssetCompare),
                 ]
                 .spacing(7),
             ]
@@ -275,10 +284,10 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     .spacing(16),
                 );
                 rows = rows.push(text("Read-only comparison. Visual pixel and geometry diffs are not implemented yet.")
-                    .size(12).color(MUTED));
+                    .size(12).style(design::muted));
             } else {
                 rows = rows.push(text("Files are compared without modifying originals, using full content hashes and DDS metadata.")
-                    .size(12).color(MUTED));
+                    .size(12).style(design::muted));
             }
             rows.into()
         }
