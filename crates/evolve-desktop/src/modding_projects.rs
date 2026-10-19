@@ -519,9 +519,14 @@ pub fn import_raw_member(
     const MAX_BYTES: u64 = 512 * 1024 * 1024;
     if !safe_member(member)
         || !regular(replacement_source, MAX_BYTES)
-        || !regular(&project.workspace.join(".evolve-pak-workspace.json"), 8 * 1024 * 1024)
+        || !regular(
+            &project.workspace.join(".evolve-pak-workspace.json"),
+            8 * 1024 * 1024,
+        )
     {
-        return Err("Select an existing, bounded raw replacement and manifest-listed project file".into());
+        return Err(
+            "Select an existing, bounded raw replacement and manifest-listed project file".into(),
+        );
     }
     let root = fs::canonicalize(projects_root).map_err(|e| e.to_string())?;
     let folder = fs::canonicalize(&project.workspace).map_err(|e| e.to_string())?;
@@ -534,8 +539,14 @@ pub fn import_raw_member(
     {
         return Err("Project is reference-only or its manifest version is unsupported".into());
     }
-    let record = manifest.get("entries").and_then(Value::as_array)
-        .and_then(|records| records.iter().find(|e| e.get("path").and_then(Value::as_str) == Some(member)))
+    let record = manifest
+        .get("entries")
+        .and_then(Value::as_array)
+        .and_then(|records| {
+            records
+                .iter()
+                .find(|e| e.get("path").and_then(Value::as_str) == Some(member))
+        })
         .ok_or("Selected file is absent from the managed manifest")?;
     if record.get("format").and_then(Value::as_str) != Some("raw") {
         return Err("Importing converted CryXmlB bytes requires the native semantic editor".into());
@@ -555,26 +566,30 @@ pub fn import_raw_member(
     }
     let old_digest = digest(&original).map_err(|e| e.to_string())?;
     let new_digest = digest(&source).map_err(|e| e.to_string())?;
-    if old_digest == new_digest { return Ok(false); }
+    if old_digest == new_digest {
+        return Ok(false);
+    }
 
     let backup_root = folder.join("EditorBackups");
     if backup_root.exists() {
-        if !fs::symlink_metadata(&backup_root)
-            .is_ok_and(|meta| meta.file_type().is_dir())
-        {
+        if !fs::symlink_metadata(&backup_root).is_ok_and(|meta| meta.file_type().is_dir()) {
             return Err("Refusing linked/non-directory EditorBackups".into());
         }
     } else {
         fs::create_dir(&backup_root).map_err(|e| e.to_string())?;
     }
     let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
         .as_nanos();
     let mut revision = None;
     for sequence in 0..10 {
         let folder = backup_root.join(format!("edit-{stamp:x}-{sequence}"));
         match fs::create_dir(&folder) {
-            Ok(()) => { revision = Some(folder); break; }
+            Ok(()) => {
+                revision = Some(folder);
+                break;
+            }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e.to_string()),
         }
@@ -590,17 +605,24 @@ pub fn import_raw_member(
     }
     let parent = original.parent().ok_or("Invalid extracted asset parent")?;
     let mut pending = tempfile::Builder::new()
-        .prefix(".evolve-import-").tempfile_in(parent).map_err(|e| e.to_string())?;
+        .prefix(".evolve-import-")
+        .tempfile_in(parent)
+        .map_err(|e| e.to_string())?;
     let mut input = File::open(&source).map_err(|e| e.to_string())?;
     io::copy(&mut input, pending.as_file_mut()).map_err(|e| e.to_string())?;
-    pending.as_file_mut().sync_all().map_err(|e| e.to_string())?;
+    pending
+        .as_file_mut()
+        .sync_all()
+        .map_err(|e| e.to_string())?;
     if digest(pending.path()).map_err(|e| e.to_string())? != new_digest {
         return Err("Staged import digest differs from replacement source".into());
     }
     if digest(&original).map_err(|e| e.to_string())? != old_digest {
         return Err("Selected extracted file changed during editing; backup retained".into());
     }
-    pending.persist(&original).map_err(|e| e.error.to_string())?;
+    pending
+        .persist(&original)
+        .map_err(|e| e.error.to_string())?;
     if digest(&original).map_err(|e| e.to_string())? != new_digest {
         return Err("Imported file did not verify; original saved under EditorBackups".into());
     }
@@ -616,26 +638,42 @@ mod tests {
         let projects = temporary.path().join("Projects");
         let workspace = projects.join("Example");
         fs::create_dir_all(workspace.join("files/hunters")).unwrap();
-        fs::write(workspace.join("files/hunters/example.bin"),b"original").unwrap();
-        fs::write(workspace.join(".evolve-pak-workspace.json"),
-            br#"{"version":1,"entries":[{"path":"hunters/example.bin","format":"raw"}]}"#).unwrap();
+        fs::write(workspace.join("files/hunters/example.bin"), b"original").unwrap();
+        fs::write(
+            workspace.join(".evolve-pak-workspace.json"),
+            br#"{"version":1,"entries":[{"path":"hunters/example.bin","format":"raw"}]}"#,
+        )
+        .unwrap();
         let external = temporary.path().join("replacement.bin");
-        fs::write(&external,b"edited content").unwrap();
+        fs::write(&external, b"edited content").unwrap();
         let project = ProjectRow {
-            label:"Example".into(),target:"example.pak".into(),
-            source_build:"Stage 2".into(),status:"Draft".into(),
-            details:String::new(),workspace:workspace.clone(),
-            modified:Vec::new(),changed_known:true,
+            label: "Example".into(),
+            target: "example.pak".into(),
+            source_build: "Stage 2".into(),
+            status: "Draft".into(),
+            details: String::new(),
+            workspace: workspace.clone(),
+            modified: Vec::new(),
+            changed_known: true,
         };
-        assert!(import_raw_member(&project,&projects,"hunters/example.bin",&external).unwrap());
-        assert_eq!(fs::read(workspace.join("files/hunters/example.bin")).unwrap(),b"edited content");
+        assert!(import_raw_member(&project, &projects, "hunters/example.bin", &external).unwrap());
+        assert_eq!(
+            fs::read(workspace.join("files/hunters/example.bin")).unwrap(),
+            b"edited content"
+        );
         let backups = workspace.join("EditorBackups");
-        let revisions=fs::read_dir(&backups).unwrap().collect::<Result<Vec<_>,_>>().unwrap();
-        assert_eq!(revisions.len(),1);
-        assert_eq!(fs::read(revisions[0].path().join("hunters/example.bin")).unwrap(),b"original");
-        assert!(!import_raw_member(&project,&projects,"hunters/example.bin",&external).unwrap());
-        assert!(import_raw_member(&project,&projects,"unlisted.dat",&external).is_err());
-        assert_eq!(fs::read(&external).unwrap(),b"edited content");
+        let revisions = fs::read_dir(&backups)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(revisions.len(), 1);
+        assert_eq!(
+            fs::read(revisions[0].path().join("hunters/example.bin")).unwrap(),
+            b"original"
+        );
+        assert!(!import_raw_member(&project, &projects, "hunters/example.bin", &external).unwrap());
+        assert!(import_raw_member(&project, &projects, "unlisted.dat", &external).is_err());
+        assert_eq!(fs::read(&external).unwrap(), b"edited content");
     }
 
     #[test]
