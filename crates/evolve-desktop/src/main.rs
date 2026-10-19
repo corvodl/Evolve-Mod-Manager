@@ -1762,7 +1762,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             } else if filename.ends_with(".caf") {
                 Operation::LoadCaf(source)
             } else if filename.ends_with(".mtl") {
-                Operation::ResolveMaterial(source, PathBuf::from(&inventory.root))
+                Operation::ResolveMaterial(
+                    source,
+                    PathBuf::from(&inventory.root),
+                    state.library_catalog.as_ref().map(|catalog| PathBuf::from(&catalog.root)),
+                    state.library_by_build.then(|| state.library_catalog.as_ref()
+                        .and_then(|catalog| catalog.builds.get(state.library_build_index))
+                        .cloned()).flatten(),
+                )
             } else {
                 state.status =
                     "Selected asset type is not supported by the native preview yet.".into();
