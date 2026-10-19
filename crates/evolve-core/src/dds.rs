@@ -398,8 +398,9 @@ pub fn decode_dds_rgba(source: &Path) -> Result<(DdsInfo, RgbaImage), DdsError> 
     if info.format == DdsFormat::Rgba32 {
         let masks = masks.ok_or_else(|| DdsError::Unsupported("missing channel masks".into()))?;
         validate_masks(masks)?;
-        for (src, dest) in payload.as_chunks::<4>().0.iter().zip(rgba.as_chunks_mut::<4>()) {
-            let pixel = u32::from_le_bytes(src.try_into().unwrap_or([0; 4]));
+        let (destination_pixels, _) = rgba.as_chunks_mut::<4>();
+        for (src, dest) in payload.as_chunks::<4>().0.iter().zip(destination_pixels.iter_mut()) {
+            let pixel = u32::from_le_bytes(*src);
             dest.copy_from_slice(&[
                 channel(pixel, masks[0], 0),
                 channel(pixel, masks[1], 0),
