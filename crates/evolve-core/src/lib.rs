@@ -5,6 +5,7 @@ pub mod cdf;
 pub mod dds;
 pub mod inventory;
 pub mod policy;
+pub mod terrain;
 
 pub use archive::{
     PakError, PakInventory, PakMember, RebuildReport, extract_legacy_pak, inspect_legacy_pak,
@@ -19,4 +20,5 @@ pub use inventory::{
     AssetEntry, AssetKind, Inventory, InventoryError, MAX_ENTRIES, scan_directory,
     write_inventory_json,
 };
+pub use terrain::{TerrainError, TerrainInfo, TerrainMesh, decode_terrain_bytes, export_terrain_obj, read_terrain};
 pub use policy::{AnimationPolicy, ExportFeature, FeatureStatus, PARITY_MATRIX};
