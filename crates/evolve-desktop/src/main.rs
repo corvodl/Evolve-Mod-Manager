@@ -5,13 +5,13 @@ mod textured;
 mod updater;
 mod viewport;
 use evolve_core::{
-    AnimatedGlb, AssetEntry, CdfDefinition, ConvertedMotion, DdsInfo, Inventory, LevelScene,
-    ModelInfo, NativeCafMotion, PakInventory, RenderMesh, RigReport, SignedPakInfo, TerrainInfo,
-    convert_original_motion, decode_dds_rgba, export_dds_png, export_level_scene_glb,
+    AnimatedGlb, AnimationPolicy, AssetEntry, CdfDefinition, ConvertedMotion, DdsInfo, Inventory, LevelScene,
+    ModelInfo, NativeCafMotion, PakInventory, RenderMesh, RigReport, SignedPakInfo, StageTransaction, TerrainInfo,
+    apply_stage_pak, convert_glb_to_fbx, convert_original_motion, decode_dds_rgba, export_dds_png, export_level_scene_glb,
     export_rigged_character_fbx, export_rigged_character_glb, extract_legacy_pak,
-    extract_signed_pak, inspect_dds, inspect_legacy_pak, inspect_signed_pak, load_level_scene,
+    extract_signed_pak, import_stage_pak, initialize_stage, inspect_dds, inspect_legacy_pak, inspect_signed_pak, load_level_scene,
     read_cdf, read_model, read_native_caf, read_terrain, rebuild_legacy_pak,
-    rebuild_signed_pak_entry, scan_directory,
+    rebuild_signed_pak_entry, restore_stage, scan_directory, stage_status,
 };
 use iced::widget::{
     button, canvas, column, container, image, row, scrollable, shader, slider, svg, text,
@@ -83,6 +83,8 @@ struct State {
     signing_public: String,
     signed_entry: String,
     signed_replacement: String,
+    stage_target: String,
+    stage_feedback: String,
     diffuse_input: String,
     diffuse: Option<Arc<::image::RgbaImage>>,
     diffuse_status: String,
@@ -149,6 +151,12 @@ enum Operation {
         PathBuf,
     ),
     ExportLevelGlb(PathBuf, PathBuf, Option<PathBuf>, PathBuf),
+    ExportLevelFbx(PathBuf, PathBuf, Option<PathBuf>, PathBuf, PathBuf),
+    StageInit(PathBuf),
+    StageStatus(PathBuf),
+    StageImport(PathBuf, PathBuf, String, PathBuf, String),
+    StageApply(PathBuf, PathBuf, String, PathBuf, PathBuf, String),
+    StageRestore(PathBuf),
     ExtractPak(PathBuf, PathBuf),
     RebuildPak(PathBuf, PathBuf, PathBuf),
     ExportPng(PathBuf, PathBuf),
@@ -172,6 +180,12 @@ enum Completed {
     ExtractedSigned(usize, PathBuf),
     RebuiltSigned(String, PathBuf),
     LevelExported(usize, usize, PathBuf),
+    LevelFbxExported(usize, usize, PathBuf),
+    StageInitialized(PathBuf),
+    StageStatus(Option<StageTransaction>),
+    StageImported(String),
+    StageApplied(StageTransaction),
+    StageRestored(StageTransaction),
     Extracted(usize, PathBuf),
     Rebuilt(usize, PathBuf),
     ExportedPng(DdsInfo, PathBuf),
@@ -273,6 +287,39 @@ impl Operation {
                 .map_err(|e| e.to_string())?;
                 Ok(Completed::RebuiltSigned(result.changed_entry, dest))
             }
+            Self::StageInit(root) => {
+                initialize_stage(&root).map_err(|e| e.to_string())?;
+                Ok(Completed::StageInitialized(root))
+            }
+            Self::StageStatus(root) => stage_status(&root)
+                .map(Completed::StageStatus)
+                .map_err(|e| e.to_string()),
+            Self::StageImport(root, source, relative, key, basename) => {
+                import_stage_pak(&root, &source, &relative, &key, &basename)
+                    .map(Completed::StageImported)
+                    .map_err(|e| e.to_string())
+            }
+            Self::StageApply(root, source, relative, old_key, new_key, basename) => {
+                apply_stage_pak(&root, &source, &relative, &old_key, &new_key, &basename)
+                    .map(Completed::StageApplied)
+                    .map_err(|e| e.to_string())
+            }
+            Self::StageRestore(root) => restore_stage(&root)
+                .map(Completed::StageRestored)
+                .map_err(|e| e.to_string()),
+            Self::ExportLevelFbx(src, root, terrain, blender, dest) => {
+                let folder = tempfile::tempdir().map_err(|e| e.to_string())?;
+                let scene_glb = folder.path().join("level-scene.glb");
+                let scene = export_level_scene_glb(&src, &root, terrain.as_deref(), &scene_glb)
+                    .map_err(|e| e.to_string())?;
+                convert_glb_to_fbx(&blender, &scene_glb, &dest, AnimationPolicy::default())
+                    .map_err(|e| e.to_string())?;
+                Ok(Completed::LevelFbxExported(
+                    scene.exported_mesh_resources,
+                    scene.exported_mesh_instances,
+                    dest,
+                ))
+            }
             Self::ExportLevelGlb(src, root, terrain, dest) => {
                 let result = export_level_scene_glb(&src, &root, terrain.as_deref(), &dest)
                     .map_err(|e| e.to_string())?;
@@ -309,6 +356,12 @@ enum Message {
     SigningPublicChanged(String),
     SignedMemberChanged(String),
     SignedReplacementChanged(String),
+    StageTargetChanged(String),
+    StartStageInit,
+    StartStageStatus,
+    StartStageImport,
+    StartStageApply,
+    StartStageRestore,
     DiffuseInputChanged(String),
     CafInputChanged(String),
     SkeletonChanged(String),
@@ -361,6 +414,7 @@ enum Message {
     StartSignedExtraction,
     StartSignedRebuild,
     StartLevelGlbExport,
+    StartLevelFbxExport,
     StartExtract,
     StartRebuild,
     StartPngExport,
@@ -556,6 +610,68 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::SigningPublicChanged(value) => state.signing_public = value,
         Message::SignedMemberChanged(value) => state.signed_entry = value,
         Message::SignedReplacementChanged(value) => state.signed_replacement = value,
+        Message::StageTargetChanged(value) => state.stage_target = value,
+        Message::StartStageInit => {
+            if state.preferences.stage.trim().is_empty() {
+                state.status = "Choose a NEW isolated PAK workspace path under Settings.".into();
+                return Task::none();
+            }
+            return launch(state, Operation::StageInit(PathBuf::from(&state.preferences.stage)));
+        }
+        Message::StartStageStatus => {
+            if state.preferences.stage.trim().is_empty() {
+                state.status = "Specify the isolated staging workspace path.".into();
+                return Task::none();
+            }
+            return launch(state, Operation::StageStatus(PathBuf::from(&state.preferences.stage)));
+        }
+        Message::StartStageImport => {
+            if [
+                &state.preferences.stage,
+                &state.input,
+                &state.stage_target,
+                &state.public_key,
+                &state.signed_name,
+            ].iter().any(|x| x.trim().is_empty()) {
+                state.status = "Specify stage root, original PAK, relative target, public key, and signed basename.".into();
+                return Task::none();
+            }
+            return launch(state, Operation::StageImport(
+                PathBuf::from(&state.preferences.stage),
+                PathBuf::from(&state.input),
+                state.stage_target.clone(),
+                PathBuf::from(&state.public_key),
+                state.signed_name.clone(),
+            ));
+        }
+        Message::StartStageApply => {
+            if [
+                &state.preferences.stage,
+                &state.input,
+                &state.stage_target,
+                &state.public_key,
+                &state.signing_public,
+                &state.signed_name,
+            ].iter().any(|x| x.trim().is_empty()) {
+                state.status = "Specify stage, replacement PAK path, relative target, original and new public keys, and signed basename.".into();
+                return Task::none();
+            }
+            return launch(state, Operation::StageApply(
+                PathBuf::from(&state.preferences.stage),
+                PathBuf::from(&state.input),
+                state.stage_target.clone(),
+                PathBuf::from(&state.public_key),
+                PathBuf::from(&state.signing_public),
+                state.signed_name.clone(),
+            ));
+        }
+        Message::StartStageRestore => {
+            if state.preferences.stage.trim().is_empty() {
+                state.status = "Specify the isolated staging workspace path.".into();
+                return Task::none();
+            }
+            return launch(state, Operation::StageRestore(PathBuf::from(&state.preferences.stage)));
+        }
         Message::DiffuseInputChanged(value) => state.diffuse_input = value,
         Message::CafInputChanged(value) => state.caf_path = value,
         Message::SkeletonChanged(value) => state.skeleton_path = value,
@@ -775,6 +891,29 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 ),
             );
         }
+        Message::StartLevelFbxExport => {
+            if [
+                &state.input,
+                &state.assets_root,
+                &state.output,
+                &state.blender_path,
+            ].iter().any(|x| x.trim().is_empty()) || !state.output.to_ascii_lowercase().ends_with(".fbx") {
+                state.status = "Select level XML/LYR, extracted asset root, Blender executable and NEW .fbx output.".into();
+                return Task::none();
+            }
+            let terrain = if state.terrain_source.trim().is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(&state.terrain_source))
+            };
+            return launch(state, Operation::ExportLevelFbx(
+                PathBuf::from(&state.input),
+                PathBuf::from(&state.assets_root),
+                terrain,
+                PathBuf::from(&state.blender_path),
+                PathBuf::from(&state.output),
+            ));
+        }
         Message::StartLevelGlbExport => {
             if state.input.trim().is_empty()
                 || state.assets_root.trim().is_empty()
@@ -980,6 +1119,45 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         dir.display()
                     );
                 }
+                Ok(Completed::StageInitialized(path)) => {
+                    state.stage_feedback = format!("Initialized isolated PAK workspace at {}", path.display());
+                    state.status = state.stage_feedback.clone();
+                    state.page = Some(Page::Files);
+                }
+                Ok(Completed::StageStatus(transaction)) => {
+                    state.stage_feedback = if let Some(transaction) = transaction {
+                        format!("Swap journal pending: {}. Restore before applying another mod.", transaction.target)
+                    } else {
+                        "No active stage swap journal. The workspace is ready.".into()
+                    };
+                    state.status = state.stage_feedback.clone();
+                    state.page = Some(Page::Files);
+                }
+                Ok(Completed::StageImported(hash)) => {
+                    state.stage_feedback = format!("Signed archive imported to isolated stage; SHA-256: {hash}");
+                    state.status = state.stage_feedback.clone();
+                    state.page = Some(Page::Files);
+                }
+                Ok(Completed::StageApplied(transaction)) => {
+                    state.stage_feedback = format!(
+                        "Signed replacement staged for {}. Recovery journal {} must be restored before another change.",
+                        transaction.target, transaction.id,
+                    );
+                    state.status = state.stage_feedback.clone();
+                    state.page = Some(Page::Files);
+                }
+                Ok(Completed::StageRestored(transaction)) => {
+                    state.stage_feedback = format!("Restored original PAK in isolated workspace: {}", transaction.target);
+                    state.status = state.stage_feedback.clone();
+                    state.page = Some(Page::Files);
+                }
+                Ok(Completed::LevelFbxExported(meshes, placements, dest)) => {
+                    state.status = format!(
+                        "Exported Blender FBX scene: {meshes} mesh resources, {placements} placements: {} (materials not yet complete).",
+                        dest.display()
+                    );
+                    state.page = Some(Page::Levels);
+                }
                 Ok(Completed::LevelExported(meshes, placements, dest)) => {
                     state.status = format!(
                         "Exported Blender scene GLB: {meshes} verified models, {placements} placements: {}",
@@ -1166,7 +1344,7 @@ fn view(state: &State) -> Element<'_, Message> {
     let workspace: Element<'_, Message> = match page {
         Page::Home => column![
             text("Inspect local CryEngine assets safely.").size(19),
-            text("ZIP-compatible 2012 PAKs can be inspected, extracted and rebuilt from exact replacements; signed Stage 2 CryPAKs are NOT supported yet."),
+            text("Legacy ZIP and signed Stage 2 PAKs support bounded inspection and extraction; signed rebuilding and isolated offline PAK staging are experimental."),
             text("DDS top-mipmap PNG export supports BC1/2/3/4/5 and 32-bit RGB(A); complete split-stream sets are reconstructed first."),
             text("Signed archive rebuilding and Blender geometry-scene GLB export are experimental. Full character FBX, game sign-key acceptance and animation/texture parity remain gated."),
         ].spacing(14).into(),
@@ -1222,6 +1400,23 @@ fn view(state: &State) -> Element<'_, Message> {
                         .on_input(Message::SignedReplacementChanged).width(Fill),
                     button("Rebuild signed PAK").on_press(Message::StartSignedRebuild),
                 ].spacing(8),
+                text("ISOLATED OFFLINE PAK STAGING / RECOVERY").size(18),
+                text("Use a NEW empty workspace. This never swaps installed EvolveGame files. Import a verified original, then select a signed modded PAK in the main input field to apply."),
+                row![
+                    text_input("NEW isolated stage folder (not game directory)...", &state.preferences.stage)
+                        .on_input(Message::PreferenceStage).width(Fill),
+                    button("Initialize stage").on_press(Message::StartStageInit),
+                    button("Check stage").on_press(Message::StartStageStatus),
+                    button("Restore backup").on_press(Message::StartStageRestore),
+                ].spacing(8),
+                row![
+                    text_input("Stage target relative to paks/ (e.g. Game/libs.pak)", &state.stage_target)
+                        .on_input(Message::StageTargetChanged).width(Fill),
+                    button("Import signed original").on_press(Message::StartStageImport),
+                    button("Apply signed replacement").on_press(Message::StartStageApply),
+                ].spacing(8),
+                text("Apply uses the PAK file in the main input and the original/public signing keys above. Restoring validates all original backup hashes."),
+                text(state.stage_feedback.as_str()).size(13),
             ].spacing(10).into()
         }
         Page::Models => {
@@ -1360,7 +1555,8 @@ fn view(state: &State) -> Element<'_, Message> {
             row![
                 button("Read level placements").on_press(Message::StartLevelInspection),
                 button("Load heightmap geometry").on_press(Message::StartTerrainInspection),
-                button("Export complete geometry scene GLB").on_press(Message::StartLevelGlbExport),
+                button("Export geometry scene GLB").on_press(Message::StartLevelGlbExport),
+                button("Export geometry scene FBX").on_press(Message::StartLevelFbxExport),
             ].spacing(8),
             row![
                 text_input("Exact extracted asset root...",&state.assets_root)
@@ -1394,7 +1590,9 @@ fn view(state: &State) -> Element<'_, Message> {
                 text("Pitch"),
                 slider(-85.0..=85.0,state.pitch,Message::PitchChanged).width(Fill),
             ].spacing(8),
-            text("Scene GLB includes verified mesh instances and optional terrain. Texture/material, compiled vegetation, scripting and full map fidelity remain gated."),
+            text_input("Blender executable for scene FBX...", &state.blender_path)
+                .on_input(Message::BlenderChanged),
+            text("GLB/FBX includes verified mesh instances and optional terrain. Texture/material, compiled vegetation, scripting and full map fidelity remain gated."),
         ].spacing(14).into(),
         Page::Settings => column![
             text("Settings").size(23),
