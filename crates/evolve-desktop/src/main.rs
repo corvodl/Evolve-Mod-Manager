@@ -7,14 +7,15 @@ use evolve_core::{
     SignedPakInfo, TerrainInfo, export_dds_png, export_level_scene_glb, extract_legacy_pak,
     extract_signed_pak, inspect_dds, inspect_legacy_pak, inspect_signed_pak, load_level_scene,
     read_cdf, read_model, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry,
-    decode_dds_rgba, scan_directory,
+    decode_dds_rgba, read_native_caf, NativeCafMotion, scan_directory,
 };
 use iced::widget::{
     button, canvas, column, container, image, row, scrollable, shader, slider, svg, text, text_input,
     tooltip,
 };
-use iced::{Element, Fill, Length, Task, Theme};
+use iced::{Element, Fill, Length, Task, Theme, Subscription};
 use std::path::PathBuf;
+use std::time::Duration;
 use std::sync::Arc;
 use viewport::MeshViewport;
 use textured::Scene as TexturedScene;
@@ -77,6 +78,10 @@ struct State {
     diffuse_input: String,
     diffuse: Option<Arc<::image::RgbaImage>>,
     diffuse_status: String,
+    caf_path: String,
+    native_caf: Option<Arc<NativeCafMotion>>,
+    motion_time: f32,
+    playing: bool,
     assets_root: String,
     terrain_source: String,
     yaw: f32,
@@ -102,6 +107,7 @@ enum Operation {
     InspectPak(PathBuf),
     InspectDds(PathBuf),
     LoadDiffuse(PathBuf),
+    LoadCaf(PathBuf),
     InspectCdf(PathBuf),
     InspectModel(PathBuf),
     InspectLevel(PathBuf),
@@ -130,6 +136,7 @@ enum Completed {
     Pak(PakInventory),
     Texture(DdsInfo),
     Diffuse(DdsInfo,::image::RgbaImage),
+    Caf(NativeCafMotion),
     Character(CdfDefinition),
     Model(RenderMesh),
     Level(LevelScene),
@@ -152,6 +159,8 @@ impl Operation {
             Self::InspectPak(source) => inspect_legacy_pak(&source)
                 .map(Completed::Pak)
                 .map_err(|e| e.to_string()),
+            Self::LoadCaf(source) => read_native_caf(&source)
+                .map(Completed::Caf).map_err(|e|e.to_string()),
             Self::LoadDiffuse(source) => decode_dds_rgba(&source)
                 .map(|(info,image)|Completed::Diffuse(info,image)).map_err(|e|e.to_string()),
             Self::InspectDds(source) => inspect_dds(&source)
@@ -254,6 +263,10 @@ enum Message {
     SignedMemberChanged(String),
     SignedReplacementChanged(String),
     DiffuseInputChanged(String),
+    CafInputChanged(String),
+    MotionScrub(f32),
+    ToggleMotion,
+    Tick,
     AssetsRootChanged(String),
     TerrainSourceChanged(String),
     YawChanged(f32),
@@ -264,6 +277,7 @@ enum Message {
     StartPakInspection,
     StartDdsInspection,
     StartDiffuseLoad,
+    StartCafLoad,
     StartCdfInspection,
     StartModelInspection,
     StartLevelInspection,
@@ -308,6 +322,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::SignedMemberChanged(value) => state.signed_entry = value,
         Message::SignedReplacementChanged(value) => state.signed_replacement = value,
         Message::DiffuseInputChanged(value) => state.diffuse_input = value,
+        Message::CafInputChanged(value) => state.caf_path = value,
+        Message::MotionScrub(value) => state.motion_time = value,
+        Message::ToggleMotion => state.playing = !state.playing && state.native_caf.is_some(),
+        Message::Tick => {
+            if state.playing {
+                if let Some(motion)=&state.native_caf {
+                    state.motion_time+=0.04;
+                    let duration=motion.duration_seconds();
+                    if duration <= 0.0 {state.playing=false;}
+                    else if state.motion_time>=duration {
+                        if motion.cyclic {state.motion_time%=duration;}
+                        else{state.motion_time=duration;state.playing=false;}
+                    }
+                }else{state.playing=false;}
+            }
+        },
         Message::AssetsRootChanged(value) => state.assets_root = value,
         Message::TerrainSourceChanged(value) => state.terrain_source = value,
         Message::YawChanged(value) => state.yaw = value,
@@ -322,6 +352,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::StartPakInspection => {
             let source = PathBuf::from(&state.input);
             return launch(state, Operation::InspectPak(source));
+        }
+        Message::StartCafLoad => {
+            if state.caf_path.trim().is_empty() {
+                state.status="Select the original native CAF to inspect/play its exact bone controller tracks.".into();
+                return Task::none();
+            }
+            return launch(state,Operation::LoadCaf(PathBuf::from(&state.caf_path)));
         }
         Message::StartDiffuseLoad => {
             if state.diffuse_input.trim().is_empty(){
@@ -483,6 +520,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.pak = Some(pak);
                     state.selected = None;
                     state.page = Some(Page::Files);
+                }
+                Ok(Completed::Caf(motion)) => {
+                    state.status=format!("Native CAF decoded: {} controllers at {:.1} FPS; {} seconds. Bind-pose matching is required for mesh animation.",
+                        motion.controllers.len(),motion.fps,motion.duration_seconds());
+                    state.motion_time=0.0;
+                    state.playing=false;
+                    state.native_caf=Some(Arc::new(motion));
+                    state.page=Some(Page::Models);
                 }
                 Ok(Completed::Diffuse(info,pixels)) => {
                     state.diffuse_status=format!("GPU diffuse loaded: {} × {} highest-resolution pixels ({:?}).",
@@ -817,6 +862,29 @@ fn view(state: &State) -> Element<'_, Message> {
                 } else {
                     text("Select a source .cgf/.chr/.skin file and click Inspect 3D model.").into()
                 },
+                text("Animation controls — exact native CAF tracks").size(18),
+                row![
+                    text_input("Select original CAF file...",&state.caf_path)
+                        .on_input(Message::CafInputChanged).width(Fill),
+                    button("Open CAF").on_press(Message::StartCafLoad),
+                    button(if state.playing{"Pause"}else{"Play"}).on_press(Message::ToggleMotion),
+                ].spacing(8),
+                if let Some(clip)=&state.native_caf {
+                    let frame=clip.sample_seconds(state.motion_time).unwrap_or_default();
+                    let value=frame.iter().take(3).map(|bone|format!(
+                        "{:08X}: {:?} ",bone.bone_crc32,bone.translation
+                    )).collect::<Vec<_>>().join(" • ");
+                    column![
+                        text(format!("Motion {:.2}/{:.2}s • {} bone controller(s) • additive={} cyclic={}",
+                            state.motion_time,clip.duration_seconds(),clip.controllers.len(),clip.additive,clip.cyclic)),
+                        slider(0.0..=clip.duration_seconds().max(0.001),state.motion_time,Message::MotionScrub),
+                        text(value),
+                        text("Motion values come directly from CAF keys. They are NOT applied to an unverified skeleton."),
+                    ].spacing(7).into()
+                }else{
+                    let placeholder:Element<'_,Message>=text("Choose original CAF to inspect playable controller data. No skeleton guessed.").into();
+                    placeholder
+                },
                 row![
                     text("Orbit"),
                     slider(-180.0..=180.0,state.yaw,Message::YawChanged).width(Fill),
@@ -901,6 +969,11 @@ fn view(state: &State) -> Element<'_, Message> {
 fn main() -> iced::Result {
     let _supported_backends = wgpu::Backends::PRIMARY;
     iced::application(State::default, update, view)
+        .subscription(|state:&State|{
+            if state.playing {
+                iced::time::every(Duration::from_millis(40)).map(|_|Message::Tick)
+            } else {Subscription::none()}
+        })
         .title("Evolve Mod Manager — Rust Development Preview")
         .theme(|_state: &State| {
             Theme::custom(
