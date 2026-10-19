@@ -2973,25 +2973,25 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     if !still_selected {
                         state.auto_idle_pending = None;
                     } else {
-                    state.auto_clips = resources.clips;
-                    state.auto_idle_pending = resources.idle;
-                    if let Some(skeleton) = resources.skeleton {
-                        state.skeleton_path = skeleton.to_string_lossy().into_owned();
-                    }
-                    state.auto_resource_note = resources.material_note;
-                    if !resources.warnings.is_empty() {
-                        state
-                            .auto_resource_note
-                            .push_str(&format!(" | {}", resources.warnings.join("; ")));
-                    }
-                    state.status = format!(
-                        "Automatic model dependencies: {} declared clips. {}",
-                        state.auto_clips.len(),
-                        state.auto_resource_note
-                    );
-                    if let Some(source) = resources.material
-                        && let Some(inv) = &state.inventory
-                    {
+                        state.auto_clips = resources.clips;
+                        state.auto_idle_pending = resources.idle;
+                        if let Some(skeleton) = resources.skeleton {
+                            state.skeleton_path = skeleton.to_string_lossy().into_owned();
+                        }
+                        state.auto_resource_note = resources.material_note;
+                        if !resources.warnings.is_empty() {
+                            state
+                                .auto_resource_note
+                                .push_str(&format!(" | {}", resources.warnings.join("; ")));
+                        }
+                        state.status = format!(
+                            "Automatic model dependencies: {} declared clips. {}",
+                            state.auto_clips.len(),
+                            state.auto_resource_note
+                        );
+                        if let Some(source) = resources.material
+                            && let Some(inv) = &state.inventory
+                        {
                             let operation = Operation::ResolveMaterial(
                                 source,
                                 PathBuf::from(&inv.root),
@@ -3012,10 +3012,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             );
                             state.auto_material_pending = true;
                             return launch(state, operation);
-                    }
-                    if let Some(idle) = state.auto_idle_pending.take() {
-                        return launch(state, Operation::LoadCaf(idle));
-                    }
+                        }
+                        if let Some(idle) = state.auto_idle_pending.take() {
+                            return launch(state, Operation::LoadCaf(idle));
+                        }
                     }
                 }
                 Ok(Completed::DeclaredClip(index, virtual_path, motion)) => {
