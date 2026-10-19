@@ -6,12 +6,12 @@ mod updater;
 mod viewport;
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssetEntry, AssetResolution, CdfDefinition, CdfDependencyReport,
-    ConvertedMotion, DdsInfo, Inventory, LevelScene, ModelInfo, NativeCafMotion, PakInventory,
-    RenderMesh, RigReport, SignedPakInfo, StageTransaction, TerrainInfo, apply_stage_pak,
+    ConvertedMotion, DdsInfo, Inventory, LevelScene, ModelInfo, ModProfile, NativeCafMotion, PakInventory,
+    ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo, StageTransaction, TerrainInfo, add_mod_to_profile, apply_stage_pak, create_mod_profile,
     convert_glb_to_fbx, convert_original_motion, decode_dds_rgba, export_dds_png,
     export_level_scene_glb, export_rigged_character_fbx, export_rigged_character_glb,
     extract_legacy_pak, extract_signed_pak, import_stage_pak, initialize_stage, inspect_dds,
-    inspect_legacy_pak, inspect_signed_pak, load_level_scene, read_cdf, read_model,
+    inspect_legacy_pak, inspect_signed_pak, list_mod_profiles, load_level_scene, plan_mod_profile, read_cdf, read_model,
     read_native_caf, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry, resolve_cdf,
     restore_stage, scan_directory, stage_status,
 };
@@ -87,6 +87,10 @@ struct State {
     signed_replacement: String,
     stage_target: String,
     stage_feedback: String,
+    profile_name: String,
+    profile_id: String,
+    profile_catalog: Option<ProfileCatalog>,
+    profile_feedback: String,
     diffuse_input: String,
     diffuse: Option<Arc<::image::RgbaImage>>,
     diffuse_status: String,
@@ -167,6 +171,10 @@ enum Operation {
     StageImport(PathBuf, PathBuf, String, PathBuf, String),
     StageApply(PathBuf, PathBuf, String, PathBuf, PathBuf, String),
     StageRestore(PathBuf),
+    ListProfiles(PathBuf),
+    CreateProfile(PathBuf, String),
+    AddProfileMod(PathBuf, String, PathBuf, String, PathBuf, PathBuf, String),
+    PlanProfile(PathBuf, String, PathBuf, PathBuf, String),
     ExtractPak(PathBuf, PathBuf),
     RebuildPak(PathBuf, PathBuf, PathBuf),
     ExportPng(PathBuf, PathBuf),
@@ -199,6 +207,10 @@ enum Completed {
     StageImported(String),
     StageApplied(StageTransaction),
     StageRestored(StageTransaction),
+    ProfileCatalog(ProfileCatalog),
+    ProfileCreated(ModProfile),
+    ProfileAdded(ProfileMod),
+    ProfilePlanned(ProfilePlan),
     Extracted(usize, PathBuf),
     Rebuilt(usize, PathBuf),
     ExportedPng(DdsInfo, PathBuf),
@@ -314,6 +326,22 @@ impl Operation {
                 .map_err(|e| e.to_string())?;
                 Ok(Completed::RebuiltSigned(result.changed_entry, dest))
             }
+            Self::ListProfiles(root) => list_mod_profiles(&root)
+                .map(Completed::ProfileCatalog)
+                .map_err(|e| e.to_string()),
+            Self::CreateProfile(root, label) => create_mod_profile(&root, &label)
+                .map(Completed::ProfileCreated)
+                .map_err(|e| e.to_string()),
+            Self::AddProfileMod(stage, id, source, target, original, public, basename) => {
+                add_mod_to_profile(&stage, &id, &source, &target, &original, &public, &basename)
+                    .map(Completed::ProfileAdded)
+                    .map_err(|e| e.to_string())
+            }
+            Self::PlanProfile(stage, id, original, public, basename) => {
+                plan_mod_profile(&stage, &id, &original, &public, &basename)
+                    .map(Completed::ProfilePlanned)
+                    .map_err(|e| e.to_string())
+            }
             Self::StageInit(root) => {
                 initialize_stage(&root).map_err(|e| e.to_string())?;
                 Ok(Completed::StageInitialized(root))
@@ -389,6 +417,12 @@ enum Message {
     StartStageImport,
     StartStageApply,
     StartStageRestore,
+    ProfileNameChanged(String),
+    SelectProfile(String),
+    StartProfileList,
+    StartProfileCreate,
+    StartProfileAdd,
+    StartProfilePlan,
     DiffuseInputChanged(String),
     NormalInputChanged(String),
     EmissiveInputChanged(String),
@@ -643,6 +677,53 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::SignedMemberChanged(value) => state.signed_entry = value,
         Message::SignedReplacementChanged(value) => state.signed_replacement = value,
         Message::StageTargetChanged(value) => state.stage_target = value,
+        Message::ProfileNameChanged(value) => state.profile_name = value,
+        Message::SelectProfile(value) => state.profile_id = value,
+        Message::StartProfileList => {
+            if state.preferences.stage.trim().is_empty() {
+                state.status = "Choose an isolated PAK stage first.".into();
+                return Task::none();
+            }
+            return launch(state, Operation::ListProfiles(PathBuf::from(&state.preferences.stage)));
+        }
+        Message::StartProfileCreate => {
+            if state.profile_name.trim().is_empty() || state.preferences.stage.trim().is_empty() {
+                state.status = "Enter a profile name and initialize an isolated stage.".into();
+                return Task::none();
+            }
+            return launch(state, Operation::CreateProfile(
+                PathBuf::from(&state.preferences.stage), state.profile_name.clone()
+            ));
+        }
+        Message::StartProfileAdd => {
+            if [
+                &state.preferences.stage, &state.profile_id, &state.input, &state.stage_target,
+                &state.public_key, &state.signing_public, &state.signed_name,
+            ].iter().any(|v| v.trim().is_empty()) {
+                state.status = "Select a profile, signed replacement PAK, relative stage target, original/mod public keys, and basename.".into();
+                return Task::none();
+            }
+            return launch(state, Operation::AddProfileMod(
+                PathBuf::from(&state.preferences.stage), state.profile_id.clone(),
+                PathBuf::from(&state.input), state.stage_target.clone(),
+                PathBuf::from(&state.public_key), PathBuf::from(&state.signing_public),
+                state.signed_name.clone(),
+            ));
+        }
+        Message::StartProfilePlan => {
+            if [
+                &state.preferences.stage, &state.profile_id, &state.public_key,
+                &state.signing_public, &state.signed_name,
+            ].iter().any(|v| v.trim().is_empty()) {
+                state.status = "Select a profile and both public signing keys for a verified read-only plan.".into();
+                return Task::none();
+            }
+            return launch(state, Operation::PlanProfile(
+                PathBuf::from(&state.preferences.stage), state.profile_id.clone(),
+                PathBuf::from(&state.public_key), PathBuf::from(&state.signing_public),
+                state.signed_name.clone(),
+            ));
+        }
         Message::StartStageInit => {
             if state.preferences.stage.trim().is_empty() {
                 state.status = "Choose a NEW isolated PAK workspace path under Settings.".into();
@@ -1251,6 +1332,34 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         dir.display()
                     );
                 }
+                Ok(Completed::ProfileCatalog(catalog)) => {
+                    let count = catalog.profiles.len();
+                    state.profile_catalog = Some(catalog);
+                    state.profile_feedback = format!("Loaded {count} isolated offline mod profiles.");
+                    state.status = state.profile_feedback.clone();
+                    state.page = Some(Page::Files);
+                }
+                Ok(Completed::ProfileCreated(profile)) => {
+                    state.profile_id = profile.id.clone();
+                    state.profile_feedback = format!("Created {} with ID {}. Refresh to list it.", profile.name, profile.id);
+                    state.status = state.profile_feedback.clone();
+                    state.page = Some(Page::Files);
+                    return launch(state, Operation::ListProfiles(PathBuf::from(&state.preferences.stage)));
+                }
+                Ok(Completed::ProfileAdded(item)) => {
+                    state.profile_feedback = format!("Registered verified signed mod {} for {}. Profile is not applied.", item.id, item.target);
+                    state.status = state.profile_feedback.clone();
+                    state.page = Some(Page::Files);
+                    return launch(state, Operation::ListProfiles(PathBuf::from(&state.preferences.stage)));
+                }
+                Ok(Completed::ProfilePlanned(plan)) => {
+                    state.profile_feedback = format!(
+                        "Verified {} enabled signed PAKs ({} bytes). This is a read-only plan; no game files changed.",
+                        plan.mods.len(), plan.total_bytes
+                    );
+                    state.status = state.profile_feedback.clone();
+                    state.page = Some(Page::Files);
+                }
                 Ok(Completed::StageInitialized(path)) => {
                     state.stage_feedback =
                         format!("Initialized isolated PAK workspace at {}", path.display());
@@ -1557,6 +1666,34 @@ fn view(state: &State) -> Element<'_, Message> {
                 ].spacing(8),
                 text("Apply uses the PAK file in the main input and the original/public signing keys above. Restoring validates all original backup hashes."),
                 text(state.stage_feedback.as_str()).size(13),
+                text("MOD PROFILES — verified offline catalog (not game installation)").size(18),
+                row![
+                    text_input("New profile name...", &state.profile_name)
+                        .on_input(Message::ProfileNameChanged).width(Fill),
+                    button("Create profile").on_press(Message::StartProfileCreate),
+                    button("Refresh profiles").on_press(Message::StartProfileList),
+                ].spacing(8),
+                if let Some(catalog) = &state.profile_catalog {
+                    let mut rows = column![].spacing(4);
+                    for profile in catalog.profiles.iter().take(100) {
+                        rows = rows.push(
+                            button(format!("{} ({} mod(s))", profile.name, profile.mods.len()))
+                                .on_press(Message::SelectProfile(profile.id.clone()))
+                        );
+                    }
+                    scrollable(rows).height(Length::Fixed(145.))
+                } else {
+                    scrollable(column![text("Refresh to browse available local profiles.")])
+                        .height(Length::Fixed(70.))
+                },
+                row![
+                    text_input("Selected profile ID...", &state.profile_id)
+                        .on_input(Message::SelectProfile).width(Fill),
+                    button("Add signed PAK").on_press(Message::StartProfileAdd),
+                    button("Verify profile").on_press(Message::StartProfilePlan),
+                ].spacing(8),
+                text("Profile add uses the signed replacement path, relative PAK target, both public DER keys and basename above. No profile is installed automatically."),
+                text(state.profile_feedback.as_str()).size(13),
             ].spacing(10).into()
         }
         Page::Models => {
