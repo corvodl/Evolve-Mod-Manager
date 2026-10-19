@@ -439,15 +439,10 @@ pub fn build_single_raw(
         );
     }
     let keys = super::modding_keys::signing_keys(stage)?;
-    if let Some(hash) = manifest.get("public_key_sha256").and_then(Value::as_str) {
-        if !digest(&keys.public)
-            .map_err(|e| e.to_string())?
-            .eq_ignore_ascii_case(hash)
-        {
-            return Err(
-                "Stage signing key no longer matches the original extracted archive".into(),
-            );
-        }
+    if let Some(hash) = manifest.get("public_key_sha256").and_then(Value::as_str)
+        && !digest(&keys.public).map_err(|e| e.to_string())?.eq_ignore_ascii_case(hash)
+    {
+        return Err("Stage signing key no longer matches the original extracted archive".into());
     }
     let basename = super::modding_keys::signed_basename(&original)?;
     if let Some(name) = manifest.get("signed_basename").and_then(Value::as_str)
