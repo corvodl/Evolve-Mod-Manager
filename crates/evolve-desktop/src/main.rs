@@ -248,6 +248,7 @@ enum Operation {
     LoadImportedLibrary(PathBuf),
     ImportSignedLibrary(PathBuf, PathBuf, PathBuf),
     OpenImportedPak(ImportedPak),
+    CreateProjectFromLibrary(ImportedPak, PathBuf, PathBuf),
     InspectDependencies(Inventory, String),
     CompareAssets(PathBuf, PathBuf),
     Scan(PathBuf, Arc<AtomicBool>, Arc<AtomicUsize>),
@@ -410,6 +411,14 @@ impl Operation {
             Self::OpenImportedPak(pak) => imported_archive_files(&pak)
                 .map(Completed::ImportedPakFiles)
                 .map_err(|e| e.to_string()),
+            Self::CreateProjectFromLibrary(pak, projects, stage) => {
+                // Exact source PAK must be in the configured stage/paks;
+                // never choose a similarly named or cross-build PAK.
+                imported_archive_files(&pak).map_err(|e| e.to_string())?;
+                modding_projects::unpack_raw_project(
+                    &projects, &stage, PathBuf::from(&pak.source).as_path()
+                ).map(|(path, count)| Completed::UnpackedProject(path, count))
+            }
             Self::Scan(source, cancelled, indexed) => {
                 scan_directory_with_progress(&source, &cancelled, &indexed)
                     .map(Completed::Inventory)
@@ -688,6 +697,7 @@ enum Message {
     LibraryNextBuild,
     LibrarySelect(usize),
     LibraryPreview,
+    LibraryMakeModProject,
     LibraryPreviousPage,
     LibraryNextPage,
     OpenViewer,
@@ -1339,6 +1349,28 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             };
             return launch(state, Operation::OpenImportedPak(pak));
+        }
+        Message::LibraryMakeModProject => {
+            if state.library_selection.indices.len() != 1 {
+                state.status = "Select exactly one imported PAK to make an editable copy.".into();
+                return Task::none();
+            }
+            let Some(pak) = state.library_selected
+                .filter(|i| state.library_selection.indices.contains(i))
+                .and_then(|i| state.library_catalog.as_ref()?.archives.get(i))
+                .cloned() else {
+                state.status = "Choose a verified imported archive first.".into();
+                return Task::none();
+            };
+            let stage = PathBuf::from(&state.preferences.stage);
+            if modding_keys::staged_target(&stage, PathBuf::from(&pak.source).as_path()).is_err() {
+                state.status = "This imported PAK is not an exact staged original in the configured stage/paks. A separate copy mapping would be required; no target was guessed.".into();
+                return Task::none();
+            }
+            state.modding_open_editor_when_scanned = true;
+            return launch(state, Operation::CreateProjectFromLibrary(
+                pak, PathBuf::from(&state.preferences.projects), stage,
+            ));
         }
         Message::ToggleAdvancedTools => state.show_advanced_tools = !state.show_advanced_tools,
         Message::ToggleActivity => state.show_activity = !state.show_activity,
