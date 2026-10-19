@@ -339,6 +339,19 @@ mod tests {
     use evolve_core::scan_directory;
 
     #[test]
+    fn dba_resolution_never_opens_a_non_database_or_neighboring_file() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("animations/kala")).unwrap();
+        std::fs::write(root.path().join("animations/kala/kala_3p.dba"), b"not validated by resolver").unwrap();
+        std::fs::write(root.path().join("animations/kala/kala.caf"), b"other").unwrap();
+        let inv = scan_directory(root.path()).unwrap();
+        assert!(resolve_declared_dba(&inv, "animations/kala/kala.caf", None, None).is_err());
+        let exact = resolve_declared_dba(&inv, "animations/kala/kala_3p.dba", None, None).unwrap();
+        assert!(exact.unwrap().ends_with("kala_3p.dba"));
+        assert!(resolve_declared_dba(&inv, "animations/other/other_3p.dba", None, None).unwrap().is_none());
+    }
+
+    #[test]
     fn chooses_matching_character_not_neighboring_model() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("characters/kala")).unwrap();
