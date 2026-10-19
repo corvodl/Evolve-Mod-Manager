@@ -761,9 +761,14 @@ mod tests {
         let workspace = projects.join("Example");
         fs::create_dir_all(workspace.join("files/hunters")).unwrap();
         fs::write(workspace.join("files/hunters/example.bin"), b"original").unwrap();
+        let original_digest = digest(&workspace.join("files/hunters/example.bin")).unwrap();
+        let manifest = serde_json::json!({
+            "version":1,
+            "entries":[{"path":"hunters/example.bin","format":"raw","sha256":original_digest}]
+        });
         fs::write(
             workspace.join(".evolve-pak-workspace.json"),
-            br#"{"version":1,"entries":[{"path":"hunters/example.bin","format":"raw"}]}"#,
+            serde_json::to_vec(&manifest).unwrap(),
         )
         .unwrap();
         let external = temporary.path().join("replacement.bin");
@@ -796,6 +801,24 @@ mod tests {
         assert!(!import_raw_member(&project, &projects, "hunters/example.bin", &external).unwrap());
         assert!(import_raw_member(&project, &projects, "unlisted.dat", &external).is_err());
         assert_eq!(fs::read(&external).unwrap(), b"edited content");
+        assert!(restore_original_raw_member(
+            &project, &projects, "hunters/example.bin"
+        ).unwrap());
+        assert_eq!(fs::read(workspace.join("files/hunters/example.bin")).unwrap(), b"original");
+        assert!(!restore_original_raw_member(
+            &project, &projects, "hunters/example.bin"
+        ).unwrap());
+        assert_eq!(fs::read_dir(&backups).unwrap().count(), 2);
+        assert!(restore_original_raw_member(
+            &project, &projects, "../outside"
+        ).is_err());
+        fs::write(workspace.join("files/hunters/example.bin"), b"bad external edit").unwrap();
+        let renamed = backups.with_extension("hidden");
+        fs::rename(&backups, &renamed).unwrap();
+        assert!(restore_original_raw_member(
+            &project, &projects, "hunters/example.bin"
+        ).is_err());
+        assert_eq!(fs::read(workspace.join("files/hunters/example.bin")).unwrap(), b"bad external edit");
     }
 
     #[test]
