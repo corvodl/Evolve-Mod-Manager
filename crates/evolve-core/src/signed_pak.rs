@@ -943,6 +943,34 @@ mod tests {
         extract_signed_pak(&archive, &key, "sample.pak", &extracted).unwrap();
         assert_eq!(fs::read(extracted.join("example.caf")).unwrap(), payload);
         assert!(extract_signed_pak(&archive, &key, "sample.pak", &extracted).is_err());
+        use rsa::pkcs1::EncodeRsaPrivateKey;
+        // A freshly generated *different* local signing key is mandatory:
+        // test all 17 OAEP secret rewraps and the new signed CDR offsets.
+        let other_private=rsa::RsaPrivateKey::new(&mut OsRng,1024).unwrap();
+        let other_public=RsaPublicKey::from(&other_private);
+        let new_private_file=root.path().join("local-private.pem");
+        let new_public_file=root.path().join("local-public.der");
+        fs::write(&new_private_file,other_private.to_pkcs1_pem(rsa::pkcs1::LineEnding::LF).unwrap().as_bytes()).unwrap();
+        fs::write(&new_public_file,other_public.to_pkcs1_der().unwrap().as_bytes()).unwrap();
+        let replacement=root.path().join("replacement.bin");
+        fs::write(&replacement,b"Longer replacement with new CRC and different crypto slot!!").unwrap();
+        let destdir=root.path().join("modified");
+        fs::create_dir(&destdir).unwrap();
+        let output=destdir.join("sample.pak");
+        let changed=rebuild_signed_pak_entry(
+            &archive,&key,&new_private_file,&new_public_file,"sample.pak",
+            "example.caf",&replacement,&output,
+        ).unwrap();
+        assert_eq!(changed.changed_entry,"example.caf");
+        assert!(changed.verified_with_new_public_key);
+        assert!(inspect_signed_pak(&output,&key,"sample.pak").is_err());
+        assert_eq!(fs::metadata(&archive).unwrap().len() as usize,bytes.len());
+        let new_extract=root.path().join("new-unpack");
+        extract_signed_pak(&output,&new_public_file,"sample.pak",&new_extract).unwrap();
+        assert_eq!(fs::read(new_extract.join("example.caf")).unwrap(),fs::read(&replacement).unwrap());
+        assert!(rebuild_signed_pak_entry(
+            &archive,&key,&new_private_file,&new_public_file,"sample.pak",
+            "example.caf",&replacement,&output).is_err());
         let wrong = inspect_signed_pak(&archive, &key, "different.pak");
         assert!(wrong.is_err(), "signed archive basename is authenticated");
     }
