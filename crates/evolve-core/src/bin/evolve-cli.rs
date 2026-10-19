@@ -48,6 +48,8 @@ fn usage() -> String {
         "  evolve-cli dds info <texture.dds|texture.dds.0> [dds-info.json]",
         "  evolve-cli dds png <texture.dds|texture.dds.0> <new-output.png>",
         "  evolve-cli cdf inspect <character.cdf> [cdf-info.json]",
+        "  evolve-cli material inspect <material.mtl> [material.json]",
+        "  evolve-cli material resolve <material.mtl> <asset-library-folder> [material-resolved.json]",
         "  evolve-cli cdf resolve <character.cdf> <asset-library-folder> [cdf-dependencies.json]",
         "  evolve-cli anim caf <motion.caf> [caf-info.json]",
         "  evolve-cli anim catalog <character.chrparams> [catalog.json]",
@@ -312,6 +314,27 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
     }
     let subcommand = pop(&mut args)?;
     let source: PathBuf = pop(&mut args)?.into();
+    if verb == OsStr::new("material") {
+        let material = read_material(&source).map_err(|e| e.to_string())?;
+        if subcommand == OsStr::new("inspect") {
+            let report: Option<PathBuf> = args.next().map(Into::into);
+            no_extra(&mut args)?;
+            println!("Material contains {} slot(s) with authored texture references.", material.slots.len());
+            if let Some(path) = report { write_report(&material, &path)?; }
+        } else if subcommand == OsStr::new("resolve") {
+            let root: PathBuf = pop(&mut args)?.into();
+            let report: Option<PathBuf> = args.next().map(Into::into);
+            no_extra(&mut args)?;
+            let inventory = scan_directory(&root).map_err(|e| e.to_string())?;
+            let resolution = resolve_materials(&inventory, &material);
+            println!("Resolved {} exact MTL references with no basename guessing.", resolution.textures.len());
+            for item in &resolution.textures {
+                println!("  {} / {}: {:?}", item.slot, item.role, item.resolution);
+            }
+            if let Some(path) = report { write_report(&resolution, &path)?; }
+        } else { return Err(usage()); }
+        return Ok(());
+    }
     if verb == OsStr::new("cdf") && subcommand == OsStr::new("resolve") {
         let asset_root: PathBuf = pop(&mut args)?.into();
         let output: Option<PathBuf> = args.next().map(Into::into);
