@@ -32,7 +32,15 @@ fn tile(name: &'static str, description: &'static str, page: Page) -> Element<'s
         ]
         .spacing(14),
     )
-    .style(button::secondary)
+    .style(|theme, status| {
+        let mut style = button::secondary(theme, status);
+        style.background = Some(Background::Color(PANEL));
+        style.text_color = Color::WHITE;
+        style.border = Border {
+            color: LINE, width: 1.0, radius: 9.0.into()
+        };
+        style
+    })
     .width(Fill)
     .height(Length::Fixed(96.0))
     .padding(15)
@@ -51,8 +59,8 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         text("A unified workspace for CryEngine assets, visual editing, signed PAK builds, and safe offline testing.").size(13),
         row![
             button("Modding").on_press(Message::Navigate(Page::Files)).style(button::primary),
-            button("Asset Library").on_press(Message::Navigate(Page::AssetLibrary)),
-            button("Instructions").on_press(Message::Navigate(Page::Instructions)),
+            button("Asset Library").on_press(Message::Navigate(Page::AssetLibrary)).style(button::secondary),
+            button("Instructions").on_press(Message::Navigate(Page::Instructions)).style(button::secondary),
         ].spacing(9),
     ].spacing(11));
     let quick = column![
