@@ -180,6 +180,9 @@ struct State {
     startup_update_checked: bool,
     viewer_search: String,
     viewer_rows: Vec<explorer_tree::ExplorerRow>,
+    // Latest selected asset while an earlier worker is running. Never replay
+    // a stale index after the indexed source folder changes.
+    viewer_queued_preview: Option<usize>,
     viewer_collapsed: HashSet<String>,
     viewer_menu: Option<&'static str>,
     viewer_explorer_visible: bool,
@@ -919,6 +922,7 @@ fn begin_scan(state: &mut State, source: PathBuf) -> Task<Message> {
     if state.busy {
         return Task::none();
     }
+    state.viewer_queued_preview = None;
     let cancelled = Arc::new(AtomicBool::new(false));
     let indexed = Arc::new(AtomicUsize::new(0));
     let task = launch(
@@ -1722,11 +1726,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.keyboard_modifiers.control(),
             );
             state.selected = state.file_selection.primary_after(index);
+            // A newer selection always supersedes an earlier queued preview.
+            state.viewer_queued_preview = None;
             // A normal single click previews immediately, like the Qt file
             // editor. Shift/Ctrl remain pure multi-select gestures.
             if !state.keyboard_modifiers.shift()
                 && !state.keyboard_modifiers.control()
-                && !state.busy
                 && state.selected == Some(index)
                 && state
                     .inventory
@@ -1748,6 +1753,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .is_some_and(|entry| {
                         entry.relative_path.to_ascii_lowercase().ends_with(".cdf")
                     });
+                if state.busy {
+                    state.viewer_queued_preview = Some(index);
+                    state.status = "Preview queued: the latest selected asset will load when the current operation finishes.".into();
+                    return Task::none();
+                }
                 return update(
                     state,
                     if is_cdf {
@@ -1779,6 +1789,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return update(state, Message::ViewerPreviewStaticCdf);
         }
         Message::ViewerPreviewStaticCdf => {
+            if state.busy {
+                state.viewer_queued_preview = state.selected;
+                state.status = "Static character preview queued until the current operation finishes.".into();
+                return Task::none();
+            }
             let Some(inventory) = state.inventory.as_ref() else {
                 state.status =
                     "Index an extracted asset folder before assembling characters.".into();
@@ -1799,6 +1814,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return launch(state, Operation::BuildStaticCdf(source, inventory.clone()));
         }
         Message::ViewerPreviewSelected => {
+            if state.busy {
+                state.viewer_queued_preview = state.selected;
+                state.status = "Asset preview queued until the current operation finishes.".into();
+                return Task::none();
+            }
             let Some(inventory) = &state.inventory else {
                 state.status =
                     "Extract the PAK into an isolated folder and index it to preview files.".into();
@@ -2770,6 +2790,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     persist_preferences(state);
                 }
                 Ok(Completed::ImportedPakFiles(inventory)) => {
+                    state.viewer_queued_preview = None;
                     state.status = format!(
                         "Read-only preview: {} manifest-listed files checked for size and location.",
                         inventory.entries.len()
@@ -2785,6 +2806,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::AssetLibrary);
                 }
                 Ok(Completed::Inventory(inventory)) => {
+                    state.viewer_queued_preview = None;
+                    state.file_selection.clear();
                     state.status = format!(
                         "{} files indexed; no originals modified.",
                         inventory.entries.len()
@@ -3012,8 +3035,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         mesh.info.vertex_count, mesh.info.triangle_count
                     );
                     state.model = Some(Arc::new(mesh));
+                    // An old character's textures and motion must never appear
+                    // on a different mesh while materials are being resolved.
+                    state.diffuse = None;
+                    state.normal_map = None;
+                    state.emissive_map = None;
+                    state.native_caf = None;
+                    state.glb_motion = None;
+                    state.playing = false;
+                    state.viewer_tab = ViewerTab::Model;
                     state.page = Some(Page::Models);
                     state.zoom = 1.0;
+                    state.pan_x = 0.0;
+                    state.pan_y = 0.0;
                 }
                 Ok(Completed::Terrain(mesh, info)) => {
                     state.status = format!(
@@ -3212,6 +3246,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                 }
                 Err(e) => state.status = format!("Operation refused: {e}"),
+            }
+            // A single worker services both windows; preserve the last click
+            // rather than requiring users to click a second time after loading.
+            if let Some(index) = state.viewer_queued_preview.take()
+                && state.selected == Some(index)
+                && let Some(entry) = state.inventory.as_ref().and_then(|i| i.entries.get(index))
+            {
+                let is_cdf = entry.relative_path.to_ascii_lowercase().ends_with(".cdf");
+                return update(state, if is_cdf {
+                    Message::ViewerPreviewStaticCdf
+                } else {
+                    Message::ViewerPreviewSelected
+                });
             }
         }
     }
@@ -4059,6 +4106,51 @@ mod project_edit_tests {
         let _task = update(&mut state, Message::ViewerSelectFile(0));
         assert_eq!(state.selected, Some(0));
         assert!(state.busy, "a normal click must queue a preview");
+    }
+
+
+    #[test]
+    fn selecting_another_asset_while_busy_loads_latest_without_second_click() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..2 {
+            std::fs::write(dir.path().join(format!("sample_{i}.skin")), b"invalid").unwrap();
+        }
+        let mut state = State {
+            inventory: Some(scan_directory(dir.path()).unwrap()),
+            ..State::default()
+        };
+        refresh_viewer_rows(&mut state);
+        let _ = update(&mut state, Message::ViewerSelectFile(0));
+        assert!(state.busy);
+        let _ = update(&mut state, Message::ViewerSelectFile(1));
+        assert_eq!(state.viewer_queued_preview, Some(1));
+        assert_eq!(state.selected, Some(1));
+        let _ = update(&mut state, Message::Finished(Err("previous preview failed".into())));
+        assert!(state.busy, "queued preview must start immediately after worker completion");
+        assert_eq!(state.viewer_queued_preview, None);
+        assert_eq!(state.selected, Some(1));
+    }
+
+    #[test]
+    fn rescanning_discards_queued_preview_from_the_old_directory() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        std::fs::write(first.path().join("old.skin"), b"invalid").unwrap();
+        std::fs::write(second.path().join("new.dds"), b"invalid").unwrap();
+        let mut state = State {
+            inventory: Some(scan_directory(first.path()).unwrap()),
+            busy: true,
+            ..State::default()
+        };
+        refresh_viewer_rows(&mut state);
+        let _ = update(&mut state, Message::ViewerSelectFile(0));
+        assert_eq!(state.viewer_queued_preview, Some(0));
+        let newer = scan_directory(second.path()).unwrap();
+        let _ = update(&mut state, Message::Finished(Ok(Completed::Inventory(newer))));
+        assert!(!state.busy);
+        assert_eq!(state.viewer_queued_preview, None);
+        assert_eq!(state.selected, None);
+        assert!(state.file_selection.indices.is_empty());
     }
 
     #[test]
