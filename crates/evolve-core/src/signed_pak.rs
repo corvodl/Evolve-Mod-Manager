@@ -1276,7 +1276,7 @@ mod tests {
             let crc = crc32fast::hash(payload);
             let size = payload.len() as u32;
             let mut local = [0u8; 30];
-            local[..4].copy_from_slice(b"PK\\x03\\x04");
+            local[..4].copy_from_slice(b"PK\x03\x04");
             local[8..10].copy_from_slice(&13u16.to_le_bytes());
             local[14..18].copy_from_slice(&crc.to_le_bytes());
             local[18..22].copy_from_slice(&size.to_le_bytes());
@@ -1294,7 +1294,7 @@ mod tests {
                 &crypt_bytes(payload, &keys[slot], entry_iv(&member)).unwrap()
             );
             let mut record = [0u8; 46];
-            record[..4].copy_from_slice(b"PK\\x01\\x02");
+            record[..4].copy_from_slice(b"PK\x01\x02");
             record[10..12].copy_from_slice(&13u16.to_le_bytes());
             record[16..20].copy_from_slice(&crc.to_le_bytes());
             record[20..24].copy_from_slice(&size.to_le_bytes());
@@ -1314,7 +1314,7 @@ mod tests {
         let mut trailer = comment;
         trailer[11..139].copy_from_slice(&sig);
         let mut end = [0u8; 22];
-        end[..4].copy_from_slice(b"PK\\x05\\x06");
+        end[..4].copy_from_slice(b"PK\x05\x06");
         end[8..10].copy_from_slice(&2u16.to_le_bytes());
         end[10..12].copy_from_slice(&2u16.to_le_bytes());
         end[12..16].copy_from_slice(&(dual_cdr.len() as u32).to_le_bytes());
