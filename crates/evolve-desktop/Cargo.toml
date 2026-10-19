@@ -26,3 +26,6 @@ winres = "0.1"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+naga = { version = "27", features = ["wgsl-in"] }
