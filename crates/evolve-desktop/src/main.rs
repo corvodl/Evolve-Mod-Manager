@@ -272,6 +272,7 @@ enum Operation {
     RestoreRawProjectMember(ProjectRow, PathBuf, String),
     UnpackRawProject(PathBuf, PathBuf, PathBuf),
     LoadImportedLibrary(PathBuf),
+    LoadImportedLibraryStartup(PathBuf),
     ImportSignedLibrary(PathBuf, PathBuf, PathBuf),
     OpenImportedPak(ImportedPak),
     CreateProjectFromLibrary(ImportedPak, PathBuf, PathBuf),
@@ -346,6 +347,7 @@ enum Completed {
     ImportedRawProjectMember(bool, String, PathBuf),
     RestoredRawProjectMember(bool, String, PathBuf),
     ImportedLibrary(ImportedLibrary),
+    StartupLibrary(ImportedLibrary),
     ImportedSignedLibrary(LibraryImportReport, ImportedLibrary),
     ImportedPakFiles(Inventory),
     Dependencies(DependencyGraph),
@@ -438,6 +440,9 @@ impl Operation {
                 .map_err(|e| e.to_string()),
             Self::LoadImportedLibrary(root) => imported_library(&root)
                 .map(Completed::ImportedLibrary)
+                .map_err(|e| e.to_string()),
+            Self::LoadImportedLibraryStartup(root) => imported_library(&root)
+                .map(Completed::StartupLibrary)
                 .map_err(|e| e.to_string()),
             Self::ImportSignedLibrary(root, source, key) => {
                 // Import is explicitly requested; don't create any directory while browsing.
@@ -3159,6 +3164,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::AssetLibrary);
                     persist_preferences(state);
                 }
+                Ok(Completed::StartupLibrary(catalog)) => {
+                    state.status = format!(
+                        "{} imported Asset Library PAKs discovered automatically; originals untouched.",
+                        catalog.archives.len()
+                    );
+                    state.library_root = catalog.root.clone();
+                    state.preferences.asset_library_root = catalog.root.clone();
+                    state.library_catalog = Some(catalog);
+                    state.library_selection.clear();
+                    state.library_selected = None;
+                    state.library_page = 0;
+                    refresh_library_matches(state);
+                    // Startup indexing must not pull users away from Home or Settings.
+                }
                 Ok(Completed::ImportedLibrary(catalog)) => {
                     let count = catalog.archives.len();
                     state.status = format!(
@@ -4371,15 +4390,22 @@ impl Desktop {
             size: iced::Size::new(1440.0, 900.0),
             ..window::Settings::default()
         });
+        let mut state = initial_state();
+        let library_root = PathBuf::from(&state.library_root);
+        let startup = if library_root.is_dir() {
+            launch(&mut state, Operation::LoadImportedLibraryStartup(library_root))
+        } else {
+            Task::none()
+        };
         (
             Self {
-                state: initial_state(),
+                state,
                 main_id,
                 viewer_id: None,
                 inspector_id: None,
                 activity_id: None,
             },
-            opened.map(|_| Message::ViewerOpened),
+            Task::batch([opened.map(|_| Message::ViewerOpened), startup]),
         )
     }
 
