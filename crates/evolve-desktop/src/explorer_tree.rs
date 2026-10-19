@@ -20,6 +20,7 @@ fn add_entries<'a>(
     let mut nodes: BTreeMap<String, Vec<ExplorerRow>> = BTreeMap::new();
     let mut folders = HashSet::new();
     let filter = query.trim().to_lowercase();
+    let mut assemblies = Vec::new();
     for (index, original, bytes) in entries {
         let path = original.replace('\\', "/");
         // Archive inventory paths are validated by the core. Also exclude
@@ -31,6 +32,9 @@ fn add_entries<'a>(
             || (!filter.is_empty() && !path.to_lowercase().contains(&filter))
         {
             continue;
+        }
+        if path.to_ascii_lowercase().ends_with(".cdf") {
+            assemblies.push((index, path.clone()));
         }
         let parts: Vec<&str> = path.split('/').collect();
         let mut parent = String::new();
@@ -60,6 +64,29 @@ fn add_entries<'a>(
             index: Some(index),
             bytes,
         });
+    }
+    if !assemblies.is_empty() {
+        let group = "@assemblies".to_owned();
+        nodes.entry(String::new()).or_default().push(ExplorerRow {
+            path: group.clone(),
+            name: "Full Character Assemblies (static)".into(),
+            depth: 0,
+            directory: true,
+            index: None,
+            bytes: 0,
+        });
+        for (index, file) in assemblies {
+            let stem = file.rsplit('/').next().unwrap_or("Character")
+                .trim_end_matches(".cdf").replace('_', " ");
+            nodes.entry(group.clone()).or_default().push(ExplorerRow {
+                path: format!("{group}/{file}"),
+                name: format!("{stem} • Full Character (verify parts)"),
+                depth: 1,
+                directory: false,
+                index: Some(index),
+                bytes: 0,
+            });
+        }
     }
     for siblings in nodes.values_mut() {
         siblings.sort_by(|a, b| {
@@ -144,11 +171,25 @@ mod tests {
         let mut collapsed = HashSet::new();
         collapsed.insert("characters".to_owned());
         let tree = visible_rows(fixture(), "", &collapsed, 50);
-        assert_eq!(tree.len(), 2);
-        assert_eq!(tree[1].index, Some(2));
+        assert_eq!(tree.len(), 4);
+        assert_eq!(tree.last().unwrap().index, Some(2));
+        assert!(tree.iter().any(|r| r.path.starts_with("@assemblies/") && r.index == Some(0)));
         let found = visible_rows(fixture(), "diffuse.dds", &collapsed, 50);
         assert_eq!(found.last().unwrap().index, Some(1));
         assert_eq!(found.len(), 5);
+    }
+
+    #[test]
+    fn virtual_full_character_entry_targets_only_an_original_cdf() {
+        let rows = visible_rows(fixture(), "", &HashSet::new(), 100);
+        let character = rows.iter()
+            .find(|row| row.path.starts_with("@assemblies/")).unwrap();
+        assert_eq!(character.index, Some(0));
+        assert!(character.name.contains("Full Character"));
+        let mut collapsed = HashSet::new();
+        collapsed.insert("@assemblies".into());
+        assert!(!visible_rows(fixture(), "", &collapsed, 100)
+            .iter().any(|row| row.path.starts_with("@assemblies/")));
     }
 
     #[test]
