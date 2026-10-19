@@ -239,6 +239,27 @@ changing these labels or authorizing v1.0.
   broader scene-history operations remain unported. Synthetic regression tests
   and Windows real-map acceptance remain required.
 
+## Experimental unified original-rig CDF FBX (release-gated)
+
+- The native Asset Viewer can request **one new FBX** assembled from a selected
+  CDF's exactly resolved default skin attachments. Each part must independently
+  decode with verified original skin weights, UV0, and the same compiled
+  skeleton. No guessed bones or missing meshes are substituted.
+- A bounded external Blender bridge imports these independently verified GLBs,
+  checks original rest-bone names/parents/matrices, and rebinds all parts to one
+  original armature. It then reimports the resulting binary FBX to verify
+  exported meshes retain an armature modifier, weights, UVs and bone count.
+- Source assets and the Asset Library are left untouched, existing destinations
+  cannot be overwritten, and no partial FBX is published after an error.
+  An exact original non-additive CAF may be opted into, but multiple Actions,
+  native DBA decoding and live wgpu skeletal deformation remain unfinished.
+- **This does not yet guarantee full character export parity.** Per-part and
+  per-submaterial textures, transparency, secondary texture channels,
+  equipment offset/bone attachment variants, complex rig formats and real
+  Blender/Windows Stage 2 acceptance still need work. The resulting export
+  reports `fully_textured = false`; this path is experimental and not a
+  production-ready painting/animation workflow until verified on real assets.
+
 ## October 19 — file actions and flat CDF FBX staging
 
 - The native Asset Viewer file list now accepts a right-click on indexed
