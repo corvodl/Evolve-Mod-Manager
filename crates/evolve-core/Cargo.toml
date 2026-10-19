@@ -21,5 +21,8 @@ flate2 = "1"
 half = "2"
 tempfile = "3"
 
+[dev-dependencies]
+rand = "0.8"
+
 [lints]
 workspace = true

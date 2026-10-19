@@ -542,6 +542,102 @@ mod tests {
         assert!(parse_cdr(&cdr, "Game.pak", 100, 1).is_err());
     }
     #[test]
+    fn verifies_user_supplied_rsa_and_extracts_signed_twofish_sample() {
+        use rand::rngs::OsRng;
+        use rsa::pkcs1::EncodeRsaPublicKey;
+        use rsa::traits::PrivateKeyParts;
+        let private = rsa::RsaPrivateKey::new(&mut OsRng, 1024).unwrap();
+        let public = RsaPublicKey::from(&private);
+        // Synthetic source: signature and content are generated entirely here;
+        // this is not game key material and does not test real-game compatibility.
+        fn wrap(raw: &[u8; 16], private: &rsa::RsaPrivateKey) -> [u8; RSA_BYTES] {
+            let mut db = vec![0u8; 95];
+            db[..32].copy_from_slice(&Sha256::digest([]));
+            db[78] = 1;
+            db[79..95].copy_from_slice(raw);
+            let mut seed = [7u8; 32];
+            let mask = mgf1(&seed, db.len());
+            for (v, m) in db.iter_mut().zip(mask) { *v ^= m; }
+            let seed_mask = mgf1(&db, 32);
+            for (v, m) in seed.iter_mut().zip(seed_mask) { *v ^= m; }
+            let mut encoded = [0u8; RSA_BYTES];
+            encoded[1..33].copy_from_slice(&seed);
+            encoded[33..].copy_from_slice(&db);
+            let integer = BigUint::from_bytes_be(&encoded).modpow(private.d(), private.n());
+            let bytes = integer.to_bytes_be();
+            let mut output = [0u8; RSA_BYTES];
+            output[RSA_BYTES - bytes.len()..].copy_from_slice(&bytes);
+            output
+        }
+        let keys = [[4u8; 16]; 16];
+        let iv = [9u8; 16];
+        let filename = b"example.caf";
+        let payload = b"Stage 2 synthetic signed sample";
+        let crc = crc32fast::hash(payload);
+        let member = SignedEntry {
+            path: "example.caf".into(),
+            method: 13,
+            flags: 0,
+            crc32: crc,
+            compressed_size: payload.len() as u64,
+            size: payload.len() as u64,
+            encrypted_data_offset: (30 + filename.len()) as u64,
+        };
+        let slot = (!(crc >> 2) & 15) as usize;
+        let encrypted_payload = crypt_bytes(payload, &keys[slot], entry_iv(&member)).unwrap();
+        let mut bytes = vec![0u8; 30];
+        bytes.extend_from_slice(filename);
+        bytes.extend_from_slice(&encrypted_payload);
+        let cdr_at = bytes.len() as u32;
+        let mut cdr = vec![0u8; 46];
+        cdr[..4].copy_from_slice(b"PK\x01\x02");
+        cdr[10..12].copy_from_slice(&13u16.to_le_bytes());
+        cdr[16..20].copy_from_slice(&crc.to_le_bytes());
+        cdr[20..24].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+        cdr[24..28].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+        cdr[28..30].copy_from_slice(&(filename.len() as u16).to_le_bytes());
+        cdr.extend_from_slice(filename);
+        bytes.extend_from_slice(&crypt_bytes(&cdr, &keys[0], iv).unwrap());
+        let mut message = cdr.clone();
+        message.extend_from_slice(b"sample.pak");
+        let digest = Sha256::digest(&message);
+        let signature = private.sign(Pss::new_with_salt::<Sha256>(0), &digest).unwrap();
+        assert_eq!(signature.len(), RSA_BYTES);
+        let mut comment = [0u8; TRAILER_BYTES];
+        comment[..6].copy_from_slice(b"\x06\x00\x00\x00\x01\x03");
+        comment[6..10].copy_from_slice(&133u32.to_le_bytes());
+        comment[11..139].copy_from_slice(&signature);
+        comment[139..143].copy_from_slice(&2181u32.to_le_bytes());
+        comment[143..271].copy_from_slice(&wrap(&iv, &private));
+        for (i, key) in keys.iter().enumerate() {
+            let start = 272 + i * RSA_BYTES;
+            comment[start..start + RSA_BYTES].copy_from_slice(&wrap(key, &private));
+        }
+        let mut eocd = [0u8; 22];
+        eocd[..4].copy_from_slice(b"PK\x05\x06");
+        eocd[8..10].copy_from_slice(&1u16.to_le_bytes());
+        eocd[10..12].copy_from_slice(&1u16.to_le_bytes());
+        eocd[12..16].copy_from_slice(&(cdr.len() as u32).to_le_bytes());
+        eocd[16..20].copy_from_slice(&cdr_at.to_le_bytes());
+        eocd[20..22].copy_from_slice(&(TRAILER_BYTES as u16).to_le_bytes());
+        bytes.extend_from_slice(&eocd);
+        bytes.extend_from_slice(&comment);
+        let root = tempfile::tempdir().unwrap();
+        let archive = root.path().join("sample.pak");
+        let key = root.path().join("public.der");
+        fs::write(&archive, &bytes).unwrap();
+        fs::write(&key, public.to_pkcs1_der().unwrap().as_bytes()).unwrap();
+        let report = inspect_signed_pak(&archive, &key, "sample.pak").unwrap();
+        assert!(report.signature_verified);
+        assert_eq!(report.entries.len(), 1);
+        let extracted = root.path().join("unpacked");
+        extract_signed_pak(&archive, &key, "sample.pak", &extracted).unwrap();
+        assert_eq!(fs::read(extracted.join("example.caf")).unwrap(), payload);
+        assert!(extract_signed_pak(&archive, &key, "sample.pak", &extracted).is_err());
+        let wrong = inspect_signed_pak(&archive, &key, "different.pak");
+        assert!(wrong.is_err(), "signed archive basename is authenticated");
+    }
+    #[test]
     fn validates_user_basename_before_opening_archive() {
         let path = Path::new("does-not-exist.pak");
         assert!(open_verified_signed_pak(path, path, "bad/name.pak").is_err());
