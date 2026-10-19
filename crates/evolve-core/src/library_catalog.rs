@@ -409,6 +409,43 @@ mod tests {
         assert_eq!(describe_archive("animationsdba.pak").0, "Animations");
     }
     #[test]
+    fn source_texture_lookup_fails_closed_on_cross_build_duplicates() {
+        let root = tempfile::tempdir().unwrap();
+        let archive_ids = ["11111111111111111111", "22222222222222222222"];
+        for (i, id) in archive_ids.iter().enumerate() {
+            let name = format!("textures{i}.pak");
+            let folder = root.path().join(format!("{name}__{id}"));
+            fs::create_dir_all(folder.join("files/textures")).unwrap();
+            fs::write(folder.join("files/textures/body.dds.0"), b"hires").unwrap();
+            fs::write(
+                folder.join("asset-library.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version":1,"name":name,"source":"/unused",
+                    "entries":[{"path":"textures/body.dds.0","bytes":5}]
+                })).unwrap()
+            ).unwrap();
+        }
+        fs::write(
+            root.path().join("build-collections.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version":1,
+                "builds":{
+                    "stage-two":{"label":"Stage 2","members":{"11111111111111111111":{}}},
+                    "legacy":{"label":"Legacy","members":{"22222222222222222222":{}}}
+                }
+            })).unwrap()
+        ).unwrap();
+        let global = resolve_imported_reference(root.path(), "textures/body.tif", None).unwrap();
+        assert!(matches!(global, LibraryReferenceStatus::Ambiguous(found) if found.len() == 2));
+        let scoped = resolve_imported_reference(root.path(), "textures/body.tif", Some("Stage 2")).unwrap();
+        assert!(matches!(scoped, LibraryReferenceStatus::Found(hit)
+            if hit.archive_id == archive_ids[0] && hit.relative_path == "textures/body.dds.0"));
+        assert!(matches!(resolve_imported_reference(root.path(), "textures/other.dds", None).unwrap(),
+            LibraryReferenceStatus::Missing));
+        assert!(resolve_imported_reference(root.path(), "../body.tif", None).is_err());
+    }
+
+    #[test]
     fn reads_existing_imports_without_changing_them() {
         let temp = tempfile::tempdir().unwrap();
         let folder = temp
