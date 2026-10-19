@@ -251,6 +251,8 @@ fn explorer(state: &State) -> Element<'_, Message> {
         };
         let action = if entry.directory {
             Message::ViewerToggleFolder(entry.path)
+        } else if entry.path.starts_with("@assemblies/") {
+            Message::ViewerOpenStaticCdf(entry.index.expect("CDF assembly row has source index"))
         } else {
             Message::ViewerSelectFile(entry.index.expect("file row has source index"))
         };
