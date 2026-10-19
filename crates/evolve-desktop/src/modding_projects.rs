@@ -310,10 +310,14 @@ pub fn build_single_raw(
     if !safe_member(rel) {
         return Err("Unsafe modified member".into());
     }
-    let expected = manifest.get("entries").and_then(Value::as_array)
-        .and_then(|entries| entries.iter().find(|entry|
-            entry.get("path").and_then(Value::as_str) == Some(rel.as_str())
-        ))
+    let expected = manifest
+        .get("entries")
+        .and_then(Value::as_array)
+        .and_then(|entries| {
+            entries
+                .iter()
+                .find(|entry| entry.get("path").and_then(Value::as_str) == Some(rel.as_str()))
+        })
         .ok_or("Modified member is absent from the verified original manifest")?;
     if expected.get("format").and_then(Value::as_str) != Some("raw") {
         return Err("This CryXmlB/converted member requires semantic round-trip serialization, not raw signed replacement.".into());
@@ -323,30 +327,47 @@ pub fn build_single_raw(
     if relative != project.target {
         return Err("Manifest target and staged original disagree".into());
     }
-    let manifest_source = manifest.get("source_pak").and_then(Value::as_str)
+    let manifest_source = manifest
+        .get("source_pak")
+        .and_then(Value::as_str)
         .ok_or("Original manifest source path missing")?;
     if fs::canonicalize(manifest_source).map_err(|e| e.to_string())?
         != fs::canonicalize(&original).map_err(|e| e.to_string())?
     {
         return Err("Workspace source archive differs from the selected staged PAK".into());
     }
-    let baseline = manifest.get("source_sha256").and_then(Value::as_str)
+    let baseline = manifest
+        .get("source_sha256")
+        .and_then(Value::as_str)
         .ok_or("Source archive identity digest missing")?;
-    if !digest(&original).map_err(|e| e.to_string())?.eq_ignore_ascii_case(baseline) {
+    if !digest(&original)
+        .map_err(|e| e.to_string())?
+        .eq_ignore_ascii_case(baseline)
+    {
         return Err("Source PAK changed since extraction; refusing to build".into());
     }
     // A fresh inspection also detects edits that occurred after project-list
     // indexing. Do not issue a partial or stale rebuild.
     let fresh = inspect_project(
-        &folder, stage, project.label.clone(), project.source_build.clone()
+        &folder,
+        stage,
+        project.label.clone(),
+        project.source_build.clone(),
     );
     if !fresh.changed_known || fresh.modified != project.modified {
-        return Err("Project edits changed during preparation; refresh and review before building".into());
+        return Err(
+            "Project edits changed during preparation; refresh and review before building".into(),
+        );
     }
     let keys = super::modding_keys::signing_keys(stage)?;
     if let Some(hash) = manifest.get("public_key_sha256").and_then(Value::as_str) {
-        if !digest(&keys.public).map_err(|e| e.to_string())?.eq_ignore_ascii_case(hash) {
-            return Err("Stage signing key no longer matches the original extracted archive".into());
+        if !digest(&keys.public)
+            .map_err(|e| e.to_string())?
+            .eq_ignore_ascii_case(hash)
+        {
+            return Err(
+                "Stage signing key no longer matches the original extracted archive".into(),
+            );
         }
     }
     let basename = super::modding_keys::signed_basename(&original)?;
@@ -356,8 +377,7 @@ pub fn build_single_raw(
         return Err("Archive signed basename mismatch".into());
     }
     let replacement = folder.join("files").join(rel);
-    let source_files = fs::canonicalize(folder.join("files"))
-        .map_err(|e| e.to_string())?;
+    let source_files = fs::canonicalize(folder.join("files")).map_err(|e| e.to_string())?;
     let canonical = fs::canonicalize(&replacement).map_err(|e| e.to_string())?;
     if !canonical.starts_with(&source_files)
         || !fs::symlink_metadata(&replacement).is_ok_and(|m| m.file_type().is_file())
@@ -373,13 +393,20 @@ pub fn build_single_raw(
     }
     let number = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| e.to_string())?.as_nanos();
+        .map_err(|e| e.to_string())?
+        .as_nanos();
     let output_folder = built.join(format!("Rust-Raw-{:x}", number));
     fs::create_dir(&output_folder).map_err(|e| e.to_string())?;
     let output = output_folder.join(&basename);
     let result = evolve_core::rebuild_signed_pak_entry(
-        &original, &keys.public, &keys.private, &keys.public,
-        &basename, rel, &replacement, &output,
+        &original,
+        &keys.public,
+        &keys.private,
+        &keys.public,
+        &basename,
+        rel,
+        &replacement,
+        &output,
     );
     match result {
         Ok(report) => Ok((report.changed_entry, output)),
