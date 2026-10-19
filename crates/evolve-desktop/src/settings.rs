@@ -102,9 +102,17 @@ impl Preferences {
         if self.font_family.len() > 120 || self.archive_label.len() > 200 {
             return Err(SettingsError::InvalidValue);
         }
-        for path in [&self.stage, &self.swap, &self.projects, &self.game_storage_root,
-            &self.current_workspace, &self.output_pak, &self.batch_root,
-            &self.asset_library_root, &self.blender_executable] {
+        for path in [
+            &self.stage,
+            &self.swap,
+            &self.projects,
+            &self.game_storage_root,
+            &self.current_workspace,
+            &self.output_pak,
+            &self.batch_root,
+            &self.asset_library_root,
+            &self.blender_executable,
+        ] {
             if path.len() > 4096 || path.contains('\0') {
                 return Err(SettingsError::InvalidValue);
             }
@@ -121,7 +129,10 @@ impl Preferences {
             if name.len() > 120 || colors.len() > 64 {
                 return Err(SettingsError::InvalidValue);
             }
-            if colors.iter().any(|(role, color)| !valid_theme_entry(role, color)) {
+            if colors
+                .iter()
+                .any(|(role, color)| !valid_theme_entry(role, color))
+            {
                 return Err(SettingsError::InvalidValue);
             }
         }
@@ -168,7 +179,9 @@ pub fn save_to(path: &Path, prefs: &Preferences) -> Result<(), SettingsError> {
         .tempfile_in(folder)?;
     std::io::Write::write_all(temporary.as_file_mut(), &bytes)?;
     temporary.as_file_mut().sync_all()?;
-    temporary.persist(path).map_err(|e| SettingsError::Io(e.error))?;
+    temporary
+        .persist(path)
+        .map_err(|e| SettingsError::Io(e.error))?;
     Ok(())
 }
 
@@ -179,12 +192,16 @@ mod tests {
     fn migrates_familiar_settings_keys_without_forgetting_defaults() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
-        fs::write(&path, r#"{
+        fs::write(
+            &path,
+            r#"{
             "ui_density":"Compact","appearance_mode":"Light",
             "file_explorer_side":"Left","keep_original_snapshots":false,
             "show_activity_on_tasks":false,"current_workspace":"C:\\Projects\\Evolve",
             "another_old_option":true
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
         let prefs = load_from(&path).unwrap();
         assert_eq!(prefs.ui_density, "Compact");
         assert_eq!(prefs.file_explorer_side, "Left");
@@ -209,7 +226,9 @@ mod tests {
         save_to(&path, &prefs).unwrap();
         let original = fs::read(&path).unwrap();
         let mut invalid = prefs;
-        invalid.appearance_colors.insert("primary".into(), "invalid".into());
+        invalid
+            .appearance_colors
+            .insert("primary".into(), "invalid".into());
         assert!(save_to(&path, &invalid).is_err());
         assert_eq!(fs::read(&path).unwrap(), original);
     }

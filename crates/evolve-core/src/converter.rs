@@ -136,25 +136,23 @@ fn inspect_outputs(
                     .is_some_and(|v| v.eq_ignore_ascii_case("glb"))
                     && let Ok(motion) = AnimatedGlb::read(&entry.path())
                 {
-                        let names = motion.list_clips();
-                        if !names.is_empty() {
-                            if clips.len() + names.len() > MAX_TRACKS {
-                                return Err(ConverterError::Invalid(
-                                    "too many motion tracks".into(),
-                                ));
-                            }
-                            clips.extend(names);
-                            outputs.push(
-                                entry
-                                    .path()
-                                    .strip_prefix(folder)
-                                    .map_err(|_| {
-                                        ConverterError::Invalid("untrusted output path".into())
-                                    })?
-                                    .to_string_lossy()
-                                    .replace('\\', "/"),
-                            );
+                    let names = motion.list_clips();
+                    if !names.is_empty() {
+                        if clips.len() + names.len() > MAX_TRACKS {
+                            return Err(ConverterError::Invalid("too many motion tracks".into()));
                         }
+                        clips.extend(names);
+                        outputs.push(
+                            entry
+                                .path()
+                                .strip_prefix(folder)
+                                .map_err(|_| {
+                                    ConverterError::Invalid("untrusted output path".into())
+                                })?
+                                .to_string_lossy()
+                                .replace('\\', "/"),
+                        );
+                    }
                 }
             }
         }

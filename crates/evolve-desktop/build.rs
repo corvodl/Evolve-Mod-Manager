@@ -5,6 +5,8 @@ fn main() {
         resource.set_icon("../../assets/hunt.ico");
         resource.set("ProductName", "Evolve Mod Manager");
         resource.set("FileDescription", "Evolve Mod Manager");
-        resource.compile().expect("Application icon resource failed");
+        resource
+            .compile()
+            .expect("Application icon resource failed");
     }
 }

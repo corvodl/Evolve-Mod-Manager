@@ -1,9 +1,9 @@
 //! Native wgpu-backed desktop shell. Asset operations use blocking workers, so
 //! file I/O/decompression never runs in the interactive Iced view/update path.
-mod textured;
-mod viewport;
 mod settings;
+mod textured;
 mod updater;
+mod viewport;
 use evolve_core::{
     AnimatedGlb, AssetEntry, CdfDefinition, ConvertedMotion, DdsInfo, Inventory, LevelScene,
     ModelInfo, NativeCafMotion, PakInventory, RenderMesh, RigReport, SignedPakInfo, TerrainInfo,
@@ -18,12 +18,14 @@ use iced::widget::{
     text_input, tooltip,
 };
 use iced::{Element, Fill, Length, Subscription, Task, Theme};
+use settings::{Preferences, load_from, save_to, settings_path};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use settings::{Preferences, load_from, save_to, settings_path};
-use updater::{ReleaseUpdate, UpdateChannel, discover_update, download_installer, launch_verified_installer};
 use textured::Scene as TexturedScene;
+use updater::{
+    ReleaseUpdate, UpdateChannel, discover_update, download_installer, launch_verified_installer,
+};
 use viewport::MeshViewport;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -382,12 +384,11 @@ fn launch(state: &mut State, operation: Operation) -> Task<Message> {
 }
 
 fn persist_preferences(state: &mut State) {
-    state.settings_status = match settings_path()
-        .and_then(|path| save_to(&path, &state.preferences))
-    {
-        Ok(()) => "Preferences saved to your Windows user profile.".into(),
-        Err(err) => format!("Preferences could not be saved: {err}"),
-    };
+    state.settings_status =
+        match settings_path().and_then(|path| save_to(&path, &state.preferences)) {
+            Ok(()) => "Preferences saved to your Windows user profile.".into(),
+            Err(err) => format!("Preferences could not be saved: {err}"),
+        };
 }
 
 fn check_updates_task(channel: UpdateChannel) -> Task<Message> {
@@ -395,7 +396,9 @@ fn check_updates_task(channel: UpdateChannel) -> Task<Message> {
         async move {
             tokio::task::spawn_blocking(move || {
                 discover_update(channel, env!("CARGO_PKG_VERSION")).map_err(|e| e.to_string())
-            }).await.map_err(|e| format!("Update checker crashed: {e}"))?
+            })
+            .await
+            .map_err(|e| format!("Update checker crashed: {e}"))?
         },
         Message::UpdateChecked,
     )
@@ -407,19 +410,26 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::PreferenceDensity => {
             state.preferences.ui_density = if state.preferences.ui_density == "Compact" {
                 "Comfortable".into()
-            } else { "Compact".into() };
+            } else {
+                "Compact".into()
+            };
             persist_preferences(state);
         }
         Message::PreferenceExplorerSide => {
-            state.preferences.file_explorer_side = if state.preferences.file_explorer_side == "Left" {
+            state.preferences.file_explorer_side = if state.preferences.file_explorer_side == "Left"
+            {
                 "Right".into()
-            } else { "Left".into() };
+            } else {
+                "Left".into()
+            };
             persist_preferences(state);
         }
         Message::PreferenceAppearance => {
             state.preferences.appearance_mode = if state.preferences.appearance_mode == "Dark" {
                 "Light".into()
-            } else { "Dark".into() };
+            } else {
+                "Dark".into()
+            };
             persist_preferences(state);
         }
         Message::PreferenceReduceMotion => {
@@ -460,20 +470,26 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
             return check_updates_task(channel);
         }
-        Message::UpdateChecked(result) => {
-            match result {
-                Ok(Some(update)) => {
-                    state.update_status = format!("Update {} ({:?}) is available.",
-                        update.version, update.channel);
-                    state.available_update = Some(update);
-                }
-                Ok(None) => state.update_status = "No newer verified release on the selected channel.".into(),
-                Err(error) => state.update_status = format!("Cannot verify latest release: {error}"),
+        Message::UpdateChecked(result) => match result {
+            Ok(Some(update)) => {
+                state.update_status = format!(
+                    "Update {} ({:?}) is available.",
+                    update.version, update.channel
+                );
+                state.available_update = Some(update);
             }
-        }
+            Ok(None) => {
+                state.update_status = "No newer verified release on the selected channel.".into()
+            }
+            Err(error) => state.update_status = format!("Cannot verify latest release: {error}"),
+        },
         Message::DownloadUpdate => {
-            let Some(update) = state.available_update.clone() else { return Task::none(); };
-            if state.busy { return Task::none(); }
+            let Some(update) = state.available_update.clone() else {
+                return Task::none();
+            };
+            if state.busy {
+                return Task::none();
+            }
             let Ok(settings) = settings_path() else {
                 state.update_status = "Windows user settings folder could not be located.".into();
                 return Task::none();
@@ -485,9 +501,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.update_status = "Downloading and verifying installer checksum...".into();
             return Task::perform(
                 async move {
-                    tokio::task::spawn_blocking(move || download_installer(&update, &root)
-                        .map_err(|e| e.to_string())
-                    ).await.map_err(|e| format!("Download worker stopped: {e}"))?
+                    tokio::task::spawn_blocking(move || {
+                        download_installer(&update, &root).map_err(|e| e.to_string())
+                    })
+                    .await
+                    .map_err(|e| format!("Download worker stopped: {e}"))?
                 },
                 Message::UpdateDownloaded,
             );
@@ -496,7 +514,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.busy = false;
             match result {
                 Ok(path) => {
-                    state.update_status = "Installer checksum verified. Run it only if you approve this update.".into();
+                    state.update_status =
+                        "Installer checksum verified. Run it only if you approve this update."
+                            .into();
                     state.staged_installer = Some(path);
                 }
                 Err(error) => {
@@ -508,8 +528,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::RunVerifiedInstaller => {
             let (Some(installer), Some(update)) =
                 (&state.staged_installer, &state.available_update)
-            else { return Task::none(); };
-            let root = settings_path().ok().and_then(|p| p.parent().map(PathBuf::from));
+            else {
+                return Task::none();
+            };
+            let root = settings_path()
+                .ok()
+                .and_then(|p| p.parent().map(PathBuf::from));
             match root {
                 Some(root) => {
                     state.update_status = match launch_verified_installer(installer, update, &root) {
@@ -1441,7 +1465,9 @@ fn initial_state() -> State {
                 result.preferences = saved;
             }
             Err(error) => {
-                result.settings_status = format!("Could not read preferences; original file was not overwritten: {error}");
+                result.settings_status = format!(
+                    "Could not read preferences; original file was not overwritten: {error}"
+                );
             }
         }
     }

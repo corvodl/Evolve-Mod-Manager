@@ -91,32 +91,51 @@ fn validate_digest(digest: &str) -> bool {
 }
 
 fn asset_checksum(body: &str, name: &str) -> Option<String> {
-    let candidates = body.lines().filter_map(|line| {
-        let tokens: Vec<&str> = line.split_ascii_whitespace().collect();
-        if tokens.len() == 3 && tokens[0] == "SHA256" && tokens[1] == name
-            && validate_digest(tokens[2])
-        {
-            Some(tokens[2].to_ascii_lowercase())
-        } else {
-            None
-        }
-    }).collect::<Vec<_>>();
-    if candidates.len() != 1 { None } else { candidates.first().cloned() }
+    let candidates = body
+        .lines()
+        .filter_map(|line| {
+            let tokens: Vec<&str> = line.split_ascii_whitespace().collect();
+            if tokens.len() == 3
+                && tokens[0] == "SHA256"
+                && tokens[1] == name
+                && validate_digest(tokens[2])
+            {
+                Some(tokens[2].to_ascii_lowercase())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    if candidates.len() != 1 {
+        None
+    } else {
+        candidates.first().cloned()
+    }
 }
 
-fn parse_asset(release: &ApiRelease, version: &str, file: &str)
-    -> Result<VerifiedAsset, UpdateError>
-{
-    let matches = release.assets.iter().filter(|item| item.name == file)
+fn parse_asset(
+    release: &ApiRelease,
+    version: &str,
+    file: &str,
+) -> Result<VerifiedAsset, UpdateError> {
+    let matches = release
+        .assets
+        .iter()
+        .filter(|item| item.name == file)
         .collect::<Vec<_>>();
     if matches.len() != 1 {
-        return Err(UpdateError::Invalid(format!("missing or duplicate {file} asset")));
+        return Err(UpdateError::Invalid(format!(
+            "missing or duplicate {file} asset"
+        )));
     }
     let asset = matches[0];
-    if asset.size < 256 || asset.size > MAX_DOWNLOAD
+    if asset.size < 256
+        || asset.size > MAX_DOWNLOAD
         || asset.browser_download_url != format!("{}{file}", github_release_prefix(version))
     {
-        return Err(UpdateError::Invalid("download address or size is not the expected public release".into()));
+        return Err(UpdateError::Invalid(
+            "download address or size is not the expected public release".into(),
+        ));
     }
     let checksum = asset_checksum(release.body.as_deref().unwrap_or(""), file)
         .ok_or_else(|| UpdateError::Invalid(format!("no unique published SHA256 for {file}")))?;
@@ -129,26 +148,47 @@ fn parse_asset(release: &ApiRelease, version: &str, file: &str)
 }
 
 fn parse_release(release: ApiRelease) -> Result<ReleaseUpdate, UpdateError> {
-    let version = release.tag_name.strip_prefix('v')
+    let version = release
+        .tag_name
+        .strip_prefix('v')
         .ok_or_else(|| UpdateError::Invalid("release tag must start with v".into()))?;
     let semver = Version::parse(version)
         .map_err(|_| UpdateError::Invalid("release tag is not semver".into()))?;
     if release.draft || release.prerelease != !semver.pre.is_empty() {
-        return Err(UpdateError::Invalid("draft or inconsistent release metadata".into()));
+        return Err(UpdateError::Invalid(
+            "draft or inconsistent release metadata".into(),
+        ));
     }
     let is_beta = !semver.pre.is_empty();
-    let channel = if is_beta { UpdateChannel::Beta } else { UpdateChannel::Stable };
+    let channel = if is_beta {
+        UpdateChannel::Beta
+    } else {
+        UpdateChannel::Stable
+    };
     let prefix = format!("EvolveModManager-");
-    let portable = parse_asset(&release, version, &format!("{prefix}Portable-{version}.zip"))?;
+    let portable = parse_asset(
+        &release,
+        version,
+        &format!("{prefix}Portable-{version}.zip"),
+    )?;
     let installer = parse_asset(&release, version, &format!("{prefix}Setup-{version}.exe"))?;
     if release.assets.len() != 2 {
-        return Err(UpdateError::Invalid("release must have exactly a portable ZIP and installer".into()));
+        return Err(UpdateError::Invalid(
+            "release must have exactly a portable ZIP and installer".into(),
+        ));
     }
-    if release.html_url != format!("https://github.com/{OWNER}/{REPOSITORY}/releases/tag/v{version}") {
+    if release.html_url
+        != format!("https://github.com/{OWNER}/{REPOSITORY}/releases/tag/v{version}")
+    {
         return Err(UpdateError::Invalid("unexpected public release URL".into()));
     }
-    Ok(ReleaseUpdate { version: version.into(), channel, portable, installer,
-        release_url: release.html_url })
+    Ok(ReleaseUpdate {
+        version: version.into(),
+        channel,
+        portable,
+        installer,
+        release_url: release.html_url,
+    })
 }
 
 fn read_metadata(mut response: impl Read) -> Result<Vec<u8>, UpdateError> {
@@ -161,16 +201,20 @@ fn read_metadata(mut response: impl Read) -> Result<Vec<u8>, UpdateError> {
     Ok(result)
 }
 
-pub fn discover_update(channel: UpdateChannel, installed: &str)
-    -> Result<Option<ReleaseUpdate>, UpdateError>
-{
+pub fn discover_update(
+    channel: UpdateChannel,
+    installed: &str,
+) -> Result<Option<ReleaseUpdate>, UpdateError> {
     let installed = Version::parse(installed)
         .map_err(|_| UpdateError::Invalid("current version is not semver".into()))?;
     let url = match channel {
         UpdateChannel::Stable => format!("{API}/releases/latest"),
         UpdateChannel::Beta => format!("{API}/releases?per_page=25"),
     };
-    let response = client()?.get(url).header("Accept", "application/vnd.github+json").send()?;
+    let response = client()?
+        .get(url)
+        .header("Accept", "application/vnd.github+json")
+        .send()?;
     if response.status().as_u16() == 404 {
         return Ok(None);
     }
@@ -179,7 +223,7 @@ pub fn discover_update(channel: UpdateChannel, installed: &str)
     let candidates = match channel {
         UpdateChannel::Stable => vec![
             serde_json::from_slice::<ApiRelease>(&bytes)
-                .map_err(|e| UpdateError::Invalid(e.to_string()))?
+                .map_err(|e| UpdateError::Invalid(e.to_string()))?,
         ],
         UpdateChannel::Beta => serde_json::from_slice::<Vec<ApiRelease>>(&bytes)
             .map_err(|e| UpdateError::Invalid(e.to_string()))?,
@@ -189,17 +233,21 @@ pub fn discover_update(channel: UpdateChannel, installed: &str)
         if candidate.draft || (channel == UpdateChannel::Beta && !candidate.prerelease) {
             continue;
         }
-        let Ok(parsed) = parse_release(candidate) else { continue };
+        let Ok(parsed) = parse_release(candidate) else {
+            continue;
+        };
         if parsed.channel != channel {
             continue;
         }
-        let Ok(version) = Version::parse(&parsed.version) else { continue };
+        let Ok(version) = Version::parse(&parsed.version) else {
+            continue;
+        };
         if version > installed {
             available.push((version, parsed));
         }
     }
-    available.sort_by(|a,b| a.0.cmp(&b.0));
-    Ok(available.pop().map(|(_,value)| value))
+    available.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(available.pop().map(|(_, value)| value))
 }
 
 fn check_file_hash(path: &Path, expected: &VerifiedAsset) -> Result<(), UpdateError> {
@@ -222,14 +270,15 @@ impl Write for DigestWriter<'_> {
         self.0.update(bytes);
         Ok(bytes.len())
     }
-    fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
-fn hasher_writer(digest: &mut Sha256) -> DigestWriter<'_> { DigestWriter(digest) }
+fn hasher_writer(digest: &mut Sha256) -> DigestWriter<'_> {
+    DigestWriter(digest)
+}
 
-pub fn download_installer(
-    update: &ReleaseUpdate,
-    root: &Path,
-) -> Result<PathBuf, UpdateError> {
+pub fn download_installer(update: &ReleaseUpdate, root: &Path) -> Result<PathBuf, UpdateError> {
     let target_root = root.join("Updates");
     fs::create_dir_all(&target_root)?;
     if fs::symlink_metadata(&target_root)?.file_type().is_symlink() {
@@ -240,8 +289,14 @@ pub fn download_installer(
         check_file_hash(&target, &update.installer)?;
         return Ok(target);
     }
-    let mut response = client()?.get(&update.installer.url).send()?.error_for_status()?;
-    if response.content_length().is_some_and(|v| v > update.installer.size) {
+    let mut response = client()?
+        .get(&update.installer.url)
+        .send()?
+        .error_for_status()?;
+    if response
+        .content_length()
+        .is_some_and(|v| v > update.installer.size)
+    {
         return Err(UpdateError::TooLarge);
     }
     let mut temporary = tempfile::Builder::new()
@@ -252,38 +307,52 @@ pub fn download_installer(
     let mut buffer = [0u8; 128 * 1024];
     loop {
         let count = response.read(&mut buffer)?;
-        if count == 0 { break; }
-        size = size.checked_add(count as u64).ok_or(UpdateError::TooLarge)?;
-        if size > update.installer.size || size > MAX_DOWNLOAD { return Err(UpdateError::TooLarge); }
+        if count == 0 {
+            break;
+        }
+        size = size
+            .checked_add(count as u64)
+            .ok_or(UpdateError::TooLarge)?;
+        if size > update.installer.size || size > MAX_DOWNLOAD {
+            return Err(UpdateError::TooLarge);
+        }
         temporary.write_all(&buffer[..count])?;
         digest.update(&buffer[..count]);
     }
     if size != update.installer.size
-        || format!("{:x}",digest.finalize()) != update.installer.sha256 {
+        || format!("{:x}", digest.finalize()) != update.installer.sha256
+    {
         return Err(UpdateError::HashMismatch);
     }
     temporary.as_file_mut().sync_all()?;
-    temporary.persist_noclobber(&target)
+    temporary
+        .persist_noclobber(&target)
         .map_err(|e| UpdateError::Io(e.error))?;
-    check_file_hash(&target,&update.installer)?;
+    check_file_hash(&target, &update.installer)?;
     Ok(target)
 }
 
 /// The user must explicitly select "Launch installer" in Settings. This
 /// function does not install anything silently, modify application data,
 /// or write to the game's directory.
-pub fn launch_verified_installer(path: &Path, update: &ReleaseUpdate, root: &Path)
-    -> Result<(), UpdateError>
-{
+pub fn launch_verified_installer(
+    path: &Path,
+    update: &ReleaseUpdate,
+    root: &Path,
+) -> Result<(), UpdateError> {
     let updates = fs::canonicalize(root.join("Updates"))?;
     let canonical = fs::canonicalize(path)?;
     if canonical.parent() != Some(updates.as_path())
-        || canonical.file_name().and_then(|s|s.to_str()) != Some(update.installer.name.as_str())
-        || !canonical.extension().is_some_and(|s|s.eq_ignore_ascii_case("exe"))
+        || canonical.file_name().and_then(|s| s.to_str()) != Some(update.installer.name.as_str())
+        || !canonical
+            .extension()
+            .is_some_and(|s| s.eq_ignore_ascii_case("exe"))
     {
-        return Err(UpdateError::Invalid("installer must be staged inside the managed Updates directory".into()));
+        return Err(UpdateError::Invalid(
+            "installer must be staged inside the managed Updates directory".into(),
+        ));
     }
-    check_file_hash(&canonical,&update.installer)?;
+    check_file_hash(&canonical, &update.installer)?;
     Command::new(canonical).spawn()?;
     Ok(())
 }
@@ -299,37 +368,55 @@ mod tests {
         let exe = format!("EvolveModManager-Setup-{version}.exe");
         let checksum = "a".repeat(64);
         ApiRelease {
-            tag_name: format!("v{version}"),body:Some(format!(
+            tag_name: format!("v{version}"),
+            body: Some(format!(
                 "Version 1.0.2\nSHA256 {zip} {checksum}\nSHA256 {exe} {checksum}"
-            )),draft:false,prerelease:false,
+            )),
+            draft: false,
+            prerelease: false,
             html_url: format!("https://github.com/{OWNER}/{REPOSITORY}/releases/tag/v{version}"),
-            assets:vec![
-                ApiAsset{name:zip.clone(),size:2000,browser_download_url:format!("{prefix}{zip}")},
-                ApiAsset{name:exe.clone(),size:2000,browser_download_url:format!("{prefix}{exe}")},
+            assets: vec![
+                ApiAsset {
+                    name: zip.clone(),
+                    size: 2000,
+                    browser_download_url: format!("{prefix}{zip}"),
+                },
+                ApiAsset {
+                    name: exe.clone(),
+                    size: 2000,
+                    browser_download_url: format!("{prefix}{exe}"),
+                },
             ],
         }
     }
     #[test]
     fn accepts_only_expected_two_asset_release() {
-        let parsed=parse_release(release()).unwrap();
-        assert_eq!(parsed.channel,UpdateChannel::Stable);
-        assert_eq!(parsed.version,"1.0.2");
+        let parsed = parse_release(release()).unwrap();
+        assert_eq!(parsed.channel, UpdateChannel::Stable);
+        assert_eq!(parsed.version, "1.0.2");
     }
     #[test]
     fn refuses_release_with_missing_checksum_or_extra_asset() {
-        let mut data=release();data.body=Some("Version only".into());
+        let mut data = release();
+        data.body = Some("Version only".into());
         assert!(parse_release(data).is_err());
-        let mut extra=release();extra.assets.push(ApiAsset {
-            name:"screenshot.png".into(),size:3000,browser_download_url:"https://example.com".into()
+        let mut extra = release();
+        extra.assets.push(ApiAsset {
+            name: "screenshot.png".into(),
+            size: 3000,
+            browser_download_url: "https://example.com".into(),
         });
         assert!(parse_release(extra).is_err());
     }
     #[test]
     fn rejects_repacked_installer_without_published_digest() {
-        let folder=tempfile::tempdir().unwrap();
-        let path=folder.path().join("setup.exe");
-        fs::write(&path,vec![0u8;2000]).unwrap();
-        let update=parse_release(release()).unwrap();
-        assert!(matches!(check_file_hash(&path,&update.installer),Err(UpdateError::HashMismatch)));
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("setup.exe");
+        fs::write(&path, vec![0u8; 2000]).unwrap();
+        let update = parse_release(release()).unwrap();
+        assert!(matches!(
+            check_file_hash(&path, &update.installer),
+            Err(UpdateError::HashMismatch)
+        ));
     }
 }
