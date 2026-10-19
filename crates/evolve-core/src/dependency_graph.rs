@@ -2,8 +2,8 @@
 //! Only explicit CryEngine CDF and MTL references produce edges. No guessed
 //! basename matches or fabricated bone/animation relationships are emitted.
 use crate::{
-    AssetKind, AssetResolution, Inventory, MaterialDocument, parse_cdf,
-    parse_material, resolve_virtual,
+    AssetKind, AssetResolution, Inventory, MaterialDocument, parse_cdf, parse_material,
+    resolve_virtual,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
