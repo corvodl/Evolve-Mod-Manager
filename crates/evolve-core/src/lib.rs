@@ -7,6 +7,7 @@ pub mod batch;
 pub mod caf_layers;
 pub mod cdf;
 pub mod character_assembly;
+pub mod character_folder_fbx;
 pub mod converter;
 pub mod cryxml;
 pub mod dds;
@@ -42,6 +43,7 @@ pub use cdf::{
     AssetResolution, CdfAttachment, CdfDefinition, CdfDependencyReport, CdfError, parse_cdf,
     read_cdf, resolve_cdf, resolve_virtual,
 };
+pub use character_folder_fbx::{FlatCdfFbxReport, export_flat_cdf_parts_fbx};
 pub use character_assembly::{
     AssemblyError, AssemblyReport, combine_source_meshes, read_static_cdf_assembly,
 };
