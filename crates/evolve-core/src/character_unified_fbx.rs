@@ -57,6 +57,9 @@ fn preferred_compiled_mesh(
     original: &Path,
     inventory: &Inventory,
 ) -> Result<PathBuf, String> {
+    // Windows temp directories can use a different spelling/case than the
+    // canonical source. Compare two canonical paths, not mixed lexical paths.
+    let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
     let extension = match original.extension().and_then(|e| e.to_str()) {
         Some(e) if e.eq_ignore_ascii_case("skin") => "skinm",
         Some(e) if e.eq_ignore_ascii_case("chr") => "chrm",
@@ -64,11 +67,11 @@ fn preferred_compiled_mesh(
     };
     let candidate = original.with_extension(extension);
     let relative = candidate
-        .strip_prefix(root)
+        .strip_prefix(&root)
         .map_err(|_| "Compiled mesh escaped original asset root")?;
     let virtual_path = relative.to_string_lossy().replace('\\', "/");
     match resolve_virtual(inventory, &virtual_path) {
-        AssetResolution::Found(path) => input_file(root, &path),
+        AssetResolution::Found(path) => input_file(&root, &path),
         AssetResolution::Missing => Ok(original.to_path_buf()),
         AssetResolution::Ambiguous(_) => Err("Ambiguous compiled mesh sidecar".into()),
     }
@@ -148,9 +151,10 @@ fn exact_single_slot_maps(
     mesh_path: &Path,
     inventory: &Inventory,
 ) -> Result<AuthoredMaps, String> {
+    let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
     let material = mesh_path.with_extension("mtl");
     let rel = material
-        .strip_prefix(root)
+        .strip_prefix(&root)
         .map_err(|_| "Material path escaped the original asset root")?;
     let candidate = rel.to_string_lossy().replace('\\', "/");
     let found = match resolve_virtual(inventory, &candidate) {
@@ -160,7 +164,7 @@ fn exact_single_slot_maps(
             return Err(format!("Ambiguous authored CDF material: {candidate}"));
         }
     };
-    let document = read_material(&input_file(root, &found)?)
+    let document = read_material(&input_file(&root, &found)?)
         .map_err(|e| format!("Invalid authored material {candidate}: {e}"))?;
     if document.slots.len() != 1 {
         return Ok(AuthoredMaps::default());
@@ -181,7 +185,7 @@ fn exact_single_slot_maps(
             ));
         }
         match &item.resolution {
-            AssetResolution::Found(path) => *target = Some(input_file(root, path)?),
+            AssetResolution::Found(path) => *target = Some(input_file(&root, path)?),
             AssetResolution::Missing => (),
             AssetResolution::Ambiguous(_) => {
                 return Err(format!(
