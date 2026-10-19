@@ -3259,7 +3259,7 @@ fn view(state: &State) -> Element<'_, Message> {
                     button::text
                 })
                 .on_press(Message::Navigate(item));
-            items.push(tooltip(nav, text(item.title()), tooltip::Position::Right))
+            items.push(tooltip(nav, text(item.title()).size(11), tooltip::Position::Right))
         });
     let play_mods_icon = svg(svg::Handle::from_memory(
         include_bytes!("../../../assets/nav/play-mods.svg").to_vec(),
@@ -3274,12 +3274,12 @@ fn view(state: &State) -> Element<'_, Message> {
     let lower = column![
         tooltip(
             button(play_mods_icon).width(46).height(40),
-            text("Play with Mods — production launch not yet supported"),
+            text("Play with Mods").size(11),
             tooltip::Position::Right
         ),
         tooltip(
             button(play_clean_icon).width(46).height(40),
-            text("Play without Mods — production launch not yet supported"),
+            text("Play without Mods").size(11),
             tooltip::Position::Right
         ),
         tooltip(
@@ -3292,7 +3292,7 @@ fn view(state: &State) -> Element<'_, Message> {
                     button::text
                 })
                 .on_press(Message::Navigate(Page::Settings)),
-            text("Settings"),
+            text("Settings").size(11),
             tooltip::Position::Right
         ),
     ]
