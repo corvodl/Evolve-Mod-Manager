@@ -1084,30 +1084,38 @@ mod tests {
             "bufferViews":[], "accessors":[], "extras":{"animations_embedded":false}
         });
         let controller = CafController {
-            bone_crc32:crc32fast::hash(b"root"),
-            rotations:vec![[0.0,0.0,0.0,1.0], [0.0,0.0,0.0,1.0]],
-            rotation_times:vec![0.0,30.0],
-            positions:vec![[0.0,0.0,0.0],[1.0,0.0,0.0]],
-            position_times:vec![0.0,30.0],
+            bone_crc32: crc32fast::hash(b"root"),
+            rotations: vec![[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0]],
+            rotation_times: vec![0.0, 30.0],
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            position_times: vec![0.0, 30.0],
         };
         let motion = NativeCafMotion {
-            schema:1,controllers:vec![controller],start_frame:0.0,
-            end_frame:30.0,fps:30.0,additive:false,cyclic:false,
+            schema: 1,
+            controllers: vec![controller],
+            start_frame: 0.0,
+            end_frame: 30.0,
+            fps: 30.0,
+            additive: false,
+            cyclic: false,
         };
-        let mut binary=Vec::new();
-        attach_native_caf(&mut doc,&mut binary,&skeleton,1,&motion).unwrap();
-        assert_eq!(doc["animations"][0]["channels"].as_array().unwrap().len(),2);
-        assert_eq!(doc["animations"][0]["channels"][0]["target"]["node"],1);
+        let mut binary = Vec::new();
+        attach_native_caf(&mut doc, &mut binary, &skeleton, 1, &motion).unwrap();
+        assert_eq!(
+            doc["animations"][0]["channels"].as_array().unwrap().len(),
+            2
+        );
+        assert_eq!(doc["animations"][0]["channels"][0]["target"]["node"], 1);
         assert!(doc["nodes"][1]["matrix"].is_null());
         assert!(doc["extras"]["animations_embedded"].as_bool().unwrap());
         assert!(!binary.is_empty());
-        let mut bad=motion.clone();
-        bad.controllers[0].bone_crc32=0x1234;
-        let mut copy=json!({"nodes":[{}, {"matrix":[
+        let mut bad = motion.clone();
+        bad.controllers[0].bone_crc32 = 0x1234;
+        let mut copy = json!({"nodes":[{}, {"matrix":[
             1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,
             0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0
         ]}],"bufferViews":[],"accessors":[]});
-        assert!(attach_native_caf(&mut copy,&mut Vec::new(),&skeleton,1,&bad).is_err());
+        assert!(attach_native_caf(&mut copy, &mut Vec::new(), &skeleton, 1, &bad).is_err());
     }
 
     #[test]
