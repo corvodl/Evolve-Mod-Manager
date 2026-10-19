@@ -2619,6 +2619,18 @@ fn initial_state() -> State {
             }
         }
     }
+    if result.preferences.asset_library_root.trim().is_empty()
+        && let Ok(settings) = settings_path()
+        && let Some(parent) = settings.parent()
+    {
+        // The established manager stores persistent imported PAK manifests here.
+        // Prefer its existing library without decrypting or copying originals.
+        let existing = parent.join("Data").join("AssetLibrary");
+        if existing.is_dir() {
+            result.preferences.asset_library_root = existing.to_string_lossy().into_owned();
+        }
+    }
+    result.library_root = result.preferences.asset_library_root.clone();
     if let Ok(executable) = std::env::current_exe()
         && let Some(parent) = executable.parent()
     {
@@ -2687,7 +2699,9 @@ impl Desktop {
                 }
             }
             message => {
-                let opens_model = matches!(&message, Message::Finished(Ok(Completed::Model(_))));
+                let opens_model = matches!(&message,
+                    Message::Finished(Ok(Completed::Model(_) | Completed::ImportedPakFiles(_)))
+                );
                 let launched_from_library = self.state.page == Some(Page::AssetLibrary);
                 let command = update(&mut self.state, message);
                 if opens_model && self.viewer_id.is_none() {
