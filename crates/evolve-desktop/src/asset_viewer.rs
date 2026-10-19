@@ -255,7 +255,7 @@ fn explorer(state: &State) -> Element<'_, Message> {
         let action = if entry.directory {
             Message::ViewerToggleFolder(entry.path)
         } else {
-            Message::Select(entry.index.expect("file row has source index"))
+            Message::ViewerSelectFile(entry.index.expect("file row has source index"))
         };
         rows = rows.push(
             button(row![
@@ -264,7 +264,7 @@ fn explorer(state: &State) -> Element<'_, Message> {
                     .size(12).width(90),
             ].spacing(7))
                 .width(Fill).padding(5)
-                .style(if entry.index.is_some() && entry.index == state.selected {
+                .style(if entry.index.is_some() && entry.index.is_some_and(|i| state.file_selection.indices.contains(&i)) {
                     button::primary
                 } else { button::text })
                 .on_press(action)
@@ -299,7 +299,7 @@ fn explorer(state: &State) -> Element<'_, Message> {
                 ]
                 .spacing(8),
                 scrollable(rows).height(Fill),
-                text("Hierarchical explorer  •  first 350 visible rows  •  CDF = assembly definition")
+                text("Shift: range  •  Ctrl: toggle  •  CDF: assembly definition  •  350 visible rows")
                     .size(11)
                     .color(MUTED),
             ]
@@ -321,11 +321,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let heading = row![
         text("Asset / Model Viewer").size(16),
         text(readonly).size(12).color(MUTED),
-        text(if state.selected.is_some() {
-            " • 1 selected"
-        } else {
-            " • 0 selected"
-        })
+        text(format!(" • {} selected", state.file_selection.indices.len()))
         .size(12),
         button("Toggle Explorer").on_press(Message::ViewerToggleExplorer),
         button("Save layout").on_press(Message::ViewerSaveLayout),
