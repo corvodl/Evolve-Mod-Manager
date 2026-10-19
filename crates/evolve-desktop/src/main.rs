@@ -1507,17 +1507,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 && index < scene.objects.len()
             {
                 let query = state.level_filter.to_ascii_lowercase();
-                let visible: Vec<usize> = scene.objects.iter().enumerate()
+                let visible: Vec<usize> = scene
+                    .objects
+                    .iter()
+                    .enumerate()
                     .filter(|(_, obj)| {
                         query.is_empty()
                             || obj.name.to_ascii_lowercase().contains(&query)
                             || obj.layer.to_ascii_lowercase().contains(&query)
                             || obj.model.to_ascii_lowercase().contains(&query)
                     })
-                    .map(|(i, _)| i).take(180).collect();
+                    .map(|(i, _)| i)
+                    .take(180)
+                    .collect();
                 if visible.contains(&index) {
                     state.level_selection.click(
-                        &visible, index,
+                        &visible,
+                        index,
                         state.keyboard_modifiers.shift(),
                         state.keyboard_modifiers.control(),
                     );
