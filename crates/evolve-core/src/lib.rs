@@ -3,6 +3,7 @@
 pub mod animation;
 pub mod archive;
 pub mod cdf;
+pub mod converter;
 pub mod dds;
 pub mod fbx;
 pub mod glb;
@@ -24,6 +25,7 @@ pub use archive::{
     PakError, PakInventory, PakMember, RebuildReport, extract_legacy_pak, inspect_legacy_pak,
     rebuild_legacy_pak,
 };
+pub use converter::{ConverterError,ConvertedMotion,convert_original_motion};
 pub use cdf::{
     AssetResolution, CdfAttachment, CdfDefinition, CdfDependencyReport, CdfError, parse_cdf,
     read_cdf, resolve_cdf, resolve_virtual,
