@@ -175,7 +175,7 @@ enum Operation {
     ListProfiles(PathBuf),
     CreateProfile(PathBuf, String),
     AddProfileMod(PathBuf, String, PathBuf, String, PathBuf, PathBuf, String),
-    PlanProfile(PathBuf, String, PathBuf, PathBuf, String),
+    PlanProfile(PathBuf, String, PathBuf, PathBuf),
     ExtractPak(PathBuf, PathBuf),
     RebuildPak(PathBuf, PathBuf, PathBuf),
     ExportPng(PathBuf, PathBuf),
@@ -338,8 +338,8 @@ impl Operation {
                     .map(Completed::ProfileAdded)
                     .map_err(|e| e.to_string())
             }
-            Self::PlanProfile(stage, id, original, public, basename) => {
-                plan_mod_profile(&stage, &id, &original, &public, &basename)
+            Self::PlanProfile(stage, id, original, public) => {
+                plan_mod_profile(&stage, &id, &original, &public)
                     .map(Completed::ProfilePlanned)
                     .map_err(|e| e.to_string())
             }
@@ -738,7 +738,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 &state.profile_id,
                 &state.public_key,
                 &state.signing_public,
-                &state.signed_name,
             ]
             .iter()
             .any(|v| v.trim().is_empty())
@@ -755,8 +754,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.profile_id.clone(),
                     PathBuf::from(&state.public_key),
                     PathBuf::from(&state.signing_public),
-                    state.signed_name.clone(),
-                ),
+                    ),
             );
         }
         Message::StartStageInit => {
