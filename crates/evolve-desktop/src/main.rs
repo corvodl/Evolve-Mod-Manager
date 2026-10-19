@@ -496,7 +496,7 @@ impl Operation {
 enum Message {
     Navigate(Page),
     OpenViewer,
-    ViewerOpened(window::Id),
+    ViewerOpened,
     WindowClosed(window::Id),
     ViewerMenu(&'static str),
     ViewerToggleExplorer,
@@ -2422,7 +2422,7 @@ impl Desktop {
                 main_id,
                 viewer_id: None,
             },
-            opened.map(Message::ViewerOpened),
+            opened.map(|_| Message::ViewerOpened),
         )
     }
 
@@ -2437,13 +2437,13 @@ impl Desktop {
             ..window::Settings::default()
         });
         self.viewer_id = Some(id);
-        opened.map(Message::ViewerOpened)
+        opened.map(|_| Message::ViewerOpened)
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::OpenViewer => self.open_viewer(),
-            Message::ViewerOpened(_) => Task::none(),
+            Message::ViewerOpened => Task::none(),
             Message::WindowClosed(id) => {
                 if id == self.main_id {
                     iced::exit()
