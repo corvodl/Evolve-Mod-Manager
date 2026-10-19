@@ -8,7 +8,7 @@ Independent Windows desktop modding toolkit rewrite using **Rust**, **Iced 0.14*
 
 - Responsive Iced dark desktop shell with navigation, searchable file inventory, PAK member browsing, DDS metadata inspection, and explicit output fields.
 - Bounded read-only scanning of local CryEngine assets, classification by extension, deterministic results, and an optional JSON inventory report.
-- **Historical 2012 ZIP-compatible PAK** inspection and extraction (stored and DEFLATE methods), with bounded sizes, unsafe-name and symlink rejection, duplicate detection, CRC-checked streaming, and newly created staging/output folders. Original PAK files are never modified.
+- **Historical ZIP-compatible PAK** inspection, extraction, and rebuild from existing-member replacements (stored and DEFLATE methods), with bounded sizes, unsafe-name and symlink rejection, duplicate detection, CRC-checked streaming, and newly created staging/output folders. Original PAK files are never modified.
 - **DDS texture inspection and highest-resolution PNG export** for BC1, BC2, BC3, unsigned BC4/BC5, and common 32-bit RGBA/BGRA. Supports complete `.dds`, complete `.dds.0`, and fully extracted consecutive `.dds.0`–`.dds.N` mip fragments. BC5 is exported as raw red/green channels rather than simulated normal-map shading.
 - **CDF XML character-definition inspection**, retaining explicit skeleton, CA_SKIN/CA_SKIN_UNIQUE attachments, and skin-set references. An ambiguity-aware asset resolver refuses to guess among duplicate workspace references.
 - Off-thread filesystem operations in the GUI, Rust unit tests, and Linux + Windows CI checks.
@@ -29,12 +29,13 @@ Standalone command-line equivalents:
 cargo run -p evolve-core --bin evolve-cli -- scan "C:\Assets" "inventory.json"
 cargo run -p evolve-core --bin evolve-cli -- pak inspect "C:\Archives\Legacy.pak" "pak-info.json"
 cargo run -p evolve-core --bin evolve-cli -- pak extract "C:\Archives\Legacy.pak" "C:\Exports\LegacyExtracted"
+cargo run -p evolve-core --bin evolve-cli -- pak rebuild "C:\Archives\Legacy.pak" "C:\Overrides" "C:\Exports\LegacyRebuilt.pak"
 cargo run -p evolve-core --bin evolve-cli -- dds info "C:\Assets\body.dds.0"
 cargo run -p evolve-core --bin evolve-cli -- dds png "C:\Assets\body.dds.0" "C:\Exports\body.png"
 cargo run -p evolve-core --bin evolve-cli -- cdf inspect "C:\Assets\character.cdf" "character-info.json"
 ```
 
-Extraction output must be an **absent folder**; PNG and JSON outputs must be **new files**. The operations refuse existing outputs rather than overwriting them. Legacy ZIP support does not imply that the encrypted, signed Stage 2 PAK format is supported.
+Extraction output must be an **absent folder**; PNG and JSON outputs must be **new files**. The operations refuse existing outputs rather than overwriting them. Replacement files must match existing members of an ordinary ZIP PAK. Encrypted Stage 2 PAK support remains unfinished.
 
 ## Public release policy
 
