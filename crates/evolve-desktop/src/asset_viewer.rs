@@ -223,14 +223,24 @@ fn explorer(state: &State) -> Element<'_, Message> {
     };
     let limit = 350;
     let records: Vec<(usize, &str, u64)> = if let Some(inv) = &state.inventory {
-        inv.entries.iter().enumerate()
-            .map(|(i, e)| (i, e.relative_path.as_str(), e.byte_size)).collect()
+        inv.entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (i, e.relative_path.as_str(), e.byte_size))
+            .collect()
     } else if let Some(signed) = &state.signed_pak {
-        signed.entries.iter().enumerate()
-            .map(|(i, e)| (i, e.path.as_str(), e.size)).collect()
+        signed
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (i, e.path.as_str(), e.size))
+            .collect()
     } else if let Some(pak) = &state.pak {
-        pak.entries.iter().enumerate()
-            .map(|(i, e)| (i, e.path.as_str(), e.size)).collect()
+        pak.entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (i, e.path.as_str(), e.size))
+            .collect()
     } else {
         Vec::new()
     };
@@ -243,7 +253,15 @@ fn explorer(state: &State) -> Element<'_, Message> {
     for entry in visible {
         let indent = "  ".repeat(entry.depth.min(20));
         let title = if entry.directory {
-            format!("{indent}{} 📁 {}", if state.viewer_collapsed.contains(&entry.path) && state.viewer_search.is_empty() { "▸" } else { "▾" }, entry.name)
+            format!(
+                "{indent}{} 📁 {}",
+                if state.viewer_collapsed.contains(&entry.path) && state.viewer_search.is_empty() {
+                    "▸"
+                } else {
+                    "▾"
+                },
+                entry.name
+            )
         } else {
             let label = if entry.name.to_ascii_lowercase().ends_with(".cdf") {
                 format!("◇ {} · Character assembly", entry.name)
@@ -258,20 +276,41 @@ fn explorer(state: &State) -> Element<'_, Message> {
             Message::ViewerSelectFile(entry.index.expect("file row has source index"))
         };
         rows = rows.push(
-            button(row![
-                text(title).size(12).width(Fill),
-                text(if entry.directory { String::new() } else { format!("{} KiB", entry.bytes.div_ceil(1024)) })
-                    .size(12).width(90),
-            ].spacing(7))
-                .width(Fill).padding(5)
-                .style(if entry.index.is_some() && entry.index.is_some_and(|i| state.file_selection.indices.contains(&i)) {
+            button(
+                row![
+                    text(title).size(12).width(Fill),
+                    text(if entry.directory {
+                        String::new()
+                    } else {
+                        format!("{} KiB", entry.bytes.div_ceil(1024))
+                    })
+                    .size(12)
+                    .width(90),
+                ]
+                .spacing(7),
+            )
+            .width(Fill)
+            .padding(5)
+            .style(
+                if entry.index.is_some()
+                    && entry
+                        .index
+                        .is_some_and(|i| state.file_selection.indices.contains(&i))
+                {
                     button::primary
-                } else { button::text })
-                .on_press(action)
+                } else {
+                    button::text
+                },
+            )
+            .on_press(action),
         );
     }
     if total == 0 {
-        rows = rows.push(text("No archive or extracted folder indexed.").size(13).color(MUTED));
+        rows = rows.push(
+            text("No archive or extracted folder indexed.")
+                .size(13)
+                .color(MUTED),
+        );
     }
     let source = state
         .signed_pak
@@ -321,7 +360,10 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let heading = row![
         text("Asset / Model Viewer").size(16),
         text(readonly).size(12).color(MUTED),
-        text(format!(" • {} selected", state.file_selection.indices.len()))
+        text(format!(
+            " • {} selected",
+            state.file_selection.indices.len()
+        ))
         .size(12),
         button("Toggle Explorer").on_press(Message::ViewerToggleExplorer),
         button("Save layout").on_press(Message::ViewerSaveLayout),
