@@ -20,8 +20,12 @@ enum Page {
 
 impl Page {
     const ALL: [Self; 6] = [
-        Self::Home, Self::Files, Self::AssetLibrary,
-        Self::Models, Self::Levels, Self::Settings,
+        Self::Home,
+        Self::Files,
+        Self::AssetLibrary,
+        Self::Models,
+        Self::Levels,
+        Self::Settings,
     ];
 
     fn title(self) -> &'static str {
@@ -170,7 +174,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             match result {
                 Ok(Completed::Inventory(inventory)) => {
                     state.status = format!(
-                        "{} files indexed; no originals modified.", inventory.entries.len()
+                        "{} files indexed; no originals modified.",
+                        inventory.entries.len()
                     );
                     state.inventory = Some(inventory);
                     state.pak = None;
@@ -191,8 +196,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Ok(Completed::Texture(texture)) => {
                     state.status = format!(
                         "DDS: {} × {} • {:?} • {} mipmaps • {} fragment(s)",
-                        texture.width, texture.height,
-                        texture.format, texture.mipmaps, texture.streaming_parts
+                        texture.width,
+                        texture.height,
+                        texture.format,
+                        texture.mipmaps,
+                        texture.streaming_parts
                     );
                     state.texture = Some(texture);
                     state.page = Some(Page::Models);
@@ -214,7 +222,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Ok(Completed::ExportedPng(info, target)) => {
                     state.status = format!(
                         "Exported {} × {} highest-resolution DDS mip to {}",
-                        info.width, info.height, target.display()
+                        info.width,
+                        info.height,
+                        target.display()
                     );
                 }
                 Err(e) => state.status = format!("Operation refused: {e}"),
@@ -225,45 +235,62 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
 }
 
 fn file_row<'a>(index: usize, entry: &'a AssetEntry) -> Element<'a, Message> {
-    button(row![
-        text(entry.kind.display()).width(130),
-        text(entry.relative_path.as_str()).width(Fill),
-        text(format!("{} B", entry.byte_size)),
-    ].spacing(12)).width(Fill).on_press(Message::Select(index)).into()
+    button(
+        row![
+            text(entry.kind.display()).width(130),
+            text(entry.relative_path.as_str()).width(Fill),
+            text(format!("{} B", entry.byte_size)),
+        ]
+        .spacing(12),
+    )
+    .width(Fill)
+    .on_press(Message::Select(index))
+    .into()
 }
 
 fn view(state: &State) -> Element<'_, Message> {
     let page = state.page.unwrap_or(Page::Home);
     let navigation = Page::ALL.into_iter().fold(
         column![text("EVOLVE").size(26), text("MOD MANAGER").size(14)].spacing(10),
-        |content, item| content.push(
-            button(text(item.title())).width(Fill).on_press(Message::Navigate(item))
-        ),
+        |content, item| {
+            content.push(
+                button(text(item.title()))
+                    .width(Fill)
+                    .on_press(Message::Navigate(item)),
+            )
+        },
     );
     let sidebar = container(navigation.padding(16).spacing(10)).width(205);
     let headline = column![
         text(page.title()).size(26),
         text("Rust + Iced / wgpu | development preview 0.1").size(13),
-    ].spacing(6);
+    ]
+    .spacing(6);
 
     let location = column![
         row![
             text_input("Local asset folder, .pak or .dds path...", &state.input)
-                .on_input(Message::InputChanged).width(Fill),
+                .on_input(Message::InputChanged)
+                .width(Fill),
             button("Scan folder").on_press(Message::StartScan),
-        ].spacing(8),
+        ]
+        .spacing(8),
         row![
             button("Inspect ZIP PAK").on_press(Message::StartPakInspection),
             button("Inspect DDS").on_press(Message::StartDdsInspection),
             button("Inspect CDF").on_press(Message::StartCdfInspection),
-        ].spacing(8),
+        ]
+        .spacing(8),
         row![
             text_input("New output directory or .png filename...", &state.output)
-                .on_input(Message::OutputChanged).width(Fill),
+                .on_input(Message::OutputChanged)
+                .width(Fill),
             button("Extract PAK").on_press(Message::StartExtract),
             button("Export DDS → PNG").on_press(Message::StartPngExport),
-        ].spacing(8),
-    ].spacing(9);
+        ]
+        .spacing(8),
+    ]
+    .spacing(9);
 
     let workspace: Element<'_, Message> = match page {
         Page::Home => column![
@@ -350,7 +377,12 @@ fn view(state: &State) -> Element<'_, Message> {
     let body = column![
         headline,
         location,
-        text(if state.busy { "Working..." } else { state.status.as_str() }).size(13),
+        text(if state.busy {
+            "Working..."
+        } else {
+            state.status.as_str()
+        })
+        .size(13),
         workspace,
     ]
     .spacing(16)
@@ -358,7 +390,9 @@ fn view(state: &State) -> Element<'_, Message> {
     .width(Fill)
     .height(Fill);
     container(row![sidebar, body].height(Fill))
-        .width(Fill).height(Fill).into()
+        .width(Fill)
+        .height(Fill)
+        .into()
 }
 
 fn main() -> iced::Result {

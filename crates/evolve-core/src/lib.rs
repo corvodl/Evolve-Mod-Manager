@@ -6,9 +6,12 @@ pub mod dds;
 pub mod inventory;
 pub mod policy;
 
-pub use cdf::{parse_cdf, read_cdf, resolve_cdf, resolve_virtual, AssetResolution, CdfAttachment, CdfDefinition, CdfDependencyReport, CdfError};
-pub use dds::{inspect_dds, decode_dds_rgba, export_dds_png, DdsError, DdsFormat, DdsInfo};
-pub use archive::{extract_legacy_pak, inspect_legacy_pak, PakError, PakInventory, PakMember};
+pub use archive::{PakError, PakInventory, PakMember, extract_legacy_pak, inspect_legacy_pak};
+pub use cdf::{
+    AssetResolution, CdfAttachment, CdfDefinition, CdfDependencyReport, CdfError, parse_cdf,
+    read_cdf, resolve_cdf, resolve_virtual,
+};
+pub use dds::{DdsError, DdsFormat, DdsInfo, decode_dds_rgba, export_dds_png, inspect_dds};
 pub use inventory::{
     AssetEntry, AssetKind, Inventory, InventoryError, MAX_ENTRIES, scan_directory,
     write_inventory_json,

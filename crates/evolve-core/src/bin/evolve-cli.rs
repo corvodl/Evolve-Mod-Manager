@@ -91,7 +91,10 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
             result.total_bytes
         );
         for item in &result.entries {
-            println!("  {:>10} {:>10} {}", item.size, item.compressed_size, item.path);
+            println!(
+                "  {:>10} {:>10} {}",
+                item.size, item.compressed_size, item.path
+            );
         }
         if let Some(path) = output {
             write_report(&result, &path)?;
@@ -115,7 +118,11 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
         }
     } else if verb == OsStr::new("cdf") && subcommand == OsStr::new("inspect") {
         let cdf = read_cdf(&source).map_err(|e| e.to_string())?;
-        println!("CDF: {} | {} valid skin/CHR attachment(s)", cdf.skeleton, cdf.attachments.len());
+        println!(
+            "CDF: {} | {} valid skin/CHR attachment(s)",
+            cdf.skeleton,
+            cdf.attachments.len()
+        );
         for attachment in &cdf.attachments {
             println!("  {} -> {}", attachment.name, attachment.binding);
         }
@@ -127,7 +134,10 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
         let info = export_dds_png(&source, &target).map_err(|e| e.to_string())?;
         println!(
             "Exported original top mip {} x {} ({:?}) to {}",
-            info.width, info.height, info.format, target.display()
+            info.width,
+            info.height,
+            info.format,
+            target.display()
         );
     } else {
         return Err(usage());

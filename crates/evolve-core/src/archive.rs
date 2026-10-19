@@ -50,9 +50,8 @@ pub enum PakError {
 }
 
 const WINDOWS_DEVICES: [&str; 22] = [
-    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6",
-    "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6",
-    "LPT7", "LPT8", "LPT9",
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ];
 
 /// Preserve original slash spelling but reject traversal, aliases, Windows device
@@ -66,11 +65,18 @@ pub fn safe_member_name(raw: &str) -> Result<String, PakError> {
         return Err(PakError::UnsafePath(raw.into()));
     }
     for component in name.split('/') {
-        let device = component.split('.').next().unwrap_or_default().to_ascii_uppercase();
+        let device = component
+            .split('.')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_uppercase();
         if component.is_empty()
-            || component == "." || component == ".."
+            || component == "."
+            || component == ".."
             || component.ends_with(['.', ' '])
-            || component.chars().any(|c| c.is_control() || "<>:\"|?*".contains(c))
+            || component
+                .chars()
+                .any(|c| c.is_control() || "<>:\"|?*".contains(c))
             || WINDOWS_DEVICES.contains(&device.as_str())
         {
             return Err(PakError::UnsafePath(raw.into()));
@@ -82,7 +88,9 @@ pub fn safe_member_name(raw: &str) -> Result<String, PakError> {
 fn open_archive(source: &Path) -> Result<ZipArchive<File>, PakError> {
     let metadata = fs::symlink_metadata(source).map_err(|_| PakError::InvalidSource)?;
     if !metadata.file_type().is_file()
-        || source.extension().and_then(|x| x.to_str())
+        || source
+            .extension()
+            .and_then(|x| x.to_str())
             .is_none_or(|x| !x.eq_ignore_ascii_case("pak"))
     {
         return Err(PakError::InvalidSource);
@@ -102,7 +110,11 @@ fn inspect_open(archive: &mut ZipArchive<File>, source: &Path) -> Result<PakInve
         let member = archive.by_index_raw(i)?;
         let filename = member.name().to_owned();
         let is_directory = member.is_dir();
-        if !is_directory && member.unix_mode().is_some_and(|mode| mode & 0o170000 == 0o120000) {
+        if !is_directory
+            && member
+                .unix_mode()
+                .is_some_and(|mode| mode & 0o170000 == 0o120000)
+        {
             return Err(PakError::Unsupported("symlink members".into()));
         }
         if member.encrypted() {
@@ -149,7 +161,11 @@ fn inspect_open(archive: &mut ZipArchive<File>, source: &Path) -> Result<PakInve
     }
     Ok(PakInventory {
         schema: 1,
-        source_file: source.file_name().unwrap_or_default().to_string_lossy().to_string(),
+        source_file: source
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string(),
         kind: "legacy-zip".into(),
         total_bytes: total,
         entries,
@@ -174,7 +190,9 @@ pub fn extract_legacy_pak(source: &Path, destination: &Path) -> Result<PakInvent
     if !parent.is_dir() || fs::symlink_metadata(parent)?.file_type().is_symlink() {
         return Err(PakError::UnsafeDestination);
     }
-    let staged = tempfile::Builder::new().prefix(".evolve-pak-").tempdir_in(parent)?;
+    let staged = tempfile::Builder::new()
+        .prefix(".evolve-pak-")
+        .tempdir_in(parent)?;
     let mut extracted_index = 0usize;
     for i in 0..archive.len() {
         let mut member = archive.by_index(i)?;
@@ -187,22 +205,32 @@ pub fn extract_legacy_pak(source: &Path, destination: &Path) -> Result<PakInvent
             || member.size() != expected.size
             || member.crc32() != expected.crc32
         {
-            return Err(PakError::Unsupported("member changed after validation".into()));
+            return Err(PakError::Unsupported(
+                "member changed after validation".into(),
+            ));
         }
         let target = staged.path().join(PathBuf::from(&expected.path));
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)?;
         }
-        let mut output = fs::OpenOptions::new().create_new(true).write(true).open(&target)?;
+        let mut output = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&target)?;
         let mut limited = (&mut member).take(expected.size.saturating_add(1));
         let copied = io::copy(&mut limited, &mut output)?;
         if copied != expected.size {
-            return Err(PakError::Unsupported(format!("length or CRC failure in {}", expected.path)));
+            return Err(PakError::Unsupported(format!(
+                "length or CRC failure in {}",
+                expected.path
+            )));
         }
         // Force end-of-stream; ZIP's reader verifies CRC at EOF.
         let mut probe = [0u8; 1];
         if limited.read(&mut probe)? != 0 {
-            return Err(PakError::Unsupported("extra uncompressed entry data".into()));
+            return Err(PakError::Unsupported(
+                "extra uncompressed entry data".into(),
+            ));
         }
         output.flush()?;
     }
@@ -241,7 +269,10 @@ mod tests {
         let dest = folder.path().join("out");
         let extracted = extract_legacy_pak(&pak, &dest).unwrap();
         assert_eq!(extracted.total_bytes, summary.total_bytes);
-        assert_eq!(fs::read(dest.join("characters/tech_3p.cdf")).unwrap(), b"<Character/>");
+        assert_eq!(
+            fs::read(dest.join("characters/tech_3p.cdf")).unwrap(),
+            b"<Character/>"
+        );
         assert_eq!(fs::read(dest.join("animations/idle.caf")).unwrap(), b"CAF!");
         assert_eq!(fs::read(&pak).unwrap(), original);
         assert!(extract_legacy_pak(&pak, &dest).is_err());
@@ -249,20 +280,37 @@ mod tests {
 
     #[test]
     fn rejects_zip_slip_devices_duplicates_and_absolute_names() {
-        for name in ["../bad", "C:/bad", "/bad", "a/../bad", "NUL.txt", "data/CON.xml",
-                     "a//b", "trailing. ", "a:stream"] {
+        for name in [
+            "../bad",
+            "C:/bad",
+            "/bad",
+            "a/../bad",
+            "NUL.txt",
+            "data/CON.xml",
+            "a//b",
+            "trailing. ",
+            "a:stream",
+        ] {
             assert!(safe_member_name(name).is_err(), "{name}");
         }
-        assert_eq!(safe_member_name("models\\goliath.cdf").unwrap(), "models/goliath.cdf");
+        assert_eq!(
+            safe_member_name("models\\goliath.cdf").unwrap(),
+            "models/goliath.cdf"
+        );
         let folder = tempfile::tempdir().unwrap();
         let pak = folder.path().join("dup.pak");
         let mut zip = zip::ZipWriter::new(File::create(&pak).unwrap());
-        zip.start_file("Textures/Kala.dds", SimpleFileOptions::default()).unwrap();
+        zip.start_file("Textures/Kala.dds", SimpleFileOptions::default())
+            .unwrap();
         zip.write_all(b"hi").unwrap();
-        zip.start_file("textures/kala.DDS", SimpleFileOptions::default()).unwrap();
+        zip.start_file("textures/kala.DDS", SimpleFileOptions::default())
+            .unwrap();
         zip.write_all(b"bye").unwrap();
         zip.finish().unwrap();
-        assert!(matches!(inspect_legacy_pak(&pak), Err(PakError::DuplicatePath(_))));
+        assert!(matches!(
+            inspect_legacy_pak(&pak),
+            Err(PakError::DuplicatePath(_))
+        ));
     }
 
     #[test]

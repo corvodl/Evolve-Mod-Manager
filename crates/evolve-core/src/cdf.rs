@@ -2,8 +2,8 @@
 //! intentionally refuses to guess between asset-library duplicates.
 use crate::archive::safe_member_name;
 use crate::inventory::Inventory;
-use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
+use quick_xml::events::{BytesStart, Event};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -69,7 +69,8 @@ fn attr(node: &BytesStart<'_>, name: &[u8]) -> Result<Option<String>, CdfError> 
     for value in node.attributes() {
         let value = value.map_err(|e| CdfError::Xml(e.to_string()))?;
         if value.key.as_ref().eq_ignore_ascii_case(name) {
-            return value.unescape_value()
+            return value
+                .unescape_value()
                 .map(|s| Some(s.into_owned()))
                 .map_err(|e| CdfError::Xml(e.to_string()));
         }
@@ -96,7 +97,9 @@ fn handle_element(
             *skeleton = Some(normalize(&value)?);
         }
     } else if parents.len() == 2
-        && parents.last().is_some_and(|p| p.eq_ignore_ascii_case(b"AttachmentList"))
+        && parents
+            .last()
+            .is_some_and(|p| p.eq_ignore_ascii_case(b"AttachmentList"))
         && tag.eq_ignore_ascii_case(b"Attachment")
     {
         let ty = attr(element, b"Type")?.unwrap_or_default();
@@ -105,7 +108,9 @@ fn handle_element(
             "ca_skin_unique" => AttachmentKind::UniqueSkin,
             _ => return Ok(()),
         };
-        let Some(binding) = attr(element, b"Binding")? else { return Ok(()) };
+        let Some(binding) = attr(element, b"Binding")? else {
+            return Ok(());
+        };
         let binding = normalize(&binding)?;
         let ext = binding.rsplit('.').next().unwrap_or_default();
         if !ext.eq_ignore_ascii_case("skin") && !ext.eq_ignore_ascii_case("chr") {
@@ -114,29 +119,49 @@ fn handle_element(
         if attachments.len() >= MAX_ATTACHMENTS {
             return Err(CdfError::UnsafeXml);
         }
-        let fallback = binding.rsplit('/').next().unwrap_or_default()
-            .rsplit_once('.').map_or(binding.as_str(), |(base, _)| base);
-        let name = attr(element, b"AName")?.filter(|s| !s.is_empty())
+        let fallback = binding
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .rsplit_once('.')
+            .map_or(binding.as_str(), |(base, _)| base);
+        let name = attr(element, b"AName")?
+            .filter(|s| !s.is_empty())
             .unwrap_or_else(|| fallback.to_string());
-        attachments.push(CdfAttachment { name, binding, kind });
+        attachments.push(CdfAttachment {
+            name,
+            binding,
+            kind,
+        });
     } else if parents.len() == 2
-        && parents.last().is_some_and(|p| p.eq_ignore_ascii_case(b"SkinSets"))
+        && parents
+            .last()
+            .is_some_and(|p| p.eq_ignore_ascii_case(b"SkinSets"))
         && tag.eq_ignore_ascii_case(b"SkinSet")
     {
         let name = attr(element, b"name")?.unwrap_or_default();
-        let key = name.to_ascii_lowercase().chars().filter(char::is_ascii_alphanumeric).collect::<String>();
+        let key = name
+            .to_ascii_lowercase()
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect::<String>();
         if !key.is_empty() {
             skin_sets.entry(key.clone()).or_default();
             *current_skin_set = Some(key);
         }
     } else if parents.len() == 3
-        && parents.last().is_some_and(|p| p.eq_ignore_ascii_case(b"SkinSet"))
+        && parents
+            .last()
+            .is_some_and(|p| p.eq_ignore_ascii_case(b"SkinSet"))
         && tag.eq_ignore_ascii_case(b"skin")
         && let Some(group) = current_skin_set.as_ref()
         && let Some(value) = attr(element, b"name")?
     {
-        let normalized = value.to_ascii_lowercase().chars()
-            .filter(char::is_ascii_alphanumeric).collect::<String>();
+        let normalized = value
+            .to_ascii_lowercase()
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect::<String>();
         if !normalized.is_empty() {
             let set = skin_sets.entry(group.to_string()).or_default();
             if set.len() < MAX_ATTACHMENTS {
@@ -150,9 +175,14 @@ fn handle_element(
 /// Parse a CDF's skeleton, actual skin/CHR attachments, and explicit skin sets.
 /// Does not infer or manufacture missing meshes, bones, or equipment.
 pub fn parse_cdf(bytes: &[u8]) -> Result<CdfDefinition, CdfError> {
-    if bytes.is_empty() || bytes.len() > MAX_CDF_BYTES
-        || bytes.windows(9).any(|w| w.eq_ignore_ascii_case(b"<!DOCTYPE"))
-        || bytes.windows(8).any(|w| w.eq_ignore_ascii_case(b"<!ENTITY"))
+    if bytes.is_empty()
+        || bytes.len() > MAX_CDF_BYTES
+        || bytes
+            .windows(9)
+            .any(|w| w.eq_ignore_ascii_case(b"<!DOCTYPE"))
+        || bytes
+            .windows(8)
+            .any(|w| w.eq_ignore_ascii_case(b"<!ENTITY"))
     {
         return Err(CdfError::UnsafeXml);
     }
@@ -165,19 +195,32 @@ pub fn parse_cdf(bytes: &[u8]) -> Result<CdfDefinition, CdfError> {
     let mut current_skin_set = None;
     let mut found_root = false;
     loop {
-        match reader.read_event().map_err(|e| CdfError::Xml(e.to_string()))? {
+        match reader
+            .read_event()
+            .map_err(|e| CdfError::Xml(e.to_string()))?
+        {
             Event::Start(e) => {
                 if parents.len() >= MAX_DEPTH {
                     return Err(CdfError::UnsafeXml);
                 }
                 if parents.is_empty() {
-                    if !e.name().as_ref().eq_ignore_ascii_case(b"CharacterDefinition") {
+                    if !e
+                        .name()
+                        .as_ref()
+                        .eq_ignore_ascii_case(b"CharacterDefinition")
+                    {
                         return Err(CdfError::Xml("Unexpected root element".into()));
                     }
                     found_root = true;
                 } else {
-                    handle_element(&e, &parents, &mut skeleton, &mut attachments,
-                                   &mut skin_sets, &mut current_skin_set)?;
+                    handle_element(
+                        &e,
+                        &parents,
+                        &mut skeleton,
+                        &mut attachments,
+                        &mut skin_sets,
+                        &mut current_skin_set,
+                    )?;
                 }
                 parents.push(e.name().as_ref().to_vec());
             }
@@ -185,8 +228,14 @@ pub fn parse_cdf(bytes: &[u8]) -> Result<CdfDefinition, CdfError> {
                 if parents.is_empty() || !found_root {
                     return Err(CdfError::Xml("Unexpected empty root".into()));
                 }
-                handle_element(&e, &parents, &mut skeleton, &mut attachments,
-                               &mut skin_sets, &mut current_skin_set)?;
+                handle_element(
+                    &e,
+                    &parents,
+                    &mut skeleton,
+                    &mut attachments,
+                    &mut skin_sets,
+                    &mut current_skin_set,
+                )?;
             }
             Event::End(e) => {
                 let Some(previous) = parents.pop() else {
@@ -230,7 +279,9 @@ pub fn resolve_virtual(inventory: &Inventory, virtual_path: &str) -> AssetResolu
         return AssetResolution::Missing;
     };
     let key = valid.to_ascii_lowercase();
-    let mut matches = inventory.entries.iter()
+    let mut matches = inventory
+        .entries
+        .iter()
         .filter(|e| {
             let value = e.relative_path.to_ascii_lowercase();
             value == key || value.ends_with(&format!("/{key}"))
@@ -250,8 +301,11 @@ pub fn resolve_cdf(inventory: &Inventory, cdf: &CdfDefinition) -> CdfDependencyR
     CdfDependencyReport {
         schema: 1,
         skeleton: resolve_virtual(inventory, &cdf.skeleton),
-        attachments: cdf.attachments.iter()
-            .map(|a| (a.binding.clone(), resolve_virtual(inventory, &a.binding))).collect(),
+        attachments: cdf
+            .attachments
+            .iter()
+            .map(|a| (a.binding.clone(), resolve_virtual(inventory, &a.binding)))
+            .collect(),
     }
 }
 
@@ -281,25 +335,51 @@ mod tests {
 
     #[test]
     fn rejects_unsafe_entities_and_traversal() {
-        assert!(parse_cdf(br#"<!DOCTYPE foo [<!ENTITY x SYSTEM "file:///secret">]><CharacterDefinition/>"#).is_err());
-        assert!(parse_cdf(br#"<CharacterDefinition><Model File="../outside.chr"/></CharacterDefinition>"#).is_err());
-        assert!(parse_cdf(br#"<CharacterDefinition><AttachmentList/></CharacterDefinition>"#).is_err());
+        assert!(
+            parse_cdf(
+                br#"<!DOCTYPE foo [<!ENTITY x SYSTEM "file:///secret">]><CharacterDefinition/>"#
+            )
+            .is_err()
+        );
+        assert!(
+            parse_cdf(
+                br#"<CharacterDefinition><Model File="../outside.chr"/></CharacterDefinition>"#
+            )
+            .is_err()
+        );
+        assert!(
+            parse_cdf(br#"<CharacterDefinition><AttachmentList/></CharacterDefinition>"#).is_err()
+        );
     }
 
     #[test]
     fn exact_and_ambiguous_resolution_never_guess() {
         let mut inventory = Inventory {
-            schema: 1, root: "synthetic".into(), entries: vec![], total_bytes: 0, skipped_symlinks: 0,
+            schema: 1,
+            root: "synthetic".into(),
+            entries: vec![],
+            total_bytes: 0,
+            skipped_symlinks: 0,
         };
         let skeleton = "characters/hunters/merc_tech/tech_skeleton.chr";
         inventory.entries.push(AssetEntry {
-            relative_path: format!("ExtractedA/files/{skeleton}"), byte_size: 4, kind: AssetKind::Skeleton,
+            relative_path: format!("ExtractedA/files/{skeleton}"),
+            byte_size: 4,
+            kind: AssetKind::Skeleton,
         });
         let cdf = parse_cdf(br#"<CharacterDefinition><Model File="characters/hunters/merc_tech/tech_skeleton.chr"/></CharacterDefinition>"#).unwrap();
-        assert_eq!(resolve_cdf(&inventory, &cdf).skeleton, AssetResolution::Found(format!("ExtractedA/files/{skeleton}")));
+        assert_eq!(
+            resolve_cdf(&inventory, &cdf).skeleton,
+            AssetResolution::Found(format!("ExtractedA/files/{skeleton}"))
+        );
         inventory.entries.push(AssetEntry {
-            relative_path: format!("ExtractedB/files/{skeleton}"), byte_size: 4, kind: AssetKind::Skeleton,
+            relative_path: format!("ExtractedB/files/{skeleton}"),
+            byte_size: 4,
+            kind: AssetKind::Skeleton,
         });
-        assert!(matches!(resolve_cdf(&inventory, &cdf).skeleton, AssetResolution::Ambiguous(_)));
+        assert!(matches!(
+            resolve_cdf(&inventory, &cdf).skeleton,
+            AssetResolution::Ambiguous(_)
+        ));
     }
 }

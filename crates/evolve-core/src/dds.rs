@@ -61,9 +61,12 @@ pub enum DdsError {
 }
 
 fn u32_at(buffer: &[u8], offset: usize) -> Result<u32, DdsError> {
-    let bytes = buffer.get(offset..offset + 4)
+    let bytes = buffer
+        .get(offset..offset + 4)
         .ok_or_else(|| DdsError::Unsupported("truncated header".into()))?;
-    Ok(u32::from_le_bytes(bytes.try_into().map_err(|_| DdsError::Unsupported("invalid header".into()))?))
+    Ok(u32::from_le_bytes(bytes.try_into().map_err(|_| {
+        DdsError::Unsupported("invalid header".into())
+    })?))
 }
 
 fn checked_read(path: &Path) -> Result<Vec<u8>, DdsError> {
@@ -78,18 +81,27 @@ fn checked_read(path: &Path) -> Result<Vec<u8>, DdsError> {
 }
 
 fn parse_header(bytes: &[u8]) -> Result<(DdsInfo, usize, Option<[u32; 4]>), DdsError> {
-    if bytes.len() < 128 || &bytes[..4] != b"DDS "
-        || u32_at(bytes, 4)? != 124 || u32_at(bytes, 76)? != 32
+    if bytes.len() < 128
+        || &bytes[..4] != b"DDS "
+        || u32_at(bytes, 4)? != 124
+        || u32_at(bytes, 76)? != 32
     {
         return Err(DdsError::Unsupported("missing DDS magic/header".into()));
     }
     let flags = u32_at(bytes, 8)?;
     let height = u32_at(bytes, 12)?;
     let width = u32_at(bytes, 16)?;
-    let mipmaps = if flags & 0x20000 != 0 { u32_at(bytes, 28)? } else { 1 };
+    let mipmaps = if flags & 0x20000 != 0 {
+        u32_at(bytes, 28)?
+    } else {
+        1
+    };
     if flags & 0x1004 != 0x1004
-        || width == 0 || height == 0 || u64::from(width) * u64::from(height) > MAX_PIXELS
-        || mipmaps == 0 || mipmaps > 20
+        || width == 0
+        || height == 0
+        || u64::from(width) * u64::from(height) > MAX_PIXELS
+        || mipmaps == 0
+        || mipmaps > 20
         || mipmaps > u32::BITS - width.max(height).leading_zeros()
     {
         return Err(DdsError::LimitsExceeded);
@@ -98,7 +110,9 @@ fn parse_header(bytes: &[u8]) -> Result<(DdsInfo, usize, Option<[u32; 4]>), DdsE
         return Err(DdsError::Unsupported("volume/cubemap texture".into()));
     }
     let format_flags = u32_at(bytes, 80)?;
-    let fourcc = bytes.get(84..88).ok_or_else(|| DdsError::Unsupported("short FourCC".into()))?;
+    let fourcc = bytes
+        .get(84..88)
+        .ok_or_else(|| DdsError::Unsupported("short FourCC".into()))?;
     let mut payload_offset = 128usize;
     let mut masks = None;
     let format = if format_flags & 4 != 0 {
@@ -113,8 +127,11 @@ fn parse_header(bytes: &[u8]) -> Result<(DdsInfo, usize, Option<[u32; 4]>), DdsE
                     return Err(DdsError::Unsupported("missing DX10 header".into()));
                 }
                 payload_offset = 148;
-                if u32_at(bytes, 132)? != 3 || u32_at(bytes, 136)? != 0 || u32_at(bytes, 140)? != 1 {
-                    return Err(DdsError::Unsupported("non-2D/array/cube DX10 layout".into()));
+                if u32_at(bytes, 132)? != 3 || u32_at(bytes, 136)? != 0 || u32_at(bytes, 140)? != 1
+                {
+                    return Err(DdsError::Unsupported(
+                        "non-2D/array/cube DX10 layout".into(),
+                    ));
                 }
                 match u32_at(bytes, 128)? {
                     71 | 72 => DdsFormat::Bc1,
@@ -137,44 +154,61 @@ fn parse_header(bytes: &[u8]) -> Result<(DdsInfo, usize, Option<[u32; 4]>), DdsE
         }
     } else {
         if format_flags & 0x40 == 0 || u32_at(bytes, 88)? != 32 {
-            return Err(DdsError::Unsupported("only 32-bit RGB DDS is supported".into()));
+            return Err(DdsError::Unsupported(
+                "only 32-bit RGB DDS is supported".into(),
+            ));
         }
-        masks = Some([u32_at(bytes, 92)?, u32_at(bytes, 96)?, u32_at(bytes, 100)?, u32_at(bytes, 104)?]);
+        masks = Some([
+            u32_at(bytes, 92)?,
+            u32_at(bytes, 96)?,
+            u32_at(bytes, 100)?,
+            u32_at(bytes, 104)?,
+        ]);
         DdsFormat::Rgba32
     };
-    Ok((DdsInfo {
-        schema: 1,
-        width,
-        height,
-        mipmaps,
-        format,
-        streaming_parts: 1,
-        top_mip_bytes: 0,
-    }, payload_offset, masks))
+    Ok((
+        DdsInfo {
+            schema: 1,
+            width,
+            height,
+            mipmaps,
+            format,
+            streaming_parts: 1,
+            top_mip_bytes: 0,
+        },
+        payload_offset,
+        masks,
+    ))
 }
 
 fn mip_sizes(info: &DdsInfo) -> Result<Vec<usize>, DdsError> {
-    (0..info.mipmaps).map(|level| {
-        let w = (info.width >> level).max(1) as u64;
-        let h = (info.height >> level).max(1) as u64;
-        let size = if let Some(block_bytes) = info.format.bytes_per_block() {
-            w.div_ceil(4).checked_mul(h.div_ceil(4))
-                .and_then(|n| n.checked_mul(block_bytes as u64))
-        } else {
-            w.checked_mul(h).and_then(|n| n.checked_mul(4))
-        }.ok_or(DdsError::LimitsExceeded)?;
-        usize::try_from(size).map_err(|_| DdsError::LimitsExceeded)
-    }).collect()
+    (0..info.mipmaps)
+        .map(|level| {
+            let w = (info.width >> level).max(1) as u64;
+            let h = (info.height >> level).max(1) as u64;
+            let size = if let Some(block_bytes) = info.format.bytes_per_block() {
+                w.div_ceil(4)
+                    .checked_mul(h.div_ceil(4))
+                    .and_then(|n| n.checked_mul(block_bytes as u64))
+            } else {
+                w.checked_mul(h).and_then(|n| n.checked_mul(4))
+            }
+            .ok_or(DdsError::LimitsExceeded)?;
+            usize::try_from(size).map_err(|_| DdsError::LimitsExceeded)
+        })
+        .collect()
 }
 
 fn parse_part_name(path: &Path) -> Result<(String, Option<usize>), DdsError> {
-    let name = path.file_name().and_then(|n| n.to_str()).ok_or(DdsError::InvalidFile)?;
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or(DdsError::InvalidFile)?;
     let folded = name.to_ascii_lowercase();
     if folded.ends_with(".dds") {
         return Ok((folded, None));
     }
-    let (base, num) = folded.rsplit_once(".dds.")
-        .ok_or(DdsError::InvalidFile)?;
+    let (base, num) = folded.rsplit_once(".dds.").ok_or(DdsError::InvalidFile)?;
     let index = num.parse::<usize>().map_err(|_| DdsError::InvalidFile)?;
     if index >= MAX_PARTS {
         return Err(DdsError::LimitsExceeded);
@@ -197,12 +231,16 @@ fn load_dds(source: &Path) -> Result<LoadedDds, DdsError> {
     let (mut info, offset, masks) = parse_header(&initial)?;
     let sizes = mip_sizes(&info)?;
     info.top_mip_bytes = sizes[0];
-    let expected = sizes.iter().try_fold(0usize, |a, b| a.checked_add(*b))
+    let expected = sizes
+        .iter()
+        .try_fold(0usize, |a, b| a.checked_add(*b))
         .ok_or(DdsError::LimitsExceeded)?;
     let payload_len = initial.len() - offset;
     if index.is_none() {
         if payload_len != expected {
-            return Err(DdsError::Unsupported("standalone DDS mip data incomplete or padded".into()));
+            return Err(DdsError::Unsupported(
+                "standalone DDS mip data incomplete or padded".into(),
+            ));
         }
         return Ok((info, initial, offset, masks));
     }
@@ -211,12 +249,18 @@ fn load_dds(source: &Path) -> Result<LoadedDds, DdsError> {
     for candidate in fs::read_dir(parent)? {
         let path = candidate?.path();
         if let Ok((name, Some(n))) = parse_part_name(&path)
-            && name == base && parts.insert(n, path).is_some() {
-            return Err(DdsError::Unsupported("duplicate numbered DDS fragment".into()));
+            && name == base
+            && parts.insert(n, path).is_some()
+        {
+            return Err(DdsError::Unsupported(
+                "duplicate numbered DDS fragment".into(),
+            ));
         }
     }
     if !parts.contains_key(&0) || !parts.get(&0).is_some_and(|p| p == &header_path) {
-        return Err(DdsError::Unsupported("DDS .0 fragment spelling mismatch".into()));
+        return Err(DdsError::Unsupported(
+            "DDS .0 fragment spelling mismatch".into(),
+        ));
     }
     if payload_len == expected && parts.len() == 1 {
         return Ok((info, initial, offset, masks));
@@ -225,24 +269,34 @@ fn load_dds(source: &Path) -> Result<LoadedDds, DdsError> {
         .filter(|count| sizes[sizes.len() - count..].iter().sum::<usize>() == payload_len)
         .collect::<Vec<_>>();
     if possible.len() != 1 {
-        return Err(DdsError::Unsupported("DDS .0 is not a recognized mip tail".into()));
+        return Err(DdsError::Unsupported(
+            "DDS .0 is not a recognized mip tail".into(),
+        ));
     }
     let tail = possible[0];
     let expected_parts = sizes.len() - tail + 1;
-    if parts.len() != expected_parts || parts.keys().copied().collect::<Vec<_>>() != (0..expected_parts).collect::<Vec<_>>() {
-        return Err(DdsError::Unsupported("incomplete or noncontiguous split DDS set".into()));
+    if parts.len() != expected_parts
+        || parts.keys().copied().collect::<Vec<_>>() != (0..expected_parts).collect::<Vec<_>>()
+    {
+        return Err(DdsError::Unsupported(
+            "incomplete or noncontiguous split DDS set".into(),
+        ));
     }
     let mut all = initial[..offset].to_vec();
     for i in (1..expected_parts).rev() {
         let bytes = checked_read(&parts[&i])?;
         if bytes.len() != sizes[sizes.len() - tail - i] {
-            return Err(DdsError::Unsupported(format!("DDS fragment .{i} length mismatch")));
+            return Err(DdsError::Unsupported(format!(
+                "DDS fragment .{i} length mismatch"
+            )));
         }
         all.extend_from_slice(&bytes);
     }
     all.extend_from_slice(&initial[offset..]);
     if all.len() != offset + expected {
-        return Err(DdsError::Unsupported("reconstructed DDS length mismatch".into()));
+        return Err(DdsError::Unsupported(
+            "reconstructed DDS length mismatch".into(),
+        ));
     }
     info.streaming_parts = expected_parts;
     Ok((info, all, offset, masks))
@@ -257,9 +311,11 @@ fn color565(c: u16) -> [u8; 3] {
     let r = (c >> 11) as u8 & 31;
     let g = (c >> 5) as u8 & 63;
     let b = c as u8 & 31;
-    [((u16::from(r) * 255 + 15) / 31) as u8,
-     ((u16::from(g) * 255 + 31) / 63) as u8,
-     ((u16::from(b) * 255 + 15) / 31) as u8]
+    [
+        ((u16::from(r) * 255 + 15) / 31) as u8,
+        ((u16::from(g) * 255 + 31) / 63) as u8,
+        ((u16::from(b) * 255 + 15) / 31) as u8,
+    ]
 }
 
 fn decode_bc1_colors(bytes: &[u8], opaque: bool) -> [[u8; 4]; 16] {
@@ -399,7 +455,12 @@ pub fn decode_dds_rgba(source: &Path) -> Result<(DdsInfo, RgbaImage), DdsError> 
         let masks = masks.ok_or_else(|| DdsError::Unsupported("missing channel masks".into()))?;
         validate_masks(masks)?;
         let (destination_pixels, _) = rgba.as_chunks_mut::<4>();
-        for (src, dest) in payload.as_chunks::<4>().0.iter().zip(destination_pixels.iter_mut()) {
+        for (src, dest) in payload
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(destination_pixels.iter_mut())
+        {
             let pixel = u32::from_le_bytes(*src);
             dest.copy_from_slice(&[
                 channel(pixel, masks[0], 0),
@@ -409,7 +470,10 @@ pub fn decode_dds_rgba(source: &Path) -> Result<(DdsInfo, RgbaImage), DdsError> 
             ]);
         }
     } else {
-        let block_size = info.format.bytes_per_block().ok_or(DdsError::LimitsExceeded)?;
+        let block_size = info
+            .format
+            .bytes_per_block()
+            .ok_or(DdsError::LimitsExceeded)?;
         let bw = info.width.div_ceil(4);
         let bh = info.height.div_ceil(4);
         for by in 0..bh {
@@ -429,17 +493,23 @@ pub fn decode_dds_rgba(source: &Path) -> Result<(DdsInfo, RgbaImage), DdsError> 
             }
         }
     }
-    let image = RgbaImage::from_raw(info.width, info.height, rgba)
-        .ok_or(DdsError::LimitsExceeded)?;
+    let image =
+        RgbaImage::from_raw(info.width, info.height, rgba).ok_or(DdsError::LimitsExceeded)?;
     Ok((info, image))
 }
 
 /// Explicit opt-in PNG export. Never overwrites an existing PNG.
 pub fn export_dds_png(source: &Path, destination: &Path) -> Result<DdsInfo, DdsError> {
     let (info, rgba) = decode_dds_rgba(source)?;
-    let mut file = match fs::OpenOptions::new().write(true).create_new(true).open(destination) {
+    let mut file = match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+    {
         Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Err(DdsError::OutputExists),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            return Err(DdsError::OutputExists);
+        }
         Err(error) => return Err(DdsError::Io(error)),
     };
     if let Err(error) = DynamicImage::ImageRgba8(rgba).write_to(&mut file, ImageFormat::Png) {
@@ -470,8 +540,11 @@ mod tests {
     }
 
     fn solid_bc1(red: bool) -> [u8; 8] {
-        if red { [0, 248, 224, 7, 0, 0, 0, 0] }
-        else { [224, 7, 0, 248, 0, 0, 0, 0] }
+        if red {
+            [0, 248, 224, 7, 0, 0, 0, 0]
+        } else {
+            [224, 7, 0, 248, 0, 0, 0, 0]
+        }
     }
 
     #[test]
@@ -487,7 +560,10 @@ mod tests {
         let out = temp.path().join("result.png");
         export_dds_png(&src, &out).unwrap();
         assert_eq!(image::open(&out).unwrap().width(), 4);
-        assert!(matches!(export_dds_png(&src, &out), Err(DdsError::OutputExists)));
+        assert!(matches!(
+            export_dds_png(&src, &out),
+            Err(DdsError::OutputExists)
+        ));
     }
 
     #[test]
@@ -527,7 +603,10 @@ mod tests {
         let mut bytes = header(1, 1, 1, b"\0\0\0\0");
         bytes[80..84].copy_from_slice(&0x41u32.to_le_bytes());
         bytes[88..92].copy_from_slice(&32u32.to_le_bytes());
-        for (i, mask) in [0x00ff0000u32, 0x0000ff00, 0x000000ff, 0xff000000].iter().enumerate() {
+        for (i, mask) in [0x00ff0000u32, 0x0000ff00, 0x000000ff, 0xff000000]
+            .iter()
+            .enumerate()
+        {
             bytes[92 + i * 4..96 + i * 4].copy_from_slice(&mask.to_le_bytes());
         }
         bytes.extend_from_slice(&[30, 20, 10, 255]);
