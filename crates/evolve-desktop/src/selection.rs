@@ -87,6 +87,18 @@ mod tests {
     }
 
     #[test]
+    fn shift_selection_spans_paginated_filtered_catalog_indices() {
+        let mut state = MultiSelection::default();
+        let ordered = (0usize..260).map(|i| i * 2).collect::<Vec<_>>();
+        state.click(&ordered, ordered[107], false, false);
+        state.click(&ordered, ordered[139], true, false);
+        assert_eq!(state.indices.len(), 33);
+        assert_eq!(state.anchor, Some(ordered[107]));
+        assert!(state.indices.contains(&ordered[110]));
+        assert!(!state.indices.contains(&219)); // Excluded by filter.
+    }
+
+    #[test]
     fn collapsed_folders_do_not_implicitly_select_hidden_files() {
         let mut state = MultiSelection::default();
         state.click(&[1, 4], 1, false, false);
