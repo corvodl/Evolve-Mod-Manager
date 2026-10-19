@@ -982,6 +982,7 @@ enum Message {
     PreferenceDensity,
     PreferenceExplorerSide,
     PreferenceAppearance,
+    PreferenceAccentPreset(&'static str),
     PreferenceReduceMotion,
     PreferenceSnapshots,
     PreferenceActivity,
@@ -2349,6 +2350,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 "Left".into()
             };
             persist_preferences(state);
+        }
+        Message::PreferenceAccentPreset(preset) => {
+            if settings::apply_accent_preset(&mut state.preferences, preset) {
+                persist_preferences(state);
+                state.settings_status = format!("Appearance preset applied: {preset}");
+            }
         }
         Message::PreferenceAppearance => {
             state.preferences.appearance_mode = if state.preferences.appearance_mode == "Dark" {
