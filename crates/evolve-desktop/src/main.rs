@@ -272,7 +272,6 @@ enum Operation {
     RestoreRawProjectMember(ProjectRow, PathBuf, String),
     UnpackRawProject(PathBuf, PathBuf, PathBuf),
     LoadImportedLibrary(PathBuf),
-    LoadImportedLibraryStartup(PathBuf),
     ImportSignedLibrary(PathBuf, PathBuf, PathBuf),
     OpenImportedPak(ImportedPak),
     CreateProjectFromLibrary(ImportedPak, PathBuf, PathBuf),
@@ -347,7 +346,6 @@ enum Completed {
     ImportedRawProjectMember(bool, String, PathBuf),
     RestoredRawProjectMember(bool, String, PathBuf),
     ImportedLibrary(ImportedLibrary),
-    StartupLibrary(ImportedLibrary),
     ImportedSignedLibrary(LibraryImportReport, ImportedLibrary),
     ImportedPakFiles(Inventory),
     Dependencies(DependencyGraph),
@@ -440,9 +438,6 @@ impl Operation {
                 .map_err(|e| e.to_string()),
             Self::LoadImportedLibrary(root) => imported_library(&root)
                 .map(Completed::ImportedLibrary)
-                .map_err(|e| e.to_string()),
-            Self::LoadImportedLibraryStartup(root) => imported_library(&root)
-                .map(Completed::StartupLibrary)
                 .map_err(|e| e.to_string()),
             Self::ImportSignedLibrary(root, source, key) => {
                 // Import is explicitly requested; don't create any directory while browsing.
@@ -858,6 +853,7 @@ enum Message {
     ModdingToggleProfiles,
     LibraryToggleConfiguration,
     LibraryRefresh,
+    StartupLibraryIndexed(PathBuf, Result<ImportedLibrary, String>),
     LibrarySetByBuild(bool),
     LibraryNextBuild,
     LibrarySelect(usize),
@@ -1519,6 +1515,29 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LibraryToggleConfiguration => {
             state.library_show_configuration = !state.library_show_configuration;
+        }
+        Message::StartupLibraryIndexed(expected, result) => {
+            // Ignore a startup read that finished after the user changed
+            // the configured library root in Advanced Settings.
+            if PathBuf::from(&state.library_root) != expected {
+                return Task::none();
+            }
+            match result {
+                Ok(catalog) => {
+                    state.status = format!(
+                        "{} imported Asset Library PAKs discovered automatically; originals untouched.",
+                        catalog.archives.len()
+                    );
+                    state.library_root = catalog.root.clone();
+                    state.preferences.asset_library_root = catalog.root.clone();
+                    state.library_catalog = Some(catalog);
+                    state.library_selection.clear();
+                    state.library_selected = None;
+                    state.library_page = 0;
+                    refresh_library_matches(state);
+                }
+                Err(error) => state.status = format!("Could not index saved Asset Library: {error}"),
+            }
         }
         Message::LibraryRefresh => {
             if !PathBuf::from(&state.library_root).is_dir() {
@@ -3156,20 +3175,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::AssetLibrary);
                     persist_preferences(state);
                 }
-                Ok(Completed::StartupLibrary(catalog)) => {
-                    state.status = format!(
-                        "{} imported Asset Library PAKs discovered automatically; originals untouched.",
-                        catalog.archives.len()
-                    );
-                    state.library_root = catalog.root.clone();
-                    state.preferences.asset_library_root = catalog.root.clone();
-                    state.library_catalog = Some(catalog);
-                    state.library_selection.clear();
-                    state.library_selected = None;
-                    state.library_page = 0;
-                    refresh_library_matches(state);
-                    // Startup indexing must not pull users away from Home or Settings.
-                }
                 Ok(Completed::ImportedLibrary(catalog)) => {
                     let count = catalog.archives.len();
                     state.status = format!(
@@ -4382,12 +4387,21 @@ impl Desktop {
             size: iced::Size::new(1440.0, 900.0),
             ..window::Settings::default()
         });
-        let mut state = initial_state();
+        let state = initial_state();
         let library_root = PathBuf::from(&state.library_root);
+        // Independent read-only indexing: don't block Modding, updates,
+        // previews or Settings with the global worker busy flag.
         let startup = if library_root.is_dir() {
-            launch(
-                &mut state,
-                Operation::LoadImportedLibraryStartup(library_root),
+            Task::perform(
+                async move {
+                    let expected = library_root.clone();
+                    let result = tokio::task::spawn_blocking(move || imported_library(&library_root))
+                        .await
+                        .map_err(|e| format!("Asset Library worker stopped: {e}"))
+                        .and_then(|outcome| outcome.map_err(|e| e.to_string()));
+                    (expected, result)
+                },
+                |(expected, result)| Message::StartupLibraryIndexed(expected, result),
             )
         } else {
             Task::none()
