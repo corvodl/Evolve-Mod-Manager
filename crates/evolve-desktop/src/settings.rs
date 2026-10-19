@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 pub struct Preferences {
     pub ui_density: String,
     pub file_explorer_side: String,
+    pub viewer_explorer_visible: bool,
     pub viewer_split: f32,
     pub light_strength: f32,
     pub viewer_show_inspector: bool,
@@ -52,6 +53,7 @@ impl Default for Preferences {
         Self {
             ui_density: "Comfortable".into(),
             file_explorer_side: "Right".into(),
+            viewer_explorer_visible: true,
             viewer_split: 0.67,
             light_strength: 1.0,
             viewer_show_inspector: false,
@@ -268,6 +270,24 @@ pub fn save_to(path: &Path, prefs: &Preferences) -> Result<(), SettingsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn viewer_explorer_preference_roundtrips_and_legacy_defaults_visible() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        let prefs = Preferences {
+            file_explorer_side: "Left".into(),
+            viewer_explorer_visible: false,
+            ..Preferences::default()
+        };
+        save_to(&file, &prefs).unwrap();
+        let saved = load_from(&file).unwrap();
+        assert_eq!(saved.file_explorer_side, "Left");
+        assert!(!saved.viewer_explorer_visible);
+
+        fs::write(&file, r#"{"file_explorer_side":"Right","viewer_split":0.65}"#).unwrap();
+        assert!(load_from(&file).unwrap().viewer_explorer_visible);
+    }
+
     #[test]
     fn detects_existing_manager_library_and_gamesets_without_user_input() {
         let home = tempfile::tempdir().unwrap();
