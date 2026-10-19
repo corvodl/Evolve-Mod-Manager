@@ -1,6 +1,6 @@
 //! Safe command-line functions shared with the desktop application.
 use evolve_core::{
-    export_dds_png, extract_legacy_pak, inspect_dds, inspect_legacy_pak, read_cdf, scan_directory,
+    export_dds_png, extract_legacy_pak, inspect_dds, inspect_legacy_pak, read_cdf, rebuild_legacy_pak, scan_directory,
     write_inventory_json,
 };
 use serde::Serialize;
@@ -22,6 +22,7 @@ fn usage() -> String {
         "  evolve-cli scan <directory> [inventory.json]",
         "  evolve-cli pak inspect <legacy.pak> [pak-inventory.json]",
         "  evolve-cli pak extract <legacy.pak> <new-output-directory>",
+        "  evolve-cli pak rebuild <legacy.pak> <overrides-folder> <new-output.pak>",
         "  evolve-cli dds info <texture.dds|texture.dds.0> [dds-info.json]",
         "  evolve-cli dds png <texture.dds|texture.dds.0> <new-output.png>",
         "  evolve-cli cdf inspect <character.cdf> [cdf-info.json]",
@@ -82,7 +83,11 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
     let subcommand = pop(&mut args)?;
     let source: PathBuf = pop(&mut args)?.into();
     let output: Option<PathBuf> = args.next().map(Into::into);
+    let extra: Option<PathBuf> = args.next().map(Into::into);
     no_extra(&mut args)?;
+    if (verb != OsStr::new("pak") || subcommand != OsStr::new("rebuild")) && extra.is_some() {
+        return Err(usage());
+    }
     if verb == OsStr::new("pak") && subcommand == OsStr::new("inspect") {
         let result = inspect_legacy_pak(&source).map_err(|e| e.to_string())?;
         println!(
@@ -106,6 +111,16 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
             "Extracted {} files into {}",
             extracted.entries.len(),
             target.display()
+        );
+    } else if verb == OsStr::new("pak") && subcommand == OsStr::new("rebuild") {
+        let overrides = output.ok_or_else(usage)?;
+        let new_pak = extra.ok_or_else(usage)?;
+        let report = rebuild_legacy_pak(&source, &overrides, &new_pak)
+            .map_err(|e| e.to_string())?;
+        println!(
+            "Rebuilt UNSIGNED historical ZIP PAK with {} replacement(s): {}",
+            report.changed_entries,
+            new_pak.display()
         );
     } else if verb == OsStr::new("dds") && subcommand == OsStr::new("info") {
         let info = inspect_dds(&source).map_err(|e| e.to_string())?;
