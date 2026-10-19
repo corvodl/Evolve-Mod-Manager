@@ -3,13 +3,13 @@
 mod textured;
 mod viewport;
 use evolve_core::{
-    AssetEntry, CdfDefinition, DdsInfo, Inventory, LevelScene, ModelInfo, NativeCafMotion,
-    PakInventory, RenderMesh, RigReport, SignedPakInfo, TerrainInfo, decode_dds_rgba,
-    export_dds_png, export_level_scene_glb, export_rigged_character_fbx,
-    export_rigged_character_glb, extract_legacy_pak, extract_signed_pak, inspect_dds,
-    inspect_legacy_pak, inspect_signed_pak, load_level_scene, read_cdf, read_model,
-    read_native_caf, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry, scan_directory,
-    AnimatedGlb, ConvertedMotion, convert_original_motion,
+    AnimatedGlb, AssetEntry, CdfDefinition, ConvertedMotion, DdsInfo, Inventory, LevelScene,
+    ModelInfo, NativeCafMotion, PakInventory, RenderMesh, RigReport, SignedPakInfo, TerrainInfo,
+    convert_original_motion, decode_dds_rgba, export_dds_png, export_level_scene_glb,
+    export_rigged_character_fbx, export_rigged_character_glb, extract_legacy_pak,
+    extract_signed_pak, inspect_dds, inspect_legacy_pak, inspect_signed_pak, load_level_scene,
+    read_cdf, read_model, read_native_caf, read_terrain, rebuild_legacy_pak,
+    rebuild_signed_pak_entry, scan_directory,
 };
 use iced::widget::{
     button, canvas, column, container, image, row, scrollable, shader, slider, svg, text,
@@ -83,10 +83,10 @@ struct State {
     caf_path: String,
     skeleton_path: String,
     blender_path: String,
-    converter_path:String,
-    converted_glbs:Vec<PathBuf>,
-    glb_motion:Option<Arc<AnimatedGlb>>,
-    selected_motion_clip:usize,
+    converter_path: String,
+    converted_glbs: Vec<PathBuf>,
+    glb_motion: Option<Arc<AnimatedGlb>>,
+    selected_motion_clip: usize,
     native_caf: Option<Arc<NativeCafMotion>>,
     motion_time: f32,
     playing: bool,
@@ -118,7 +118,7 @@ enum Operation {
     LoadCaf(PathBuf),
     RiggedGlb(PathBuf, PathBuf, PathBuf),
     RiggedFbx(PathBuf, PathBuf, PathBuf, PathBuf),
-    ConvertMotion(PathBuf,PathBuf,PathBuf,PathBuf),
+    ConvertMotion(PathBuf, PathBuf, PathBuf, PathBuf),
     LoadGlbMotion(PathBuf),
     InspectCdf(PathBuf),
     InspectModel(PathBuf),
@@ -150,7 +150,7 @@ enum Completed {
     Diffuse(DdsInfo, ::image::RgbaImage),
     Caf(NativeCafMotion),
     RiggedExport(RigReport, PathBuf),
-    MotionConverted(ConvertedMotion,PathBuf),
+    MotionConverted(ConvertedMotion, PathBuf),
     MotionGlb(AnimatedGlb),
     Character(CdfDefinition),
     Model(RenderMesh),
@@ -184,10 +184,14 @@ impl Operation {
                     .map(|(r, _)| Completed::RiggedExport(r, dest))
                     .map_err(|e| e.to_string())
             }
-            Self::ConvertMotion(exe,source,assets,destination)=>convert_original_motion(&exe,&source,&assets,&destination)
-                .map(|result|Completed::MotionConverted(result,destination)).map_err(|e|e.to_string()),
-            Self::LoadGlbMotion(path)=>AnimatedGlb::read(&path)
-                .map(Completed::MotionGlb).map_err(|e|e.to_string()),
+            Self::ConvertMotion(exe, source, assets, destination) => {
+                convert_original_motion(&exe, &source, &assets, &destination)
+                    .map(|result| Completed::MotionConverted(result, destination))
+                    .map_err(|e| e.to_string())
+            }
+            Self::LoadGlbMotion(path) => AnimatedGlb::read(&path)
+                .map(Completed::MotionGlb)
+                .map_err(|e| e.to_string()),
             Self::LoadCaf(source) => read_native_caf(&source)
                 .map(Completed::Caf)
                 .map_err(|e| e.to_string()),
@@ -364,38 +368,52 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::CafInputChanged(value) => state.caf_path = value,
         Message::SkeletonChanged(value) => state.skeleton_path = value,
         Message::BlenderChanged(value) => state.blender_path = value,
-        Message::ConverterPathChanged(value)=>state.converter_path=value,
-        Message::SelectMotionClip(index)=>{
-            state.selected_motion_clip=index;
-            state.motion_time=0.0;
-            state.playing=false;
-        },
-        Message::OpenConvertedGlb(index)=>{
-            if let Some(path)=state.converted_glbs.get(index).cloned(){
-                return launch(state,Operation::LoadGlbMotion(path));
+        Message::ConverterPathChanged(value) => state.converter_path = value,
+        Message::SelectMotionClip(index) => {
+            state.selected_motion_clip = index;
+            state.motion_time = 0.0;
+            state.playing = false;
+        }
+        Message::OpenConvertedGlb(index) => {
+            if let Some(path) = state.converted_glbs.get(index).cloned() {
+                return launch(state, Operation::LoadGlbMotion(path));
             }
-        },
+        }
         Message::MotionScrub(value) => state.motion_time = value,
-        Message::ToggleMotion => state.playing = !state.playing &&
-            (state.native_caf.is_some() || state.glb_motion.as_ref()
-                .is_some_and(|m|m.list_clips().get(state.selected_motion_clip).is_some())),
+        Message::ToggleMotion => {
+            state.playing = !state.playing
+                && (state.native_caf.is_some()
+                    || state
+                        .glb_motion
+                        .as_ref()
+                        .is_some_and(|m| m.list_clips().get(state.selected_motion_clip).is_some()))
+        }
         Message::Tick => {
             if state.playing {
-                let duration=if let Some(motion)=&state.native_caf {
-                    Some((motion.duration_seconds(),motion.cyclic))
-                }else{
-                    state.glb_motion.as_ref().and_then(|m|m.list_clips()
-                        .get(state.selected_motion_clip).map(|clip|(clip.duration,false)))
+                let duration = if let Some(motion) = &state.native_caf {
+                    Some((motion.duration_seconds(), motion.cyclic))
+                } else {
+                    state.glb_motion.as_ref().and_then(|m| {
+                        m.list_clips()
+                            .get(state.selected_motion_clip)
+                            .map(|clip| (clip.duration, false))
+                    })
                 };
-                if let Some((duration,looping))=duration {
-                    state.motion_time+=0.04;
-                    if duration<=0.0 {state.playing=false;}
-                    else if state.motion_time>=duration {
-                        if looping{state.motion_time%=duration;}
-                        else{state.motion_time=duration;state.playing=false;}
+                if let Some((duration, looping)) = duration {
+                    state.motion_time += 0.04;
+                    if duration <= 0.0 {
+                        state.playing = false;
+                    } else if state.motion_time >= duration {
+                        if looping {
+                            state.motion_time %= duration;
+                        } else {
+                            state.motion_time = duration;
+                            state.playing = false;
+                        }
                     }
-                }else{state.playing=false;}
-
+                } else {
+                    state.playing = false;
+                }
             }
         }
         Message::AssetsRootChanged(value) => state.assets_root = value,
@@ -450,15 +468,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::StartMotionConversion => {
-            if state.converter_path.trim().is_empty() || state.caf_path.trim().is_empty() ||
-                state.assets_root.trim().is_empty() || state.output.trim().is_empty() {
+            if state.converter_path.trim().is_empty()
+                || state.caf_path.trim().is_empty()
+                || state.assets_root.trim().is_empty()
+                || state.output.trim().is_empty()
+            {
                 state.status="Select Cryengine-Converter.exe, original CAF/DBA, exact asset root and NEW output folder.".into();
                 return Task::none();
             }
-            return launch(state,Operation::ConvertMotion(
-                PathBuf::from(&state.converter_path),PathBuf::from(&state.caf_path),
-                PathBuf::from(&state.assets_root),PathBuf::from(&state.output),
-            ));
+            return launch(
+                state,
+                Operation::ConvertMotion(
+                    PathBuf::from(&state.converter_path),
+                    PathBuf::from(&state.caf_path),
+                    PathBuf::from(&state.assets_root),
+                    PathBuf::from(&state.output),
+                ),
+            );
         }
         Message::StartCafLoad => {
             if state.caf_path.trim().is_empty() {
@@ -643,28 +669,39 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                     state.page = Some(Page::Models);
                 }
-                Ok(Completed::MotionConverted(result,dir))=>{
-                    state.status=format!("Converter produced {} validated GLB animation files, {} source clips from {}.",
-                        result.glb_files.len(),result.clips.len(),result.virtual_source);
-                    state.converted_glbs=result.glb_files.iter().map(|rel|dir.join(rel)).collect();
-                    state.native_caf=None;
-                    state.glb_motion=None;
-                    state.playing=false;
-                    state.page=Some(Page::Models);
-                    if state.converted_glbs.len()==1 {
-                        return launch(state,Operation::LoadGlbMotion(state.converted_glbs[0].clone()));
+                Ok(Completed::MotionConverted(result, dir)) => {
+                    state.status = format!(
+                        "Converter produced {} validated GLB animation files, {} source clips from {}.",
+                        result.glb_files.len(),
+                        result.clips.len(),
+                        result.virtual_source
+                    );
+                    state.converted_glbs =
+                        result.glb_files.iter().map(|rel| dir.join(rel)).collect();
+                    state.native_caf = None;
+                    state.glb_motion = None;
+                    state.playing = false;
+                    state.page = Some(Page::Models);
+                    if state.converted_glbs.len() == 1 {
+                        return launch(
+                            state,
+                            Operation::LoadGlbMotion(state.converted_glbs[0].clone()),
+                        );
                     }
                 }
-                Ok(Completed::MotionGlb(motion))=>{
-                    let clips=motion.list_clips();
-                    state.status=format!("Loaded {} real glTF animation clip(s), {} source nodes.",
-                        clips.len(),motion.node_names.len());
-                    state.motion_time=0.0;
-                    state.playing=false;
-                    state.selected_motion_clip=0;
-                    state.native_caf=None;
-                    state.glb_motion=Some(Arc::new(motion));
-                    state.page=Some(Page::Models);
+                Ok(Completed::MotionGlb(motion)) => {
+                    let clips = motion.list_clips();
+                    state.status = format!(
+                        "Loaded {} real glTF animation clip(s), {} source nodes.",
+                        clips.len(),
+                        motion.node_names.len()
+                    );
+                    state.motion_time = 0.0;
+                    state.playing = false;
+                    state.selected_motion_clip = 0;
+                    state.native_caf = None;
+                    state.glb_motion = Some(Arc::new(motion));
+                    state.page = Some(Page::Models);
                 }
                 Ok(Completed::Caf(motion)) => {
                     state.status = format!(
@@ -676,7 +713,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.motion_time = 0.0;
                     state.playing = false;
                     state.native_caf = Some(Arc::new(motion));
-                    state.glb_motion=None;
+                    state.glb_motion = None;
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::Diffuse(info, pixels)) => {
@@ -1173,13 +1210,19 @@ fn view(state: &State) -> Element<'_, Message> {
         .into()
 }
 
-fn initial_state()->State{
-    let mut result=State::default();
-    result.zoom=1.0;
-    if let Ok(executable)=std::env::current_exe()
-        && let Some(parent)=executable.parent(){
-        let bundled=parent.join("third_party").join("Cryengine-Converter").join("cgf-converter.exe");
-        if bundled.is_file(){result.converter_path=bundled.to_string_lossy().to_string();}
+fn initial_state() -> State {
+    let mut result = State::default();
+    result.zoom = 1.0;
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(parent) = executable.parent()
+    {
+        let bundled = parent
+            .join("third_party")
+            .join("Cryengine-Converter")
+            .join("cgf-converter.exe");
+        if bundled.is_file() {
+            result.converter_path = bundled.to_string_lossy().to_string();
+        }
     }
     result
 }

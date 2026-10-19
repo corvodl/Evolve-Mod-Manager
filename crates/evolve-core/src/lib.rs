@@ -25,11 +25,11 @@ pub use archive::{
     PakError, PakInventory, PakMember, RebuildReport, extract_legacy_pak, inspect_legacy_pak,
     rebuild_legacy_pak,
 };
-pub use converter::{ConverterError,ConvertedMotion,convert_original_motion};
 pub use cdf::{
     AssetResolution, CdfAttachment, CdfDefinition, CdfDependencyReport, CdfError, parse_cdf,
     read_cdf, resolve_cdf, resolve_virtual,
 };
+pub use converter::{ConvertedMotion, ConverterError, convert_original_motion};
 pub use dds::{DdsError, DdsFormat, DdsInfo, decode_dds_rgba, export_dds_png, inspect_dds};
 pub use fbx::{FbxError, FbxReport, convert_glb_to_fbx, validate_glb_source};
 pub use glb::{GlbError, export_model_glb, geometry_glb_bytes};

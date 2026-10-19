@@ -233,12 +233,19 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
         let asset_root: PathBuf = pop(&mut args)?.into();
         let output: PathBuf = pop(&mut args)?.into();
         no_extra(&mut args)?;
-        let result=convert_original_motion(&converter,&source,&asset_root,&output)
-            .map_err(|e|e.to_string())?;
-        println!("Verified converter playback for {}: {} animated GLB(s), {} actual clips",
-            result.virtual_source,result.glb_files.len(),result.clips.len());
+        let result = convert_original_motion(&converter, &source, &asset_root, &output)
+            .map_err(|e| e.to_string())?;
+        println!(
+            "Verified converter playback for {}: {} animated GLB(s), {} actual clips",
+            result.virtual_source,
+            result.glb_files.len(),
+            result.clips.len()
+        );
         for clip in &result.clips {
-            println!("  {}  •  {:.3}s  •  {} animated channels",clip.name,clip.duration,clip.channels);
+            println!(
+                "  {}  •  {:.3}s  •  {} animated channels",
+                clip.name, clip.duration, clip.channels
+            );
         }
         return Ok(());
     }

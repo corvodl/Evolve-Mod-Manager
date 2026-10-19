@@ -6,20 +6,20 @@ use crate::glb::{GlbError, geometry_glb_bytes};
 use crate::model::{ModelError, RenderMesh, read_model};
 use crate::policy::AnimationPolicy;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value,json};
+use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
-use std::io::{self,Write};
+use std::io::{self, Write};
 use std::path::Path;
 
-const BONES:u32=0x08002000;
-const STREAM:u32=0x08001016;
-const SUBSETS:u32=0x08001017;
-const RECORD:usize=584;
-const MAX_BONES:usize=1024;
-const MAX_BYTES:usize=256*1024*1024;
+const BONES: u32 = 0x08002000;
+const STREAM: u32 = 0x08001016;
+const SUBSETS: u32 = 0x08001017;
+const RECORD: usize = 584;
+const MAX_BONES: usize = 1024;
+const MAX_BYTES: usize = 256 * 1024 * 1024;
 
-#[derive(Debug,thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum RigError {
     #[error("Missing or invalid original CryEngine rigging: {0}")]
     Invalid(String),
@@ -112,83 +112,124 @@ fn chunks(data: &[u8]) -> Result<Vec<Chunk<'_>>, RigError> {
     }
     Ok(out)
 }
-fn matrix(data:&[u8],at:usize)->Result<[[f32;4];4],RigError>{
-    let mut m=[[0f32;4];4];
-    for (r,row) in m.iter_mut().enumerate().take(3){
-        for (c,v) in row.iter_mut().enumerate(){
-            *v=read_f32(data,at+(r*4+c)*4)?;
-            if !v.is_finite()||v.abs()>1e7{return Err(RigError::Limits);}
+fn matrix(data: &[u8], at: usize) -> Result<[[f32; 4]; 4], RigError> {
+    let mut m = [[0f32; 4]; 4];
+    for (r, row) in m.iter_mut().enumerate().take(3) {
+        for (c, v) in row.iter_mut().enumerate() {
+            *v = read_f32(data, at + (r * 4 + c) * 4)?;
+            if !v.is_finite() || v.abs() > 1e7 {
+                return Err(RigError::Limits);
+            }
         }
     }
-    m[3]=[0.,0.,0.,1.];
+    m[3] = [0., 0., 0., 1.];
     Ok(m)
 }
-fn multiply(a:&[[f32;4];4],b:&[[f32;4];4])->[[f32;4];4]{
-    std::array::from_fn(|r|std::array::from_fn(|c|
-        (0..4).map(|k|a[r][k]*b[k][c]).sum()))
+fn multiply(a: &[[f32; 4]; 4], b: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    std::array::from_fn(|r| std::array::from_fn(|c| (0..4).map(|k| a[r][k] * b[k][c]).sum()))
 }
-fn column_major(m:&[[f32;4];4])->[f32;16]{
-    std::array::from_fn(|index|m[index%4][index/4])
+fn column_major(m: &[[f32; 4]; 4]) -> [f32; 16] {
+    std::array::from_fn(|index| m[index % 4][index / 4])
 }
-pub fn parse_compiled_skeleton(data:&[u8])->Result<CompiledSkeleton,RigError>{
-    let chunks=chunks(data)?;
-    let mut sources=chunks.iter().filter(|c|c.kind==BONES);
-    let raw=sources.next().ok_or_else(||RigError::Invalid("CompiledBones chunk missing".into()))?.data;
-    if sources.next().is_some() || raw.len()<32 || !(raw.len()-32).is_multiple_of(RECORD) {
-        return Err(RigError::Invalid("expected exactly one 584-byte compiled bone table".into()));
+pub fn parse_compiled_skeleton(data: &[u8]) -> Result<CompiledSkeleton, RigError> {
+    let chunks = chunks(data)?;
+    let mut sources = chunks.iter().filter(|c| c.kind == BONES);
+    let raw = sources
+        .next()
+        .ok_or_else(|| RigError::Invalid("CompiledBones chunk missing".into()))?
+        .data;
+    if sources.next().is_some() || raw.len() < 32 || !(raw.len() - 32).is_multiple_of(RECORD) {
+        return Err(RigError::Invalid(
+            "expected exactly one 584-byte compiled bone table".into(),
+        ));
     }
-    let count=(raw.len()-32)/RECORD;
-    if !(1..=MAX_BONES).contains(&count){return Err(RigError::Limits);}
-    let mut names=Vec::with_capacity(count);
-    let mut parents=Vec::with_capacity(count);
-    let mut world=Vec::with_capacity(count);
-    let mut inverse=Vec::with_capacity(count);
-    let mut unique=HashSet::new();
-    let mut roots=0usize;
-    for i in 0..count{
-        let at=32+i*RECORD;
-        let raw_name=raw.get(at+312..at+568).ok_or(RigError::Limits)?;
-        let end=raw_name.iter().position(|b|*b==0)
-            .ok_or_else(||RigError::Invalid("unterminated bone name".into()))?;
-        let name=std::str::from_utf8(&raw_name[..end])
-            .map_err(|_|RigError::Invalid("invalid bone name encoding".into()))?
-            .trim().to_owned();
-        if name.is_empty()||!unique.insert(name.to_ascii_lowercase()){
-            return Err(RigError::Invalid("blank/duplicate skeleton bone name".into()));
+    let count = (raw.len() - 32) / RECORD;
+    if !(1..=MAX_BONES).contains(&count) {
+        return Err(RigError::Limits);
+    }
+    let mut names = Vec::with_capacity(count);
+    let mut parents = Vec::with_capacity(count);
+    let mut world = Vec::with_capacity(count);
+    let mut inverse = Vec::with_capacity(count);
+    let mut unique = HashSet::new();
+    let mut roots = 0usize;
+    for i in 0..count {
+        let at = 32 + i * RECORD;
+        let raw_name = raw.get(at + 312..at + 568).ok_or(RigError::Limits)?;
+        let end = raw_name
+            .iter()
+            .position(|b| *b == 0)
+            .ok_or_else(|| RigError::Invalid("unterminated bone name".into()))?;
+        let name = std::str::from_utf8(&raw_name[..end])
+            .map_err(|_| RigError::Invalid("invalid bone name encoding".into()))?
+            .trim()
+            .to_owned();
+        if name.is_empty() || !unique.insert(name.to_ascii_lowercase()) {
+            return Err(RigError::Invalid(
+                "blank/duplicate skeleton bone name".into(),
+            ));
         }
-        let inv=matrix(raw,at+216)?;
-        let rest=matrix(raw,at+264)?;
-        let product=multiply(&inv,&rest);
-        if (0..4).any(|r|(0..4).any(|c|
-            (product[r][c]-if r==c{1.0}else{0.0}).abs()>0.001)){
-            return Err(RigError::Invalid(format!("compiled bind/inverse mismatch: {name}")));
+        let inv = matrix(raw, at + 216)?;
+        let rest = matrix(raw, at + 264)?;
+        let product = multiply(&inv, &rest);
+        if (0..4)
+            .any(|r| (0..4).any(|c| (product[r][c] - if r == c { 1.0 } else { 0.0 }).abs() > 0.001))
+        {
+            return Err(RigError::Invalid(format!(
+                "compiled bind/inverse mismatch: {name}"
+            )));
         }
-        let delta=read_u32(raw,at+572)? as i32;
-        let parent=if delta<0 {
-            let p=(i as i64)+i64::from(delta);
-            if p<0 || p>=i as i64{return Err(RigError::Invalid("invalid parent offset".into()));}
+        let delta = read_u32(raw, at + 572)? as i32;
+        let parent = if delta < 0 {
+            let p = (i as i64) + i64::from(delta);
+            if p < 0 || p >= i as i64 {
+                return Err(RigError::Invalid("invalid parent offset".into()));
+            }
             Some(p as usize)
-        } else {roots+=1;None};
-        names.push(name);parents.push(parent);world.push(rest);inverse.push(inv);
+        } else {
+            roots += 1;
+            None
+        };
+        names.push(name);
+        parents.push(parent);
+        world.push(rest);
+        inverse.push(inv);
     }
-    if roots!=1{return Err(RigError::Invalid("expected one source skeleton root".into()));}
-    Ok(CompiledSkeleton{names,parents,world,inverse})
+    if roots != 1 {
+        return Err(RigError::Invalid(
+            "expected one source skeleton root".into(),
+        ));
+    }
+    Ok(CompiledSkeleton {
+        names,
+        parents,
+        world,
+        inverse,
+    })
 }
 type InfluenceStream<'a> = (usize, usize, &'a [u8]);
-fn stream<'a>(all:&'a [Chunk<'a>],kind:u32)->Result<Option<InfluenceStream<'a>>,RigError>{
-    let mut result=None;
-    for chunk in all.iter().filter(|c|c.kind==STREAM){
-        let r=chunk.data;
-        if r.len()<24{return Err(RigError::Limits);}
-        let ty=read_u32(r,4)?;
-        if ty!=kind{continue;}
-        let count=read_u32(r,8)? as usize;
-        let stride=read_u32(r,12)? as usize;
-        if count==0 || stride==0 ||
-            count.checked_mul(stride).and_then(|n|n.checked_add(24))!=Some(r.len()){
-            return Err(RigError::Invalid("unsupported rig influence stream header".into()));
+fn stream<'a>(all: &'a [Chunk<'a>], kind: u32) -> Result<Option<InfluenceStream<'a>>, RigError> {
+    let mut result = None;
+    for chunk in all.iter().filter(|c| c.kind == STREAM) {
+        let r = chunk.data;
+        if r.len() < 24 {
+            return Err(RigError::Limits);
         }
-        if result.replace((count,stride,&r[24..])).is_some(){
+        let ty = read_u32(r, 4)?;
+        if ty != kind {
+            continue;
+        }
+        let count = read_u32(r, 8)? as usize;
+        let stride = read_u32(r, 12)? as usize;
+        if count == 0
+            || stride == 0
+            || count.checked_mul(stride).and_then(|n| n.checked_add(24)) != Some(r.len())
+        {
+            return Err(RigError::Invalid(
+                "unsupported rig influence stream header".into(),
+            ));
+        }
+        if result.replace((count, stride, &r[24..])).is_some() {
             return Err(RigError::Invalid("duplicate rig influence stream".into()));
         }
     }
