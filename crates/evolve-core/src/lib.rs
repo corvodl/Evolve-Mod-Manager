@@ -11,6 +11,7 @@ pub mod level_export;
 pub mod model;
 pub mod native_caf;
 pub mod policy;
+pub mod rig;
 pub mod scene;
 pub mod signed_pak;
 pub mod terrain;
@@ -41,6 +42,7 @@ pub use model::{
 pub use native_caf::{
     CafBonePose, CafController, NativeCafError, NativeCafMotion, decode_native_caf, read_native_caf,
 };
+pub use rig::{RigError, RigReport, CompiledSkeleton, VerifiedWeights, parse_compiled_skeleton, remap_verified_weights, rigged_glb_bytes, export_rigged_character_glb, export_rigged_character_fbx};
 pub use policy::{AnimationPolicy, ExportFeature, FeatureStatus, PARITY_MATRIX};
 pub use scene::{
     LevelScene, PlacedObject, SceneError, Transform, export_edited_layer, load_level_scene,
