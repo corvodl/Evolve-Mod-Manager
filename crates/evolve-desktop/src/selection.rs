@@ -49,8 +49,6 @@ impl MultiSelection {
             self.indices.iter().min().copied()
         }
     }
-
-
 }
 
 #[cfg(test)]
