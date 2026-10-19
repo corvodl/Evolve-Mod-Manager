@@ -4,6 +4,7 @@ mod activity_window;
 mod asset_cache;
 mod asset_library_page;
 mod asset_viewer;
+mod auto_resources;
 mod developer_auth;
 mod explorer_tree;
 mod level_workspace;
@@ -137,6 +138,9 @@ struct State {
     emissive_map: Option<Arc<::image::RgbaImage>>,
     material_input: String,
     material_report: Option<MaterialReport>,
+    auto_clips: Vec<auto_resources::AutoClip>,
+    auto_resource_note: String,
+    auto_idle_pending: Option<PathBuf>,
     caf_path: String,
     skeleton_path: String,
     blender_path: String,
@@ -283,6 +287,7 @@ enum Operation {
     BuildStaticCdf(PathBuf, Inventory),
     ResolveCdf(PathBuf, PathBuf),
     InspectModel(PathBuf),
+    DiscoverModelResources(String, Inventory, Option<PathBuf>, Option<String>),
     InspectLevel(PathBuf),
     InspectTerrain(PathBuf),
     InspectSignedPak(PathBuf, PathBuf, String),
@@ -348,6 +353,7 @@ enum Completed {
     StaticCharacter(RenderMesh, AssemblyReport),
     CharacterDependencies(CdfDependencyReport),
     Model(RenderMesh),
+    ModelResources(auto_resources::AutoDiscovery),
     Level(LevelScene),
     Terrain(RenderMesh, TerrainInfo),
     SignedPak(SignedPakInfo),
@@ -560,6 +566,9 @@ impl Operation {
             Self::InspectDds(source) => inspect_dds(&source)
                 .map(Completed::Texture)
                 .map_err(|e| e.to_string()),
+            Self::DiscoverModelResources(relative, inventory, library_root, build) => {
+                Ok(Completed::ModelResources(auto_resources::discover(&relative, &inventory, library_root.as_deref(), build.as_deref())))
+            }
             Self::InspectModel(source) => read_model(&source)
                 .map(Completed::Model)
                 .map_err(|e| e.to_string()),
@@ -2895,6 +2904,28 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.glb_motion = None;
                     state.page = Some(Page::Models);
                 }
+                Ok(Completed::ModelResources(resources)) => {
+                    state.auto_clips = resources.clips;
+                    state.auto_idle_pending = resources.idle;
+                    state.auto_resource_note = resources.material_note;
+                    if !resources.warnings.is_empty() {
+                        state.auto_resource_note.push_str(&format!(" | {}", resources.warnings.join("; ")));
+                    }
+                    state.status = format!("Automatic model dependencies: {} declared clips. {}", state.auto_clips.len(), state.auto_resource_note);
+                    if let Some(source) = resources.material {
+                        if let Some(inv) = &state.inventory {
+                            return launch(state, Operation::ResolveMaterial(
+                                source,
+                                PathBuf::from(&inv.root),
+                                state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
+                                state.library_by_build.then(|| state.library_catalog.as_ref().and_then(|c| c.builds.get(state.library_build_index)).cloned()).flatten(),
+                            ));
+                        }
+                    }
+                    if let Some(idle) = state.auto_idle_pending.take() {
+                        return launch(state, Operation::LoadCaf(idle));
+                    }
+                }
                 Ok(Completed::MaterialResolved(report, diffuse, normal, emissive)) => {
                     let found = report
                         .textures
@@ -2920,6 +2951,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.emissive_map = emissive.map(Arc::new);
                     state.material_report = Some(report);
                     state.page = Some(Page::Models);
+                    if let Some(idle) = state.auto_idle_pending.take() {
+                        return launch(state, Operation::LoadCaf(idle));
+                    }
                 }
                 Ok(Completed::Normal(info, pixels)) => {
                     state.status = format!(
@@ -3035,6 +3069,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         mesh.info.vertex_count, mesh.info.triangle_count
                     );
                     state.model = Some(Arc::new(mesh));
+                    state.auto_clips.clear();
+                    state.auto_idle_pending = None;
+                    state.auto_resource_note = "Discovering verified local textures and character animation references...".into();
                     // An old character's textures and motion must never appear
                     // on a different mesh while materials are being resolved.
                     state.diffuse = None;
@@ -3048,6 +3085,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.zoom = 1.0;
                     state.pan_x = 0.0;
                     state.pan_y = 0.0;
+                    if let Some(inv) = &state.inventory {
+                        let root = PathBuf::from(&inv.root);
+                        let input = PathBuf::from(&state.input);
+                        if let Ok(relative) = input.strip_prefix(&root) {
+                            return launch(state, Operation::DiscoverModelResources(
+                                relative.to_string_lossy().replace('\\', "/"),
+                                inv.clone(),
+                                state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
+                                state.library_by_build.then(|| state.library_catalog.as_ref().and_then(|c| c.builds.get(state.library_build_index)).cloned()).flatten(),
+                            ));
+                        }
+                    }
                 }
                 Ok(Completed::Terrain(mesh, info)) => {
                     state.status = format!(
