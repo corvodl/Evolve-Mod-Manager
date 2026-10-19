@@ -186,7 +186,7 @@ pub fn resolve_materials(inventory: &Inventory, document: &MaterialDocument) -> 
             let candidates = if lower.ends_with(".dds.0") {
                 vec![source.clone()]
             } else if lower.ends_with(".tif") || lower.ends_with(".dds") {
-                let suffix_len = if lower.ends_with(".tif") { 4 } else { 4 };
+                let suffix_len = 4;
                 let base = &source[..source.len() - suffix_len];
                 vec![format!("{base}.dds.0"), format!("{base}.dds")]
             } else {
