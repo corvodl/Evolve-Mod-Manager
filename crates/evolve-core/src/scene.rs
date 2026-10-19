@@ -128,7 +128,7 @@ fn attr(e:&BytesStart<'_>,key:&[u8])->Result<Option<String>,SceneError>{
 fn vector<const N:usize>(raw:Option<String>,default:[f32;N])->[f32;N] {
     let Some(raw)=raw else{return default;};
     let parts=raw.split(',').map(|v|v.trim().parse::<f32>()).collect::<Vec<_>>();
-    if parts.len()!=N || parts.iter().any(|v|v.as_ref().is_err_and(|_|true)) {
+    if parts.len()!=N || parts.iter().any(|v|v.is_err()) {
         return default;
     }
     let mut out=default;
@@ -148,11 +148,10 @@ fn parse_element(e:&BytesStart<'_>,layer:&str,idx:usize)->Result<Option<PlacedOb
         .unwrap_or_default().to_ascii_lowercase();
     let mut model=String::new();
     for key in [b"Prefab".as_slice(),b"Geometry",b"Model",b"FileName"] {
-        if let Some(value)=attr(e,key)? {
-            if renderable(&value) {
-                model=value.replace('\\',"/");
-                break;
-            }
+        if let Some(value)=attr(e,key)?
+            && renderable(&value) {
+            model=value.replace('\\',"/");
+            break;
         }
     }
     let local=Transform{

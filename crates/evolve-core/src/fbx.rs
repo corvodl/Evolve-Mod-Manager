@@ -4,7 +4,7 @@
 use crate::policy::AnimationPolicy;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -124,6 +124,7 @@ pub fn convert_glb_to_fbx(
     if size < 256 {
         return Err(FbxError::Converter("FBX unexpectedly small".into()));
     }
+    file.seek(SeekFrom::Start(0))?;
     let mut temp=tempfile::Builder::new().prefix(".fbx-copy-").tempfile_in(parent)?;
     std::io::copy(&mut file,&mut temp)?;
     temp.as_file_mut().sync_all()?;
