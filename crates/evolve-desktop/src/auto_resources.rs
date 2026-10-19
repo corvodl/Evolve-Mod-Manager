@@ -174,7 +174,9 @@ pub fn discover(
                 found.warnings.push(e);
                 break;
             }
-        }) else { continue; };
+        }) else {
+            continue;
+        };
         let cdf = match evolve_core::read_cdf(&cdf_path) {
             Ok(value) => value,
             Err(e) => {
@@ -183,18 +185,24 @@ pub fn discover(
             }
         };
         let key = canonical.to_ascii_lowercase();
-        let key_without_m = key.strip_suffix(".skinm").map(|prefix| format!("{prefix}.skin"));
+        let key_without_m = key
+            .strip_suffix(".skinm")
+            .map(|prefix| format!("{prefix}.skin"));
         let belongs = cdf.skeleton.eq_ignore_ascii_case(&canonical)
             || cdf.attachments.iter().any(|a| {
                 a.binding.eq_ignore_ascii_case(&canonical)
-                    || key_without_m.as_ref().is_some_and(|p| a.binding.eq_ignore_ascii_case(p))
+                    || key_without_m
+                        .as_ref()
+                        .is_some_and(|p| a.binding.eq_ignore_ascii_case(p))
             });
         if !belongs {
             continue;
         }
         match exact(inv, &cdf.skeleton, imported, build) {
             Ok(Some(path)) => found.skeleton = Some(path),
-            Ok(None) => found.warnings.push(format!("CDF skeleton not imported: {}", cdf.skeleton)),
+            Ok(None) => found
+                .warnings
+                .push(format!("CDF skeleton not imported: {}", cdf.skeleton)),
             Err(e) => found.warnings.push(e),
         }
         break;
@@ -264,7 +272,9 @@ pub fn discover(
         } else {
             None
         };
-        if r.kind == "caf" && let Some(rank) = idle_priority(&r.name) {
+        if r.kind == "caf"
+            && let Some(rank) = idle_priority(&r.name)
+        {
             preferred.push((i, rank));
         }
         found.clips.push(AutoClip {
