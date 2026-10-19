@@ -363,6 +363,7 @@ enum Completed {
         Option<::image::RgbaImage>,
         Option<::image::RgbaImage>,
         Option<::image::RgbaImage>,
+        Vec<String>,
     ),
     Caf(NativeCafMotion),
     RiggedExport(RigReport, PathBuf),
@@ -629,11 +630,23 @@ impl Operation {
                     let (_, image) = decode_dds_rgba(&source).map_err(|e| e.to_string())?;
                     Ok(Some(image))
                 };
-                let diffuse = get_pixels(&["diffuse"])?;
-                let normal = get_pixels(&["normals", "normal", "bumpmap"])?;
-                let emissive = get_pixels(&["emittance", "emissive", "emission", "glow"])?;
+                // Missing/corrupt optional streams must not discard every
+                // successfully decoded map. Keep accurate source diagnostics.
+                let mut diagnostics = Vec::new();
+                let mut try_map = |role: &str, names: &[&str]| {
+                    match get_pixels(names) {
+                        Ok(image) => image,
+                        Err(error) => {
+                            diagnostics.push(format!("{role}: {error}"));
+                            None
+                        }
+                    }
+                };
+                let diffuse = try_map("Diffuse", &["diffuse"]);
+                let normal = try_map("Normal", &["normals", "normal", "bumpmap"]);
+                let emissive = try_map("Emissive", &["emittance", "emissive", "emission", "glow"]);
                 Ok(Completed::MaterialResolved(
-                    report, diffuse, normal, emissive,
+                    report, diffuse, normal, emissive, diagnostics,
                 ))
             }
             Self::LoadNormal(source, cache) => {
@@ -3424,7 +3437,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             "Additive CAF cannot play alone without a compatible base pose.".into();
                     }
                 }
-                Ok(Completed::MaterialResolved(report, diffuse, normal, emissive)) => {
+                Ok(Completed::MaterialResolved(report, diffuse, normal, emissive, diagnostics)) => {
                     state.auto_material_pending = false;
                     let found = report
                         .textures
@@ -3437,12 +3450,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .filter(|t| matches!(t.resolution, AssetResolution::Ambiguous(_)))
                         .count();
                     state.status = format!(
-                        "MTL: {} slot(s), {} authored references, {} uniquely resolved, {} ambiguous. No guessing.",
+                        "MTL: {} slot(s), {} authored references, {} uniquely resolved, {} ambiguous.{}",
                         report.slots,
                         report.textures.len(),
                         found,
-                        ambiguous
+                        ambiguous,
+                        if diagnostics.is_empty() {
+                            " No guessing.".to_string()
+                        } else {
+                            format!(" Unavailable maps: {}.", diagnostics.join(" | "))
+                        }
                     );
+                    if !diagnostics.is_empty() {
+                        state.auto_resource_note = format!(
+                            "Material partially loaded: {}", diagnostics.join(" | ")
+                        );
+                    }
                     // A new authored material must not inherit a previous
                     // character's maps when the reference is missing/ambiguous.
                     state.diffuse_input = verified_export_diffuse(state, &report)
