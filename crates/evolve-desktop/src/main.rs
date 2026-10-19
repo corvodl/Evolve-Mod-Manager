@@ -837,7 +837,6 @@ impl Operation {
 #[derive(Debug, Clone)]
 enum Message {
     Navigate(Page),
-    LibraryRootChanged(String),
     LibraryImportSourceChanged(String),
     LibraryImportStart,
     LibrarySearchChanged(String),
@@ -1505,13 +1504,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     key,
                 ),
             );
-        }
-        Message::LibraryRootChanged(value) => {
-            state.library_root = value;
-            state.library_catalog = None;
-            state.library_selected = None;
-            state.library_page = 0;
-            refresh_library_matches(state);
         }
         Message::LibrarySearchChanged(value) => {
             state.library_search = value;
@@ -4348,14 +4340,14 @@ fn initial_state() -> State {
         {
             result.preferences.game_storage_root = location.to_string_lossy().into_owned();
         }
-        if result.preferences.projects.trim().is_empty() {
-            if let Some(parent) = file.parent() {
-                result.preferences.projects = parent
-                    .join("Data")
-                    .join("Projects")
-                    .to_string_lossy()
-                    .into_owned();
-            }
+        if result.preferences.projects.trim().is_empty()
+            && let Some(parent) = file.parent()
+        {
+            result.preferences.projects = parent
+                .join("Data")
+                .join("Projects")
+                .to_string_lossy()
+                .into_owned();
         }
     }
     result.library_root = result.preferences.asset_library_root.clone();
