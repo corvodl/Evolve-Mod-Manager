@@ -7,7 +7,7 @@ use evolve_core::{
     inspect_dds, inspect_legacy_pak, inspect_signed_pak, load_level_scene, read_cdf, read_model,
     read_terrain, rebuild_legacy_pak, scan_directory,
 };
-use iced::widget::{button, canvas, column, container, row, scrollable, slider, text, text_input};
+use iced::widget::{button, canvas, column, container, image, row, scrollable, slider, svg, text, text_input, tooltip};
 use iced::{Element, Fill, Length, Task, Theme};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -32,6 +32,18 @@ impl Page {
         Self::Levels,
         Self::Settings,
     ];
+
+    fn icon(self) -> svg::Handle {
+        let data: &'static [u8] = match self {
+            Self::Home => include_bytes!("../../../assets/nav/home.svg"),
+            Self::Files => include_bytes!("../../../assets/nav/folder.svg"),
+            Self::AssetLibrary => include_bytes!("../../../assets/nav/layers.svg"),
+            Self::Models => include_bytes!("../../../assets/nav/box.svg"),
+            Self::Levels => include_bytes!("../../../assets/nav/map.svg"),
+            Self::Settings => include_bytes!("../../../assets/nav/settings.svg"),
+        };
+        svg::Handle::from_memory(data.to_vec())
+    }
 
     fn title(self) -> &'static str {
         match self {
@@ -436,22 +448,36 @@ fn file_row<'a>(index: usize, entry: &'a AssetEntry) -> Element<'a, Message> {
 
 fn view(state: &State) -> Element<'_, Message> {
     let page = state.page.unwrap_or(Page::Home);
+    // Preserve the original compact icon-only sidebar and hover labels.
+    // Red selection is only applied to the active workspace; there is no
+    // hamburger button or whole-sidebar hover expansion.
     let navigation = Page::ALL.into_iter().fold(
-        column![text("EVOLVE").size(26), text("MOD MANAGER").size(14)].spacing(10),
-        |content, item| {
-            content.push(
-                button(text(item.title()))
-                    .width(Fill)
-                    .on_press(Message::Navigate(item)),
-            )
+        column![
+            image(image::Handle::from_bytes(include_bytes!("../../../assets/hunt.png").to_vec()))
+                .width(45)
+                .height(45),
+        ].spacing(16),
+        |items, item| {
+            let active = page == item;
+            let nav_button = button(svg(item.icon()).width(24).height(24))
+                .width(50)
+                .height(48)
+                .padding(12)
+                .style(if active { button::danger } else { button::secondary })
+                .on_press(Message::Navigate(item));
+            items.push(tooltip(nav_button, text(item.title()), tooltip::Position::Right))
         },
     );
-    let sidebar = container(navigation.padding(16).spacing(10)).width(205);
-    let headline = column![
-        text(page.title()).size(26),
-        text("Rust + Iced / wgpu | development preview 0.1").size(13),
-    ]
-    .spacing(6);
+    let sidebar = container(navigation.padding(10).spacing(11)).width(72);
+    let headline = row![
+        image(image::Handle::from_bytes(include_bytes!("../../../assets/hunt.png").to_vec()))
+            .width(46)
+            .height(46),
+        column![
+            text("EVOLVE / MOD MANAGER").size(22),
+            text(format!("{}  •  Rust / Iced / wgpu development preview", page.title())).size(12),
+        ].spacing(5),
+    ].spacing(14);
 
     let location = column![
         row![
@@ -653,6 +679,13 @@ fn main() -> iced::Result {
     let _supported_backends = wgpu::Backends::PRIMARY;
     iced::application(State::default, update, view)
         .title("Evolve Mod Manager — Rust Development Preview")
-        .theme(|_state: &State| Theme::Dark)
+        .theme(|_state: &State| Theme::custom("Evolve Black/Red",
+            iced::theme::Palette {
+                background: iced::Color::from_rgb8(15, 15, 18),
+                text: iced::Color::from_rgb8(234, 234, 236),
+                primary: iced::Color::from_rgb8(205, 52, 59),
+                success: iced::Color::from_rgb8(70, 170, 130),
+                danger: iced::Color::from_rgb8(205, 52, 59),
+            }))
         .run()
 }
