@@ -281,6 +281,7 @@ pub fn export_unified_cdf_fbx(
     let mut entries = Vec::new();
     let mut bone_count = None;
     let mut vertices = 0usize;
+    let mut total_glb_bytes = 0u64;
     let mut labels = Vec::new();
     let mut diffuse_textured_parts = 0usize;
     for (index, (name, original)) in parts.iter().enumerate() {
@@ -335,6 +336,12 @@ pub fn export_unified_cdf_fbx(
         }
         if diffuse.is_some() {
             diffuse_textured_parts += 1;
+        }
+        total_glb_bytes = total_glb_bytes
+            .checked_add(glb.len() as u64)
+            .ok_or("Staged character GLB size overflow")?;
+        if total_glb_bytes > 2 * 1024 * 1024 * 1024 {
+            return Err("Combined character intermediates exceed 2 GiB limit".into());
         }
         let staged = work.path().join(format!("part-{index:03}.glb"));
         fs::write(&staged, &glb).map_err(|e| e.to_string())?;
