@@ -391,7 +391,7 @@ enum Completed {
         Vec<String>,
     ),
     Caf(NativeCafMotion),
-    BoundCafPreview(PathBuf, VerifiedCafSkin),
+    BoundCafPreview(PathBuf, Box<VerifiedCafSkin>),
     RiggedExport(RigReport, PathBuf),
     FlatCdfFbxExport(FlatCdfFbxReport, PathBuf),
     UnifiedCdfFbxExport(UnifiedCdfFbxReport, PathBuf),
@@ -508,7 +508,7 @@ impl Operation {
             Self::BindCafPreview(mesh, skeleton, motion) => {
                 let skin = VerifiedCafSkin::from_originals(&mesh, &skeleton, motion)
                     .map_err(|e| format!("Original CAF skeleton binding: {e}"))?;
-                Ok(Completed::BoundCafPreview(mesh, skin))
+                Ok(Completed::BoundCafPreview(mesh, Box::new(skin)))
             }
             Self::RiggedGlb(mesh, skeleton, dest) => {
                 export_rigged_character_glb(&mesh, &skeleton, &dest)
@@ -3904,7 +3904,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         let count = skin.original_vertices();
                         let bones = skin.original_bones();
                         let cyclic = skin.source_motion().cyclic;
-                        state.skin_preview = Some(Arc::new(skin));
+                        state.skin_preview = Some(Arc::new(*skin));
                         state.motion_time = 0.0;
                         apply_current_skin_frame(state);
                         state.playing = cyclic;
