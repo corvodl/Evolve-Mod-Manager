@@ -3239,7 +3239,7 @@ fn view(state: &State) -> Element<'_, Message> {
                 .height(43)
                 .padding(10)
                 .style(if active {
-                    button::primary
+                    button::secondary
                 } else {
                     button::text
                 })
@@ -3272,7 +3272,7 @@ fn view(state: &State) -> Element<'_, Message> {
                 .width(46)
                 .height(43)
                 .style(if page == Page::Settings {
-                    button::primary
+                    button::secondary
                 } else {
                     button::text
                 })
@@ -3288,6 +3288,10 @@ fn view(state: &State) -> Element<'_, Message> {
             .height(Fill)
             .padding([6, 4]),
     )
+    .style(|_| container::Style {
+        background: Some(iced::Background::Color(iced::Color::from_rgb8(27, 26, 32))),
+        ..container::Style::default()
+    })
     .width(62)
     .height(Fill);
     let headline = row![
