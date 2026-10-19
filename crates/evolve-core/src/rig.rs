@@ -1201,15 +1201,25 @@ mod tests {
         assert_eq!(&output[off..off + image.len()], image);
         assert_eq!(&input[input.len() - 4..], &[1, 2, 3, 4]);
         let full = embed_verified_maps_png_glb(
-            &input, Some(b"diffuse"), Some(b"normal"), Some(b"emissive"),
-        ).unwrap();
+            &input,
+            Some(b"diffuse"),
+            Some(b"normal"),
+            Some(b"emissive"),
+        )
+        .unwrap();
         let n = u32::from_le_bytes(full[12..16].try_into().unwrap()) as usize;
         let result: Value = serde_json::from_slice(&full[20..20 + n]).unwrap();
         assert_eq!(result["images"].as_array().unwrap().len(), 3);
         assert_eq!(result["materials"][0]["normalTexture"]["index"], 1);
         assert_eq!(result["materials"][0]["emissiveTexture"]["index"], 2);
-        assert_eq!(result["materials"][0]["emissiveFactor"], json!([1.0,1.0,1.0]));
-        assert_eq!(result["meshes"][0]["primitives"][0]["attributes"]["TEXCOORD_0"], 3);
+        assert_eq!(
+            result["materials"][0]["emissiveFactor"],
+            json!([1.0, 1.0, 1.0])
+        );
+        assert_eq!(
+            result["meshes"][0]["primitives"][0]["attributes"]["TEXCOORD_0"],
+            3
+        );
         assert!(embed_verified_maps_png_glb(&input, None, None, None).is_err());
     }
     #[test]
