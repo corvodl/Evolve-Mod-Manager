@@ -4,6 +4,7 @@ mod asset_cache;
 mod asset_library_page;
 mod asset_viewer;
 mod developer_auth;
+mod explorer_tree;
 mod level_workspace;
 mod modding_keys;
 mod modding_page;
@@ -40,6 +41,7 @@ use iced::{Element, Fill, Length, Subscription, Task, Theme, window};
 use modding_projects::{ProjectRow, discover_projects};
 use settings::{Preferences, load_from, save_to, settings_path};
 use std::path::PathBuf;
+use std::collections::HashSet;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -165,6 +167,7 @@ struct State {
     staged_installer: Option<PathBuf>,
     startup_update_checked: bool,
     viewer_search: String,
+    viewer_collapsed: HashSet<String>,
     viewer_menu: Option<&'static str>,
     viewer_explorer_visible: bool,
     viewer_from_library: bool,
@@ -628,6 +631,7 @@ enum Message {
     ViewerToggleExplorer,
     ViewerResetCamera,
     ViewerSearchChanged(String),
+    ViewerToggleFolder(String),
     ViewerPreviewSelected,
     StartDependencyInspection,
     CompareOriginalChanged(String),
@@ -1279,6 +1283,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.zoom = 1.0;
         }
         Message::ViewerSearchChanged(filter) => state.viewer_search = filter,
+        Message::ViewerToggleFolder(path) => {
+            if !state.viewer_collapsed.insert(path.clone()) {
+                state.viewer_collapsed.remove(&path);
+            }
+        },
         Message::ViewerPreviewSelected => {
             let Some(inventory) = &state.inventory else {
                 state.status =
