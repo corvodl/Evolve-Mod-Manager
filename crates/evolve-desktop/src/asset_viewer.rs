@@ -163,7 +163,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
     ]
     .spacing(2);
     let main: Element<'_, Message> = if let Some(mesh) = &state.model {
-        if mesh.uv0.is_some() && !state.viewer_wireframe {
+        if !state.viewer_wireframe {
             shader(TexturedScene {
                 mesh: mesh.clone(),
                 diffuse: state.diffuse.clone(),
