@@ -221,36 +221,7 @@ fn explorer(state: &State) -> Element<'_, Message> {
     } else {
         state.pak.as_ref().map_or(0, |pak| pak.entries.len())
     };
-    let limit = 350;
-    let records: Vec<(usize, &str, u64)> = if let Some(inv) = &state.inventory {
-        inv.entries
-            .iter()
-            .enumerate()
-            .map(|(i, e)| (i, e.relative_path.as_str(), e.byte_size))
-            .collect()
-    } else if let Some(signed) = &state.signed_pak {
-        signed
-            .entries
-            .iter()
-            .enumerate()
-            .map(|(i, e)| (i, e.path.as_str(), e.size))
-            .collect()
-    } else if let Some(pak) = &state.pak {
-        pak.entries
-            .iter()
-            .enumerate()
-            .map(|(i, e)| (i, e.path.as_str(), e.size))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    let visible = super::explorer_tree::visible_rows(
-        records.iter().map(|(i, name, bytes)| (*i, *name, *bytes)),
-        &state.viewer_search,
-        &state.viewer_collapsed,
-        limit,
-    );
-    for entry in visible {
+    for entry in state.viewer_rows.iter().cloned() {
         let indent = "  ".repeat(entry.depth.min(20));
         let title = if entry.directory {
             format!(
