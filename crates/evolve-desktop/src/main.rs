@@ -1680,6 +1680,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.keyboard_modifiers.control(),
             );
             state.selected = state.file_selection.primary_after(index);
+            // A normal single click previews immediately, like the Qt file
+            // editor. Shift/Ctrl remain pure multi-select gestures.
+            if !state.keyboard_modifiers.shift()
+                && !state.keyboard_modifiers.control()
+                && !state.busy
+                && state.selected == Some(index)
+                && state.inventory.as_ref().and_then(|inv| inv.entries.get(index))
+                    .is_some_and(|entry| {
+                        [".skin", ".skinm", ".chr", ".cgf", ".cdf", ".dds", ".dds.0", ".caf", ".mtl"]
+                            .iter().any(|ext| entry.relative_path.to_ascii_lowercase().ends_with(ext))
+                    })
+            {
+                return update(state, Message::ViewerPreviewSelected);
+            }
         }
         Message::ViewerToggleFolder(path) => {
             if !state.viewer_collapsed.insert(path.clone()) {
@@ -3918,6 +3932,40 @@ fn main() -> iced::Result {
 #[cfg(test)]
 mod project_edit_tests {
     use super::*;
+
+    #[test]
+    fn plain_click_previews_model_without_second_button_press() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("sample.skin"), b"invalid model").unwrap();
+        let inventory = scan_directory(dir.path()).unwrap();
+        let mut state = State {
+            inventory: Some(inventory),
+            ..State::default()
+        };
+        refresh_viewer_rows(&mut state);
+        let _task = update(&mut state, Message::ViewerSelectFile(0));
+        assert_eq!(state.selected, Some(0));
+        assert!(state.busy, "a normal click must queue a preview");
+    }
+
+    #[test]
+    fn shift_click_selects_range_without_launching_an_asset_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..3 {
+            std::fs::write(dir.path().join(format!("sample_{i}.skin")), b"invalid").unwrap();
+        }
+        let mut state = State {
+            inventory: Some(scan_directory(dir.path()).unwrap()),
+            ..State::default()
+        };
+        refresh_viewer_rows(&mut state);
+        state.keyboard_modifiers = iced::keyboard::Modifiers::SHIFT;
+        let _task = update(&mut state, Message::ViewerSelectFile(0));
+        assert!(!state.busy);
+        let _task = update(&mut state, Message::ViewerSelectFile(2));
+        assert!(!state.busy);
+        assert_eq!(state.file_selection.indices.len(), 3);
+    }
 
     #[test]
     fn restore_rejects_protected_library_and_unmanaged_viewers() {
