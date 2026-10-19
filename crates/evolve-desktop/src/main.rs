@@ -4385,7 +4385,10 @@ impl Desktop {
         let mut state = initial_state();
         let library_root = PathBuf::from(&state.library_root);
         let startup = if library_root.is_dir() {
-            launch(&mut state, Operation::LoadImportedLibraryStartup(library_root))
+            launch(
+                &mut state,
+                Operation::LoadImportedLibraryStartup(library_root),
+            )
         } else {
             Task::none()
         };
