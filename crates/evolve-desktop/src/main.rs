@@ -32,10 +32,10 @@ use evolve_core::{
     FlatCdfFbxReport, ImportedLibrary, ImportedPak, Inventory, LevelScene,
     LibraryBatchImportReport, LibraryReferenceStatus, MaterialReport, ModProfile, ModelInfo,
     NativeCafMotion, PakInventory, ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport,
-    SignedPakInfo, StageTransaction, TerrainInfo, UnifiedCdfFbxReport, VerifiedCafSkin, add_mod_to_profile,
-    apply_profile_stage, apply_stage_pak, batch_stage_status, compare_assets, convert_glb_to_fbx,
-    convert_original_motion, create_mod_profile, decode_dds_rgba, export_dds_png,
-    export_flat_cdf_parts_fbx, export_level_scene_glb,
+    SignedPakInfo, StageTransaction, TerrainInfo, UnifiedCdfFbxReport, VerifiedCafSkin,
+    add_mod_to_profile, apply_profile_stage, apply_stage_pak, batch_stage_status, compare_assets,
+    convert_glb_to_fbx, convert_original_motion, create_mod_profile, decode_dds_rgba,
+    export_dds_png, export_flat_cdf_parts_fbx, export_level_scene_glb,
     export_rigged_character_fbx_textured_animated, export_rigged_character_glb,
     export_unified_cdf_fbx, extract_legacy_pak, extract_signed_pak,
     import_signed_library_selection, import_stage_pak, imported_archive_files, imported_library,
@@ -1131,14 +1131,18 @@ fn bind_current_native_caf(state: &mut State) -> Option<Task<Message>> {
     let source = PathBuf::from(&state.input);
     let extension = source.extension().and_then(|ext| ext.to_str())?;
     if !["skin", "skinm", "chr", "chrm"]
-        .iter().any(|candidate| extension.eq_ignore_ascii_case(candidate))
+        .iter()
+        .any(|candidate| extension.eq_ignore_ascii_case(candidate))
     {
         return None;
     }
     let compiled = preferred_render_source(&source);
     let skeleton = PathBuf::from(&state.skeleton_path);
     let clip = (**motion).clone();
-    Some(launch(state, Operation::BindCafPreview(compiled, skeleton, clip)))
+    Some(launch(
+        state,
+        Operation::BindCafPreview(compiled, skeleton, clip),
+    ))
 }
 
 /// Re-evaluate the actual original vertex weights while the existing wgpu
@@ -3095,7 +3099,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::MotionScrub(value) => {
             state.motion_time = value;
             apply_current_skin_frame(state);
-        },
+        }
         Message::ToggleMotion => {
             if state.native_caf.is_some() && state.skin_preview.is_none() {
                 state.playing = false;
@@ -3104,10 +3108,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             } else {
                 state.playing = !state.playing
                     && (state.skin_preview.is_some()
-                        || state
-                            .glb_motion
-                            .as_ref()
-                            .is_some_and(|m| m.list_clips().get(state.selected_motion_clip).is_some()));
+                        || state.glb_motion.as_ref().is_some_and(|m| {
+                            m.list_clips().get(state.selected_motion_clip).is_some()
+                        }));
             }
         }
         Message::Tick => {
