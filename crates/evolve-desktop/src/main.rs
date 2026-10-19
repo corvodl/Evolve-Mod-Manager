@@ -468,7 +468,9 @@ impl Operation {
                     .map_err(|e| e.to_string())
             }
             Self::AnalyzeStorage(data, games, stage, projects, library) => {
-                Ok(Completed::StorageAnalyzed(storage_usage::analyze(&data, &games, &stage, &projects, &library)))
+                Ok(Completed::StorageAnalyzed(storage_usage::analyze(
+                    &data, &games, &stage, &projects, &library,
+                )))
             }
             Self::InspectPak(source) => inspect_legacy_pak(&source)
                 .map(Completed::Pak)
@@ -1476,8 +1478,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.library_import_source = path;
         }
         Message::LibraryImportStart => {
-            if state.library_import_source.trim().is_empty()
-            {
+            if state.library_import_source.trim().is_empty() {
                 state.status =
                     "Select a local signed Stage 2 PAK to import. The Asset Library location is detected automatically.".into();
                 state.library_show_configuration = true;
@@ -2251,20 +2252,30 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.preferences.automatic_update_checks = !state.preferences.automatic_update_checks;
             persist_preferences(state);
         }
-        Message::SettingsToggleAdvancedPaths => state.settings_advanced_paths = !state.settings_advanced_paths,
+        Message::SettingsToggleAdvancedPaths => {
+            state.settings_advanced_paths = !state.settings_advanced_paths
+        }
         Message::PreferenceGameStorage(value) => {
             state.preferences.game_storage_root = value;
             state.storage_usage = None;
         }
         Message::SettingsAnalyzeStorage => {
-            if state.busy || state.storage_analyzing { return Task::none(); }
+            if state.busy || state.storage_analyzing {
+                return Task::none();
+            }
             let games = PathBuf::from(&state.preferences.game_storage_root);
-            let data = games.parent().map(PathBuf::from).unwrap_or_else(|| games.clone());
+            let data = games
+                .parent()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| games.clone());
             let stage = PathBuf::from(&state.preferences.stage);
             let projects = PathBuf::from(&state.preferences.projects);
             let library = PathBuf::from(&state.library_root);
             state.storage_analyzing = true;
-            return launch(state, Operation::AnalyzeStorage(data, games, stage, projects, library));
+            return launch(
+                state,
+                Operation::AnalyzeStorage(data, games, stage, projects, library),
+            );
         }
         Message::PreferenceStage(value) => {
             state.preferences.stage = value;
@@ -3033,7 +3044,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.scan_indexed = None;
             match result {
                 Ok(Completed::StorageAnalyzed(usage)) => {
-                    state.status = format!("Read-only storage analysis complete: {} files checked.", usage.files);
+                    state.status = format!(
+                        "Read-only storage analysis complete: {} files checked.",
+                        usage.files
+                    );
                     state.storage_usage = Some(usage);
                 }
                 Ok(Completed::Dependencies(graph)) => {
@@ -4305,15 +4319,23 @@ fn initial_state() -> State {
         }
     }
     if let Ok(file) = settings_path() {
-        if let Ok(location) = settings::library_directory(&file, &result.preferences.asset_library_root) {
+        if let Ok(location) =
+            settings::library_directory(&file, &result.preferences.asset_library_root)
+        {
             result.preferences.asset_library_root = location.to_string_lossy().into_owned();
         }
-        if let Ok(location) = settings::game_storage_directory(&file, &result.preferences.game_storage_root) {
+        if let Ok(location) =
+            settings::game_storage_directory(&file, &result.preferences.game_storage_root)
+        {
             result.preferences.game_storage_root = location.to_string_lossy().into_owned();
         }
         if result.preferences.projects.trim().is_empty() {
             if let Some(parent) = file.parent() {
-                result.preferences.projects = parent.join("Data").join("Projects").to_string_lossy().into_owned();
+                result.preferences.projects = parent
+                    .join("Data")
+                    .join("Projects")
+                    .to_string_lossy()
+                    .into_owned();
             }
         }
     }
