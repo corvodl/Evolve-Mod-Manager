@@ -149,14 +149,19 @@ fn valid_theme_entry(role: &str, value: &str) -> bool {
 }
 
 pub fn load_from(path: &Path) -> Result<Preferences, SettingsError> {
-    if !path.exists() {
-        return Ok(Preferences::default());
-    }
-    let metadata = fs::symlink_metadata(path)?;
+    // The previous Windows manager stores preferences relative to its install
+    // directory. Read that file when the new Rust profile has not been saved.
+    // Never move, rewrite or delete the original preferences or recovery data.
+    let legacy = path.parent().ok_or(SettingsError::InvalidValue)?
+        .join("Data").join("Settings").join("manager_settings.json");
+    let source = if path.exists() { path }
+        else if legacy.exists() { legacy.as_path() }
+        else { return Ok(Preferences::default()); };
+    let metadata = fs::symlink_metadata(source)?;
     if !metadata.file_type().is_file() || metadata.len() > 512 * 1024 {
         return Err(SettingsError::InvalidValue);
     }
-    let mut prefs: Preferences = serde_json::from_slice(&fs::read(path)?)?;
+    let mut prefs: Preferences = serde_json::from_slice(&fs::read(source)?)?;
     prefs.validate()?;
     Ok(prefs)
 }
@@ -209,6 +214,20 @@ mod tests {
         assert!(!prefs.experimental_updates);
         save_to(&path, &prefs).unwrap();
         assert_eq!(load_from(&path).unwrap().appearance_mode, "Light");
+    }
+    #[test]
+    fn uses_previous_installed_settings_without_changing_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let old_path = dir.path().join("Data").join("Settings").join("manager_settings.json");
+        fs::create_dir_all(old_path.parent().unwrap()).unwrap();
+        let original = br#"{"appearance_mode":"Light","ui_density":"Compact","projects":"C:\\Games\\Mods"}"#;
+        fs::write(&old_path, original).unwrap();
+        let migrated = load_from(&path).unwrap();
+        assert_eq!(migrated.appearance_mode, "Light");
+        assert_eq!(migrated.ui_density, "Compact");
+        assert!(!path.exists());
+        assert_eq!(fs::read(&old_path).unwrap(), original);
     }
     #[test]
     fn malformed_settings_are_not_silently_overwritten() {
