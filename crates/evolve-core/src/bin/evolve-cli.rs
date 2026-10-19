@@ -6,7 +6,8 @@ use evolve_core::{
     export_rigged_character_glb, export_terrain_obj, extract_legacy_pak, extract_signed_pak,
     import_stage_pak, initialize_stage, inspect_caf_file, inspect_dds, inspect_legacy_pak,
     inspect_signed_pak, load_level_scene, read_cdf, read_model, read_terrain, rebuild_legacy_pak,
-    rebuild_signed_pak_entry, restore_stage, scan_directory, stage_status, write_inventory_json,
+    rebuild_signed_pak_entry, resolve_cdf, restore_stage, scan_directory, stage_status,
+    write_inventory_json,
 };
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
@@ -36,6 +37,7 @@ fn usage() -> String {
         "  evolve-cli dds info <texture.dds|texture.dds.0> [dds-info.json]",
         "  evolve-cli dds png <texture.dds|texture.dds.0> <new-output.png>",
         "  evolve-cli cdf inspect <character.cdf> [cdf-info.json]",
+        "  evolve-cli cdf resolve <character.cdf> <asset-library-folder> [cdf-dependencies.json]",
         "  evolve-cli anim caf <motion.caf> [caf-info.json]",
         "  evolve-cli anim catalog <character.chrparams> [catalog.json]",
         "  evolve-cli anim convert <original.caf|original.dba|original.chr> <Cryengine-Converter.exe> <extracted-asset-root> <NEW-output-folder>",
@@ -185,6 +187,26 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
     }
     let subcommand = pop(&mut args)?;
     let source: PathBuf = pop(&mut args)?.into();
+    if verb == OsStr::new("cdf") && subcommand == OsStr::new("resolve") {
+        let asset_root: PathBuf = pop(&mut args)?.into();
+        let output: Option<PathBuf> = args.next().map(Into::into);
+        no_extra(&mut args)?;
+        let character = read_cdf(&source).map_err(|e| e.to_string())?;
+        let inventory = scan_directory(&asset_root).map_err(|e| e.to_string())?;
+        let result = resolve_cdf(&inventory, &character);
+        println!(
+            "CDF dependency report: {} attachment(s), skeleton: {:?}",
+            result.attachments.len(),
+            result.skeleton
+        );
+        for (binding, resolution) in &result.attachments {
+            println!("  {binding}: {resolution:?}");
+        }
+        if let Some(report) = output {
+            write_report(&result, &report)?;
+        }
+        return Ok(());
+    }
     if verb == OsStr::new("signed") && subcommand == OsStr::new("rebuild") {
         let old_public: PathBuf = pop(&mut args)?.into();
         let new_private: PathBuf = pop(&mut args)?.into();
