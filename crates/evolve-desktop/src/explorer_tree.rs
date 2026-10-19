@@ -109,6 +109,8 @@ fn walk(
     collapsed: &HashSet<String>,
     filtering: bool,
     limit: usize,
+    offset: usize,
+    seen: &mut usize,
     result: &mut Vec<ExplorerRow>,
 ) {
     if result.len() >= limit {
@@ -119,9 +121,12 @@ fn walk(
             if result.len() >= limit {
                 break;
             }
-            result.push(item.clone());
+            if *seen >= offset {
+                result.push(item.clone());
+            }
+            *seen += 1;
             if item.directory && (filtering || !collapsed.contains(&item.path)) {
-                walk(&item.path, nodes, collapsed, filtering, limit, result);
+                walk(&item.path, nodes, collapsed, filtering, limit, offset, seen, result);
             }
         }
     }
@@ -135,14 +140,29 @@ pub fn visible_rows<'a>(
     collapsed: &HashSet<String>,
     limit: usize,
 ) -> Vec<ExplorerRow> {
+    visible_rows_page(entries, query, collapsed, 0, limit)
+}
+
+/// Walk the same stable hierarchy without permanently hiding everything
+/// after the first bounded viewport page.
+pub fn visible_rows_page<'a>(
+    entries: impl IntoIterator<Item = (usize, &'a str, u64)>,
+    query: &str,
+    collapsed: &HashSet<String>,
+    offset: usize,
+    limit: usize,
+) -> Vec<ExplorerRow> {
     let nodes = add_entries(entries, query);
     let mut rows = Vec::new();
+    let mut seen = 0;
     walk(
         "",
         &nodes,
         collapsed,
         !query.trim().is_empty(),
         limit,
+        offset,
+        &mut seen,
         &mut rows,
     );
     rows
@@ -202,6 +222,13 @@ mod tests {
                 .iter()
                 .any(|row| row.path.starts_with("@assemblies/"))
         );
+    }
+
+    #[test]
+    fn offset_page_keeps_original_asset_indices() {
+        let rows = visible_rows(fixture(), "", &HashSet::new(), 100);
+        let second = visible_rows_page(fixture(), "", &HashSet::new(), 2, 3);
+        assert_eq!(second.as_slice(), &rows[2..5]);
     }
 
     #[test]
