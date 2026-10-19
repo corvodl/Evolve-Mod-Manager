@@ -25,7 +25,9 @@ fn add_entries<'a>(
         // Archive inventory paths are validated by the core. Also exclude
         // malformed paths here so the hierarchy cannot mask unsafe names.
         if path.starts_with('/')
-            || path.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+            || path
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
             || (!filter.is_empty() && !path.to_lowercase().contains(&filter))
         {
             continue;
@@ -61,9 +63,10 @@ fn add_entries<'a>(
     }
     for siblings in nodes.values_mut() {
         siblings.sort_by(|a, b| {
-            b.directory.cmp(&a.directory).then_with(|| {
-                a.name.to_lowercase().cmp(&b.name.to_lowercase())
-            }).then_with(|| a.path.cmp(&b.path))
+            b.directory
+                .cmp(&a.directory)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                .then_with(|| a.path.cmp(&b.path))
         });
     }
     nodes
@@ -103,7 +106,14 @@ pub fn visible_rows<'a>(
 ) -> Vec<ExplorerRow> {
     let nodes = add_entries(entries, query);
     let mut rows = Vec::new();
-    walk("", &nodes, collapsed, !query.trim().is_empty(), limit, &mut rows);
+    walk(
+        "",
+        &nodes,
+        collapsed,
+        !query.trim().is_empty(),
+        limit,
+        &mut rows,
+    );
     rows
 }
 
