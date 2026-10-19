@@ -1,5 +1,6 @@
 //! Native wgpu-backed desktop shell. Asset operations use blocking workers, so
 //! file I/O/decompression never runs in the interactive Iced view/update path.
+mod asset_viewer;
 mod settings;
 mod textured;
 mod updater;
@@ -22,7 +23,7 @@ use iced::widget::{
     button, canvas, column, container, image, row, scrollable, shader, slider, svg, text,
     text_input, tooltip,
 };
-use iced::{Element, Fill, Length, Subscription, Task, Theme};
+use iced::{Element, Fill, Length, Subscription, Task, Theme, window};
 use settings::{Preferences, load_from, save_to, settings_path};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -137,6 +138,10 @@ struct State {
     available_update: Option<ReleaseUpdate>,
     staged_installer: Option<PathBuf>,
     startup_update_checked: bool,
+    viewer_search: String,
+    viewer_menu: Option<&'static str>,
+    viewer_explorer_visible: bool,
+    viewer_from_library: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -470,6 +475,14 @@ impl Operation {
 #[derive(Debug, Clone)]
 enum Message {
     Navigate(Page),
+    OpenViewer,
+    ViewerOpened(window::Id),
+    WindowClosed(window::Id),
+    ViewerMenu(&'static str),
+    ViewerToggleExplorer,
+    ViewerResetCamera,
+    ViewerSearchChanged(String),
+    ViewerPreviewSelected,
     InputChanged(String),
     OutputChanged(String),
     ReplacementsChanged(String),
@@ -601,6 +614,62 @@ fn check_updates_task(channel: UpdateChannel) -> Task<Message> {
 fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::Navigate(page) => state.page = Some(page),
+        Message::OpenViewer | Message::ViewerOpened(_) | Message::WindowClosed(_) => {},
+        Message::ViewerMenu(section) => {
+            state.viewer_menu = if section.is_empty() || state.viewer_menu == Some(section) {
+                None
+            } else {
+                Some(section)
+            };
+        }
+        Message::ViewerToggleExplorer => {
+            state.viewer_explorer_visible = !state.viewer_explorer_visible;
+        }
+        Message::ViewerResetCamera => {
+            state.yaw = 0.0;
+            state.pitch = 0.0;
+            state.zoom = 1.0;
+        }
+        Message::ViewerSearchChanged(filter) => state.viewer_search = filter,
+        Message::ViewerPreviewSelected => {
+            let Some(inventory) = &state.inventory else {
+                state.status = "Extract the PAK into an isolated folder and index it to preview files.".into();
+                return Task::none();
+            };
+            let Some(relative) = state.selected.and_then(|index| inventory.entries.get(index)) else {
+                state.status = "Select an extracted file in the explorer first.".into();
+                return Task::none();
+            };
+            let source = PathBuf::from(&inventory.root).join(&relative.relative_path);
+            let canonical_root = std::fs::canonicalize(&inventory.root);
+            let canonical_source = std::fs::canonicalize(&source);
+            if !matches!(
+                (canonical_root, canonical_source),
+                (Ok(root), Ok(file)) if file.starts_with(&root)
+                    && std::fs::symlink_metadata(&source)
+                        .is_ok_and(|meta| meta.file_type().is_file())
+            ) {
+                state.status = "Selected file is missing or escaped the indexed root; rescan before preview.".into();
+                return Task::none();
+            }
+            state.input = source.to_string_lossy().to_string();
+            let filename = relative.relative_path.to_ascii_lowercase();
+            let operation = if [".skin", ".skinm", ".chr", ".cgf"].iter().any(|s| filename.ends_with(s)) {
+                Operation::InspectModel(source)
+            } else if filename.ends_with(".cdf") {
+                Operation::InspectCdf(source)
+            } else if filename.ends_with(".dds") || filename.ends_with(".dds.0") {
+                Operation::InspectDds(source)
+            } else if filename.ends_with(".caf") {
+                Operation::LoadCaf(source)
+            } else if filename.ends_with(".mtl") {
+                Operation::ResolveMaterial(source, PathBuf::from(&inventory.root))
+            } else {
+                state.status = "Selected asset type is not supported by the native preview yet.".into();
+                return Task::none();
+            };
+            return launch(state, operation);
+        },
         Message::PreferenceDensity => {
             state.preferences.ui_density = if state.preferences.ui_density == "Compact" {
                 "Comfortable".into()
@@ -1779,6 +1848,7 @@ fn view(state: &State) -> Element<'_, Message> {
                 .on_input(Message::InputChanged)
                 .width(Fill),
             button("Scan folder").on_press(Message::StartScan),
+            button("Open Asset Viewer").on_press(Message::OpenViewer),
         ]
         .spacing(8),
         row![
@@ -2231,6 +2301,7 @@ fn view(state: &State) -> Element<'_, Message> {
 fn initial_state() -> State {
     let mut result = State {
         zoom: 1.0,
+        viewer_explorer_visible: true,
         ..State::default()
     };
     if let Ok(path) = settings_path() {
@@ -2260,32 +2331,102 @@ fn initial_state() -> State {
     }
     result
 }
-fn main() -> iced::Result {
-    let _supported_backends = wgpu::Backends::PRIMARY;
-    iced::application(initial_state, update, view)
-        .subscription(|state: &State| {
-            let playback = if state.playing {
-                iced::time::every(Duration::from_millis(40)).map(|_| Message::Tick)
-            } else {
-                Subscription::none()
-            };
-            let startup =
-                if state.preferences.automatic_update_checks && !state.startup_update_checked {
-                    iced::time::every(Duration::from_millis(500)).map(|_| Message::CheckUpdates)
+/// One native main window and one native model/asset editor window. All costly
+/// asset operations stay in the existing worker queue, independent of either
+/// window's render loop.
+struct Desktop {
+    state: State,
+    main_id: window::Id,
+    viewer_id: Option<window::Id>,
+}
+
+impl Desktop {
+    fn new() -> (Self, Task<Message>) {
+        let (main_id, opened) = window::open(window::Settings {
+            size: iced::Size::new(1440.0, 900.0),
+            ..window::Settings::default()
+        });
+        (
+            Self { state: initial_state(), main_id, viewer_id: None },
+            opened.map(Message::ViewerOpened),
+        )
+    }
+
+    fn open_viewer(&mut self) -> Task<Message> {
+        if self.viewer_id.is_some() {
+            return Task::none();
+        }
+        self.state.viewer_from_library = self.state.page == Some(Page::AssetLibrary);
+        self.state.viewer_explorer_visible = true;
+        let (id, opened) = window::open(window::Settings {
+            size: iced::Size::new(1550.0, 940.0),
+            ..window::Settings::default()
+        });
+        self.viewer_id = Some(id);
+        opened.map(Message::ViewerOpened)
+    }
+
+    fn update(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::OpenViewer => self.open_viewer(),
+            Message::ViewerOpened(_) => Task::none(),
+            Message::WindowClosed(id) => {
+                if id == self.main_id {
+                    iced::exit()
                 } else {
-                    Subscription::none()
-                };
-            Subscription::batch([playback, startup])
-        })
-        .title("Evolve Mod Manager — Rust Development Preview")
-        .theme(|state: &State| {
-            if state.preferences.appearance_mode == "Light" {
-                return Theme::Light;
+                    if self.viewer_id == Some(id) {
+                        self.viewer_id = None;
+                        self.state.viewer_menu = None;
+                    }
+                    Task::none()
+                }
             }
+            message => {
+                let opens_model = matches!(&message, Message::Finished(Ok(Completed::Model(_))));
+                let command = update(&mut self.state, message);
+                if opens_model && self.viewer_id.is_none() {
+                    Task::batch([command, self.open_viewer()])
+                } else {
+                    command
+                }
+            }
+        }
+    }
+
+    fn view(&self, id: window::Id) -> Element<'_, Message> {
+        if self.viewer_id == Some(id) {
+            asset_viewer::view(&self.state)
+        } else if id == self.main_id {
+            view(&self.state)
+        } else {
+            container(text("Window closed")).into()
+        }
+    }
+
+    fn title(&self, id: window::Id) -> String {
+        if self.viewer_id == Some(id) {
+            let source = std::path::Path::new(&self.state.input)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Asset Viewer".to_owned());
+            if self.state.viewer_from_library {
+                format!("Asset Library — {source} — Read Only")
+            } else {
+                format!("Modding — {source} — Asset Viewer")
+            }
+        } else {
+            "Evolve Mod Manager".into()
+        }
+    }
+
+    fn theme(&self, _id: window::Id) -> Option<Theme> {
+        Some(if self.state.preferences.appearance_mode == "Light" {
+            Theme::Light
+        } else {
             Theme::custom(
                 "Evolve Black/Red",
                 iced::theme::Palette {
-                    background: iced::Color::from_rgb8(15, 15, 18),
+                    background: iced::Color::from_rgb8(32, 34, 39),
                     text: iced::Color::from_rgb8(234, 234, 236),
                     primary: iced::Color::from_rgb8(205, 52, 59),
                     success: iced::Color::from_rgb8(70, 170, 130),
@@ -2294,5 +2435,33 @@ fn main() -> iced::Result {
                 },
             )
         })
+    }
+
+    fn subscription(&self) -> Subscription<Message> {
+        let playback = if self.state.playing {
+            iced::time::every(Duration::from_millis(40)).map(|_| Message::Tick)
+        } else {
+            Subscription::none()
+        };
+        let startup = if self.state.preferences.automatic_update_checks
+            && !self.state.startup_update_checked {
+            iced::time::every(Duration::from_millis(500)).map(|_| Message::CheckUpdates)
+        } else {
+            Subscription::none()
+        };
+        Subscription::batch([
+            playback,
+            startup,
+            window::close_events().map(Message::WindowClosed),
+        ])
+    }
+}
+
+fn main() -> iced::Result {
+    let _supported_backends = wgpu::Backends::PRIMARY;
+    iced::daemon(Desktop::new, Desktop::update, Desktop::view)
+        .subscription(Desktop::subscription)
+        .title(Desktop::title)
+        .theme(Desktop::theme)
         .run()
 }
