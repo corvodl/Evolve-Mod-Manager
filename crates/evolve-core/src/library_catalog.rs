@@ -375,31 +375,51 @@ pub fn resolve_imported_reference(
         // Full verification remains mandatory when opening an archive for edits.
         let folder = Path::new(&archive.directory);
         let manifest: Manifest = serde_json::from_slice(&read_bounded(
-            &folder.join("asset-library.json"), MAX_MANIFEST_BYTES
+            &folder.join("asset-library.json"),
+            MAX_MANIFEST_BYTES,
         )?)?;
-        if manifest.version != 1 || manifest.name != archive.name
+        if manifest.version != 1
+            || manifest.name != archive.name
             || manifest.entries.len() > MAX_MEMBERS
         {
             return Err(LibraryError::UnsafeArchive);
         }
-        let matches = manifest.entries.into_iter().filter_map(|entry| {
-            let name = safe_member_name(&entry.path).ok()?;
-            let rank = candidates.iter().position(|candidate| name.eq_ignore_ascii_case(candidate))?;
-            Some((rank, name, entry.bytes))
-        }).collect::<Vec<_>>();
-        if matches.is_empty() { continue; }
+        let matches = manifest
+            .entries
+            .into_iter()
+            .filter_map(|entry| {
+                let name = safe_member_name(&entry.path).ok()?;
+                let rank = candidates
+                    .iter()
+                    .position(|candidate| name.eq_ignore_ascii_case(candidate))?;
+                Some((rank, name, entry.bytes))
+            })
+            .collect::<Vec<_>>();
+        if matches.is_empty() {
+            continue;
+        }
         let file_root = folder.join("files");
         let root_meta = fs::symlink_metadata(&file_root)?;
-        if !root_meta.file_type().is_dir() { return Err(LibraryError::UnsafeArchive); }
+        if !root_meta.file_type().is_dir() {
+            return Err(LibraryError::UnsafeArchive);
+        }
         let safe_root = fs::canonicalize(&file_root)?;
         for (rank, relative, expected_size) in matches {
             let path = safe_root.join(&relative);
             // A missing or modified referenced texture isn't a usable hit,
             // but must not prevent searching another source-qualified PAK.
-            let Ok(metadata) = fs::symlink_metadata(&path) else { continue; };
-            if !metadata.file_type().is_file() || metadata.len() != expected_size { continue; }
-            let Ok(real) = fs::canonicalize(&path) else { continue; };
-            if !real.starts_with(&safe_root) { continue; }
+            let Ok(metadata) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if !metadata.file_type().is_file() || metadata.len() != expected_size {
+                continue;
+            }
+            let Ok(real) = fs::canonicalize(&path) else {
+                continue;
+            };
+            if !real.starts_with(&safe_root) {
+                continue;
+            }
             found[rank].push(LibraryReference {
                 archive_id: archive.id.clone(),
                 archive_name: archive.name.clone(),
