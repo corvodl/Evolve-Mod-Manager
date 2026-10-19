@@ -4,7 +4,7 @@
 use super::{MeshViewport, Message, State, TexturedScene, viewer_inspector};
 use crate::design;
 use iced::widget::{
-    canvas, column, container, mouse_area, row, scrollable, shader, slider, stack, text,
+    canvas, column, container, mouse_area, row, scrollable, shader, slider, stack, text, tooltip,
 };
 use iced::{Background, Border, Element, Fill, Length};
 
@@ -304,6 +304,29 @@ fn viewport(state: &State) -> Element<'_, Message> {
     .into()
 }
 
+/// Keep the full archive location available on hover, but prevent very
+/// long Windows paths from consuming the entire viewer's right-hand pane.
+fn compact_source_name(source: &str) -> String {
+    let mut parts = source.trim_end_matches(['\\', '/']).rsplit(['\\', '/']);
+    let file = parts.next().filter(|part| !part.is_empty()).unwrap_or("No source selected");
+    let parent = parts.next().filter(|part| !part.is_empty());
+    let short = match parent {
+        Some(folder) if !folder.ends_with(':') => format!("{folder} / {file}"),
+        _ => file.to_owned(),
+    };
+    const MAX_LABEL: usize = 100;
+    if short.chars().count() <= MAX_LABEL {
+        short
+    } else {
+        let keep = short.chars().rev().take(MAX_LABEL - 1).collect::<String>();
+        format!("…{}", keep.chars().rev().collect::<String>())
+    }
+}
+
+fn explorer_on_left(side: &str) -> bool {
+    side.eq_ignore_ascii_case("left")
+}
+
 fn explorer(state: &State) -> Element<'_, Message> {
     let mut rows =
         column![row![text("File / Folder").width(Fill), text("Size").width(90)].spacing(8)]
@@ -402,7 +425,11 @@ fn explorer(state: &State) -> Element<'_, Message> {
                 ]
                 .spacing(16),
                 text("PAK / PROJECT").size(12),
-                text(source).size(12),
+                tooltip(
+                    text(compact_source_name(source)).size(12),
+                    text(source).size(11),
+                    tooltip::Position::Bottom,
+                ),
                 design::text_input("Search files and folders...", &state.viewer_search)
                     .on_input(Message::ViewerSearchChanged),
                 row![
@@ -420,6 +447,8 @@ fn explorer(state: &State) -> Element<'_, Message> {
                         let is_cdf = filename.to_ascii_lowercase().ends_with(".cdf");
                         let is_dds = filename.to_ascii_lowercase().ends_with(".dds")
                             || filename.to_ascii_lowercase().ends_with(".dds.0");
+                        let is_model = [".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cdf"]
+                            .iter().any(|extension| filename.to_ascii_lowercase().ends_with(extension));
                         panel(
                             column![
                                 row![
@@ -445,7 +474,9 @@ fn explorer(state: &State) -> Element<'_, Message> {
                                     ),
                                     design::button("Export DDS → PNG")
                                         .on_press_maybe(is_dds.then_some(Message::StartPngExport)),
-                                    design::button("Rigged FBX").on_press(Message::StartRigFbx),
+                                    design::button("Rigged FBX").on_press_maybe(
+                                        (is_model && !state.busy).then_some(Message::StartRigFbx)
+                                    ),
                                     design::button("Restore original").on_press_maybe(
                                         (!state.viewer_from_library && !state.busy)
                                             .then_some(Message::EditorRestoreRawMember)
@@ -547,13 +578,14 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let view_weight = (ratio * 100.0).round() as u16;
     let list_weight = (100.0 - ratio * 100.0).round() as u16;
     let panes: Element<'_, Message> = if state.viewer_explorer_visible {
-        row![
-            container(viewport(state)).width(Length::FillPortion(view_weight.max(1))),
-            container(explorer(state)).width(Length::FillPortion(list_weight.max(1)))
-        ]
-        .spacing(10)
-        .height(Fill)
-        .into()
+        let preview = container(viewport(state)).width(Length::FillPortion(view_weight.max(1)));
+        let files = container(explorer(state)).width(Length::FillPortion(list_weight.max(1)));
+        let panes = if explorer_on_left(&state.preferences.file_explorer_side) {
+            row![files, preview]
+        } else {
+            row![preview, files]
+        };
+        panes.spacing(10).height(Fill).into()
     } else {
         viewport(state)
     };
@@ -588,9 +620,13 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         })
         .size(12)
         .width(Fill),
-        text("Asset Library originals protected  •  Preview only")
-            .size(11)
-            .style(design::muted),
+        text(if state.viewer_from_library {
+            "Asset Library originals protected  •  Preview only"
+        } else {
+            "Modding project workspace  •  Original PAKs preserved"
+        })
+        .size(11)
+        .style(design::muted),
     ]
     .spacing(12);
 
@@ -614,4 +650,27 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         ..container::Style::default()
     })
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explorer_side_setting_affects_pane_order() {
+        assert!(explorer_on_left("Left"));
+        assert!(!explorer_on_left("Right"));
+        assert!(!explorer_on_left(""));
+    }
+
+    #[test]
+    fn long_windows_archive_paths_remain_readable() {
+        let source = r"\\?\C:\Users\Example\AppData\Local\EvolveModManager\Data\AssetLibrary\characters_hunters_merc_tech_data.pak__1234567890abcdefabcd\files";
+        assert_eq!(
+            compact_source_name(source),
+            "characters_hunters_merc_tech_data.pak__1234567890abcdefabcd / files"
+        );
+        assert!(compact_source_name(&"x".repeat(140)).chars().count() <= 100);
+        assert_eq!(compact_source_name(""), "No source selected");
+    }
 }
