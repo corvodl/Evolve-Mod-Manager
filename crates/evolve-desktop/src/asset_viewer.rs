@@ -52,7 +52,7 @@ fn strip(state: &State) -> Element<'_, Message> {
         ].spacing(8).into(),
         Some("Model") => column![
             row![
-                design::button("Inspect selected model").on_press(Message::ViewerPreviewSelected),
+                design::button("Retry selected preview").on_press(Message::ViewerPreviewSelected),
                 design::button("Inspect CDF").on_press(Message::StartCdfInspection),
                 design::button("Preview CDF assembly (static)").on_press(Message::ViewerPreviewStaticCdf),
                 design::button("Export verified rigged FBX").on_press(Message::StartRigFbx),
@@ -61,6 +61,7 @@ fn strip(state: &State) -> Element<'_, Message> {
                 design::button("Unified CDF rigged FBX (experimental)")
                     .on_press(Message::ViewerExportUnifiedCdf),
             ].spacing(8),
+            text("Single-click an indexed source asset to preview it automatically. The Retry action is optional; no second Inspect click is required.").size(12).style(design::muted),
             text("Blender FBX export requires a verified compiled skeleton and original mesh weights. Source files are never overwritten.").size(12).style(design::muted),
             text("Flat CDF export requires a NEW DIRECTORY. Unified CDF export requires a NEW .fbx file. Both verify original UVs and weights; unified output uses one shared armature, but complete per-part materials and skin animation remain unverified.")
                 .size(12).style(design::muted),
