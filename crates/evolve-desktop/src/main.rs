@@ -3092,14 +3092,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return launch(state, Operation::LoadGlbMotion(path));
             }
         }
-        Message::MotionScrub(value) => state.motion_time = value,
+        Message::MotionScrub(value) => {
+            state.motion_time = value;
+            apply_current_skin_frame(state);
+        },
         Message::ToggleMotion => {
-            state.playing = !state.playing
-                && (state.native_caf.is_some()
-                    || state
-                        .glb_motion
-                        .as_ref()
-                        .is_some_and(|m| m.list_clips().get(state.selected_motion_clip).is_some()))
+            if state.native_caf.is_some() && state.skin_preview.is_none() {
+                state.playing = false;
+                state.status =
+                    "CAF controller keys decoded, but selected mesh has no verified matching skin; cannot animate an unbound model.".into();
+            } else {
+                state.playing = !state.playing
+                    && (state.skin_preview.is_some()
+                        || state
+                            .glb_motion
+                            .as_ref()
+                            .is_some_and(|m| m.list_clips().get(state.selected_motion_clip).is_some()));
+            }
         }
         Message::Tick => {
             if state.playing {
@@ -3127,6 +3136,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 } else {
                     state.playing = false;
                 }
+                apply_current_skin_frame(state);
             }
         }
         Message::AssetsRootChanged(value) => state.assets_root = value,
@@ -3770,6 +3780,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.converted_glbs =
                         result.glb_files.iter().map(|rel| dir.join(rel)).collect();
                     state.native_caf = None;
+                    state.skin_preview = None;
                     state.glb_motion = None;
                     state.playing = false;
                     state.page = Some(Page::Models);
@@ -3803,9 +3814,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                     state.motion_time = 0.0;
                     state.playing = false;
+                    state.skin_preview = None;
                     state.native_caf = Some(Arc::new(motion));
                     state.glb_motion = None;
                     state.page = Some(Page::Models);
+                    if let Some(task) = bind_current_native_caf(state) {
+                        return task;
+                    }
                 }
                 Ok(Completed::ModelResources(relative, resources)) => {
                     // A new click might have arrived while the index worker ran.
@@ -3860,16 +3875,39 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             clip.virtual_path.eq_ignore_ascii_case(&virtual_path)
                         });
                     if selected && !motion.additive {
+                        state.skin_preview = None;
                         state.native_caf = Some(Arc::new(motion));
                         state.glb_motion = None;
                         state.motion_time = 0.0;
                         state.playing = false;
                         state.status = format!(
-                            "Loaded verified character-declared CAF: {virtual_path}. Skeleton skinning still requires source binding."
+                            "Loaded exact character CAF: {virtual_path}; verifying original source bone skin..."
                         );
+                        if let Some(task) = bind_current_native_caf(state) {
+                            return task;
+                        }
                     } else if selected {
                         state.status =
                             "Additive CAF cannot play alone without a compatible base pose.".into();
+                    }
+                }
+                Ok(Completed::BoundCafPreview(source, skin)) => {
+                    let expected = preferred_render_source(Path::new(&state.input));
+                    if state.viewer_queued_preview.is_none()
+                        && expected == source
+                        && state.native_caf.is_some()
+                    {
+                        let count = skin.original_vertices();
+                        let bones = skin.original_bones();
+                        let cyclic = skin.source_motion().cyclic;
+                        state.skin_preview = Some(Arc::new(skin));
+                        state.motion_time = 0.0;
+                        apply_current_skin_frame(state);
+                        state.playing = cyclic;
+                        state.status = format!(
+                            "Native CAF bound to {count} original weighted vertices and {bones} compiled bones. Mesh deforms in the GPU viewport (CPU skin evaluation)."
+                        );
+                        state.page = Some(Page::Models);
                     }
                 }
                 Ok(Completed::MaterialResolved(report, diffuse, normal, emissive, diagnostics)) => {
@@ -3983,6 +4021,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.normal_map = None;
                     state.emissive_map = None;
                     state.native_caf = None;
+                    state.skin_preview = None;
                     state.glb_motion = None;
                     state.playing = false;
                     state.viewer_tab = ViewerTab::Model;
