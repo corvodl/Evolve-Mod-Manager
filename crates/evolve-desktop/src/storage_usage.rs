@@ -70,7 +70,7 @@ pub fn analyze(data: &Path, games: &Path, active_stage: &Path, projects: &Path, 
     if let Ok(entries) = fs::read_dir(data) {
         for entry in entries.flatten() {
             let location = entry.path();
-            if [&games, &projects, &library].iter().any(|known| location == **known) {
+            if location == games || location == projects || location == library {
                 continue;
             }
             report.buckets[4] = report.buckets[4].saturating_add(
