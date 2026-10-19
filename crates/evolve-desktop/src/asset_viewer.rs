@@ -58,6 +58,7 @@ fn strip(state: &State) -> Element<'_, Message> {
         Some("Model") => row![
             button("Inspect selected model").on_press(Message::ViewerPreviewSelected),
             button("Inspect CDF").on_press(Message::StartCdfInspection),
+            button("Preview CDF assembly (static)").on_press(Message::ViewerPreviewStaticCdf),
             button("Export rigged FBX").on_press(Message::StartRigFbx),
         ].spacing(8).into(),
         Some("Textures") => row![
