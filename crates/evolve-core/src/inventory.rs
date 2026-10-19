@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// Bound traversal to protect the UI from malformed or enormous directories.
 pub const MAX_ENTRIES: usize = 250_000;
@@ -105,6 +106,8 @@ impl Inventory {
 pub enum InventoryError {
     #[error("Choose an existing regular directory")]
     InvalidRoot,
+    #[error("Directory scan cancelled before completion")]
+    Cancelled,
     #[error("Traversal exceeds the safe file limit of {MAX_ENTRIES}")]
     TooManyFiles,
     #[error("Nested directories exceed the supported depth")]
@@ -116,6 +119,23 @@ pub enum InventoryError {
 /// Scan an explicitly chosen directory. Never follow junctions or symbolic links.
 /// No game files are read, altered, converted, or copied by this operation.
 pub fn scan_directory(root: &Path) -> Result<Inventory, InventoryError> {
+    scan_directory_inner(root, None)
+}
+
+/// A read-only, cooperatively cancellable scan. The progress counter reports
+/// the number of indexed files, not an invented completion percentage.
+pub fn scan_directory_with_progress(
+    root: &Path,
+    cancelled: &AtomicBool,
+    indexed: &AtomicUsize,
+) -> Result<Inventory, InventoryError> {
+    scan_directory_inner(root, Some((cancelled, indexed)))
+}
+
+fn scan_directory_inner(
+    root: &Path,
+    progress: Option<(&AtomicBool, &AtomicUsize)>,
+) -> Result<Inventory, InventoryError> {
     if !root.is_dir() || root.symlink_metadata()?.file_type().is_symlink() {
         return Err(InventoryError::InvalidRoot);
     }
@@ -125,12 +145,18 @@ pub fn scan_directory(root: &Path) -> Result<Inventory, InventoryError> {
     let mut skipped_symlinks = 0;
     let mut total_bytes = 0u64;
     while let Some((folder, depth)) = pending.pop() {
+        if progress.is_some_and(|(cancelled, _)| cancelled.load(Ordering::Relaxed)) {
+            return Err(InventoryError::Cancelled);
+        }
         if depth > MAX_DEPTH {
             return Err(InventoryError::TooDeep);
         }
         let mut children = fs::read_dir(&folder)?.collect::<Result<Vec<_>, io::Error>>()?;
         children.sort_by_key(|entry| entry.file_name());
         for child in children {
+            if progress.is_some_and(|(cancelled, _)| cancelled.load(Ordering::Relaxed)) {
+                return Err(InventoryError::Cancelled);
+            }
             let path = child.path();
             let kind = child.file_type()?;
             if kind.is_symlink() {
@@ -159,6 +185,9 @@ pub fn scan_directory(root: &Path) -> Result<Inventory, InventoryError> {
                 byte_size,
                 kind: classify_path(relative),
             });
+            if let Some((_, indexed)) = progress {
+                indexed.fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
     entries.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
@@ -234,6 +263,22 @@ mod tests {
         assert!(write_inventory_json(&inventory, &output).is_err());
         let loaded: Inventory = serde_json::from_slice(&fs::read(output).unwrap()).unwrap();
         assert_eq!(loaded.schema, 1);
+    }
+
+    #[test]
+    fn cancelled_scan_does_not_emit_incomplete_inventory() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("file.cdf"), b"data").unwrap();
+        let cancelled = AtomicBool::new(true);
+        let indexed = AtomicUsize::new(0);
+        assert!(matches!(
+            scan_directory_with_progress(root.path(), &cancelled, &indexed),
+            Err(InventoryError::Cancelled)
+        ));
+        cancelled.store(false, Ordering::Relaxed);
+        let scan = scan_directory_with_progress(root.path(), &cancelled, &indexed).unwrap();
+        assert_eq!(scan.entries.len(), 1);
+        assert_eq!(indexed.load(Ordering::Relaxed), 1);
     }
 
     #[cfg(unix)]
