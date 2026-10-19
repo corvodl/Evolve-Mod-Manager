@@ -229,7 +229,9 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     if matching == 0 {
         rows = rows.push(
             container(
-                text(if library.is_none() {
+                text(if state.library_startup_loading {
+                    "Indexing imported PAK manifests from the detected manager Asset Library location…"
+                } else if library.is_none() {
                     "No imported PAKs at the detected manager Asset Library location. Use Import PAKs to add an archive."
                 } else if by_build && build.is_none() {
                     "No build snapshot is available. Use All Assets or import snapshot metadata."
