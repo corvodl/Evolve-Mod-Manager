@@ -319,8 +319,10 @@ fn explorer(state: &State) -> Element<'_, Message> {
                 ]
                 .spacing(8),
                 if state.viewer_from_library {
-                    text("Protected read-only source. To edit, open a separate Modding project.")
-                        .size(11).color(MUTED).into()
+                    Element::<Message>::from(
+                        text("Protected read-only source. To edit, open a separate Modding project.")
+                            .size(11).color(MUTED)
+                    )
                 } else {
                     column![
                         text_input("Existing local file to import over selected project asset...", &state.editor_replace_source)
