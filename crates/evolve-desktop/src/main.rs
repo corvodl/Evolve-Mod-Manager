@@ -24,7 +24,7 @@ use evolve_core::{
     initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_signed_pak,
     list_mod_profiles, load_level_scene, plan_mod_profile, read_cdf, read_material, read_model,
     read_native_caf, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry, resolve_cdf,
-    resolve_materials, restore_profile_stage, restore_stage, scan_directory, stage_status,
+    resolve_materials, restore_profile_stage, restore_stage, scan_directory, scan_directory_with_progress, stage_status,
 };
 use iced::widget::{
     button, canvas, column, container, image, row, scrollable, shader, slider, space, svg, text,
@@ -33,7 +33,7 @@ use iced::widget::{
 use iced::{Element, Fill, Length, Subscription, Task, Theme, window};
 use settings::{Preferences, load_from, save_to, settings_path};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}};
 use std::time::Duration;
 use textured::Scene as TexturedScene;
 use updater::{
@@ -193,6 +193,8 @@ struct State {
     level_filter: String,
     level_selected: Option<usize>,
     level_zoom: f32,
+    scan_cancel: Option<Arc<AtomicBool>>,
+    scan_indexed: Option<Arc<AtomicUsize>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,7 +216,7 @@ enum Operation {
     OpenImportedPak(ImportedPak),
     InspectDependencies(Inventory, String),
     CompareAssets(PathBuf, PathBuf),
-    Scan(PathBuf),
+    Scan(PathBuf, Arc<AtomicBool>, Arc<AtomicUsize>),
     InspectPak(PathBuf),
     InspectDds(PathBuf),
     LoadDiffuse(PathBuf),
@@ -328,7 +330,8 @@ impl Operation {
             Self::OpenImportedPak(pak) => imported_archive_files(&pak)
                 .map(Completed::ImportedPakFiles)
                 .map_err(|e| e.to_string()),
-            Self::Scan(source) => scan_directory(&source)
+            Self::Scan(source, cancelled, indexed) =>
+                scan_directory_with_progress(&source, &cancelled, &indexed)
                 .map(Completed::Inventory)
                 .map_err(|e| e.to_string()),
             Self::InspectPak(source) => inspect_legacy_pak(&source)
@@ -577,6 +580,8 @@ enum Message {
     WindowClosed(window::Id),
     FileDropped(window::Id, PathBuf),
     DropPath(PathBuf),
+    CancelScan,
+    ScanPulse,
     ViewerMenu(&'static str),
     ViewerToggleExplorer,
     ViewerResetCamera,
@@ -707,6 +712,18 @@ fn launch(state: &mut State, operation: Operation) -> Task<Message> {
         },
         Message::Finished,
     )
+}
+
+fn begin_scan(state: &mut State, source: PathBuf) -> Task<Message> {
+    if state.busy {
+        return Task::none();
+    }
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let indexed = Arc::new(AtomicUsize::new(0));
+    let task = launch(state, Operation::Scan(source, cancelled.clone(), indexed.clone()));
+    state.scan_cancel = Some(cancelled);
+    state.scan_indexed = Some(indexed);
+    task
 }
 
 fn persist_preferences(state: &mut State) {
@@ -905,6 +922,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::OpenViewer | Message::ViewerOpened | Message::WindowClosed(_) |
         Message::FileDropped(_, _) => {},
+        Message::CancelScan => {
+            if let Some(cancel) = &state.scan_cancel {
+                cancel.store(true, Ordering::Relaxed);
+                state.status = "Cancelling asset scan after current entry...".into();
+            }
+        }
+        Message::ScanPulse => {
+            if let Some(indexed) = &state.scan_indexed {
+                state.status = format!("Indexed {} local assets; working asynchronously...",
+                    indexed.load(Ordering::Relaxed));
+            }
+        }
         Message::DropPath(path) => {
             let metadata = match std::fs::symlink_metadata(&path) {
                 Ok(metadata) if !metadata.file_type().is_symlink() => metadata,
@@ -915,7 +944,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
             state.input = path.to_string_lossy().into_owned();
             if metadata.file_type().is_dir() {
-                return launch(state, Operation::Scan(path));
+                return begin_scan(state, path);
             }
             if !metadata.file_type().is_file() {
                 state.status = "Unsupported dropped path type.".into();
@@ -1515,7 +1544,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::Select(index) => state.selected = Some(index),
         Message::StartScan => {
             let source = PathBuf::from(&state.input);
-            return launch(state, Operation::Scan(source));
+            return begin_scan(state, source);
         }
         Message::StartPakInspection => {
             let source = PathBuf::from(&state.input);
@@ -1790,6 +1819,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::Finished(result) => {
             state.busy = false;
+            state.scan_cancel = None;
+            state.scan_indexed = None;
             match result {
                 Ok(Completed::Dependencies(graph)) => {
                     state.status = format!(
@@ -2332,7 +2363,12 @@ fn view(state: &State) -> Element<'_, Message> {
         text(format!("  /  {}", page.title())).size(12),
         space().width(Fill),
         button("Help").on_press(Message::Navigate(Page::Instructions)),
-        button("Activity").on_press(Message::ToggleActivity),
+        button("Activity").on_press(Message::ToggleActivity).style(button::secondary),
+        if state.scan_cancel.is_some() {
+            button("Cancel Scan").on_press(Message::CancelScan).style(button::secondary)
+        } else {
+            button("Cancel Scan").style(button::secondary)
+        },
     ]
     .spacing(13)
     .align_y(iced::Center);
@@ -3018,6 +3054,11 @@ impl Desktop {
         } else {
             Subscription::none()
         };
+        let scan_progress = if self.state.scan_indexed.is_some() {
+            iced::time::every(Duration::from_millis(250)).map(|_| Message::ScanPulse)
+        } else {
+            Subscription::none()
+        };
         let startup = if self.state.preferences.automatic_update_checks
             && !self.state.startup_update_checked
         {
@@ -3028,6 +3069,7 @@ impl Desktop {
         Subscription::batch([
             playback,
             startup,
+            scan_progress,
             window::close_events().map(Message::WindowClosed),
             iced::event::listen_with(|event, _status, id| match event {
                 iced::Event::Window(window::Event::FileDropped(path)) => {
