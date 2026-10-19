@@ -18,6 +18,7 @@ pub struct Scene {
     pub yaw: f32,
     pub pitch: f32,
     pub zoom: f32,
+    pub light_strength: f32,
 }
 
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -27,13 +28,15 @@ struct Vertex {
     uv: [f32; 2],
     normal: [f32; 3],
     view_position: [f32; 3],
+    light_strength: f32,
 }
 impl Vertex {
-    const ATTRS: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
+    const ATTRS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
         0 => Float32x3,
         1 => Float32x2,
         2 => Float32x3,
         3 => Float32x3,
+        4 => Float32,
     ];
     fn descriptor<'a>() -> wgpu::VertexBufferLayout<'a> {
         wgpu::VertexBufferLayout {
@@ -118,6 +121,7 @@ impl<Message> shader::Program<Message> for Scene {
                     .unwrap_or([0., 0.]),
                 normal,
                 view_position: [xr, yr, depth],
+                light_strength: self.light_strength.clamp(0.1, 2.0),
             });
         }
         Primitive {
