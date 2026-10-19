@@ -214,100 +214,64 @@ fn explorer(state: &State) -> Element<'_, Message> {
     let mut rows =
         column![row![text("File / Folder").width(Fill), text("Size").width(90)].spacing(8)]
             .spacing(2);
-    let filter = state.viewer_search.to_ascii_lowercase();
-    let selected = state.selected;
-    let total: usize;
-    if let Some(inv) = &state.inventory {
-        total = inv.entries.len();
-        for (index, entry) in inv
-            .entries
-            .iter()
-            .enumerate()
-            .filter(|(_, file)| file.relative_path.to_ascii_lowercase().contains(&filter))
-            .take(350)
-        {
-            let label = if selected == Some(index) {
-                format!("▸ {}", entry.relative_path)
-            } else {
-                entry.relative_path.clone()
-            };
-            rows = rows.push(
-                button(
-                    row![
-                        text(label).size(12).width(Fill),
-                        text(format!("{} KiB", entry.byte_size.div_ceil(1024)))
-                            .size(12)
-                            .width(90),
-                    ]
-                    .spacing(7),
-                )
-                .width(Fill)
-                .padding(5)
-                .style(if selected == Some(index) {
-                    button::primary
-                } else {
-                    button::text
-                })
-                .on_press(Message::Select(index)),
-            );
-        }
+    let total = if let Some(inv) = &state.inventory {
+        inv.entries.len()
     } else if let Some(signed) = &state.signed_pak {
-        total = signed.entries.len();
-        for (index, entry) in signed
-            .entries
-            .iter()
-            .enumerate()
-            .filter(|(_, file)| file.path.to_ascii_lowercase().contains(&filter))
-            .take(350)
-        {
-            rows = rows.push(
-                button(
-                    row![
-                        text(entry.path.as_str()).size(12).width(Fill),
-                        text(format!("{} KiB", entry.size.div_ceil(1024)))
-                            .size(12)
-                            .width(90),
-                    ]
-                    .spacing(7),
-                )
-                .width(Fill)
-                .padding(5)
-                .style(button::text)
-                .on_press(Message::Select(index)),
-            );
-        }
-    } else if let Some(pak) = &state.pak {
-        total = pak.entries.len();
-        for (index, entry) in pak
-            .entries
-            .iter()
-            .enumerate()
-            .filter(|(_, file)| file.path.to_ascii_lowercase().contains(&filter))
-            .take(350)
-        {
-            rows = rows.push(
-                button(
-                    row![
-                        text(entry.path.as_str()).size(12).width(Fill),
-                        text(format!("{} KiB", entry.size.div_ceil(1024)))
-                            .size(12)
-                            .width(90),
-                    ]
-                    .spacing(7),
-                )
-                .width(Fill)
-                .padding(5)
-                .style(button::text)
-                .on_press(Message::Select(index)),
-            );
-        }
+        signed.entries.len()
     } else {
-        total = 0;
+        state.pak.as_ref().map_or(0, |pak| pak.entries.len())
+    };
+    let limit = 350;
+    let records: Vec<(usize, &str, u64)> = if let Some(inv) = &state.inventory {
+        inv.entries.iter().enumerate()
+            .map(|(i, e)| (i, e.relative_path.as_str(), e.byte_size)).collect()
+    } else if let Some(signed) = &state.signed_pak {
+        signed.entries.iter().enumerate()
+            .map(|(i, e)| (i, e.path.as_str(), e.size)).collect()
+    } else if let Some(pak) = &state.pak {
+        pak.entries.iter().enumerate()
+            .map(|(i, e)| (i, e.path.as_str(), e.size)).collect()
+    } else {
+        Vec::new()
+    };
+    let visible = super::explorer_tree::visible_rows(
+        records.iter().map(|(i, name, bytes)| (*i, *name, *bytes)),
+        &state.viewer_search,
+        &state.viewer_collapsed,
+        limit,
+    );
+    for entry in visible {
+        let indent = "  ".repeat(entry.depth.min(20));
+        let title = if entry.directory {
+            format!("{indent}{} 📁 {}", if state.viewer_collapsed.contains(&entry.path) && state.viewer_search.is_empty() { "▸" } else { "▾" }, entry.name)
+        } else {
+            let label = if entry.name.to_ascii_lowercase().ends_with(".cdf") {
+                format!("◇ {} · Character assembly", entry.name)
+            } else {
+                entry.name.clone()
+            };
+            format!("{indent}  {label}")
+        };
+        let action = if entry.directory {
+            Message::ViewerToggleFolder(entry.path)
+        } else {
+            Message::Select(entry.index.expect("file row has source index"))
+        };
         rows = rows.push(
-            text("No archive or extracted folder indexed.")
-                .size(13)
-                .color(MUTED),
+            button(row![
+                text(title).size(12).width(Fill),
+                text(if entry.directory { String::new() } else { format!("{} KiB", entry.bytes.div_ceil(1024)) })
+                    .size(12).width(90),
+            ].spacing(7))
+                .width(Fill).padding(5)
+                .style(if entry.index.is_some() && entry.index == state.selected {
+                    button::primary
+                } else { button::text })
+                .on_press(action)
         );
+    }
+    if total == 0 {
+        rows = rows.push(text("No archive or extracted folder indexed.").size(13).color(MUTED));
     }
     let source = state
         .signed_pak
@@ -335,7 +299,7 @@ fn explorer(state: &State) -> Element<'_, Message> {
                 ]
                 .spacing(8),
                 scrollable(rows).height(Fill),
-                text("Read-only explorer  •  350 matching files per view")
+                text("Hierarchical explorer  •  first 350 visible rows  •  CDF = assembly definition")
                     .size(11)
                     .color(MUTED),
             ]
