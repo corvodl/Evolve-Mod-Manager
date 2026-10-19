@@ -1,7 +1,7 @@
 //! Separate Asset Library and Modding preview window. Matches the private
 //! manager's viewport/explorer split; Asset Library originals are read-only.
 //! Heavy decoding and indexing are run by the main application's worker tasks.
-use super::{MeshViewport, Message, State, TexturedScene};
+use super::{MeshViewport, Message, State, TexturedScene, viewer_inspector};
 use iced::widget::{
     button, canvas, column, container, row, scrollable, shader, slider, text, text_input,
 };
@@ -93,7 +93,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
     ]
     .spacing(2);
     let main: Element<'_, Message> = if let Some(mesh) = &state.model {
-        if mesh.uv0.is_some() {
+        if mesh.uv0.is_some() && !state.viewer_wireframe {
             shader(TexturedScene {
                 mesh: mesh.clone(),
                 diffuse: state.diffuse.clone(),
@@ -164,6 +164,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
         .max(0.03);
     let timeline = row![
         text("Timeline").size(12),
+        button(if state.playback_loop { "Loop on" } else { "Loop off" }).on_press(Message::PlaybackLoopChanged),
         button("◀").on_press(Message::MotionScrub(0.0)),
         button(if state.playing { "Ⅱ" } else { "▶" }).on_press(Message::ToggleMotion),
         slider(
@@ -173,6 +174,9 @@ fn viewport(state: &State) -> Element<'_, Message> {
         )
         .width(Fill),
         text(format!("{:.2} / {:.2} s", state.motion_time, duration)).size(12),
+        text(format!("{:.1}×", state.playback_speed)).size(12),
+        slider(0.1..=3.0, state.playback_speed.max(0.1), Message::PlaybackSpeedChanged)
+            .width(Length::Fixed(80.0)),
     ]
     .spacing(8)
     .align_y(iced::Center);
@@ -343,16 +347,33 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         })
         .size(12),
         button("Toggle Explorer").on_press(Message::ViewerToggleExplorer),
+        button("Save layout").on_press(Message::ViewerSaveLayout),
     ]
     .spacing(14)
     .align_y(iced::Center);
+    let ratio = state.viewer_split.clamp(0.25, 0.8);
+    let view_weight = (ratio * 100.0).round() as u16;
+    let list_weight = (100.0 - ratio * 100.0).round() as u16;
     let panes: Element<'_, Message> = if state.viewer_explorer_visible {
-        row![viewport(state), explorer(state)]
-            .spacing(10)
-            .height(Fill)
-            .into()
+        row![
+            container(viewport(state)).width(Length::FillPortion(view_weight.max(1))),
+            container(explorer(state)).width(Length::FillPortion(list_weight.max(1)))
+        ].spacing(10).height(Fill).into()
     } else {
         viewport(state)
+    };
+    let split_controls: Element<'_, Message> = if state.viewer_explorer_visible {
+        row![
+            text("Viewport").size(12),
+            slider(25.0..=80.0, ratio * 100.0,
+                |value| Message::ViewerSplitChanged(value / 100.0))
+                .width(Length::Fixed(200.0)),
+            text("Explorer").size(12),
+            button(if state.viewer_show_inspector { "Hide Inspector" } else { "Inspector" })
+                .on_press(Message::ViewerToggleInspector),
+        ].spacing(10).align_y(iced::Center).into()
+    } else {
+        button("Show Explorer").on_press(Message::ViewerToggleExplorer).into()
     };
     let footer = row![
         text(if state.busy {
@@ -369,7 +390,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     .spacing(12);
 
     container(
-        column![strip(state), heading, panes, footer]
+        column![strip(state), heading, split_controls, panes, viewer_inspector::view(state), footer]
             .spacing(7)
             .padding(7)
             .height(Fill),
