@@ -73,14 +73,28 @@ fn menu<'a>(state: &'a State) -> Element<'a, Message> {
         ]
         .spacing(8)
         .into(),
-        Some("Tools") => row![
-            button("Verify selected signed PAK").on_press(Message::StartSignedInspection),
-            button("Check offline stage").on_press(Message::StartStageStatus),
-            button("Restore offline stage").on_press(Message::StartStageRestore),
-            button("Asset Library").on_press(Message::Navigate(super::Page::AssetLibrary)),
-        ]
-        .spacing(8)
-        .into(),
+        Some("Tools") => column![
+            row![
+                button("Verify selected signed PAK").style(button::secondary)
+                    .on_press(Message::StartSignedInspection),
+                button("Initialize isolated stage").style(button::secondary)
+                    .on_press(Message::StartStageInit),
+                button("Check stage").style(button::secondary)
+                    .on_press(Message::StartStageStatus),
+                button("Restore backup").style(button::secondary)
+                    .on_press(Message::StartStageRestore),
+            ].spacing(7),
+            row![
+                button("Import signed original").style(button::secondary)
+                    .on_press(Message::StartStageImport),
+                button("Apply signed replacement").style(button::secondary)
+                    .on_press(Message::StartStageApply),
+                button("Installed Mods / Profiles").style(button::secondary)
+                    .on_press(Message::ModdingToggleProfiles),
+                button("Asset Library").style(button::secondary)
+                    .on_press(Message::Navigate(super::Page::AssetLibrary)),
+            ].spacing(7),
+        ].spacing(7).into(),
         _ => text("").into(),
     };
     if state.modding_menu.is_some() {
@@ -352,10 +366,12 @@ fn profiles(state: &State) -> Element<'_, Message> {
             .spacing(8),
             scrollable(catalog).height(Length::Fixed(110.0)),
             row![
-                button("Verify selected").on_press(Message::StartProfilePlan),
-                button("Restore staged profile").on_press(Message::StartProfileRecover),
-            ]
-            .spacing(8),
+                button("Add signed PAK").style(button::secondary).on_press(Message::StartProfileAdd),
+                button("Verify selected").style(button::secondary).on_press(Message::StartProfilePlan),
+                button("Apply to offline stage").style(button::secondary).on_press(Message::StartProfileApply),
+                button("Check recovery").style(button::secondary).on_press(Message::StartProfileStatus),
+                button("Restore staged profile").style(button::secondary).on_press(Message::StartProfileRecover),
+            ].spacing(8),
             text(state.profile_feedback.as_str()).size(12).color(MUTED)
         ]
         .spacing(7),
