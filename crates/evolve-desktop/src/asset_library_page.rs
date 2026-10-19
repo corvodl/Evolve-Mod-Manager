@@ -141,16 +141,16 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     if state.library_show_configuration {
         layout = layout.push(panel(container(column![
             row![
-                text("IMPORT SIGNED STAGE 2 PAK").size(14),
+                text("IMPORT SIGNED STAGE 2 PAKS").size(14),
                 space().width(Fill),
                 design::button("Close").on_press(Message::LibraryToggleConfiguration).style(design::text_button),
             ].spacing(8),
-            text("The Asset Library location is detected automatically. Imports use the configured setup's local verification key; original PAK files are not modified.")
+            text("The Asset Library location is detected automatically. Select one signed .pak or a directory containing up to 64 .pak files. Imports use the configured setup's local verification key; original PAK files are not modified.")
                 .size(12).style(design::muted),
             row![
-                design::text_input("Full path to a local Stage 2 .pak...", &state.library_import_source)
+                design::text_input("Stage 2 .pak file or folder path...", &state.library_import_source)
                     .on_input(Message::LibraryImportSourceChanged).width(Fill),
-                design::button("Import signed PAK").style(design::primary)
+                design::button("Import selected PAK(s)").style(design::primary)
                     .on_press(Message::LibraryImportStart),
             ].spacing(8),
             row![
