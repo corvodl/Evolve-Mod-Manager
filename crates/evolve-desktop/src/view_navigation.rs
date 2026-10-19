@@ -26,7 +26,10 @@ impl Navigation {
     ) -> Option<Gesture> {
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(button))
-                if matches!(button, mouse::Button::Left | mouse::Button::Middle | mouse::Button::Right) =>
+                if matches!(
+                    button,
+                    mouse::Button::Left | mouse::Button::Middle | mouse::Button::Right
+                ) =>
             {
                 if let Some(position) = cursor.position_in(bounds) {
                     self.last = Some(Point::new(position.x + bounds.x, position.y + bounds.y));
@@ -91,13 +94,22 @@ mod tests {
 
     #[test]
     fn left_drag_orbits_without_special_mouse_buttons() {
-        let bounds = Rectangle { x: 0.0, y: 0.0, width: 250.0, height: 200.0 };
+        let bounds = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 250.0,
+            height: 200.0,
+        };
         let mut nav = Navigation::default();
         let start = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
         let cursor = mouse::Cursor::Available(Point::new(60.0, 80.0));
         assert!(nav.handle(&start, bounds, cursor, false).is_none());
-        let moved = Event::Mouse(mouse::Event::CursorMoved { position: Point::new(80.0, 70.0) });
-        assert!(matches!(nav.handle(&moved, bounds, cursor, false), Some(Gesture::Orbit(dx, dy)) if dx > 0.0 && dy < 0.0));
+        let moved = Event::Mouse(mouse::Event::CursorMoved {
+            position: Point::new(80.0, 70.0),
+        });
+        assert!(
+            matches!(nav.handle(&moved, bounds, cursor, false), Some(Gesture::Orbit(dx, dy)) if dx > 0.0 && dy < 0.0)
+        );
         let release = Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left));
         nav.handle(&release, bounds, cursor, false);
         assert!(nav.handle(&moved, bounds, cursor, false).is_none());
@@ -105,13 +117,27 @@ mod tests {
 
     #[test]
     fn shift_left_and_right_drag_pan() {
-        let bounds = Rectangle { x: 0.0, y: 0.0, width: 250.0, height: 200.0 };
+        let bounds = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 250.0,
+            height: 200.0,
+        };
         let cursor = mouse::Cursor::Available(Point::new(60.0, 80.0));
         for (button, shift) in [(mouse::Button::Left, true), (mouse::Button::Right, false)] {
             let mut nav = Navigation::default();
-            nav.handle(&Event::Mouse(mouse::Event::ButtonPressed(button)), bounds, cursor, shift);
-            let moved = Event::Mouse(mouse::Event::CursorMoved { position: Point::new(80.0, 70.0) });
-            assert!(matches!(nav.handle(&moved, bounds, cursor, shift), Some(Gesture::Pan(x, y)) if x > 0.0 && y > 0.0));
+            nav.handle(
+                &Event::Mouse(mouse::Event::ButtonPressed(button)),
+                bounds,
+                cursor,
+                shift,
+            );
+            let moved = Event::Mouse(mouse::Event::CursorMoved {
+                position: Point::new(80.0, 70.0),
+            });
+            assert!(
+                matches!(nav.handle(&moved, bounds, cursor, shift), Some(Gesture::Pan(x, y)) if x > 0.0 && y > 0.0)
+            );
         }
     }
 
