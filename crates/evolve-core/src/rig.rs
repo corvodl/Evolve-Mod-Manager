@@ -417,7 +417,7 @@ fn add_accessor(
 /// glTF animated nodes require TRS rather than a baked matrix. Decompose only
 /// verified rigid (no shear/mirror/scale) bind-space transforms, or refuse the
 /// animation instead of corrupting bone orientations.
-fn rigid_trs(matrix: &Value) -> Result<([f32; 3], [f32; 4]), RigError> {
+pub(crate) fn rigid_trs(matrix: &Value) -> Result<([f32; 3], [f32; 4]), RigError> {
     let values = matrix
         .as_array()
         .ok_or_else(|| RigError::Invalid("Missing source bone matrix".into()))?;
