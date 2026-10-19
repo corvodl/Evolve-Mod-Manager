@@ -1,7 +1,7 @@
 //! Safe command-line functions shared with the desktop application.
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, Transform, add_mod_to_profile, animation_references,
-    apply_stage_pak, convert_glb_to_fbx, convert_original_motion, create_mod_profile,
+    apply_profile_stage, apply_stage_pak, batch_stage_status, convert_glb_to_fbx, convert_original_motion, create_mod_profile,
     delete_mod_profile, enable_profile_mod, export_dds_png, export_edited_layer,
     export_level_scene_glb, export_model_glb, export_model_obj, export_rigged_character_fbx,
     export_rigged_character_glb, export_terrain_obj, extract_legacy_pak, extract_signed_pak,
@@ -29,6 +29,9 @@ fn usage() -> String {
         "  evolve-cli scan <directory> [inventory.json]",
         "  evolve-cli stage init <new-isolated-stage>",
         "  evolve-cli profile list <stage>",
+        "  evolve-cli profile status <stage>",
+        "  evolve-cli profile recover <stage>",
+        "  evolve-cli profile apply <stage> <profile-id> <original-public.der> <mod-public.der>",
         "  evolve-cli profile create <stage> <name>",
         "  evolve-cli profile delete <stage> <profile-id>",
         "  evolve-cli profile add <stage> <profile-id> <replacement.pak> <Game/name.pak> <original-public.der> <mod-public.der> <basename>",
@@ -144,7 +147,27 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
     if verb == OsStr::new("profile") {
         let action = pop(&mut args)?;
         let stage: PathBuf = pop(&mut args)?.into();
-        if action == OsStr::new("list") {
+        if action == OsStr::new("status") {
+            no_extra(&mut args)?;
+            match batch_stage_status(&stage).map_err(|e| e.to_string())? {
+                Some(tx) => println!("Profile {} has {} PAKs requiring recovery ({})",
+                    tx.profile_id, tx.entries.len(), tx.id),
+                None => println!("No active multi-PAK profile transaction"),
+            }
+        } else if action == OsStr::new("recover") {
+            no_extra(&mut args)?;
+            let tx = restore_profile_stage(&stage).map_err(|e| e.to_string())?;
+            println!("Recovered {} original PAKs from profile {}", tx.entries.len(), tx.profile_id);
+        } else if action == OsStr::new("apply") {
+            let id = pop(&mut args)?.into_string().map_err(|_| usage())?;
+            let original_key: PathBuf = pop(&mut args)?.into();
+            let mod_key: PathBuf = pop(&mut args)?.into();
+            no_extra(&mut args)?;
+            let tx = apply_profile_stage(&stage, &id, &original_key, &mod_key)
+                .map_err(|e| e.to_string())?;
+            println!("Staged {} verified signed PAKs; recovery transaction {}",
+                tx.entries.len(), tx.id);
+        } else if action == OsStr::new("list") {
             no_extra(&mut args)?;
             let catalog = list_mod_profiles(&stage).map_err(|e| e.to_string())?;
             for profile in catalog.profiles {
