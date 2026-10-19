@@ -882,7 +882,7 @@ pub fn export_rigged_character_glb(
 /// Attach a real source DDS diffuse to the already verified rigged GLB,
 /// with the highest decoded DDS mip embedded in the GLB BIN chunk. The
 /// original UV0 accessor and all skeleton/accessor data are untouched.
-fn embed_diffuse_png_glb(source: &[u8], png: &[u8]) -> Result<Vec<u8>, RigError> {
+pub(crate) fn embed_diffuse_png_glb(source: &[u8], png: &[u8]) -> Result<Vec<u8>, RigError> {
     if source.len() < 28 || &source[..4] != b"glTF" || png.is_empty() {
         return Err(RigError::Invalid(
             "Expected a complete rigged GLB and PNG".into(),
