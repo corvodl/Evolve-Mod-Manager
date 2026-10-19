@@ -539,8 +539,10 @@ fn rsa_private_wrap(
     db[79..].copy_from_slice(secret);
     let mut seed = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut seed);
-    for (v, m) in db.iter_mut().zip(mgf1(&seed, db.len())) { *v ^= m; }
-    for (v, m) in seed.iter_mut().zip(mgf1(&db, seed.len())) { *v ^= m; }
+    let db_mask=mgf1(&seed, db.len());
+    for (v, m) in db.iter_mut().zip(db_mask) { *v ^= m; }
+    let seed_mask=mgf1(&db, seed.len());
+    for (v, m) in seed.iter_mut().zip(seed_mask) { *v ^= m; }
     let mut encoded = [0u8; RSA_BYTES];
     encoded[1..33].copy_from_slice(&seed);
     encoded[33..].copy_from_slice(&db);
@@ -716,34 +718,28 @@ pub fn rebuild_signed_pak_entry(
     let mut replacement_file=File::open(replacement)?;
     let mut crc=Hasher::new();
     let mut original_size=0u64;
-    {
-        let mut packed:Box<dyn Write> = if method==14 {
-            Box::new(flate2::write::DeflateEncoder::new(
-                &mut temporary,flate2::Compression::new(9)))
-        }else{
-            Box::new(&mut temporary)
-        };
-        let mut buffer=[0u8;128*1024];
+    let mut buffer=[0u8;128*1024];
+    if method == 14 {
+        let mut encoder=flate2::write::DeflateEncoder::new(
+            &mut temporary,flate2::Compression::new(9));
         loop{
             let n=replacement_file.read(&mut buffer)?;
             if n==0{break;}
             original_size=original_size.checked_add(n as u64).ok_or(SignedPakError::Limits)?;
             if original_size>MAX_ENTRY_BYTES{return Err(SignedPakError::Limits);}
             crc.update(&buffer[..n]);
-            packed.write_all(&buffer[..n])?;
+            encoder.write_all(&buffer[..n])?;
         }
-        packed.flush()?;
-    }
-    // Box<Write> drop may not finalize DEFLATE. Rewind and compress directly
-    // with a concrete encoder in a separate branch to force finish().
-    if method == 14 {
-        temporary.set_len(0)?;
-        temporary.seek(SeekFrom::Start(0))?;
-        replacement_file.seek(SeekFrom::Start(0))?;
-        let mut encoder=flate2::write::DeflateEncoder::new(
-            &mut temporary,flate2::Compression::new(9));
-        io::copy(&mut replacement_file,&mut encoder)?;
         encoder.finish()?;
+    }else{
+        loop{
+            let n=replacement_file.read(&mut buffer)?;
+            if n==0{break;}
+            original_size=original_size.checked_add(n as u64).ok_or(SignedPakError::Limits)?;
+            if original_size>MAX_ENTRY_BYTES{return Err(SignedPakError::Limits);}
+            crc.update(&buffer[..n]);
+            temporary.write_all(&buffer[..n])?;
+        }
     }
     let compressed_size=temporary.seek(SeekFrom::End(0))?;
     if compressed_size>u32::MAX as u64{return Err(SignedPakError::Limits);}
