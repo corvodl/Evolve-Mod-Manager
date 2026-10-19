@@ -100,7 +100,8 @@ fn workspace(root: &Path) -> Result<PathBuf, StageError> {
         return Err(StageError::InvalidWorkspace);
     }
     for folder in ["paks", HISTORY] {
-        if !fs::symlink_metadata(root.join(folder))?.file_type().is_dir() {
+        let ty = fs::symlink_metadata(root.join(folder))?.file_type();
+        if !ty.is_dir() || ty.is_symlink() {
             return Err(StageError::InvalidWorkspace);
         }
     }
