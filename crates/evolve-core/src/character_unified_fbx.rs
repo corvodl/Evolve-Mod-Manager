@@ -1,12 +1,14 @@
 //! Opt-in unified CDF character FBX, using original CryEngine skeleton/weights.
 //! Fail closed on any missing part, UV, mismatched rig or invalid Blender output.
 //! This is geometry/rig unification; full multi-slot materials remain a separate gate.
-use crate::cdf::{AssetResolution, read_cdf, resolve_cdf};
+use crate::cdf::{AssetResolution, read_cdf, resolve_cdf, resolve_virtual};
 use crate::character_assembly::select_attachments;
 use crate::inventory::Inventory;
 use crate::model::read_model;
+use crate::materials::{read_material, resolve_materials};
 use crate::native_caf::read_native_caf;
-use crate::rig::{rigged_glb_bytes, rigged_glb_bytes_with_caf};
+use crate::rig::{embed_diffuse_png_glb, rigged_glb_bytes, rigged_glb_bytes_with_caf};
+use image::ImageEncoder;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashSet;
@@ -27,6 +29,7 @@ pub struct UnifiedCdfFbxReport {
     pub parts: Vec<String>,
     pub bones: usize,
     pub weighted_vertices: usize,
+    pub diffuse_textured_parts: usize,
     pub animations_embedded: bool,
     /// These are not yet a complete set of original per-submaterial textures.
     pub fully_textured: bool,
@@ -92,6 +95,47 @@ fn plan_parts(source: &Path, inventory: &Inventory) -> Result<(PathBuf, String, 
     Ok((skeleton, skeleton_ref, skin_set, parts))
 }
 
+/// Only use one authored diffuse map in an unambiguous single-slot material.
+/// Multiple submaterials and authored overrides are intentionally not guessed.
+fn exact_single_slot_diffuse(
+    root: &Path,
+    mesh_path: &Path,
+    inventory: &Inventory,
+) -> Result<Option<PathBuf>, String> {
+    let material = mesh_path.with_extension("mtl");
+    let rel = material.strip_prefix(root)
+        .map_err(|_| "Material path escaped the original asset root")?;
+    let candidate = rel.to_string_lossy().replace('\\', "/");
+    let found = match resolve_virtual(inventory, &candidate) {
+        AssetResolution::Found(path) => path,
+        AssetResolution::Missing => return Ok(None),
+        AssetResolution::Ambiguous(_) => {
+            return Err(format!("Ambiguous authored CDF material: {candidate}"));
+        }
+    };
+    let document = read_material(&input_file(root, &found)?)
+        .map_err(|e| format!("Invalid authored material {candidate}: {e}"))?;
+    if document.slots.len() != 1 {
+        return Ok(None);
+    }
+    let resolved = resolve_materials(inventory, &document);
+    let diffuse = resolved.textures.iter()
+        .filter(|t| t.role == "diffuse").collect::<Vec<_>>();
+    if diffuse.is_empty() {
+        return Ok(None);
+    }
+    if diffuse.len() != 1 {
+        return Err(format!("Multiple authored diffuse textures in {candidate}"));
+    }
+    match &diffuse[0].resolution {
+        AssetResolution::Found(path) => input_file(root, path).map(Some),
+        AssetResolution::Missing => Ok(None),
+        AssetResolution::Ambiguous(_) => Err(format!(
+            "Ambiguous authored diffuse {} in {candidate}", diffuse[0].authored_path
+        )),
+    }
+}
+
 /// Make ONE armature-bound FBX from original CDF attachments only when every
 /// decoded mesh has verified native skeleton weights and original UV0.
 /// A separate, explicitly selected compatible CAF is opt-in. No automatic
@@ -142,13 +186,14 @@ pub fn export_unified_cdf_fbx(
     let mut bone_count = None;
     let mut vertices = 0usize;
     let mut labels = Vec::new();
+    let mut diffuse_textured_parts = 0usize;
     for (index, (name, original)) in parts.iter().enumerate() {
         let mesh = read_model(original).map_err(|e| format!("CDF part {name}: {e}"))?;
         if mesh.uv0.as_ref().is_none_or(|uv| uv.len() != mesh.positions.len()) {
             return Err(format!("CDF part {name} has no verified original UV0"));
         }
         let raw = fs::read(original).map_err(|e| e.to_string())?;
-        let (glb, verified) = match &motion {
+        let (mut glb, verified) = match &motion {
             Some(clip) => rigged_glb_bytes_with_caf(&mesh, &raw, &skeleton_bytes, clip),
             None => rigged_glb_bytes(&mesh, &raw, &skeleton_bytes),
         }.map_err(|e| format!("CDF part {name} cannot be rigged: {e}"))?;
@@ -158,6 +203,18 @@ pub fn export_unified_cdf_fbx(
         bone_count = Some(verified.bone_count);
         vertices = vertices.checked_add(verified.weighted_vertices)
             .ok_or("Vertex count overflow")?;
+        if let Some(dds_path) = exact_single_slot_diffuse(&root, original, inventory)? {
+            let (_info, rgba) = crate::dds::decode_dds_rgba(&dds_path)
+                .map_err(|e| format!("CDF part {name}: authored DDS decode: {e}"))?;
+            let mut png = Vec::new();
+            image::codecs::png::PngEncoder::new(&mut png)
+                .write_image(
+                    rgba.as_raw(), rgba.width(), rgba.height(),
+                    image::ExtendedColorType::Rgba8,
+                ).map_err(|e| format!("CDF part {name}: PNG encoding: {e}"))?;
+            glb = embed_diffuse_png_glb(&glb, &png).map_err(|e| e.to_string())?;
+            diffuse_textured_parts += 1;
+        }
         let staged = work.path().join(format!("part-{index:03}.glb"));
         fs::write(&staged, &glb).map_err(|e| e.to_string())?;
         entries.push(json!({"name":name,"source":staged}));
@@ -207,6 +264,7 @@ pub fn export_unified_cdf_fbx(
         parts: labels,
         bones: bone_count.unwrap_or(0),
         weighted_vertices: vertices,
+        diffuse_textured_parts,
         animations_embedded: motion.is_some(),
         fully_textured: false,
     })
