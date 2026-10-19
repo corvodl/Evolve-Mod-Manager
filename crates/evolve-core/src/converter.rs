@@ -2,7 +2,7 @@
 //! databases. The external GPL executable is not included in this Rust crate.
 //! Actual decoded glTF tracks are validated before being listed as playable.
 //! No reconstructed/dummy keyframes or cross-character retargeting.
-use crate::animation::{AnimatedGlb, AnimationError, MotionClip};
+use crate::animation::{AnimatedGlb, MotionClip};
 use serde::{Deserialize,Serialize};
 use std::fs::{self};
 use std::path::{Path,PathBuf};

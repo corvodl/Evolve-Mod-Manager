@@ -32,6 +32,7 @@ fn usage() -> String {
         "  evolve-cli cdf inspect <character.cdf> [cdf-info.json]",
         "  evolve-cli anim caf <motion.caf> [caf-info.json]",
         "  evolve-cli anim catalog <character.chrparams> [catalog.json]",
+        "  evolve-cli anim convert <original.caf|original.dba|original.chr> <Cryengine-Converter.exe> <extracted-asset-root> <NEW-output-folder>",
         "  evolve-cli anim clips <animated.glb> [clips.json]",
         "  evolve-cli fbx export <rigged.glb> <Blender.exe> <new.fbx> [--animations]",
         "  evolve-cli signed inspect <original.pak> <public-key.der> <signed-basename> [info.json]",
@@ -224,6 +225,20 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
             );
         } else {
             return Err(usage());
+        }
+        return Ok(());
+    }
+    if verb == OsStr::new("anim") && subcommand == OsStr::new("convert") {
+        let converter: PathBuf = pop(&mut args)?.into();
+        let asset_root: PathBuf = pop(&mut args)?.into();
+        let output: PathBuf = pop(&mut args)?.into();
+        no_extra(&mut args)?;
+        let result=convert_original_motion(&converter,&source,&asset_root,&output)
+            .map_err(|e|e.to_string())?;
+        println!("Verified converter playback for {}: {} animated GLB(s), {} actual clips",
+            result.virtual_source,result.glb_files.len(),result.clips.len());
+        for clip in &result.clips {
+            println!("  {}  •  {:.3}s  •  {} animated channels",clip.name,clip.duration,clip.channels);
         }
         return Ok(());
     }
