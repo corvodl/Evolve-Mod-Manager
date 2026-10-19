@@ -354,12 +354,12 @@ mod tests {
         let character = temp.path().join("characters/kala");
         let animations = character.join("animations/3p");
         std::fs::create_dir_all(&animations).unwrap();
-        let catalog = br#"<Params><AnimationList>
+        let catalog = br##"<Params><AnimationList>
             <Animation name="#filepath" path="characters/kala/animations/3p"/>
             <Animation name="swim_idle" path="swim_idle.caf"/>
             <Animation name="stand_idle_loop" path="stand_idle_loop.caf"/>
             <Animation name="walk_forward" path="walk_forward.caf"/>
-        </AnimationList></Params>"#;
+        </AnimationList></Params>"##;
         std::fs::write(character.join("kala.chrparams"), catalog).unwrap();
         for clip in ["swim_idle.caf", "stand_idle_loop.caf", "walk_forward.caf"] {
             std::fs::write(animations.join(clip), b"fixture").unwrap();
