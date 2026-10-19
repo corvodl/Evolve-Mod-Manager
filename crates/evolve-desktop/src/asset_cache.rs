@@ -32,7 +32,10 @@ pub struct PreviewCache {
 }
 impl Default for PreviewCache {
     fn default() -> Self {
-        Self { entries: VecDeque::new(), bytes: 0 }
+        Self {
+            entries: VecDeque::new(),
+            bytes: 0,
+        }
     }
 }
 pub type SharedCache = Arc<Mutex<PreviewCache>>;
@@ -61,28 +64,33 @@ impl PreviewCache {
         if bytes > LIMIT_BYTES {
             return;
         }
-        if let Some(index) = self.entries.iter().position(|entry| entry.key.canonical == key.canonical)
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|entry| entry.key.canonical == key.canonical)
             && let Some(old) = self.entries.remove(index)
         {
             self.bytes = self.bytes.saturating_sub(old.bytes);
         }
-        while !self.entries.is_empty() &&
-            (self.bytes.saturating_add(bytes) > LIMIT_BYTES || self.entries.len() >= MAX_ENTRIES)
+        while !self.entries.is_empty()
+            && (self.bytes.saturating_add(bytes) > LIMIT_BYTES || self.entries.len() >= MAX_ENTRIES)
         {
             if let Some(old) = self.entries.pop_back() {
                 self.bytes = self.bytes.saturating_sub(old.bytes);
             }
         }
         self.bytes += bytes;
-        self.entries.push_front(CachedImage { key, info, image, bytes });
+        self.entries.push_front(CachedImage {
+            key,
+            info,
+            image,
+            bytes,
+        });
     }
 }
 /// Reuse verified decoded pixels without blocking the UI. A changed source
 /// invalidates a cached entry; only current decoded pixels remain in memory.
-pub fn decoded_dds(
-    cache: &SharedCache,
-    path: &Path,
-) -> Result<(DdsInfo, Arc<RgbaImage>), String> {
+pub fn decoded_dds(cache: &SharedCache, path: &Path) -> Result<(DdsInfo, Arc<RgbaImage>), String> {
     let before = key(path)?;
     if let Ok(mut cache) = cache.lock() {
         if let Some(found) = cache.lookup(&before) {
@@ -110,8 +118,13 @@ mod tests {
         fs::write(&source, b"original").unwrap();
         let original_key = key(&source).unwrap();
         let info = DdsInfo {
-            schema: 1, width: 2, height: 2, mipmaps: 1,
-            format: DdsFormat::Rgba32, streaming_parts: 1, top_mip_bytes: 16,
+            schema: 1,
+            width: 2,
+            height: 2,
+            mipmaps: 1,
+            format: DdsFormat::Rgba32,
+            streaming_parts: 1,
+            top_mip_bytes: 16,
         };
         let image = Arc::new(RgbaImage::new(2, 2));
         let mut cache = PreviewCache::default();
