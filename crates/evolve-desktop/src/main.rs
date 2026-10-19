@@ -140,6 +140,7 @@ struct State {
     material_report: Option<MaterialReport>,
     auto_clips: Vec<auto_resources::AutoClip>,
     auto_resource_note: String,
+    auto_clip_filter: String,
     auto_idle_pending: Option<PathBuf>,
     auto_material_pending: bool,
     caf_path: String,
@@ -805,6 +806,7 @@ enum Message {
     ViewerToggleFolder(String),
     ViewerPreviewSelected,
     ViewerAutoClip(usize),
+    ViewerAutoClipFilter(String),
     ViewerPreviewStaticCdf,
     ViewerOpenStaticCdf(usize),
     StartDependencyInspection,
@@ -1844,6 +1846,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 "Validating exact CDF parts for a static preview (not a rigged export)...".into();
             return launch(state, Operation::BuildStaticCdf(source, inventory.clone()));
         }
+        Message::ViewerAutoClipFilter(value) => state.auto_clip_filter = value,
         Message::ViewerAutoClip(index) => {
             let Some(clip) = state.auto_clips.get(index) else {
                 return Task::none();
@@ -3181,6 +3184,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                     state.model = Some(Arc::new(mesh));
                     state.auto_clips.clear();
+                    state.auto_clip_filter.clear();
                     state.auto_idle_pending = None;
                     state.auto_material_pending = false;
                     state.skeleton_path.clear();
