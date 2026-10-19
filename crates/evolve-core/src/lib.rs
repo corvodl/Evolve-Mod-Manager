@@ -34,10 +34,12 @@ pub use archive::{
     rebuild_legacy_pak,
 };
 pub use asset_compare::{AssetComparison, AssetFingerprint, CompareError, compare_assets};
-pub use character_assembly::{AssemblyError, AssemblyReport, combine_source_meshes, read_static_cdf_assembly};
 pub use cdf::{
     AssetResolution, CdfAttachment, CdfDefinition, CdfDependencyReport, CdfError, parse_cdf,
     read_cdf, resolve_cdf, resolve_virtual,
+};
+pub use character_assembly::{
+    AssemblyError, AssemblyReport, combine_source_meshes, read_static_cdf_assembly,
 };
 pub use converter::{ConvertedMotion, ConverterError, convert_original_motion};
 pub use dds::{DdsError, DdsFormat, DdsInfo, decode_dds_rgba, export_dds_png, inspect_dds};
