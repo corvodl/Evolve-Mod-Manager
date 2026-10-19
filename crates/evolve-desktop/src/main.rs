@@ -11,6 +11,7 @@ mod level_workspace;
 mod modding_keys;
 mod modding_page;
 mod modding_projects;
+mod orientation_gizmo;
 mod private_pages;
 mod selection;
 mod settings;
