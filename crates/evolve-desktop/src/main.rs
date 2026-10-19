@@ -2,6 +2,7 @@
 //! file I/O/decompression never runs in the interactive Iced view/update path.
 mod textured;
 mod viewport;
+mod settings;
 use evolve_core::{
     AnimatedGlb, AssetEntry, CdfDefinition, ConvertedMotion, DdsInfo, Inventory, LevelScene,
     ModelInfo, NativeCafMotion, PakInventory, RenderMesh, RigReport, SignedPakInfo, TerrainInfo,
