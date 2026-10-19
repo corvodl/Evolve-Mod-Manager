@@ -10,6 +10,7 @@ pub mod fbx;
 pub mod glb;
 pub mod inventory;
 pub mod level_export;
+pub mod library_catalog;
 pub mod materials;
 pub mod model;
 pub mod native_caf;
@@ -42,6 +43,10 @@ pub use inventory::{
     write_inventory_json,
 };
 pub use level_export::{LevelExportError, LevelExportReport, export_level_scene_glb};
+pub use library_catalog::{
+    ImportedLibrary, ImportedPak, LibraryError, describe_archive, imported_archive_files,
+    imported_library,
+};
 pub use model::{
     ModelError, ModelInfo, RenderMesh, export_model_obj, parse_model_bytes, read_model,
 };
