@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 const MAX_PROJECTS: usize = 4096;
 const MAX_DIRECTORIES: usize = 32768;
-const MAX_ENTRIES: usize = 25000;
+const MAX_ENTRIES: usize = 60000;
 const MAX_HASHED_PER_WORKSPACE: u64 = 256 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
@@ -70,7 +70,7 @@ fn inspect_project(folder: &Path, stage: &Path, label: String, source_build: Str
         changed_known: false,
     };
     let read = || -> Result<(String, Vec<String>, bool), String> {
-        let manifest = read_json(&folder.join(".evolve-pak-workspace.json"), 8 * 1024 * 1024)?;
+        let manifest = read_json(&folder.join(".evolve-pak-workspace.json"), 32 * 1024 * 1024)?;
         if manifest.get("version").and_then(Value::as_u64) != Some(1)
             || manifest.get("reference_only").and_then(Value::as_bool) == Some(true)
         {
@@ -284,6 +284,85 @@ pub fn discover_projects(root: &Path, stage: &Path) -> Result<Vec<ProjectRow>, S
             .cmp(&b.label.to_ascii_lowercase())
     });
     Ok(projects)
+}
+
+/// Extract a selected, verified staged CryPAK into a NEW private-style project.
+/// Source files are untouched. The manifest labels decoded bytes as raw; it
+/// deliberately does not mislabel CryXmlB as a converted editable XML file.
+pub fn unpack_raw_project(
+    projects: &Path,
+    stage: &Path,
+    source: &Path,
+) -> Result<(PathBuf, usize), String> {
+    let target = super::modding_keys::staged_target(stage, source)?;
+    let basename = super::modding_keys::signed_basename(source)?;
+    let public = super::modding_keys::public_key(stage)?;
+    if !fs::symlink_metadata(projects).is_ok_and(|meta| meta.file_type().is_dir()) {
+        return Err("Configure a real Projects directory before extracting".into());
+    }
+    let canonical_projects = fs::canonicalize(projects).map_err(|e| e.to_string())?;
+    let before = digest(source).map_err(|e| e.to_string())?;
+    let safe_stem: String = basename.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .take(90).collect();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?.as_nanos();
+    let output = canonical_projects.join(format!("{}_raw_{stamp:x}", safe_stem));
+    fs::create_dir(&output).map_err(|e| e.to_string())?;
+    let sentinel = output.join(".EXTRACTION-INCOMPLETE.txt");
+    fs::write(&sentinel, b"Extraction is incomplete; do not build from this project.\n")
+        .map_err(|e| e.to_string())?;
+    // The core's signed extractor uses an atomic temporary directory. It
+    // refuses to merge results with pre-existing assets or follow bad paths.
+    let info = evolve_core::extract_signed_pak(
+        source, &public, &basename, &output.join("files"),
+    ).map_err(|e| e.to_string())?;
+    if info.entries.len() > 60_000 {
+        return Err("Project exceeds supported manifest entry limit".into());
+    }
+    let mut records = Vec::with_capacity(info.entries.len());
+    for entry in &info.entries {
+        if !safe_member(&entry.path) {
+            return Err("Invalid extracted archive virtual path".into());
+        }
+        let asset = output.join("files").join(&entry.path);
+        if !fs::symlink_metadata(&asset).is_ok_and(|m| m.file_type().is_file()) {
+            return Err("An extracted archive member is missing".into());
+        }
+        records.push(serde_json::json!({
+            "path":entry.path,
+            "archive_name":entry.path,
+            "format":"raw",
+            "sha256":digest(&asset).map_err(|e| e.to_string())?,
+            "original_sha256":digest(&asset).map_err(|e| e.to_string())?,
+            "method":entry.method
+        }));
+    }
+    if before != digest(source).map_err(|e| e.to_string())? {
+        return Err("Original staged PAK changed during extraction".into());
+    }
+    let manifest = serde_json::json!({
+        "version":1,
+        "source_pak":fs::canonicalize(source).map_err(|e| e.to_string())?,
+        "source_sha256":before,
+        "signed_basename":basename,
+        "public_key_sha256":digest(&public).map_err(|e| e.to_string())?,
+        "archive_entry_count":info.entries.len(),
+        "entries":records,
+        "extraction_mode":"raw"
+    });
+    let mut writer = fs::OpenOptions::new().write(true).create_new(true)
+        .open(output.join(".evolve-pak-workspace.json"))
+        .map_err(|e| e.to_string())?;
+    use std::io::Write;
+    serde_json::to_writer_pretty(&mut writer, &manifest).map_err(|e| e.to_string())?;
+    writer.sync_all().map_err(|e| e.to_string())?;
+    fs::remove_file(sentinel).map_err(|e| e.to_string())?;
+    // raw-mode workspaces are verified by build_single_raw; they are not
+    // incorrectly offered as CryXmlB-converted projects.
+    let _ = target;
+    Ok((output, info.entries.len()))
 }
 
 /// Build a single changed *raw* member only. CryXmlB needs a validated
