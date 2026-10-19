@@ -278,11 +278,12 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         button("›").on_press_maybe((state.library_page + 1 < pages).then_some(Message::LibraryNextPage)),
     ].spacing(10).align_y(iced::Center));
     layout = layout.push(row![
+        text(format!("{} selected", state.library_selection.indices.len())).size(12).color(MUTED),
         button("Preview Files").on_press_maybe(selected.map(|_| Message::LibraryPreview)),
         button("Edit / Add to Mod Project")
             .on_press_maybe(selected.map(|_| Message::LibraryMakeModProject)),
         text(if selected.is_some() {
-            "Shift: range • Ctrl: toggle. A project copy requires an exact verified staged PAK; the Library remains read-only."
+            "Shift: range (including across pages) • Ctrl: toggle. Editing requires an exact staged PAK; the Library remains read-only."
         } else {
             "Select an imported archive to preview its extracted files."
         }).size(12).color(MUTED),
