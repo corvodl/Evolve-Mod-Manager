@@ -227,6 +227,7 @@ enum ViewerTab {
 #[derive(Debug, Clone)]
 enum Operation {
     IndexProjects(PathBuf, PathBuf),
+    BuildRawProject(ProjectRow, PathBuf, PathBuf),
     LoadImportedLibrary(PathBuf),
     OpenImportedPak(ImportedPak),
     InspectDependencies(Inventory, String),
@@ -335,6 +336,9 @@ impl Operation {
             Self::IndexProjects(root, stage) => {
                 discover_projects(&root, &stage).map(Completed::Projects)
             }
+            Self::BuildRawProject(project, projects, stage) =>
+                modding_projects::build_single_raw(&project, &projects, &stage)
+                    .map(|(entry, target)| Completed::RebuiltSigned(entry, target)),
             Self::InspectDependencies(inventory, relative) => {
                 inspect_dependencies(&inventory, &relative)
                     .map(Completed::Dependencies)
@@ -957,7 +961,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::ModdingBuild => {
-            state.status = "Full-project signed builds are not available in the Rust preview yet. Source metadata, file conversions and all modified entries must be verified before building; existing Qt projects remain unchanged.".into();
+            let Some(project) = state.modding_selected.and_then(|i|
+                state.modding_projects.as_ref().and_then(|projects| projects.get(i))
+            ) else {
+                state.status = "Select a verified editable project first.".into();
+                return Task::none();
+            };
+            if !project.changed_known || project.modified.len() != 1 {
+                state.status = "The Rust builder currently supports exactly one changed raw member per project. Multi-entry and CryXmlB rebuilds still require the Qt manager.".into();
+                return Task::none();
+            }
+            return launch(state, Operation::BuildRawProject(
+                project.clone(),
+                PathBuf::from(&state.preferences.projects),
+                PathBuf::from(&state.preferences.stage),
+            ));
         }
         Message::ModdingUnpackPak => {
             let source = PathBuf::from(&state.input);
