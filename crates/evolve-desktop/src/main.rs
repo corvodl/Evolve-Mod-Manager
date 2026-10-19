@@ -1962,7 +1962,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.preferences.saved_pitch = state.pitch;
             state.preferences.saved_zoom = state.zoom;
             persist_preferences(state);
-            state.status = "Viewer split, explorer visibility, camera and animation speed saved.".into();
+            state.status =
+                "Viewer split, explorer visibility, camera and animation speed saved.".into();
         }
         Message::CompareOriginalChanged(path) => {
             state.compare_original = path;
