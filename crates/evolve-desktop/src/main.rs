@@ -7,8 +7,8 @@ mod level_workspace;
 mod private_pages;
 mod settings;
 mod textured;
-mod uv_preview;
 mod updater;
+mod uv_preview;
 mod viewer_inspector;
 mod viewport;
 use evolve_core::{
@@ -735,22 +735,29 @@ fn refresh_library_matches(state: &mut State) {
         return;
     };
     let needle = state.library_search.to_ascii_lowercase();
-    let build = state.library_by_build
-        .then(|| catalog.builds.get(state.library_build_index)).flatten();
-    state.library_matches = catalog.archives.iter().enumerate().filter_map(|(i, entry)| {
-        if state.library_by_build &&
-            !build.is_some_and(|label| entry.builds.contains(label)) {
-            return None;
-        }
-        if !needle.is_empty() && !entry.name.to_ascii_lowercase().contains(&needle)
-            && !entry.description.to_ascii_lowercase().contains(&needle)
-            && !entry.group.to_ascii_lowercase().contains(&needle)
-            && !entry.source.to_ascii_lowercase().contains(&needle)
-        {
-            return None;
-        }
-        Some(i)
-    }).collect();
+    let build = state
+        .library_by_build
+        .then(|| catalog.builds.get(state.library_build_index))
+        .flatten();
+    state.library_matches = catalog
+        .archives
+        .iter()
+        .enumerate()
+        .filter_map(|(i, entry)| {
+            if state.library_by_build && !build.is_some_and(|label| entry.builds.contains(label)) {
+                return None;
+            }
+            if !needle.is_empty()
+                && !entry.name.to_ascii_lowercase().contains(&needle)
+                && !entry.description.to_ascii_lowercase().contains(&needle)
+                && !entry.group.to_ascii_lowercase().contains(&needle)
+                && !entry.source.to_ascii_lowercase().contains(&needle)
+            {
+                return None;
+            }
+            Some(i)
+        })
+        .collect();
 }
 
 fn update(state: &mut State, message: Message) -> Task<Message> {
@@ -914,7 +921,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::PlaybackLoopChanged => state.playback_loop = !state.playback_loop,
         Message::ViewerToggleWireframe => state.viewer_wireframe = !state.viewer_wireframe,
         Message::LevelSelect(index) => {
-            if state.level_scene.as_ref()
+            if state
+                .level_scene
+                .as_ref()
                 .is_some_and(|scene| index < scene.objects.len())
             {
                 state.level_selected = Some(index);
