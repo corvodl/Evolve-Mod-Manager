@@ -18,19 +18,18 @@ impl MultiSelection {
         let Some(end) = visible.iter().position(|&index| index == clicked) else {
             return;
         };
-        if shift {
-            if let Some(begin) = self
+        if shift
+            && let Some(begin) = self
                 .anchor
                 .and_then(|anchor| visible.iter().position(|&index| index == anchor))
-            {
-                if !ctrl {
-                    self.indices.clear();
-                }
-                for &index in &visible[begin.min(end)..=begin.max(end)] {
-                    self.indices.insert(index);
-                }
-                return;
+        {
+            if !ctrl {
+                self.indices.clear();
             }
+            for &index in &visible[begin.min(end)..=begin.max(end)] {
+                self.indices.insert(index);
+            }
+            return;
         }
         if ctrl {
             if !self.indices.insert(clicked) {
@@ -51,12 +50,7 @@ impl MultiSelection {
         }
     }
 
-    pub fn retain_visible(&mut self, exists: impl Fn(usize) -> bool) {
-        self.indices.retain(|i| exists(*i));
-        if self.anchor.is_some_and(|i| !exists(i)) {
-            self.anchor = None;
-        }
-    }
+
 }
 
 #[cfg(test)]
