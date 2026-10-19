@@ -1,8 +1,8 @@
 //! Native wgpu-backed desktop shell. Asset operations use blocking workers, so
 //! file I/O/decompression never runs in the interactive Iced view/update path.
 use evolve_core::{
-    AssetEntry, DdsInfo, Inventory, PakInventory, export_dds_png,
-    extract_legacy_pak, inspect_dds, inspect_legacy_pak, scan_directory,
+    AssetEntry, CdfDefinition, DdsInfo, Inventory, PakInventory, export_dds_png,
+    extract_legacy_pak, inspect_dds, inspect_legacy_pak, read_cdf, scan_directory,
 };
 use iced::widget::{button, column, container, row, scrollable, text, text_input};
 use iced::{Element, Fill, Task, Theme};
@@ -45,6 +45,7 @@ struct State {
     inventory: Option<Inventory>,
     pak: Option<PakInventory>,
     texture: Option<DdsInfo>,
+    character: Option<CdfDefinition>,
     selected: Option<usize>,
     status: String,
     busy: bool,
@@ -55,6 +56,7 @@ enum Operation {
     Scan(PathBuf),
     InspectPak(PathBuf),
     InspectDds(PathBuf),
+    InspectCdf(PathBuf),
     ExtractPak(PathBuf, PathBuf),
     ExportPng(PathBuf, PathBuf),
 }
@@ -64,6 +66,7 @@ enum Completed {
     Inventory(Inventory),
     Pak(PakInventory),
     Texture(DdsInfo),
+    Character(CdfDefinition),
     Extracted(usize, PathBuf),
     ExportedPng(DdsInfo, PathBuf),
 }
@@ -77,6 +80,8 @@ impl Operation {
                 .map(Completed::Pak).map_err(|e| e.to_string()),
             Self::InspectDds(source) => inspect_dds(&source)
                 .map(Completed::Texture).map_err(|e| e.to_string()),
+            Self::InspectCdf(source) => read_cdf(&source)
+                .map(Completed::Character).map_err(|e| e.to_string()),
             Self::ExtractPak(source, dest) => extract_legacy_pak(&source, &dest)
                 .map(|pak| Completed::Extracted(pak.entries.len(), dest))
                 .map_err(|e| e.to_string()),
@@ -96,6 +101,7 @@ enum Message {
     StartScan,
     StartPakInspection,
     StartDdsInspection,
+    StartCdfInspection,
     StartExtract,
     StartPngExport,
     Finished(Result<Completed, String>),
@@ -136,6 +142,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::StartDdsInspection => {
             let source = PathBuf::from(&state.input);
             return launch(state, Operation::InspectDds(source));
+        }
+        Message::StartCdfInspection => {
+            let source = PathBuf::from(&state.input);
+            return launch(state, Operation::InspectCdf(source));
         }
         Message::StartExtract => {
             if state.output.trim().is_empty() {
@@ -185,6 +195,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         texture.format, texture.mipmaps, texture.streaming_parts
                     );
                     state.texture = Some(texture);
+                    state.page = Some(Page::Models);
+                }
+                Ok(Completed::Character(character)) => {
+                    state.status = format!(
+                        "CDF: {} | {} validated skin/CHR attachment(s)",
+                        character.skeleton, character.attachments.len()
+                    );
+                    state.character = Some(character);
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::Extracted(count, folder)) => {
@@ -237,6 +255,7 @@ fn view(state: &State) -> Element<'_, Message> {
         row![
             button("Inspect ZIP PAK").on_press(Message::StartPakInspection),
             button("Inspect DDS").on_press(Message::StartDdsInspection),
+            button("Inspect CDF").on_press(Message::StartCdfInspection),
         ].spacing(8),
         row![
             text_input("New output directory or .png filename...", &state.output)
@@ -307,6 +326,12 @@ fn view(state: &State) -> Element<'_, Message> {
                 text("Texture inspection and original top-mip export").size(19),
                 text(description),
                 text("PNG export preserves BC5 channels without pretending to reconstruct normal-map shading."),
+                text(if let Some(character) = &state.character {
+                    format!("CDF skeleton: {} | {} real skin/CHR attachment(s).",
+                        character.skeleton, character.attachments.len())
+                } else {
+                    "CDF: select a local character definition and choose Inspect CDF.".to_owned()
+                }),
                 text("GPU character viewer, skeletal animation preview and complete FBX conversion remain unported."),
             ].spacing(14).into()
         }
