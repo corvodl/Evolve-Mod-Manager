@@ -2,12 +2,12 @@
 //! Only explicit CryEngine CDF and MTL references produce edges. No guessed
 //! basename matches or fabricated bone/animation relationships are emitted.
 use crate::{
-    AssetKind, AssetResolution, Inventory, MaterialDocument, classify_path, parse_cdf,
+    AssetKind, AssetResolution, Inventory, MaterialDocument, parse_cdf,
     parse_material, resolve_virtual,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 const MAX_INPUT: u64 = 5 * 1024 * 1024;
 const MAX_NODES: usize = 1024;
