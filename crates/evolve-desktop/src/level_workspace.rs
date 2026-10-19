@@ -213,7 +213,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             ]
             .spacing(12),
             canvas_widget(SceneOverview {
-                scene: Arc::new(scene.clone()),
+                scene: scene.clone(),
                 selected: state.level_selected,
                 zoom: state.level_zoom.max(0.3),
             })
