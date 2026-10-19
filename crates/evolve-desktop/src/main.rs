@@ -24,13 +24,14 @@ mod viewport;
 use asset_cache::{SharedCache, decoded_dds};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
-    CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph, FlatCdfFbxReport, ImportedLibrary,
-    ImportedPak, Inventory, LevelScene, LibraryImportReport, LibraryReferenceStatus,
-    MaterialReport, ModProfile, ModelInfo, NativeCafMotion, PakInventory, ProfileCatalog,
-    ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo, StageTransaction, TerrainInfo,
-    add_mod_to_profile, apply_profile_stage, apply_stage_pak, batch_stage_status, compare_assets,
-    convert_glb_to_fbx, convert_original_motion, create_mod_profile, decode_dds_rgba,
-    export_dds_png, export_flat_cdf_parts_fbx, export_level_scene_glb, export_rigged_character_fbx_textured_animated,
+    CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph,
+    FlatCdfFbxReport, ImportedLibrary, ImportedPak, Inventory, LevelScene, LibraryImportReport,
+    LibraryReferenceStatus, MaterialReport, ModProfile, ModelInfo, NativeCafMotion, PakInventory,
+    ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo,
+    StageTransaction, TerrainInfo, add_mod_to_profile, apply_profile_stage, apply_stage_pak,
+    batch_stage_status, compare_assets, convert_glb_to_fbx, convert_original_motion,
+    create_mod_profile, decode_dds_rgba, export_dds_png, export_flat_cdf_parts_fbx,
+    export_level_scene_glb, export_rigged_character_fbx_textured_animated,
     export_rigged_character_glb, extract_legacy_pak, extract_signed_pak, import_signed_library_pak,
     import_stage_pak, imported_archive_files, imported_library, initialize_stage, inspect_dds,
     inspect_dependencies, inspect_legacy_pak, inspect_signed_pak, list_mod_profiles,
@@ -461,7 +462,11 @@ impl Operation {
             }
             Self::FlatCdfFbx(source, inventory, blender, destination, caf) => {
                 let report = export_flat_cdf_parts_fbx(
-                    &source, &inventory, &blender, &destination, caf.as_deref(),
+                    &source,
+                    &inventory,
+                    &blender,
+                    &destination,
+                    caf.as_deref(),
                 )?;
                 Ok(Completed::FlatCdfFbxExport(report, destination))
             }
@@ -2611,7 +2616,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 || state.blender_path.trim().is_empty()
                 || state.output.trim().is_empty()
             {
-                state.status = "Choose a CDF, installed Blender executable and NEW flat export folder.".into();
+                state.status =
+                    "Choose a CDF, installed Blender executable and NEW flat export folder.".into();
                 return Task::none();
             }
             return launch(
