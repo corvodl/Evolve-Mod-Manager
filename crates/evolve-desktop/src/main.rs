@@ -1035,6 +1035,23 @@ fn file_row<'a>(index: usize, entry: &'a AssetEntry) -> Element<'a, Message> {
     .into()
 }
 
+fn download_action(state: &State) -> Element<'_, Message> {
+    if let Some(update) = &state.available_update {
+        button(text(format!("Download verified {} installer",update.version)))
+            .on_press(Message::DownloadUpdate).into()
+    } else {
+        text("Stable updates appear after the public release is published.").into()
+    }
+}
+fn run_installer_action(state: &State) -> Element<'_, Message> {
+    if state.staged_installer.is_some() {
+        button("Run verified installer (requires approval)")
+            .on_press(Message::RunVerifiedInstaller).into()
+    } else {
+        text("No installer staged. The game and its PAKs are never modified by update checks.").into()
+    }
+}
+
 fn view(state: &State) -> Element<'_, Message> {
     let page = state.page.unwrap_or(Page::Home);
     // Preserve the original compact icon-only sidebar and hover labels.
@@ -1379,17 +1396,8 @@ fn view(state: &State) -> Element<'_, Message> {
             text(format!("Installed version: {}. Downloads require a verified public release.",env!("CARGO_PKG_VERSION"))),
             button("Check for Updates").on_press(Message::CheckUpdates),
             text(state.update_status.as_str()),
-            if let Some(update) = &state.available_update {
-                button(text(format!("Download verified {} installer",update.version)))
-                    .on_press(Message::DownloadUpdate).into()
-            } else {
-                text("Stable updates appear after the public release is published.").into()
-            },
-            if state.staged_installer.is_some() {
-                button("Run verified installer (requires approval)").on_press(Message::RunVerifiedInstaller).into()
-            } else {
-                text("No installer staged. The game and its PAKs are never modified by update checks.").into()
-            },
+            download_action(state),
+            run_installer_action(state),
             button(text(format!("Experimental update channel: {}", if state.preferences.experimental_updates {"Enabled"} else {"Disabled"})))
                 .on_press(Message::PreferenceExperimental),
             button(text(format!("Automatic update checks: {}", if state.preferences.automatic_update_checks {"Enabled"} else {"Disabled"})))
