@@ -1,21 +1,23 @@
 //! Native wgpu-backed desktop shell. Asset operations use blocking workers, so
 //! file I/O/decompression never runs in the interactive Iced view/update path.
 mod viewport;
+mod textured;
 use evolve_core::{
     AssetEntry, CdfDefinition, DdsInfo, Inventory, LevelScene, ModelInfo, PakInventory, RenderMesh,
     SignedPakInfo, TerrainInfo, export_dds_png, export_level_scene_glb, extract_legacy_pak,
     extract_signed_pak, inspect_dds, inspect_legacy_pak, inspect_signed_pak, load_level_scene,
     read_cdf, read_model, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry,
-    scan_directory,
+    decode_dds_rgba, scan_directory,
 };
 use iced::widget::{
-    button, canvas, column, container, image, row, scrollable, slider, svg, text, text_input,
+    button, canvas, column, container, image, row, scrollable, shader, slider, svg, text, text_input,
     tooltip,
 };
 use iced::{Element, Fill, Length, Task, Theme};
 use std::path::PathBuf;
 use std::sync::Arc;
 use viewport::MeshViewport;
+use textured::Scene as TexturedScene;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Page {
@@ -72,6 +74,9 @@ struct State {
     signing_public: String,
     signed_entry: String,
     signed_replacement: String,
+    diffuse_input: String,
+    diffuse: Option<Arc<image::RgbaImage>>,
+    diffuse_status: String,
     assets_root: String,
     terrain_source: String,
     yaw: f32,
@@ -96,6 +101,7 @@ enum Operation {
     Scan(PathBuf),
     InspectPak(PathBuf),
     InspectDds(PathBuf),
+    LoadDiffuse(PathBuf),
     InspectCdf(PathBuf),
     InspectModel(PathBuf),
     InspectLevel(PathBuf),
@@ -123,6 +129,7 @@ enum Completed {
     Inventory(Inventory),
     Pak(PakInventory),
     Texture(DdsInfo),
+    Diffuse(DdsInfo,image::RgbaImage),
     Character(CdfDefinition),
     Model(RenderMesh),
     Level(LevelScene),
@@ -145,6 +152,8 @@ impl Operation {
             Self::InspectPak(source) => inspect_legacy_pak(&source)
                 .map(Completed::Pak)
                 .map_err(|e| e.to_string()),
+            Self::LoadDiffuse(source) => decode_dds_rgba(&source)
+                .map(|(info,image)|Completed::Diffuse(info,image)).map_err(|e|e.to_string()),
             Self::InspectDds(source) => inspect_dds(&source)
                 .map(Completed::Texture)
                 .map_err(|e| e.to_string()),
@@ -244,6 +253,7 @@ enum Message {
     SigningPublicChanged(String),
     SignedMemberChanged(String),
     SignedReplacementChanged(String),
+    DiffuseInputChanged(String),
     AssetsRootChanged(String),
     TerrainSourceChanged(String),
     YawChanged(f32),
@@ -253,6 +263,7 @@ enum Message {
     StartScan,
     StartPakInspection,
     StartDdsInspection,
+    StartDiffuseLoad,
     StartCdfInspection,
     StartModelInspection,
     StartLevelInspection,
@@ -296,6 +307,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::SigningPublicChanged(value) => state.signing_public = value,
         Message::SignedMemberChanged(value) => state.signed_entry = value,
         Message::SignedReplacementChanged(value) => state.signed_replacement = value,
+        Message::DiffuseInputChanged(value) => state.diffuse_input = value,
         Message::AssetsRootChanged(value) => state.assets_root = value,
         Message::TerrainSourceChanged(value) => state.terrain_source = value,
         Message::YawChanged(value) => state.yaw = value,
@@ -310,6 +322,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::StartPakInspection => {
             let source = PathBuf::from(&state.input);
             return launch(state, Operation::InspectPak(source));
+        }
+        Message::StartDiffuseLoad => {
+            if state.diffuse_input.trim().is_empty(){
+                state.status="Select an exact original DDS diffuse texture or split-stream set.".into();
+                return Task::none();
+            }
+            return launch(state, Operation::LoadDiffuse(PathBuf::from(&state.diffuse_input)));
         }
         Message::StartDdsInspection => {
             let source = PathBuf::from(&state.input);
@@ -464,6 +483,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.pak = Some(pak);
                     state.selected = None;
                     state.page = Some(Page::Files);
+                }
+                Ok(Completed::Diffuse(info,pixels)) => {
+                    state.diffuse_status=format!("GPU diffuse loaded: {} × {} highest-resolution pixels ({:?}).",
+                        info.width,info.height,info.format);
+                    state.status=state.diffuse_status.clone();
+                    state.diffuse=Some(Arc::new(pixels));
+                    state.page=Some(Page::Models);
                 }
                 Ok(Completed::Texture(texture)) => {
                     state.status = format!(
@@ -769,12 +795,25 @@ fn view(state: &State) -> Element<'_, Message> {
                 } else {
                     "CDF: select a local character definition and choose Inspect CDF.".to_owned()
                 }),
-                text("Wireframe views display validated source triangle geometry using Iced's GPU compositing. Skeletal skinning and full materials are not yet ported."),
+                text("GPU viewer draws real triangles and samples verified DDS diffuse with original UV0. Automatic material matching and skeletal skinning remain gated."),
+                row![
+                    text_input("Exact DDS diffuse (.dds or .dds.0) path...",&state.diffuse_input)
+                        .on_input(Message::DiffuseInputChanged).width(Fill),
+                    button("Load GPU diffuse").on_press(Message::StartDiffuseLoad),
+                ].spacing(8),
+                text(state.diffuse_status.as_str()),
                 if let Some(mesh)=&state.model {
-                    let canvas:Element<'_,Message> = canvas(MeshViewport{
-                        mesh:mesh.clone(), yaw:state.yaw, pitch:state.pitch, zoom:state.zoom,
-                    }).width(Fill).height(Length::Fixed(400.)).into();
-                    canvas
+                    let display:Element<'_,Message> = if mesh.uv0.is_some(){
+                        shader(&TexturedScene{
+                            mesh:mesh.clone(),diffuse:state.diffuse.clone(),
+                            yaw:state.yaw,pitch:state.pitch,zoom:state.zoom,
+                        }).width(Fill).height(Length::Fixed(400.)).into()
+                    }else{
+                        canvas(MeshViewport{
+                            mesh:mesh.clone(),yaw:state.yaw,pitch:state.pitch,zoom:state.zoom,
+                        }).width(Fill).height(Length::Fixed(400.)).into()
+                    };
+                    display
                 } else {
                     text("Select a source .cgf/.chr/.skin file and click Inspect 3D model.").into()
                 },
@@ -807,12 +846,19 @@ fn view(state: &State) -> Element<'_, Message> {
                     scene.objects.len(),scene.diagnostics.len())
             }else{"No placement source inspected.".into()}),
             if let Some(mesh)=&state.model {
-                let viewport: Element<'_, Message> = canvas(MeshViewport{
-                    mesh:mesh.clone(), yaw:state.yaw, pitch:state.pitch, zoom:state.zoom.max(0.2),
-                }).width(Fill).height(Length::Fixed(400.)).into();
-                viewport
+                let display:Element<'_,Message> = if mesh.uv0.is_some(){
+                    shader(&TexturedScene{
+                        mesh:mesh.clone(),diffuse:state.diffuse.clone(),
+                        yaw:state.yaw,pitch:state.pitch,zoom:state.zoom.max(0.2),
+                    }).width(Fill).height(Length::Fixed(400.)).into()
+                }else{
+                    canvas(MeshViewport{
+                        mesh:mesh.clone(),yaw:state.yaw,pitch:state.pitch,zoom:state.zoom.max(0.2),
+                    }).width(Fill).height(Length::Fixed(400.)).into()
+                };
+                display
             }else{
-                let fallback: Element<'_, Message> = text("Load an original source heightmap to see terrain triangles.").into();
+                let fallback:Element<'_,Message>=text("Load an original source heightmap to see terrain triangles.").into();
                 fallback
             },
             row![
