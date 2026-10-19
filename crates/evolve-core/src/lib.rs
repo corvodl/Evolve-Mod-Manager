@@ -15,6 +15,7 @@ pub mod glb;
 pub mod inventory;
 pub mod level_export;
 pub mod library_catalog;
+pub mod library_import;
 pub mod materials;
 pub mod model;
 pub mod native_caf;
@@ -55,6 +56,7 @@ pub use inventory::{
     scan_directory_with_progress, write_inventory_json,
 };
 pub use level_export::{LevelExportError, LevelExportReport, export_level_scene_glb};
+pub use library_import::{LibraryImportReport, import_signed_library_pak};
 pub use library_catalog::{
     ImportedLibrary, ImportedPak, LibraryError, describe_archive, imported_archive_files,
     imported_library,
