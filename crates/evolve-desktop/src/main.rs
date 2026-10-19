@@ -5,6 +5,7 @@ mod asset_cache;
 mod asset_library_page;
 mod asset_viewer;
 mod auto_resources;
+mod design;
 mod developer_auth;
 mod explorer_tree;
 mod level_workspace;
@@ -44,8 +45,7 @@ use evolve_core::{
     restore_stage, scan_directory, scan_directory_with_progress, stage_status,
 };
 use iced::widget::{
-    button, canvas, column, container, image, row, scrollable, shader, slider, space, svg, text,
-    text_input, tooltip,
+    canvas, column, container, image, row, scrollable, shader, slider, space, svg, text, tooltip,
 };
 use iced::{Element, Fill, Length, Subscription, Task, Theme, window};
 use modding_projects::{ProjectRow, discover_projects};
@@ -225,6 +225,7 @@ struct State {
     library_by_build: bool,
     library_build_index: usize,
     library_page: usize,
+    settings_tab: settings_page::Tab,
     library_show_configuration: bool,
     library_menu: Option<&'static str>,
     library_matches: Vec<usize>,
@@ -249,6 +250,8 @@ struct State {
     modding_projects: Option<Vec<ProjectRow>>,
     modding_selected: Option<usize>,
     modding_filter: String,
+    modding_page: usize,
+    modding_changes_page: usize,
     editor_replace_source: String,
     modding_menu: Option<&'static str>,
     modding_advanced: bool,
@@ -854,10 +857,13 @@ enum Message {
     Navigate(Page),
     LibraryImportSourceChanged(String),
     LibraryImportStart,
+    SettingsTab(settings_page::Tab),
     LibrarySearchChanged(String),
     LibraryMenu(&'static str),
     ModdingMenu(&'static str),
     ModdingFilterChanged(String),
+    ModdingPage(bool),
+    ModdingChangesPage(bool),
     ModdingSelectProject(usize),
     ModdingRefresh,
     ModdingToggleAdvanced,
@@ -871,6 +877,7 @@ enum Message {
     EditorImportRawMember,
     EditorRestoreRawMember,
     ModdingToggleProfiles,
+    OpenLibrarySettings,
     LibraryToggleConfiguration,
     LibraryRefresh,
     StartupLibraryIndexed(PathBuf, Result<ImportedLibrary, String>),
@@ -1303,34 +1310,51 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Some(menu)
             };
         }
-        Message::ModdingFilterChanged(value) => state.modding_filter = value,
+        Message::ModdingFilterChanged(value) => {
+            state.modding_filter = value;
+            state.modding_page = 0;
+        }
+        Message::ModdingPage(next) => {
+            let count = modding_page::matching_projects(state).len();
+            let last = count.saturating_sub(1) / modding_page::PAGE;
+            state.modding_page = if next {
+                state.modding_page.saturating_add(1).min(last)
+            } else {
+                state.modding_page.saturating_sub(1).min(last)
+            };
+        }
+        Message::ModdingChangesPage(next) => {
+            let count = state
+                .modding_selected
+                .and_then(|i| state.modding_projects.as_ref()?.get(i))
+                .map_or(0, |p| p.modified.len());
+            let last = count.saturating_sub(1) / modding_page::PAGE;
+            state.modding_changes_page = if next {
+                state.modding_changes_page.saturating_add(1).min(last)
+            } else {
+                state.modding_changes_page.saturating_sub(1).min(last)
+            };
+        }
         Message::ModifiersChanged(modifiers) => state.keyboard_modifiers = modifiers,
         Message::ModdingSelectProject(index) => {
-            if let Some(project) = state.modding_projects.as_ref().and_then(|p| p.get(index)) {
-                let query = state.modding_filter.to_ascii_lowercase();
-                let visible: Vec<usize> = state
-                    .modding_projects
-                    .as_deref()
-                    .unwrap_or(&[])
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, p)| {
-                        (query.is_empty()
-                            || p.label.to_ascii_lowercase().contains(&query)
-                            || p.target.to_ascii_lowercase().contains(&query)
-                            || p.source_build.to_ascii_lowercase().contains(&query))
-                        .then_some(i)
-                    })
-                    .take(90)
-                    .collect();
-                state.project_selection.click(
-                    &visible,
-                    index,
-                    state.keyboard_modifiers.shift(),
-                    state.keyboard_modifiers.control(),
-                );
-                state.modding_selected = state.project_selection.primary_after(index);
-                state.modding_selected = Some(index);
+            let matches = modding_page::matching_projects(state);
+            let range = modding_page::page_range(matches.len(), state.modding_page);
+            let visible = &matches[range];
+            if !visible.contains(&index) {
+                return Task::none();
+            }
+            state.project_selection.click(
+                visible,
+                index,
+                state.keyboard_modifiers.shift(),
+                state.keyboard_modifiers.control(),
+            );
+            state.modding_selected = state.project_selection.primary_after(index);
+            state.modding_changes_page = 0;
+            if let Some(project) = state
+                .modding_selected
+                .and_then(|i| state.modding_projects.as_ref()?.get(i))
+            {
                 state.preferences.current_workspace =
                     project.workspace.to_string_lossy().into_owned();
                 state.input = PathBuf::from(&state.preferences.stage)
@@ -1339,6 +1363,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .to_string_lossy()
                     .into_owned();
                 state.status = format!("Selected {} · {}", project.label, project.details);
+            } else {
+                state.preferences.current_workspace.clear();
+                state.status = "No project selected.".into();
             }
         }
         Message::ModdingRefresh => {
@@ -1571,6 +1598,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 ),
             );
         }
+        Message::SettingsTab(tab) => state.settings_tab = tab,
         Message::LibrarySearchChanged(value) => {
             state.library_search = value;
             state.library_page = 0;
@@ -1585,6 +1613,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LibraryToggleConfiguration => {
             state.library_show_configuration = !state.library_show_configuration;
+        }
+        Message::OpenLibrarySettings => {
+            state.settings_tab = settings_page::Tab::Storage;
+            state.page = Some(Page::Settings);
+            state.library_menu = None;
         }
         Message::StartupLibraryIndexed(expected, result) => {
             state.library_startup_loading = false;
@@ -1625,7 +1658,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.library_selected = None;
                 state.library_page = 0;
                 refresh_library_matches(state);
-                state.status = "No imported PAKs at the detected Asset Library location. Use Import PAKs to add one.".into();
+                state.status =
+                    "Choose an Asset Library location in Settings → Storage, or import a PAK."
+                        .into();
+                state.page = Some(Page::Settings);
+                state.settings_tab = settings_page::Tab::Storage;
                 return Task::none();
             }
             return launch(
@@ -3214,6 +3251,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         previous.and_then(|path| projects.iter().position(|p| p.workspace == path));
                     state.status = format!("Loaded {} editable project(s).", projects.len());
                     state.modding_projects = Some(projects);
+                    let matches = modding_page::matching_projects(state);
+                    state.modding_page = state
+                        .modding_selected
+                        .and_then(|i| matches.iter().position(|v| *v == i))
+                        .map_or(0, |i| i / modding_page::PAGE);
+                    state.modding_changes_page = 0;
                     state.project_selection.clear();
                     if let Some(path) = focus {
                         state.modding_open_editor_when_scanned = true;
@@ -3255,7 +3298,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.library_selected = None;
                     state.library_page = 0;
                     state.library_menu = None;
-                    state.library_show_configuration = false;
                     refresh_library_matches(state);
                     state.page = Some(Page::AssetLibrary);
                     persist_preferences(state);
@@ -3891,7 +3933,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
 
 fn download_action(state: &State) -> Element<'_, Message> {
     if let Some(update) = &state.available_update {
-        button(text(format!(
+        design::button(text(format!(
             "Download verified {} installer",
             update.version
         )))
@@ -3903,7 +3945,7 @@ fn download_action(state: &State) -> Element<'_, Message> {
 }
 fn run_installer_action(state: &State) -> Element<'_, Message> {
     if state.staged_installer.is_some() {
-        button("Run verified installer (requires approval)")
+        design::button("Run verified installer (requires approval)")
             .on_press(Message::RunVerifiedInstaller)
             .into()
     } else {
@@ -3918,17 +3960,13 @@ fn view(state: &State) -> Element<'_, Message> {
     // Hover reveals one tooltip, never the whole expanded sidebar.
     let navigation = Page::ALL
         .into_iter()
-        .fold(column![].spacing(6), |items, item| {
+        .fold(column![].spacing(7), |items, item| {
             let active = page == item;
-            let nav = button(svg(item.icon()).width(20).height(20))
-                .width(46)
+            let nav = design::button(svg(item.icon()).style(design::icon).width(23).height(23))
+                .width(51)
                 .height(43)
                 .padding(10)
-                .style(if active {
-                    button::secondary
-                } else {
-                    button::text
-                })
+                .style(move |theme, status| design::rail(theme, status, active))
                 .on_press(Message::Navigate(item));
             items.push(tooltip(
                 nav,
@@ -3948,24 +3986,24 @@ fn view(state: &State) -> Element<'_, Message> {
     .height(20);
     let lower = column![
         tooltip(
-            button(play_mods_icon).width(46).height(40),
+            design::button(play_mods_icon).width(46).height(40),
             text("Play with Mods").size(11),
             tooltip::Position::Right
         ),
         tooltip(
-            button(play_clean_icon).width(46).height(40),
+            design::button(play_clean_icon).width(46).height(40),
             text("Play without Mods").size(11),
             tooltip::Position::Right
         ),
         tooltip(
-            button(svg(Page::Settings.icon()).width(20).height(20))
+            design::button(svg(Page::Settings.icon()).width(20).height(20))
                 .width(46)
                 .height(43)
                 .padding(10)
                 .style(if page == Page::Settings {
-                    button::secondary
+                    design::secondary
                 } else {
-                    button::text
+                    design::text_button
                 })
                 .on_press(Message::Navigate(Page::Settings)),
             text("Settings").size(11),
@@ -3977,85 +4015,98 @@ fn view(state: &State) -> Element<'_, Message> {
         column![navigation, space().height(Fill), lower,]
             .spacing(8)
             .height(Fill)
-            .padding([6, 4]),
+            .padding([12, 7]),
     )
-    .style(|_| container::Style {
-        background: Some(iced::Background::Color(iced::Color::from_rgb8(27, 26, 32))),
+    .width(66)
+    .height(Fill)
+    .style(|theme| container::Style {
+        background: Some(iced::Background::Color(design::sidebar(theme))),
+        border: iced::Border {
+            color: design::border(theme),
+            width: 1.0,
+            radius: 12.0.into(),
+        },
         ..container::Style::default()
-    })
-    .width(62)
-    .height(Fill);
-    let headline = row![
-        image(image::Handle::from_bytes(
-            include_bytes!("../../../assets/hunt.png").to_vec()
-        ))
-        .width(25)
-        .height(25),
-        text("EVOLVE / MOD MANAGER").size(18),
+    });
+    let mut headline = row![
+        design::button(
+            row![
+                image(image::Handle::from_bytes(
+                    include_bytes!("../../../assets/hunt.png").to_vec()
+                ))
+                .width(34)
+                .height(34),
+                text("EVOLVE  /  MOD MANAGER").size(18),
+            ]
+            .spacing(10)
+            .align_y(iced::Center)
+        )
+        .style(design::text_button)
+        .on_press(Message::Navigate(Page::Home)),
         text(format!("  /  {}", page.title())).size(12),
         space().width(Fill),
-        button("Help")
+        design::button("Help")
             .on_press(Message::Navigate(Page::Instructions))
-            .style(button::secondary),
-        button("Activity")
+            .style(design::secondary),
+        design::button("Activity")
             .on_press(Message::ToggleActivity)
-            .style(button::secondary),
-        if state.scan_cancel.is_some() {
-            button("Cancel Scan")
-                .on_press(Message::CancelScan)
-                .style(button::secondary)
-        } else {
-            button("Cancel Scan").style(button::secondary)
-        },
+            .style(design::secondary),
     ]
     .spacing(13)
     .align_y(iced::Center);
+    if state.scan_cancel.is_some() {
+        headline = headline.push(
+            design::button("Cancel Scan")
+                .on_press(Message::CancelScan)
+                .style(design::secondary),
+        );
+    }
 
     let location: iced::widget::Column<'_, Message> = column![
         row![
-            text_input("Local asset folder, .pak or .dds path...", &state.input)
+            design::text_input("Local asset folder, .pak or .dds path...", &state.input)
                 .on_input(Message::InputChanged)
                 .width(Fill),
-            button("Scan folder")
+            design::button("Scan folder")
                 .on_press(Message::StartScan)
-                .style(button::secondary),
-            button("Open Asset Viewer")
+                .style(design::secondary),
+            design::button("Open Asset Viewer")
                 .on_press(Message::OpenViewer)
-                .style(button::secondary),
+                .style(design::secondary),
         ]
         .spacing(8),
         row![
-            button("Inspect ZIP PAK").on_press(Message::StartPakInspection),
-            button("Inspect DDS").on_press(Message::StartDdsInspection),
-            button("Inspect CDF").on_press(Message::StartCdfInspection),
-            button("Inspect 3D model").on_press(Message::StartModelInspection),
+            design::button("Inspect ZIP PAK").on_press(Message::StartPakInspection),
+            design::button("Inspect DDS").on_press(Message::StartDdsInspection),
+            design::button("Inspect CDF").on_press(Message::StartCdfInspection),
+            design::button("Inspect 3D model").on_press(Message::StartModelInspection),
         ]
         .spacing(8),
         row![
-            text_input("New output directory or .png filename...", &state.output)
+            design::text_input("New output directory or .png filename...", &state.output)
                 .on_input(Message::OutputChanged)
                 .width(Fill),
-            button("Extract PAK").on_press(Message::StartExtract),
-            button("Export DDS → PNG").on_press(Message::StartPngExport),
+            design::button("Extract PAK").on_press(Message::StartExtract),
+            design::button("Export DDS → PNG").on_press(Message::StartPngExport),
         ]
         .spacing(8),
         row![
-            text_input(
+            design::text_input(
                 "Folder containing exact original PAK member replacements...",
                 &state.replacements
             )
             .on_input(Message::ReplacementsChanged)
             .width(Fill),
-            button("Rebuild unsigned PAK").on_press(Message::StartRebuild),
+            design::button("Rebuild unsigned PAK").on_press(Message::StartRebuild),
         ]
         .spacing(8),
         row![
             text("PAK signing: use the selected stage's local mykeys/ resources.").size(12),
-            button("Verify signed PAK")
-                .style(button::secondary)
+            design::button("Verify signed PAK")
+                .style(design::secondary)
                 .on_press(Message::StartSignedInspection),
-            button("Extract signed PAK")
-                .style(button::secondary)
+            design::button("Extract signed PAK")
+                .style(design::secondary)
                 .on_press(Message::StartSignedExtraction),
         ]
         .spacing(8),
@@ -4092,9 +4143,9 @@ fn view(state: &State) -> Element<'_, Message> {
                 }),
                 text("GPU viewer uses source UV0 and explicitly selected DDS diffuse, normal and emissive. Automatic MTL matching and skeletal skinning remain gated."),
                 row![
-                    text_input("Extracted Asset Library root for CDF dependency resolution...", &state.assets_root)
+                    design::text_input("Extracted Asset Library root for CDF dependency resolution...", &state.assets_root)
                         .on_input(Message::AssetsRootChanged).width(Fill),
-                    button("Resolve CDF parts").on_press(Message::StartCdfResolve),
+                    design::button("Resolve CDF parts").on_press(Message::StartCdfResolve),
                 ].spacing(8),
                 if let Some(dependencies) = &state.cdf_dependencies {
                     let mut items: iced::widget::Column<'_, Message> = column![
@@ -4108,15 +4159,15 @@ fn view(state: &State) -> Element<'_, Message> {
                     Element::<Message>::from(text("Read and resolve a CDF to inspect exact attachments; ambiguous matches are never selected automatically."))
                 },
                 row![
-                    text_input("Exact DDS diffuse (.dds or .dds.0) path...",&state.diffuse_input)
+                    design::text_input("Exact DDS diffuse (.dds or .dds.0) path...",&state.diffuse_input)
                         .on_input(Message::DiffuseInputChanged).width(Fill),
-                    button("Load GPU diffuse").on_press(Message::StartDiffuseLoad),
+                    design::button("Load GPU diffuse").on_press(Message::StartDiffuseLoad),
                 ].spacing(8),
                 text(state.diffuse_status.as_str()),
                 row![
-                    text_input("Exact source CryEngine .mtl path...", &state.material_input)
+                    design::text_input("Exact source CryEngine .mtl path...", &state.material_input)
                         .on_input(Message::MaterialInputChanged).width(Fill),
-                    button("Resolve material DDS maps").on_press(Message::StartMaterialResolve),
+                    design::button("Resolve material DDS maps").on_press(Message::StartMaterialResolve),
                 ].spacing(8),
                 if let Some(report) = &state.material_report {
                     let mut rows = column![].spacing(3);
@@ -4130,12 +4181,12 @@ fn view(state: &State) -> Element<'_, Message> {
                         .height(Length::Fixed(40.))
                 },
                 row![
-                    text_input("Source normal map DDS (BC5)...", &state.normal_input)
+                    design::text_input("Source normal map DDS (BC5)...", &state.normal_input)
                         .on_input(Message::NormalInputChanged).width(Fill),
-                    button("Load GPU normal").on_press(Message::StartNormalLoad),
-                    text_input("Source emissive or glow DDS...", &state.emissive_input)
+                    design::button("Load GPU normal").on_press(Message::StartNormalLoad),
+                    design::text_input("Source emissive or glow DDS...", &state.emissive_input)
                         .on_input(Message::EmissiveInputChanged).width(Fill),
-                    button("Load GPU emissive").on_press(Message::StartEmissiveLoad),
+                    design::button("Load GPU emissive").on_press(Message::StartEmissiveLoad),
                 ].spacing(8),
                 if let Some(mesh)=&state.model {
                     let display:Element<'_,Message> = if mesh.uv0.is_some(){
@@ -4158,34 +4209,34 @@ fn view(state: &State) -> Element<'_, Message> {
                 },
                 text("Rigged character export — verified original weights").size(18),
                 row![
-                    text_input("Exact original .chr skeleton path...",&state.skeleton_path)
+                    design::text_input("Exact original .chr skeleton path...",&state.skeleton_path)
                         .on_input(Message::SkeletonChanged).width(Fill),
-                    text_input("Blender.exe path for FBX...",&state.blender_path)
+                    design::text_input("Blender.exe path for FBX...",&state.blender_path)
                         .on_input(Message::BlenderChanged).width(Fill),
                 ].spacing(8),
                 row![
-                    button("Export rigged GLB").on_press(Message::StartRigGlb),
-                    button("Export rigged FBX").on_press(Message::StartRigFbx),
+                    design::button("Export rigged GLB").on_press(Message::StartRigGlb),
+                    design::button("Export rigged FBX").on_press(Message::StartRigFbx),
                     text("FBX optionally embeds selected DDS diffuse and exact native CAF tracks when bone CRCs match; DBA layering remains unfinished."),
                 ].spacing(9),
                 text("Animation controls — exact native CAF tracks").size(18),
                 row![
-                    text_input("Select original CAF file...",&state.caf_path)
+                    design::text_input("Select original CAF file...",&state.caf_path)
                         .on_input(Message::CafInputChanged).width(Fill),
-                    button("Open CAF").on_press(Message::StartCafLoad),
-                    button(if state.playing{"Pause"}else{"Play"}).on_press(Message::ToggleMotion),
+                    design::button("Open CAF").on_press(Message::StartCafLoad),
+                    design::button(if state.playing{"Pause"}else{"Play"}).on_press(Message::ToggleMotion),
                 ].spacing(8),
                 row![
-                    text_input("Bundled or independent Cryengine-Converter.exe...",
+                    design::text_input("Bundled or independent Cryengine-Converter.exe...",
                         &state.converter_path).on_input(Message::ConverterPathChanged).width(Fill),
-                    button("Convert & preview CAF/DBA").on_press(Message::StartMotionConversion),
+                    design::button("Convert & preview CAF/DBA").on_press(Message::StartMotionConversion),
                 ].spacing(8),
-                text_input("Exact extracted asset root (for converter dependencies)...",
+                design::text_input("Exact extracted asset root (for converter dependencies)...",
                     &state.assets_root).on_input(Message::AssetsRootChanged),
                 if !state.converted_glbs.is_empty() {
                     let mut items=column![text("Verified converter GLB outputs (select exact file)")].spacing(4);
                     for (index,file) in state.converted_glbs.iter().enumerate().take(32) {
-                        items=items.push(button(text(file.file_name().unwrap_or_default().to_string_lossy().to_string()))
+                        items=items.push(design::button(text(file.file_name().unwrap_or_default().to_string_lossy().to_string()))
                             .on_press(Message::OpenConvertedGlb(index)));
                     }
                     scrollable(items).height(Length::Fixed(160.)).into()
@@ -4197,7 +4248,7 @@ fn view(state: &State) -> Element<'_, Message> {
                     let clips=loaded.list_clips();
                     let mut chooser=column![text(format!("Verified glTF animation clips: {}",clips.len()))].spacing(4);
                     for (i,clip) in clips.iter().enumerate().take(64) {
-                        chooser=chooser.push(button(text(format!("{} • {:.2}s • {} channels",clip.name,clip.duration,clip.channels)))
+                        chooser=chooser.push(design::button(text(format!("{} • {:.2}s • {} channels",clip.name,clip.duration,clip.channels)))
                             .on_press(Message::SelectMotionClip(i)));
                     }
                     let chosen=clips.get(state.selected_motion_clip);
@@ -4249,15 +4300,15 @@ fn view(state: &State) -> Element<'_, Message> {
             level_workspace::view(state),
             text("Read Level/LYR or Heightmap.dat without touching installed game assets."),
             row![
-                button("Read level placements").on_press(Message::StartLevelInspection),
-                button("Load heightmap geometry").on_press(Message::StartTerrainInspection),
-                button("Export geometry scene GLB").on_press(Message::StartLevelGlbExport),
-                button("Export geometry scene FBX").on_press(Message::StartLevelFbxExport),
+                design::button("Read level placements").on_press(Message::StartLevelInspection),
+                design::button("Load heightmap geometry").on_press(Message::StartTerrainInspection),
+                design::button("Export geometry scene GLB").on_press(Message::StartLevelGlbExport),
+                design::button("Export geometry scene FBX").on_press(Message::StartLevelFbxExport),
             ].spacing(8),
             row![
-                text_input("Exact extracted asset root...",&state.assets_root)
+                design::text_input("Exact extracted asset root...",&state.assets_root)
                     .on_input(Message::AssetsRootChanged).width(Fill),
-                text_input("Optional Heightmap.dat source...",&state.terrain_source)
+                design::text_input("Optional Heightmap.dat source...",&state.terrain_source)
                     .on_input(Message::TerrainSourceChanged).width(Fill),
             ].spacing(8),
             text(if let Some(scene)=&state.level_scene {
@@ -4290,14 +4341,14 @@ fn view(state: &State) -> Element<'_, Message> {
                 text("Pitch"),
                 slider(-85.0..=85.0,state.pitch,Message::PitchChanged).width(Fill),
             ].spacing(8),
-            text_input("Blender executable for scene FBX...", &state.blender_path)
+            design::text_input("Blender executable for scene FBX...", &state.blender_path)
                 .on_input(Message::BlenderChanged),
             text("GLB/FBX includes verified mesh instances and optional terrain. Texture/material, compiled vegetation, scripting and full map fidelity remain gated."),
         ].spacing(14).into(),
         Page::Settings => settings_page::view(state),
     };
 
-    let workspace: Element<'_, Message> = if page == Page::Settings || page == Page::Files {
+    let workspace: Element<'_, Message> = if page == Page::Files {
         scrollable(workspace).height(Fill).into()
     } else {
         workspace
@@ -4311,14 +4362,14 @@ fn view(state: &State) -> Element<'_, Message> {
     let tools: Element<'_, Message> = if show_tools {
         column![
             row![
-                text_input("Selected asset / folder / PAK path...", &state.input)
+                design::text_input("Selected asset / folder / PAK path...", &state.input)
                     .on_input(Message::InputChanged)
                     .width(Fill),
-                button("Scan Folder").on_press(Message::StartScan),
-                button("Open Asset Viewer")
+                design::button("Scan Folder").on_press(Message::StartScan),
+                design::button("Open Asset Viewer")
                     .on_press(Message::OpenViewer)
-                    .style(button::secondary),
-                button(if state.show_advanced_tools {
+                    .style(design::secondary),
+                design::button(if state.show_advanced_tools {
                     "Hide Archive Tools"
                 } else {
                     "Show Advanced Archive Tools"
@@ -4444,6 +4495,7 @@ impl Desktop {
     fn new() -> (Self, Task<Message>) {
         let (main_id, opened) = window::open(window::Settings {
             size: iced::Size::new(1440.0, 900.0),
+            min_size: Some(iced::Size::new(880.0, 620.0)),
             ..window::Settings::default()
         });
         let mut state = initial_state();
@@ -4640,21 +4692,7 @@ impl Desktop {
     }
 
     fn theme(&self, _id: window::Id) -> Option<Theme> {
-        Some(if self.state.preferences.appearance_mode == "Light" {
-            Theme::Light
-        } else {
-            Theme::custom(
-                "Evolve Black/Red",
-                iced::theme::Palette {
-                    background: iced::Color::from_rgb8(23, 23, 29),
-                    text: iced::Color::from_rgb8(242, 240, 244),
-                    primary: iced::Color::from_rgb8(198, 48, 68),
-                    success: iced::Color::from_rgb8(70, 170, 130),
-                    warning: iced::Color::from_rgb8(233, 170, 80),
-                    danger: iced::Color::from_rgb8(205, 52, 59),
-                },
-            )
-        })
+        Some(design::theme(&self.state.preferences))
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -4842,6 +4880,85 @@ mod project_edit_tests {
         let _ = update(&mut state, Message::ViewerContextFile(0));
         assert_eq!(state.viewer_context_index, None);
         assert!(!state.busy);
+    }
+
+    #[test]
+    fn library_configuration_routes_to_storage_and_preserves_edits_between_tabs() {
+        let mut state = State {
+            page: Some(Page::AssetLibrary),
+            ..State::default()
+        };
+        let _ = update(&mut state, Message::OpenLibrarySettings);
+        assert_eq!(state.page, Some(Page::Settings));
+        assert_eq!(state.settings_tab, settings_page::Tab::Storage);
+        state.library_page = 3;
+        state.library_matches = vec![1, 2];
+        state.library_selection.indices.insert(1);
+        let _ = update(&mut state, Message::PreferenceAssets("C:/Library".into()));
+        let _ = update(
+            &mut state,
+            Message::SettingsTab(settings_page::Tab::Updates),
+        );
+        let _ = update(
+            &mut state,
+            Message::SettingsTab(settings_page::Tab::Storage),
+        );
+        assert_eq!(state.preferences.asset_library_root, "C:/Library");
+        assert_eq!(state.library_root, "C:/Library");
+        assert_eq!(state.library_page, 0);
+        assert!(state.library_selection.indices.is_empty());
+        assert!(state.library_matches.is_empty());
+        let _ = update(&mut state, Message::PreferenceAssets(String::new()));
+        state.page = Some(Page::AssetLibrary);
+        let _ = update(&mut state, Message::LibraryRefresh);
+        assert_eq!(state.page, Some(Page::Settings));
+        assert!(!state.busy);
+    }
+
+    #[test]
+    fn project_paging_filtering_and_control_deselection_use_visible_rows() {
+        let mut state = State {
+            modding_projects: Some(
+                (0..185)
+                    .map(|i| ProjectRow {
+                        label: format!("Project {i}"),
+                        target: format!("{i}.pak"),
+                        source_build: String::new(),
+                        status: "Modified".into(),
+                        details: String::new(),
+                        workspace: PathBuf::from(format!("projects/{i}")),
+                        modified: (0..181).map(|j| format!("file{j}.xml")).collect(),
+                        changed_known: true,
+                    })
+                    .collect(),
+            ),
+            ..State::default()
+        };
+        let _ = update(&mut state, Message::ModdingPage(true));
+        assert_eq!(state.modding_page, 1);
+        let _ = update(&mut state, Message::ModdingSelectProject(0));
+        assert_eq!(state.modding_selected, None);
+        let _ = update(&mut state, Message::ModdingSelectProject(95));
+        assert_eq!(state.modding_selected, Some(95));
+        let _ = update(&mut state, Message::ModdingChangesPage(true));
+        let _ = update(&mut state, Message::ModdingChangesPage(true));
+        let _ = update(&mut state, Message::ModdingChangesPage(true));
+        assert_eq!(state.modding_changes_page, 2);
+        state.keyboard_modifiers = iced::keyboard::Modifiers::CTRL;
+        let _ = update(&mut state, Message::ModdingSelectProject(95));
+        assert_eq!(state.modding_selected, None);
+        assert!(state.preferences.current_workspace.is_empty());
+        let _ = update(&mut state, Message::ModdingPage(true));
+        assert_eq!(modding_page::page_range(185, state.modding_page), 180..185);
+        let _ = update(
+            &mut state,
+            Message::ModdingFilterChanged("Project 184".into()),
+        );
+        assert_eq!(state.modding_page, 0);
+        assert_eq!(modding_page::matching_projects(&state), vec![184]);
+        let _ = update(&mut state, Message::ModdingSelectProject(184));
+        assert_eq!(state.modding_selected, Some(184));
+        assert_eq!(modding_page::page_range(0, usize::MAX), 0..0);
     }
 
     #[test]

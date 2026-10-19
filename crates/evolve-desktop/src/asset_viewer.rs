@@ -2,33 +2,27 @@
 //! manager's viewport/explorer split; Asset Library originals are read-only.
 //! Heavy decoding and indexing are run by the main application's worker tasks.
 use super::{MeshViewport, Message, State, TexturedScene, viewer_inspector};
+use crate::design;
 use iced::widget::{
-    button, canvas, column, container, mouse_area, row, scrollable, shader, slider, stack, text,
-    text_input,
+    canvas, column, container, mouse_area, row, scrollable, shader, slider, stack, text,
 };
-use iced::{Background, Border, Color, Element, Fill, Length};
-
-const SHELL: Color = Color::from_rgb(0.136, 0.145, 0.159);
-const PANEL: Color = Color::from_rgb(0.170, 0.180, 0.195);
-const PREVIEW: Color = Color::from_rgb(0.275, 0.285, 0.299);
-const RULE: Color = Color::from_rgb(0.245, 0.255, 0.280);
-const MUTED: Color = Color::from_rgb(0.77, 0.79, 0.85);
+use iced::{Background, Border, Element, Fill, Length};
 
 fn panel<'a>(child: impl Into<Element<'a, Message>>) -> iced::widget::Container<'a, Message> {
-    container(child).style(|_| container::Style {
-        background: Some(Background::Color(PANEL)),
+    container(child).style(|theme| container::Style {
+        background: Some(Background::Color(design::surface(theme))),
         border: Border {
-            color: RULE,
+            color: design::border(theme),
             width: 1.0,
-            radius: 5.0.into(),
+            radius: 12.0.into(),
         },
         ..container::Style::default()
     })
 }
 
 fn menu_action<'a>(label: &'static str) -> iced::widget::Button<'a, Message> {
-    button(text(label).size(13))
-        .style(button::text)
+    design::button(text(label).size(13))
+        .style(design::text_button)
         .padding([6, 11])
 }
 
@@ -47,61 +41,61 @@ fn strip(state: &State) -> Element<'_, Message> {
 
     let options: Element<'_, Message> = match state.viewer_menu {
         Some("File") => row![
-            button("Inspect original PAK").on_press(Message::StartPakInspection),
-            button("Export selected DDS → PNG").on_press(Message::StartPngExport),
-            button("Close menu").on_press(Message::ViewerMenu("")),
+            design::button("Inspect original PAK").on_press(Message::StartPakInspection),
+            design::button("Export selected DDS → PNG").on_press(Message::StartPngExport),
+            design::button("Close menu").on_press(Message::ViewerMenu("")),
         ].spacing(8).into(),
         Some("Edit") => text("Asset Library originals are read-only. Edit a separate Modding workspace copy.").size(13).into(),
         Some("View") => row![
-            button("Toggle File Explorer").on_press(Message::ViewerToggleExplorer),
-            button("Reset camera").on_press(Message::ViewerResetCamera),
+            design::button("Toggle File Explorer").on_press(Message::ViewerToggleExplorer),
+            design::button("Reset camera").on_press(Message::ViewerResetCamera),
         ].spacing(8).into(),
         Some("Model") => column![
             row![
-                button("Inspect selected model").on_press(Message::ViewerPreviewSelected),
-                button("Inspect CDF").on_press(Message::StartCdfInspection),
-                button("Preview CDF assembly (static)").on_press(Message::ViewerPreviewStaticCdf),
-                button("Export verified rigged FBX").on_press(Message::StartRigFbx),
-                button("Flat CDF parts FBX (experimental)")
+                design::button("Inspect selected model").on_press(Message::ViewerPreviewSelected),
+                design::button("Inspect CDF").on_press(Message::StartCdfInspection),
+                design::button("Preview CDF assembly (static)").on_press(Message::ViewerPreviewStaticCdf),
+                design::button("Export verified rigged FBX").on_press(Message::StartRigFbx),
+                design::button("Flat CDF parts FBX (experimental)")
                     .on_press(Message::ViewerExportFlatCdf),
             ].spacing(8),
-            text("Blender FBX export requires a verified compiled skeleton and original mesh weights. Source files are never overwritten.").size(12).color(MUTED),
+            text("Blender FBX export requires a verified compiled skeleton and original mesh weights. Source files are never overwritten.").size(12).style(design::muted),
             text("Flat CDF export uses the same output field as a NEW DIRECTORY (not .fbx). It publishes separate rigged part FBXs only if every part passes; complete character materials and unified root FBX are not yet supported.")
-                .size(12).color(MUTED),
+                .size(12).style(design::muted),
             row![
-                text_input("NEW FBX destination (absolute path)", &state.output)
+                design::text_input("NEW FBX destination (absolute path)", &state.output)
                     .on_input(Message::OutputChanged).width(Fill),
-                text_input("Blender executable", &state.blender_path)
+                design::text_input("Blender executable", &state.blender_path)
                     .on_input(Message::BlenderChanged).width(Fill),
-                text_input("Matching skeleton (CDF auto-detected where verified)", &state.skeleton_path)
+                design::text_input("Matching skeleton (CDF auto-detected where verified)", &state.skeleton_path)
                     .on_input(Message::SkeletonChanged).width(Fill),
             ].spacing(8),
             row![
-                button(if state.export_include_animation {
+                design::button(if state.export_include_animation {
                     "Verified CAF Actions: on"
                 } else {
                     "Verified CAF Actions: off"
                 }).on_press(Message::ViewerToggleExportAnimations),
-                text_input("Exact CAF path (optional; export opt-in)", &state.caf_path)
+                design::text_input("Exact CAF path (optional; export opt-in)", &state.caf_path)
                     .on_input(Message::CafInputChanged).width(Fill),
             ].spacing(8),
         ].spacing(7).into(),
         Some("Textures") => row![
-            button("Resolve .mtl").on_press(Message::StartMaterialResolve),
-            button("Load diffuse").on_press(Message::StartDiffuseLoad),
-            button("Load normal").on_press(Message::StartNormalLoad),
-            button("Load emissive").on_press(Message::StartEmissiveLoad),
+            design::button("Resolve .mtl").on_press(Message::StartMaterialResolve),
+            design::button("Load diffuse").on_press(Message::StartDiffuseLoad),
+            design::button("Load normal").on_press(Message::StartNormalLoad),
+            design::button("Load emissive").on_press(Message::StartEmissiveLoad),
         ].spacing(8).into(),
         Some("Animation") => {
             let mut clips = column![
                 row![
-                    button("Open CAF").on_press(Message::StartCafLoad),
-                    button(if state.playing { "Pause" } else { "Play" }).on_press(Message::ToggleMotion),
+                    design::button("Open CAF").on_press(Message::StartCafLoad),
+                    design::button(if state.playing { "Pause" } else { "Play" }).on_press(Message::ToggleMotion),
                     text(format!("{} character-declared animations", state.auto_clips.len())).size(12),
                 ].spacing(8),
             ].spacing(5);
             clips = clips.push(
-                text_input("Filter character animations…", &state.auto_clip_filter)
+                design::text_input("Filter character animations…", &state.auto_clip_filter)
                     .on_input(Message::ViewerAutoClipFilter)
             );
             let needle = state.auto_clip_filter.to_ascii_lowercase();
@@ -113,9 +107,9 @@ fn strip(state: &State) -> Element<'_, Message> {
             {
                 let label = format!("{} · {}{}", clip.label, clip.kind.to_ascii_uppercase(), if clip.source.is_none() { " (not extracted)" } else { "" });
                 clips = clips.push(
-                    button(text(label).size(12))
+                    design::button(text(label).size(12))
                         .on_press(Message::ViewerAutoClip(index))
-                        .style(button::text)
+                        .style(design::text_button)
                 );
             }
             if !state.converted_glbs.is_empty() {
@@ -126,20 +120,20 @@ fn strip(state: &State) -> Element<'_, Message> {
                         "VERIFIED CONVERTED MOTION FILES"
                     })
                     .size(12)
-                    .color(MUTED),
+                    .style(design::muted),
                 );
                 for (index, source) in state.converted_glbs.iter().enumerate().take(64) {
                     let name = source.file_name().map(|s| s.to_string_lossy().into_owned())
                         .unwrap_or_else(|| format!("Track {}", index + 1));
-                    clips = clips.push(button(text(name).size(12))
-                        .on_press(Message::OpenConvertedGlb(index)).style(button::text));
+                    clips = clips.push(design::button(text(name).size(12))
+                        .on_press(Message::OpenConvertedGlb(index)).style(design::text_button));
                 }
             }
             scrollable(clips).height(Length::Fixed(250.0)).into()
         },
         Some("Tools") => row![
-            button("Index extracted files").on_press(Message::StartScan),
-            button("Inspect selected asset").on_press(Message::ViewerPreviewSelected),
+            design::button("Index extracted files").on_press(Message::StartScan),
+            design::button("Inspect selected asset").on_press(Message::ViewerPreviewSelected),
         ].spacing(8).into(),
         Some("Help") => text("Read-only preview. Use the file explorer to select extracted assets; original PAK members must be extracted before preview.").size(13).into(),
         _ => column![].into(),
@@ -159,7 +153,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
         .size(12),
         text(state.auto_resource_note.as_str())
             .size(11)
-            .color(MUTED),
+            .style(design::muted),
     ]
     .spacing(2);
     let main: Element<'_, Message> = if let Some(mesh) = &state.model {
@@ -198,31 +192,31 @@ fn viewport(state: &State) -> Element<'_, Message> {
         container(
             column![
             text("3D / ASSET PREVIEW").size(19),
-            text("Choose a model, CDF, or DDS from extracted files.").size(14).color(MUTED),
+            text("Choose a model, CDF, or DDS from extracted files.").size(14).style(design::muted),
             text("This workspace does not invent missing character pieces, textures or animations.")
-                .size(12).color(MUTED),
-            button("Inspect selected file").on_press(Message::ViewerPreviewSelected)
+                .size(12).style(design::muted),
+            design::button("Inspect selected file").on_press(Message::ViewerPreviewSelected)
         ]
             .spacing(13)
             .align_x(iced::Center),
         )
         .center(Fill)
-        .style(|_| container::Style {
-            background: Some(Background::Color(PREVIEW)),
+        .style(|theme| container::Style {
+            background: Some(Background::Color(design::field(theme))),
             ..container::Style::default()
         })
         .into()
     };
 
     let toolbar = row![
-        button("Reset View").on_press(Message::ViewerResetCamera),
+        design::button("Reset View").on_press(Message::ViewerResetCamera),
         text("Drag: orbit • Shift+drag/right-drag: pan • Wheel: zoom").size(11),
-        button("−")
+        design::button("−")
             .on_press(Message::ViewerZoomWheel(-2.0))
-            .style(button::secondary),
-        button("+")
+            .style(design::secondary),
+        design::button("+")
             .on_press(Message::ViewerZoomWheel(2.0))
-            .style(button::secondary),
+            .style(design::secondary),
         text("Studio light").size(11),
         slider(
             0.1..=2.0,
@@ -272,14 +266,14 @@ fn viewport(state: &State) -> Element<'_, Message> {
         .max(0.03);
     let timeline = row![
         text("Timeline").size(12),
-        button(if state.playback_loop {
+        design::button(if state.playback_loop {
             "Loop on"
         } else {
             "Loop off"
         })
         .on_press(Message::PlaybackLoopChanged),
-        button("◀").on_press(Message::MotionScrub(0.0)),
-        button(if state.playing { "Ⅱ" } else { "▶" }).on_press(Message::ToggleMotion),
+        design::button("◀").on_press(Message::MotionScrub(0.0)),
+        design::button(if state.playing { "Ⅱ" } else { "▶" }).on_press(Message::ToggleMotion),
         slider(
             0.0..=duration,
             state.motion_time.clamp(0.0, duration),
@@ -348,7 +342,7 @@ fn explorer(state: &State) -> Element<'_, Message> {
         } else {
             Message::ViewerSelectFile(entry.index.expect("file row has source index"))
         };
-        let item = button(
+        let item = design::button(
             row![
                 text(title).size(12).width(Fill),
                 text(if entry.directory {
@@ -369,9 +363,9 @@ fn explorer(state: &State) -> Element<'_, Message> {
                     .index
                     .is_some_and(|i| state.file_selection.indices.contains(&i))
             {
-                button::primary
+                design::primary
             } else {
-                button::text
+                design::text_button
             },
         )
         .on_press(action);
@@ -388,7 +382,7 @@ fn explorer(state: &State) -> Element<'_, Message> {
         rows = rows.push(
             text("No archive or extracted folder indexed.")
                 .size(13)
-                .color(MUTED),
+                .style(design::muted),
         );
     }
     let source = state
@@ -409,11 +403,11 @@ fn explorer(state: &State) -> Element<'_, Message> {
                 .spacing(16),
                 text("PAK / PROJECT").size(12),
                 text(source).size(12),
-                text_input("Search files and folders...", &state.viewer_search)
+                design::text_input("Search files and folders...", &state.viewer_search)
                     .on_input(Message::ViewerSearchChanged),
                 row![
-                    button("Preview selected").on_press(Message::ViewerPreviewSelected),
-                    button("Index folder").on_press(Message::StartScan),
+                    design::button("Preview selected").on_press(Message::ViewerPreviewSelected),
+                    design::button("Index folder").on_press(Message::StartScan),
                 ]
                 .spacing(8),
                 if let Some(index) = state.viewer_context_index {
@@ -430,27 +424,29 @@ fn explorer(state: &State) -> Element<'_, Message> {
                             column![
                                 row![
                                     text("FILE ACTIONS").size(13),
-                                    text(filename).size(11).color(MUTED).width(Fill),
-                                    button("✕").on_press(Message::ViewerContextClose),
+                                    text(filename).size(11).style(design::muted).width(Fill),
+                                    design::button("✕").on_press(Message::ViewerContextClose),
                                 ]
                                 .spacing(7),
                                 row![
-                                    button("Preview").on_press(Message::ViewerPreviewSelected),
-                                    button("Copy path").on_press(Message::ViewerCopySelectedPath),
-                                    button("Show in Explorer")
+                                    design::button("Preview")
+                                        .on_press(Message::ViewerPreviewSelected),
+                                    design::button("Copy path")
+                                        .on_press(Message::ViewerCopySelectedPath),
+                                    design::button("Show in Explorer")
                                         .on_press(Message::ViewerRevealSelectedFile),
-                                    button("Dependencies")
+                                    design::button("Dependencies")
                                         .on_press(Message::StartDependencyInspection),
                                 ]
                                 .spacing(6),
                                 row![
-                                    button("Preview full CDF").on_press_maybe(
+                                    design::button("Preview full CDF").on_press_maybe(
                                         is_cdf.then_some(Message::ViewerPreviewStaticCdf)
                                     ),
-                                    button("Export DDS → PNG")
+                                    design::button("Export DDS → PNG")
                                         .on_press_maybe(is_dds.then_some(Message::StartPngExport)),
-                                    button("Rigged FBX").on_press(Message::StartRigFbx),
-                                    button("Restore original").on_press_maybe(
+                                    design::button("Rigged FBX").on_press(Message::StartRigFbx),
+                                    design::button("Restore original").on_press_maybe(
                                         (!state.viewer_from_library && !state.busy)
                                             .then_some(Message::EditorRestoreRawMember)
                                     ),
@@ -467,7 +463,7 @@ fn explorer(state: &State) -> Element<'_, Message> {
                     Element::<Message>::from(
                         text("Right-click a file for actions.")
                             .size(11)
-                            .color(MUTED),
+                            .style(design::muted),
                     )
                 },
                 if state.viewer_from_library {
@@ -476,28 +472,30 @@ fn explorer(state: &State) -> Element<'_, Message> {
                             "Protected read-only source. To edit, open a separate Modding project.",
                         )
                         .size(11)
-                        .color(MUTED),
+                        .style(design::muted),
                     )
                 } else {
                     column![
-                        text_input(
+                        design::text_input(
                             "Existing local file to import over selected project asset...",
                             &state.editor_replace_source
                         )
                         .on_input(Message::EditorReplacementChanged),
-                        button("Import over selected project asset (backup)").on_press_maybe(
-                            (!state.busy).then_some(Message::EditorImportRawMember)
-                        ),
-                        button("Restore selected original (keep edited backup)").on_press_maybe(
-                            (!state.busy).then_some(Message::EditorRestoreRawMember)
-                        ),
+                        design::button("Import over selected project asset (backup)")
+                            .on_press_maybe(
+                                (!state.busy).then_some(Message::EditorImportRawMember)
+                            ),
+                        design::button("Restore selected original (keep edited backup)")
+                            .on_press_maybe(
+                                (!state.busy).then_some(Message::EditorRestoreRawMember)
+                            ),
                     ]
                     .spacing(5)
                     .into()
                 },
                 scrollable(rows).height(Fill),
                 row![
-                    button("◀ Previous").on_press_maybe(
+                    design::button("◀ Previous").on_press_maybe(
                         (state.viewer_page > 0).then_some(Message::ViewerPreviousPage)
                     ),
                     text(format!(
@@ -505,14 +503,14 @@ fn explorer(state: &State) -> Element<'_, Message> {
                         state.viewer_page + 1
                     ))
                     .size(11)
-                    .color(MUTED),
-                    button("Next ▶")
+                    .style(design::muted),
+                    design::button("Next ▶")
                         .on_press_maybe(state.viewer_more_rows.then_some(Message::ViewerNextPage)),
                 ]
                 .spacing(8),
                 text("Shift: range  •  Ctrl: toggle  •  CDF: assembly definition")
                     .size(11)
-                    .color(MUTED),
+                    .style(design::muted),
             ]
             .spacing(9),
         )
@@ -531,17 +529,17 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     };
     let heading = row![
         text("Asset / Model Viewer").size(16),
-        text(readonly).size(12).color(MUTED),
+        text(readonly).size(12).style(design::muted),
         text(format!(
             " • {} selected",
             state.file_selection.indices.len()
         ))
         .size(12),
-        button("Toggle Explorer").on_press(Message::ViewerToggleExplorer),
-        button("Save layout").on_press(Message::ViewerSaveLayout),
-        button("Detach Inspector")
+        design::button("Toggle Explorer").on_press(Message::ViewerToggleExplorer),
+        design::button("Save layout").on_press(Message::ViewerSaveLayout),
+        design::button("Detach Inspector")
             .on_press(Message::OpenInspectorWindow)
-            .style(button::secondary),
+            .style(design::secondary),
     ]
     .spacing(14)
     .align_y(iced::Center);
@@ -567,7 +565,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             })
             .width(Length::Fixed(200.0)),
             text("Explorer").size(12),
-            button(if state.viewer_show_inspector {
+            design::button(if state.viewer_show_inspector {
                 "Hide Inspector"
             } else {
                 "Inspector"
@@ -578,7 +576,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         .align_y(iced::Center)
         .into()
     } else {
-        button("Show Explorer")
+        design::button("Show Explorer")
             .on_press(Message::ViewerToggleExplorer)
             .into()
     };
@@ -592,7 +590,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         .width(Fill),
         text("Asset Library originals protected  •  Preview only")
             .size(11)
-            .color(MUTED),
+            .style(design::muted),
     ]
     .spacing(12);
 
@@ -611,8 +609,8 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     )
     .height(Fill)
     .width(Fill)
-    .style(|_| container::Style {
-        background: Some(Background::Color(SHELL)),
+    .style(|theme| container::Style {
+        background: Some(Background::Color(theme.palette().background)),
         ..container::Style::default()
     })
     .into()

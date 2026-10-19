@@ -136,9 +136,7 @@ impl canvas::Program<super::Message> for OrientationGizmo {
                 }
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                if state.last.take().is_none() {
-                    return None;
-                }
+                state.last.take()?;
                 let target = if state.moved {
                     None
                 } else {

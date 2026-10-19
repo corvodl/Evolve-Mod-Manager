@@ -1,26 +1,25 @@
 //! Private-manager-style imported PAK browser. Original archives and
 //! extracted Asset Library files remain read-only; mod editing lives elsewhere.
 use super::{Message, Page, State};
-use iced::widget::{button, column, container, row, scrollable, space, text, text_input};
-use iced::{Background, Border, Color, Element, Fill, Length};
+use crate::design;
+use iced::widget::{column, container, row, scrollable, space, text};
+use iced::{Background, Border, Element, Fill, Length};
 use std::path::Path;
 
-const PANEL: Color = Color::from_rgb8(31, 30, 36);
-const HEADER: Color = Color::from_rgb8(35, 34, 41);
-const EDGE: Color = Color::from_rgb8(48, 45, 53);
-const MUTED: Color = Color::from_rgb8(181, 178, 188);
 const PAGE_SIZE: usize = 110;
 
 fn panel<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Container<'a, Message> {
-    container(content).width(Fill).style(|_| container::Style {
-        background: Some(Background::Color(PANEL)),
-        border: Border {
-            color: EDGE,
-            width: 1.0,
-            radius: 5.0.into(),
-        },
-        ..container::Style::default()
-    })
+    container(content)
+        .width(Fill)
+        .style(|theme| container::Style {
+            background: Some(Background::Color(design::surface(theme))),
+            border: Border {
+                color: design::border(theme),
+                width: 1.0,
+                radius: 12.0.into(),
+            },
+            ..container::Style::default()
+        })
 }
 
 fn header_cell(label: &'static str, width: u16) -> Element<'static, Message> {
@@ -34,6 +33,7 @@ fn archive_row<'a>(
     index: usize,
     archive: &'a evolve_core::ImportedPak,
     selected: bool,
+    compact: bool,
 ) -> Element<'a, Message> {
     let folder = Path::new(&archive.source)
         .parent()
@@ -56,20 +56,20 @@ fn archive_row<'a>(
     ]
     .spacing(9)
     .align_y(iced::Center);
-    let item = button(content)
-        .padding([7, 8])
+    let item = design::button(content)
+        .padding([if compact { 2 } else { 5 }, 8])
         .width(Fill)
-        .style(button::text)
+        .style(design::text_button)
         .on_press(Message::LibrarySelect(index));
     container(item)
         .width(Fill)
-        .style(move |_| container::Style {
+        .style(move |theme| container::Style {
             background: Some(Background::Color(if selected {
-                Color::from_rgb8(65, 38, 48)
+                design::selection(theme)
             } else if index.is_multiple_of(2) {
-                PANEL
+                design::surface(theme)
             } else {
-                Color::from_rgb8(34, 33, 40)
+                design::field(theme)
             })),
             ..container::Style::default()
         })
@@ -83,35 +83,35 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         .and_then(|i| library.and_then(|c| c.archives.get(i)));
 
     let menu = row![
-        button("File")
+        design::button("File")
             .on_press(Message::LibraryMenu("File"))
-            .style(button::text),
-        button("View")
+            .style(design::text_button),
+        design::button("View")
             .on_press(Message::LibraryMenu("View"))
-            .style(button::text),
-        button("Tools")
+            .style(design::text_button),
+        design::button("Tools")
             .on_press(Message::LibraryMenu("Tools"))
-            .style(button::text),
+            .style(design::text_button),
     ]
     .spacing(8);
     let menu_details: Element<'_, Message> = match state.library_menu {
         Some("File") => row![
-            button("Refresh catalog").on_press(Message::LibraryRefresh),
-            button("Import signed PAK…").on_press(Message::LibraryToggleConfiguration),
-            button("Storage settings").on_press(Message::Navigate(Page::Settings)),
+            design::button("Refresh catalog").on_press(Message::LibraryRefresh),
+            design::button("Import signed PAK…").on_press(Message::LibraryToggleConfiguration),
+            design::button("Storage settings").on_press(Message::Navigate(Page::Settings)),
         ]
         .spacing(8)
         .into(),
         Some("View") => row![
-            button("All Assets").on_press(Message::LibrarySetByBuild(false)),
-            button("By Build").on_press(Message::LibrarySetByBuild(true)),
+            design::button("All Assets").on_press(Message::LibrarySetByBuild(false)),
+            design::button("By Build").on_press(Message::LibrarySetByBuild(true)),
         ]
         .spacing(8)
         .into(),
         Some("Tools") => row![
-            button("Preview selected PAK").on_press(Message::LibraryPreview),
-            button("Create editable project").on_press(Message::LibraryMakeModProject),
-            button("Open Modding").on_press(Message::Navigate(Page::Files)),
+            design::button("Preview selected PAK").on_press(Message::LibraryPreview),
+            design::button("Create editable project").on_press(Message::LibraryMakeModProject),
+            design::button("Open Modding").on_press(Message::Navigate(Page::Files)),
         ]
         .spacing(8)
         .into(),
@@ -121,18 +121,20 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let mut layout = column![
         text("Asset Library").size(24),
         text("Preview and export PAKs you have already extracted. The Asset Library is read-only; editing, building and signing are performed in Modding.")
-            .size(12).color(MUTED),
-        container(menu).padding([4, 8]).width(Fill).style(|_| container::Style {
-            background: Some(Background::Color(HEADER)),
+            .size(12).style(design::muted),
+        container(menu).padding([4, 8]).width(Fill).style(|theme| container::Style {
+            background: Some(Background::Color(design::field(theme))),
             ..container::Style::default()
         }),
         menu_details,
         row![
-            button("Import PAKs").style(button::primary)
+            design::button("Import PAKs").style(design::primary)
                 .on_press(Message::LibraryToggleConfiguration),
-            button("Refresh").on_press(Message::LibraryRefresh),
+            design::button("Library Settings").style(design::secondary)
+                .on_press(Message::OpenLibrarySettings),
+            design::button("Refresh").on_press(Message::LibraryRefresh),
             space().width(Fill),
-            text("◈").size(18).color(MUTED),
+            text("◈").size(18).style(design::muted),
         ].spacing(9),
     ].spacing(10);
 
@@ -141,19 +143,19 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             row![
                 text("IMPORT SIGNED STAGE 2 PAK").size(14),
                 space().width(Fill),
-                button("Close").on_press(Message::LibraryToggleConfiguration).style(button::text),
+                design::button("Close").on_press(Message::LibraryToggleConfiguration).style(design::text_button),
             ].spacing(8),
             text("The Asset Library location is detected automatically. Imports use the configured setup's local verification key; original PAK files are not modified.")
-                .size(12).color(MUTED),
+                .size(12).style(design::muted),
             row![
-                text_input("Full path to a local Stage 2 .pak...", &state.library_import_source)
+                design::text_input("Full path to a local Stage 2 .pak...", &state.library_import_source)
                     .on_input(Message::LibraryImportSourceChanged).width(Fill),
-                button("Import signed PAK").style(button::primary)
+                design::button("Import signed PAK").style(design::primary)
                     .on_press(Message::LibraryImportStart),
             ].spacing(8),
             row![
-                button("Manage storage location in Settings").on_press(Message::Navigate(Page::Settings)).style(button::text),
-                button("Advanced archive tools in Modding").on_press(Message::Navigate(Page::Files)).style(button::text),
+                design::button("Manage storage location in Settings").on_press(Message::OpenLibrarySettings).style(design::text_button),
+                design::button("Advanced archive tools in Modding").on_press(Message::Navigate(Page::Files)).style(design::text_button),
             ].spacing(8),
         ].spacing(8)).padding(12)));
     }
@@ -161,28 +163,28 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let by_build = state.library_by_build;
     let build = library.and_then(|c| c.builds.get(state.library_build_index));
     let tabs = row![
-        button("All Assets")
+        design::button("All Assets")
             .style(if !by_build {
-                button::secondary
+                design::secondary
             } else {
-                button::text
+                design::text_button
             })
             .on_press(Message::LibrarySetByBuild(false)),
-        button("By Build")
+        design::button("By Build")
             .style(if by_build {
-                button::secondary
+                design::secondary
             } else {
-                button::text
+                design::text_button
             })
             .on_press(Message::LibrarySetByBuild(true)),
         space().width(Fill),
         if by_build {
-            button(text(build.map_or("No build snapshots".to_owned(), |s| {
+            design::button(text(build.map_or("No build snapshots".to_owned(), |s| {
                 format!("Build: {s}  ▾")
             })))
             .on_press(Message::LibraryNextBuild)
         } else {
-            button("All imported PAKs").on_press(Message::LibrarySetByBuild(false))
+            design::button("All imported PAKs").on_press(Message::LibrarySetByBuild(false))
         },
     ]
     .spacing(12);
@@ -194,17 +196,17 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             "All imported archives across snapshots"
         })
         .size(12)
-        .color(MUTED),
+        .style(design::muted),
     );
     layout = layout.push(
         row![
-            text_input(
+            design::text_input(
                 "Search imported PAKs, names, folders...",
                 &state.library_search
             )
             .on_input(Message::LibrarySearchChanged)
             .width(Fill),
-            button("Refresh").on_press(Message::LibraryRefresh),
+            design::button("Refresh").on_press(Message::LibraryRefresh),
         ]
         .spacing(8),
     );
@@ -221,6 +223,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     index,
                     archive,
                     state.library_selection.indices.contains(&index),
+                    state.preferences.ui_density == "Compact",
                 ));
                 shown += 1;
             }
@@ -239,7 +242,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     "No imported PAKs match this search."
                 })
                 .size(13)
-                .color(MUTED),
+                .style(design::muted),
             )
             .padding(18),
         );
@@ -255,8 +258,8 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         .spacing(9)
         .padding([10, 8]),
     )
-    .style(|_| container::Style {
-        background: Some(Background::Color(HEADER)),
+    .style(|theme| container::Style {
+        background: Some(Background::Color(design::field(theme))),
         ..container::Style::default()
     })
     .width(Fill);
@@ -275,21 +278,21 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             "{count} imported PAKs • {:.1} GiB manifest-listed extraction • read-only previews{}",
             bytes as f64 / 1_073_741_824.0,
             if ignored > 0 { format!(" • {ignored} invalid manifests skipped") } else { String::new() }
-        )).size(12).color(MUTED).width(Fill),
-        button("‹").on_press_maybe((state.library_page > 0).then_some(Message::LibraryPreviousPage)),
+        )).size(12).style(design::muted).width(Fill),
+        design::button("‹").on_press_maybe((state.library_page > 0).then_some(Message::LibraryPreviousPage)),
         text(format!("{} / {}  •  {} shown", state.library_page + 1, pages, shown)).size(12),
-        button("›").on_press_maybe((state.library_page + 1 < pages).then_some(Message::LibraryNextPage)),
+        design::button("›").on_press_maybe((state.library_page + 1 < pages).then_some(Message::LibraryNextPage)),
     ].spacing(10).align_y(iced::Center));
     layout = layout.push(row![
-        text(format!("{} selected", state.library_selection.indices.len())).size(12).color(MUTED),
-        button("Preview Files").on_press_maybe(selected.map(|_| Message::LibraryPreview)),
-        button("Edit / Add to Mod Project")
+        text(format!("{} selected", state.library_selection.indices.len())).size(12).style(design::muted),
+        design::button("Preview Files").on_press_maybe(selected.map(|_| Message::LibraryPreview)),
+        design::button("Edit / Add to Mod Project")
             .on_press_maybe(selected.map(|_| Message::LibraryMakeModProject)),
         text(if selected.is_some() {
             "Shift: range (including across pages) • Ctrl: toggle. Editing requires an exact staged PAK; the Library remains read-only."
         } else {
             "Select an imported archive to preview its extracted files."
-        }).size(12).color(MUTED),
+        }).size(12).style(design::muted),
     ].spacing(9).align_y(iced::Center));
     layout.width(Fill).height(Fill).into()
 }

@@ -2,25 +2,45 @@
 //! Projects and changed assets are central. Specialist archive actions are
 //! contextual and collapsed by default. Cryptographic keys are never entered.
 use super::{Message, State};
-use iced::widget::{button, column, container, row, scrollable, space, text, text_input};
-use iced::{Background, Border, Color, Element, Fill, Length};
+use crate::design;
+use iced::widget::{column, container, row, scrollable, space, text};
+use iced::{Background, Border, Element, Fill, Length};
 
-const MUTED: Color = Color::from_rgb(0.69, 0.72, 0.77);
-const SURFACE: Color = Color::from_rgb(0.17, 0.18, 0.20);
-const SELECTED: Color = Color::from_rgb(0.24, 0.20, 0.22);
-const LINE: Color = Color::from_rgb(0.26, 0.27, 0.30);
-const PAGE: usize = 90;
+pub(super) const PAGE: usize = 90;
+
+pub(super) fn matching_projects(state: &State) -> Vec<usize> {
+    let query = state.modding_filter.to_lowercase();
+    state
+        .modding_projects
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| {
+            (query.is_empty()
+                || [&p.label, &p.target, &p.source_build]
+                    .iter()
+                    .any(|value| value.to_lowercase().contains(&query)))
+            .then_some(i)
+        })
+        .collect()
+}
+
+pub(super) fn page_range(count: usize, page: usize) -> std::ops::Range<usize> {
+    let start = page.min(count.saturating_sub(1) / PAGE) * PAGE;
+    start..(start + PAGE).min(count)
+}
 
 fn panel<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Container<'a, Message> {
     container(content)
         .width(Fill)
         .padding(10)
-        .style(|_| container::Style {
-            background: Some(Background::Color(SURFACE)),
+        .style(|theme| container::Style {
+            background: Some(Background::Color(design::surface(theme))),
             border: Border {
-                color: LINE,
+                color: design::border(theme),
                 width: 1.0,
-                radius: 7.0.into(),
+                radius: 12.0.into(),
             },
             ..container::Style::default()
         })
@@ -28,79 +48,79 @@ fn panel<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Containe
 
 fn menu<'a>(state: &'a State) -> Element<'a, Message> {
     let items = row![
-        button("File")
-            .style(button::text)
+        design::button("File")
+            .style(design::text_button)
             .on_press(Message::ModdingMenu("File")),
-        button("Edit")
-            .style(button::text)
+        design::button("Edit")
+            .style(design::text_button)
             .on_press(Message::ModdingMenu("Edit")),
-        button("View")
-            .style(button::text)
+        design::button("View")
+            .style(design::text_button)
             .on_press(Message::ModdingMenu("View")),
-        button("Tools")
-            .style(button::text)
+        design::button("Tools")
+            .style(design::text_button)
             .on_press(Message::ModdingMenu("Tools")),
         space().width(Fill),
-        text("Workspace actions").size(12).color(MUTED)
+        text("Workspace actions").size(12).style(design::muted)
     ]
     .spacing(15)
     .align_y(iced::Center);
     let commands: Element<'a, Message> = match state.modding_menu {
         Some("File") => row![
-            button("Refresh Projects").on_press(Message::ModdingRefresh),
-            button("Browse staged PAKs").on_press(Message::ModdingBrowsePaks),
-            button("Installed Mods / Profiles").on_press(Message::ModdingToggleProfiles),
+            design::button("Refresh Projects").on_press(Message::ModdingRefresh),
+            design::button("Browse staged PAKs").on_press(Message::ModdingBrowsePaks),
+            design::button("Installed Mods / Profiles").on_press(Message::ModdingToggleProfiles),
         ]
         .spacing(8)
         .into(),
         Some("Edit") => row![
-            button("Continue Editing").on_press(Message::ModdingOpenProject),
-            button("Review Changes").on_press(Message::ModdingReviewChanges),
-            button("Build Mod")
-                .style(button::primary)
+            design::button("Continue Editing").on_press(Message::ModdingOpenProject),
+            design::button("Review Changes").on_press(Message::ModdingReviewChanges),
+            design::button("Build Mod")
+                .style(design::primary)
                 .on_press(Message::ModdingBuild),
         ]
         .spacing(8)
         .into(),
         Some("View") => row![
-            button(if state.modding_advanced {
+            design::button(if state.modding_advanced {
                 "Hide archive browser"
             } else {
                 "Show archive browser"
             })
             .on_press(Message::ModdingToggleAdvanced),
-            button("Open Asset Viewer").on_press(Message::OpenViewer),
+            design::button("Open Asset Viewer").on_press(Message::OpenViewer),
         ]
         .spacing(8)
         .into(),
         Some("Tools") => column![
             row![
-                button("Verify selected signed PAK")
-                    .style(button::secondary)
+                design::button("Verify selected signed PAK")
+                    .style(design::secondary)
                     .on_press(Message::StartSignedInspection),
-                button("Initialize isolated stage")
-                    .style(button::secondary)
+                design::button("Initialize isolated stage")
+                    .style(design::secondary)
                     .on_press(Message::StartStageInit),
-                button("Check stage")
-                    .style(button::secondary)
+                design::button("Check stage")
+                    .style(design::secondary)
                     .on_press(Message::StartStageStatus),
-                button("Restore backup")
-                    .style(button::secondary)
+                design::button("Restore backup")
+                    .style(design::secondary)
                     .on_press(Message::StartStageRestore),
             ]
             .spacing(7),
             row![
-                button("Import signed original")
-                    .style(button::secondary)
+                design::button("Import signed original")
+                    .style(design::secondary)
                     .on_press(Message::StartStageImport),
-                button("Apply signed replacement")
-                    .style(button::secondary)
+                design::button("Apply signed replacement")
+                    .style(design::secondary)
                     .on_press(Message::StartStageApply),
-                button("Installed Mods / Profiles")
-                    .style(button::secondary)
+                design::button("Installed Mods / Profiles")
+                    .style(design::secondary)
                     .on_press(Message::ModdingToggleProfiles),
-                button("Asset Library")
-                    .style(button::secondary)
+                design::button("Asset Library")
+                    .style(design::secondary)
                     .on_press(Message::Navigate(super::Page::AssetLibrary)),
             ]
             .spacing(7),
@@ -131,25 +151,11 @@ fn project_header() -> Element<'static, Message> {
 
 fn projects(state: &State) -> Element<'_, Message> {
     let mut rows = column![project_header()].spacing(4);
-    let query = state.modding_filter.to_ascii_lowercase();
     let projects = state.modding_projects.as_deref().unwrap_or(&[]);
-    let matches: Vec<usize> = projects
-        .iter()
-        .enumerate()
-        .filter_map(|(index, project)| {
-            if query.is_empty()
-                || project.label.to_ascii_lowercase().contains(&query)
-                || project.target.to_ascii_lowercase().contains(&query)
-                || project.source_build.to_ascii_lowercase().contains(&query)
-            {
-                Some(index)
-            } else {
-                None
-            }
-        })
-        .collect();
+    let matches = matching_projects(state);
     let count = matches.len();
-    for index in matches.into_iter().take(PAGE) {
+    let range = page_range(count, state.modding_page);
+    for &index in &matches[range.clone()] {
         let record = &projects[index];
         let selected = state.project_selection.indices.contains(&index);
         let changed = if record.changed_known {
@@ -179,15 +185,26 @@ fn projects(state: &State) -> Element<'_, Message> {
         .align_y(iced::Center);
         rows = rows.push(
             container(
-                button(cells)
+                design::button(cells)
                     .width(Fill)
-                    .padding([6, 7])
-                    .style(button::text)
+                    .padding([
+                        if state.preferences.ui_density == "Compact" {
+                            2
+                        } else {
+                            5
+                        },
+                        7,
+                    ])
+                    .style(design::text_button)
                     .on_press(Message::ModdingSelectProject(index)),
             )
             .width(Fill)
-            .style(move |_| container::Style {
-                background: Some(Background::Color(if selected { SELECTED } else { SURFACE })),
+            .style(move |theme| container::Style {
+                background: Some(Background::Color(if selected {
+                    design::selection(theme)
+                } else {
+                    design::surface(theme)
+                })),
                 ..container::Style::default()
             }),
         );
@@ -198,24 +215,38 @@ fn projects(state: &State) -> Element<'_, Message> {
             "No projects folder configured. Set Projects in Settings, then refresh."
         } else {
             "No editable projects found. The Asset Library stores originals, not editing projects."
-        }).size(13).color(MUTED).into()
+        }).size(13).style(design::muted).into()
         } else if count == 0 {
             text("No projects match this filter.")
                 .size(13)
-                .color(MUTED)
+                .style(design::muted)
                 .into()
         } else {
             text(format!(
-                "{count} matching project(s); showing first {PAGE}."
+                "{}–{} of {count} matching projects",
+                range.start + 1,
+                range.end
             ))
             .size(11)
-            .color(MUTED)
+            .style(design::muted)
             .into()
         };
     panel(
-        column![scrollable(rows).height(Length::FillPortion(3)), empty,]
+        column![
+            scrollable(rows).height(Length::FillPortion(3)),
+            row![
+                empty,
+                space().width(Fill),
+                design::button("Previous")
+                    .on_press_maybe((range.start > 0).then_some(Message::ModdingPage(false))),
+                design::button("Next")
+                    .on_press_maybe((range.end < count).then_some(Message::ModdingPage(true))),
+            ]
             .spacing(8)
-            .height(Fill),
+            .align_y(iced::Center)
+        ]
+        .spacing(8)
+        .height(Fill),
     )
     .height(Length::FillPortion(3))
     .into()
@@ -230,19 +261,20 @@ fn modifications(state: &State) -> Element<'_, Message> {
     });
     let mut rows = column![
         row![
-            text("MODIFIED FILES IN SELECTED PROJECT")
+            text("MODIFIED FILES IN design::selection(theme) PROJECT")
                 .size(12)
-                .color(MUTED),
+                .style(design::muted),
             space().width(Fill),
-            button("Review Changes")
-                .style(button::secondary)
+            design::button("Review Changes")
+                .style(design::secondary)
                 .on_press(Message::ModdingReviewChanges),
         ]
         .align_y(iced::Center)
     ]
     .spacing(5);
     if let Some(record) = record {
-        for changed in record.modified.iter().take(PAGE) {
+        let range = page_range(record.modified.len(), state.modding_changes_page);
+        for changed in &record.modified[range.clone()] {
             rows = rows.push(
                 row![
                     text(changed.as_str())
@@ -251,23 +283,44 @@ fn modifications(state: &State) -> Element<'_, Message> {
                     text(record.workspace.to_string_lossy().to_string())
                         .width(Length::FillPortion(2))
                         .size(11)
-                        .color(MUTED),
+                        .style(design::muted),
                 ]
                 .spacing(12),
             );
         }
-        if record.modified.is_empty() {
+        if !record.modified.is_empty() {
+            rows = rows.push(
+                row![
+                    text(format!(
+                        "{}–{} of {} changed files",
+                        range.start + 1,
+                        range.end,
+                        record.modified.len()
+                    ))
+                    .size(12),
+                    space().width(Fill),
+                    design::button("Previous").on_press_maybe(
+                        (range.start > 0).then_some(Message::ModdingChangesPage(false))
+                    ),
+                    design::button("Next").on_press_maybe(
+                        (range.end < record.modified.len())
+                            .then_some(Message::ModdingChangesPage(true))
+                    ),
+                ]
+                .spacing(8),
+            );
+        } else {
             rows = rows.push(text(if record.changed_known {
                 "No modified files detected in this project."
             } else {
                 "Some files could not be checked; review the source and project before building."
-            }).size(12).color(MUTED));
+            }).size(12).style(design::muted));
         }
     } else {
         rows = rows.push(
             text("Select an editable project above to see changed files.")
                 .size(12)
-                .color(MUTED),
+                .style(design::muted),
         );
     }
     panel(scrollable(rows).height(Fill))
@@ -294,18 +347,18 @@ fn archive_browser(state: &State) -> Element<'_, Message> {
             if count <= PAGE {
                 let selected = state.file_selection.indices.contains(&index);
                 list = list.push(
-                    button(row![
+                    design::button(row![
                         text(file.relative_path.as_str()).size(12).width(Fill),
                         text(format!("{} KiB", file.byte_size / 1024))
                             .size(12)
-                            .color(MUTED)
+                            .style(design::muted)
                     ])
                     .width(Fill)
                     .padding([5, 8])
                     .style(if selected {
-                        button::primary
+                        design::primary
                     } else {
-                        button::text
+                        design::text_button
                     })
                     .on_press(Message::ModdingSelectArchive(index)),
                 );
@@ -314,37 +367,37 @@ fn archive_browser(state: &State) -> Element<'_, Message> {
     }
     panel(column![
         row![
-            text_input("Search PAKs, maps and dependency groups…", &state.search)
+            design::text_input("Search PAKs, maps and dependency groups…", &state.search)
                 .on_input(Message::SearchChanged).width(Fill),
-            button("Refresh").style(button::secondary).on_press(Message::ModdingBrowsePaks)
+            design::button("Refresh").style(design::secondary).on_press(Message::ModdingBrowsePaks)
         ].spacing(8),
         scrollable(list).height(Length::Fixed(180.0)),
-        text(format!("{count} matching staged PAK(s)")).size(12).color(MUTED),
+        text(format!("{count} matching staged PAK(s)")).size(12).style(design::muted),
         row![
-            button("Verify PAK").style(button::secondary)
+            design::button("Verify PAK").style(design::secondary)
                 .on_press(Message::StartSignedInspection),
-            button("Unpack PAK").style(button::secondary)
+            design::button("Unpack PAK").style(design::secondary)
                 .on_press(Message::ModdingUnpackPak),
-            button("Edit Files").style(button::primary)
+            design::button("Edit Files").style(design::primary)
                 .on_press(Message::ModdingOpenProject),
-            button("Level Editor").style(button::secondary)
+            design::button("Level Editor").style(design::secondary)
                 .on_press(Message::Navigate(super::Page::Levels)),
         ].spacing(8),
-        text("SPECIALIST · REBUILD ONE SIGNED MEMBER").size(12).color(MUTED),
+        text("SPECIALIST · REBUILD ONE SIGNED MEMBER").size(12).style(design::muted),
         row![
-            text_input("Exact archive member path…", &state.signed_entry)
+            design::text_input("Exact archive member path…", &state.signed_entry)
                 .on_input(Message::SignedMemberChanged).width(Fill),
-            text_input("Modified replacement file…", &state.signed_replacement)
+            design::text_input("Modified replacement file…", &state.signed_replacement)
                 .on_input(Message::SignedReplacementChanged).width(Fill),
         ].spacing(7),
         row![
-            text_input("NEW output path ending in original .pak basename…", &state.output)
+            design::text_input("NEW output path ending in original .pak basename…", &state.output)
                 .on_input(Message::OutputChanged).width(Fill),
-            button("Rebuild one member").style(button::secondary)
+            design::button("Rebuild one member").style(design::secondary)
                 .on_press(Message::StartSignedRebuild),
         ].spacing(7),
         text("Signing keys and the signed basename are resolved from your prepared stage and selected archive.")
-            .size(12).color(MUTED),
+            .size(12).style(design::muted),
     ].spacing(8)).into()
 }
 
@@ -353,49 +406,53 @@ fn profiles(state: &State) -> Element<'_, Message> {
     if let Some(data) = &state.profile_catalog {
         for profile in data.profiles.iter().take(40) {
             catalog = catalog.push(
-                button(text(format!("{} · {} mod(s)", profile.name, profile.mods.len())).size(12))
-                    .style(button::text)
-                    .on_press(Message::SelectProfile(profile.id.clone())),
+                design::button(
+                    text(format!("{} · {} mod(s)", profile.name, profile.mods.len())).size(12),
+                )
+                .style(design::text_button)
+                .on_press(Message::SelectProfile(profile.id.clone())),
             );
         }
     } else {
         catalog = catalog.push(
             text("Select Refresh to browse offline profiles.")
                 .size(12)
-                .color(MUTED),
+                .style(design::muted),
         );
     }
     panel(
         column![
             text("INSTALLED MODS / PROFILES").size(14),
             row![
-                text_input("New profile name…", &state.profile_name)
+                design::text_input("New profile name…", &state.profile_name)
                     .on_input(Message::ProfileNameChanged)
                     .width(Fill),
-                button("Create profile").on_press(Message::StartProfileCreate),
-                button("Refresh").on_press(Message::StartProfileList)
+                design::button("Create profile").on_press(Message::StartProfileCreate),
+                design::button("Refresh").on_press(Message::StartProfileList)
             ]
             .spacing(8),
             scrollable(catalog).height(Length::Fixed(110.0)),
             row![
-                button("Add signed PAK")
-                    .style(button::secondary)
+                design::button("Add signed PAK")
+                    .style(design::secondary)
                     .on_press(Message::StartProfileAdd),
-                button("Verify selected")
-                    .style(button::secondary)
+                design::button("Verify selected")
+                    .style(design::secondary)
                     .on_press(Message::StartProfilePlan),
-                button("Apply to offline stage")
-                    .style(button::secondary)
+                design::button("Apply to offline stage")
+                    .style(design::secondary)
                     .on_press(Message::StartProfileApply),
-                button("Check recovery")
-                    .style(button::secondary)
+                design::button("Check recovery")
+                    .style(design::secondary)
                     .on_press(Message::StartProfileStatus),
-                button("Restore staged profile")
-                    .style(button::secondary)
+                design::button("Restore staged profile")
+                    .style(design::secondary)
                     .on_press(Message::StartProfileRecover),
             ]
             .spacing(8),
-            text(state.profile_feedback.as_str()).size(12).color(MUTED)
+            text(state.profile_feedback.as_str())
+                .size(12)
+                .style(design::muted)
         ]
         .spacing(7),
     )
@@ -410,20 +467,20 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             .and_then(|list| list.get(index))
     });
     let actions = row![
-        button("Install Mod…")
-            .style(button::secondary)
+        design::button("Install Mod…")
+            .style(design::secondary)
             .on_press(Message::ModdingToggleProfiles),
-        button("Installed Mods…")
-            .style(button::secondary)
+        design::button("Installed Mods…")
+            .style(design::secondary)
             .on_press(Message::ModdingToggleProfiles),
-        button("Refresh Projects")
-            .style(button::secondary)
+        design::button("Refresh Projects")
+            .style(design::secondary)
             .on_press(Message::ModdingRefresh),
-        button("Continue Editing")
-            .style(button::secondary)
+        design::button("Continue Editing")
+            .style(design::secondary)
             .on_press(Message::ModdingOpenProject),
-        button("Build Mod")
-            .style(button::primary)
+        design::button("Build Mod")
+            .style(design::primary)
             .on_press(Message::ModdingBuild),
         space().width(Fill),
     ]
@@ -433,10 +490,10 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         text("Modding").size(22),
         text("Projects contain editable copies. Original signed PAKs stay in the Asset Library.")
             .size(12)
-            .color(MUTED),
+            .style(design::muted),
         menu(state),
         row![
-            text_input(
+            design::text_input(
                 "Find workspace, target PAK or build…",
                 &state.modding_filter
             )
@@ -448,19 +505,19 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     .unwrap_or("Select a project")
             )
             .size(12)
-            .color(MUTED),
+            .style(design::muted),
         ]
         .spacing(10)
         .align_y(iced::Center),
         projects(state),
         modifications(state),
         actions,
-        button(if state.modding_advanced {
+        design::button(if state.modding_advanced {
             "Hide Advanced Archive Tools"
         } else {
             "Show Advanced Archive Tools"
         })
-        .style(button::secondary)
+        .style(design::secondary)
         .on_press(Message::ModdingToggleAdvanced),
     ]
     .spacing(9)

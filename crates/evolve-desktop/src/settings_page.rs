@@ -1,21 +1,18 @@
 //! Private-manager-inspired Settings: grouped Game Storage, Asset Library,
 //! appearance and update panels. Advanced paths are hidden by default.
 use super::{Message, Page, State};
-use iced::widget::{button, column, container, row, space, text, text_input};
+use crate::design;
+use iced::widget::{column, container, row, scrollable, space, text};
 use iced::{Background, Border, Color, Element, Fill, Length};
-
-const PANEL: Color = Color::from_rgb8(39, 40, 46);
-const EDGE: Color = Color::from_rgb8(57, 57, 66);
-const MUTED: Color = Color::from_rgb8(173, 178, 190);
 
 fn panel<'a>(child: impl Into<Element<'a, Message>>) -> iced::widget::Container<'a, Message> {
     container(child)
         .width(Fill)
         .padding(14)
-        .style(|_| container::Style {
-            background: Some(Background::Color(PANEL)),
+        .style(|theme| container::Style {
+            background: Some(Background::Color(design::surface(theme))),
             border: Border {
-                color: EDGE,
+                color: design::border(theme),
                 width: 1.0,
                 radius: 7.0.into(),
             },
@@ -24,7 +21,11 @@ fn panel<'a>(child: impl Into<Element<'a, Message>>) -> iced::widget::Container<
 }
 
 fn heading<'a>(name: &'a str, description: &'a str) -> iced::widget::Column<'a, Message> {
-    column![text(name).size(17), text(description).size(12).color(MUTED)].spacing(7)
+    column![
+        text(name).size(17),
+        text(description).size(12).style(design::muted)
+    ]
+    .spacing(7)
 }
 
 fn mib(bytes: u64) -> String {
@@ -90,60 +91,58 @@ fn storage(state: &State) -> Element<'_, Message> {
     }
     panel(column![
         text("GAME STORAGE").size(15),
-        text("One location for future setups, with storage breakdown and advanced paths.").size(12).color(MUTED),
+        text("One location for future setups, with storage breakdown and advanced paths.").size(12).style(design::muted),
         row![
             text("Mod Data Location").size(12),
-            container(text(root).size(12)).width(Fill).padding(9).style(|_| container::Style {
+            container(text(root).size(12)).width(Fill).padding(9).style(|theme| container::Style {
                 background: Some(Background::Color(Color::from_rgb8(31, 31, 37))),
-                border: Border { color: EDGE, width: 1.0, radius: 5.0.into() },
+                border: Border { color: design::border(theme), width: 1.0, radius: 5.0.into() },
                 ..container::Style::default()
             }),
-            button("Change…").on_press(Message::SettingsToggleAdvancedPaths).style(button::secondary)
+            design::button("Change…").on_press(Message::SettingsToggleAdvancedPaths).style(design::secondary)
         ].spacing(9).align_y(iced::Center),
-        text("Changing this location affects FUTURE setups only. Existing signing and recovery files are not moved.").size(11).color(MUTED),
+        text("Changing this location affects FUTURE setups only. Existing signing and recovery files are not moved.").size(11).style(design::muted),
         text(format!("Active stage: {}", if state.preferences.stage.is_empty() { "Not configured" } else { &state.preferences.stage })).size(11),
         container(column![
             row![
                 text("STORAGE BREAKDOWN").size(12),
                 space().width(Fill),
-                text(if state.storage_analyzing { "Checking storage…" } else if state.storage_usage.is_some() { "Scan complete" } else { "Not yet analyzed" }).size(11).color(MUTED)
+                text(if state.storage_analyzing { "Checking storage…" } else if state.storage_usage.is_some() { "Scan complete" } else { "Not yet analyzed" }).size(11).style(design::muted)
             ],
             strip,
             legend,
             row![
-                button("Analyze Storage").on_press_maybe((!state.storage_analyzing && !state.busy).then_some(Message::SettingsAnalyzeStorage)).style(button::secondary),
-                text(state.storage_usage.as_ref().map_or("No storage analysis yet.".to_owned(), |r| format!("{} files checked{}", r.files, if r.truncated { " • Scan limit reached; totals incomplete" } else { "" }))).size(11).color(MUTED)
+                design::button("Analyze Storage").on_press_maybe((!state.storage_analyzing && !state.busy).then_some(Message::SettingsAnalyzeStorage)).style(design::secondary),
+                text(state.storage_usage.as_ref().map_or("No storage analysis yet.".to_owned(), |r| format!("{} files checked{}", r.files, if r.truncated { " • Scan limit reached; totals incomplete" } else { "" }))).size(11).style(design::muted)
             ].spacing(8)
-        ].spacing(8)).padding(10).width(Fill).style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgb8(31, 32, 37))),
+        ].spacing(8)).padding(10).width(Fill).style(|theme| container::Style {
+            background: Some(Background::Color(design::field(theme))),
             ..container::Style::default()
         }),
-        button(text(if state.settings_advanced_paths { "▾ Advanced folder paths" } else { "▸ Advanced folder paths" }))
-            .on_press(Message::SettingsToggleAdvancedPaths).style(button::text),
+        design::button(text(if state.settings_advanced_paths { "▾ Advanced folder paths" } else { "▸ Advanced folder paths" }))
+            .on_press(Message::SettingsToggleAdvancedPaths).style(design::text_button),
         if state.settings_advanced_paths {
             column![
                 text("Future GameSets location").size(12),
-                text_input("GameSets folder", &state.preferences.game_storage_root).on_input(Message::PreferenceGameStorage),
+                design::text_input("GameSets folder", &state.preferences.game_storage_root).on_input(Message::PreferenceGameStorage),
                 text("Signing stage • existing location").size(12),
-                text_input("Stage folder", &state.preferences.stage).on_input(Message::PreferenceStage),
+                design::text_input("Stage folder", &state.preferences.stage).on_input(Message::PreferenceStage),
                 text("Launch restoration journal").size(12),
-                text_input("Swap journal folder", &state.preferences.swap).on_input(Message::PreferenceSwap),
+                design::text_input("Swap journal folder", &state.preferences.swap).on_input(Message::PreferenceSwap),
                 text("Mod projects").size(12),
-                text_input("Projects folder", &state.preferences.projects).on_input(Message::PreferenceProjects),
-                text("Asset Library").size(12),
-                text_input("Asset Library folder", &state.preferences.asset_library_root).on_input(Message::PreferenceAssets),
+                design::text_input("Projects folder", &state.preferences.projects).on_input(Message::PreferenceProjects),
                 text("Current editor workspace").size(12),
-                text_input("Current workspace", &state.preferences.current_workspace).on_input(Message::PreferenceWorkspace),
-                text("Paths are saved only when you select Save Settings; no data is automatically moved.").size(11).color(MUTED),
+                design::text_input("Current workspace", &state.preferences.current_workspace).on_input(Message::PreferenceWorkspace),
+                text("Paths are saved only when you select Save Settings; no data is automatically moved.").size(11).style(design::muted),
             ].spacing(6).into()
         } else {
             Element::<Message>::from(space().height(Length::Fixed(1.0)))
         },
         row![
-            button("Set Up Manager").on_press(Message::Navigate(Page::Files)).style(button::primary).width(Fill),
-            button("Check Setup").on_press(Message::StartStageStatus).style(button::secondary).width(Fill),
-            button("Open Projects").on_press(Message::Navigate(Page::Files)).style(button::secondary).width(Fill),
-            button("Save Settings").on_press(Message::SavePreferences).style(button::secondary).width(Fill),
+            design::button("Set Up Manager").on_press(Message::Navigate(Page::Files)).style(design::primary).width(Fill),
+            design::button("Check Setup").on_press(Message::StartStageStatus).style(design::secondary).width(Fill),
+            design::button("Open Projects").on_press(Message::Navigate(Page::Files)).style(design::secondary).width(Fill),
+            design::button("Save Settings").on_press(Message::SavePreferences).style(design::secondary).width(Fill),
         ].spacing(8),
     ].spacing(11))
     .into()
@@ -190,59 +189,123 @@ fn library(state: &State) -> Element<'_, Message> {
     });
     panel(column![
         text("EXTRACTED PAK LIBRARY").size(15),
-        text("Reference PAKs for characters, textures, animations and levels. The location is detected automatically from the saved manager profile.").size(12).color(MUTED),
+        text("Reference PAKs for characters, textures, animations and levels. The location is detected automatically from the saved manager profile.").size(12).style(design::muted),
         text(format!("{} imported archives • {} stored", archive_count, if state.library_catalog.is_some() { mib(total) } else { "Not indexed yet".into() })).size(12),
         text(reference_counts.map_or("Shared references: —  •  Animation references: —".to_string(), |(shared, animations)| format!("Shared references: {shared}/6  •  Animation references: {animations}/3"))).size(12),
-        text(if state.library_root.is_empty() { "Default Asset Library location could not be detected" } else { state.library_root.as_str() }).size(11).color(MUTED),
-        button("Manage Asset Library / Add PAKs…").on_press(Message::Navigate(Page::AssetLibrary)).width(Fill).style(button::secondary),
+        text(if state.library_root.is_empty() { "Default Asset Library location could not be detected" } else { state.library_root.as_str() }).size(11).style(design::muted),
+        design::text_input("Existing extracted AssetLibrary folder...", &state.preferences.asset_library_root).on_input(Message::PreferenceAssets),
+        design::button("Load Library").on_press_maybe((!state.busy).then_some(Message::LibraryRefresh)),
+        design::button("Manage Asset Library / Add PAKs…").on_press(Message::Navigate(Page::AssetLibrary)).width(Fill).style(design::secondary),
     ].spacing(10)).into()
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Tab {
+    #[default]
+    Appearance,
+    Storage,
+    Integration,
+    Updates,
+    Advanced,
+}
+
+impl Tab {
+    const ALL: [Self; 5] = [
+        Self::Appearance,
+        Self::Storage,
+        Self::Integration,
+        Self::Updates,
+        Self::Advanced,
+    ];
+    fn title(self) -> &'static str {
+        match self {
+            Self::Appearance => "Appearance",
+            Self::Storage => "Storage",
+            Self::Integration => "Integrations",
+            Self::Updates => "Updates",
+            Self::Advanced => "Advanced",
+        }
+    }
+}
+
 pub(super) fn view(state: &State) -> Element<'_, Message> {
-    column![
-        text("Settings").size(24),
-        heading("GAME STORAGE", "Review disk usage and configure future setups without changing active recovery files."),
-        storage(state),
-        heading("ASSET LIBRARY", "Keep extracted reference PAKs available across Modding, models and levels."),
-        library(state),
+    let tabs = Tab::ALL.into_iter().fold(row![].spacing(8), |tabs, tab| {
+        tabs.push(
+            design::button(tab.title())
+                .style(if state.settings_tab == tab {
+                    design::primary
+                } else {
+                    design::secondary
+                })
+                .on_press(Message::SettingsTab(tab)),
+        )
+    });
+    let content: Element<'_, Message> = match state.settings_tab {
+        Tab::Appearance => column![
         heading("GENERAL & APPEARANCE", "Compact controls with the same sidebar and theme behavior as the private manager."),
         panel(column![
             row![
-                button(text(format!("Appearance: {}", state.preferences.appearance_mode))).on_press(Message::PreferenceAppearance).style(button::secondary),
-                button(text(format!("Density: {}", state.preferences.ui_density))).on_press(Message::PreferenceDensity).style(button::secondary),
-                button(text(format!("Explorer: {}", state.preferences.file_explorer_side))).on_press(Message::PreferenceExplorerSide).style(button::secondary)
+                design::button(text(format!("Appearance: {}", state.preferences.appearance_mode))).on_press(Message::PreferenceAppearance).style(design::secondary),
+                design::button(text(format!("Density: {}", state.preferences.ui_density))).on_press(Message::PreferenceDensity).style(design::secondary),
+                design::button(text(format!("Explorer: {}", state.preferences.file_explorer_side))).on_press(Message::PreferenceExplorerSide).style(design::secondary)
             ].spacing(8),
-            button(text(format!("Reduce menu animation: {}", if state.preferences.reduce_motion { "On" } else { "Off" }))).on_press(Message::PreferenceReduceMotion).style(button::secondary),
-            text("Color presets and font preferences are preserved in settings.json; visual pickers are not implemented yet.").size(11).color(MUTED),
+            design::button(text(format!("Reduce menu animation: {}", if state.preferences.reduce_motion { "On" } else { "Off" }))).on_press(Message::PreferenceReduceMotion).style(design::secondary),
+            text("Color presets and font preferences are preserved in settings.json; visual pickers are not implemented yet.").size(11).style(design::muted),
         ].spacing(8)),
+        ].spacing(12).into(),
+        Tab::Updates => column![
         heading("UPDATES", "Stable by default, with a verified experimental channel available."),
         panel(column![
             text(format!("Installed version: {}", env!("CARGO_PKG_VERSION"))).size(12),
             row![
-                button("Check for Updates").on_press(Message::CheckUpdates).style(button::primary),
-                button(text(format!("Experimental: {}", if state.preferences.experimental_updates { "On" } else { "Off" }))).on_press(Message::PreferenceExperimental).style(button::secondary),
-                button(text(format!("Auto-check: {}", if state.preferences.automatic_update_checks { "On" } else { "Off" }))).on_press(Message::PreferenceAutoUpdates).style(button::secondary)
+                design::button("Check for Updates").on_press(Message::CheckUpdates).style(design::primary),
+                design::button(text(format!("Experimental: {}", if state.preferences.experimental_updates { "On" } else { "Off" }))).on_press(Message::PreferenceExperimental).style(design::secondary),
+                design::button(text(format!("Auto-check: {}", if state.preferences.automatic_update_checks { "On" } else { "Off" }))).on_press(Message::PreferenceAutoUpdates).style(design::secondary)
             ].spacing(8),
-            text(state.update_status.as_str()).size(12).color(MUTED),
+            text(state.update_status.as_str()).size(12).style(design::muted),
             super::download_action(state),
             super::run_installer_action(state),
         ].spacing(8)),
+        ].spacing(12).into(),
+        Tab::Integration => column![
         heading("BLENDER INTEGRATION", "Blender is used for verified native FBX export."),
         panel(column![
             text("Blender executable").size(12),
-            text_input("Path to Blender executable", &state.preferences.blender_executable).on_input(Message::PreferenceBlender),
+            design::text_input("Path to Blender executable", &state.preferences.blender_executable).on_input(Message::PreferenceBlender),
         ].spacing(7)),
+        ].spacing(12).into(),
+        Tab::Advanced => column![
         heading("BACKUPS & RECOVERY", "Preserve source archives and restoration history."),
         panel(column![
-            button(text(format!("Keep permanent original snapshots: {}", if state.preferences.keep_original_snapshots { "On" } else { "Off" }))).on_press(Message::PreferenceSnapshots).style(button::secondary),
-            button(text(format!("Show activity during tasks: {}", if state.preferences.show_activity_on_tasks { "On" } else { "Off" }))).on_press(Message::PreferenceActivity).style(button::secondary),
-            text("Recovery settings do not imply that every private-manager swap operation has been ported.").size(11).color(MUTED),
+            design::button(text(format!("Keep permanent original snapshots: {}", if state.preferences.keep_original_snapshots { "On" } else { "Off" }))).on_press(Message::PreferenceSnapshots).style(design::secondary),
+            design::button(text(format!("Show activity during tasks: {}", if state.preferences.show_activity_on_tasks { "On" } else { "Off" }))).on_press(Message::PreferenceActivity).style(design::secondary),
+            text("Recovery settings do not imply that every private-manager swap operation has been ported.").size(11).style(design::muted),
         ].spacing(8)),
+        ].spacing(12).into(),
+        Tab::Storage => column![
+        heading("GAME STORAGE", "Review disk usage and configure future setups without changing active recovery files."),
+        storage(state),
+        heading("ASSET LIBRARY", "Keep extracted reference PAKs available across Modding, models and levels."),
+        library(state),
+        ].spacing(12).into(),
+    };
+    column![
+        text("Settings").size(24),
+        tabs,
+        scrollable(content).height(Fill),
         row![
-            text(state.settings_status.as_str()).size(12).color(MUTED).width(Fill),
-            button("Save Settings").on_press(Message::SavePreferences).style(button::primary)
-        ].spacing(8)
-    ].spacing(12).into()
+            design::button("Save Settings")
+                .style(design::primary)
+                .on_press(Message::SavePreferences),
+            text(state.settings_status.as_str())
+                .size(12)
+                .style(design::muted)
+        ]
+        .spacing(12),
+    ]
+    .spacing(16)
+    .height(Fill)
+    .into()
 }
 
 #[cfg(test)]

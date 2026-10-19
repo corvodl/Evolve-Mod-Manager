@@ -109,6 +109,27 @@ The page now mirrors the private Qt manager's **project-first workflow** instead
 
 ## Rust/Iced/wgpu interactive GUI improvements (development preview)
 
+### Shared appearance and project browsing
+
+- Settings has Appearance, Storage, Integrations, Updates and Advanced tabs with
+  a persistent Save Settings footer. Asset Library folder configuration and Load
+  Library live under Storage. Switching tabs preserves pending preference edits.
+
+- Home, Modding, Asset Library and Asset Viewer now share the reference Dark/Light
+  semantic palette. Saved color overrides affect rendered surfaces, text, accents,
+  borders and selections. Controls use rounded buttons and readable themed inputs;
+  navigation and Home tile icons adapt to Light mode.
+- The shell uses the reference 66-pixel rail, 51-by-43 navigation buttons, 23-pixel
+  section icons and a clickable Home brand. Home has separate Play and Client cards,
+  106-pixel workspace tiles and matching panel spacing. The main window minimum is
+  880 by 620. This is closer visual alignment, not pixel-identical Qt parity.
+- Project and changed-file lists page beyond 90 records. Filtering resets the page;
+  selection uses the visible page, and Ctrl-deselecting clears the active project
+  when nothing remains selected. Compact density affects project/library rows.
+- Reducer tests cover later-page selection, filtering, deselection and changed-file
+  page bounds; palette tests cover default and overridden colors. Previously listed incomplete workflows remain subject to their acceptance gates;
+  matching their appearance does not establish functionality.
+
 The following are **new implementation work**, not a claim of complete Qt parity:
 
 | Capability | Implemented in the preview | Still required |
