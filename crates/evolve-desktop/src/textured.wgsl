@@ -39,7 +39,17 @@ fn fs_main(input: Output) -> @location(0) vec4<f32> {
     let tangent_normal = normalize(vec3<f32>(
         xy, sqrt(max(0.0, 1.0 - dot(xy, xy)))
     ));
-    var surface = normalize(input.normal);
+    // Compiled meshes can omit a usable per-vertex normal stream. Use real
+    // view-space triangle derivatives rather than flattening every face into
+    // the same clay silhouette. The original geometry is not modified.
+    var surface = input.normal;
+    if length(surface) < 0.00001 {
+        surface = cross(dpdx(input.view_position), dpdy(input.view_position));
+    }
+    if length(surface) < 0.00001 {
+        surface = vec3<f32>(0.0, 0.0, 1.0);
+    }
+    surface = normalize(surface);
 
     // Derivative-based tangent frame respects unwrapped/repeating original UV0,
     // including mirror signs. Do not mutate the source mesh or original UVs.
@@ -59,8 +69,15 @@ fn fs_main(input: Output) -> @location(0) vec4<f32> {
             surface = normalize(t * tangent_normal.x + b * tangent_normal.y + surface * tangent_normal.z);
         }
     }
-    let light = normalize(vec3<f32>(0.35, -0.3, 0.9));
-    let brightness = (0.20 + 0.75 * max(dot(surface, light), 0.0)) * clamp(input.light_strength, 0.1, 2.0);
+    // Neutral studio lights keep source surface detail visible without
+    // inventing missing diffuse artwork. Two-sided light accommodates
+    // CryEngine meshes with reversed source winding in isolated previews.
+    let key = normalize(vec3<f32>(0.45, -0.4, 0.8));
+    let fill = normalize(vec3<f32>(-0.7, 0.25, 0.5));
+    let key_amount = abs(dot(surface, key));
+    let fill_amount = abs(dot(surface, fill));
+    let brightness = (0.30 + 0.54 * key_amount + 0.16 * fill_amount)
+        * clamp(input.light_strength, 0.1, 2.0);
     // Emission is manually selected and authored as sRGB; exact MTL
     // GlowAmount and transparency still require verified material resolution.
     return vec4<f32>(base.rgb * brightness + glow, base.a);
