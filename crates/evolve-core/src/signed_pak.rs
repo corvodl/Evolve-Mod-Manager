@@ -150,7 +150,7 @@ impl<R: Read> CtrRead<R> {
     fn new(reader: R, key: &[u8; 16], iv: [u8; 16]) -> Self {
         Self {
             reader,
-            cipher: Twofish::new(GenericArray::from_slice(key)),
+            cipher: Twofish::new_from_slice(key).expect("CryPAK uses a fixed 128-bit Twofish key"),
             counter: u128::from_le_bytes(iv),
             keystream: [0u8; 16],
             used: 16,
@@ -421,6 +421,9 @@ mod tests {
         cdr[10..12].copy_from_slice(&13u16.to_le_bytes());
         cdr[28..30].copy_from_slice(&11u16.to_le_bytes());
         cdr[46..].copy_from_slice(b"file01.caf!");
+        // Force the signed local payload beyond the central-directory boundary.
+        cdr[20..24].copy_from_slice(&99u32.to_le_bytes());
+        cdr[24..28].copy_from_slice(&99u32.to_le_bytes());
         assert!(parse_cdr(&cdr, "Game.pak", 100, 1).is_err());
     }
     #[test]
