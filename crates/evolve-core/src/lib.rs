@@ -4,6 +4,7 @@ pub mod archive;
 pub mod cdf;
 pub mod dds;
 pub mod inventory;
+pub mod model;
 pub mod policy;
 pub mod terrain;
 pub mod signed_pak;
@@ -17,6 +18,7 @@ pub use cdf::{
     read_cdf, resolve_cdf, resolve_virtual,
 };
 pub use dds::{DdsError, DdsFormat, DdsInfo, decode_dds_rgba, export_dds_png, inspect_dds};
+pub use model::{ModelError, ModelInfo, RenderMesh, export_model_obj, parse_model_bytes, read_model};
 pub use inventory::{
     AssetEntry, AssetKind, Inventory, InventoryError, MAX_ENTRIES, scan_directory,
     write_inventory_json,
