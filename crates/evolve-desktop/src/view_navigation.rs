@@ -31,6 +31,10 @@ impl Navigation {
                     mouse::Button::Left | mouse::Button::Middle | mouse::Button::Right
                 ) =>
             {
+                // Keep the original drag active even if another button is pressed.
+                if self.active_button.is_some() {
+                    return None;
+                }
                 if let Some(position) = cursor.position_in(bounds) {
                     self.last = Some(Point::new(position.x + bounds.x, position.y + bounds.y));
                     self.active_button = Some(*button);
@@ -43,10 +47,19 @@ impl Navigation {
             {
                 self.last = None;
                 self.active_button = None;
+                self.panning = false;
                 None
             }
             Event::Mouse(mouse::Event::CursorMoved { position }) => {
                 let last = self.last?;
+                // Pointer capture is bounded: discard an abandoned drag once
+                // the pointer leaves the viewport, instead of jumping on re-entry.
+                if cursor.position_in(bounds).is_none() {
+                    self.last = None;
+                    self.active_button = None;
+                    self.panning = false;
+                    return None;
+                }
                 self.last = Some(*position);
                 let dx = position.x - last.x;
                 let dy = position.y - last.y;
@@ -139,6 +152,17 @@ mod tests {
                 matches!(nav.handle(&moved, bounds, cursor, shift), Some(Gesture::Pan(x, y)) if x > 0.0 && y > 0.0)
             );
         }
+    }
+
+    #[test]
+    fn secondary_button_does_not_replace_active_orbit_drag() {
+        let bounds = Rectangle { x: 0.0, y: 0.0, width: 200.0, height: 200.0 };
+        let cursor = mouse::Cursor::Available(Point::new(50.0, 50.0));
+        let mut nav = Navigation::default();
+        nav.handle(&Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)), bounds, cursor, false);
+        nav.handle(&Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)), bounds, cursor, false);
+        let move_event = Event::Mouse(mouse::Event::CursorMoved { position: Point::new(55.0, 53.0) });
+        assert!(matches!(nav.handle(&move_event, bounds, cursor, false), Some(Gesture::Orbit(..))));
     }
 
     #[test]
