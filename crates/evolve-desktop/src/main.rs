@@ -462,8 +462,9 @@ impl Operation {
                 let authored = read_material(&source).map_err(|e| e.to_string())?;
                 let library = scan_directory(&root).map_err(|e| e.to_string())?;
                 let mut report = resolve_materials(&library, &authored);
-                if authored.slots.len() == 1 && report.textures.len() <= 8 {
-                    if let Some(imported_root) = &imported_root {
+                if authored.slots.len() == 1 && report.textures.len() <= 8
+                    && let Some(imported_root) = &imported_root
+                {
                         for texture in &mut report.textures {
                             if !matches!(texture.resolution, AssetResolution::Missing) {
                                 continue;
@@ -495,7 +496,6 @@ impl Operation {
                                 }
                             };
                         }
-                    }
                 }
                 let get_pixels = |roles: &[&str]| -> Result<Option<::image::RgbaImage>, String> {
                     if authored.slots.len() != 1 {
