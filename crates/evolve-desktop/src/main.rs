@@ -4339,6 +4339,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     if state.auto_material_pending && state.viewer_queued_preview.is_none() {
                         state.auto_material_pending = false;
                         if let Some(idle) = state.auto_idle_pending.take() {
+                            state.auto_play_native_caf = true;
                             return launch(state, Operation::LoadCaf(idle));
                         }
                     }
