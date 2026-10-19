@@ -58,9 +58,11 @@ fn strip(state: &State) -> Element<'_, Message> {
                 design::button("Export verified rigged FBX").on_press(Message::StartRigFbx),
                 design::button("Flat CDF parts FBX (experimental)")
                     .on_press(Message::ViewerExportFlatCdf),
+                design::button("Unified CDF rigged FBX (experimental)")
+                    .on_press(Message::ViewerExportUnifiedCdf),
             ].spacing(8),
             text("Blender FBX export requires a verified compiled skeleton and original mesh weights. Source files are never overwritten.").size(12).style(design::muted),
-            text("Flat CDF export uses the same output field as a NEW DIRECTORY (not .fbx). It publishes separate rigged part FBXs only if every part passes; complete character materials and unified root FBX are not yet supported.")
+            text("Flat CDF export requires a NEW DIRECTORY. Unified CDF export requires a NEW .fbx file. Both verify original UVs and weights; unified output uses one shared armature, but complete per-part materials and skin animation remain unverified.")
                 .size(12).style(design::muted),
             row![
                 design::text_input("NEW FBX destination (absolute path)", &state.output)
