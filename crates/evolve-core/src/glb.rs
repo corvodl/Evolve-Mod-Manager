@@ -35,8 +35,7 @@ fn align4(data: &mut Vec<u8>) {
 /// the corresponding parser has independently verified its layout.
 pub fn geometry_glb_bytes(mesh: &RenderMesh) -> Result<Vec<u8>, GlbError> {
     let count = mesh.positions.len();
-    if count < 3
-        || count > 250000
+    if !(3..=250000).contains(&count)
         || mesh.indices.len() < 3
         || mesh.indices.len() > 1_500_000
         || !mesh.indices.len().is_multiple_of(3)
