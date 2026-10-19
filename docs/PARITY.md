@@ -53,6 +53,18 @@ Do not convert an internal Rust prototype into a public production release just 
 - Preview Files verifies that each manifest-listed file still resides in its imported archive folder with its expected length, then opens the established separate native Asset Viewer window; original library files stay protected.
 - **Still unfinished:** a new-PAK import wizard that generates permanent library manifests, full browse-by-build management, large-list virtualization, editable project copy workflow and source-hash audit on every preview. The Import PAKs control currently exposes the library-folder setup/help panel; it must not be reported as an implemented source archive importer. The Edit / Add to Mod Project action stays disabled until copy-on-write project creation is supported.
 
+## Modding page parity — public Rust preview
+
+The page now mirrors the private Qt manager's **project-first workflow** instead of exposing unrelated cryptographic or staging forms by default:
+
+- Native-style File/Edit/View/Tools contextual command strip, searchable Projects table (project, target, changed, build, state, details), selected project's modified-files panel, and compact Install/Profiles/Refresh/Continue/Build actions.
+- Advanced PAK browser collapsed by default, with read-only staged archive selection, signature verification, Level Editor and a *specialist* single-member replacement panel.
+- Reads private-manager `mod-projects.json` and `.evolve-pak-workspace.json` without changing them, bounds path traversal and avoids following symlinks, compares changed files against manifest hashes in a background worker.
+- `Unpack PAK` verifies the selected source with the installed stage's public key, writes a new **raw** workspace manifest under Projects, then opens the native file editor; does not pretend to decode CryXmlB into editable XML.
+- Signing resource paths now resolve only from the configured existing stage's `mykeys/public_key.bin` and `mykeys/private_key.pem`; the signed basename comes from the source PAK, and a target may only come from an exact staged archive or selected verified project. Missing keys are setup errors, not silently fabricated credentials.
+- `Build Mod` can safely rebuild one validated changed **raw** member after source hash, target, manifest and key consistency checks, into a new output folder. Multiple edits, CryXmlB conversion, complete dependency extraction, the original GUI's one-click installer, full profiles, and installed-game swap integration are **not yet parity complete**. Existing private Qt workflows remain the recommended path for those operations.
+- The UI no longer requests PEM, DER or basename manually. No private keys are included in the repository, executable or update downloads.
+
 ## Rust/Iced/wgpu interactive GUI improvements (development preview)
 
 The following are **new implementation work**, not a claim of complete Qt parity:
