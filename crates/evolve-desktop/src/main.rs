@@ -888,6 +888,7 @@ enum Message {
     ViewerMenu(&'static str),
     ViewerToggleExplorer,
     ViewerResetCamera,
+    ViewerCameraPreset(&'static str),
     ViewerOrbitDelta(f32, f32),
     ViewerPanDelta(f32, f32),
     ViewerZoomWheel(f32),
@@ -1919,6 +1920,25 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.zoom = 1.0;
             state.pan_x = 0.0;
             state.pan_y = 0.0;
+        }
+        Message::ViewerCameraPreset(preset) => {
+            // Match the private viewer's Blender-style axis directions.
+            let orientation = match preset {
+                "Front" => Some((0.0, 0.0)),
+                "Back" => Some((180.0, 0.0)),
+                "Left" => Some((-90.0, 0.0)),
+                "Right" => Some((90.0, 0.0)),
+                "Top" => Some((0.0, 89.5)),
+                "Bottom" => Some((0.0, -89.5)),
+                "Isometric" => Some((-30.0, 14.0)),
+                _ => None,
+            };
+            if let Some((yaw, pitch)) = orientation {
+                state.yaw = yaw;
+                state.pitch = pitch;
+                state.pan_x = 0.0;
+                state.pan_y = 0.0;
+            }
         }
         Message::ViewerOrbitDelta(dx, dy) => {
             state.yaw = (state.yaw + dx).rem_euclid(360.0);
