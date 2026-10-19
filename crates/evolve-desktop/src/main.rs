@@ -3286,6 +3286,7 @@ fn view(state: &State) -> Element<'_, Message> {
             button(svg(Page::Settings.icon()).width(20).height(20))
                 .width(46)
                 .height(43)
+                .padding(10)
                 .style(if page == Page::Settings {
                     button::secondary
                 } else {
