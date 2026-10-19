@@ -311,7 +311,6 @@ pub fn plan_mod_profile(
     profile_id: &str,
     original_key: &Path,
     mod_key: &Path,
-    basename: &str,
 ) -> Result<ProfilePlan, ProfileError> {
     let catalog = list_mod_profiles(stage)?;
     let profile = catalog
@@ -328,7 +327,7 @@ pub fn plan_mod_profile(
             &item.target,
             original_key,
             mod_key,
-            basename,
+            item.target.rsplit('/').next().unwrap_or_default(),
         )?;
         if current != item.sha256 {
             return Err(ProfileError::Verify(format!(
