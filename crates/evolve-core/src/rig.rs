@@ -7,7 +7,7 @@ use crate::model::{ModelError, RenderMesh, read_model};
 use crate::policy::AnimationPolicy;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value,json};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::{self,Write};
 use std::path::Path;
@@ -162,7 +162,8 @@ pub fn parse_compiled_skeleton(data:&[u8])->Result<CompiledSkeleton,RigError>{
     if roots!=1{return Err(RigError::Invalid("expected one source skeleton root".into()));}
     Ok(CompiledSkeleton{names,parents,world,inverse})
 }
-fn stream<'a>(all:&'a [Chunk<'a>],kind:u32)->Result<Option<(usize,usize,&'a [u8])>,RigError>{
+type InfluenceStream<'a> = (usize, usize, &'a [u8]);
+fn stream<'a>(all:&'a [Chunk<'a>],kind:u32)->Result<Option<InfluenceStream<'a>>,RigError>{
     let mut result=None;
     for chunk in all.iter().filter(|c|c.kind==STREAM){
         let r=chunk.data;
