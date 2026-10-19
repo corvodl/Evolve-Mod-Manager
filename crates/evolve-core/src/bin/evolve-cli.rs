@@ -1,6 +1,7 @@
 //! Safe command-line functions shared with the desktop application.
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, Transform, animation_references, convert_glb_to_fbx,
+    export_rigged_character_glb, export_rigged_character_fbx,
     export_dds_png, export_edited_layer, export_level_scene_glb, export_model_glb,
     export_model_obj, export_terrain_obj, extract_legacy_pak, extract_signed_pak, inspect_caf_file,
     inspect_dds, inspect_legacy_pak, inspect_signed_pak, load_level_scene, read_cdf, read_model,
@@ -40,6 +41,8 @@ fn usage() -> String {
         "  evolve-cli model inspect <model.cgf|model.skin> [model-info.json]",
         "  evolve-cli model obj <model.cgf|model.skin> <new.obj>",
         "  evolve-cli model glb <model.cgf|model.skin> <new.glb>",
+        "  evolve-cli rig glb <mesh.skinm> <matching-skeleton.chr> <new.glb>",
+        "  evolve-cli rig fbx <mesh.skinm> <matching-skeleton.chr> <Blender.exe> <new.fbx>",
         "  evolve-cli model fbx <model.cgf|model.skin> <Blender.exe> <new.fbx> (no rig yet)",
         "  evolve-cli terrain inspect <Heightmap.dat> [terrain-info.json]",
         "  evolve-cli terrain obj <Heightmap.dat> <new-terrain.obj>",
@@ -223,6 +226,29 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
         } else {
             return Err(usage());
         }
+        return Ok(());
+    }
+    if verb == OsStr::new("rig") && subcommand == OsStr::new("glb") {
+        let skeleton: PathBuf = pop(&mut args)?.into();
+        let output: PathBuf = pop(&mut args)?.into();
+        no_extra(&mut args)?;
+        let report=export_rigged_character_glb(&source,&skeleton,&output)
+            .map_err(|e|e.to_string())?;
+        println!("Verified source bind poses/skin weights: {} bones, {} weighted vertices, {} subset palettes",
+            report.bone_count,report.weighted_vertices,report.subset_count);
+        println!("Rigged GLB: {}. Embedded animations: no.",output.display());
+        return Ok(());
+    }
+    if verb == OsStr::new("rig") && subcommand == OsStr::new("fbx") {
+        let skeleton: PathBuf = pop(&mut args)?.into();
+        let blender: PathBuf = pop(&mut args)?.into();
+        let output: PathBuf = pop(&mut args)?.into();
+        no_extra(&mut args)?;
+        let (rig,fbx)=export_rigged_character_fbx(&source,&skeleton,&blender,&output)
+            .map_err(|e|e.to_string())?;
+        println!("Rigged FBX source: {} bones, {} active, {} weighted vertices.",
+            rig.bone_count,rig.active_bones,rig.weighted_vertices);
+        println!("Rigged Blender FBX: {} bytes. Embedded animations: no.",fbx.output_size);
         return Ok(());
     }
     if verb == OsStr::new("model") && subcommand == OsStr::new("fbx") {
