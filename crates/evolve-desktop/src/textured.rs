@@ -598,3 +598,18 @@ impl shader::Primitive for Primitive {
         pipeline.render_scene(encoder, target, *clip_bounds);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn cryengine_gpu_material_shader_parses_and_validates() {
+        let module = naga::front::wgsl::parse_str(include_str!("textured.wgsl"))
+            .expect("Material WGSL must parse");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("GPU normal/emissive shader must pass Naga validation");
+    }
+}
