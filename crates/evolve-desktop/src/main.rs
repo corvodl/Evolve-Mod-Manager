@@ -30,21 +30,21 @@ use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph,
     FlatCdfFbxReport, ImportedLibrary, ImportedPak, Inventory, LevelScene,
-    UnifiedCdfFbxReport,
     LibraryBatchImportReport, LibraryReferenceStatus, MaterialReport, ModProfile, ModelInfo,
     NativeCafMotion, PakInventory, ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport,
-    SignedPakInfo, StageTransaction, TerrainInfo, add_mod_to_profile, apply_profile_stage,
-    apply_stage_pak, batch_stage_status, compare_assets, convert_glb_to_fbx,
+    SignedPakInfo, StageTransaction, TerrainInfo, UnifiedCdfFbxReport, add_mod_to_profile,
+    apply_profile_stage, apply_stage_pak, batch_stage_status, compare_assets, convert_glb_to_fbx,
     convert_original_motion, create_mod_profile, decode_dds_rgba, export_dds_png,
-    export_flat_cdf_parts_fbx, export_level_scene_glb, export_unified_cdf_fbx,
-    export_rigged_character_fbx_textured_animated, export_rigged_character_glb, extract_legacy_pak,
-    extract_signed_pak, import_signed_library_selection, import_stage_pak, imported_archive_files,
-    imported_library, initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak,
-    inspect_signed_pak, list_mod_profiles, load_level_scene, plan_mod_profile, read_cdf,
-    read_material, read_model, read_native_caf, read_static_cdf_assembly, read_terrain,
-    rebuild_legacy_pak, rebuild_signed_pak_entry, resolve_cdf, resolve_imported_reference,
-    resolve_materials, restore_profile_stage, restore_stage, scan_directory,
-    scan_directory_with_progress, stage_status,
+    export_flat_cdf_parts_fbx, export_level_scene_glb,
+    export_rigged_character_fbx_textured_animated, export_rigged_character_glb,
+    export_unified_cdf_fbx, extract_legacy_pak, extract_signed_pak,
+    import_signed_library_selection, import_stage_pak, imported_archive_files, imported_library,
+    initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_signed_pak,
+    list_mod_profiles, load_level_scene, plan_mod_profile, read_cdf, read_material, read_model,
+    read_native_caf, read_static_cdf_assembly, read_terrain, rebuild_legacy_pak,
+    rebuild_signed_pak_entry, resolve_cdf, resolve_imported_reference, resolve_materials,
+    restore_profile_stage, restore_stage, scan_directory, scan_directory_with_progress,
+    stage_status,
 };
 use iced::widget::{
     canvas, column, container, image, row, scrollable, shader, slider, space, svg, text, tooltip,
@@ -519,7 +519,11 @@ impl Operation {
             }
             Self::UnifiedCdfFbx(source, inventory, blender, destination, caf) => {
                 let report = export_unified_cdf_fbx(
-                    &source, &inventory, &blender, &destination, caf.as_deref(),
+                    &source,
+                    &inventory,
+                    &blender,
+                    &destination,
+                    caf.as_deref(),
                 )?;
                 Ok(Completed::UnifiedCdfFbxExport(report, destination))
             }
@@ -3155,7 +3159,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 || state.blender_path.trim().is_empty()
                 || !state.output.to_ascii_lowercase().ends_with(".fbx")
             {
-                state.status = "Select a CDF, installed Blender, and NEW absolute .fbx destination.".into();
+                state.status =
+                    "Select a CDF, installed Blender, and NEW absolute .fbx destination.".into();
                 return Task::none();
             }
             let source = PathBuf::from(&inventory.root).join(&entry.relative_path);
@@ -3671,7 +3676,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Ok(Completed::UnifiedCdfFbxExport(report, destination)) => {
                     state.status = format!(
                         "Exported {} original-weight CDF part(s) with one verified {}-bone armature to {}. Textures and material slots are not yet complete.",
-                        report.parts.len(), report.bones, destination.display()
+                        report.parts.len(),
+                        report.bones,
+                        destination.display()
                     );
                     state.page = Some(Page::Models);
                 }
