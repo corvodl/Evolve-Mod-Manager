@@ -32,9 +32,10 @@ fn path_state(path: &Path, label: &str) -> String {
 #[cfg(windows)]
 fn read_command(name: &str, arguments: &[&str]) -> String {
     match Command::new(name).args(arguments).output() {
-        Ok(result) if result.status.success() => {
-            String::from_utf8_lossy(&result.stdout).chars().take(12_000).collect()
-        }
+        Ok(result) if result.status.success() => String::from_utf8_lossy(&result.stdout)
+            .chars()
+            .take(12_000)
+            .collect(),
         Ok(result) => format!("Query unavailable (exit {})", result.status),
         Err(error) => format!("Query unavailable: {error}"),
     }
@@ -66,21 +67,35 @@ pub fn inspect(game_path: &str, stage_path: &str, projects_path: &str) -> Snapsh
             "Evolve.exe not detected in current process list".into()
         };
         // Only query the manager-owned rule; never create/remove/reconfigure.
-        let firewall_status = read_command("netsh",
-            &["advfirewall", "firewall", "show", "rule",
-                "name=Evolve Mod Manager Offline"]);
+        let firewall_status = read_command(
+            "netsh",
+            &[
+                "advfirewall",
+                "firewall",
+                "show",
+                "rule",
+                "name=Evolve Mod Manager Offline",
+            ],
+        );
         let firewall = if firewall_status.starts_with("Query unavailable") {
             firewall_status
-        } else if firewall_status.to_ascii_lowercase().contains("no rules match")
+        } else if firewall_status
+            .to_ascii_lowercase()
+            .contains("no rules match")
             || firewall_status.to_ascii_lowercase().contains("no rules")
         {
             "Manager offline firewall rule not found".into()
         } else {
-            "Firewall query returned rule information; review Windows Firewall for exact policy".into()
+            "Firewall query returned rule information; review Windows Firewall for exact policy"
+                .into()
         };
         return Snapshot {
-            firewall, game_process, environment, recovery,
-            dumps: "WER crash dump settings are not modified or enumerated by the Rust preview.".into(),
+            firewall,
+            game_process,
+            environment,
+            recovery,
+            dumps: "WER crash dump settings are not modified or enumerated by the Rust preview."
+                .into(),
             storage: "Disk free space and orphaned-swap cleanup are not yet implemented.".into(),
         };
     }
@@ -90,7 +105,8 @@ pub fn inspect(game_path: &str, stage_path: &str, projects_path: &str) -> Snapsh
         Snapshot {
             firewall: "Windows Firewall diagnostics require Windows".into(),
             game_process: "Windows process diagnostics require Windows".into(),
-            environment, recovery,
+            environment,
+            recovery,
             dumps: "Windows WER diagnostics require Windows".into(),
             storage: "Disk space and backup cleanup are not yet implemented".into(),
         }
