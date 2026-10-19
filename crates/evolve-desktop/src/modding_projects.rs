@@ -559,8 +559,8 @@ pub fn import_raw_member(
 
     let backup_root = folder.join("EditorBackups");
     if backup_root.exists() {
-        if fs::symlink_metadata(&backup_root)
-            .is_err_or(|meta| !meta.file_type().is_dir())
+        if !fs::symlink_metadata(&backup_root)
+            .is_ok_and(|meta| meta.file_type().is_dir())
         {
             return Err("Refusing linked/non-directory EditorBackups".into());
         }
