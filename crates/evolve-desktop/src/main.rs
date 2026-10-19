@@ -968,13 +968,17 @@ fn verified_export_diffuse(state: &State, report: &MaterialReport) -> Option<Pat
         return None;
     }
     let source = std::fs::canonicalize(path).ok()?;
-    let local = state.inventory.as_ref()
+    let local = state
+        .inventory
+        .as_ref()
         .and_then(|i| std::fs::canonicalize(&i.root).ok());
-    let library = state.library_catalog.as_ref()
+    let library = state
+        .library_catalog
+        .as_ref()
         .and_then(|i| std::fs::canonicalize(&i.root).ok());
     (local.as_ref().is_some_and(|r| source.starts_with(r))
         || library.as_ref().is_some_and(|r| source.starts_with(r)))
-        .then_some(source)
+    .then_some(source)
 }
 
 fn selected_stage_target(state: &State) -> Result<String, String> {
