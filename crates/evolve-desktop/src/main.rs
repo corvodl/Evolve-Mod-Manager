@@ -633,20 +633,22 @@ impl Operation {
                 // Missing/corrupt optional streams must not discard every
                 // successfully decoded map. Keep accurate source diagnostics.
                 let mut diagnostics = Vec::new();
-                let mut try_map = |role: &str, names: &[&str]| {
-                    match get_pixels(names) {
-                        Ok(image) => image,
-                        Err(error) => {
-                            diagnostics.push(format!("{role}: {error}"));
-                            None
-                        }
+                let mut try_map = |role: &str, names: &[&str]| match get_pixels(names) {
+                    Ok(image) => image,
+                    Err(error) => {
+                        diagnostics.push(format!("{role}: {error}"));
+                        None
                     }
                 };
                 let diffuse = try_map("Diffuse", &["diffuse"]);
                 let normal = try_map("Normal", &["normals", "normal", "bumpmap"]);
                 let emissive = try_map("Emissive", &["emittance", "emissive", "emission", "glow"]);
                 Ok(Completed::MaterialResolved(
-                    report, diffuse, normal, emissive, diagnostics,
+                    report,
+                    diffuse,
+                    normal,
+                    emissive,
+                    diagnostics,
                 ))
             }
             Self::LoadNormal(source, cache) => {
@@ -1056,7 +1058,9 @@ fn resource_build(state: &State) -> Option<String> {
         return None;
     }
     let archive_folder = source.parent()?;
-    let archive = catalog.archives.iter()
+    let archive = catalog
+        .archives
+        .iter()
         .find(|item| Path::new(&item.directory) == archive_folder)?;
     (archive.builds.len() == 1).then(|| archive.builds[0].clone())
 }
@@ -3456,9 +3460,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         }
                     );
                     if !diagnostics.is_empty() {
-                        state.auto_resource_note = format!(
-                            "Material partially loaded: {}", diagnostics.join(" | ")
-                        );
+                        state.auto_resource_note =
+                            format!("Material partially loaded: {}", diagnostics.join(" | "));
                     }
                     // A new authored material must not inherit a previous
                     // character's maps when the reference is missing/ambiguous.
