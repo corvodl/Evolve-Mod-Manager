@@ -20,7 +20,7 @@ This table tracks **actual Rust implementation state**, not feature mockups. The
 | GPU model viewer and CryEngine materials | **Partial: Iced GPU-composited orbit wireframe, no materials/skinning** | Real wgpu mesh, high-res DDS, normal/emissive/transparency parity |
 | Level Editor and Blender scene export | **Partial: terrain OBJ, XML object scene, non-destructive transform editing** | Correct complete-scene placements, terrain, textures and dependencies |
 | GFX, USM and loose-file editing | **Not ported** | Real-asset read/preview/edit/repack integrity |
-| Settings, mod profiles, signed updater and installer | **Not ported** | Versioned releases, recovery, private-data exclusion and tests |
+| Settings, mod profiles, signed updater and installer | **Partial: settings migration/persistence, public release check/download and installer/release definitions; game mod profiles not ported** | Versioned releases, recovery, private-data exclusion, tested installs and rollback |
 | Responsive UI and safe long-running jobs | **Partial** | Cancellation, progress, large-input and Windows GUI tests |
 
 ## Release requirements
@@ -44,3 +44,10 @@ Do not convert an internal Rust prototype into a public production release just 
 - **Animations**: source CAF metadata and chrparams indexes, converted GLB keyframe clip catalog and sampling. Raw CAF controller/DBA decode, bone matching, native playback, mixed animation layers and verified FBX Actions not done.
 - **Levels**: read-only Heightmap.dat decoded terrain plus Blender-compatible OBJ; mission/LYR object hierarchy, world transforms and edits written to distinct output files. Real-game material/geometry assembly and seamless Blender scene export remain unported.
 - **Public output**: no user-owned game files, keys, private repository history, secrets or proprietary assets should be committed. Public release tag 1.0 must be gated by full actual parity.
+
+## Windows packaging and settings milestone (experimental)
+
+- Rust settings load the established user preferences (including backup, density, file explorer side, theme fields, data paths and update options). Unrecognized older keys are preserved; imported legacy settings are read without modifying original data.
+- Stable/experimental update checks run against the new public releases repository, with a checksum-confirmed installer download and a separate approval action before launch. Actual upgrade/rollback behavior must still be validated on Windows.
+- The versioned installer and portable ZIP are the **only** intended public release assets. The installer offers an optional desktop shortcut, installs per-user and preserves private user files. A manually approved release workflow stays blocked by unfinished parity markers.
+- Application screenshots are diagnostic resources and are **not** packaged in GitHub Releases.

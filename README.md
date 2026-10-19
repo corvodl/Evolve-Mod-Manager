@@ -15,7 +15,19 @@ Independent Windows desktop modding toolkit rewrite using **Rust**, **Iced 0.14*
 
 **New experimental modules on this branch:** signed Stage 2 PAK RSA-PSS verification and Twofish decrypt/extract (requires the exact user-supplied RSA public DER key and original signed PAK basename); CryTek/CrChF source mesh geometry and original UV0 preservation; Blender-importable source GLB/OBJ; an orbiting GPU-composited wireframe viewport; CDF inspection; CAF metadata and chrparams references; validated converted GLB keyframe sampling; external Blender GLB-to-binary-FBX conversion with optional animations **OFF by default**; Level Editor terrain decoding/OBJ and mission/LYR placed-object hierarchy inspection and new-file transform edits. These paths require **real-game correctness testing** before release.
 
-**Not yet implemented:** Stage 2 signed PAK re-signing, modified archive injection/rollback, complete CDF character assembly and skeletal weighting, in-manager GPU materials, direct CAF/DBA controller playback, full rigged/source-authentic character FBX, complete textured Blender level scenes, GFX editor, profiles, updater and Windows installer. This preview is **not** a replacement for the current production manager.
+**Not yet implemented:** Stage 2 signed PAK re-signing, modified archive injection/rollback, complete CDF character assembly and skeletal weighting, in-manager GPU materials, direct CAF/DBA controller playback, full rigged/source-authentic character FBX, complete textured Blender level scenes, GFX editor, mod profiles, complete update/installer real-game validation. This preview is **not** a replacement for the current production manager.
+
+## Persistent settings and verified updates (experimental)
+
+The Windows desktop stores preferences under `%LOCALAPPDATA%\\EvolveModManager\\settings.json`, independent of where the executable runs. If no Rust settings file exists, it reads the installed manager's former `Data/Settings/manager_settings.json` without changing or deleting that original file. Recognized settings and unknown older keys are preserved.
+
+The Settings page offers the established dark/light appearance, compact density, file-explorer position, reduced motion, backups, activity log, workspace and data paths, Blender executable, and stable/experimental update options. Some controls persist their values while their dependent workflows remain under development.
+
+Automatic or manual checks use only public GitHub Releases. Newer releases must supply exactly a verified installer and portable ZIP, with SHA256 checksums in the release description. The manager verifies a downloaded installer and requires an additional user action to launch it. These features require final Windows integration testing.
+
+An Inno Setup script installs per-user under LocalAppData with the original icon and optional desktop shortcut. `.github/workflows/release.yml` is manually triggered and **refuses to publish** while the 1.0 parity checklist contains unfinished capabilities. Any public release is restricted to these two download files:
+- `EvolveModManager-Setup-VERSION.exe`
+- `EvolveModManager-Portable-VERSION.zip`
 
 ## Build on Windows
 
