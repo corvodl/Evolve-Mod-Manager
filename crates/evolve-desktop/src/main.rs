@@ -7,7 +7,7 @@ mod viewport;
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssetEntry, AssetResolution, BatchJournal, CdfDefinition,
     CdfDependencyReport, ConvertedMotion, DdsInfo, Inventory, LevelScene, ModProfile, ModelInfo,
-    NativeCafMotion, PakInventory, ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport,
+    NativeCafMotion, PakInventory, ProfileCatalog, ProfileMod, ProfilePlan, MaterialReport, RenderMesh, RigReport,
     SignedPakInfo, StageTransaction, TerrainInfo, add_mod_to_profile, apply_profile_stage,
     apply_stage_pak, batch_stage_status, convert_glb_to_fbx, convert_original_motion,
     create_mod_profile, decode_dds_rgba, export_dds_png, export_level_scene_glb,
@@ -15,7 +15,7 @@ use evolve_core::{
     extract_signed_pak, import_stage_pak, initialize_stage, inspect_dds, inspect_legacy_pak,
     inspect_signed_pak, list_mod_profiles, load_level_scene, plan_mod_profile, read_cdf,
     read_model, read_native_caf, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry,
-    resolve_cdf, restore_profile_stage, restore_stage, scan_directory, stage_status,
+    resolve_cdf, resolve_materials, read_material, restore_profile_stage, restore_stage, scan_directory, stage_status,
 };
 use iced::widget::{
     button, canvas, column, container, image, row, scrollable, shader, slider, svg, text,
@@ -100,6 +100,8 @@ struct State {
     normal_map: Option<Arc<::image::RgbaImage>>,
     emissive_input: String,
     emissive_map: Option<Arc<::image::RgbaImage>>,
+    material_input: String,
+    material_report: Option<MaterialReport>,
     caf_path: String,
     skeleton_path: String,
     blender_path: String,
@@ -144,6 +146,7 @@ enum Operation {
     LoadDiffuse(PathBuf),
     LoadNormal(PathBuf),
     LoadEmissive(PathBuf),
+    ResolveMaterial(PathBuf, PathBuf),
     LoadCaf(PathBuf),
     RiggedGlb(PathBuf, PathBuf, PathBuf),
     RiggedFbx(PathBuf, PathBuf, PathBuf, PathBuf),
@@ -193,6 +196,7 @@ enum Completed {
     Diffuse(DdsInfo, ::image::RgbaImage),
     Normal(DdsInfo, ::image::RgbaImage),
     Emissive(DdsInfo, ::image::RgbaImage),
+    MaterialResolved(MaterialReport, Option<::image::RgbaImage>, Option<::image::RgbaImage>, Option<::image::RgbaImage>),
     Caf(NativeCafMotion),
     RiggedExport(RigReport, PathBuf),
     MotionConverted(ConvertedMotion, PathBuf),
@@ -254,6 +258,37 @@ impl Operation {
             Self::LoadCaf(source) => read_native_caf(&source)
                 .map(Completed::Caf)
                 .map_err(|e| e.to_string()),
+            Self::ResolveMaterial(source, root) => {
+                let authored = read_material(&source).map_err(|e| e.to_string())?;
+                let library = scan_directory(&root).map_err(|e| e.to_string())?;
+                let report = resolve_materials(&library, &authored);
+                let get_pixels = |roles: &[&str]| -> Result<Option<::image::RgbaImage>, String> {
+                    if authored.slots.len() != 1 {
+                        return Ok(None); // Never mix different material slots.
+                    }
+                    let candidates = report.textures.iter()
+                        .filter(|r| roles.contains(&r.role.as_str()))
+                        .collect::<Vec<_>>();
+                    if candidates.len() != 1 {
+                        return Ok(None); // Missing or multiple authored maps.
+                    }
+                    let evolve_core::AssetResolution::Found(relative) =
+                        &candidates[0].resolution else { return Ok(None); };
+                    let source = root.join(relative);
+                    let metadata = std::fs::symlink_metadata(&source).map_err(|e| e.to_string())?;
+                    if !metadata.file_type().is_file() ||
+                        !std::fs::canonicalize(&source).map_err(|e| e.to_string())?
+                            .starts_with(std::fs::canonicalize(&root).map_err(|e| e.to_string())?) {
+                        return Err("Resolved DDS path is unsafe".into());
+                    }
+                    let (_, image) = decode_dds_rgba(&source).map_err(|e| e.to_string())?;
+                    Ok(Some(image))
+                };
+                let diffuse = get_pixels(&["diffuse"])?;
+                let normal = get_pixels(&["normals", "normal", "bumpmap"])?;
+                let emissive = get_pixels(&["emittance", "emissive", "emission", "glow"])?;
+                Ok(Completed::MaterialResolved(report, diffuse, normal, emissive))
+            }
             Self::LoadNormal(source) => decode_dds_rgba(&source)
                 .map(|(info, image)| Completed::Normal(info, image))
                 .map_err(|e| e.to_string()),
@@ -448,6 +483,8 @@ enum Message {
     DiffuseInputChanged(String),
     NormalInputChanged(String),
     EmissiveInputChanged(String),
+    MaterialInputChanged(String),
+    StartMaterialResolve,
     CafInputChanged(String),
     SkeletonChanged(String),
     BlenderChanged(String),
@@ -908,6 +945,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::DiffuseInputChanged(value) => state.diffuse_input = value,
         Message::NormalInputChanged(value) => state.normal_input = value,
         Message::EmissiveInputChanged(value) => state.emissive_input = value,
+        Message::MaterialInputChanged(value) => state.material_input = value,
+        Message::StartMaterialResolve => {
+            if state.material_input.trim().is_empty() || state.assets_root.trim().is_empty() {
+                state.status = "Choose exact CryEngine .mtl file and extracted Asset Library root.".into();
+                return Task::none();
+            }
+            return launch(state, Operation::ResolveMaterial(
+                PathBuf::from(&state.material_input),
+                PathBuf::from(&state.assets_root),
+            ));
+        }
         Message::CafInputChanged(value) => state.caf_path = value,
         Message::SkeletonChanged(value) => state.skeleton_path = value,
         Message::BlenderChanged(value) => state.blender_path = value,
@@ -1321,6 +1369,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.playing = false;
                     state.native_caf = Some(Arc::new(motion));
                     state.glb_motion = None;
+                    state.page = Some(Page::Models);
+                }
+                Ok(Completed::MaterialResolved(report, diffuse, normal, emissive)) => {
+                    let found = report.textures.iter()
+                        .filter(|t| matches!(t.resolution, AssetResolution::Found(_))).count();
+                    let ambiguous = report.textures.iter()
+                        .filter(|t| matches!(t.resolution, AssetResolution::Ambiguous(_))).count();
+                    state.status = format!(
+                        "MTL: {} slot(s), {} authored references, {} uniquely resolved, {} ambiguous. No guessing.",
+                        report.slots, report.textures.len(), found, ambiguous
+                    );
+                    if let Some(image) = diffuse { state.diffuse = Some(Arc::new(image)); }
+                    if let Some(image) = normal { state.normal_map = Some(Arc::new(image)); }
+                    if let Some(image) = emissive { state.emissive_map = Some(Arc::new(image)); }
+                    state.material_report = Some(report);
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::Normal(info, pixels)) => {
@@ -1888,6 +1951,22 @@ fn view(state: &State) -> Element<'_, Message> {
                     button("Load GPU diffuse").on_press(Message::StartDiffuseLoad),
                 ].spacing(8),
                 text(state.diffuse_status.as_str()),
+                row![
+                    text_input("Exact source CryEngine .mtl path...", &state.material_input)
+                        .on_input(Message::MaterialInputChanged).width(Fill),
+                    button("Resolve material DDS maps").on_press(Message::StartMaterialResolve),
+                ].spacing(8),
+                if let Some(report) = &state.material_report {
+                    let mut rows = column![].spacing(3);
+                    for texture in report.textures.iter().take(80) {
+                        rows = rows.push(text(format!("{} / {} / {}: {:?}",
+                            texture.slot, texture.role, texture.authored_path, texture.resolution)));
+                    }
+                    scrollable(rows).height(Length::Fixed(125.))
+                } else {
+                    scrollable(column![text("Load an authored .mtl to inspect provenance and GPU DDS maps.")])
+                        .height(Length::Fixed(40.))
+                },
                 row![
                     text_input("Source normal map DDS (BC5)...", &state.normal_input)
                         .on_input(Message::NormalInputChanged).width(Fill),
