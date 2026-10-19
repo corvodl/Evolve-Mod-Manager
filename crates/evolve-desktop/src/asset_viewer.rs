@@ -75,7 +75,17 @@ fn strip(state: &State) -> Element<'_, Message> {
                     text(format!("{} character-declared animations", state.auto_clips.len())).size(12),
                 ].spacing(8),
             ].spacing(5);
-            for (index, clip) in state.auto_clips.iter().take(80).enumerate() {
+            clips = clips.push(
+                text_input("Filter character animations…", &state.auto_clip_filter)
+                    .on_input(Message::ViewerAutoClipFilter)
+            );
+            let needle = state.auto_clip_filter.to_ascii_lowercase();
+            for (index, clip) in state.auto_clips.iter().enumerate()
+                .filter(|(_, clip)| needle.is_empty()
+                    || clip.label.to_ascii_lowercase().contains(&needle)
+                    || clip.kind.to_ascii_lowercase().contains(&needle))
+                .take(80)
+            {
                 let label = format!("{} · {}{}", clip.label, clip.kind.to_ascii_uppercase(), if clip.source.is_none() { " (not extracted)" } else { "" });
                 clips = clips.push(
                     button(text(label).size(12))
