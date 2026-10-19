@@ -381,7 +381,16 @@ fn explorer(state: &State) -> Element<'_, Message> {
                     ].spacing(5).into()
                 },
                 scrollable(rows).height(Fill),
-                text("Shift: range  •  Ctrl: toggle  •  CDF: assembly definition  •  350 visible rows")
+                row![
+                    button("◀ Previous")
+                        .on_press_maybe((state.viewer_page > 0).then_some(Message::ViewerPreviousPage)),
+                    text(format!("Page {} · up to 350 visible entries", state.viewer_page + 1))
+                        .size(11)
+                        .color(MUTED),
+                    button("Next ▶")
+                        .on_press_maybe(state.viewer_more_rows.then_some(Message::ViewerNextPage)),
+                ].spacing(8),
+                text("Shift: range  •  Ctrl: toggle  •  CDF: assembly definition")
                     .size(11)
                     .color(MUTED),
             ]
