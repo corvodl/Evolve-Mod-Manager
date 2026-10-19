@@ -499,29 +499,39 @@ impl Operation {
                 .map_err(|e| e.to_string()),
             Self::LoadDeclaredDba(virtual_path, inventory, imported_root, build, converter) => {
                 let source = auto_resources::resolve_declared_dba(
-                    &inventory, &virtual_path, imported_root.as_deref(), build.as_deref(),
-                )?.ok_or("Declared DBA is not present in verified extracted assets")?;
-                let local_root = std::fs::canonicalize(&inventory.root)
-                    .map_err(|e| e.to_string())?;
+                    &inventory,
+                    &virtual_path,
+                    imported_root.as_deref(),
+                    build.as_deref(),
+                )?
+                .ok_or("Declared DBA is not present in verified extracted assets")?;
+                let local_root =
+                    std::fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
                 let root = if source.starts_with(&local_root) {
                     local_root
                 } else if let Some(library_root) = imported_root {
-                    let library_root = std::fs::canonicalize(library_root)
-                        .map_err(|e| e.to_string())?;
+                    let library_root =
+                        std::fs::canonicalize(library_root).map_err(|e| e.to_string())?;
                     if !source.starts_with(&library_root) {
                         return Err("DBA escaped verified local and imported asset roots".into());
                     }
-                    let files = source.ancestors().find(|part| {
-                        part.starts_with(&library_root)
-                            && part.file_name().is_some_and(|f| f == "files")
-                    }).ok_or("Imported DBA has no verified extracted files root")?;
+                    let files = source
+                        .ancestors()
+                        .find(|part| {
+                            part.starts_with(&library_root)
+                                && part.file_name().is_some_and(|f| f == "files")
+                        })
+                        .ok_or("Imported DBA has no verified extracted files root")?;
                     files.to_path_buf()
                 } else {
                     return Err("DBA has no verified extracted source root".into());
                 };
-                let temp = Arc::new(tempfile::Builder::new()
-                    .prefix("evolve-verified-dba-")
-                    .tempdir().map_err(|e| e.to_string())?);
+                let temp = Arc::new(
+                    tempfile::Builder::new()
+                        .prefix("evolve-verified-dba-")
+                        .tempdir()
+                        .map_err(|e| e.to_string())?,
+                );
                 let dest = temp.path().join("tracks");
                 let report = convert_original_motion(&converter, &source, &root, &dest)
                     .map_err(|e| e.to_string())?;
@@ -2058,11 +2068,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 let operation = Operation::LoadDeclaredDba(
                     clip.virtual_path.clone(),
                     inventory,
-                    state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
-                    state.library_by_build.then(|| {
-                        state.library_catalog.as_ref()
-                            .and_then(|c| c.builds.get(state.library_build_index)).cloned()
-                    }).flatten(),
+                    state
+                        .library_catalog
+                        .as_ref()
+                        .map(|c| PathBuf::from(&c.root)),
+                    state
+                        .library_by_build
+                        .then(|| {
+                            state
+                                .library_catalog
+                                .as_ref()
+                                .and_then(|c| c.builds.get(state.library_build_index))
+                                .cloned()
+                        })
+                        .flatten(),
                     PathBuf::from(&state.converter_path),
                 );
                 return launch(state, operation);
@@ -3177,7 +3196,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Ok(Completed::DbaConverted(result, dir, temp)) => {
                     let count = result.clips.len();
                     state.converted_dba_cache = Some(temp);
-                    state.converted_glbs = result.glb_files.iter().map(|relative| dir.join(relative)).collect();
+                    state.converted_glbs = result
+                        .glb_files
+                        .iter()
+                        .map(|relative| dir.join(relative))
+                        .collect();
                     state.native_caf = None;
                     state.glb_motion = None;
                     state.playing = false;
@@ -3187,7 +3210,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                     state.page = Some(Page::Models);
                     if state.converted_glbs.len() == 1 {
-                        return launch(state, Operation::LoadGlbMotion(state.converted_glbs[0].clone()));
+                        return launch(
+                            state,
+                            Operation::LoadGlbMotion(state.converted_glbs[0].clone()),
+                        );
                     }
                 }
                 Ok(Completed::MotionConverted(result, dir)) => {
