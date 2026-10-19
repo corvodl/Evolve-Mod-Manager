@@ -24,8 +24,11 @@ fn bad(message: &str) -> NativeCafError {
 fn quaternion_blend(a: [f32; 4], b: [f32; 4], weight: f32) -> Result<[f32; 4], NativeCafError> {
     let len_a = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let len_b = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if !len_a.is_finite() || !len_b.is_finite()
-        || !(0.95..=1.05).contains(&len_a) || !(0.95..=1.05).contains(&len_b) {
+    if !len_a.is_finite()
+        || !len_b.is_finite()
+        || !(0.95..=1.05).contains(&len_a)
+        || !(0.95..=1.05).contains(&len_b)
+    {
         return Err(bad("Invalid original controller quaternion"));
     }
     let mut rhs = b.map(|x| x / len_b);
@@ -38,7 +41,9 @@ fn quaternion_blend(a: [f32; 4], b: [f32; 4], weight: f32) -> Result<[f32; 4], N
     if !len.is_finite() || len < 1e-6 {
         return Err(bad("Degenerate layered controller quaternion"));
     }
-    for component in &mut output { *component /= len; }
+    for component in &mut output {
+        *component /= len;
+    }
     Ok(output)
 }
 
@@ -49,12 +54,17 @@ fn validate(pose: &[CafBonePose], allowed: &HashSet<u32>) -> Result<(), NativeCa
     }
     for controller in pose {
         if !allowed.contains(&controller.bone_crc32) || !seen.insert(controller.bone_crc32) {
-            return Err(bad("CAF has unknown or repeated original skeleton bone CRC"));
+            return Err(bad(
+                "CAF has unknown or repeated original skeleton bone CRC",
+            ));
         }
         if controller.translation.is_none() && controller.rotation.is_none() {
             return Err(bad("CAF controller contains no sampled transform"));
         }
-        if controller.translation.is_some_and(|v| v.iter().any(|x| !x.is_finite())) {
+        if controller
+            .translation
+            .is_some_and(|v| v.iter().any(|x| !x.is_finite()))
+        {
             return Err(bad("Non-finite source translation"));
         }
     }
@@ -80,29 +90,46 @@ pub fn sample_verified_caf_layers(
     }
     let mut pose = base.sample_seconds(seconds)?;
     validate(&pose, original_bone_crcs)?;
-    let lookup: HashMap<u32, usize> = pose.iter().enumerate()
-        .map(|(i, p)| (p.bone_crc32, i)).collect();
+    let lookup: HashMap<u32, usize> = pose
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.bone_crc32, i))
+        .collect();
     for layer in layers {
-        if layer.motion.additive || !layer.weight.is_finite() || !(0.0..=1.0).contains(&layer.weight) {
-            return Err(bad("Additive clips or invalid layer weight require a verified bind-pose mixer"));
+        if layer.motion.additive
+            || !layer.weight.is_finite()
+            || !(0.0..=1.0).contains(&layer.weight)
+        {
+            return Err(bad(
+                "Additive clips or invalid layer weight require a verified bind-pose mixer",
+            ));
         }
-        if layer.weight == 0.0 { continue; }
+        if layer.weight == 0.0 {
+            continue;
+        }
         let overlay = layer.motion.sample_seconds(layer.seconds)?;
         validate(&overlay, original_bone_crcs)?;
         for controller in overlay {
-            let index = *lookup.get(&controller.bone_crc32)
-                .ok_or_else(|| bad("Layer references a bone absent from the base controller pose"))?;
+            let index = *lookup.get(&controller.bone_crc32).ok_or_else(|| {
+                bad("Layer references a bone absent from the base controller pose")
+            })?;
             let target = &mut pose[index];
             match (target.translation, controller.translation) {
                 (Some(a), Some(b)) => {
-                    target.translation = Some(std::array::from_fn(|i| a[i] * (1.0 - layer.weight) + b[i] * layer.weight));
+                    target.translation = Some(std::array::from_fn(|i| {
+                        a[i] * (1.0 - layer.weight) + b[i] * layer.weight
+                    }));
                 }
-                (None, Some(_)) => return Err(bad("Layer translation has no verified base transform")),
+                (None, Some(_)) => {
+                    return Err(bad("Layer translation has no verified base transform"));
+                }
                 _ => {}
             }
             match (target.rotation, controller.rotation) {
                 (Some(a), Some(b)) => target.rotation = Some(quaternion_blend(a, b, layer.weight)?),
-                (None, Some(_)) => return Err(bad("Layer rotation has no verified base transform")),
+                (None, Some(_)) => {
+                    return Err(bad("Layer rotation has no verified base transform"));
+                }
                 _ => {}
             }
         }
@@ -117,8 +144,12 @@ mod tests {
 
     fn clip(id: u32, value: f32) -> NativeCafMotion {
         NativeCafMotion {
-            schema: 1, start_frame: 0.0, end_frame: 30.0, fps: 30.0,
-            additive: false, cyclic: true,
+            schema: 1,
+            start_frame: 0.0,
+            end_frame: 30.0,
+            fps: 30.0,
+            additive: false,
+            cyclic: true,
             controllers: vec![CafController {
                 bone_crc32: id,
                 rotation_times: vec![0.0, 30.0],
@@ -135,15 +166,33 @@ mod tests {
         let overlay = clip(123, 10.0);
         let allowed = HashSet::from([123]);
         let blend = sample_verified_caf_layers(
-            &base, 0.25,
-            &[CafLayer { motion: &overlay, seconds: 0.2, weight: 0.25 }],
+            &base,
+            0.25,
+            &[CafLayer {
+                motion: &overlay,
+                seconds: 0.2,
+                weight: 0.25,
+            }],
             &allowed,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(blend[0].translation, Some([4.0, 0.0, 0.0]));
         assert_eq!(blend[0].rotation, Some([0.0, 0.0, 0.0, 1.0]));
-        assert_eq!(sample_verified_caf_layers(
-            &base, 0.0, &[CafLayer { motion: &overlay, seconds: 0.0, weight: 0.0 }], &allowed
-        ).unwrap()[0].translation, Some([2.0, 0.0, 0.0]));
+        assert_eq!(
+            sample_verified_caf_layers(
+                &base,
+                0.0,
+                &[CafLayer {
+                    motion: &overlay,
+                    seconds: 0.0,
+                    weight: 0.0
+                }],
+                &allowed
+            )
+            .unwrap()[0]
+                .translation,
+            Some([2.0, 0.0, 0.0])
+        );
     }
 
     #[test]
@@ -151,23 +200,53 @@ mod tests {
         let base = clip(123, 0.0);
         let different = clip(999, 10.0);
         let allowed = HashSet::from([123]);
-        assert!(sample_verified_caf_layers(
-            &base, 0.0, &[CafLayer { motion: &different, seconds: 0.0, weight: 0.5 }], &allowed
-        ).is_err());
+        assert!(
+            sample_verified_caf_layers(
+                &base,
+                0.0,
+                &[CafLayer {
+                    motion: &different,
+                    seconds: 0.0,
+                    weight: 0.5
+                }],
+                &allowed
+            )
+            .is_err()
+        );
         let mut additive = clip(123, 2.0);
         additive.additive = true;
-        assert!(sample_verified_caf_layers(
-            &base, 0.0, &[CafLayer { motion: &additive, seconds: 0.0, weight: 0.5 }], &allowed
-        ).is_err());
+        assert!(
+            sample_verified_caf_layers(
+                &base,
+                0.0,
+                &[CafLayer {
+                    motion: &additive,
+                    seconds: 0.0,
+                    weight: 0.5
+                }],
+                &allowed
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn refuses_non_finite_weight_and_no_skeleton() {
         let base = clip(123, 1.0);
         let allowed = HashSet::from([123]);
-        assert!(sample_verified_caf_layers(
-            &base, 0.0, &[CafLayer { motion: &base, seconds: 0.0, weight: f32::NAN }], &allowed
-        ).is_err());
+        assert!(
+            sample_verified_caf_layers(
+                &base,
+                0.0,
+                &[CafLayer {
+                    motion: &base,
+                    seconds: 0.0,
+                    weight: f32::NAN
+                }],
+                &allowed
+            )
+            .is_err()
+        );
         assert!(sample_verified_caf_layers(&base, 0.0, &[], &HashSet::new()).is_err());
     }
 }
