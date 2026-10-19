@@ -37,7 +37,9 @@ fn tile(name: &'static str, description: &'static str, page: Page) -> Element<'s
         style.background = Some(Background::Color(PANEL));
         style.text_color = Color::WHITE;
         style.border = Border {
-            color: LINE, width: 1.0, radius: 9.0.into()
+            color: LINE,
+            width: 1.0,
+            radius: 9.0.into(),
         };
         style
     })
