@@ -918,10 +918,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 && let Some(entry) = inventory.entries.get(index)
             {
                 let candidate = PathBuf::from(&inventory.root).join(&entry.relative_path);
-                if let Ok(relative) = modding_keys::staged_target(
+                if modding_keys::staged_target(
                     PathBuf::from(&state.preferences.stage).as_path(),
                     &candidate,
-                ) {
+                ).is_ok() {
                     state.selected = Some(index);
                     state.input = candidate.to_string_lossy().into_owned();
                     state.status = format!("Selected original staged PAK: {}", entry.relative_path);
