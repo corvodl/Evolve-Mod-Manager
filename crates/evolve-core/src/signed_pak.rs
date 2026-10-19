@@ -1243,26 +1243,58 @@ mod tests {
         let batch_output = batch_dir.join("sample.pak");
         let batch_changes = vec![("example.caf".into(), replacement.clone())];
         let reports = rebuild_signed_pak_entries(
-            &archive, &key, &new_private_file, &new_public_file,
-            "sample.pak", &batch_changes, &batch_output,
-        ).unwrap();
+            &archive,
+            &key,
+            &new_private_file,
+            &new_public_file,
+            "sample.pak",
+            &batch_changes,
+            &batch_output,
+        )
+        .unwrap();
         assert_eq!(reports.len(), 1);
         let batch_extract = root.path().join("batch-extracted");
-        extract_signed_pak(&batch_output, &new_public_file, "sample.pak", &batch_extract).unwrap();
-        assert_eq!(fs::read(batch_extract.join("example.caf")).unwrap(), fs::read(&replacement).unwrap());
+        extract_signed_pak(
+            &batch_output,
+            &new_public_file,
+            "sample.pak",
+            &batch_extract,
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read(batch_extract.join("example.caf")).unwrap(),
+            fs::read(&replacement).unwrap()
+        );
         let duplicate_output = batch_dir.join("duplicate").join("sample.pak");
         fs::create_dir(batch_dir.join("duplicate")).unwrap();
-        assert!(rebuild_signed_pak_entries(
-            &archive, &key, &new_private_file, &new_public_file,
-            "sample.pak",
-            &[("example.caf".into(), replacement.clone()), ("example.caf".into(), replacement.clone())],
-            &duplicate_output
-        ).is_err());
+        assert!(
+            rebuild_signed_pak_entries(
+                &archive,
+                &key,
+                &new_private_file,
+                &new_public_file,
+                "sample.pak",
+                &[
+                    ("example.caf".into(), replacement.clone()),
+                    ("example.caf".into(), replacement.clone())
+                ],
+                &duplicate_output
+            )
+            .is_err()
+        );
         assert!(!duplicate_output.exists());
-        assert!(rebuild_signed_pak_entries(
-            &archive, &key, &new_private_file, &new_public_file,
-            "sample.pak", &batch_changes, &batch_output,
-        ).is_err());
+        assert!(
+            rebuild_signed_pak_entries(
+                &archive,
+                &key,
+                &new_private_file,
+                &new_public_file,
+                "sample.pak",
+                &batch_changes,
+                &batch_output,
+            )
+            .is_err()
+        );
 
         // Two distinct local records, two modified paths: the final archive
         // must retain both changed bytes, not just the last signed CDR patch.
