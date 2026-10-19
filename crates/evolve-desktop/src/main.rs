@@ -2930,16 +2930,34 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.auto_idle_pending = resources.idle;
                     state.auto_resource_note = resources.material_note;
                     if !resources.warnings.is_empty() {
-                        state.auto_resource_note.push_str(&format!(" | {}", resources.warnings.join("; ")));
+                        state
+                            .auto_resource_note
+                            .push_str(&format!(" | {}", resources.warnings.join("; ")));
                     }
-                    state.status = format!("Automatic model dependencies: {} declared clips. {}", state.auto_clips.len(), state.auto_resource_note);
+                    state.status = format!(
+                        "Automatic model dependencies: {} declared clips. {}",
+                        state.auto_clips.len(),
+                        state.auto_resource_note
+                    );
                     if let Some(source) = resources.material {
                         if let Some(inv) = &state.inventory {
                             let operation = Operation::ResolveMaterial(
                                 source,
                                 PathBuf::from(&inv.root),
-                                state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
-                                state.library_by_build.then(|| state.library_catalog.as_ref().and_then(|c| c.builds.get(state.library_build_index)).cloned()).flatten(),
+                                state
+                                    .library_catalog
+                                    .as_ref()
+                                    .map(|c| PathBuf::from(&c.root)),
+                                state
+                                    .library_by_build
+                                    .then(|| {
+                                        state
+                                            .library_catalog
+                                            .as_ref()
+                                            .and_then(|c| c.builds.get(state.library_build_index))
+                                            .cloned()
+                                    })
+                                    .flatten(),
                             );
                             return launch(state, operation);
                         }
@@ -3116,8 +3134,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             let operation = Operation::DiscoverModelResources(
                                 relative.to_string_lossy().replace('\\', "/"),
                                 inv.clone(),
-                                state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
-                                state.library_by_build.then(|| state.library_catalog.as_ref().and_then(|c| c.builds.get(state.library_build_index)).cloned()).flatten(),
+                                state
+                                    .library_catalog
+                                    .as_ref()
+                                    .map(|c| PathBuf::from(&c.root)),
+                                state
+                                    .library_by_build
+                                    .then(|| {
+                                        state
+                                            .library_catalog
+                                            .as_ref()
+                                            .and_then(|c| c.builds.get(state.library_build_index))
+                                            .cloned()
+                                    })
+                                    .flatten(),
                             );
                             return launch(state, operation);
                         }
