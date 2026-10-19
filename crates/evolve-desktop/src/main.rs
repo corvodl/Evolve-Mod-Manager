@@ -567,7 +567,12 @@ impl Operation {
                 .map(Completed::Texture)
                 .map_err(|e| e.to_string()),
             Self::DiscoverModelResources(relative, inventory, library_root, build) => {
-                Ok(Completed::ModelResources(auto_resources::discover(&relative, &inventory, library_root.as_deref(), build.as_deref())))
+                Ok(Completed::ModelResources(auto_resources::discover(
+                    &relative,
+                    &inventory,
+                    library_root.as_deref(),
+                    build.as_deref(),
+                )))
             }
             Self::InspectModel(source) => read_model(&source)
                 .map(Completed::Model)
@@ -1801,7 +1806,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ViewerPreviewStaticCdf => {
             if state.busy {
                 state.viewer_queued_preview = state.selected;
-                state.status = "Static character preview queued until the current operation finishes.".into();
+                state.status =
+                    "Static character preview queued until the current operation finishes.".into();
                 return Task::none();
             }
             let Some(inventory) = state.inventory.as_ref() else {
@@ -1824,7 +1830,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return launch(state, Operation::BuildStaticCdf(source, inventory.clone()));
         }
         Message::ViewerAutoClip(index) => {
-            let Some(clip) = state.auto_clips.get(index) else { return Task::none(); };
+            let Some(clip) = state.auto_clips.get(index) else {
+                return Task::none();
+            };
             if clip.kind != "caf" {
                 state.status = "This character references a database or blendspace; native verified DBA playback is not supported yet.".into();
                 return Task::none();
@@ -3085,7 +3093,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.model = Some(Arc::new(mesh));
                     state.auto_clips.clear();
                     state.auto_idle_pending = None;
-                    state.auto_resource_note = "Discovering verified local textures and character animation references...".into();
+                    state.auto_resource_note =
+                        "Discovering verified local textures and character animation references..."
+                            .into();
                     // An old character's textures and motion must never appear
                     // on a different mesh while materials are being resolved.
                     state.diffuse = None;
@@ -3318,11 +3328,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 && let Some(entry) = state.inventory.as_ref().and_then(|i| i.entries.get(index))
             {
                 let is_cdf = entry.relative_path.to_ascii_lowercase().ends_with(".cdf");
-                return update(state, if is_cdf {
-                    Message::ViewerPreviewStaticCdf
-                } else {
-                    Message::ViewerPreviewSelected
-                });
+                return update(
+                    state,
+                    if is_cdf {
+                        Message::ViewerPreviewStaticCdf
+                    } else {
+                        Message::ViewerPreviewSelected
+                    },
+                );
             }
         }
     }
@@ -4013,11 +4026,9 @@ impl Desktop {
                 let finished = matches!(&message, Message::Finished(_));
                 let opens_model = matches!(
                     &message,
-                    Message::Finished(Ok(
-                        Completed::Model(_)
-                            | Completed::StaticCharacter(_, _)
-                            | Completed::ImportedPakFiles(_)
-                    ))
+                    Message::Finished(Ok(Completed::Model(_)
+                        | Completed::StaticCharacter(_, _)
+                        | Completed::ImportedPakFiles(_)))
                 ) || project_scan_done;
                 let launched_from_library = self.state.page == Some(Page::AssetLibrary);
                 let before = self.state.status.clone();
@@ -4176,7 +4187,6 @@ mod project_edit_tests {
         assert!(state.busy, "a normal click must queue a preview");
     }
 
-
     #[test]
     fn selecting_another_asset_while_busy_loads_latest_without_second_click() {
         let dir = tempfile::tempdir().unwrap();
@@ -4193,8 +4203,14 @@ mod project_edit_tests {
         let _ = update(&mut state, Message::ViewerSelectFile(1));
         assert_eq!(state.viewer_queued_preview, Some(1));
         assert_eq!(state.selected, Some(1));
-        let _ = update(&mut state, Message::Finished(Err("previous preview failed".into())));
-        assert!(state.busy, "queued preview must start immediately after worker completion");
+        let _ = update(
+            &mut state,
+            Message::Finished(Err("previous preview failed".into())),
+        );
+        assert!(
+            state.busy,
+            "queued preview must start immediately after worker completion"
+        );
         assert_eq!(state.viewer_queued_preview, None);
         assert_eq!(state.selected, Some(1));
     }
@@ -4214,7 +4230,10 @@ mod project_edit_tests {
         let _ = update(&mut state, Message::ViewerSelectFile(0));
         assert_eq!(state.viewer_queued_preview, Some(0));
         let newer = scan_directory(second.path()).unwrap();
-        let _ = update(&mut state, Message::Finished(Ok(Completed::Inventory(newer))));
+        let _ = update(
+            &mut state,
+            Message::Finished(Ok(Completed::Inventory(newer))),
+        );
         assert!(!state.busy);
         assert_eq!(state.viewer_queued_preview, None);
         assert_eq!(state.selected, None);
