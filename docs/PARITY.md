@@ -153,3 +153,30 @@ All source libraries stay read-only. New PAK installation/rebuilding must keep i
 - Stable/experimental update checks run against the new public releases repository, with a checksum-confirmed installer download and a separate approval action before launch. Actual upgrade/rollback behavior must still be validated on Windows.
 - The versioned installer and portable ZIP are the **only** intended public release assets. The installer offers an optional desktop shortcut, installs per-user and preserves private user files. A manually approved release workflow stays blocked by unfinished parity markers.
 - Application screenshots are diagnostic resources and are **not** packaged in GitHub Releases.
+
+## Native viewer automatic dependency loading (development)
+
+- On a single-click model preview, the wgpu mesh is shown first, then an
+  asynchronous read-only source discovery examines indexed extracted assets and
+  the manifest-verified Asset Library. Previously decoded character maps are
+  cleared immediately; a queued different selection cannot inherit them.
+- The resolver looks for a matching same-character CryEngine material and loads
+  only uniquely resolved authored maps (diffuse, normal and emissive, currently
+  one material slot). A documented/highest cooked DDS `.dds.0` stream is
+  preferred. Conflicting build/library paths are reported, never guessed.
+- An exact `.chrparams` tied to the selected character populates a browser of
+  declared CAF, DBA and blendspace references. A suitable non-contextual idle
+  may be decoded automatically, while other explicitly declared CAFs can be
+  resolved from local or imported manifests on click. The original PAKs and
+  protected Asset Library remain untouched.
+- A matching same-character CDF may supply a verified skeleton for the existing
+  rigged FBX export preparation. It is not a substitute for validating the
+  selected mesh's skin weights, original UVs and skeleton compatibility.
+
+**Not yet private-manager parity:** compiled-model material references and
+CDF attachment material overrides, multiple shader/material slots, animated
+GPU skinning, complete multi-part equipment assemblies, DBAs and layered
+animation playback, full-character FBX folder/action exports, game-level
+texture effects, and native export dialogs/workflow. CAF controller decoding
+does **not** imply its pose is applied to the rendered mesh. Real Stage 2
+character, Windows GUI and Blender acceptance remains a release gate.
