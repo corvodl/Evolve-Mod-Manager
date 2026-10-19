@@ -580,8 +580,12 @@ impl Operation {
             }
             Self::LoadDeclaredClip(index, virtual_path, inventory, library_root, build) => {
                 let file = auto_resources::resolve_declared(
-                    &inventory, &virtual_path, library_root.as_deref(), build.as_deref()
-                )?.ok_or_else(|| format!("Declared CAF is not available: {virtual_path}"))?;
+                    &inventory,
+                    &virtual_path,
+                    library_root.as_deref(),
+                    build.as_deref(),
+                )?
+                .ok_or_else(|| format!("Declared CAF is not available: {virtual_path}"))?;
                 let motion = read_native_caf(&file).map_err(|e| e.to_string())?;
                 Ok(Completed::DeclaredClip(index, virtual_path, motion))
             }
@@ -1859,10 +1863,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 index,
                 clip.virtual_path.clone(),
                 inventory,
-                state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
-                state.library_by_build
-                    .then(|| state.library_catalog.as_ref()
-                        .and_then(|c| c.builds.get(state.library_build_index)).cloned())
+                state
+                    .library_catalog
+                    .as_ref()
+                    .map(|c| PathBuf::from(&c.root)),
+                state
+                    .library_by_build
+                    .then(|| {
+                        state
+                            .library_catalog
+                            .as_ref()
+                            .and_then(|c| c.builds.get(state.library_build_index))
+                            .cloned()
+                    })
                     .flatten(),
             );
             return launch(state, operation);
@@ -2953,9 +2966,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     // A new click might have arrived while the index worker ran.
                     // Never attach another character's maps or CAF catalog.
                     let still_selected = state.viewer_queued_preview.is_none()
-                        && state.selected.and_then(|i| {
-                            state.inventory.as_ref()?.entries.get(i)
-                        }).is_some_and(|e| e.relative_path.eq_ignore_ascii_case(&relative));
+                        && state
+                            .selected
+                            .and_then(|i| state.inventory.as_ref()?.entries.get(i))
+                            .is_some_and(|e| e.relative_path.eq_ignore_ascii_case(&relative));
                     if !still_selected {
                         state.auto_idle_pending = None;
                     } else {
@@ -3006,16 +3020,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::DeclaredClip(index, virtual_path, motion)) => {
                     let selected = state.viewer_queued_preview.is_none()
-                        && state.auto_clips.get(index)
-                           .is_some_and(|clip| clip.virtual_path.eq_ignore_ascii_case(&virtual_path));
+                        && state.auto_clips.get(index).is_some_and(|clip| {
+                            clip.virtual_path.eq_ignore_ascii_case(&virtual_path)
+                        });
                     if selected && !motion.additive {
                         state.native_caf = Some(Arc::new(motion));
                         state.glb_motion = None;
                         state.motion_time = 0.0;
                         state.playing = false;
-                        state.status = format!("Loaded verified character-declared CAF: {virtual_path}. Skeleton skinning still requires source binding.");
+                        state.status = format!(
+                            "Loaded verified character-declared CAF: {virtual_path}. Skeleton skinning still requires source binding."
+                        );
                     } else if selected {
-                        state.status = "Additive CAF cannot play alone without a compatible base pose.".into();
+                        state.status =
+                            "Additive CAF cannot play alone without a compatible base pose.".into();
                     }
                 }
                 Ok(Completed::MaterialResolved(report, diffuse, normal, emissive)) => {
