@@ -13,6 +13,7 @@ pub struct Preferences {
     pub ui_density: String,
     pub file_explorer_side: String,
     pub viewer_split: f32,
+    pub light_strength: f32,
     pub viewer_show_inspector: bool,
     pub viewer_wireframe: bool,
     pub animation_speed: f32,
@@ -52,6 +53,7 @@ impl Default for Preferences {
             ui_density: "Comfortable".into(),
             file_explorer_side: "Right".into(),
             viewer_split: 0.67,
+            light_strength: 1.0,
             viewer_show_inspector: false,
             viewer_wireframe: false,
             animation_speed: 1.0,
@@ -119,6 +121,9 @@ impl Preferences {
         }
         if !self.viewer_split.is_finite() || !(0.25..=0.8).contains(&self.viewer_split) {
             self.viewer_split = 0.67;
+        }
+        if !self.light_strength.is_finite() || !(0.1..=2.0).contains(&self.light_strength) {
+            self.light_strength = 1.0;
         }
         if !self.animation_speed.is_finite() || !(0.1..=3.0).contains(&self.animation_speed) {
             self.animation_speed = 1.0;
