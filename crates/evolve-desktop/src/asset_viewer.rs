@@ -234,63 +234,24 @@ fn viewport(state: &State) -> Element<'_, Message> {
     .spacing(8)
     .align_y(iced::Center);
 
-    // The orientation compass is part of the preview, rather than the
-    // previous yaw/pitch/zoom sliders. It does not cover the model surface
-    // except for its own small button hitboxes.
-    let gizmo = container(
-        column![
-            row![
-                button("Z")
-                    .on_press(Message::ViewerCameraPreset("Top"))
-                    .style(button::secondary),
-                button("Iso")
-                    .on_press(Message::ViewerCameraPreset("Isometric"))
-                    .style(button::text),
-            ]
-            .spacing(3),
-            row![
-                button("−X")
-                    .on_press(Message::ViewerCameraPreset("Left"))
-                    .style(button::secondary),
-                button("●")
-                    .on_press(Message::ViewerCameraPreset("Front"))
-                    .style(button::primary),
-                button("+X")
-                    .on_press(Message::ViewerCameraPreset("Right"))
-                    .style(button::secondary),
-            ]
-            .spacing(3),
-            row![
-                button("−Z")
-                    .on_press(Message::ViewerCameraPreset("Bottom"))
-                    .style(button::secondary),
-                button("Back")
-                    .on_press(Message::ViewerCameraPreset("Back"))
-                    .style(button::text),
-            ]
-            .spacing(3),
-        ]
-        .spacing(3)
-        .align_x(iced::Center),
-    )
-    .padding(7)
-    .style(|_| container::Style {
-        background: Some(Background::Color(Color::from_rgba8(30, 30, 38, 0.86))),
-        border: Border {
-            color: Color::from_rgb8(71, 71, 81),
-            width: 1.0,
-            radius: 9.0.into(),
-        },
-        ..container::Style::default()
-    });
+    // Native, perspective-aware signed XYZ gizmo from the private manager:
+    // drag to orbit, click an axis to snap. Only the 112px compass covers
+    // viewport input; the remaining preview stays fully interactive.
     let preview = stack![
         main,
-        container(gizmo)
-            .width(Fill)
-            .height(Fill)
-            .align_right(Fill)
-            .align_top(Fill)
-            .padding(12),
+        container(
+            canvas(super::orientation_gizmo::OrientationGizmo {
+                yaw: state.yaw,
+                pitch: state.pitch,
+            })
+            .width(Length::Fixed(112.0))
+            .height(Length::Fixed(112.0)),
+        )
+        .width(Fill)
+        .height(Fill)
+        .align_right(Fill)
+        .align_top(Fill)
+        .padding(8),
     ]
     .width(Fill)
     .height(Fill);
