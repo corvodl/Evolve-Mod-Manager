@@ -1237,6 +1237,32 @@ mod tests {
             )
             .is_err()
         );
+        // Batch path must use the same independently checked signed output.
+        let batch_dir = root.path().join("batch");
+        fs::create_dir(&batch_dir).unwrap();
+        let batch_output = batch_dir.join("sample.pak");
+        let batch_changes = vec![("example.caf".into(), replacement.clone())];
+        let reports = rebuild_signed_pak_entries(
+            &archive, &key, &new_private_file, &new_public_file,
+            "sample.pak", &batch_changes, &batch_output,
+        ).unwrap();
+        assert_eq!(reports.len(), 1);
+        let batch_extract = root.path().join("batch-extracted");
+        extract_signed_pak(&batch_output, &new_public_file, "sample.pak", &batch_extract).unwrap();
+        assert_eq!(fs::read(batch_extract.join("example.caf")).unwrap(), fs::read(&replacement).unwrap());
+        let duplicate_output = batch_dir.join("missing").join("sample.pak");
+        assert!(rebuild_signed_pak_entries(
+            &archive, &key, &new_private_file, &new_public_file,
+            "sample.pak",
+            &[("example.caf".into(), replacement.clone()), ("example.caf".into(), replacement.clone())],
+            &duplicate_output
+        ).is_err());
+        assert!(!duplicate_output.exists());
+        assert!(rebuild_signed_pak_entries(
+            &archive, &key, &new_private_file, &new_public_file,
+            "sample.pak", &batch_changes, &batch_output,
+        ).is_err());
+
         let wrong = inspect_signed_pak(&archive, &key, "different.pak");
         assert!(wrong.is_err(), "signed archive basename is authenticated");
 
