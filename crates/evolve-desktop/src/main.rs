@@ -2722,6 +2722,8 @@ fn view(state: &State) -> Element<'_, Message> {
 fn initial_state() -> State {
     let mut result = State {
         zoom: 1.0,
+        playback_speed: 1.0,
+        viewer_split: 0.67,
         viewer_explorer_visible: true,
         ..State::default()
     };
@@ -2730,6 +2732,14 @@ fn initial_state() -> State {
             Ok(saved) => {
                 result.blender_path = saved.blender_executable.clone();
                 result.assets_root = saved.asset_library_root.clone();
+                result.viewer_split = saved.viewer_split;
+                result.viewer_show_inspector = saved.viewer_show_inspector;
+                result.viewer_wireframe = saved.viewer_wireframe;
+                result.playback_speed = saved.animation_speed;
+                result.playback_loop = saved.animation_loop;
+                result.yaw = saved.saved_yaw;
+                result.pitch = saved.saved_pitch;
+                result.zoom = saved.saved_zoom;
                 result.preferences = saved;
             }
             Err(error) => {
