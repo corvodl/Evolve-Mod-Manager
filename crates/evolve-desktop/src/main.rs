@@ -148,7 +148,7 @@ struct State {
     character: Option<CdfDefinition>,
     cdf_dependencies: Option<CdfDependencyReport>,
     model: Option<Arc<RenderMesh>>,
-    level_scene: Option<LevelScene>,
+    level_scene: Option<Arc<LevelScene>>,
     terrain: Option<TerrainInfo>,
     selected: Option<usize>,
     status: String,
@@ -1998,7 +1998,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         scene.objects.len(),
                         scene.diagnostics.len()
                     );
-                    state.level_scene = Some(scene);
+                    state.level_scene = Some(Arc::new(scene));
                     state.level_selected = None;
                     state.level_zoom = 1.0;
                     state.page = Some(Page::Levels);
