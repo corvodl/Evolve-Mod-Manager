@@ -1037,8 +1037,12 @@ fn file_row<'a>(index: usize, entry: &'a AssetEntry) -> Element<'a, Message> {
 
 fn download_action(state: &State) -> Element<'_, Message> {
     if let Some(update) = &state.available_update {
-        button(text(format!("Download verified {} installer",update.version)))
-            .on_press(Message::DownloadUpdate).into()
+        button(text(format!(
+            "Download verified {} installer",
+            update.version
+        )))
+        .on_press(Message::DownloadUpdate)
+        .into()
     } else {
         text("Stable updates appear after the public release is published.").into()
     }
@@ -1046,9 +1050,11 @@ fn download_action(state: &State) -> Element<'_, Message> {
 fn run_installer_action(state: &State) -> Element<'_, Message> {
     if state.staged_installer.is_some() {
         button("Run verified installer (requires approval)")
-            .on_press(Message::RunVerifiedInstaller).into()
+            .on_press(Message::RunVerifiedInstaller)
+            .into()
     } else {
-        text("No installer staged. The game and its PAKs are never modified by update checks.").into()
+        text("No installer staged. The game and its PAKs are never modified by update checks.")
+            .into()
     }
 }
 
