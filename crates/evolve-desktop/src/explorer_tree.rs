@@ -124,7 +124,7 @@ mod tests {
         let tree = visible_rows(fixture(), "", &HashSet::new(), 50);
         assert_eq!(tree[0].path, "characters");
         assert!(tree[0].directory);
-        assert_eq!(tree[3].name, "emet");
+        assert_eq!(tree[2].name, "emet");
         assert!(tree.iter().any(|r| r.index == Some(1) && r.depth == 4));
         assert_eq!(tree.last().unwrap().index, Some(2));
     }
