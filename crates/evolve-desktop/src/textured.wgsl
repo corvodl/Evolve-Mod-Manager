@@ -42,9 +42,10 @@ fn fs_main(input: Output) -> @location(0) vec4<f32> {
     // Compiled meshes can omit a usable per-vertex normal stream. Use real
     // view-space triangle derivatives rather than flattening every face into
     // the same clay silhouette. The original geometry is not modified.
+    let face_normal = cross(dpdx(input.view_position), dpdy(input.view_position));
     var surface = input.normal;
     if length(surface) < 0.00001 {
-        surface = cross(dpdx(input.view_position), dpdy(input.view_position));
+        surface = face_normal;
     }
     if length(surface) < 0.00001 {
         surface = vec3<f32>(0.0, 0.0, 1.0);
