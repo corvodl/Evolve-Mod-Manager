@@ -3,7 +3,9 @@
 use super::{Message, State, ViewerTab};
 use evolve_core::{DependencyGraph, DependencyStatus};
 use iced::widget::canvas::{self, Path, Stroke};
-use iced::widget::{button, canvas as canvas_widget, column, container, row, scrollable, space, text, text_input};
+use iced::widget::{
+    button, canvas as canvas_widget, column, container, row, scrollable, space, text, text_input,
+};
 use iced::{Color, Element, Fill, Length, Point, Rectangle, Renderer, Theme, mouse};
 use std::sync::Arc;
 
@@ -39,7 +41,11 @@ impl<Message> canvas::Program<Message> for DependencyCanvas {
         frame.fill_rectangle(Point::ORIGIN, frame.size(), BASE);
         let count = self.graph.nodes.len().saturating_sub(1).min(12);
         let root = Point::new(16.0, bounds.height * 0.5 - 24.0);
-        frame.fill_rectangle(root, iced::Size::new(142.0, 48.0), mark(&DependencyStatus::Source));
+        frame.fill_rectangle(
+            root,
+            iced::Size::new(142.0, 48.0),
+            mark(&DependencyStatus::Source),
+        );
         frame.fill_text(canvas::Text {
             content: "CDF / MTL source".into(),
             position: Point::new(root.x + 8.0, root.y + 29.0),
@@ -57,8 +63,17 @@ impl<Message> canvas::Program<Message> for DependencyCanvas {
                 Point::new(root.x + 142.0, root.y + 24.0),
                 Point::new(x, y + height * 0.5),
             );
-            frame.stroke(&line, Stroke::default().with_color(mark(&node.status)).with_width(1.0));
-            frame.fill_rectangle(Point::new(x, y), iced::Size::new(w, height), mark(&node.status));
+            frame.stroke(
+                &line,
+                Stroke::default()
+                    .with_color(mark(&node.status))
+                    .with_width(1.0),
+            );
+            frame.fill_rectangle(
+                Point::new(x, y),
+                iced::Size::new(w, height),
+                mark(&node.status),
+            );
             if height > 20.0 {
                 frame.fill_text(canvas::Text {
                     content: node.label.chars().take(42).collect(),
@@ -79,9 +94,14 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         button("DEPENDENCIES").on_press(Message::ViewerSelectTab(ViewerTab::Dependencies)),
         button("COMPARE").on_press(Message::ViewerSelectTab(ViewerTab::Compare)),
         space().width(Fill),
-        button(if state.viewer_show_inspector { "Hide" } else { "Show" })
-            .on_press(Message::ViewerToggleInspector),
-    ].spacing(7);
+        button(if state.viewer_show_inspector {
+            "Hide"
+        } else {
+            "Show"
+        })
+        .on_press(Message::ViewerToggleInspector),
+    ]
+    .spacing(7);
     if !state.viewer_show_inspector {
         return tabs.into();
     }
@@ -163,5 +183,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             rows.into()
         }
     };
-    column![tabs, container(content).width(Fill).padding(8)].spacing(6).into()
+    column![tabs, container(content).width(Fill).padding(8)]
+        .spacing(6)
+        .into()
 }
