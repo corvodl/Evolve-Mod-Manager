@@ -1250,7 +1250,8 @@ mod tests {
         let batch_extract = root.path().join("batch-extracted");
         extract_signed_pak(&batch_output, &new_public_file, "sample.pak", &batch_extract).unwrap();
         assert_eq!(fs::read(batch_extract.join("example.caf")).unwrap(), fs::read(&replacement).unwrap());
-        let duplicate_output = batch_dir.join("missing").join("sample.pak");
+        let duplicate_output = batch_dir.join("duplicate").join("sample.pak");
+        fs::create_dir(&batch_dir.join("duplicate")).unwrap();
         assert!(rebuild_signed_pak_entries(
             &archive, &key, &new_private_file, &new_public_file,
             "sample.pak",
@@ -1262,6 +1263,89 @@ mod tests {
             &archive, &key, &new_private_file, &new_public_file,
             "sample.pak", &batch_changes, &batch_output,
         ).is_err());
+
+        // Two distinct local records, two modified paths: the final archive
+        // must retain both changed bytes, not just the last signed CDR patch.
+        let mut dual_bytes = Vec::new();
+        let mut dual_cdr = Vec::new();
+        for (name, payload) in [
+            ("first.caf", b"original first".as_slice()),
+            ("second.caf", b"original second".as_slice()),
+        ] {
+            let offset = dual_bytes.len() as u32;
+            let crc = crc32fast::hash(payload);
+            let size = payload.len() as u32;
+            let mut local = [0u8; 30];
+            local[..4].copy_from_slice(b"PK\\x03\\x04");
+            local[8..10].copy_from_slice(&13u16.to_le_bytes());
+            local[14..18].copy_from_slice(&crc.to_le_bytes());
+            local[18..22].copy_from_slice(&size.to_le_bytes());
+            local[22..26].copy_from_slice(&size.to_le_bytes());
+            local[26..28].copy_from_slice(&(name.len() as u16).to_le_bytes());
+            dual_bytes.extend_from_slice(&local);
+            dual_bytes.extend_from_slice(name.as_bytes());
+            let member = SignedEntry {
+                path: name.into(), method: 13, flags: 0, crc32: crc,
+                compressed_size: u64::from(size), size: u64::from(size),
+                encrypted_data_offset: u64::from(offset) + 30 + name.len() as u64,
+            };
+            let slot = (!(crc >> 2) & 15) as usize;
+            dual_bytes.extend_from_slice(
+                &crypt_bytes(payload, &keys[slot], entry_iv(&member)).unwrap()
+            );
+            let mut record = [0u8; 46];
+            record[..4].copy_from_slice(b"PK\\x01\\x02");
+            record[10..12].copy_from_slice(&13u16.to_le_bytes());
+            record[16..20].copy_from_slice(&crc.to_le_bytes());
+            record[20..24].copy_from_slice(&size.to_le_bytes());
+            record[24..28].copy_from_slice(&size.to_le_bytes());
+            record[28..30].copy_from_slice(&(name.len() as u16).to_le_bytes());
+            record[42..46].copy_from_slice(&offset.to_le_bytes());
+            dual_cdr.extend_from_slice(&record);
+            dual_cdr.extend_from_slice(name.as_bytes());
+        }
+        let dual_cdr_offset = dual_bytes.len() as u32;
+        dual_bytes.extend_from_slice(&crypt_bytes(&dual_cdr, &keys[0], iv).unwrap());
+        let mut message = dual_cdr.clone();
+        message.extend_from_slice(b"dual.pak");
+        let sig = private.sign_with_rng(
+            &mut OsRng, Pss::new_with_salt::<Sha256>(0), &Sha256::digest(&message)
+        ).unwrap();
+        let mut trailer = comment;
+        trailer[11..139].copy_from_slice(&sig);
+        let mut end = [0u8; 22];
+        end[..4].copy_from_slice(b"PK\\x05\\x06");
+        end[8..10].copy_from_slice(&2u16.to_le_bytes());
+        end[10..12].copy_from_slice(&2u16.to_le_bytes());
+        end[12..16].copy_from_slice(&(dual_cdr.len() as u32).to_le_bytes());
+        end[16..20].copy_from_slice(&dual_cdr_offset.to_le_bytes());
+        end[20..22].copy_from_slice(&(TRAILER_BYTES as u16).to_le_bytes());
+        dual_bytes.extend_from_slice(&end);
+        dual_bytes.extend_from_slice(&trailer);
+        let dual_original = root.path().join("dual.pak");
+        fs::write(&dual_original, &dual_bytes).unwrap();
+        assert_eq!(inspect_signed_pak(&dual_original, &key, "dual.pak").unwrap().entries.len(), 2);
+        let first = root.path().join("first-new.caf");
+        let second = root.path().join("second-new.caf");
+        fs::write(&first, b"replacement FIRST with a changed CRC").unwrap();
+        fs::write(&second, b"replacement SECOND with different length").unwrap();
+        let dual_folder = root.path().join("dual-out");
+        fs::create_dir(&dual_folder).unwrap();
+        let dual_output = dual_folder.join("dual.pak");
+        let changes = vec![
+            ("first.caf".to_owned(), first.clone()),
+            ("second.caf".to_owned(), second.clone()),
+        ];
+        let reports = rebuild_signed_pak_entries(
+            &dual_original, &key, &new_private_file, &new_public_file,
+            "dual.pak", &changes, &dual_output,
+        ).unwrap();
+        assert_eq!(reports.len(), 2);
+        assert_eq!(fs::read(&dual_original).unwrap(), dual_bytes);
+        let dual_extracted = root.path().join("dual-extracted");
+        extract_signed_pak(&dual_output, &new_public_file, "dual.pak", &dual_extracted).unwrap();
+        assert_eq!(fs::read(dual_extracted.join("first.caf")).unwrap(), fs::read(&first).unwrap());
+        assert_eq!(fs::read(dual_extracted.join("second.caf")).unwrap(), fs::read(&second).unwrap());
 
         let wrong = inspect_signed_pak(&archive, &key, "different.pak");
         assert!(wrong.is_err(), "signed archive basename is authenticated");
