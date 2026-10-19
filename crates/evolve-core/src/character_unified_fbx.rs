@@ -193,9 +193,12 @@ pub fn export_unified_cdf_fbx(
             return Err(format!("CDF part {name} has no verified original UV0"));
         }
         let raw = fs::read(original).map_err(|e| e.to_string())?;
-        let (mut glb, verified) = match &motion {
-            Some(clip) => rigged_glb_bytes_with_caf(&mesh, &raw, &skeleton_bytes, clip),
-            None => rigged_glb_bytes(&mesh, &raw, &skeleton_bytes),
+        // Embed the verified Action once, on the common skeleton. Importing
+        // a duplicate CAF for every part would create competing Blender
+        // actions and make the exported animation ambiguous.
+        let (mut glb, verified) = match (&motion, index) {
+            (Some(clip), 0) => rigged_glb_bytes_with_caf(&mesh, &raw, &skeleton_bytes, clip),
+            _ => rigged_glb_bytes(&mesh, &raw, &skeleton_bytes),
         }.map_err(|e| format!("CDF part {name} cannot be rigged: {e}"))?;
         if bone_count.is_some_and(|count| count != verified.bone_count) {
             return Err("Compiled bone count changes between CDF parts".into());
