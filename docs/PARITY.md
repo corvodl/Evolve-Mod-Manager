@@ -239,6 +239,26 @@ changing these labels or authorizing v1.0.
   broader scene-history operations remain unported. Synthetic regression tests
   and Windows real-map acceptance remain required.
 
+## Native CAF weighted viewport preview (release-gated)
+
+- Selecting a compatible indexed .skin/.skinm or .chr/.chrm previews original geometry
+  without a second Inspect click. When a **non-additive CAF** and an exact
+  compiled source skeleton resolve, the model viewer now attempts to verify
+  the original subset palettes, bone weights, CRC identities, inverse bind
+  matrices and CAF tracks before enabling deformation.
+- Compatible source clips can be scrubbed and played. Skin deformation uses
+  the original 4- or 8-influence weights in a bounded CPU evaluator while
+  wgpu still renders the textured triangles. Source UVs, textures and files
+  remain untouched; source shapes and bone hierarchies are never guessed.
+- Cyclic CAF clips start playback automatically after successful source
+  binding. CAF keys without a verified skeleton remain inspectable but
+  **cannot** animate an unbound character mesh. Unverified/malformed rigs
+  fail instead of producing misleading moving vertices.
+- **Still blocked:** True GPU skeletal skinning, multiple attached CDF
+  parts in the same animated viewport, additive overlays, native DBA
+  bitstream playback, full CryEngine shader/material subsets, equipment
+  attachment transformations, and Windows/real-character acceptance.
+
 ## Experimental unified original-rig CDF FBX (release-gated)
 
 - The native Asset Viewer can request **one new FBX** assembled from a selected
