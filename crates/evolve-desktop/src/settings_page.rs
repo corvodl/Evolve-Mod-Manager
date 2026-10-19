@@ -52,7 +52,7 @@ fn storage(state: &State) -> Element<'_, Message> {
                 })
         );
     }
-    let mut legend = row![].spacing(15).wrap();
+    let mut legend = row![].spacing(15);
     for (i, label) in labels.iter().enumerate() {
         legend = legend.push(text(format!(
             "{}: {}",
