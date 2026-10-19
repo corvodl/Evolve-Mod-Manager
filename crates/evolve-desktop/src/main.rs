@@ -37,8 +37,8 @@ use iced::widget::{
     text_input, tooltip,
 };
 use iced::{Element, Fill, Length, Subscription, Task, Theme, window};
-use settings::{Preferences, load_from, save_to, settings_path};
 use modding_projects::{ProjectRow, discover_projects};
+use settings::{Preferences, load_from, save_to, settings_path};
 use std::path::PathBuf;
 use std::sync::{
     Arc,
@@ -332,8 +332,9 @@ enum Completed {
 impl Operation {
     fn execute(self) -> Result<Completed, String> {
         match self {
-            Self::IndexProjects(root, stage) => discover_projects(&root, &stage)
-                .map(Completed::Projects),
+            Self::IndexProjects(root, stage) => {
+                discover_projects(&root, &stage).map(Completed::Projects)
+            }
             Self::InspectDependencies(inventory, relative) => {
                 inspect_dependencies(&inventory, &relative)
                     .map(Completed::Dependencies)
@@ -752,12 +753,13 @@ fn launch(state: &mut State, operation: Operation) -> Task<Message> {
 /// staged original. A replacement's filename alone is never sufficient.
 fn selected_stage_target(state: &State) -> Result<String, String> {
     let stage = PathBuf::from(&state.preferences.stage);
-    if let Some(project) = state.modding_selected.and_then(|index|
-        state.modding_projects.as_ref().and_then(|projects| projects.get(index))
-    ) {
-        return modding_keys::staged_target(
-            &stage, &stage.join("paks").join(&project.target)
-        );
+    if let Some(project) = state.modding_selected.and_then(|index| {
+        state
+            .modding_projects
+            .as_ref()
+            .and_then(|projects| projects.get(index))
+    }) {
+        return modding_keys::staged_target(&stage, &stage.join("paks").join(&project.target));
     }
     modding_keys::staged_target(&stage, PathBuf::from(&state.input).as_path())
 }
@@ -838,10 +840,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 && state.modding_projects.is_none()
                 && !state.preferences.projects.trim().is_empty()
             {
-                return launch(state, Operation::IndexProjects(
-                    PathBuf::from(&state.preferences.projects),
-                    PathBuf::from(&state.preferences.stage),
-                ));
+                return launch(
+                    state,
+                    Operation::IndexProjects(
+                        PathBuf::from(&state.preferences.projects),
+                        PathBuf::from(&state.preferences.stage),
+                    ),
+                );
             }
             if page == Page::AssetLibrary
                 && state.library_catalog.is_none()
@@ -856,16 +861,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ModdingMenu(menu) => {
             state.modding_menu = if state.modding_menu == Some(menu) {
                 None
-            } else { Some(menu) };
+            } else {
+                Some(menu)
+            };
         }
         Message::ModdingFilterChanged(value) => state.modding_filter = value,
         Message::ModdingSelectProject(index) => {
             if let Some(project) = state.modding_projects.as_ref().and_then(|p| p.get(index)) {
                 state.modding_selected = Some(index);
-                state.preferences.current_workspace = project.workspace.to_string_lossy().into_owned();
+                state.preferences.current_workspace =
+                    project.workspace.to_string_lossy().into_owned();
                 state.stage_target = project.target.clone();
                 state.input = PathBuf::from(&state.preferences.stage)
-                    .join("paks").join(&project.target).to_string_lossy().into_owned();
+                    .join("paks")
+                    .join(&project.target)
+                    .to_string_lossy()
+                    .into_owned();
                 state.status = format!("Selected {} · {}", project.label, project.details);
             }
         }
@@ -874,16 +885,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Configure your Projects folder in Settings first.".into();
                 return Task::none();
             }
-            return launch(state, Operation::IndexProjects(
-                PathBuf::from(&state.preferences.projects),
-                PathBuf::from(&state.preferences.stage),
-            ));
+            return launch(
+                state,
+                Operation::IndexProjects(
+                    PathBuf::from(&state.preferences.projects),
+                    PathBuf::from(&state.preferences.stage),
+                ),
+            );
         }
         Message::ModdingToggleAdvanced => state.modding_advanced = !state.modding_advanced,
         Message::ModdingToggleProfiles => {
             state.modding_profiles = !state.modding_profiles;
             if state.modding_profiles && !state.preferences.stage.trim().is_empty() {
-                return launch(state, Operation::ListProfiles(PathBuf::from(&state.preferences.stage)));
+                return launch(
+                    state,
+                    Operation::ListProfiles(PathBuf::from(&state.preferences.stage)),
+                );
             }
         }
         Message::ModdingBrowsePaks => {
@@ -901,7 +918,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             {
                 let candidate = PathBuf::from(&inventory.root).join(&entry.relative_path);
                 if let Ok(relative) = modding_keys::staged_target(
-                    PathBuf::from(&state.preferences.stage).as_path(), &candidate
+                    PathBuf::from(&state.preferences.stage).as_path(),
+                    &candidate,
                 ) {
                     state.selected = Some(index);
                     state.stage_target = relative;
@@ -913,9 +931,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::ModdingOpenProject => {
-            let Some(project) = state.modding_selected.and_then(|i|
-                state.modding_projects.as_ref().and_then(|p| p.get(i))
-            ) else {
+            let Some(project) = state
+                .modding_selected
+                .and_then(|i| state.modding_projects.as_ref().and_then(|p| p.get(i)))
+            else {
                 state.status = "Select an editable project first.".into();
                 return Task::none();
             };
@@ -928,9 +947,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return begin_scan(state, root);
         }
         Message::ModdingReviewChanges => {
-            if let Some(project) = state.modding_selected.and_then(|i|
-                state.modding_projects.as_ref().and_then(|p| p.get(i))
-            ) {
+            if let Some(project) = state
+                .modding_selected
+                .and_then(|i| state.modding_projects.as_ref().and_then(|p| p.get(i)))
+            {
                 state.status = format!("{} · {}", project.label, project.details);
             } else {
                 state.status = "Select a project to review its changed assets.".into();
@@ -943,31 +963,46 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let source = PathBuf::from(&state.input);
             let basename = match modding_keys::signed_basename(&source) {
                 Ok(value) => value,
-                Err(error) => { state.status = error; return Task::none(); }
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
             };
             if modding_keys::staged_target(
-                PathBuf::from(&state.preferences.stage).as_path(), &source
-            ).is_err() {
-                state.status = "Select a verified staged original PAK, not an arbitrary file.".into();
+                PathBuf::from(&state.preferences.stage).as_path(),
+                &source,
+            )
+            .is_err()
+            {
+                state.status =
+                    "Select a verified staged original PAK, not an arbitrary file.".into();
                 return Task::none();
             }
-            let key = match modding_keys::public_key(
-                PathBuf::from(&state.preferences.stage).as_path()
-            ) {
-                Ok(key) => key,
-                Err(error) => { state.status = error; return Task::none(); }
-            };
+            let key =
+                match modding_keys::public_key(PathBuf::from(&state.preferences.stage).as_path()) {
+                    Ok(key) => key,
+                    Err(error) => {
+                        state.status = error;
+                        return Task::none();
+                    }
+                };
             let projects = PathBuf::from(&state.preferences.projects);
             if !projects.is_dir() {
                 state.status = "Configure an existing Projects folder before unpacking.".into();
                 return Task::none();
             }
             let label = basename.trim_end_matches(".pak");
-            let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |time| time.as_millis());
             let dest = projects.join(format!("Unpacked-{}-{}", label, unique));
-            state.status = "Extracting into a NEW read-only files directory (no project manifest yet)...".into();
-            return launch(state, Operation::ExtractSignedPak(source, key, basename, dest));
+            state.status =
+                "Extracting into a NEW read-only files directory (no project manifest yet)..."
+                    .into();
+            return launch(
+                state,
+                Operation::ExtractSignedPak(source, key, basename, dest),
+            );
         }
         Message::LibraryRootChanged(value) => {
             state.library_root = value;
@@ -1338,9 +1373,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.preferences.automatic_update_checks = !state.preferences.automatic_update_checks;
             persist_preferences(state);
         }
-        Message::PreferenceStage(value) => { state.preferences.stage = value; state.modding_projects = None; }, 
+        Message::PreferenceStage(value) => {
+            state.preferences.stage = value;
+            state.modding_projects = None;
+        }
         Message::PreferenceSwap(value) => state.preferences.swap = value,
-        Message::PreferenceProjects(value) => { state.preferences.projects = value; state.modding_projects = None; }, 
+        Message::PreferenceProjects(value) => {
+            state.preferences.projects = value;
+            state.modding_projects = None;
+        }
         Message::PreferenceAssets(value) => {
             state.library_root = value.clone();
             state.library_catalog = None;
@@ -1474,16 +1515,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Select an offline profile and prepared stage.".into();
                 return Task::none();
             }
-            let key = match modding_keys::public_key(
-                PathBuf::from(&state.preferences.stage).as_path()
-            ) {
-                Ok(value) => value,
-                Err(error) => { state.status = error; return Task::none(); }
-            };
-            return launch(state, Operation::ApplyProfile(
-                PathBuf::from(&state.preferences.stage), state.profile_id.clone(),
-                key.clone(), key
-            ));
+            let key =
+                match modding_keys::public_key(PathBuf::from(&state.preferences.stage).as_path()) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        state.status = error;
+                        return Task::none();
+                    }
+                };
+            return launch(
+                state,
+                Operation::ApplyProfile(
+                    PathBuf::from(&state.preferences.stage),
+                    state.profile_id.clone(),
+                    key.clone(),
+                    key,
+                ),
+            );
         }
         Message::StartProfileList => {
             if state.preferences.stage.trim().is_empty() {
@@ -1515,23 +1563,38 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             let target = match selected_stage_target(state) {
                 Ok(target) => target,
-                Err(error) => { state.status = error; return Task::none(); }
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
             };
             let stage = PathBuf::from(&state.preferences.stage);
             let key = match modding_keys::public_key(&stage) {
                 Ok(key) => key,
-                Err(error) => { state.status = error; return Task::none(); }
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
             };
-            let basename = match modding_keys::signed_basename(
-                &stage.join("paks").join(&target)
-            ) {
+            let basename = match modding_keys::signed_basename(&stage.join("paks").join(&target)) {
                 Ok(name) => name,
-                Err(error) => { state.status = error; return Task::none(); }
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
             };
-            return launch(state, Operation::AddProfileMod(
-                stage, state.profile_id.clone(), PathBuf::from(&state.input),
-                target, key.clone(), key, basename,
-            ));
+            return launch(
+                state,
+                Operation::AddProfileMod(
+                    stage,
+                    state.profile_id.clone(),
+                    PathBuf::from(&state.input),
+                    target,
+                    key.clone(),
+                    key,
+                    basename,
+                ),
+            );
         }
         Message::StartProfilePlan => {
             if state.profile_id.trim().is_empty() {
@@ -1541,11 +1604,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let stage = PathBuf::from(&state.preferences.stage);
             let key = match modding_keys::public_key(&stage) {
                 Ok(key) => key,
-                Err(error) => { state.status = error; return Task::none(); }
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
             };
-            return launch(state, Operation::PlanProfile(
-                stage, state.profile_id.clone(), key.clone(), key,
-            ));
+            return launch(
+                state,
+                Operation::PlanProfile(stage, state.profile_id.clone(), key.clone(), key),
+            );
         }
         Message::StartStageInit => {
             if state.preferences.stage.trim().is_empty() {
@@ -1570,43 +1637,65 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::StartStageImport => {
             let target = match selected_stage_target(state) {
                 Ok(target) => target,
-                Err(error) => { state.status = error; return Task::none(); }
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
             };
             let stage = PathBuf::from(&state.preferences.stage);
             let key = match modding_keys::public_key(&stage) {
                 Ok(key) => key,
-                Err(error) => { state.status = error; return Task::none(); }
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
             };
-            let basename = match modding_keys::signed_basename(
-                &stage.join("paks").join(&target)
-            ) {
+            let basename = match modding_keys::signed_basename(&stage.join("paks").join(&target)) {
                 Ok(name) => name,
-                Err(error) => { state.status = error; return Task::none(); }
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
             };
-            return launch(state, Operation::StageImport(
-                stage, PathBuf::from(&state.input), target, key, basename,
-            ));
+            return launch(
+                state,
+                Operation::StageImport(stage, PathBuf::from(&state.input), target, key, basename),
+            );
         }
         Message::StartStageApply => {
             let target = match selected_stage_target(state) {
                 Ok(target) => target,
-                Err(error) => { state.status = error; return Task::none(); }
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
             };
             let stage = PathBuf::from(&state.preferences.stage);
             let key = match modding_keys::public_key(&stage) {
                 Ok(key) => key,
-                Err(error) => { state.status = error; return Task::none(); }
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
             };
-            let basename = match modding_keys::signed_basename(
-                &stage.join("paks").join(&target)
-            ) {
+            let basename = match modding_keys::signed_basename(&stage.join("paks").join(&target)) {
                 Ok(name) => name,
-                Err(error) => { state.status = error; return Task::none(); }
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
             };
-            return launch(state, Operation::StageApply(
-                stage, PathBuf::from(&state.input), target,
-                key.clone(), key, basename,
-            ));
+            return launch(
+                state,
+                Operation::StageApply(
+                    stage,
+                    PathBuf::from(&state.input),
+                    target,
+                    key.clone(),
+                    key,
+                    basename,
+                ),
+            );
         }
         Message::StartStageRestore => {
             if state.preferences.stage.trim().is_empty() {
@@ -1847,7 +1936,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
             let basename = match modding_keys::signed_basename(&source) {
                 Ok(name) => name,
-                Err(error) => { state.status = error; return Task::none(); }
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
             };
             return launch(state, Operation::InspectSignedPak(source, key, basename));
         }
@@ -1860,26 +1952,36 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
             let basename = match modding_keys::signed_basename(&source) {
                 Ok(name) => name,
-                Err(error) => { state.status = error; return Task::none(); }
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
             };
             if state.output.trim().is_empty() {
                 state.status = "Choose a new extraction folder, or use Unpack PAK in Modding to generate one automatically.".into();
                 return Task::none();
             }
-            return launch(state, Operation::ExtractSignedPak(
-                source, key, basename, PathBuf::from(&state.output)
-            ));
+            return launch(
+                state,
+                Operation::ExtractSignedPak(source, key, basename, PathBuf::from(&state.output)),
+            );
         }
         Message::StartSignedRebuild => {
             let source = PathBuf::from(&state.input);
             let stage = PathBuf::from(&state.preferences.stage);
             let keys = match modding_keys::signing_keys(&stage) {
                 Ok(keys) => keys,
-                Err(error) => { state.status = error; return Task::none(); }
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
             };
             let basename = match modding_keys::signed_basename(&source) {
                 Ok(name) => name,
-                Err(error) => { state.status = error; return Task::none(); }
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
             };
             if state.signed_entry.trim().is_empty()
                 || state.signed_replacement.trim().is_empty()
@@ -1888,12 +1990,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Select an exact virtual member, a replacement file and a NEW output PAK. Signing keys are resolved automatically.".into();
                 return Task::none();
             }
-            return launch(state, Operation::RebuildSignedPak(
-                source, keys.public.clone(), keys.private, keys.public,
-                basename, state.signed_entry.clone(),
-                PathBuf::from(&state.signed_replacement),
-                PathBuf::from(&state.output),
-            ));
+            return launch(
+                state,
+                Operation::RebuildSignedPak(
+                    source,
+                    keys.public.clone(),
+                    keys.private,
+                    keys.public,
+                    basename,
+                    state.signed_entry.clone(),
+                    PathBuf::from(&state.signed_replacement),
+                    PathBuf::from(&state.output),
+                ),
+            );
         }
         Message::StartLevelFbxExport => {
             if [
@@ -2001,12 +2110,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.viewer_tab = ViewerTab::Compare;
                 }
                 Ok(Completed::Projects(projects)) => {
-                    let previous = state.modding_selected.and_then(|i|
-                        state.modding_projects.as_ref().and_then(|old| old.get(i))
-                    ).map(|p| p.workspace.clone());
-                    state.modding_selected = previous.and_then(|path|
-                        projects.iter().position(|p| p.workspace == path)
-                    );
+                    let previous = state
+                        .modding_selected
+                        .and_then(|i| state.modding_projects.as_ref().and_then(|old| old.get(i)))
+                        .map(|p| p.workspace.clone());
+                    state.modding_selected =
+                        previous.and_then(|path| projects.iter().position(|p| p.workspace == path));
                     state.status = format!("Loaded {} editable project(s).", projects.len());
                     state.modding_projects = Some(projects);
                 }
