@@ -32,7 +32,7 @@ use evolve_core::{
     FlatCdfFbxReport, ImportedLibrary, ImportedPak, Inventory, LevelScene,
     LibraryBatchImportReport, LibraryReferenceStatus, MaterialReport, ModProfile, ModelInfo,
     NativeCafMotion, PakInventory, ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport,
-    SignedPakInfo, StageTransaction, TerrainInfo, UnifiedCdfFbxReport, add_mod_to_profile,
+    SignedPakInfo, StageTransaction, TerrainInfo, UnifiedCdfFbxReport, VerifiedCafSkin, add_mod_to_profile,
     apply_profile_stage, apply_stage_pak, batch_stage_status, compare_assets, convert_glb_to_fbx,
     convert_original_motion, create_mod_profile, decode_dds_rgba, export_dds_png,
     export_flat_cdf_parts_fbx, export_level_scene_glb,
@@ -161,6 +161,7 @@ struct State {
     glb_motion: Option<Arc<AnimatedGlb>>,
     selected_motion_clip: usize,
     native_caf: Option<Arc<NativeCafMotion>>,
+    skin_preview: Option<Arc<VerifiedCafSkin>>,
     motion_time: f32,
     playing: bool,
     assets_root: String,
@@ -303,6 +304,7 @@ enum Operation {
     LoadEmissive(PathBuf, SharedCache),
     ResolveMaterial(PathBuf, PathBuf, Option<PathBuf>, Option<String>),
     LoadCaf(PathBuf),
+    BindCafPreview(PathBuf, PathBuf, NativeCafMotion),
     RiggedGlb(PathBuf, PathBuf, PathBuf),
     FlatCdfFbx(PathBuf, Inventory, PathBuf, PathBuf, Option<PathBuf>),
     UnifiedCdfFbx(PathBuf, Inventory, PathBuf, PathBuf, Option<PathBuf>),
@@ -389,6 +391,7 @@ enum Completed {
         Vec<String>,
     ),
     Caf(NativeCafMotion),
+    BoundCafPreview(PathBuf, VerifiedCafSkin),
     RiggedExport(RigReport, PathBuf),
     FlatCdfFbxExport(FlatCdfFbxReport, PathBuf),
     UnifiedCdfFbxExport(UnifiedCdfFbxReport, PathBuf),
@@ -502,6 +505,11 @@ impl Operation {
             Self::InspectPak(source) => inspect_legacy_pak(&source)
                 .map(Completed::Pak)
                 .map_err(|e| e.to_string()),
+            Self::BindCafPreview(mesh, skeleton, motion) => {
+                let skin = VerifiedCafSkin::from_originals(&mesh, &skeleton, motion)
+                    .map_err(|e| format!("Original CAF skeleton binding: {e}"))?;
+                Ok(Completed::BoundCafPreview(mesh, skin))
+            }
             Self::RiggedGlb(mesh, skeleton, dest) => {
                 export_rigged_character_glb(&mesh, &skeleton, &dest)
                     .map(|r| Completed::RiggedExport(r, dest))
@@ -1111,6 +1119,41 @@ fn level_source_hash(source: &Path) -> Result<String, String> {
         hash.update(&chunk[..count]);
     }
     Ok(format!("{:x}", hash.finalize()))
+}
+
+/// Only exact current model meshes are eligible for verified CAF playback.
+/// Decode and bind in a worker, never during the GUI draw or input event.
+fn bind_current_native_caf(state: &mut State) -> Option<Task<Message>> {
+    let motion = state.native_caf.as_ref()?;
+    if state.model.is_none() || state.skeleton_path.trim().is_empty() {
+        return None;
+    }
+    let source = PathBuf::from(&state.input);
+    let extension = source.extension().and_then(|ext| ext.to_str())?;
+    if !["skin", "skinm", "chr", "chrm"]
+        .iter().any(|candidate| extension.eq_ignore_ascii_case(candidate))
+    {
+        return None;
+    }
+    let compiled = preferred_render_source(&source);
+    let skeleton = PathBuf::from(&state.skeleton_path);
+    let clip = (**motion).clone();
+    Some(launch(state, Operation::BindCafPreview(compiled, skeleton, clip)))
+}
+
+/// Re-evaluate the actual original vertex weights while the existing wgpu
+/// viewport continues rendering textured geometry. Source geometry, UVs and
+/// on-disk assets are never modified by the animation preview.
+fn apply_current_skin_frame(state: &mut State) {
+    if let Some(skin) = &state.skin_preview {
+        match skin.mesh_at(state.motion_time) {
+            Ok(mesh) => state.model = Some(Arc::new(mesh)),
+            Err(error) => {
+                state.playing = false;
+                state.status = format!("CAF playback stopped: {error}");
+            }
+        }
+    }
 }
 
 fn sync_level_fields(state: &mut State) {
