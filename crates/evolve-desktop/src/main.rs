@@ -939,6 +939,40 @@ fn launch(state: &mut State, operation: Operation) -> Task<Message> {
 
 /// The target must belong to a selected editable project or to the exact
 /// staged original. A replacement's filename alone is never sufficient.
+/// Only a single material-slot, uniquely resolved original diffuse stream is
+/// eligible as an automatic FBX texture input. The user can still override it.
+fn verified_export_diffuse(state: &State, report: &MaterialReport) -> Option<PathBuf> {
+    if report.slots != 1 {
+        return None;
+    }
+    let mut refs = report.textures.iter().filter(|r| r.role == "diffuse");
+    let reference = refs.next()?;
+    if refs.next().is_some() {
+        return None;
+    }
+    let AssetResolution::Found(relative) = &reference.resolution else {
+        return None;
+    };
+    let path = PathBuf::from(relative);
+    let path = if path.is_absolute() {
+        path
+    } else {
+        PathBuf::from(&state.inventory.as_ref()?.root).join(path)
+    };
+    let meta = std::fs::symlink_metadata(&path).ok()?;
+    if !meta.file_type().is_file() {
+        return None;
+    }
+    let source = std::fs::canonicalize(path).ok()?;
+    let local = state.inventory.as_ref()
+        .and_then(|i| std::fs::canonicalize(&i.root).ok());
+    let library = state.library_catalog.as_ref()
+        .and_then(|i| std::fs::canonicalize(&i.root).ok());
+    (local.as_ref().is_some_and(|r| source.starts_with(r))
+        || library.as_ref().is_some_and(|r| source.starts_with(r)))
+        .then_some(source)
+}
+
 fn selected_stage_target(state: &State) -> Result<String, String> {
     let stage = PathBuf::from(&state.preferences.stage);
     if let Some(project) = state.modding_selected.and_then(|index| {
@@ -3066,6 +3100,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                     // A new authored material must not inherit a previous
                     // character's maps when the reference is missing/ambiguous.
+                    state.diffuse_input = verified_export_diffuse(state, &report)
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_default();
                     state.diffuse = diffuse.map(Arc::new);
                     state.normal_map = normal.map(Arc::new);
                     state.emissive_map = emissive.map(Arc::new);
@@ -3195,6 +3232,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.auto_idle_pending = None;
                     state.auto_material_pending = false;
                     state.skeleton_path.clear();
+                    state.diffuse_input.clear();
                     state.auto_resource_note =
                         "Discovering verified local textures and character animation references..."
                             .into();
