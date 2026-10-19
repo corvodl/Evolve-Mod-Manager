@@ -575,6 +575,8 @@ enum Message {
     OpenViewer,
     ViewerOpened,
     WindowClosed(window::Id),
+    FileDropped(window::Id, PathBuf),
+    DropPath(PathBuf),
     ViewerMenu(&'static str),
     ViewerToggleExplorer,
     ViewerResetCamera,
@@ -901,7 +903,44 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 };
             }
         }
-        Message::OpenViewer | Message::ViewerOpened | Message::WindowClosed(_) => {}
+        Message::OpenViewer | Message::ViewerOpened | Message::WindowClosed(_) |
+        Message::FileDropped(_, _) => {},
+        Message::DropPath(path) => {
+            let metadata = match std::fs::symlink_metadata(&path) {
+                Ok(metadata) if !metadata.file_type().is_symlink() => metadata,
+                _ => {
+                    state.status = "Dropped path must be a regular local file or directory.".into();
+                    return Task::none();
+                }
+            };
+            state.input = path.to_string_lossy().into_owned();
+            if metadata.file_type().is_dir() {
+                return launch(state, Operation::Scan(path));
+            }
+            if !metadata.file_type().is_file() {
+                state.status = "Unsupported dropped path type.".into();
+                return Task::none();
+            }
+            let name = state.input.to_ascii_lowercase();
+            let operation = if name.ends_with(".dds") || name.ends_with(".dds.0") {
+                Some(Operation::InspectDds(path))
+            } else if name.ends_with(".cdf") {
+                Some(Operation::InspectCdf(path))
+            } else if [".skin", ".skinm", ".chr", ".cgf"].iter()
+                .any(|ext| name.ends_with(ext)) {
+                Some(Operation::InspectModel(path))
+            } else if name.ends_with(".caf") {
+                Some(Operation::LoadCaf(path))
+            } else if name.ends_with(".cry") || name.ends_with(".lvl") {
+                Some(Operation::InspectLevel(path))
+            } else {
+                None
+            };
+            if let Some(operation) = operation {
+                return launch(state, operation);
+            }
+            state.status = "Source path selected. Choose the relevant safe inspector in Modding.".into();
+        }
         Message::ViewerMenu(section) => {
             state.viewer_menu = if section.is_empty() || state.viewer_menu == Some(section) {
                 None
@@ -2892,6 +2931,14 @@ impl Desktop {
         match message {
             Message::OpenViewer => self.open_viewer(),
             Message::ViewerOpened => Task::none(),
+            Message::FileDropped(id, path) => {
+                if self.viewer_id == Some(id) && self.state.viewer_from_library {
+                    self.state.status = "Asset Library originals are read-only. Drop files in Modding for inspection.".into();
+                    Task::none()
+                } else {
+                    update(&mut self.state, Message::DropPath(path))
+                }
+            }
             Message::WindowClosed(id) => {
                 if id == self.main_id {
                     iced::exit()
@@ -2982,6 +3029,12 @@ impl Desktop {
             playback,
             startup,
             window::close_events().map(Message::WindowClosed),
+            iced::event::listen_with(|event, _status, id| match event {
+                iced::Event::Window(window::Event::FileDropped(path)) => {
+                    Some(Message::FileDropped(id, path))
+                }
+                _ => None,
+            }),
         ])
     }
 }
