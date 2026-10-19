@@ -318,6 +318,21 @@ pub fn resolve_declared(
     exact(inventory, declared_path, imported, build)
 }
 
+/// Resolve a DBA named in the selected character's own chrparams catalog.
+/// Refuse arbitrary filenames and let the converter independently validate
+/// its decoded GLB tracks before anything becomes playable.
+pub fn resolve_declared_dba(
+    inventory: &Inventory,
+    declared_path: &str,
+    imported: Option<&Path>,
+    build: Option<&str>,
+) -> Result<Option<PathBuf>, String> {
+    if !declared_path.to_ascii_lowercase().ends_with(".dba") {
+        return Err("Only explicitly declared DBA paths may be opened".into());
+    }
+    exact(inventory, declared_path, imported, build)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
