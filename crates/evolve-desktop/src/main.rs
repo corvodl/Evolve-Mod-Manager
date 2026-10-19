@@ -2651,7 +2651,6 @@ fn view(state: &State) -> Element<'_, Message> {
                     }else{
                         canvas(MeshViewport{
                             mesh:mesh.clone(),yaw:state.yaw,pitch:state.pitch,zoom:state.zoom,
-                            light_strength:state.light_strength,
                         }).width(Fill).height(Length::Fixed(400.)).into()
                     };
                     display
@@ -2777,7 +2776,6 @@ fn view(state: &State) -> Element<'_, Message> {
                 }else{
                     canvas(MeshViewport{
                         mesh:mesh.clone(),yaw:state.yaw,pitch:state.pitch,zoom:state.zoom.max(0.2),
-                            light_strength:state.light_strength,
                     }).width(Fill).height(Length::Fixed(400.)).into()
                 };
                 display
