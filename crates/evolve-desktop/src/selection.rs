@@ -19,9 +19,10 @@ impl MultiSelection {
             return;
         };
         if shift {
-            if let Some(begin) = self.anchor.and_then(|anchor|
-                visible.iter().position(|&index| index == anchor)
-            ) {
+            if let Some(begin) = self
+                .anchor
+                .and_then(|anchor| visible.iter().position(|&index| index == anchor))
+            {
                 if !ctrl {
                     self.indices.clear();
                 }
