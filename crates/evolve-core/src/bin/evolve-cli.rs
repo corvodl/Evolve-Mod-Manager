@@ -1,11 +1,11 @@
 //! Safe command-line functions shared with the desktop application.
 use evolve_core::{
-    AnimatedGlb, AnimationPolicy, Transform, convert_original_motion, animation_references, convert_glb_to_fbx,
-    export_dds_png, export_edited_layer, export_level_scene_glb, export_model_glb,
-    export_model_obj, export_rigged_character_fbx, export_rigged_character_glb, export_terrain_obj,
-    extract_legacy_pak, extract_signed_pak, inspect_caf_file, inspect_dds, inspect_legacy_pak,
-    inspect_signed_pak, load_level_scene, read_cdf, read_model, read_terrain, rebuild_legacy_pak,
-    rebuild_signed_pak_entry, scan_directory, write_inventory_json,
+    AnimatedGlb, AnimationPolicy, Transform, animation_references, convert_glb_to_fbx,
+    convert_original_motion, export_dds_png, export_edited_layer, export_level_scene_glb,
+    export_model_glb, export_model_obj, export_rigged_character_fbx, export_rigged_character_glb,
+    export_terrain_obj, extract_legacy_pak, extract_signed_pak, inspect_caf_file, inspect_dds,
+    inspect_legacy_pak, inspect_signed_pak, load_level_scene, read_cdf, read_model, read_terrain,
+    rebuild_legacy_pak, rebuild_signed_pak_entry, scan_directory, write_inventory_json,
 };
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
