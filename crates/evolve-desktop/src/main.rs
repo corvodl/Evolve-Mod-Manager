@@ -5,7 +5,7 @@ use evolve_core::{
     AssetEntry, CdfDefinition, DdsInfo, Inventory, LevelScene, ModelInfo, PakInventory, RenderMesh,
     SignedPakInfo, TerrainInfo, export_dds_png, extract_legacy_pak, extract_signed_pak,
     inspect_dds, inspect_legacy_pak, inspect_signed_pak, load_level_scene, read_cdf, read_model,
-    read_terrain, rebuild_legacy_pak, scan_directory,
+    read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry, export_level_scene_glb, scan_directory,
 };
 use iced::widget::{button, canvas, column, container, image, row, scrollable, slider, svg, text, text_input, tooltip};
 use iced::{Element, Fill, Length, Task, Theme};
@@ -64,6 +64,12 @@ struct State {
     replacements: String,
     public_key: String,
     signed_name: String,
+    signing_private: String,
+    signing_public: String,
+    signed_entry: String,
+    signed_replacement: String,
+    assets_root: String,
+    terrain_source: String,
     yaw: f32,
     pitch: f32,
     zoom: f32,
@@ -92,6 +98,8 @@ enum Operation {
     InspectTerrain(PathBuf),
     InspectSignedPak(PathBuf, PathBuf, String),
     ExtractSignedPak(PathBuf, PathBuf, String, PathBuf),
+    RebuildSignedPak(PathBuf, PathBuf, PathBuf, PathBuf, String, String, PathBuf, PathBuf),
+    ExportLevelGlb(PathBuf, PathBuf, Option<PathBuf>, PathBuf),
     ExtractPak(PathBuf, PathBuf),
     RebuildPak(PathBuf, PathBuf, PathBuf),
     ExportPng(PathBuf, PathBuf),
@@ -108,6 +116,8 @@ enum Completed {
     Terrain(RenderMesh, TerrainInfo),
     SignedPak(SignedPakInfo),
     ExtractedSigned(usize, PathBuf),
+    RebuiltSigned(String, PathBuf),
+    LevelExported(usize, usize, PathBuf),
     Extracted(usize, PathBuf),
     Rebuilt(usize, PathBuf),
     ExportedPng(DdsInfo, PathBuf),
@@ -162,6 +172,16 @@ impl Operation {
             Self::InspectCdf(source) => read_cdf(&source)
                 .map(Completed::Character)
                 .map_err(|e| e.to_string()),
+            Self::RebuildSignedPak(src,old_pub,signing_key,new_pub,name,member,replacement,dest) => {
+                let result=rebuild_signed_pak_entry(&src,&old_pub,&signing_key,&new_pub,&name,&member,&replacement,&dest)
+                    .map_err(|e|e.to_string())?;
+                Ok(Completed::RebuiltSigned(result.changed_entry,dest))
+            }
+            Self::ExportLevelGlb(src,root,terrain,dest) => {
+                let result=export_level_scene_glb(&src,&root,terrain.as_deref(),&dest)
+                    .map_err(|e|e.to_string())?;
+                Ok(Completed::LevelExported(result.exported_mesh_resources,result.exported_mesh_instances,dest))
+            }
             Self::ExtractPak(source, dest) => extract_legacy_pak(&source, &dest)
                 .map(|pak| Completed::Extracted(pak.entries.len(), dest))
                 .map_err(|e| e.to_string()),
@@ -185,6 +205,12 @@ enum Message {
     ReplacementsChanged(String),
     PublicKeyChanged(String),
     SignedNameChanged(String),
+    SigningPrivateChanged(String),
+    SigningPublicChanged(String),
+    SignedMemberChanged(String),
+    SignedReplacementChanged(String),
+    AssetsRootChanged(String),
+    TerrainSourceChanged(String),
     YawChanged(f32),
     PitchChanged(f32),
     ZoomChanged(f32),
@@ -198,6 +224,8 @@ enum Message {
     StartTerrainInspection,
     StartSignedInspection,
     StartSignedExtraction,
+    StartSignedRebuild,
+    StartLevelGlbExport,
     StartExtract,
     StartRebuild,
     StartPngExport,
@@ -229,6 +257,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ReplacementsChanged(replacements) => state.replacements = replacements,
         Message::PublicKeyChanged(key) => state.public_key = key,
         Message::SignedNameChanged(name) => state.signed_name = name,
+        Message::SigningPrivateChanged(value) => state.signing_private = value,
+        Message::SigningPublicChanged(value) => state.signing_public = value,
+        Message::SignedMemberChanged(value) => state.signed_entry = value,
+        Message::SignedReplacementChanged(value) => state.signed_replacement = value,
+        Message::AssetsRootChanged(value) => state.assets_root = value,
+        Message::TerrainSourceChanged(value) => state.terrain_source = value,
         Message::YawChanged(value) => state.yaw = value,
         Message::PitchChanged(value) => state.pitch = value,
         Message::ZoomChanged(value) => state.zoom = value,
@@ -289,6 +323,33 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state,
                 Operation::ExtractSignedPak(source, key, signed, output),
             );
+        }
+        Message::StartSignedRebuild => {
+            if [&state.input,&state.public_key,&state.signing_private,&state.signing_public,
+                &state.signed_name,&state.signed_entry,&state.signed_replacement,&state.output]
+                .iter().any(|v|v.trim().is_empty()) {
+                state.status="Choose the source PAK, both public keys, local private key, exact entry, replacement, and NEW output PAK.".into();
+                return Task::none();
+            }
+            return launch(state,Operation::RebuildSignedPak(
+                PathBuf::from(&state.input),PathBuf::from(&state.public_key),
+                PathBuf::from(&state.signing_private),PathBuf::from(&state.signing_public),
+                state.signed_name.clone(),state.signed_entry.clone(),
+                PathBuf::from(&state.signed_replacement),PathBuf::from(&state.output),
+            ));
+        }
+        Message::StartLevelGlbExport => {
+            if state.input.trim().is_empty() || state.assets_root.trim().is_empty()
+                || state.output.trim().is_empty(){
+                state.status="Select level XML/LYR, exact extracted game assets root, and a NEW .glb output.".into();
+                return Task::none();
+            }
+            let terrain=if state.terrain_source.trim().is_empty(){None}
+                else{Some(PathBuf::from(&state.terrain_source))};
+            return launch(state,Operation::ExportLevelGlb(
+                PathBuf::from(&state.input),PathBuf::from(&state.assets_root),
+                terrain,PathBuf::from(&state.output),
+            ));
         }
         Message::StartExtract => {
             if state.output.trim().is_empty() {
@@ -397,6 +458,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         info.entries.len(),
                         info.total_expanded_bytes
                     );
+                }
+                Ok(Completed::RebuiltSigned(name,dir)) => {
+                    state.status=format!("Rebuilt and verified signed PAK entry {} into {}. Source unchanged; offline test required.",
+                        name,dir.display());
+                }
+                Ok(Completed::LevelExported(meshes,placements,dest)) => {
+                    state.status=format!("Exported Blender scene GLB: {meshes} verified models, {placements} placements: {}",
+                        dest.display());
+                    state.page=Some(Page::Levels);
                 }
                 Ok(Completed::ExtractedSigned(count, dir)) => {
                     state.status = format!(
@@ -537,7 +607,7 @@ fn view(state: &State) -> Element<'_, Message> {
             text("Inspect local CryEngine assets safely.").size(19),
             text("ZIP-compatible 2012 PAKs can be inspected, extracted and rebuilt from exact replacements; signed Stage 2 CryPAKs are NOT supported yet."),
             text("DDS top-mipmap PNG export supports BC1/2/3/4/5 and 32-bit RGB(A); complete split-stream sets are reconstructed first."),
-            text("Signed PAK verification/extraction, model geometry preview and level source inspection are experimental. Stage 2 signing and full rigged FBX remain unported."),
+            text("Signed archive rebuilding and Blender geometry-scene GLB export are experimental. Full character FBX, game sign-key acceptance and animation/texture parity remain gated."),
         ].spacing(14).into(),
         Page::Files | Page::AssetLibrary => {
             let mut rows = column![].spacing(3);
@@ -577,6 +647,20 @@ fn view(state: &State) -> Element<'_, Message> {
                 text(selected_name).size(14),
                 scrollable(rows).height(Fill),
                 text("Showing up to 350 matching rows; data remains available for filtering.").size(12),
+                text("Signed CryPAK rebuild (offline/private testing)").size(18),
+                row![
+                    text_input("Private PEM key (local only)...",&state.signing_private)
+                        .on_input(Message::SigningPrivateChanged).width(Fill),
+                    text_input("Matching public DER key...",&state.signing_public)
+                        .on_input(Message::SigningPublicChanged).width(Fill),
+                ].spacing(8),
+                row![
+                    text_input("Exact signed member virtual path...",&state.signed_entry)
+                        .on_input(Message::SignedMemberChanged).width(Fill),
+                    text_input("Replacement asset path...",&state.signed_replacement)
+                        .on_input(Message::SignedReplacementChanged).width(Fill),
+                    button("Rebuild signed PAK").on_press(Message::StartSignedRebuild),
+                ].spacing(8),
             ].spacing(10).into()
         }
         Page::Models => {
@@ -624,6 +708,13 @@ fn view(state: &State) -> Element<'_, Message> {
             row![
                 button("Read level placements").on_press(Message::StartLevelInspection),
                 button("Load heightmap geometry").on_press(Message::StartTerrainInspection),
+                button("Export complete geometry scene GLB").on_press(Message::StartLevelGlbExport),
+            ].spacing(8),
+            row![
+                text_input("Exact extracted asset root...",&state.assets_root)
+                    .on_input(Message::AssetsRootChanged).width(Fill),
+                text_input("Optional Heightmap.dat source...",&state.terrain_source)
+                    .on_input(Message::TerrainSourceChanged).width(Fill),
             ].spacing(8),
             text(if let Some(scene)=&state.level_scene {
                 format!("{} level objects, {} unresolved diagnostics; source transforms preserved.",
@@ -644,7 +735,7 @@ fn view(state: &State) -> Element<'_, Message> {
                 text("Pitch"),
                 slider(-85.0..=85.0,state.pitch,Message::PitchChanged).width(Fill),
             ].spacing(8),
-            text("Full map assembly, terrain materials, live vegetation, and Blender scene export are still being ported."),
+            text("Scene GLB includes verified mesh instances and optional terrain. Texture/material, compiled vegetation, scripting and full map fidelity remain gated."),
         ].spacing(14).into(),
         Page::Settings => column![
             text("Workspace safety").size(19),
