@@ -7,8 +7,8 @@ use crate::staging::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 const JOURNAL: &str = "bundle-active.json";
