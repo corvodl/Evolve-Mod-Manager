@@ -222,6 +222,12 @@ pub fn import_signed_library_pak(
     if sha_file(&source)? != before {
         return Err("Source PAK changed during import; no library entry was published".into());
     }
+    let source_mtime_ns = source_meta
+        .modified().map_err(|e| e.to_string())?
+        .duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?
+        .as_nanos();
+    let source_mtime_ns = u64::try_from(source_mtime_ns)
+        .map_err(|_| "Source modification timestamp exceeds manifest limit")?;
     let imported_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
@@ -230,7 +236,7 @@ pub fn import_signed_library_pak(
         "version": 1, "name": basename, "signed_name": basename,
         "source": source.to_string_lossy(),
         "source_sha256": before, "source_size": source_meta.len(),
-        "source_mtime_ns": 0,
+        "source_mtime_ns": source_mtime_ns,
         "public_key_sha256": sha_file(&public_key)?,
         "archive_format": "signed-crypak",
         "verification": "rsa-pss", "imported_at": imported_at,
