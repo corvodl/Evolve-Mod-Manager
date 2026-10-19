@@ -1,6 +1,7 @@
 //! Safe command-line functions shared with the desktop application.
 use evolve_core::{
-    AnimatedGlb, AnimationPolicy, Transform, animation_references, apply_stage_pak,
+    AnimatedGlb, AnimationPolicy, Transform, add_mod_to_profile, animation_references, apply_stage_pak,
+    create_mod_profile, delete_mod_profile, enable_profile_mod, list_mod_profiles, plan_mod_profile,
     convert_glb_to_fbx, convert_original_motion, export_dds_png, export_edited_layer,
     export_level_scene_glb, export_model_glb, export_model_obj, export_rigged_character_fbx,
     export_rigged_character_glb, export_terrain_obj, extract_legacy_pak, extract_signed_pak,
@@ -27,6 +28,12 @@ fn usage() -> String {
         "Usage:",
         "  evolve-cli scan <directory> [inventory.json]",
         "  evolve-cli stage init <new-isolated-stage>",
+        "  evolve-cli profile list <stage>",
+        "  evolve-cli profile create <stage> <name>",
+        "  evolve-cli profile delete <stage> <profile-id>",
+        "  evolve-cli profile add <stage> <profile-id> <replacement.pak> <Game/name.pak> <original-public.der> <mod-public.der> <basename>",
+        "  evolve-cli profile enable <stage> <profile-id> <mod-id> <true|false>",
+        "  evolve-cli profile plan <stage> <profile-id> <original-public.der> <mod-public.der> <basename>",
         "  evolve-cli stage status <stage>",
         "  evolve-cli stage restore <stage>",
         "  evolve-cli stage import <stage> <original.pak> <target-relative.pak> <public.der> <basename>",
@@ -131,6 +138,67 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
         );
         if let Some(report) = report {
             write_inventory_json(&inventory, &report).map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
+    if verb == OsStr::new("profile") {
+        let action = pop(&mut args)?;
+        let stage: PathBuf = pop(&mut args)?.into();
+        if action == OsStr::new("list") {
+            no_extra(&mut args)?;
+            let catalog = list_mod_profiles(&stage).map_err(|e| e.to_string())?;
+            for profile in catalog.profiles {
+                println!("{} | {} | {} mod(s)", profile.id, profile.name, profile.mods.len());
+                for m in profile.mods {
+                    println!("  {} {} -> {} ({})", m.id, m.source, m.target,
+                        if m.enabled { "enabled" } else { "disabled" });
+                }
+            }
+        } else if action == OsStr::new("create") {
+            let name = pop(&mut args)?.into_string().map_err(|_| usage())?;
+            no_extra(&mut args)?;
+            let profile = create_mod_profile(&stage, &name).map_err(|e| e.to_string())?;
+            println!("Created offline mod profile {} ({})", profile.name, profile.id);
+        } else if action == OsStr::new("delete") {
+            let id = pop(&mut args)?.into_string().map_err(|_| usage())?;
+            no_extra(&mut args)?;
+            delete_mod_profile(&stage, &id).map_err(|e| e.to_string())?;
+            println!("Deleted profile {id}");
+        } else if action == OsStr::new("add") {
+            let id = pop(&mut args)?.into_string().map_err(|_| usage())?;
+            let mod_file: PathBuf = pop(&mut args)?.into();
+            let relative = pop(&mut args)?.into_string().map_err(|_| usage())?;
+            let original_key: PathBuf = pop(&mut args)?.into();
+            let mod_key: PathBuf = pop(&mut args)?.into();
+            let basename = pop(&mut args)?.into_string().map_err(|_| usage())?;
+            no_extra(&mut args)?;
+            let m = add_mod_to_profile(
+                &stage, &id, &mod_file, &relative, &original_key, &mod_key, &basename
+            ).map_err(|e| e.to_string())?;
+            println!("Registered verified mod {} at target {}", m.id, m.target);
+        } else if action == OsStr::new("enable") {
+            let id = pop(&mut args)?.into_string().map_err(|_| usage())?;
+            let mod_id = pop(&mut args)?.into_string().map_err(|_| usage())?;
+            let enabled = match pop(&mut args)?.to_str() {
+                Some("true") => true,
+                Some("false") => false,
+                _ => return Err(usage()),
+            };
+            no_extra(&mut args)?;
+            enable_profile_mod(&stage, &id, &mod_id, enabled).map_err(|e| e.to_string())?;
+            println!("Updated mod {mod_id} to enabled={enabled}");
+        } else if action == OsStr::new("plan") {
+            let id = pop(&mut args)?.into_string().map_err(|_| usage())?;
+            let original_key: PathBuf = pop(&mut args)?.into();
+            let mod_key: PathBuf = pop(&mut args)?.into();
+            let basename = pop(&mut args)?.into_string().map_err(|_| usage())?;
+            no_extra(&mut args)?;
+            let plan = plan_mod_profile(&stage, &id, &original_key, &mod_key, &basename)
+                .map_err(|e| e.to_string())?;
+            println!("Verified {} enabled signed mods ({} bytes); game unchanged.",
+                plan.mods.len(), plan.total_bytes);
+        } else {
+            return Err(usage());
         }
         return Ok(());
     }
