@@ -369,22 +369,43 @@ pub fn resolve_imported_reference(
         {
             continue;
         }
-        let inv = imported_archive_files(archive)?;
-        for entry in inv.entries {
-            let path = entry.relative_path.to_ascii_lowercase();
-            for (i, candidate) in candidates.iter().enumerate() {
-                if path == *candidate {
-                    found[i].push(LibraryReference {
-                        archive_id: archive.id.clone(),
-                        archive_name: archive.name.clone(),
-                        relative_path: entry.relative_path.clone(),
-                        absolute_path: PathBuf::from(&inv.root)
-                            .join(&entry.relative_path)
-                            .to_string_lossy()
-                            .into_owned(),
-                    });
-                }
-            }
+        // Resolve only matching manifest members. Validating every extracted
+        // file in *every* imported PAK here used to make an unrelated missing
+        // DDS break the entire character's material lookup (Windows os error 2).
+        // Full verification remains mandatory when opening an archive for edits.
+        let folder = Path::new(&archive.directory);
+        let manifest: Manifest = serde_json::from_slice(&read_bounded(
+            &folder.join("asset-library.json"), MAX_MANIFEST_BYTES
+        )?)?;
+        if manifest.version != 1 || manifest.name != archive.name
+            || manifest.entries.len() > MAX_MEMBERS
+        {
+            return Err(LibraryError::UnsafeArchive);
+        }
+        let matches = manifest.entries.into_iter().filter_map(|entry| {
+            let name = safe_member_name(&entry.path).ok()?;
+            let rank = candidates.iter().position(|candidate| name.eq_ignore_ascii_case(candidate))?;
+            Some((rank, name, entry.bytes))
+        }).collect::<Vec<_>>();
+        if matches.is_empty() { continue; }
+        let file_root = folder.join("files");
+        let root_meta = fs::symlink_metadata(&file_root)?;
+        if !root_meta.file_type().is_dir() { return Err(LibraryError::UnsafeArchive); }
+        let safe_root = fs::canonicalize(&file_root)?;
+        for (rank, relative, expected_size) in matches {
+            let path = safe_root.join(&relative);
+            // A missing or modified referenced texture isn't a usable hit,
+            // but must not prevent searching another source-qualified PAK.
+            let Ok(metadata) = fs::symlink_metadata(&path) else { continue; };
+            if !metadata.file_type().is_file() || metadata.len() != expected_size { continue; }
+            let Ok(real) = fs::canonicalize(&path) else { continue; };
+            if !real.starts_with(&safe_root) { continue; }
+            found[rank].push(LibraryReference {
+                archive_id: archive.id.clone(),
+                archive_name: archive.name.clone(),
+                relative_path: relative,
+                absolute_path: real.to_string_lossy().into_owned(),
+            });
         }
     }
     // A high-resolution .dds.0 has priority over .dds, but never prefer one
