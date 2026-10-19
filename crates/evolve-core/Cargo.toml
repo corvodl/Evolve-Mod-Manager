@@ -12,6 +12,12 @@ thiserror = "2"
 zip = { version = "=2.4.1", default-features = false, features = ["deflate"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 quick-xml = "0.38"
+rsa = "0.9"
+sha2 = { version = "0.10", features = ["oid"] }
+twofish = "0.7"
+cipher = "0.4"
+crc32fast = "1"
+flate2 = "1"
 tempfile = "3"
 
 [lints]

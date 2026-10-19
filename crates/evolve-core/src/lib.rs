@@ -6,6 +6,7 @@ pub mod dds;
 pub mod inventory;
 pub mod policy;
 pub mod terrain;
+pub mod signed_pak;
 
 pub use archive::{
     PakError, PakInventory, PakMember, RebuildReport, extract_legacy_pak, inspect_legacy_pak,
@@ -20,5 +21,6 @@ pub use inventory::{
     AssetEntry, AssetKind, Inventory, InventoryError, MAX_ENTRIES, scan_directory,
     write_inventory_json,
 };
+pub use signed_pak::{SignedPakError, SignedPakInfo, SignedEntry, inspect_signed_pak, extract_signed_pak, open_verified_signed_pak};
 pub use terrain::{TerrainError, TerrainInfo, TerrainMesh, decode_terrain_bytes, export_terrain_obj, read_terrain};
 pub use policy::{AnimationPolicy, ExportFeature, FeatureStatus, PARITY_MATRIX};
