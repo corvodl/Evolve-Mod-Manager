@@ -264,10 +264,8 @@ pub fn discover(
         } else {
             None
         };
-        if r.kind == "caf" {
-            if let Some(rank) = idle_priority(&r.name) {
-                preferred.push((i, rank));
-            }
+        if r.kind == "caf" && let Some(rank) = idle_priority(&r.name) {
+            preferred.push((i, rank));
         }
         found.clips.push(AutoClip {
             label: r.name.clone(),
