@@ -557,9 +557,13 @@ mod tests {
             db[79..95].copy_from_slice(raw);
             let mut seed = [7u8; 32];
             let mask = mgf1(&seed, db.len());
-            for (v, m) in db.iter_mut().zip(mask) { *v ^= m; }
+            for (v, m) in db.iter_mut().zip(mask) {
+                *v ^= m;
+            }
             let seed_mask = mgf1(&db, 32);
-            for (v, m) in seed.iter_mut().zip(seed_mask) { *v ^= m; }
+            for (v, m) in seed.iter_mut().zip(seed_mask) {
+                *v ^= m;
+            }
             let mut encoded = [0u8; RSA_BYTES];
             encoded[1..33].copy_from_slice(&seed);
             encoded[33..].copy_from_slice(&db);
@@ -601,7 +605,9 @@ mod tests {
         let mut message = cdr.clone();
         message.extend_from_slice(b"sample.pak");
         let digest = Sha256::digest(&message);
-        let signature = private.sign(Pss::new_with_salt::<Sha256>(0), &digest).unwrap();
+        let signature = private
+            .sign(Pss::new_with_salt::<Sha256>(0), &digest)
+            .unwrap();
         assert_eq!(signature.len(), RSA_BYTES);
         let mut comment = [0u8; TRAILER_BYTES];
         comment[..6].copy_from_slice(b"\x06\x00\x00\x00\x01\x03");
