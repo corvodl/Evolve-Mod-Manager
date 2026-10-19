@@ -83,7 +83,7 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, LibraryError> {
     if !metadata.file_type().is_file() || metadata.len() > limit {
         return Err(LibraryError::UnsafeArchive);
     }
-    let mut file = File::open(path)?;
+    let file = File::open(path)?;
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.take(limit + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > limit {
