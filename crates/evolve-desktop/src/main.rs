@@ -416,8 +416,11 @@ impl Operation {
                 // never choose a similarly named or cross-build PAK.
                 imported_archive_files(&pak).map_err(|e| e.to_string())?;
                 modding_projects::unpack_raw_project(
-                    &projects, &stage, PathBuf::from(&pak.source).as_path()
-                ).map(|(path, count)| Completed::UnpackedProject(path, count))
+                    &projects,
+                    &stage,
+                    PathBuf::from(&pak.source).as_path(),
+                )
+                .map(|(path, count)| Completed::UnpackedProject(path, count))
             }
             Self::Scan(source, cancelled, indexed) => {
                 scan_directory_with_progress(&source, &cancelled, &indexed)
@@ -1355,10 +1358,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Select exactly one imported PAK to make an editable copy.".into();
                 return Task::none();
             }
-            let Some(pak) = state.library_selected
+            let Some(pak) = state
+                .library_selected
                 .filter(|i| state.library_selection.indices.contains(i))
                 .and_then(|i| state.library_catalog.as_ref()?.archives.get(i))
-                .cloned() else {
+                .cloned()
+            else {
                 state.status = "Choose a verified imported archive first.".into();
                 return Task::none();
             };
@@ -1368,9 +1373,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             }
             state.modding_open_editor_when_scanned = true;
-            return launch(state, Operation::CreateProjectFromLibrary(
-                pak, PathBuf::from(&state.preferences.projects), stage,
-            ));
+            return launch(
+                state,
+                Operation::CreateProjectFromLibrary(
+                    pak,
+                    PathBuf::from(&state.preferences.projects),
+                    stage,
+                ),
+            );
         }
         Message::ToggleAdvancedTools => state.show_advanced_tools = !state.show_advanced_tools,
         Message::ToggleActivity => state.show_activity = !state.show_activity,
