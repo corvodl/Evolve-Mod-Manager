@@ -26,7 +26,8 @@ impl canvas::Program<super::Message> for MeshViewport {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<super::Message>> {
-        state.handle(event, bounds, cursor, self.shift)
+        state
+            .handle(event, bounds, cursor, self.shift)
             .map(super::view_navigation::message)
             .map(|message| canvas::Action::publish(message).and_capture())
     }
