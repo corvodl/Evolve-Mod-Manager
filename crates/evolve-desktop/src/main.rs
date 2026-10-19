@@ -1495,13 +1495,12 @@ fn main() -> iced::Result {
             } else {
                 Subscription::none()
             };
-            let startup = if state.preferences.automatic_update_checks
-                && !state.startup_update_checked
-            {
-                iced::time::every(Duration::from_millis(500)).map(|_| Message::CheckUpdates)
-            } else {
-                Subscription::none()
-            };
+            let startup =
+                if state.preferences.automatic_update_checks && !state.startup_update_checked {
+                    iced::time::every(Duration::from_millis(500)).map(|_| Message::CheckUpdates)
+                } else {
+                    Subscription::none()
+                };
             Subscription::batch([playback, startup])
         })
         .title("Evolve Mod Manager — Rust Development Preview")
