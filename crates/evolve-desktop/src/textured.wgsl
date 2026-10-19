@@ -3,6 +3,7 @@ struct Output {
     @location(0) uv: vec2<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) view_position: vec3<f32>,
+    @location(3) light_strength: f32,
 }
 @group(0) @binding(0) var diffuse: texture_2d<f32>;
 @group(0) @binding(1) var material_sampler: sampler;
@@ -15,12 +16,14 @@ fn vs_main(
     @location(1) uv: vec2<f32>,
     @location(2) normal: vec3<f32>,
     @location(3) view_position: vec3<f32>,
+    @location(4) light_strength: f32,
 ) -> Output {
     var out: Output;
     out.position = vec4<f32>(position, 1.0);
     out.uv = uv;
     out.normal = normal;
     out.view_position = view_position;
+    out.light_strength = light_strength;
     return out;
 }
 
@@ -57,7 +60,7 @@ fn fs_main(input: Output) -> @location(0) vec4<f32> {
         }
     }
     let light = normalize(vec3<f32>(0.35, -0.3, 0.9));
-    let brightness = 0.30 + 0.70 * max(dot(surface, light), 0.0);
+    let brightness = (0.20 + 0.75 * max(dot(surface, light), 0.0)) * clamp(input.light_strength, 0.1, 2.0);
     // Emission is manually selected and authored as sRGB; exact MTL
     // GlowAmount and transparency still require verified material resolution.
     return vec4<f32>(base.rgb * brightness + glow, base.a);
