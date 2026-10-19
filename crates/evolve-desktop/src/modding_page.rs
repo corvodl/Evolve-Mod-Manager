@@ -151,7 +151,7 @@ fn projects(state: &State) -> Element<'_, Message> {
     let count = matches.len();
     for index in matches.into_iter().take(PAGE) {
         let record = &projects[index];
-        let selected = state.modding_selected == Some(index);
+        let selected = state.project_selection.indices.contains(&index);
         let changed = if record.changed_known {
             record.modified.len().to_string()
         } else {
@@ -292,7 +292,7 @@ fn archive_browser(state: &State) -> Element<'_, Message> {
             }
             count += 1;
             if count <= PAGE {
-                let selected = state.selected == Some(index);
+                let selected = state.file_selection.indices.contains(&index);
                 list = list.push(
                     button(row![
                         text(file.relative_path.as_str()).size(12).width(Fill),
