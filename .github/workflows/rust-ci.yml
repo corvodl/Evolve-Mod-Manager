@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# Superseded development commits should not consume additional Windows runners
+# while newer model-viewer fixes are already ready to validate.
+concurrency:
+  group: rust-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   core:
     runs-on: ubuntu-latest
