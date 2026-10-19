@@ -1521,6 +1521,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         | Message::OpenInspectorWindow
         | Message::InspectorOpened
         | Message::ViewerOpened
+        | Message::ActivityOpened
         | Message::WindowClosed(_)
         | Message::FileDropped(_, _) => {}
         Message::CancelScan => {
@@ -3682,7 +3683,7 @@ fn view(state: &State) -> Element<'_, Message> {
     } else {
         container(column![]).into()
     };
-    let mut body = column![
+    let body = column![
         headline,
         tools,
         workspace,
