@@ -45,59 +45,20 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build actual Windows executables
         run: cargo build --release --workspace --bins
-      - name: Verify embedded administrator manifest in Windows GUI
+      - name: Verify Windows GUI administrator manifest
         shell: pwsh
         run: |
-          $sdkBin = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"
-          if (!(Test-Path $sdkBin)) { throw "Windows SDK bin directory missing." }
-          $mt = Get-ChildItem $sdkBin -Recurse -Filter mt.exe -File |
-            Where-Object { $_.DirectoryName -match '[\\/]x64
-        shell: pwsh
-        run: |
-          $output = "dist/EvolveModManager-Rust-Preview"
-          New-Item -ItemType Directory -Path $output -Force | Out-Null
-          foreach ($binary in @("evolve-mod-manager.exe", "evolve-cli.exe")) {
-            $source = Join-Path "target/release" $binary
-            if (!(Test-Path $source)) { throw "Missing required binary: $binary" }
-            Copy-Item $source (Join-Path $output $binary)
-          }
-          Copy-Item README.md (Join-Path $output "README.md")
-          Copy-Item docs/PARITY.md (Join-Path $output "PARITY.md")
-          Compress-Archive -LiteralPath $output -DestinationPath "dist/EvolveModManager-Rust-Preview.zip" -CompressionLevel Optimal -Force
-          if (!(Test-Path "dist/EvolveModManager-Rust-Preview.zip")) { throw "Missing portable preview" }
-      - name: Capture genuine Iced application screenshot (if interactive desktop exists)
-        shell: pwsh
-        continue-on-error: true
-        run: |
-          ./scripts/capture-window.ps1 -Executable "target/release/evolve-mod-manager.exe" -Output "dist/EvolveModManager-Rust-Window.png"
-      - name: Upload genuine screenshot separately (if captured)
-        uses: actions/upload-artifact@v4
-        with:
-          name: EvolveModManager-Rust-Actual-Window
-          path: dist/EvolveModManager-Rust-Window.png
-          if-no-files-found: warn
-      - name: Upload portable preview (not a public release)
-        uses: actions/upload-artifact@v4
-        with:
-          name: EvolveModManager-Rust-Preview-Windows
-          path: dist/EvolveModManager-Rust-Preview.zip
-          if-no-files-found: error
- } |
-            Sort-Object FullName -Descending | Select-Object -First 1
-          if (!$mt) { throw "Windows SDK manifest verifier mt.exe missing." }
-          $gui = (Resolve-Path "target/release/evolve-mod-manager.exe").Path
-          $manifest = Join-Path $env:RUNNER_TEMP "evolve-gui-embedded.manifest"
-          & $mt.FullName "-inputresource:${gui};#1" "-out:${manifest}"
-          if ($LASTEXITCODE -ne 0 -or !(Test-Path $manifest)) {
-            throw "Compiled manager is missing an extractable UAC manifest."
-          }
-          $contents = Get-Content -LiteralPath $manifest -Raw
-          if ($contents -notmatch 'requestedExecutionLevel\s+level="requireAdministrator"') {
-            throw "GUI executable does not request administrator consent."
-          }
-          if ($contents -notmatch 'uiAccess="false"') {
-            throw "GUI requested an unsafe UIAccess privilege."
-          }
+          $kit = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Windows Kits\10\bin'
+          $mt = Get-ChildItem -Path $kit -Recurse -Filter mt.exe -File |
+            Where-Object { $_.DirectoryName.EndsWith('\x64') } | Select-Object -First 1
+          if (!$mt) { throw 'Windows SDK manifest tool not found' }
+          $exe = (Resolve-Path 'target/release/evolve-mod-manager.exe').Path
+          $destination = Join-Path $env:RUNNER_TEMP 'evolve-gui.manifest'
+          & $mt.FullName "-inputresource:${exe};#1" "-out:${destination}"
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path $destination)) { throw 'Missing GUI manifest' }
+          $manifest = Get-Content -LiteralPath $destination -Raw
+          if (!$manifest.Contains('level="requireAdministrator"')) { throw 'GUI must request UAC' }
+          if (!$manifest.Contains('uiAccess="false"')) { throw 'GUI must not enable UIAccess' }
       - name: Package development preview without game assets
         shell: pwsh
         run: |
