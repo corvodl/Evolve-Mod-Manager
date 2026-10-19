@@ -482,6 +482,7 @@ fn rigid_trs(matrix: &Value) -> Result<([f32; 3], [f32; 4]), RigError> {
     Ok(([m[12], m[13], m[14]], [x / len, y / len, z / len, w / len]))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn add_native_channel(
     doc: &mut Value,
     binary: &mut Vec<u8>,
