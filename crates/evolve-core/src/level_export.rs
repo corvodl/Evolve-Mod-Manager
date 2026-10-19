@@ -10,7 +10,7 @@ use crate::terrain::{TerrainError, read_terrain};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::fs::{self, File};
+use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
@@ -67,7 +67,7 @@ impl Assembler {
             "scenes":[{"name":label,"nodes":[0]}],
             "nodes":[{
                 "name":"CryEngine world Z-up to Blender Y-up",
-                "rotation":[-0.7071067811865476,0,0,0.7071067811865476],
+                "rotation":[-std::f32::consts::FRAC_1_SQRT_2,0,0,std::f32::consts::FRAC_1_SQRT_2],
                 "children":[]
             }],
             "meshes":[], "bufferViews":[], "accessors":[],
