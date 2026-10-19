@@ -652,7 +652,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let expected = std::env::var("EVOLVE_MOD_MANAGER_DEV_SHA256").unwrap_or_default();
             let digest = format!("{:x}", Sha256::digest(state.developer_password.as_bytes()));
             let authenticated = expected.len() == 64
-                && digest.bytes().zip(expected.bytes()).fold(0u8, |diff, (a, b)| diff | a ^ b) == 0;
+                && digest
+                    .bytes()
+                    .zip(expected.bytes())
+                    .fold(0u8, |diff, (a, b)| diff | a ^ b)
+                    == 0;
             state.developer_password.clear();
             if state.developer_attempts >= 5 {
                 state.developer_status = "Developer access locked for this session.".into();
@@ -663,7 +667,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.developer_attempts += 1;
                 state.developer_status = "Invalid or unavailable developer credentials.".into();
             }
-        },
+        }
         Message::OpenViewer | Message::ViewerOpened | Message::WindowClosed(_) => {}
         Message::ViewerMenu(section) => {
             state.viewer_menu = if section.is_empty() || state.viewer_menu == Some(section) {
@@ -1854,50 +1858,80 @@ fn view(state: &State) -> Element<'_, Message> {
     let page = state.page.unwrap_or(Page::Home);
     // Preserve the private manager's compact rail and exact navigation order.
     // Hover reveals one tooltip, never the whole expanded sidebar.
-    let navigation = Page::ALL.into_iter().fold(column![].spacing(6), |items, item| {
-        let active = page == item;
-        let nav = button(svg(item.icon()).width(20).height(20))
-            .width(46)
-            .height(43)
-            .padding(10)
-            .style(if active { button::primary } else { button::text })
-            .on_press(Message::Navigate(item));
-        items.push(tooltip(nav, text(item.title()), tooltip::Position::Right))
-    });
+    let navigation = Page::ALL
+        .into_iter()
+        .fold(column![].spacing(6), |items, item| {
+            let active = page == item;
+            let nav = button(svg(item.icon()).width(20).height(20))
+                .width(46)
+                .height(43)
+                .padding(10)
+                .style(if active {
+                    button::primary
+                } else {
+                    button::text
+                })
+                .on_press(Message::Navigate(item));
+            items.push(tooltip(nav, text(item.title()), tooltip::Position::Right))
+        });
     let play_mods_icon = svg(svg::Handle::from_memory(
-        include_bytes!("../../../assets/nav/play-mods.svg").to_vec()
-    )).width(20).height(20);
+        include_bytes!("../../../assets/nav/play-mods.svg").to_vec(),
+    ))
+    .width(20)
+    .height(20);
     let play_clean_icon = svg(svg::Handle::from_memory(
-        include_bytes!("../../../assets/nav/play-clean.svg").to_vec()
-    )).width(20).height(20);
+        include_bytes!("../../../assets/nav/play-clean.svg").to_vec(),
+    ))
+    .width(20)
+    .height(20);
     let lower = column![
-        tooltip(button(play_mods_icon).width(46).height(40),
+        tooltip(
+            button(play_mods_icon).width(46).height(40),
             text("Play with Mods — production launch not yet supported"),
-            tooltip::Position::Right),
-        tooltip(button(play_clean_icon).width(46).height(40),
+            tooltip::Position::Right
+        ),
+        tooltip(
+            button(play_clean_icon).width(46).height(40),
             text("Play without Mods — production launch not yet supported"),
-            tooltip::Position::Right),
-        tooltip(button(svg(Page::Settings.icon()).width(20).height(20))
-            .width(46).height(43)
-            .style(if page == Page::Settings { button::primary } else { button::text })
-            .on_press(Message::Navigate(Page::Settings)),
-            text("Settings"), tooltip::Position::Right),
-    ].spacing(5);
-    let sidebar = container(column![
-        navigation,
-        space().height(Fill),
-        lower,
-    ].spacing(8).height(Fill).padding([6, 4]))
-        .width(62).height(Fill);
+            tooltip::Position::Right
+        ),
+        tooltip(
+            button(svg(Page::Settings.icon()).width(20).height(20))
+                .width(46)
+                .height(43)
+                .style(if page == Page::Settings {
+                    button::primary
+                } else {
+                    button::text
+                })
+                .on_press(Message::Navigate(Page::Settings)),
+            text("Settings"),
+            tooltip::Position::Right
+        ),
+    ]
+    .spacing(5);
+    let sidebar = container(
+        column![navigation, space().height(Fill), lower,]
+            .spacing(8)
+            .height(Fill)
+            .padding([6, 4]),
+    )
+    .width(62)
+    .height(Fill);
     let headline = row![
-        image(image::Handle::from_bytes(include_bytes!("../../../assets/hunt.png").to_vec()))
-            .width(25).height(25),
+        image(image::Handle::from_bytes(
+            include_bytes!("../../../assets/hunt.png").to_vec()
+        ))
+        .width(25)
+        .height(25),
         text("EVOLVE / MOD MANAGER").size(18),
         text(format!("  /  {}", page.title())).size(12),
         space().width(Fill),
         button("Help").on_press(Message::Navigate(Page::Instructions)),
         button("Activity").on_press(Message::ToggleActivity),
-    ].spacing(13).align_y(iced::Center);
+    ]
+    .spacing(13)
+    .align_y(iced::Center);
 
     let location = column![
         row![
@@ -2333,23 +2367,34 @@ fn view(state: &State) -> Element<'_, Message> {
     } else {
         workspace
     };
-    let show_tools = matches!(page, Page::Files | Page::AssetLibrary | Page::Models | Page::Levels);
+    let show_tools = matches!(
+        page,
+        Page::Files | Page::AssetLibrary | Page::Models | Page::Levels
+    );
     let tools: Element<'_, Message> = if show_tools {
         column![
             row![
                 text_input("Selected asset / folder / PAK path...", &state.input)
-                    .on_input(Message::InputChanged).width(Fill),
+                    .on_input(Message::InputChanged)
+                    .width(Fill),
                 button("Scan Folder").on_press(Message::StartScan),
                 button("Open Asset Viewer").on_press(Message::OpenViewer),
-                button(if state.show_advanced_tools { "Hide Archive Tools" } else { "Show Advanced Archive Tools" })
-                    .on_press(Message::ToggleAdvancedTools),
-            ].spacing(8),
+                button(if state.show_advanced_tools {
+                    "Hide Archive Tools"
+                } else {
+                    "Show Advanced Archive Tools"
+                })
+                .on_press(Message::ToggleAdvancedTools),
+            ]
+            .spacing(8),
             if state.show_advanced_tools {
                 container(location).into()
             } else {
                 container(column![]).into()
             },
-        ].spacing(7).into()
+        ]
+        .spacing(7)
+        .into()
     } else {
         container(column![]).into()
     };
@@ -2358,14 +2403,29 @@ fn view(state: &State) -> Element<'_, Message> {
         tools,
         workspace,
         row![
-            text(if state.busy { "Working..." } else { state.status.as_str() }).size(12).width(Fill),
+            text(if state.busy {
+                "Working..."
+            } else {
+                state.status.as_str()
+            })
+            .size(12)
+            .width(Fill),
             text(format!("v{}  •  Rust preview", env!("CARGO_PKG_VERSION"))).size(12),
-        ].spacing(12),
-    ].spacing(11).padding([10, 16]).width(Fill).height(Fill);
+        ]
+        .spacing(12),
+    ]
+    .spacing(11)
+    .padding([10, 16])
+    .width(Fill)
+    .height(Fill);
     if state.show_activity {
-        body = body.push(container(text(format!("Activity: {}", state.status)).size(12)).padding(8));
+        body =
+            body.push(container(text(format!("Activity: {}", state.status)).size(12)).padding(8));
     }
-    container(row![sidebar, body].height(Fill)).width(Fill).height(Fill).into()
+    container(row![sidebar, body].height(Fill))
+        .width(Fill)
+        .height(Fill)
+        .into()
 }
 
 fn initial_state() -> State {
