@@ -1,7 +1,6 @@
 //! Core boundary for the Rust rewrite.
 //! All game data is local and opt-in. No assets are embedded or downloaded.
 pub mod animation;
-pub mod native_caf;
 pub mod archive;
 pub mod cdf;
 pub mod dds;
@@ -9,12 +8,12 @@ pub mod fbx;
 pub mod glb;
 pub mod inventory;
 pub mod model;
+pub mod native_caf;
 pub mod policy;
 pub mod scene;
 pub mod signed_pak;
 pub mod terrain;
 
-pub use native_caf::{CafController,NativeCafError,NativeCafMotion,decode_native_caf,read_native_caf};
 pub use animation::{
     AnimatedGlb, AnimationError, AnimationReference, CafInspection, MotionClip, PoseSample,
     animation_references, inspect_caf_bytes, inspect_caf_file,
@@ -36,6 +35,9 @@ pub use inventory::{
 };
 pub use model::{
     ModelError, ModelInfo, RenderMesh, export_model_obj, parse_model_bytes, read_model,
+};
+pub use native_caf::{
+    CafController, NativeCafError, NativeCafMotion, decode_native_caf, read_native_caf,
 };
 pub use policy::{AnimationPolicy, ExportFeature, FeatureStatus, PARITY_MATRIX};
 pub use scene::{
