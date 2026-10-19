@@ -320,20 +320,32 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
         if subcommand == OsStr::new("inspect") {
             let report: Option<PathBuf> = args.next().map(Into::into);
             no_extra(&mut args)?;
-            println!("Material contains {} slot(s) with authored texture references.", material.slots.len());
-            if let Some(path) = report { write_report(&material, &path)?; }
+            println!(
+                "Material contains {} slot(s) with authored texture references.",
+                material.slots.len()
+            );
+            if let Some(path) = report {
+                write_report(&material, &path)?;
+            }
         } else if subcommand == OsStr::new("resolve") {
             let root: PathBuf = pop(&mut args)?.into();
             let report: Option<PathBuf> = args.next().map(Into::into);
             no_extra(&mut args)?;
             let inventory = scan_directory(&root).map_err(|e| e.to_string())?;
             let resolution = resolve_materials(&inventory, &material);
-            println!("Resolved {} exact MTL references with no basename guessing.", resolution.textures.len());
+            println!(
+                "Resolved {} exact MTL references with no basename guessing.",
+                resolution.textures.len()
+            );
             for item in &resolution.textures {
                 println!("  {} / {}: {:?}", item.slot, item.role, item.resolution);
             }
-            if let Some(path) = report { write_report(&resolution, &path)?; }
-        } else { return Err(usage()); }
+            if let Some(path) = report {
+                write_report(&resolution, &path)?;
+            }
+        } else {
+            return Err(usage());
+        }
         return Ok(());
     }
     if verb == OsStr::new("cdf") && subcommand == OsStr::new("resolve") {
