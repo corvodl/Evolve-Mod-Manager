@@ -10,21 +10,28 @@ const MUTED: Color = Color::from_rgb(0.76, 0.79, 0.85);
 const ACCENT: Color = Color::from_rgb(0.91, 0.20, 0.30);
 
 fn surface<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Container<'a, Message> {
-    container(content).width(Fill).padding(15).style(|_| container::Style {
-        background: Some(Background::Color(PANEL)),
-        border: Border { color: LINE, width: 1.0, radius: 10.0.into() },
-        ..container::Style::default()
-    })
+    container(content)
+        .width(Fill)
+        .padding(15)
+        .style(|_| container::Style {
+            background: Some(Background::Color(PANEL)),
+            border: Border {
+                color: LINE,
+                width: 1.0,
+                radius: 10.0.into(),
+            },
+            ..container::Style::default()
+        })
 }
 
 fn tile(name: &'static str, description: &'static str, page: Page) -> Element<'static, Message> {
-    button(row![
-        svg(page.icon()).width(24).height(24),
-        column![
-            text(name).size(16),
-            text(description).size(12).color(MUTED),
-        ].spacing(5),
-    ].spacing(14))
+    button(
+        row![
+            svg(page.icon()).width(24).height(24),
+            column![text(name).size(16), text(description).size(12).color(MUTED),].spacing(5),
+        ]
+        .spacing(14),
+    )
     .style(button::secondary)
     .width(Fill)
     .height(Length::Fixed(96.0))
@@ -34,10 +41,7 @@ fn tile(name: &'static str, description: &'static str, page: Page) -> Element<'s
 }
 
 fn status_card<'a>(label: &'static str, value: String) -> Element<'a, Message> {
-    surface(column![
-        text(label).size(13),
-        text(value).size(12).color(MUTED),
-    ].spacing(8)).into()
+    surface(column![text(label).size(13), text(value).size(12).color(MUTED),].spacing(8)).into()
 }
 
 pub(super) fn home(state: &State) -> Element<'_, Message> {
@@ -53,58 +57,113 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
     ].spacing(11));
     let quick = column![
         text("PLAY EVOLVE").size(14),
-        text("Choose an offline modded session or launch with original game files.").size(12).color(MUTED),
+        text("Choose an offline modded session or launch with original game files.")
+            .size(12)
+            .color(MUTED),
         row![
             button("Play with Mods").style(button::primary),
             button("Play without Mods").style(button::secondary),
-        ].spacing(8),
-        text("Launch controls are disabled until game swap and restore integration is verified.").size(12).color(MUTED),
+        ]
+        .spacing(8),
+        text("Launch controls are disabled until game swap and restore integration is verified.")
+            .size(12)
+            .color(MUTED),
         text("EVOLVE CLIENT").size(14),
-        text("Original client executable not yet configured for production launching.").size(12).color(MUTED),
-    ].spacing(9);
+        text("Original client executable not yet configured for production launching.")
+            .size(12)
+            .color(MUTED),
+    ]
+    .spacing(9);
     let entries = column![
         text("Your workspace").size(19),
-        text("Everything in the manager, one click away.").size(12).color(MUTED),
+        text("Everything in the manager, one click away.")
+            .size(12)
+            .color(MUTED),
         row![
-            tile("Modding", "Open a project, edit assets and sign a PAK.", Page::Files),
-            tile("Asset Library", "Browse textures, models, animation and GFX.", Page::AssetLibrary),
-        ].spacing(10),
+            tile(
+                "Modding",
+                "Open a project, edit assets and sign a PAK.",
+                Page::Files
+            ),
+            tile(
+                "Asset Library",
+                "Browse textures, models, animation and GFX.",
+                Page::AssetLibrary
+            ),
+        ]
+        .spacing(10),
         row![
-            tile("Instructions", "First-time setup and safe modding workflow.", Page::Instructions),
-            tile("Settings", "Appearance, paths, updates and maintenance.", Page::Settings),
-        ].spacing(10),
+            tile(
+                "Instructions",
+                "First-time setup and safe modding workflow.",
+                Page::Instructions
+            ),
+            tile(
+                "Settings",
+                "Appearance, paths, updates and maintenance.",
+                Page::Settings
+            ),
+        ]
+        .spacing(10),
         row![
-            tile("What's New", "Changes included in the latest release.", Page::WhatsNew),
-            tile("Credits", "Project information and acknowledgments.", Page::Credits),
-        ].spacing(10),
-    ].spacing(9).width(Length::FillPortion(5));
+            tile(
+                "What's New",
+                "Changes included in the latest release.",
+                Page::WhatsNew
+            ),
+            tile(
+                "Credits",
+                "Project information and acknowledgments.",
+                Page::Credits
+            ),
+        ]
+        .spacing(10),
+    ]
+    .spacing(9)
+    .width(Length::FillPortion(5));
     let status = column![
         text("At a glance").size(19),
-        text("Installed game and client status; launch actions are separate.").size(12).color(MUTED),
+        text("Installed game and client status; launch actions are separate.")
+            .size(12)
+            .color(MUTED),
         status_card("Game installation", "Not configured for launch".to_owned()),
         status_card("Game version", "Not detected".to_owned()),
-        status_card("Signing stage", if state.preferences.stage.is_empty() {
-            "Not prepared".to_owned()
-        } else {
-            "Isolated offline stage configured".to_owned()
-        }),
-        status_card("Editing project", if state.preferences.current_workspace.is_empty() {
-            "None selected".to_owned()
-        } else { state.preferences.current_workspace.clone() }),
-    ].spacing(9).width(Length::FillPortion(2));
-    scrollable(column![
-        hero,
-        quick,
-        surface(text("System Health   ·   On-demand diagnostics").size(12)),
-        row![entries, status].spacing(14),
-    ].spacing(20).padding(12)).height(Fill).into()
+        status_card(
+            "Signing stage",
+            if state.preferences.stage.is_empty() {
+                "Not prepared".to_owned()
+            } else {
+                "Isolated offline stage configured".to_owned()
+            }
+        ),
+        status_card(
+            "Editing project",
+            if state.preferences.current_workspace.is_empty() {
+                "None selected".to_owned()
+            } else {
+                state.preferences.current_workspace.clone()
+            }
+        ),
+    ]
+    .spacing(9)
+    .width(Length::FillPortion(2));
+    scrollable(
+        column![
+            hero,
+            quick,
+            surface(text("System Health   ·   On-demand diagnostics").size(12)),
+            row![entries, status].spacing(14),
+        ]
+        .spacing(20)
+        .padding(12),
+    )
+    .height(Fill)
+    .into()
 }
 
 fn workflow_step(name: &'static str, description: &'static str) -> Element<'static, Message> {
-    surface(column![
-        text(name).size(15),
-        text(description).size(12).color(MUTED),
-    ].spacing(7)).into()
+    surface(column![text(name).size(15), text(description).size(12).color(MUTED),].spacing(7))
+        .into()
 }
 
 pub(super) fn instructions() -> Element<'static, Message> {
@@ -175,16 +234,24 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
     } else {
         column![
             text("Developer").size(24),
-            surface(column![
-                text("Password protected").size(17),
-                text("Developer features are not available without authorized credentials.").size(13).color(MUTED),
-                text_input("Developer password", &state.developer_password)
-                    .secure(true)
-                    .on_input(Message::DeveloperPasswordChanged)
-                    .on_submit(Message::UnlockDeveloper),
-                button("Unlock").on_press(Message::UnlockDeveloper),
-                text(state.developer_status.as_str()).size(12).color(MUTED),
-            ].spacing(12)),
-        ].spacing(13).padding(12).into()
+            surface(
+                column![
+                    text("Password protected").size(17),
+                    text("Developer features are not available without authorized credentials.")
+                        .size(13)
+                        .color(MUTED),
+                    text_input("Developer password", &state.developer_password)
+                        .secure(true)
+                        .on_input(Message::DeveloperPasswordChanged)
+                        .on_submit(Message::UnlockDeveloper),
+                    button("Unlock").on_press(Message::UnlockDeveloper),
+                    text(state.developer_status.as_str()).size(12).color(MUTED),
+                ]
+                .spacing(12)
+            ),
+        ]
+        .spacing(13)
+        .padding(12)
+        .into()
     }
 }
