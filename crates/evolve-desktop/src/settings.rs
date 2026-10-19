@@ -147,8 +147,12 @@ pub fn apply_accent_preset(prefs: &mut Preferences, preset: &str) -> bool {
         _ => return false,
     };
     if let Some((accent, selected)) = colors {
-        prefs.appearance_colors.insert("accent".into(), accent.into());
-        prefs.appearance_colors.insert("selection".into(), selected.into());
+        prefs
+            .appearance_colors
+            .insert("accent".into(), accent.into());
+        prefs
+            .appearance_colors
+            .insert("selection".into(), selected.into());
     } else {
         prefs.appearance_colors.remove("accent");
         prefs.appearance_colors.remove("selection");
@@ -293,15 +297,26 @@ mod tests {
     #[test]
     fn accent_presets_change_only_accent_roles_and_are_valid() {
         let mut prefs = Preferences::default();
-        prefs.appearance_colors.insert("surface".into(), "#15171c".into());
+        prefs
+            .appearance_colors
+            .insert("surface".into(), "#15171c".into());
         assert!(apply_accent_preset(&mut prefs, "Deep Red"));
-        assert_eq!(prefs.appearance_colors.get("accent").map(String::as_str), Some("#a91f38"));
-        assert_eq!(prefs.appearance_colors.get("surface").map(String::as_str), Some("#15171c"));
+        assert_eq!(
+            prefs.appearance_colors.get("accent").map(String::as_str),
+            Some("#a91f38")
+        );
+        assert_eq!(
+            prefs.appearance_colors.get("surface").map(String::as_str),
+            Some("#15171c")
+        );
         assert!(prefs.validate().is_ok());
         assert!(!apply_accent_preset(&mut prefs, "Not a preset"));
         assert!(apply_accent_preset(&mut prefs, "Default"));
         assert!(!prefs.appearance_colors.contains_key("accent"));
-        assert_eq!(prefs.appearance_colors.get("surface").map(String::as_str), Some("#15171c"));
+        assert_eq!(
+            prefs.appearance_colors.get("surface").map(String::as_str),
+            Some("#15171c")
+        );
     }
 
     #[test]
