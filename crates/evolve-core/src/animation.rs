@@ -236,7 +236,7 @@ impl AnimatedGlb {
                         || times.windows(2).any(|w|w[0]>=w[1]) {return Err(AnimationError::Invalid("track times invalid".into()));}
                     let interpolation=sampler["interpolation"].as_str().unwrap_or("LINEAR");
                     if !matches!(interpolation,"LINEAR"|"STEP"){return Err(AnimationError::Invalid("unsupported interpolation".into()));}
-                    duration=duration.max(*times.last().unwrap_or(&0.));
+                    duration=duration.max(times.last().map(|v|v[0]).unwrap_or(0.0));
                     tracks.push(Track{
                         target,path:path.into(),interp:interpolation.into(),
                         times:times.into_iter().map(|v|v[0]).collect(),values:output,
