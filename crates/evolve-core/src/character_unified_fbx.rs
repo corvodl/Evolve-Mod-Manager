@@ -51,6 +51,28 @@ fn input_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+// Prefer a verified same-stem compiled skinm/chrm stream; never search by basename.
+fn preferred_compiled_mesh(
+    root: &Path,
+    original: &Path,
+    inventory: &Inventory,
+) -> Result<PathBuf, String> {
+    let extension = match original.extension().and_then(|e| e.to_str()) {
+        Some(e) if e.eq_ignore_ascii_case("skin") => "skinm",
+        Some(e) if e.eq_ignore_ascii_case("chr") => "chrm",
+        _ => return Ok(original.to_path_buf()),
+    };
+    let candidate = original.with_extension(extension);
+    let relative = candidate.strip_prefix(root)
+        .map_err(|_| "Compiled mesh escaped original asset root")?;
+    let virtual_path = relative.to_string_lossy().replace('\\', "/");
+    match resolve_virtual(inventory, &virtual_path) {
+        AssetResolution::Found(path) => input_file(root, &path),
+        AssetResolution::Missing => Ok(original.to_path_buf()),
+        AssetResolution::Ambiguous(_) => Err("Ambiguous compiled mesh sidecar".into()),
+    }
+}
+
 fn safe_part_name(raw: &str) -> Result<String, String> {
     let filtered = raw
         .chars()
@@ -101,7 +123,9 @@ fn plan_parts(
         if !names.insert(name.to_ascii_lowercase()) {
             return Err("CDF has colliding attachment names".into());
         }
-        parts.push((name, input_file(&root, relative)?));
+        let bound = input_file(&root, relative)?;
+        let compiled = preferred_compiled_mesh(&root, &bound, inventory)?;
+        parts.push((name, compiled));
     }
     if parts.is_empty() || parts.len() != selected.len() || parts.len() > MAX_PARTS {
         return Err("CDF has incomplete or excessive selected attachments".into());
