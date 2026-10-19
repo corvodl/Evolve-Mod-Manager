@@ -203,7 +203,7 @@ pub fn discover_projects(root: &Path, stage: &Path) -> Result<Vec<ProjectRow>, S
             if let Some(source) = row.get("workspace").and_then(Value::as_str) {
                 let path = Path::new(source);
                 if !path.is_dir()
-                    || fs::symlink_metadata(path).is_err_or(|m| !m.file_type().is_dir())
+                    || fs::symlink_metadata(path).is_ok_and(|m| !m.file_type().is_dir())
                 {
                     continue;
                 }
