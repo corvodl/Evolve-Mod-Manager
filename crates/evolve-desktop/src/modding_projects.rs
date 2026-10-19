@@ -507,6 +507,106 @@ pub fn build_project_raw(
     }
 }
 
+/// Import explicitly selected raw bytes over ONE manifest-listed editable
+/// member. Never writes source PAKs or imported library originals. Keeps a
+/// verified, immutable editor backup for manual or in-app recovery.
+pub fn import_raw_member(
+    project: &ProjectRow,
+    projects_root: &Path,
+    member: &str,
+    replacement_source: &Path,
+) -> Result<bool, String> {
+    const MAX_BYTES: u64 = 512 * 1024 * 1024;
+    if !safe_member(member)
+        || !regular(replacement_source, MAX_BYTES)
+        || !regular(&project.workspace.join(".evolve-pak-workspace.json"), 8 * 1024 * 1024)
+    {
+        return Err("Select an existing, bounded raw replacement and manifest-listed project file".into());
+    }
+    let root = fs::canonicalize(projects_root).map_err(|e| e.to_string())?;
+    let folder = fs::canonicalize(&project.workspace).map_err(|e| e.to_string())?;
+    if folder == root || !folder.starts_with(&root) {
+        return Err("Selected project is not managed by the Projects root".into());
+    }
+    let manifest = read_json(&folder.join(".evolve-pak-workspace.json"), 8 * 1024 * 1024)?;
+    if manifest.get("version").and_then(Value::as_u64) != Some(1)
+        || manifest.get("reference_only").and_then(Value::as_bool) == Some(true)
+    {
+        return Err("Project is reference-only or its manifest version is unsupported".into());
+    }
+    let record = manifest.get("entries").and_then(Value::as_array)
+        .and_then(|records| records.iter().find(|e| e.get("path").and_then(Value::as_str) == Some(member)))
+        .ok_or("Selected file is absent from the managed manifest")?;
+    if record.get("format").and_then(Value::as_str) != Some("raw") {
+        return Err("Importing converted CryXmlB bytes requires the native semantic editor".into());
+    }
+    let files = fs::canonicalize(folder.join("files")).map_err(|e| e.to_string())?;
+    let original = folder.join("files").join(member);
+    if !regular(&original, MAX_BYTES) {
+        return Err("Selected extracted file is missing or exceeds 512 MiB".into());
+    }
+    let original = fs::canonicalize(&original).map_err(|e| e.to_string())?;
+    if !original.starts_with(&files) {
+        return Err("Selected extracted file escaped the workspace".into());
+    }
+    let source = fs::canonicalize(replacement_source).map_err(|e| e.to_string())?;
+    if source == original || source.starts_with(&folder) {
+        return Err("Replacement must be an independent file outside this managed project".into());
+    }
+    let old_digest = digest(&original).map_err(|e| e.to_string())?;
+    let new_digest = digest(&source).map_err(|e| e.to_string())?;
+    if old_digest == new_digest { return Ok(false); }
+
+    let backup_root = folder.join("EditorBackups");
+    if backup_root.exists() {
+        if fs::symlink_metadata(&backup_root)
+            .is_err_or(|meta| !meta.file_type().is_dir())
+        {
+            return Err("Refusing linked/non-directory EditorBackups".into());
+        }
+    } else {
+        fs::create_dir(&backup_root).map_err(|e| e.to_string())?;
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?
+        .as_nanos();
+    let mut revision = None;
+    for sequence in 0..10 {
+        let folder = backup_root.join(format!("edit-{stamp:x}-{sequence}"));
+        match fs::create_dir(&folder) {
+            Ok(()) => { revision = Some(folder); break; }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    let revision = revision.ok_or("Unable to allocate unique editor revision")?;
+    let backup = revision.join(member);
+    if let Some(parent) = backup.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::copy(&original, &backup).map_err(|e| e.to_string())?;
+    if digest(&backup).map_err(|e| e.to_string())? != old_digest {
+        return Err("Editor backup verification failed; extracted file untouched".into());
+    }
+    let parent = original.parent().ok_or("Invalid extracted asset parent")?;
+    let mut pending = tempfile::Builder::new()
+        .prefix(".evolve-import-").tempfile_in(parent).map_err(|e| e.to_string())?;
+    let mut input = File::open(&source).map_err(|e| e.to_string())?;
+    io::copy(&mut input, pending.as_file_mut()).map_err(|e| e.to_string())?;
+    pending.as_file_mut().sync_all().map_err(|e| e.to_string())?;
+    if digest(pending.path()).map_err(|e| e.to_string())? != new_digest {
+        return Err("Staged import digest differs from replacement source".into());
+    }
+    if digest(&original).map_err(|e| e.to_string())? != old_digest {
+        return Err("Selected extracted file changed during editing; backup retained".into());
+    }
+    pending.persist(&original).map_err(|e| e.error.to_string())?;
+    if digest(&original).map_err(|e| e.to_string())? != new_digest {
+        return Err("Imported file did not verify; original saved under EditorBackups".into());
+    }
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
