@@ -475,8 +475,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::UpdateChecked(result) => match result {
             Ok(Some(update)) => {
                 state.update_status = format!(
-                    "Update {} ({:?}) is available.",
-                    update.version, update.channel
+                    "Update {} ({:?}) is available. Portable: {}. Release: {}",
+                    update.version, update.channel, update.portable.name, update.release_url
                 );
                 state.available_update = Some(update);
             }
@@ -1471,8 +1471,7 @@ fn view(state: &State) -> Element<'_, Message> {
 }
 
 fn initial_state() -> State {
-    let mut result = State::default();
-    result.zoom = 1.0;
+    let mut result = State { zoom: 1.0, ..State::default() };
     if let Ok(path) = settings_path() {
         match load_from(&path) {
             Ok(saved) => {

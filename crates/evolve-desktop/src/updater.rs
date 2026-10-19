@@ -165,7 +165,7 @@ fn parse_release(release: ApiRelease) -> Result<ReleaseUpdate, UpdateError> {
     } else {
         UpdateChannel::Stable
     };
-    let prefix = format!("EvolveModManager-");
+    let prefix = "EvolveModManager-";
     let portable = parse_asset(
         &release,
         version,
