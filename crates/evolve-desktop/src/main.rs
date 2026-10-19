@@ -3675,9 +3675,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::UnifiedCdfFbxExport(report, destination)) => {
                     state.status = format!(
-                        "Exported {} original-weight CDF part(s) with one verified {}-bone armature to {}. Textures and material slots are not yet complete.",
+                        "Exported {} source-rigged CDF parts under one {}-bone armature; {} part(s) have a verified authored diffuse. Normal/emissive maps are included only when exact; full multi-slot shading remains incomplete. {}",
                         report.parts.len(),
                         report.bones,
+                        report.diffuse_textured_parts,
                         destination.display()
                     );
                     state.page = Some(Page::Models);
