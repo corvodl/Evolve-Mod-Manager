@@ -57,7 +57,9 @@ fn ordinary(path: &Path) -> Result<(), StageError> {
 fn digest(path: &Path) -> Result<String, StageError> {
     ordinary(path)?;
     if fs::metadata(path)?.len() > LIMIT {
-        return Err(StageError::Verification("PAK exceeds staging byte limit".into()));
+        return Err(StageError::Verification(
+            "PAK exceeds staging byte limit".into(),
+        ));
     }
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
@@ -75,7 +77,10 @@ fn digest(path: &Path) -> Result<String, StageError> {
 fn copy_checked(source: &Path, destination: &Path, expected: &str) -> Result<(), StageError> {
     ordinary(source)?;
     let mut input = File::open(source)?;
-    let mut output = OpenOptions::new().write(true).create_new(true).open(destination)?;
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)?;
     let copied = io::copy(&mut (&mut input).take(LIMIT + 1), &mut output)?;
     output.sync_all()?;
     if copied > LIMIT || digest(destination)? != expected {
@@ -95,7 +100,8 @@ fn workspace(root: &Path) -> Result<PathBuf, StageError> {
     let marker = root.join(MARKER);
     ordinary(&marker).map_err(|_| StageError::InvalidWorkspace)?;
     if fs::metadata(&marker)?.len() > 1024
-        || fs::read_to_string(&marker)? != "{\"schema\":1,\"kind\":\"isolated-offline-pak-stage\"}\n"
+        || fs::read_to_string(&marker)?
+            != "{\"schema\":1,\"kind\":\"isolated-offline-pak-stage\"}\n"
     {
         return Err(StageError::InvalidWorkspace);
     }
@@ -125,8 +131,11 @@ fn stage_target(root: &Path, name: &str, create_parent: bool) -> Result<PathBuf,
         let entries = fs::read_dir(&path)?;
         for entry in entries {
             let entry = entry?;
-            if entry.file_name().to_string_lossy().eq_ignore_ascii_case(component)
-                && entry.file_name() != component
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(component)
+                && entry.file_name() != *component
             {
                 return Err(StageError::UnsafePath(name.into()));
             }
@@ -141,7 +150,10 @@ fn stage_target(root: &Path, name: &str, create_parent: bool) -> Result<PathBuf,
     }
     for entry in fs::read_dir(&path)? {
         let entry = entry?;
-        if entry.file_name().to_string_lossy().eq_ignore_ascii_case(pieces[pieces.len() - 1])
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(pieces[pieces.len() - 1])
             && entry.file_name() != pieces[pieces.len() - 1]
         {
             return Err(StageError::UnsafePath(name.into()));
@@ -153,7 +165,11 @@ fn stage_target(root: &Path, name: &str, create_parent: bool) -> Result<PathBuf,
 fn verify(path: &Path, public_key: &Path, basename: &str) -> Result<HashSet<String>, StageError> {
     let report = inspect_signed_pak(path, public_key, basename)
         .map_err(|e| StageError::Verification(e.to_string()))?;
-    Ok(report.entries.into_iter().map(|e| e.path.to_lowercase()).collect())
+    Ok(report
+        .entries
+        .into_iter()
+        .map(|e| e.path.to_lowercase())
+        .collect())
 }
 
 fn active(root: &Path) -> Result<Option<StageTransaction>, StageError> {
@@ -228,10 +244,14 @@ pub fn import_stage_pak(
     if original.file_name().and_then(|s| s.to_str())
         != Some(name.rsplit('/').next().unwrap_or_default())
     {
-        return Err(StageError::UnsafePath("PAK filename must match target".into()));
+        return Err(StageError::UnsafePath(
+            "PAK filename must match target".into(),
+        ));
     }
     if fs::canonicalize(original)?.starts_with(&root) {
-        return Err(StageError::UnsafePath("Import source is inside workspace".into()));
+        return Err(StageError::UnsafePath(
+            "Import source is inside workspace".into(),
+        ));
     }
     verify(original, public_key, basename)?;
     let expected = digest(original)?;
@@ -265,12 +285,16 @@ pub fn apply_stage_pak(
     let name = target_name(relative)?;
     ordinary(replacement)?;
     if fs::canonicalize(replacement)?.starts_with(&root) {
-        return Err(StageError::UnsafePath("Replacement is inside workspace".into()));
+        return Err(StageError::UnsafePath(
+            "Replacement is inside workspace".into(),
+        ));
     }
     if replacement.file_name().and_then(|s| s.to_str())
         != Some(name.rsplit('/').next().unwrap_or_default())
     {
-        return Err(StageError::UnsafePath("PAK filename must match target".into()));
+        return Err(StageError::UnsafePath(
+            "PAK filename must match target".into(),
+        ));
     }
     let target = stage_target(&root, &name, false)?;
     ordinary(&target)?;
@@ -282,7 +306,9 @@ pub fn apply_stage_pak(
     let before = digest(&target)?;
     let after = digest(replacement)?;
     if before == after {
-        return Err(StageError::Verification("Replacement is identical to original".into()));
+        return Err(StageError::Verification(
+            "Replacement is identical to original".into(),
+        ));
     }
     let id = format!("{:032x}", rand::random::<u128>());
     let history = root.join(HISTORY).join(&id);
@@ -299,7 +325,11 @@ pub fn apply_stage_pak(
     // All preflight, backup and hash checks finish before the first target edit.
     write_journal(&root, &tx)?;
     fs::rename(&target, history.join("displaced.pak"))?;
-    copy_checked(&history.join("after.pak"), &history.join("incoming.pak"), &tx.after_sha256)?;
+    copy_checked(
+        &history.join("after.pak"),
+        &history.join("incoming.pak"),
+        &tx.after_sha256,
+    )?;
     fs::rename(history.join("incoming.pak"), &target)?;
     if digest(&target)? != tx.after_sha256 {
         return Err(StageError::Changed);
