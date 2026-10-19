@@ -1,7 +1,7 @@
 //! Safe command-line functions shared with the desktop application.
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, inspect_caf_file, animation_references,
-    convert_glb_to_fbx, Transform, export_dds_png, export_edited_layer, export_model_obj, export_terrain_obj,
+    convert_glb_to_fbx, export_model_glb, Transform, export_dds_png, export_edited_layer, export_model_obj, export_terrain_obj,
     extract_legacy_pak, extract_signed_pak, inspect_dds, inspect_legacy_pak, inspect_signed_pak,
     load_level_scene, read_cdf, read_model, read_terrain, rebuild_legacy_pak, scan_directory,
     write_inventory_json,
@@ -37,6 +37,8 @@ fn usage() -> String {
         "  evolve-cli signed extract <original.pak> <public-key.der> <signed-basename> <new-folder>",
         "  evolve-cli model inspect <model.cgf|model.skin> [model-info.json]",
         "  evolve-cli model obj <model.cgf|model.skin> <new.obj>",
+        "  evolve-cli model glb <model.cgf|model.skin> <new.glb>",
+        "  evolve-cli model fbx <model.cgf|model.skin> <Blender.exe> <new.fbx> (no rig yet)",
         "  evolve-cli terrain inspect <Heightmap.dat> [terrain-info.json]",
         "  evolve-cli terrain obj <Heightmap.dat> <new-terrain.obj>",
         "  evolve-cli level inspect <mission.xml|layer.lyr> [scene-info.json]",
@@ -149,6 +151,20 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
         } else {
             return Err(usage());
         }
+        return Ok(());
+    }
+    if verb == OsStr::new("model") && subcommand == OsStr::new("fbx") {
+        let blender: PathBuf = pop(&mut args)?.into();
+        let target: PathBuf = pop(&mut args)?.into();
+        no_extra(&mut args)?;
+        let model = read_model(&source).map_err(|e|e.to_string())?;
+        let temp = tempfile::tempdir().map_err(|e|e.to_string())?;
+        let intermediate = temp.path().join("source.glb");
+        export_model_glb(&model, &intermediate).map_err(|e|e.to_string())?;
+        let report = convert_glb_to_fbx(&blender, &intermediate, &target, AnimationPolicy::default())
+            .map_err(|e|e.to_string())?;
+        println!("Exported source geometry as {} bytes of FBX (no rigged skeleton inferred): {}",
+            report.output_size,target.display());
         return Ok(());
     }
     if verb == OsStr::new("fbx") && subcommand == OsStr::new("export") {
@@ -277,6 +293,12 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
             mesh.info.triangle_count,
             target.display()
         );
+    } else if verb == OsStr::new("model") && subcommand == OsStr::new("glb") {
+        let model=read_model(&source).map_err(|e|e.to_string())?;
+        let target=output.ok_or_else(usage)?;
+        let bytes=export_model_glb(&model,&target).map_err(|e|e.to_string())?;
+        println!("Exported GLB with exact source triangles and UV0 ({} bytes): {}",
+            bytes,target.display());
     } else if verb == OsStr::new("terrain") && subcommand == OsStr::new("inspect") {
         let mesh = read_terrain(&source, 257).map_err(|e| e.to_string())?;
         println!(
