@@ -54,7 +54,6 @@ pub(super) fn parse_transform(
     })
 }
 
-
 #[derive(Clone)]
 struct SceneOverview {
     scene: Arc<LevelScene>,
@@ -299,15 +298,19 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 button("Redo").on_press_maybe(
                     (!state.level_redo.is_empty()).then_some(Message::LevelRedoTransform)
                 ),
-                text(format!("{} undo steps", state.level_undo.len())).size(12).color(MUTED),
+                text(format!("{} undo steps", state.level_undo.len()))
+                    .size(12)
+                    .color(MUTED),
             ]
             .spacing(8),
             text("Save edits as a separate new level layer").size(12),
-            text_input("New absolute .lyr or .xml output path", &state.level_edit_output)
-                .on_input(Message::LevelEditOutputChanged),
+            text_input(
+                "New absolute .lyr or .xml output path",
+                &state.level_edit_output
+            )
+            .on_input(Message::LevelEditOutputChanged),
             button("Export edited level copy").on_press_maybe(
-                (!state.level_original_transforms.is_empty())
-                    .then_some(Message::LevelExportEdits)
+                (!state.level_original_transforms.is_empty()).then_some(Message::LevelExportEdits)
             ),
             text("Original level is read-only. Child world positions update in the preview.")
                 .size(12)
