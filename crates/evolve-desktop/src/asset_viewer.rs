@@ -62,8 +62,12 @@ fn strip(state: &State) -> Element<'_, Message> {
                 button("Inspect CDF").on_press(Message::StartCdfInspection),
                 button("Preview CDF assembly (static)").on_press(Message::ViewerPreviewStaticCdf),
                 button("Export verified rigged FBX").on_press(Message::StartRigFbx),
+                button("Flat CDF parts FBX (experimental)")
+                    .on_press(Message::ViewerExportFlatCdf),
             ].spacing(8),
             text("Blender FBX export requires a verified compiled skeleton and original mesh weights. Source files are never overwritten.").size(12).color(MUTED),
+            text("Flat CDF export uses the same output field as a NEW DIRECTORY (not .fbx). It publishes separate rigged part FBXs only if every part passes; complete character materials and unified root FBX are not yet supported.")
+                .size(12).color(MUTED),
             row![
                 text_input("NEW FBX destination (absolute path)", &state.output)
                     .on_input(Message::OutputChanged).width(Fill),
