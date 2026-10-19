@@ -47,6 +47,7 @@ pub use scene::{
     parse_level_scene,
 };
 pub use signed_pak::{
+    SignedRebuildReport, rebuild_signed_pak_entry,
     SignedEntry, SignedPakError, SignedPakInfo, extract_signed_pak, inspect_signed_pak,
     open_verified_signed_pak,
 };
