@@ -32,3 +32,36 @@ jobs:
       - run: cargo check --workspace --all-targets
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --all-targets
+
+  portable-preview:
+    name: Windows portable preview (not a release)
+    needs: [core, desktop]
+    runs-on: windows-2022
+    timeout-minutes: 55
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build actual Windows executables
+        run: cargo build --release --workspace --bins
+      - name: Package development preview without game assets
+        shell: pwsh
+        run: |
+          $output = "dist/EvolveModManager-Rust-Preview"
+          New-Item -ItemType Directory -Path $output -Force | Out-Null
+          foreach ($binary in @("evolve-mod-manager.exe", "evolve-cli.exe")) {
+            $source = Join-Path "target/release" $binary
+            if (!(Test-Path $source)) { throw "Missing required binary: $binary" }
+            Copy-Item $source (Join-Path $output $binary)
+          }
+          Copy-Item README.md (Join-Path $output "README.md")
+          Copy-Item docs/PARITY.md (Join-Path $output "PARITY.md")
+          Compress-Archive -LiteralPath $output -DestinationPath "dist/EvolveModManager-Rust-Preview.zip" -CompressionLevel Optimal -Force
+          if (!(Test-Path "dist/EvolveModManager-Rust-Preview.zip")) { throw "Missing portable preview" }
+      - name: Upload portable preview (not a public release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: EvolveModManager-Rust-Preview-Windows
+          path: dist/EvolveModManager-Rust-Preview.zip
+          if-no-files-found: error
