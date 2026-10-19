@@ -9,11 +9,18 @@ const EDGE: Color = Color::from_rgb8(57, 57, 66);
 const MUTED: Color = Color::from_rgb8(173, 178, 190);
 
 fn panel<'a>(child: impl Into<Element<'a, Message>>) -> iced::widget::Container<'a, Message> {
-    container(child).width(Fill).padding(14).style(|_| container::Style {
-        background: Some(Background::Color(PANEL)),
-        border: Border { color: EDGE, width: 1.0, radius: 7.0.into() },
-        ..container::Style::default()
-    })
+    container(child)
+        .width(Fill)
+        .padding(14)
+        .style(|_| container::Style {
+            background: Some(Background::Color(PANEL)),
+            border: Border {
+                color: EDGE,
+                width: 1.0,
+                radius: 7.0.into(),
+            },
+            ..container::Style::default()
+        })
 }
 
 fn heading<'a>(name: &'a str, description: &'a str) -> iced::widget::Column<'a, Message> {
@@ -26,9 +33,19 @@ fn mib(bytes: u64) -> String {
 
 fn storage(state: &State) -> Element<'_, Message> {
     let root = state.preferences.game_storage_root.as_str();
-    let buckets = state.storage_usage.as_ref().map(|r| r.buckets).unwrap_or([0; 5]);
+    let buckets = state
+        .storage_usage
+        .as_ref()
+        .map(|r| r.buckets)
+        .unwrap_or([0; 5]);
     let total = buckets.iter().sum::<u64>();
-    let labels = ["Active setup", "Old setups", "Projects", "Asset Library", "Other"];
+    let labels = [
+        "Active setup",
+        "Old setups",
+        "Projects",
+        "Asset Library",
+        "Other",
+    ];
     let colors = [
         Color::from_rgb8(222, 51, 79),
         Color::from_rgb8(122, 151, 202),
@@ -38,10 +55,14 @@ fn storage(state: &State) -> Element<'_, Message> {
     ];
     let mut strip = row![].spacing(0).height(Length::Fixed(13.0));
     for (i, value) in buckets.iter().enumerate() {
-        let amount = if total == 0 { 1 } else {
+        let amount = if total == 0 {
+            1
+        } else {
             ((*value as f64 / total as f64) * 1000.0).round() as u16
         };
-        if amount == 0 { continue; }
+        if amount == 0 {
+            continue;
+        }
         let color = colors[i];
         strip = strip.push(
             container(space().height(Length::Fixed(13.0)))
@@ -49,16 +70,23 @@ fn storage(state: &State) -> Element<'_, Message> {
                 .style(move |_| container::Style {
                     background: Some(Background::Color(color)),
                     ..container::Style::default()
-                })
+                }),
         );
     }
     let mut legend = row![].spacing(15);
     for (i, label) in labels.iter().enumerate() {
-        legend = legend.push(text(format!(
-            "{}: {}",
-            label,
-            state.storage_usage.as_ref().map_or("—".into(), |_| mib(buckets[i]))
-        )).size(11).color(colors[i]));
+        legend = legend.push(
+            text(format!(
+                "{}: {}",
+                label,
+                state
+                    .storage_usage
+                    .as_ref()
+                    .map_or("—".into(), |_| mib(buckets[i]))
+            ))
+            .size(11)
+            .color(colors[i]),
+        );
     }
     panel(column![
         text("GAME STORAGE").size(15),
@@ -120,7 +148,10 @@ fn storage(state: &State) -> Element<'_, Message> {
 }
 
 fn library(state: &State) -> Element<'_, Message> {
-    let archive_count = state.library_catalog.as_ref().map_or(0, |c| c.archives.len());
+    let archive_count = state
+        .library_catalog
+        .as_ref()
+        .map_or(0, |c| c.archives.len());
     let total = state.library_catalog.as_ref().map_or(0, |c| c.total_bytes);
     panel(column![
         text("EXTRACTED PAK LIBRARY").size(15),
