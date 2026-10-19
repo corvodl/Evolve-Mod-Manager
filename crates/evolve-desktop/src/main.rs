@@ -12,7 +12,6 @@ mod updater;
 mod uv_preview;
 mod viewer_inspector;
 mod viewport;
-use asset_cache::{PreviewCache, SharedCache, decoded_dds};
 use asset_cache::{SharedCache, decoded_dds};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssetComparison, AssetEntry, AssetResolution, BatchJournal,
