@@ -1,6 +1,7 @@
 //! Native wgpu-backed desktop shell. Asset operations use blocking workers, so
 //! file I/O/decompression never runs in the interactive Iced view/update path.
 mod asset_viewer;
+mod private_pages;
 mod settings;
 mod textured;
 mod updater;
@@ -20,7 +21,7 @@ use evolve_core::{
     scan_directory, stage_status,
 };
 use iced::widget::{
-    button, canvas, column, container, image, row, scrollable, shader, slider, svg, text,
+    button, canvas, column, container, image, row, scrollable, shader, slider, space, svg, text,
     text_input, tooltip,
 };
 use iced::{Element, Fill, Length, Subscription, Task, Theme, window};
@@ -37,28 +38,37 @@ use viewport::MeshViewport;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Page {
     Home,
-    Files,
+    Instructions,
     AssetLibrary,
+    Files,
+    WhatsNew,
+    Credits,
+    Developer,
     Models,
     Levels,
     Settings,
 }
 
 impl Page {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Home,
-        Self::Files,
+        Self::Instructions,
         Self::AssetLibrary,
-        Self::Models,
-        Self::Levels,
-        Self::Settings,
+        Self::Files,
+        Self::WhatsNew,
+        Self::Credits,
+        Self::Developer,
     ];
 
     fn icon(self) -> svg::Handle {
         let data: &'static [u8] = match self {
             Self::Home => include_bytes!("../../../assets/nav/home.svg"),
-            Self::Files => include_bytes!("../../../assets/nav/folder.svg"),
-            Self::AssetLibrary => include_bytes!("../../../assets/nav/layers.svg"),
+            Self::Instructions => include_bytes!("../../../assets/nav/instructions.svg"),
+            Self::AssetLibrary => include_bytes!("../../../assets/nav/asset-library.svg"),
+            Self::Files => include_bytes!("../../../assets/nav/modding.svg"),
+            Self::WhatsNew => include_bytes!("../../../assets/nav/whats-new.svg"),
+            Self::Credits => include_bytes!("../../../assets/nav/credits.svg"),
+            Self::Developer => include_bytes!("../../../assets/nav/developer.svg"),
             Self::Models => include_bytes!("../../../assets/nav/box.svg"),
             Self::Levels => include_bytes!("../../../assets/nav/map.svg"),
             Self::Settings => include_bytes!("../../../assets/nav/settings.svg"),
@@ -69,8 +79,12 @@ impl Page {
     fn title(self) -> &'static str {
         match self {
             Self::Home => "Home",
-            Self::Files => "Modding",
+            Self::Instructions => "Instructions",
             Self::AssetLibrary => "Asset Library",
+            Self::Files => "Modding",
+            Self::WhatsNew => "What's New",
+            Self::Credits => "Credits",
+            Self::Developer => "Developer",
             Self::Models => "Textures & Models",
             Self::Levels => "Level Editor",
             Self::Settings => "Settings",
@@ -142,6 +156,12 @@ struct State {
     viewer_menu: Option<&'static str>,
     viewer_explorer_visible: bool,
     viewer_from_library: bool,
+    developer_password: String,
+    developer_status: String,
+    developer_unlocked: bool,
+    developer_attempts: u8,
+    show_advanced_tools: bool,
+    show_activity: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -483,6 +503,11 @@ enum Message {
     ViewerResetCamera,
     ViewerSearchChanged(String),
     ViewerPreviewSelected,
+    ToggleAdvancedTools,
+    ToggleActivity,
+    DeveloperPasswordChanged(String),
+    UnlockDeveloper,
+    LockDeveloper,
     InputChanged(String),
     OutputChanged(String),
     ReplacementsChanged(String),
@@ -614,6 +639,31 @@ fn check_updates_task(channel: UpdateChannel) -> Task<Message> {
 fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::Navigate(page) => state.page = Some(page),
+        Message::ToggleAdvancedTools => state.show_advanced_tools = !state.show_advanced_tools,
+        Message::ToggleActivity => state.show_activity = !state.show_activity,
+        Message::DeveloperPasswordChanged(value) => state.developer_password = value,
+        Message::LockDeveloper => {
+            state.developer_unlocked = false;
+            state.developer_password.clear();
+            state.developer_status.clear();
+        }
+        Message::UnlockDeveloper => {
+            use sha2::{Digest, Sha256};
+            let expected = std::env::var("EVOLVE_MOD_MANAGER_DEV_SHA256").unwrap_or_default();
+            let digest = format!("{:x}", Sha256::digest(state.developer_password.as_bytes()));
+            let authenticated = expected.len() == 64
+                && digest.bytes().zip(expected.bytes()).fold(0u8, |diff, (a, b)| diff | a ^ b) == 0;
+            state.developer_password.clear();
+            if state.developer_attempts >= 5 {
+                state.developer_status = "Developer access locked for this session.".into();
+            } else if authenticated {
+                state.developer_unlocked = true;
+                state.developer_status.clear();
+            } else {
+                state.developer_attempts += 1;
+                state.developer_status = "Invalid or unavailable developer credentials.".into();
+            }
+        },
         Message::OpenViewer | Message::ViewerOpened(_) | Message::WindowClosed(_) => {}
         Message::ViewerMenu(section) => {
             state.viewer_menu = if section.is_empty() || state.viewer_menu == Some(section) {
@@ -1802,55 +1852,52 @@ fn run_installer_action(state: &State) -> Element<'_, Message> {
 
 fn view(state: &State) -> Element<'_, Message> {
     let page = state.page.unwrap_or(Page::Home);
-    // Preserve the original compact icon-only sidebar and hover labels.
-    // Red selection is only applied to the active workspace; there is no
-    // hamburger button or whole-sidebar hover expansion.
-    let navigation = Page::ALL.into_iter().fold(
-        column![
-            image(image::Handle::from_bytes(
-                include_bytes!("../../../assets/hunt.png").to_vec()
-            ))
-            .width(45)
-            .height(45),
-        ]
-        .spacing(16),
-        |items, item| {
-            let active = page == item;
-            let nav_button = button(svg(item.icon()).width(24).height(24))
-                .width(50)
-                .height(48)
-                .padding(12)
-                .style(if active {
-                    button::danger
-                } else {
-                    button::secondary
-                })
-                .on_press(Message::Navigate(item));
-            items.push(tooltip(
-                nav_button,
-                text(item.title()),
-                tooltip::Position::Right,
-            ))
-        },
-    );
-    let sidebar = container(navigation.padding(10).spacing(11)).width(72);
+    // Preserve the private manager's compact rail and exact navigation order.
+    // Hover reveals one tooltip, never the whole expanded sidebar.
+    let navigation = Page::ALL.into_iter().fold(column![].spacing(6), |items, item| {
+        let active = page == item;
+        let nav = button(svg(item.icon()).width(20).height(20))
+            .width(46)
+            .height(43)
+            .padding(10)
+            .style(if active { button::primary } else { button::text })
+            .on_press(Message::Navigate(item));
+        items.push(tooltip(nav, text(item.title()), tooltip::Position::Right))
+    });
+    let play_mods_icon = svg(svg::Handle::from_memory(
+        include_bytes!("../../../assets/nav/play-mods.svg").to_vec()
+    )).width(20).height(20);
+    let play_clean_icon = svg(svg::Handle::from_memory(
+        include_bytes!("../../../assets/nav/play-clean.svg").to_vec()
+    )).width(20).height(20);
+    let lower = column![
+        tooltip(button(play_mods_icon).width(46).height(40),
+            text("Play with Mods — production launch not yet supported"),
+            tooltip::Position::Right),
+        tooltip(button(play_clean_icon).width(46).height(40),
+            text("Play without Mods — production launch not yet supported"),
+            tooltip::Position::Right),
+        tooltip(button(svg(Page::Settings.icon()).width(20).height(20))
+            .width(46).height(43)
+            .style(if page == Page::Settings { button::primary } else { button::text })
+            .on_press(Message::Navigate(Page::Settings)),
+            text("Settings"), tooltip::Position::Right),
+    ].spacing(5);
+    let sidebar = container(column![
+        navigation,
+        space().height(Fill),
+        lower,
+    ].spacing(8).height(Fill).padding([6, 4]))
+        .width(62).height(Fill);
     let headline = row![
-        image(image::Handle::from_bytes(
-            include_bytes!("../../../assets/hunt.png").to_vec()
-        ))
-        .width(46)
-        .height(46),
-        column![
-            text("EVOLVE / MOD MANAGER").size(22),
-            text(format!(
-                "{}  •  Rust / Iced / wgpu development preview",
-                page.title()
-            ))
-            .size(12),
-        ]
-        .spacing(5),
-    ]
-    .spacing(14);
+        image(image::Handle::from_bytes(include_bytes!("../../../assets/hunt.png").to_vec()))
+            .width(25).height(25),
+        text("EVOLVE / MOD MANAGER").size(18),
+        text(format!("  /  {}", page.title())).size(12),
+        space().width(Fill),
+        button("Help").on_press(Message::Navigate(Page::Instructions)),
+        button("Activity").on_press(Message::ToggleActivity),
+    ].spacing(13).align_y(iced::Center);
 
     let location = column![
         row![
@@ -1907,12 +1954,11 @@ fn view(state: &State) -> Element<'_, Message> {
     .spacing(9);
 
     let workspace: Element<'_, Message> = match page {
-        Page::Home => column![
-            text("Inspect local CryEngine assets safely.").size(19),
-            text("Legacy ZIP and signed Stage 2 PAKs support bounded inspection and extraction; signed rebuilding and isolated offline PAK staging are experimental."),
-            text("DDS top-mipmap PNG export supports BC1/2/3/4/5 and 32-bit RGB(A); complete split-stream sets are reconstructed first."),
-            text("Signed archive rebuilding and Blender geometry-scene GLB export are experimental. Full character FBX, game sign-key acceptance and animation/texture parity remain gated."),
-        ].spacing(14).into(),
+        Page::Home => private_pages::home(state),
+        Page::Instructions => private_pages::instructions(),
+        Page::WhatsNew => private_pages::whats_new(),
+        Page::Credits => private_pages::credits(),
+        Page::Developer => private_pages::developer(state),
         Page::Files | Page::AssetLibrary => {
             let mut rows = column![].spacing(3);
             let needle = state.search.to_lowercase();
@@ -2282,30 +2328,44 @@ fn view(state: &State) -> Element<'_, Message> {
         ].spacing(12).into(),
     };
 
-    let workspace: Element<'_, Message> = if page == Page::Settings {
+    let workspace: Element<'_, Message> = if page == Page::Settings || page == Page::Files {
         scrollable(workspace).height(Fill).into()
     } else {
         workspace
     };
-    let body = column![
+    let show_tools = matches!(page, Page::Files | Page::AssetLibrary | Page::Models | Page::Levels);
+    let tools: Element<'_, Message> = if show_tools {
+        column![
+            row![
+                text_input("Selected asset / folder / PAK path...", &state.input)
+                    .on_input(Message::InputChanged).width(Fill),
+                button("Scan Folder").on_press(Message::StartScan),
+                button("Open Asset Viewer").on_press(Message::OpenViewer),
+                button(if state.show_advanced_tools { "Hide Archive Tools" } else { "Show Advanced Archive Tools" })
+                    .on_press(Message::ToggleAdvancedTools),
+            ].spacing(8),
+            if state.show_advanced_tools {
+                container(location).into()
+            } else {
+                container(column![]).into()
+            },
+        ].spacing(7).into()
+    } else {
+        container(column![]).into()
+    };
+    let mut body = column![
         headline,
-        location,
-        text(if state.busy {
-            "Working..."
-        } else {
-            state.status.as_str()
-        })
-        .size(13),
+        tools,
         workspace,
-    ]
-    .spacing(16)
-    .padding(20)
-    .width(Fill)
-    .height(Fill);
-    container(row![sidebar, body].height(Fill))
-        .width(Fill)
-        .height(Fill)
-        .into()
+        row![
+            text(if state.busy { "Working..." } else { state.status.as_str() }).size(12).width(Fill),
+            text(format!("v{}  •  Rust preview", env!("CARGO_PKG_VERSION"))).size(12),
+        ].spacing(12),
+    ].spacing(11).padding([10, 16]).width(Fill).height(Fill);
+    if state.show_activity {
+        body = body.push(container(text(format!("Activity: {}", state.status)).size(12)).padding(8));
+    }
+    container(row![sidebar, body].height(Fill)).width(Fill).height(Fill).into()
 }
 
 fn initial_state() -> State {
