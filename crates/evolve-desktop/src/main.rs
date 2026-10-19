@@ -15,8 +15,8 @@ mod settings;
 mod textured;
 mod updater;
 mod uv_preview;
-mod viewer_inspector;
 mod view_navigation;
+mod viewer_inspector;
 mod viewport;
 use asset_cache::{SharedCache, decoded_dds};
 use evolve_core::{
@@ -1402,7 +1402,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ViewerOrbitDelta(dx, dy) => {
             state.yaw = (state.yaw + dx).rem_euclid(360.0);
-            if state.yaw > 180.0 { state.yaw -= 360.0; }
+            if state.yaw > 180.0 {
+                state.yaw -= 360.0;
+            }
             state.pitch = (state.pitch + dy).clamp(-85.0, 85.0);
         }
         Message::ViewerPanDelta(dx, dy) => {
