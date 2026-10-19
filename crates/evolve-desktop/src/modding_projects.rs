@@ -611,6 +611,34 @@ pub fn import_raw_member(
 mod tests {
     use super::*;
     #[test]
+    fn import_over_raw_asset_keeps_sha_verified_original_backup() {
+        let temporary = tempfile::tempdir().unwrap();
+        let projects = temporary.path().join("Projects");
+        let workspace = projects.join("Example");
+        fs::create_dir_all(workspace.join("files/hunters")).unwrap();
+        fs::write(workspace.join("files/hunters/example.bin"),b"original").unwrap();
+        fs::write(workspace.join(".evolve-pak-workspace.json"),
+            br#"{"version":1,"entries":[{"path":"hunters/example.bin","format":"raw"}]}"#).unwrap();
+        let external = temporary.path().join("replacement.bin");
+        fs::write(&external,b"edited content").unwrap();
+        let project = ProjectRow {
+            label:"Example".into(),target:"example.pak".into(),
+            source_build:"Stage 2".into(),status:"Draft".into(),
+            details:String::new(),workspace:workspace.clone(),
+            modified:Vec::new(),changed_known:true,
+        };
+        assert!(import_raw_member(&project,&projects,"hunters/example.bin",&external).unwrap());
+        assert_eq!(fs::read(workspace.join("files/hunters/example.bin")).unwrap(),b"edited content");
+        let backups = workspace.join("EditorBackups");
+        let revisions=fs::read_dir(&backups).unwrap().collect::<Result<Vec<_>,_>>().unwrap();
+        assert_eq!(revisions.len(),1);
+        assert_eq!(fs::read(revisions[0].path().join("hunters/example.bin")).unwrap(),b"original");
+        assert!(!import_raw_member(&project,&projects,"hunters/example.bin",&external).unwrap());
+        assert!(import_raw_member(&project,&projects,"unlisted.dat",&external).is_err());
+        assert_eq!(fs::read(&external).unwrap(),b"edited content");
+    }
+
+    #[test]
     fn indexes_private_manifest_and_ignores_unsafe_targets() {
         let temp = tempfile::tempdir().unwrap();
         let stage = temp.path().join("stage");
