@@ -3,7 +3,8 @@
 //! Heavy decoding and indexing are run by the main application's worker tasks.
 use super::{MeshViewport, Message, State, TexturedScene, viewer_inspector};
 use iced::widget::{
-    button, canvas, column, container, row, scrollable, shader, slider, text, text_input,
+    button, canvas, column, container, mouse_area, row, scrollable, shader, slider, text,
+    text_input,
 };
 use iced::{Background, Border, Color, Element, Fill, Length};
 
@@ -303,8 +304,7 @@ fn explorer(state: &State) -> Element<'_, Message> {
         } else {
             Message::ViewerSelectFile(entry.index.expect("file row has source index"))
         };
-        rows = rows.push(
-            button(
+        let item = button(
                 row![
                     text(title).size(12).width(Fill),
                     text(if entry.directory {
@@ -330,8 +330,15 @@ fn explorer(state: &State) -> Element<'_, Message> {
                     button::text
                 },
             )
-            .on_press(action),
-        );
+            .on_press(action);
+        let item: Element<'_, Message> = if let Some(index) = entry.index {
+            mouse_area(item)
+                .on_right_press(Message::ViewerContextFile(index))
+                .into()
+        } else {
+            item.into()
+        };
+        rows = rows.push(item);
     }
     if total == 0 {
         rows = rows.push(
@@ -365,6 +372,46 @@ fn explorer(state: &State) -> Element<'_, Message> {
                     button("Index folder").on_press(Message::StartScan),
                 ]
                 .spacing(8),
+                if let Some(index) = state.viewer_context_index {
+                    if let Some(entry) = state.inventory.as_ref().and_then(|inv| inv.entries.get(index)) {
+                        let filename = entry.relative_path.as_str();
+                        let is_cdf = filename.to_ascii_lowercase().ends_with(".cdf");
+                        let is_dds = filename.to_ascii_lowercase().ends_with(".dds")
+                            || filename.to_ascii_lowercase().ends_with(".dds.0");
+                        panel(
+                            column![
+                                row![
+                                    text("FILE ACTIONS").size(13),
+                                    text(filename).size(11).color(MUTED).width(Fill),
+                                    button("✕").on_press(Message::ViewerContextClose),
+                                ].spacing(7),
+                                row![
+                                    button("Preview").on_press(Message::ViewerPreviewSelected),
+                                    button("Copy path").on_press(Message::ViewerCopySelectedPath),
+                                    button("Show in Explorer").on_press(Message::ViewerRevealSelectedFile),
+                                    button("Dependencies").on_press(Message::StartDependencyInspection),
+                                ].spacing(6),
+                                row![
+                                    button("Preview full CDF").on_press_maybe(
+                                        is_cdf.then_some(Message::ViewerPreviewStaticCdf)
+                                    ),
+                                    button("Export DDS → PNG").on_press_maybe(
+                                        is_dds.then_some(Message::StartPngExport)
+                                    ),
+                                    button("Rigged FBX").on_press(Message::StartRigFbx),
+                                    button("Restore original").on_press_maybe(
+                                        (!state.viewer_from_library && !state.busy)
+                                            .then_some(Message::EditorRestoreRawMember)
+                                    ),
+                                ].spacing(6),
+                            ].spacing(6),
+                        ).into()
+                    } else {
+                        Element::<Message>::from(text("Selected file is no longer indexed."))
+                    }
+                } else {
+                    Element::<Message>::from(text("Right-click a file for actions.").size(11).color(MUTED))
+                },
                 if state.viewer_from_library {
                     Element::<Message>::from(
                         text(
