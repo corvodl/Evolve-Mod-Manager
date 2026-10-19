@@ -629,6 +629,128 @@ pub fn import_raw_member(
     Ok(true)
 }
 
+
+/// Restore one original, manifest-verified raw workspace member from a
+/// trustworthy EditorBackups revision. Unlike 'reload', this makes a real,
+/// reversible change and never modifies the signed source PAK.
+pub fn restore_original_raw_member(
+    project: &ProjectRow,
+    projects_root: &Path,
+    member: &str,
+) -> Result<bool, String> {
+    const MAX_BYTES: u64 = 512 * 1024 * 1024;
+    const MAX_REVISIONS: usize = 4096;
+    if !safe_member(member) {
+        return Err("Invalid extracted member path".into());
+    }
+    let root = fs::canonicalize(projects_root).map_err(|e| e.to_string())?;
+    let folder = fs::canonicalize(&project.workspace).map_err(|e| e.to_string())?;
+    if folder == root || !folder.starts_with(&root) {
+        return Err("Selected project is outside the managed Projects root".into());
+    }
+    let manifest = read_json(&folder.join(".evolve-pak-workspace.json"), 8 * 1024 * 1024)?;
+    if manifest.get("version").and_then(Value::as_u64) != Some(1)
+        || manifest.get("reference_only").and_then(Value::as_bool) == Some(true)
+    {
+        return Err("Read-only or unsupported project manifest".into());
+    }
+    let record = manifest.get("entries").and_then(Value::as_array)
+        .and_then(|entries| entries.iter()
+            .find(|entry| entry.get("path").and_then(Value::as_str) == Some(member)))
+        .ok_or("The member is not in this project's original manifest")?;
+    if record.get("format").and_then(Value::as_str) != Some("raw") {
+        return Err("CryXmlB originals require semantic restoration".into());
+    }
+    let baseline = record.get("sha256").and_then(Value::as_str)
+        .ok_or("Original extracted digest missing")?;
+    if baseline.len() != 64 || !baseline.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("Original extracted digest is invalid".into());
+    }
+    let files = fs::canonicalize(folder.join("files")).map_err(|e| e.to_string())?;
+    let target = folder.join("files").join(member);
+    if !regular(&target, MAX_BYTES) {
+        return Err("Selected extracted file is not a regular bounded file".into());
+    }
+    let current = fs::canonicalize(&target).map_err(|e| e.to_string())?;
+    if !current.starts_with(&files) {
+        return Err("Selected extracted file resolves outside the project".into());
+    }
+    let present_digest = digest(&current).map_err(|e| e.to_string())?;
+    if present_digest.eq_ignore_ascii_case(baseline) {
+        return Ok(false);
+    }
+    let backups = folder.join("EditorBackups");
+    if !fs::symlink_metadata(&backups).is_ok_and(|m| m.file_type().is_dir()) {
+        return Err("Verified original backup is unavailable".into());
+    }
+    let mut revisions = Vec::new();
+    for entry in fs::read_dir(&backups).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if revisions.len() >= MAX_REVISIONS {
+            return Err("Editor revision count exceeds safety budget".into());
+        }
+        if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+            revisions.push(entry.path());
+        }
+    }
+    revisions.sort();
+    let mut found = None;
+    for revision in revisions {
+        let candidate = revision.join(member);
+        if !regular(&candidate, MAX_BYTES) {
+            continue;
+        }
+        let clean = fs::canonicalize(&candidate).map_err(|e| e.to_string())?;
+        if !clean.starts_with(&backups) {
+            continue;
+        }
+        if digest(&clean).map_err(|e| e.to_string())?.eq_ignore_ascii_case(baseline) {
+            found = Some(clean);
+            break;
+        }
+    }
+    let original = found.ok_or("No SHA-verified extracted original exists in EditorBackups")?;
+    // Snapshot the current edited bytes first; a restore is also undoable.
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?
+        .as_nanos();
+    let mut revision = None;
+    for sequence in 0..10 {
+        let dir = backups.join(format!("restore-{stamp:x}-{sequence}"));
+        match fs::create_dir(&dir) {
+            Ok(()) => { revision = Some(dir); break; }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    let revision = revision.ok_or("Could not allocate a unique restore revision")?;
+    let saved = revision.join(member);
+    if let Some(parent) = saved.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::copy(&current, &saved).map_err(|e| e.to_string())?;
+    if digest(&saved).map_err(|e| e.to_string())? != present_digest {
+        return Err("Edited revision backup did not verify; no restoration performed".into());
+    }
+    let parent = current.parent().ok_or("Target parent is missing")?;
+    let mut pending = tempfile::Builder::new()
+        .prefix(".evolve-restore-").tempfile_in(parent).map_err(|e| e.to_string())?;
+    let mut input = File::open(&original).map_err(|e| e.to_string())?;
+    io::copy(&mut input, pending.as_file_mut()).map_err(|e| e.to_string())?;
+    pending.as_file_mut().sync_all().map_err(|e| e.to_string())?;
+    if !digest(pending.path()).map_err(|e| e.to_string())?.eq_ignore_ascii_case(baseline)
+        || digest(&current).map_err(|e| e.to_string())? != present_digest
+        || !digest(&original).map_err(|e| e.to_string())?.eq_ignore_ascii_case(baseline)
+    {
+        return Err("Source or target changed during verified restoration; revision retained".into());
+    }
+    pending.persist(&current).map_err(|e| e.error.to_string())?;
+    if !digest(&current).map_err(|e| e.to_string())?.eq_ignore_ascii_case(baseline) {
+        return Err("Restoration verification failed; edited revision remains in EditorBackups".into());
+    }
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
