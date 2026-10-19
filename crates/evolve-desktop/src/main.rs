@@ -784,6 +784,7 @@ enum Message {
     ModifiersChanged(iced::keyboard::Modifiers),
     ViewerToggleFolder(String),
     ViewerPreviewSelected,
+    ViewerAutoClip(usize),
     ViewerPreviewStaticCdf,
     ViewerOpenStaticCdf(usize),
     StartDependencyInspection,
@@ -1821,6 +1822,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.status =
                 "Validating exact CDF parts for a static preview (not a rigged export)...".into();
             return launch(state, Operation::BuildStaticCdf(source, inventory.clone()));
+        }
+        Message::ViewerAutoClip(index) => {
+            let Some(clip) = state.auto_clips.get(index) else { return Task::none(); };
+            if clip.kind != "caf" {
+                state.status = "This character references a database or blendspace; native verified DBA playback is not supported yet.".into();
+                return Task::none();
+            }
+            let Some(path) = clip.source.clone() else {
+                state.status = "The declared CAF is not yet extracted and verified; no unrelated animation will be substituted.".into();
+                return Task::none();
+            };
+            return launch(state, Operation::LoadCaf(path));
         }
         Message::ViewerPreviewSelected => {
             if state.busy {
