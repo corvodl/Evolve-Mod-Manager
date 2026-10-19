@@ -302,22 +302,27 @@ pub fn unpack_raw_project(
     }
     let canonical_projects = fs::canonicalize(projects).map_err(|e| e.to_string())?;
     let before = digest(source).map_err(|e| e.to_string())?;
-    let safe_stem: String = basename.chars()
+    let safe_stem: String = basename
+        .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
-        .take(90).collect();
+        .take(90)
+        .collect();
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| e.to_string())?.as_nanos();
+        .map_err(|e| e.to_string())?
+        .as_nanos();
     let output = canonical_projects.join(format!("{}_raw_{stamp:x}", safe_stem));
     fs::create_dir(&output).map_err(|e| e.to_string())?;
     let sentinel = output.join(".EXTRACTION-INCOMPLETE.txt");
-    fs::write(&sentinel, b"Extraction is incomplete; do not build from this project.\n")
-        .map_err(|e| e.to_string())?;
+    fs::write(
+        &sentinel,
+        b"Extraction is incomplete; do not build from this project.\n",
+    )
+    .map_err(|e| e.to_string())?;
     // The core's signed extractor uses an atomic temporary directory. It
     // refuses to merge results with pre-existing assets or follow bad paths.
-    let info = evolve_core::extract_signed_pak(
-        source, &public, &basename, &output.join("files"),
-    ).map_err(|e| e.to_string())?;
+    let info = evolve_core::extract_signed_pak(source, &public, &basename, &output.join("files"))
+        .map_err(|e| e.to_string())?;
     if info.entries.len() > 60_000 {
         return Err("Project exceeds supported manifest entry limit".into());
     }
@@ -353,7 +358,9 @@ pub fn unpack_raw_project(
         "entries":records,
         "extraction_mode":"raw"
     });
-    let mut writer = fs::OpenOptions::new().write(true).create_new(true)
+    let mut writer = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
         .open(output.join(".evolve-pak-workspace.json"))
         .map_err(|e| e.to_string())?;
     use std::io::Write;
