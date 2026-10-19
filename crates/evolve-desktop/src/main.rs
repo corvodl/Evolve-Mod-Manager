@@ -3025,7 +3025,9 @@ impl Desktop {
             Message::InspectorOpened => Task::none(),
             Message::ViewerOpened => Task::none(),
             Message::FileDropped(id, path) => {
-                if self.viewer_id == Some(id) && self.state.viewer_from_library {
+                if (self.viewer_id == Some(id) || self.inspector_id == Some(id))
+                    && self.state.viewer_from_library
+                {
                     self.state.status = "Asset Library originals are read-only. Drop files in Modding for inspection.".into();
                     Task::none()
                 } else {
