@@ -51,7 +51,7 @@ fn add_entries<'a>(
             parent = full;
         }
         nodes.entry(parent).or_default().push(ExplorerRow {
-            path,
+            path: path.clone(),
             name: (*parts.last().unwrap_or(&"")).to_owned(),
             depth: parts.len().saturating_sub(1),
             directory: false,
