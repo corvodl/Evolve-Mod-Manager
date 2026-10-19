@@ -6,16 +6,17 @@ mod updater;
 mod viewport;
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssetEntry, AssetResolution, BatchJournal, CdfDefinition,
-    CdfDependencyReport, ConvertedMotion, DdsInfo, Inventory, LevelScene, ModProfile, ModelInfo,
-    NativeCafMotion, PakInventory, ProfileCatalog, ProfileMod, ProfilePlan, MaterialReport, RenderMesh, RigReport,
-    SignedPakInfo, StageTransaction, TerrainInfo, add_mod_to_profile, apply_profile_stage,
-    apply_stage_pak, batch_stage_status, convert_glb_to_fbx, convert_original_motion,
-    create_mod_profile, decode_dds_rgba, export_dds_png, export_level_scene_glb,
-    export_rigged_character_fbx, export_rigged_character_glb, extract_legacy_pak,
-    extract_signed_pak, import_stage_pak, initialize_stage, inspect_dds, inspect_legacy_pak,
-    inspect_signed_pak, list_mod_profiles, load_level_scene, plan_mod_profile, read_cdf,
-    read_model, read_native_caf, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry,
-    resolve_cdf, resolve_materials, read_material, restore_profile_stage, restore_stage, scan_directory, stage_status,
+    CdfDependencyReport, ConvertedMotion, DdsInfo, Inventory, LevelScene, MaterialReport,
+    ModProfile, ModelInfo, NativeCafMotion, PakInventory, ProfileCatalog, ProfileMod, ProfilePlan,
+    RenderMesh, RigReport, SignedPakInfo, StageTransaction, TerrainInfo, add_mod_to_profile,
+    apply_profile_stage, apply_stage_pak, batch_stage_status, convert_glb_to_fbx,
+    convert_original_motion, create_mod_profile, decode_dds_rgba, export_dds_png,
+    export_level_scene_glb, export_rigged_character_fbx, export_rigged_character_glb,
+    extract_legacy_pak, extract_signed_pak, import_stage_pak, initialize_stage, inspect_dds,
+    inspect_legacy_pak, inspect_signed_pak, list_mod_profiles, load_level_scene, plan_mod_profile,
+    read_cdf, read_material, read_model, read_native_caf, read_terrain, rebuild_legacy_pak,
+    rebuild_signed_pak_entry, resolve_cdf, resolve_materials, restore_profile_stage, restore_stage,
+    scan_directory, stage_status,
 };
 use iced::widget::{
     button, canvas, column, container, image, row, scrollable, shader, slider, svg, text,
@@ -196,7 +197,12 @@ enum Completed {
     Diffuse(DdsInfo, ::image::RgbaImage),
     Normal(DdsInfo, ::image::RgbaImage),
     Emissive(DdsInfo, ::image::RgbaImage),
-    MaterialResolved(MaterialReport, Option<::image::RgbaImage>, Option<::image::RgbaImage>, Option<::image::RgbaImage>),
+    MaterialResolved(
+        MaterialReport,
+        Option<::image::RgbaImage>,
+        Option<::image::RgbaImage>,
+        Option<::image::RgbaImage>,
+    ),
     Caf(NativeCafMotion),
     RiggedExport(RigReport, PathBuf),
     MotionConverted(ConvertedMotion, PathBuf),
@@ -266,19 +272,25 @@ impl Operation {
                     if authored.slots.len() != 1 {
                         return Ok(None); // Never mix different material slots.
                     }
-                    let candidates = report.textures.iter()
+                    let candidates = report
+                        .textures
+                        .iter()
                         .filter(|r| roles.contains(&r.role.as_str()))
                         .collect::<Vec<_>>();
                     if candidates.len() != 1 {
                         return Ok(None); // Missing or multiple authored maps.
                     }
-                    let evolve_core::AssetResolution::Found(relative) =
-                        &candidates[0].resolution else { return Ok(None); };
+                    let evolve_core::AssetResolution::Found(relative) = &candidates[0].resolution
+                    else {
+                        return Ok(None);
+                    };
                     let source = root.join(relative);
                     let metadata = std::fs::symlink_metadata(&source).map_err(|e| e.to_string())?;
-                    if !metadata.file_type().is_file() ||
-                        !std::fs::canonicalize(&source).map_err(|e| e.to_string())?
-                            .starts_with(std::fs::canonicalize(&root).map_err(|e| e.to_string())?) {
+                    if !metadata.file_type().is_file()
+                        || !std::fs::canonicalize(&source)
+                            .map_err(|e| e.to_string())?
+                            .starts_with(std::fs::canonicalize(&root).map_err(|e| e.to_string())?)
+                    {
                         return Err("Resolved DDS path is unsafe".into());
                     }
                     let (_, image) = decode_dds_rgba(&source).map_err(|e| e.to_string())?;
@@ -287,7 +299,9 @@ impl Operation {
                 let diffuse = get_pixels(&["diffuse"])?;
                 let normal = get_pixels(&["normals", "normal", "bumpmap"])?;
                 let emissive = get_pixels(&["emittance", "emissive", "emission", "glow"])?;
-                Ok(Completed::MaterialResolved(report, diffuse, normal, emissive))
+                Ok(Completed::MaterialResolved(
+                    report, diffuse, normal, emissive,
+                ))
             }
             Self::LoadNormal(source) => decode_dds_rgba(&source)
                 .map(|(info, image)| Completed::Normal(info, image))
@@ -948,13 +962,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::MaterialInputChanged(value) => state.material_input = value,
         Message::StartMaterialResolve => {
             if state.material_input.trim().is_empty() || state.assets_root.trim().is_empty() {
-                state.status = "Choose exact CryEngine .mtl file and extracted Asset Library root.".into();
+                state.status =
+                    "Choose exact CryEngine .mtl file and extracted Asset Library root.".into();
                 return Task::none();
             }
-            return launch(state, Operation::ResolveMaterial(
-                PathBuf::from(&state.material_input),
-                PathBuf::from(&state.assets_root),
-            ));
+            return launch(
+                state,
+                Operation::ResolveMaterial(
+                    PathBuf::from(&state.material_input),
+                    PathBuf::from(&state.assets_root),
+                ),
+            );
         }
         Message::CafInputChanged(value) => state.caf_path = value,
         Message::SkeletonChanged(value) => state.skeleton_path = value,
@@ -1372,17 +1390,32 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::MaterialResolved(report, diffuse, normal, emissive)) => {
-                    let found = report.textures.iter()
-                        .filter(|t| matches!(t.resolution, AssetResolution::Found(_))).count();
-                    let ambiguous = report.textures.iter()
-                        .filter(|t| matches!(t.resolution, AssetResolution::Ambiguous(_))).count();
+                    let found = report
+                        .textures
+                        .iter()
+                        .filter(|t| matches!(t.resolution, AssetResolution::Found(_)))
+                        .count();
+                    let ambiguous = report
+                        .textures
+                        .iter()
+                        .filter(|t| matches!(t.resolution, AssetResolution::Ambiguous(_)))
+                        .count();
                     state.status = format!(
                         "MTL: {} slot(s), {} authored references, {} uniquely resolved, {} ambiguous. No guessing.",
-                        report.slots, report.textures.len(), found, ambiguous
+                        report.slots,
+                        report.textures.len(),
+                        found,
+                        ambiguous
                     );
-                    if let Some(image) = diffuse { state.diffuse = Some(Arc::new(image)); }
-                    if let Some(image) = normal { state.normal_map = Some(Arc::new(image)); }
-                    if let Some(image) = emissive { state.emissive_map = Some(Arc::new(image)); }
+                    if let Some(image) = diffuse {
+                        state.diffuse = Some(Arc::new(image));
+                    }
+                    if let Some(image) = normal {
+                        state.normal_map = Some(Arc::new(image));
+                    }
+                    if let Some(image) = emissive {
+                        state.emissive_map = Some(Arc::new(image));
+                    }
                     state.material_report = Some(report);
                     state.page = Some(Page::Models);
                 }
