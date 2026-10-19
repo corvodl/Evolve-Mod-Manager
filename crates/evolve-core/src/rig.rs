@@ -753,6 +753,43 @@ mod tests {
         source.extend_from_slice(&identity_record("Root"));
         source
     }
+
+    #[test]
+    fn embeds_png_bytes_without_changing_authored_uv_accessor() {
+        let doc = json!({
+            "meshes":[{"primitives":[{"attributes":{"TEXCOORD_0":3}}]}],
+            "skins":[{"joints":[0]}],
+            "buffers":[{"byteLength":4}],
+            "bufferViews":[],
+            "images":[]
+        });
+        let mut encoded = serde_json::to_vec(&doc).unwrap();
+        while !encoded.len().is_multiple_of(4) {
+            encoded.push(b' ');
+        }
+        let size = 28 + encoded.len() + 4;
+        let mut input = Vec::new();
+        input.extend_from_slice(b"glTF");
+        input.extend_from_slice(&2u32.to_le_bytes());
+        input.extend_from_slice(&(size as u32).to_le_bytes());
+        input.extend_from_slice(&(encoded.len() as u32).to_le_bytes());
+        input.extend_from_slice(b"JSON");
+        input.extend_from_slice(&encoded);
+        input.extend_from_slice(&4u32.to_le_bytes());
+        input.extend_from_slice(b"BIN\0");
+        input.extend_from_slice(&[1, 2, 3, 4]);
+        let image = b"synthetic-png-payload";
+        let output = embed_diffuse_png_glb(&input, image).unwrap();
+        assert_eq!(u32::from_le_bytes(output[8..12].try_into().unwrap()) as usize, output.len());
+        let json_len = u32::from_le_bytes(output[12..16].try_into().unwrap()) as usize;
+        let result: Value = serde_json::from_slice(&output[20..20 + json_len]).unwrap();
+        assert_eq!(result["meshes"][0]["primitives"][0]["attributes"]["TEXCOORD_0"], 3);
+        assert_eq!(result["images"][0]["mimeType"], "image/png");
+        assert_eq!(result["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]["index"], 0);
+        let off = 20 + json_len + 8 + 4;
+        assert_eq!(&output[off..off + image.len()], image);
+        assert_eq!(&input[input.len()-4..], &[1, 2, 3, 4]);
+    }
     #[test]
     fn verifies_inverse_bind_and_unchanged_hierarchy() {
         let raw = sample_skeleton();
