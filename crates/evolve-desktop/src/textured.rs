@@ -5,7 +5,7 @@ use evolve_core::RenderMesh;
 use iced::wgpu;
 use iced::wgpu::util::{DeviceExt, TextureDataOrder};
 use iced::widget::shader::{self, Viewport};
-use iced::{Rectangle, mouse};
+use iced::{Event, Rectangle, mouse};
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -19,6 +19,9 @@ pub struct Scene {
     pub pitch: f32,
     pub zoom: f32,
     pub light_strength: f32,
+    pub pan_x: f32,
+    pub pan_y: f32,
+    pub shift: bool,
 }
 
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -58,8 +61,19 @@ pub struct Primitive {
     normal_identity: usize,
     emissive_identity: usize,
 }
-impl<Message> shader::Program<Message> for Scene {
-    type State = ();
+impl shader::Program<super::Message> for Scene {
+    type State = super::view_navigation::Navigation;
+    fn update(
+        &self,
+        state: &mut Self::State,
+        event: &Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<shader::Action<super::Message>> {
+        state.handle(event, bounds, cursor, self.shift)
+            .map(super::view_navigation::message)
+            .map(|message| shader::Action::publish(message).and_capture())
+    }
     type Primitive = Primitive;
     fn draw(
         &self,
@@ -98,8 +112,8 @@ impl<Message> shader::Program<Message> for Scene {
             let perspective = (2.5 - depth).max(0.12);
             let scale = self.zoom.clamp(0.2, 4.0) * 1.6;
             let projected = [
-                xr * scale / perspective / ratio,
-                yr * scale / perspective,
+                xr * scale / perspective / ratio + self.pan_x,
+                yr * scale / perspective + self.pan_y,
                 ((depth + 2.0) / 5.0).clamp(0., 1.),
             ];
             let mut normal = data
