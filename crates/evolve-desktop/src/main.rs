@@ -345,7 +345,7 @@ impl Operation {
                 discover_projects(&root, &stage).map(Completed::Projects)
             }
             Self::BuildRawProject(project, projects, stage) => {
-                modding_projects::build_single_raw(&project, &projects, &stage)
+                modding_projects::build_project_raw(&project, &projects, &stage)
                     .map(|(entry, target)| Completed::RebuiltSigned(entry, target))
             }
             Self::UnpackRawProject(projects, stage, source) => {
@@ -1006,8 +1006,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Select a verified editable project first.".into();
                 return Task::none();
             };
-            if !project.changed_known || project.modified.len() != 1 {
-                state.status = "The Rust builder currently supports exactly one changed raw member per project. Multi-entry and CryXmlB rebuilds still require the Qt manager.".into();
+            if !project.changed_known || project.modified.is_empty() || project.modified.len() > 64 {
+                state.status = "A signed build needs 1–64 verified changed raw project files. CryXmlB requires the private manager until semantic round-trip conversion is ported.".into();
                 return Task::none();
             }
             return launch(
@@ -2472,7 +2472,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::RebuiltSigned(name, dir)) => {
                     state.status = format!(
-                        "Rebuilt and verified signed PAK entry {} into {}. Source unchanged; offline test required.",
+                        "Rebuilt and verified signed PAK with {} into {}. Source unchanged; offline test required.",
                         name,
                         dir.display()
                     );
