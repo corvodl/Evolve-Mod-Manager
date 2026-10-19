@@ -1354,7 +1354,7 @@ fn view(state: &State) -> Element<'_, Message> {
             button("Check for Updates").on_press(Message::CheckUpdates),
             text(state.update_status.as_str()),
             if let Some(update) = &state.available_update {
-                button(format!("Download verified {} installer",update.version))
+                button(text(format!("Download verified {} installer",update.version)))
                     .on_press(Message::DownloadUpdate).into()
             } else {
                 text("Stable updates appear after the public release is published.").into()
@@ -1364,17 +1364,17 @@ fn view(state: &State) -> Element<'_, Message> {
             } else {
                 text("No installer staged. The game and its PAKs are never modified by update checks.").into()
             },
-            button(format!("Experimental update channel: {}", if state.preferences.experimental_updates {"Enabled"} else {"Disabled"}))
+            button(text(format!("Experimental update channel: {}", if state.preferences.experimental_updates {"Enabled"} else {"Disabled"})))
                 .on_press(Message::PreferenceExperimental),
-            button(format!("Automatic update checks: {}", if state.preferences.automatic_update_checks {"Enabled"} else {"Disabled"}))
+            button(text(format!("Automatic update checks: {}", if state.preferences.automatic_update_checks {"Enabled"} else {"Disabled"})))
                 .on_press(Message::PreferenceAutoUpdates),
             text("GENERAL & APPEARANCE").size(18),
             row![
-                button(format!("Appearance: {}",state.preferences.appearance_mode)).on_press(Message::PreferenceAppearance),
-                button(format!("Density: {}",state.preferences.ui_density)).on_press(Message::PreferenceDensity),
-                button(format!("Explorer side: {}",state.preferences.file_explorer_side)).on_press(Message::PreferenceExplorerSide),
+                button(text(format!("Appearance: {}",state.preferences.appearance_mode))).on_press(Message::PreferenceAppearance),
+                button(text(format!("Density: {}",state.preferences.ui_density))).on_press(Message::PreferenceDensity),
+                button(text(format!("Explorer side: {}",state.preferences.file_explorer_side))).on_press(Message::PreferenceExplorerSide),
             ].spacing(9),
-            button(format!("Reduce menu animation: {}",state.preferences.reduce_motion))
+            button(text(format!("Reduce menu animation: {}",state.preferences.reduce_motion)))
                 .on_press(Message::PreferenceReduceMotion),
             text("Theme color overrides, presets and font preference persist in settings.json; dedicated pickers are planned."),
             text("GAME STORAGE").size(18),
@@ -1390,11 +1390,11 @@ fn view(state: &State) -> Element<'_, Message> {
             text_input("Blender executable", &state.preferences.blender_executable)
                 .on_input(Message::PreferenceBlender),
             text("BACKUPS & RECOVERY").size(18),
-            button(format!("Keep permanent original snapshots: {}",state.preferences.keep_original_snapshots))
+            button(text(format!("Keep permanent original snapshots: {}",state.preferences.keep_original_snapshots)))
                 .on_press(Message::PreferenceSnapshots),
             text("Recovery snapshots are a preference, not an indication that the Rust mod swap is implemented yet."),
             text("LAUNCH PREFERENCES").size(18),
-            button(format!("Open activity log during tasks: {}",state.preferences.show_activity_on_tasks))
+            button(text(format!("Open activity log during tasks: {}",state.preferences.show_activity_on_tasks)))
                 .on_press(Message::PreferenceActivity),
             text("ADVANCED & MAINTENANCE").size(18),
             text_input("Current workspace",&state.preferences.current_workspace)
