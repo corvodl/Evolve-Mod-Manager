@@ -28,6 +28,8 @@ fn usage() -> String {
     [
         "Usage:",
         "  evolve-cli scan <directory> [inventory.json]",
+        "  evolve-cli cryxml decode <binary-xml> <new.xml>",
+        "  evolve-cli cryxml encode <edited.xml> <new-binary-xml>",
         "  evolve-cli stage init <new-isolated-stage>",
         "  evolve-cli profile list <stage>",
         "  evolve-cli profile status <stage>",
@@ -131,6 +133,48 @@ fn write_report<T: Serialize>(value: &T, path: &Path) -> Result<(), String> {
 fn run(args: Vec<OsString>) -> Result<(), String> {
     let mut args = args.into_iter();
     let verb = pop(&mut args)?;
+    if verb == OsStr::new("cryxml") {
+        let action = pop(&mut args)?;
+        let source: PathBuf = pop(&mut args)?.into();
+        let target: PathBuf = pop(&mut args)?.into();
+        no_extra(&mut args)?;
+        const LIMIT: usize = 48 * 1024 * 1024;
+        let metadata = fs::symlink_metadata(&source).map_err(|e| e.to_string())?;
+        if !metadata.file_type().is_file() || metadata.len() > LIMIT as u64 {
+            return Err("Select a bounded regular XML source file".into());
+        }
+        let bytes = fs::read(&source).map_err(|e| e.to_string())?;
+        let result = if action == OsStr::new("encode") {
+            evolve_core::cryxml::encode_xml(&bytes, LIMIT).map_err(|e| e.to_string())?
+        } else if action == OsStr::new("decode") && bytes.starts_with(b"CryXmlB\0") {
+            evolve_core::cryxml::xml_bytes(&bytes, LIMIT)
+                .map_err(|e| e.to_string())?
+                .into_owned()
+        } else {
+            return Err("Use encode with text XML or decode with CryXmlB".into());
+        };
+        let parent = target
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        if !fs::symlink_metadata(parent).is_ok_and(|m| m.file_type().is_dir()) {
+            return Err("Output directory must be an existing regular directory".into());
+        }
+        let mut pending = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+        pending
+            .write_all(&result)
+            .and_then(|_| pending.as_file_mut().sync_all())
+            .map_err(|e| e.to_string())?;
+        pending
+            .persist_noclobber(&target)
+            .map_err(|e| e.error.to_string())?;
+        println!(
+            "Wrote {} verified XML bytes to {}",
+            result.len(),
+            target.display()
+        );
+        return Ok(());
+    }
     if verb == OsStr::new("scan") {
         let source: PathBuf = pop(&mut args)?.into();
         let report: Option<PathBuf> = args.next().map(Into::into);

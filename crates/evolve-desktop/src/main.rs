@@ -1089,7 +1089,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .and_then(|i| state.modding_projects.as_ref().and_then(|p| p.get(i)))
                 .cloned()
             else {
-                state.status = "Open a managed editable project to edit a raw member.".into();
+                state.status = "Open a managed editable project to edit a project member.".into();
                 return Task::none();
             };
             let Some(inventory) = &state.inventory else {
@@ -1104,7 +1104,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             }
             if state.file_selection.indices.len() != 1 {
-                state.status = "Select exactly one raw asset to edit (Shift/Ctrl selections are supported for inspection).".into();
+                state.status = "Select exactly one project asset to edit (Shift/Ctrl selections are supported for inspection).".into();
                 return Task::none();
             }
             let Some(member) = state
@@ -1183,7 +1183,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
             if !project.changed_known || project.modified.is_empty() || project.modified.len() > 64
             {
-                state.status = "A signed build needs 1–64 verified changed raw project files. CryXmlB requires the private manager until semantic round-trip conversion is ported.".into();
+                state.status = "A signed build needs 1–64 verified changed project files. Refresh the project before building.".into();
                 return Task::none();
             }
             return launch(
@@ -1200,8 +1200,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Select a signed staged original PAK in the archive browser.".into();
                 return Task::none();
             }
-            state.status =
-                "Creating an editable raw project from the verified signed PAK...".into();
+            state.status = "Creating an editable project from the verified signed PAK...".into();
             return launch(
                 state,
                 Operation::UnpackRawProject(
@@ -2442,7 +2441,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::UnpackedProject(path, count)) => {
                     state.status = format!(
-                        "Unpacked {count} original assets into a new raw editing project; originals unchanged."
+                        "Unpacked {count} original assets into a new editing project; originals unchanged."
                     );
                     state.modding_pending_focus = Some(path);
                     return launch(

@@ -1,12 +1,58 @@
 //! Synthetic documents encoded by the reference manager's CryEngine 3
 //! encoder. No game assets, credentials or signing material are included.
-use evolve_core::cryxml::xml_bytes;
+use evolve_core::cryxml::{encode_xml, xml_bytes};
 use evolve_core::{animation_references, parse_cdf, parse_level_scene, parse_material};
 
 const CHARACTER: &[u8] = include_bytes!("fixtures/cryxml/character.bin");
 const MATERIAL: &[u8] = include_bytes!("fixtures/cryxml/material.bin");
 const LEVEL: &[u8] = include_bytes!("fixtures/cryxml/level.bin");
 const ANIMATIONS: &[u8] = include_bytes!("fixtures/cryxml/animations.bin");
+
+#[test]
+fn attribute_whitespace_obeys_xml_normalization_but_numeric_references_survive() {
+    let xml = b"<Root literal=\"a\t\r\nb\" referenced=\"a&#9;&#13;&#10;b\">x&#13;y</Root>";
+    let binary = encode_xml(xml, 4096).unwrap();
+    let decoded = xml_bytes(&binary, 4096).unwrap();
+    assert_eq!(
+        std::str::from_utf8(&decoded).unwrap(),
+        "<Root literal=\"a  b\" referenced=\"a&#9;&#13;&#10;b\">x&#13;y</Root>"
+    );
+}
+
+#[test]
+fn encoder_matches_independent_reference_binary_fixtures() {
+    for bytes in [
+        CHARACTER,
+        MATERIAL,
+        LEVEL,
+        ANIMATIONS,
+        include_bytes!("fixtures/cryxml/escaped.bin").as_slice(),
+    ] {
+        let text = xml_bytes(bytes, 4096).unwrap();
+        assert_eq!(encode_xml(&text, 4096).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn encoder_preserves_namespaces_and_rejects_unrepresentable_xml() {
+    let xml =
+        br#"<ss:Root xmlns:ss="urn:fixture" ss:Name="A &amp; B"><ss:Value>42</ss:Value></ss:Root>"#;
+    let binary = encode_xml(xml, 4096).unwrap();
+    let decoded = xml_bytes(&binary, 4096).unwrap();
+    assert_eq!(decoded.as_ref(), xml);
+    for bad in [
+        b"<A/><B/>".as_slice(),
+        b"<A><B/>lost tail</A>",
+        b"<!DOCTYPE a><A/>",
+        b"<A x='1' x='2'/>",
+        b"<A>&unknown;</A>",
+        b"<A>",
+        b"<A><!--lost comment--></A>",
+    ] {
+        assert!(encode_xml(bad, 4096).is_err());
+    }
+    assert!(encode_xml(b"<A/>", 10).is_err());
+}
 
 #[test]
 fn reference_binary_and_text_documents_have_identical_reader_results() {

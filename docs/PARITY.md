@@ -7,7 +7,7 @@ This table tracks **actual Rust implementation state**, not feature mockups. The
 | Local indexed file browser and deterministic inventory | **Partial: searchable, folder-grouped Asset Viewer; Shift/Ctrl selection in viewer, project and library tables (native Windows validation pending)** | Fast search for realistic libraries, virtualized GUI, no freezing |
 | Historical ZIP-compatible PAK inspect/extract/rebuild | **Implemented subset** | Original archive untouched, bounded CRC-verified extraction, file-path safety |
 | Stage 2 signed/encrypted CryPAK RSA/Twofish | **Experimental: verify and extract implemented, real-game unverified** | Verify signatures and central-directory/local offsets, native decrypted streaming |
-| Signed Stage 2 PAK editing and repacking | **Experimental: 1–64 exact modified raw members chained in an isolated temporary build, re-signing with local RSA key and final per-member verification**; real-game acceptance and converted CryXmlB still unverified | Golden round-trips and signature verification after patch injection |
+| Signed Stage 2 PAK editing and repacking | **Experimental: 1–64 raw or converted CryXmlB members in a single staged write/sign operation, with final per-member verification**; real-game acceptance still unverified | Golden round-trips and signature verification after patch injection |
 | Staged offline mods, backups and crash-safe restore | **Experimental isolated workspace**: single-PAK and multi-PAK profile staging, before/after SHA-256, journals, recovery tests, CLI/GUI controls; no installed-game launch integration | Journaling and rollback after cancel, crash and power loss |
 | Asset Library multi-PAK resolution and provenance | **Partial exact CDF resolver in CLI/GUI, now automatic when previewing a CDF from an indexed folder**: missing/ambiguous paths reported, not guessed; no full cross-PAK provenance/assembly graph | Cross-PAK matching only when exact and unambiguous |
 | DDS/streaming top mip and BCn → PNG | **Implemented subset** | Golden pixel comparisons, signed BC5, BC6/BC7, console endian/split variants |
@@ -33,10 +33,13 @@ read a binary source and write a separate text XML copy; it leaves the original
 unchanged and refuses to overwrite an existing destination.
 
 Synthetic fixtures generated with the reference manager's encoder exercise all
-four readers, XML escaping and malformed inputs. This is reader compatibility,
-not binary serialization or signed-project editing parity. Converted project
-repacking, complete character rigs/materials and real-game acceptance remain
-outstanding.
+four readers, XML escaping and malformed inputs. The Rust encoder matches the
+reference synthetic binary fixtures and preserves XML semantics, namespaces,
+attribute order and escaped whitespace. It rejects unsupported mixed content,
+comments and processing instructions rather than silently dropping them.
+Forty representative real documents encoded by Rust passed semantic comparison
+through the reference decoder, with all source hashes unchanged. Complete
+character rigs/materials and real-game acceptance remain outstanding.
 
 ### October 19 source-data compatibility corrections
 
@@ -97,9 +100,9 @@ The page now mirrors the private Qt manager's **project-first workflow** instead
 - Native-style File/Edit/View/Tools contextual command strip, searchable Projects table (project, target, changed, build, state, details), selected project's modified-files panel, and compact Install/Profiles/Refresh/Continue/Build actions.
 - Advanced PAK browser collapsed by default, with read-only staged archive selection, signature verification, Level Editor and a *specialist* single-member replacement panel.
 - Reads private-manager `mod-projects.json` and `.evolve-pak-workspace.json` without changing them, bounds path traversal and avoids following symlinks, compares changed files against manifest hashes in a background worker.
-- `Unpack PAK` verifies the selected source with the installed stage's public key, writes a new **raw** workspace manifest under Projects, then opens the native file editor; does not pretend to decode CryXmlB into editable XML.
+- `Unpack PAK` verifies the selected source with the installed stage's public key and creates a new editable workspace under Projects. Representable CryXmlB members become text XML with verified original backups; other members retain their raw bytes.
 - Signing resource paths now resolve only from the configured existing stage's `mykeys/public_key.bin` and `mykeys/private_key.pem`; the signed basename comes from the source PAK, and a target may only come from an exact staged archive or selected verified project. Missing keys are setup errors, not silently fabricated credentials.
-- `Build Mod` can rebuild **1–64** exact, validated modified raw workspace members into one isolated signed output with full final member verification (currently chained whole-archive writes, so large batch performance still needs optimization). Imported replacements use an independently selected local file and a SHA-verified `EditorBackups` revision, without altering the original signed source. CryXmlB conversion, complete dependency extraction, the original GUI's one-click installer, full profiles, and installed-game swap integration are **not yet parity complete**.
+- `Build Mod` can rebuild **1–64** exact, validated modified workspace members into one isolated signed output. It copies the source payload once, appends all replacements, signs once and verifies every replacement. Converted XML is serialized against the authenticated original member with source-hash and root-name checks. Imported replacements use an independently selected local file and a SHA-verified `EditorBackups` revision, without altering the original signed source. Synthetic tests cover stored/compressed mixed batches, converted XML, unchanged members and original preservation. Complete dependency extraction, the original GUI's one-click installer, full profiles, installed-game swap integration and real-game acceptance are **not yet parity complete**.
 - The UI no longer requests PEM, DER or basename manually. No private keys are included in the repository, executable or update downloads.
 
 ## Rust/Iced/wgpu interactive GUI improvements (development preview)

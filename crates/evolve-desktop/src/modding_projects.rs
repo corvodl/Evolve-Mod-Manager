@@ -12,6 +12,31 @@ const MAX_PROJECTS: usize = 4096;
 const MAX_DIRECTORIES: usize = 32768;
 const MAX_ENTRIES: usize = 60000;
 const MAX_HASHED_PER_WORKSPACE: u64 = 256 * 1024 * 1024;
+const MAX_XML_BYTES: usize = 48 * 1024 * 1024;
+
+fn editable_format(record: &Value) -> Result<&str, String> {
+    match record.get("format").and_then(Value::as_str) {
+        Some("raw") => Ok("raw"),
+        Some("cryxml") => Ok("cryxml"),
+        _ => Err("Unsupported editable member format".into()),
+    }
+}
+
+fn serialize_project_xml(
+    original: &[u8],
+    edited: &[u8],
+    record: &Value,
+) -> Result<Vec<u8>, String> {
+    let expected = record
+        .get("original_sha256")
+        .and_then(Value::as_str)
+        .ok_or("Original binary XML digest missing")?;
+    if !format!("{:x}", Sha256::digest(original)).eq_ignore_ascii_case(expected) {
+        return Err("Original binary XML differs from the project manifest".into());
+    }
+    evolve_core::cryxml::encode_edited_xml(original, edited, MAX_XML_BYTES)
+        .map_err(|e| e.to_string())
+}
 
 #[derive(Clone, Debug)]
 pub struct ProjectRow {
@@ -287,8 +312,8 @@ pub fn discover_projects(root: &Path, stage: &Path) -> Result<Vec<ProjectRow>, S
 }
 
 /// Extract a selected, verified staged CryPAK into a NEW private-style project.
-/// Source files are untouched. The manifest labels decoded bytes as raw; it
-/// deliberately does not mislabel CryXmlB as a converted editable XML file.
+/// Extract a new project, decoding CryXmlB to editable UTF-8 XML. Both
+/// editable and original binary digests are retained; source PAKs are untouched.
 pub fn unpack_raw_project(
     projects: &Path,
     stage: &Path,
@@ -311,7 +336,7 @@ pub fn unpack_raw_project(
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
         .as_nanos();
-    let output = canonical_projects.join(format!("{}_raw_{stamp:x}", safe_stem));
+    let output = canonical_projects.join(format!("{}_editable_{stamp:x}", safe_stem));
     fs::create_dir(&output).map_err(|e| e.to_string())?;
     let sentinel = output.join(".EXTRACTION-INCOMPLETE.txt");
     fs::write(
@@ -335,13 +360,39 @@ pub fn unpack_raw_project(
         if !fs::symlink_metadata(&asset).is_ok_and(|m| m.file_type().is_file()) {
             return Err("An extracted archive member is missing".into());
         }
+        let original_sha256 = digest(&asset).map_err(|e| e.to_string())?;
+        let mut magic = [0u8; 8];
+        let read = File::open(&asset)
+            .and_then(|mut f| f.read(&mut magic))
+            .map_err(|e| e.to_string())?;
+        let format = if read == magic.len() && &magic == b"CryXmlB\0" {
+            if fs::metadata(&asset).map_err(|e| e.to_string())?.len() > MAX_XML_BYTES as u64 {
+                return Err("Binary XML exceeds the editable document limit".into());
+            }
+            let binary = fs::read(&asset).map_err(|e| e.to_string())?;
+            let text = evolve_core::cryxml::xml_bytes(&binary, MAX_XML_BYTES)
+                .map_err(|e| e.to_string())?;
+            // Establish representability before replacing the extracted copy.
+            evolve_core::cryxml::encode_edited_xml(&binary, &text, MAX_XML_BYTES)
+                .map_err(|e| e.to_string())?;
+            let backup = output
+                .join("EditorBackups/extracted-original")
+                .join(&entry.path);
+            fs::create_dir_all(backup.parent().ok_or("Missing backup parent")?)
+                .map_err(|e| e.to_string())?;
+            fs::write(&backup, &text).map_err(|e| e.to_string())?;
+            fs::write(&asset, &text).map_err(|e| e.to_string())?;
+            "cryxml"
+        } else {
+            "raw"
+        };
         let sha256 = digest(&asset).map_err(|e| e.to_string())?;
         records.push(serde_json::json!({
             "path":entry.path,
             "archive_name":entry.path,
-            "format":"raw",
+            "format":format,
             "sha256":sha256,
-            "original_sha256":sha256,
+            "original_sha256":original_sha256,
             "method":entry.method
         }));
     }
@@ -356,7 +407,7 @@ pub fn unpack_raw_project(
         "public_key_sha256":digest(&public).map_err(|e| e.to_string())?,
         "archive_entry_count":info.entries.len(),
         "entries":records,
-        "extraction_mode":"raw"
+        "extraction_mode":"editable"
     });
     let mut writer = fs::OpenOptions::new()
         .write(true)
@@ -366,13 +417,11 @@ pub fn unpack_raw_project(
     serde_json::to_writer_pretty(&mut writer, &manifest).map_err(|e| e.to_string())?;
     writer.sync_all().map_err(|e| e.to_string())?;
     fs::remove_file(sentinel).map_err(|e| e.to_string())?;
-    // raw-mode workspaces are verified by build_single_raw; they are not
-    // incorrectly offered as CryXmlB-converted projects.
     Ok((output, info.entries.len()))
 }
 
-/// Build multiple changed raw workspace members into a single signed PAK.
-/// CryXmlB still requires validated semantic serialization and is refused.
+/// Build changed raw/XML project members into a single signed PAK after
+/// validating original payload identity and binary XML semantic round trips.
 pub fn build_project_raw(
     project: &ProjectRow,
     projects: &Path,
@@ -383,7 +432,7 @@ pub fn build_project_raw(
         || project.modified.len() > 64
         || project.status != "Modified"
     {
-        return Err("A signed build requires 1–64 verified changed raw members; refresh the project before building.".into());
+        return Err("A signed build requires 1–64 verified changed project members; refresh the project before building.".into());
     }
     let parent = fs::canonicalize(projects).map_err(|e| e.to_string())?;
     if !fs::symlink_metadata(projects).is_ok_and(|m| m.file_type().is_dir()) {
@@ -406,9 +455,7 @@ pub fn build_project_raw(
             .iter()
             .find(|entry| entry.get("path").and_then(Value::as_str) == Some(rel.as_str()))
             .ok_or("Modified member is absent from the verified original manifest")?;
-        if expected.get("format").and_then(Value::as_str) != Some("raw") {
-            return Err("CryXmlB/converted files require semantic round-trip serialization; no partial raw signed build is allowed.".into());
-        }
+        editable_format(expected)?;
     }
     let original = stage.join("paks").join(&project.target);
     let relative = super::modding_keys::staged_target(stage, &original)?;
@@ -462,6 +509,12 @@ pub fn build_project_raw(
         return Err("Archive signed basename mismatch".into());
     }
     let source_files = fs::canonicalize(folder.join("files")).map_err(|e| e.to_string())?;
+    let original_index = evolve_core::open_verified_signed_pak(&original, &keys.public, &basename)
+        .map_err(|e| e.to_string())?;
+    let serialized = tempfile::Builder::new()
+        .prefix(".project-serialization-")
+        .tempdir_in(&folder)
+        .map_err(|e| e.to_string())?;
     let mut replacements = Vec::with_capacity(project.modified.len());
     for rel in &project.modified {
         let replacement = folder.join("files").join(rel);
@@ -471,7 +524,30 @@ pub fn build_project_raw(
         {
             return Err("Replacement is not a regular file inside the selected project".into());
         }
-        replacements.push((rel.clone(), replacement));
+        let record = records
+            .iter()
+            .find(|entry| entry.get("path").and_then(Value::as_str) == Some(rel.as_str()))
+            .ok_or("Modified member is absent from manifest")?;
+        if editable_format(record)? == "cryxml" {
+            if !regular(&replacement, MAX_XML_BYTES as u64) {
+                return Err("Edited XML exceeds document limit".into());
+            }
+            let prior = original_index
+                .read_member(&original, rel, MAX_XML_BYTES as u64)
+                .map_err(|e| e.to_string())?;
+            let encoded = serialize_project_xml(
+                &prior,
+                &fs::read(&replacement).map_err(|e| e.to_string())?,
+                record,
+            )?;
+            let staged = serialized
+                .path()
+                .join(format!("member-{}.bin", replacements.len()));
+            fs::write(&staged, encoded).map_err(|e| e.to_string())?;
+            replacements.push((rel.clone(), staged));
+        } else {
+            replacements.push((rel.clone(), replacement));
+        }
     }
     let built = parent.join("Built");
     if !built.exists() {
@@ -497,7 +573,7 @@ pub fn build_project_raw(
         &output,
     );
     match result {
-        Ok(reports) => Ok((format!("{} modified raw member(s)", reports.len()), output)),
+        Ok(reports) => Ok((format!("{} modified member(s)", reports.len()), output)),
         Err(error) => {
             // The core uses an atomic tempfile on failure. Remove only our
             // new empty output directory, never an existing user's path.
@@ -507,7 +583,7 @@ pub fn build_project_raw(
     }
 }
 
-/// Import explicitly selected raw bytes over ONE manifest-listed editable
+/// Import explicitly selected bytes/XML over ONE manifest-listed editable
 /// member. Never writes source PAKs or imported library originals. Keeps a
 /// verified, immutable editor backup for manual or in-app recovery.
 pub fn import_raw_member(
@@ -525,7 +601,7 @@ pub fn import_raw_member(
         )
     {
         return Err(
-            "Select an existing, bounded raw replacement and manifest-listed project file".into(),
+            "Select an existing, bounded replacement and manifest-listed project file".into(),
         );
     }
     let root = fs::canonicalize(projects_root).map_err(|e| e.to_string())?;
@@ -548,8 +624,15 @@ pub fn import_raw_member(
                 .find(|e| e.get("path").and_then(Value::as_str) == Some(member))
         })
         .ok_or("Selected file is absent from the managed manifest")?;
-    if record.get("format").and_then(Value::as_str) != Some("raw") {
-        return Err("Importing converted CryXmlB bytes requires the native semantic editor".into());
+    if editable_format(record)? == "cryxml" {
+        if !regular(replacement_source, MAX_XML_BYTES as u64) {
+            return Err("Edited XML exceeds document limit".into());
+        }
+        evolve_core::cryxml::encode_xml(
+            &fs::read(replacement_source).map_err(|e| e.to_string())?,
+            MAX_XML_BYTES,
+        )
+        .map_err(|e| e.to_string())?;
     }
     let files = fs::canonicalize(folder.join("files")).map_err(|e| e.to_string())?;
     let original = folder.join("files").join(member);
@@ -629,7 +712,7 @@ pub fn import_raw_member(
     Ok(true)
 }
 
-/// Restore one original, manifest-verified raw workspace member from a
+/// Restore one original, manifest-verified editable workspace member from a
 /// trustworthy EditorBackups revision. Unlike 'reload', this makes a real,
 /// reversible change and never modifies the signed source PAK.
 pub fn restore_original_raw_member(
@@ -662,9 +745,7 @@ pub fn restore_original_raw_member(
                 .find(|entry| entry.get("path").and_then(Value::as_str) == Some(member))
         })
         .ok_or("The member is not in this project's original manifest")?;
-    if record.get("format").and_then(Value::as_str) != Some("raw") {
-        return Err("CryXmlB originals require semantic restoration".into());
-    }
+    editable_format(record)?;
     let baseline = record
         .get("sha256")
         .and_then(Value::as_str)
@@ -783,6 +864,67 @@ pub fn restore_original_raw_member(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn converted_xml_import_restore_and_binary_serialization_preserve_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let projects = temp.path().join("projects");
+        let workspace = projects.join("Example");
+        fs::create_dir_all(workspace.join("files")).unwrap();
+        let original = br#"<Config xmlns:test="urn:test" test:Value="original"></Config>"#;
+        let edited = br#"<Config xmlns:test="urn:test" test:Value="edited"></Config>"#;
+        let binary = evolve_core::cryxml::encode_xml(original, MAX_XML_BYTES).unwrap();
+        let record = serde_json::json!({"path":"config.xml", "format":"cryxml",
+            "sha256":format!("{:x}",Sha256::digest(original)),
+            "original_sha256":format!("{:x}",Sha256::digest(&binary))});
+        fs::write(workspace.join("files/config.xml"), original).unwrap();
+        fs::write(
+            workspace.join(".evolve-pak-workspace.json"),
+            serde_json::to_vec(&serde_json::json!({"version":1,"entries":[record.clone()]}))
+                .unwrap(),
+        )
+        .unwrap();
+        let project = ProjectRow {
+            label: "Example".into(),
+            target: "example.pak".into(),
+            source_build: String::new(),
+            status: "Draft".into(),
+            details: String::new(),
+            workspace: workspace.clone(),
+            modified: Vec::new(),
+            changed_known: true,
+        };
+        let replacement = temp.path().join("replacement.xml");
+        fs::write(&replacement, edited).unwrap();
+        assert!(import_raw_member(&project, &projects, "config.xml", &replacement).unwrap());
+        let serialized = serialize_project_xml(&binary, edited, &record).unwrap();
+        assert_eq!(
+            evolve_core::cryxml::xml_bytes(&serialized, MAX_XML_BYTES)
+                .unwrap()
+                .as_ref(),
+            edited
+        );
+        assert!(serialize_project_xml(&binary, b"<Other/>", &record).is_err());
+        let mut wrong = record.clone();
+        wrong["original_sha256"] = Value::String("0".repeat(64));
+        assert!(serialize_project_xml(&binary, edited, &wrong).is_err());
+        fs::write(&replacement, b"<Config><x/>lost tail</Config>").unwrap();
+        assert!(import_raw_member(&project, &projects, "config.xml", &replacement).is_err());
+        assert_eq!(
+            fs::read(workspace.join("files/config.xml")).unwrap(),
+            edited
+        );
+        assert_eq!(
+            fs::read_dir(workspace.join("EditorBackups"))
+                .unwrap()
+                .count(),
+            1
+        );
+        assert!(restore_original_raw_member(&project, &projects, "config.xml").unwrap());
+        assert_eq!(
+            fs::read(workspace.join("files/config.xml")).unwrap(),
+            original
+        );
+    }
     #[test]
     fn import_over_raw_asset_keeps_sha_verified_original_backup() {
         let temporary = tempfile::tempdir().unwrap();
