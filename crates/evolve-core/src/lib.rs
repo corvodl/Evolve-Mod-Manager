@@ -12,6 +12,7 @@ pub mod level_export;
 pub mod model;
 pub mod native_caf;
 pub mod policy;
+pub mod profiles;
 pub mod rig;
 pub mod scene;
 pub mod signed_pak;
@@ -65,4 +66,9 @@ pub use terrain::{
 pub use staging::{
     StageError, StageTransaction, apply_stage_pak, import_stage_pak, initialize_stage,
     restore_stage, stage_status,
+};
+
+pub use profiles::{
+    ModProfile, ProfileCatalog, ProfileError, ProfileMod, ProfilePlan, add_mod_to_profile,
+    create_mod_profile, delete_mod_profile, enable_profile_mod, list_mod_profiles, plan_mod_profile,
 };
