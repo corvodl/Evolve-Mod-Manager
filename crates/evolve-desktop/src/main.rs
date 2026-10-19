@@ -685,6 +685,7 @@ fn main() -> iced::Result {
                 text: iced::Color::from_rgb8(234, 234, 236),
                 primary: iced::Color::from_rgb8(205, 52, 59),
                 success: iced::Color::from_rgb8(70, 170, 130),
+                warning: iced::Color::from_rgb8(233, 170, 80),
                 danger: iced::Color::from_rgb8(205, 52, 59),
             }))
         .run()
