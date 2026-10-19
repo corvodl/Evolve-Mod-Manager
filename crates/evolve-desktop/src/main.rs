@@ -150,6 +150,7 @@ struct State {
     auto_clip_filter: String,
     export_include_animation: bool,
     auto_idle_pending: Option<PathBuf>,
+    auto_play_native_caf: bool,
     auto_material_pending: bool,
     caf_path: String,
     skeleton_path: String,
@@ -3272,6 +3273,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::StartCafLoad => {
+            state.auto_play_native_caf = false;
             if state.caf_path.trim().is_empty() {
                 state.status="Select the original native CAF to inspect/play its exact bone controller tracks.".into();
                 return Task::none();
@@ -3869,6 +3871,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             return launch(state, operation);
                         }
                         if let Some(idle) = state.auto_idle_pending.take() {
+                            state.auto_play_native_caf = true;
                             return launch(state, Operation::LoadCaf(idle));
                         }
                     }
@@ -3907,7 +3910,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.skin_preview = Some(Arc::new(*skin));
                         state.motion_time = 0.0;
                         apply_current_skin_frame(state);
-                        state.playing = cyclic;
+                        if state.auto_play_native_caf {
+                            state.playback_loop = true;
+                        }
+                        state.playing = cyclic || state.auto_play_native_caf;
+                        state.auto_play_native_caf = false;
                         state.status = format!(
                             "Native CAF bound to {count} original weighted vertices and {bones} compiled bones. Mesh deforms in the GPU viewport (CPU skin evaluation)."
                         );
@@ -3953,6 +3960,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.material_report = Some(report);
                     state.page = Some(Page::Models);
                     if let Some(idle) = state.auto_idle_pending.take() {
+                        state.auto_play_native_caf = true;
                         return launch(state, Operation::LoadCaf(idle));
                     }
                 }
@@ -4077,6 +4085,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.auto_clip_filter.clear();
                     state.export_include_animation = false;
                     state.auto_idle_pending = None;
+                    state.auto_play_native_caf = false;
                     state.auto_material_pending = false;
                     state.skeleton_path.clear();
                     state.diffuse_input.clear();
@@ -4325,6 +4334,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                 }
                 Err(e) => {
+                    state.auto_play_native_caf = false;
                     state.status = format!("Operation refused: {e}");
                     if state.auto_material_pending && state.viewer_queued_preview.is_none() {
                         state.auto_material_pending = false;
