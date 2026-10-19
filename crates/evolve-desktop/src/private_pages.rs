@@ -55,10 +55,14 @@ fn status_card<'a>(label: &'static str, value: String) -> Element<'a, Message> {
 }
 
 fn health_entry<'a>(title: &'static str, value: &str) -> Element<'a, Message> {
-    surface(column![
-        text(title).size(13),
-        text(value.to_owned()).size(12).color(MUTED),
-    ].spacing(6)).into()
+    surface(
+        column![
+            text(title).size(13),
+            text(value.to_owned()).size(12).color(MUTED),
+        ]
+        .spacing(6),
+    )
+    .into()
 }
 
 fn health_panel(state: &State) -> Element<'_, Message> {
@@ -74,10 +78,17 @@ fn health_panel(state: &State) -> Element<'_, Message> {
         return heading.into();
     }
     let check = row![
-        button(if state.health_checking { "Checking..." } else { "Check System Health" })
-            .on_press_maybe((!state.health_checking).then_some(Message::CheckSystemHealth)),
-        text("Read-only until you choose an explicit operation").size(12).color(MUTED),
-    ].spacing(12);
+        button(if state.health_checking {
+            "Checking..."
+        } else {
+            "Check System Health"
+        })
+        .on_press_maybe((!state.health_checking).then_some(Message::CheckSystemHealth)),
+        text("Read-only until you choose an explicit operation")
+            .size(12)
+            .color(MUTED),
+    ]
+    .spacing(12);
     if let Some(result) = &state.health_report {
         column![
             heading,
