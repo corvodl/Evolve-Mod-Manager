@@ -325,7 +325,6 @@ pub fn imported_archive_files(archive: &ImportedPak) -> Result<Inventory, Librar
     })
 }
 
-
 /// Provenance-aware cross-PAK resolution. This is deliberately exact virtual
 /// path matching, NOT basename matching or a closest-looking texture guess.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -380,7 +379,9 @@ pub fn resolve_imported_reference(
                         archive_name: archive.name.clone(),
                         relative_path: entry.relative_path.clone(),
                         absolute_path: PathBuf::from(&inv.root)
-                            .join(&entry.relative_path).to_string_lossy().into_owned(),
+                            .join(&entry.relative_path)
+                            .to_string_lossy()
+                            .into_owned(),
                     });
                 }
             }
@@ -388,7 +389,9 @@ pub fn resolve_imported_reference(
     }
     // A high-resolution .dds.0 has priority over .dds, but never prefer one
     // archive over another with the same exact relative texture path.
-    let mut hits = found.into_iter().find(|group| !group.is_empty())
+    let mut hits = found
+        .into_iter()
+        .find(|group| !group.is_empty())
         .unwrap_or_default();
     hits.sort_by(|a, b| a.archive_id.cmp(&b.archive_id));
     match hits.len() {
@@ -422,8 +425,10 @@ mod tests {
                 serde_json::to_vec(&serde_json::json!({
                     "version":1,"name":name,"source":"/unused",
                     "entries":[{"path":"textures/body.dds.0","bytes":5}]
-                })).unwrap()
-            ).unwrap();
+                }))
+                .unwrap(),
+            )
+            .unwrap();
         }
         fs::write(
             root.path().join("build-collections.json"),
@@ -433,15 +438,20 @@ mod tests {
                     "stage-two":{"label":"Stage 2","members":{"11111111111111111111":{}}},
                     "legacy":{"label":"Legacy","members":{"22222222222222222222":{}}}
                 }
-            })).unwrap()
-        ).unwrap();
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let global = resolve_imported_reference(root.path(), "textures/body.tif", None).unwrap();
         assert!(matches!(global, LibraryReferenceStatus::Ambiguous(found) if found.len() == 2));
-        let scoped = resolve_imported_reference(root.path(), "textures/body.tif", Some("Stage 2")).unwrap();
+        let scoped =
+            resolve_imported_reference(root.path(), "textures/body.tif", Some("Stage 2")).unwrap();
         assert!(matches!(scoped, LibraryReferenceStatus::Found(hit)
             if hit.archive_id == archive_ids[0] && hit.relative_path == "textures/body.dds.0"));
-        assert!(matches!(resolve_imported_reference(root.path(), "textures/other.dds", None).unwrap(),
-            LibraryReferenceStatus::Missing));
+        assert!(matches!(
+            resolve_imported_reference(root.path(), "textures/other.dds", None).unwrap(),
+            LibraryReferenceStatus::Missing
+        ));
         assert!(resolve_imported_reference(root.path(), "../body.tif", None).is_err());
     }
 
