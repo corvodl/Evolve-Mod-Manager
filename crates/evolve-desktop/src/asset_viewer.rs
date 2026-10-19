@@ -141,8 +141,12 @@ fn viewport(state: &State) -> Element<'_, Message> {
     let toolbar = row![
         button("Orbit").on_press(Message::ViewerResetCamera),
         text("Light").size(12),
-        slider(0.1..=2.0, state.light_strength.max(0.1), Message::LightStrengthChanged)
-            .width(Length::Fixed(90.0)),
+        slider(
+            0.1..=2.0,
+            state.light_strength.max(0.1),
+            Message::LightStrengthChanged
+        )
+        .width(Length::Fixed(90.0)),
         text("Yaw").size(12),
         slider(-180.0..=180.0, state.yaw, Message::YawChanged).width(Length::FillPortion(2)),
         text("Pitch").size(12),
@@ -361,7 +365,9 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         .size(12),
         button("Toggle Explorer").on_press(Message::ViewerToggleExplorer),
         button("Save layout").on_press(Message::ViewerSaveLayout),
-        button("Detach Inspector").on_press(Message::OpenInspectorWindow).style(button::secondary),
+        button("Detach Inspector")
+            .on_press(Message::OpenInspectorWindow)
+            .style(button::secondary),
     ]
     .spacing(14)
     .align_y(iced::Center);
