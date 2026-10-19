@@ -22,7 +22,7 @@ use asset_cache::{SharedCache, decoded_dds};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph, ImportedLibrary,
-    ImportedPak, Inventory, LevelScene, LibraryImportReport, MaterialReport, ModProfile, ModelInfo,
+    ImportedPak, Inventory, LevelScene, LibraryImportReport, LibraryReferenceStatus, MaterialReport, ModProfile, ModelInfo,
     NativeCafMotion, PakInventory, ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport,
     SignedPakInfo, StageTransaction, TerrainInfo, add_mod_to_profile, apply_profile_stage,
     apply_stage_pak, batch_stage_status, compare_assets, convert_glb_to_fbx,
@@ -33,7 +33,7 @@ use evolve_core::{
     inspect_dependencies, inspect_legacy_pak, inspect_signed_pak, list_mod_profiles,
     load_level_scene, plan_mod_profile, read_cdf, read_material, read_model, read_native_caf,
     read_static_cdf_assembly, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry,
-    resolve_cdf, resolve_materials, restore_profile_stage, restore_stage, scan_directory,
+    resolve_cdf, resolve_imported_reference, resolve_materials, restore_profile_stage, restore_stage, scan_directory,
     scan_directory_with_progress, stage_status,
 };
 use iced::widget::{
@@ -45,7 +45,7 @@ use modding_projects::{ProjectRow, discover_projects};
 use selection::MultiSelection;
 use settings::{Preferences, load_from, save_to, settings_path};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -257,7 +257,7 @@ enum Operation {
     LoadDiffuse(PathBuf, SharedCache),
     LoadNormal(PathBuf, SharedCache),
     LoadEmissive(PathBuf, SharedCache),
-    ResolveMaterial(PathBuf, PathBuf),
+    ResolveMaterial(PathBuf, PathBuf, Option<PathBuf>, Option<String>),
     LoadCaf(PathBuf),
     RiggedGlb(PathBuf, PathBuf, PathBuf),
     RiggedFbx(
@@ -458,10 +458,31 @@ impl Operation {
             Self::LoadCaf(source) => read_native_caf(&source)
                 .map(Completed::Caf)
                 .map_err(|e| e.to_string()),
-            Self::ResolveMaterial(source, root) => {
+            Self::ResolveMaterial(source, root, imported_root, build_label) => {
                 let authored = read_material(&source).map_err(|e| e.to_string())?;
                 let library = scan_directory(&root).map_err(|e| e.to_string())?;
-                let report = resolve_materials(&library, &authored);
+                let mut report = resolve_materials(&library, &authored);
+                if authored.slots.len() == 1 && report.textures.len() <= 8 {
+                    if let Some(imported_root) = &imported_root {
+                        for texture in &mut report.textures {
+                            if !matches!(texture.resolution, AssetResolution::Missing) {
+                                continue;
+                            }
+                            texture.resolution = match resolve_imported_reference(
+                                imported_root, &texture.authored_path, build_label.as_deref()
+                            ).map_err(|e| e.to_string())? {
+                                LibraryReferenceStatus::Missing => AssetResolution::Missing,
+                                LibraryReferenceStatus::Found(hit) =>
+                                    AssetResolution::Found(hit.absolute_path),
+                                LibraryReferenceStatus::Ambiguous(hits) => AssetResolution::Ambiguous(
+                                    hits.into_iter()
+                                        .map(|hit| format!("{} [{}] / {}", hit.archive_name, hit.archive_id, hit.relative_path))
+                                        .collect()
+                                ),
+                            };
+                        }
+                    }
+                }
                 let get_pixels = |roles: &[&str]| -> Result<Option<::image::RgbaImage>, String> {
                     if authored.slots.len() != 1 {
                         return Ok(None); // Never mix different material slots.
@@ -478,14 +499,26 @@ impl Operation {
                     else {
                         return Ok(None);
                     };
-                    let source = root.join(relative);
+                    let relative_path = Path::new(relative);
+                    let source = if relative_path.is_absolute() {
+                        relative_path.to_path_buf()
+                    } else {
+                        root.join(relative_path)
+                    };
                     let metadata = std::fs::symlink_metadata(&source).map_err(|e| e.to_string())?;
-                    if !metadata.file_type().is_file()
-                        || !std::fs::canonicalize(&source)
-                            .map_err(|e| e.to_string())?
-                            .starts_with(std::fs::canonicalize(&root).map_err(|e| e.to_string())?)
-                    {
-                        return Err("Resolved DDS path is unsafe".into());
+                    let canonical = std::fs::canonicalize(&source).map_err(|e| e.to_string())?;
+                    let within_local = canonical.starts_with(
+                        std::fs::canonicalize(&root).map_err(|e| e.to_string())?
+                    );
+                    let within_imported = if let Some(ref library_root) = imported_root {
+                        canonical.starts_with(
+                            std::fs::canonicalize(library_root).map_err(|e| e.to_string())?
+                        )
+                    } else {
+                        false
+                    };
+                    if !metadata.file_type().is_file() || (!within_local && !within_imported) {
+                        return Err("Resolved DDS path escaped all verified asset roots".into());
                     }
                     let (_, image) = decode_dds_rgba(&source).map_err(|e| e.to_string())?;
                     Ok(Some(image))
@@ -2113,6 +2146,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Operation::ResolveMaterial(
                     PathBuf::from(&state.material_input),
                     PathBuf::from(&state.assets_root),
+                    state.library_catalog.as_ref()
+                        .map(|catalog| PathBuf::from(&catalog.root)),
+                    state.library_by_build.then(|| state.library_catalog.as_ref()
+                        .and_then(|catalog| catalog.builds.get(state.library_build_index))
+                        .cloned()).flatten(),
                 ),
             );
         }
