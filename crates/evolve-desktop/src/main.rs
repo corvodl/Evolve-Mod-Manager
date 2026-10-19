@@ -190,7 +190,6 @@ struct State {
     developer_attempts: u8,
     developer_checking: bool,
     show_advanced_tools: bool,
-    show_activity: bool,
     activity_log: Vec<String>,
     health_expanded: bool,
     health_checking: bool,
@@ -1735,7 +1734,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             .iter().any(|ext| entry.relative_path.to_ascii_lowercase().ends_with(ext))
                     })
             {
-                return update(state, Message::ViewerPreviewSelected);
+                let is_cdf = state.inventory.as_ref().and_then(|inv| inv.entries.get(index))
+                    .is_some_and(|entry| entry.relative_path.to_ascii_lowercase().ends_with(".cdf"));
+                return update(state, if is_cdf {
+                    Message::ViewerPreviewStaticCdf
+                } else {
+                    Message::ViewerPreviewSelected
+                });
             }
         }
         Message::ViewerToggleFolder(path) => {
@@ -3695,7 +3700,7 @@ fn view(state: &State) -> Element<'_, Message> {
         .spacing(12),
     ]
     .spacing(11)
-    .padding([10, 16])
+    .padding([10, 28])
     .width(Fill)
     .height(Fill);
     // Activity is detached so it never steals space from the working page.
@@ -3948,9 +3953,9 @@ impl Desktop {
             Theme::custom(
                 "Evolve Black/Red",
                 iced::theme::Palette {
-                    background: iced::Color::from_rgb8(32, 34, 39),
-                    text: iced::Color::from_rgb8(234, 234, 236),
-                    primary: iced::Color::from_rgb8(205, 52, 59),
+                    background: iced::Color::from_rgb8(23, 23, 29),
+                    text: iced::Color::from_rgb8(242, 240, 244),
+                    primary: iced::Color::from_rgb8(198, 48, 68),
                     success: iced::Color::from_rgb8(70, 170, 130),
                     warning: iced::Color::from_rgb8(233, 170, 80),
                     danger: iced::Color::from_rgb8(205, 52, 59),
