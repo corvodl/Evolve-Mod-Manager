@@ -5,6 +5,9 @@ mod asset_library_page;
 mod asset_viewer;
 mod developer_auth;
 mod level_workspace;
+mod modding_keys;
+mod modding_page;
+mod modding_projects;
 mod private_pages;
 mod settings;
 mod textured;
@@ -35,6 +38,7 @@ use iced::widget::{
 };
 use iced::{Element, Fill, Length, Subscription, Task, Theme, window};
 use settings::{Preferences, load_from, save_to, settings_path};
+use modding_projects::{ProjectRow, discover_projects};
 use std::path::PathBuf;
 use std::sync::{
     Arc,
@@ -203,6 +207,12 @@ struct State {
     scan_cancel: Option<Arc<AtomicBool>>,
     scan_indexed: Option<Arc<AtomicUsize>>,
     preview_cache: SharedCache,
+    modding_projects: Option<Vec<ProjectRow>>,
+    modding_selected: Option<usize>,
+    modding_filter: String,
+    modding_menu: Option<&'static str>,
+    modding_advanced: bool,
+    modding_profiles: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -216,6 +226,7 @@ enum ViewerTab {
 
 #[derive(Debug, Clone)]
 enum Operation {
+    IndexProjects(PathBuf, PathBuf),
     LoadImportedLibrary(PathBuf),
     OpenImportedPak(ImportedPak),
     InspectDependencies(Inventory, String),
@@ -270,6 +281,7 @@ enum Operation {
 
 #[derive(Debug, Clone)]
 enum Completed {
+    Projects(Vec<ProjectRow>),
     ImportedLibrary(ImportedLibrary),
     ImportedPakFiles(Inventory),
     Dependencies(DependencyGraph),
@@ -320,6 +332,8 @@ enum Completed {
 impl Operation {
     fn execute(self) -> Result<Completed, String> {
         match self {
+            Self::IndexProjects(root, stage) => discover_projects(&root, &stage)
+                .map(Completed::Projects),
             Self::InspectDependencies(inventory, relative) => {
                 inspect_dependencies(&inventory, &relative)
                     .map(Completed::Dependencies)
@@ -572,6 +586,18 @@ enum Message {
     LibraryRootChanged(String),
     LibrarySearchChanged(String),
     LibraryMenu(&'static str),
+    ModdingMenu(&'static str),
+    ModdingFilterChanged(String),
+    ModdingSelectProject(usize),
+    ModdingRefresh,
+    ModdingToggleAdvanced,
+    ModdingBrowsePaks,
+    ModdingSelectArchive(usize),
+    ModdingOpenProject,
+    ModdingReviewChanges,
+    ModdingBuild,
+    ModdingUnpackPak,
+    ModdingToggleProfiles,
     LibraryToggleConfiguration,
     LibraryRefresh,
     LibrarySetByBuild(bool),
@@ -794,6 +820,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::Navigate(page) => {
             state.page = Some(page);
+            if page == Page::Files
+                && state.modding_projects.is_none()
+                && !state.preferences.projects.trim().is_empty()
+            {
+                return launch(state, Operation::IndexProjects(
+                    PathBuf::from(&state.preferences.projects),
+                    PathBuf::from(&state.preferences.stage),
+                ));
+            }
             if page == Page::AssetLibrary
                 && state.library_catalog.is_none()
                 && !state.library_root.trim().is_empty()
@@ -803,6 +838,122 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     Operation::LoadImportedLibrary(PathBuf::from(&state.library_root)),
                 );
             }
+        }
+        Message::ModdingMenu(menu) => {
+            state.modding_menu = if state.modding_menu == Some(menu) {
+                None
+            } else { Some(menu) };
+        }
+        Message::ModdingFilterChanged(value) => state.modding_filter = value,
+        Message::ModdingSelectProject(index) => {
+            if let Some(project) = state.modding_projects.as_ref().and_then(|p| p.get(index)) {
+                state.modding_selected = Some(index);
+                state.preferences.current_workspace = project.workspace.to_string_lossy().into_owned();
+                state.stage_target = project.target.clone();
+                state.input = PathBuf::from(&state.preferences.stage)
+                    .join("paks").join(&project.target).to_string_lossy().into_owned();
+                state.status = format!("Selected {} · {}", project.label, project.details);
+            }
+        }
+        Message::ModdingRefresh => {
+            if state.preferences.projects.trim().is_empty() {
+                state.status = "Configure your Projects folder in Settings first.".into();
+                return Task::none();
+            }
+            return launch(state, Operation::IndexProjects(
+                PathBuf::from(&state.preferences.projects),
+                PathBuf::from(&state.preferences.stage),
+            ));
+        }
+        Message::ModdingToggleAdvanced => state.modding_advanced = !state.modding_advanced,
+        Message::ModdingToggleProfiles => {
+            state.modding_profiles = !state.modding_profiles;
+            if state.modding_profiles && !state.preferences.stage.trim().is_empty() {
+                return launch(state, Operation::ListProfiles(PathBuf::from(&state.preferences.stage)));
+            }
+        }
+        Message::ModdingBrowsePaks => {
+            let root = PathBuf::from(&state.preferences.stage).join("paks");
+            if !root.is_dir() {
+                state.status = "Configure and prepare a signed PAK stage first (Settings).".into();
+                return Task::none();
+            }
+            state.modding_advanced = true;
+            return begin_scan(state, root);
+        }
+        Message::ModdingSelectArchive(index) => {
+            if let Some(inventory) = &state.inventory
+                && let Some(entry) = inventory.entries.get(index)
+            {
+                let candidate = PathBuf::from(&inventory.root).join(&entry.relative_path);
+                if let Ok(relative) = modding_keys::staged_target(
+                    PathBuf::from(&state.preferences.stage).as_path(), &candidate
+                ) {
+                    state.selected = Some(index);
+                    state.stage_target = relative;
+                    state.input = candidate.to_string_lossy().into_owned();
+                    state.status = format!("Selected original staged PAK: {}", entry.relative_path);
+                } else {
+                    state.status = "Select a regular PAK inside the configured stage/paks.".into();
+                }
+            }
+        }
+        Message::ModdingOpenProject => {
+            let Some(project) = state.modding_selected.and_then(|i|
+                state.modding_projects.as_ref().and_then(|p| p.get(i))
+            ) else {
+                state.status = "Select an editable project first.".into();
+                return Task::none();
+            };
+            let root = project.workspace.join("files");
+            if !root.is_dir() {
+                state.status = "This project has no extracted files folder.".into();
+                return Task::none();
+            }
+            state.input = root.to_string_lossy().into_owned();
+            return begin_scan(state, root);
+        }
+        Message::ModdingReviewChanges => {
+            if let Some(project) = state.modding_selected.and_then(|i|
+                state.modding_projects.as_ref().and_then(|p| p.get(i))
+            ) {
+                state.status = format!("{} · {}", project.label, project.details);
+            } else {
+                state.status = "Select a project to review its changed assets.".into();
+            }
+        }
+        Message::ModdingBuild => {
+            state.status = "Full-project signed builds are not available in the Rust preview yet. Source metadata, file conversions and all modified entries must be verified before building; existing Qt projects remain unchanged.".into();
+        }
+        Message::ModdingUnpackPak => {
+            let source = PathBuf::from(&state.input);
+            let basename = match modding_keys::signed_basename(&source) {
+                Ok(value) => value,
+                Err(error) => { state.status = error; return Task::none(); }
+            };
+            if modding_keys::staged_target(
+                PathBuf::from(&state.preferences.stage).as_path(), &source
+            ).is_err() {
+                state.status = "Select a verified staged original PAK, not an arbitrary file.".into();
+                return Task::none();
+            }
+            let key = match modding_keys::public_key(
+                PathBuf::from(&state.preferences.stage).as_path()
+            ) {
+                Ok(key) => key,
+                Err(error) => { state.status = error; return Task::none(); }
+            };
+            let projects = PathBuf::from(&state.preferences.projects);
+            if !projects.is_dir() {
+                state.status = "Configure an existing Projects folder before unpacking.".into();
+                return Task::none();
+            }
+            let label = basename.trim_end_matches(".pak");
+            let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |time| time.as_millis());
+            let dest = projects.join(format!("Unpacked-{}-{}", label, unique));
+            state.status = "Extracting into a NEW read-only files directory (no project manifest yet)...".into();
+            return launch(state, Operation::ExtractSignedPak(source, key, basename, dest));
         }
         Message::LibraryRootChanged(value) => {
             state.library_root = value;
@@ -1872,6 +2023,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.comparison = Some(report);
                     state.viewer_tab = ViewerTab::Compare;
                 }
+                Ok(Completed::Projects(projects)) => {
+                    let previous = state.modding_selected.and_then(|i|
+                        state.modding_projects.as_ref().and_then(|old| old.get(i))
+                    ).map(|p| p.workspace.clone());
+                    state.modding_selected = previous.and_then(|path|
+                        projects.iter().position(|p| p.workspace == path)
+                    );
+                    state.status = format!("Loaded {} editable project(s).", projects.len());
+                    state.modding_projects = Some(projects);
+                }
                 Ok(Completed::ImportedLibrary(catalog)) => {
                     let count = catalog.archives.len();
                     state.status = format!(
@@ -2469,110 +2630,7 @@ fn view(state: &State) -> Element<'_, Message> {
         Page::Credits => private_pages::credits(),
         Page::Developer => private_pages::developer(state),
         Page::AssetLibrary => asset_library_page::view(state),
-        Page::Files => {
-            let mut rows = column![].spacing(3);
-            let needle = state.search.to_lowercase();
-            let selected_name;
-            if let Some(pak) = &state.pak {
-                for (index, entry) in pak.entries.iter().enumerate()
-                    .filter(|(_, e)| e.path.to_lowercase().contains(&needle))
-                    .take(350)
-                {
-                    rows = rows.push(button(row![
-                        text(entry.path.as_str()).width(Fill),
-                        text(format!("{} B", entry.size)),
-                    ].spacing(8)).width(Fill).on_press(Message::Select(index)));
-                }
-                selected_name = state.selected
-                    .and_then(|n| pak.entries.get(n))
-                    .map(|e| format!("Member: {} / {} bytes / ZIP method {}", e.path, e.size, e.method))
-                    .unwrap_or_else(|| format!("Archive: {}", pak.source_file));
-            } else if let Some(inventory) = &state.inventory {
-                for (index, entry) in inventory.entries.iter().enumerate()
-                    .filter(|(_, e)| e.relative_path.to_lowercase().contains(&needle))
-                    .take(350)
-                {
-                    rows = rows.push(file_row(index, entry));
-                }
-                selected_name = state.selected
-                    .and_then(|n| inventory.entries.get(n))
-                    .map(|e| format!("Asset: {} / {} bytes", e.relative_path, e.byte_size))
-                    .unwrap_or_else(|| format!("Local directory: {}", inventory.root));
-            } else {
-                selected_name = "Scan a folder or inspect a ZIP-compatible PAK to see files.".to_owned();
-            }
-            column![
-                text_input("Search indexed filenames...", &state.search)
-                    .on_input(Message::SearchChanged),
-                text(selected_name).size(14),
-                scrollable(rows).height(Fill),
-                text("Showing up to 350 matching rows; data remains available for filtering.").size(12),
-                text("Signed CryPAK rebuild (offline/private testing)").size(18),
-                row![
-                    text_input("Private PEM key (local only)...",&state.signing_private)
-                        .on_input(Message::SigningPrivateChanged).width(Fill),
-                    text_input("Matching public DER key...",&state.signing_public)
-                        .on_input(Message::SigningPublicChanged).width(Fill),
-                ].spacing(8),
-                row![
-                    text_input("Exact signed member virtual path...",&state.signed_entry)
-                        .on_input(Message::SignedMemberChanged).width(Fill),
-                    text_input("Replacement asset path...",&state.signed_replacement)
-                        .on_input(Message::SignedReplacementChanged).width(Fill),
-                    button("Rebuild signed PAK").on_press(Message::StartSignedRebuild),
-                ].spacing(8),
-                text("ISOLATED OFFLINE PAK STAGING / RECOVERY").size(18),
-                text("Use a NEW empty workspace. This never swaps installed EvolveGame files. Import a verified original, then select a signed modded PAK in the main input field to apply."),
-                row![
-                    text_input("NEW isolated stage folder (not game directory)...", &state.preferences.stage)
-                        .on_input(Message::PreferenceStage).width(Fill),
-                    button("Initialize stage").on_press(Message::StartStageInit),
-                    button("Check stage").on_press(Message::StartStageStatus),
-                    button("Restore backup").on_press(Message::StartStageRestore),
-                ].spacing(8),
-                row![
-                    text_input("Stage target relative to paks/ (e.g. Game/libs.pak)", &state.stage_target)
-                        .on_input(Message::StageTargetChanged).width(Fill),
-                    button("Import signed original").on_press(Message::StartStageImport),
-                    button("Apply signed replacement").on_press(Message::StartStageApply),
-                ].spacing(8),
-                text("Apply uses the PAK file in the main input and the original/public signing keys above. Restoring validates all original backup hashes."),
-                text(state.stage_feedback.as_str()).size(13),
-                text("MOD PROFILES — verified offline catalog (not game installation)").size(18),
-                row![
-                    text_input("New profile name...", &state.profile_name)
-                        .on_input(Message::ProfileNameChanged).width(Fill),
-                    button("Create profile").on_press(Message::StartProfileCreate),
-                    button("Refresh profiles").on_press(Message::StartProfileList),
-                ].spacing(8),
-                if let Some(catalog) = &state.profile_catalog {
-                    let mut rows = column![].spacing(4);
-                    for profile in catalog.profiles.iter().take(100) {
-                        rows = rows.push(
-                            button(text(format!("{} ({} mod(s))", profile.name, profile.mods.len())))
-                                .on_press(Message::SelectProfile(profile.id.clone()))
-                        );
-                    }
-                    scrollable(rows).height(Length::Fixed(145.))
-                } else {
-                    scrollable(column![text("Refresh to browse available local profiles.")])
-                        .height(Length::Fixed(70.))
-                },
-                row![
-                    text_input("Selected profile ID...", &state.profile_id)
-                        .on_input(Message::SelectProfile).width(Fill),
-                    button("Add signed PAK").on_press(Message::StartProfileAdd),
-                    button("Verify profile").on_press(Message::StartProfilePlan),
-                ].spacing(8),
-                row![
-                    button("Apply to offline stage").on_press(Message::StartProfileApply),
-                    button("Check batch recovery").on_press(Message::StartProfileStatus),
-                    button("Restore staged profile").on_press(Message::StartProfileRecover),
-                ].spacing(8),
-                text("Profile add uses the signed replacement path, relative PAK target, both public DER keys and basename above. No profile is installed automatically."),
-                text(state.profile_feedback.as_str()).size(13),
-            ].spacing(10).into()
-        }
+        Page::Files => modding_page::view(state),
         Page::Models => {
             let description = if let Some(texture) = &state.texture {
                 format!(
@@ -2846,7 +2904,7 @@ fn view(state: &State) -> Element<'_, Message> {
     } else {
         workspace
     };
-    let show_tools = matches!(page, Page::Files | Page::Models | Page::Levels);
+    let show_tools = matches!(page, Page::Models | Page::Levels);
     let advanced: Element<'_, Message> = if state.show_advanced_tools {
         container(location).into()
     } else {
