@@ -2,17 +2,9 @@
 //! This module is descriptive; it is not evidence that unported actions work.
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnimationPolicy {
     pub embed_verified_animations: bool,
-}
-
-impl Default for AnimationPolicy {
-    fn default() -> Self {
-        Self {
-            embed_verified_animations: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
