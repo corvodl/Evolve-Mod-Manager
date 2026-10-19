@@ -192,6 +192,7 @@ struct State {
     // Latest selected asset while an earlier worker is running. Never replay
     // a stale index after the indexed source folder changes.
     viewer_queued_preview: Option<usize>,
+    viewer_context_index: Option<usize>,
     viewer_collapsed: HashSet<String>,
     viewer_menu: Option<&'static str>,
     viewer_explorer_visible: bool,
@@ -807,6 +808,10 @@ enum Message {
     ViewerPreviousPage,
     ViewerNextPage,
     ViewerSelectFile(usize),
+    ViewerContextFile(usize),
+    ViewerContextClose,
+    ViewerCopySelectedPath,
+    ViewerRevealSelectedFile,
     ModifiersChanged(iced::keyboard::Modifiers),
     ViewerToggleFolder(String),
     ViewerPreviewSelected,
@@ -999,6 +1004,7 @@ fn begin_scan(state: &mut State, source: PathBuf) -> Task<Message> {
         return Task::none();
     }
     state.viewer_queued_preview = None;
+    state.viewer_context_index = None;
     let cancelled = Arc::new(AtomicBool::new(false));
     let indexed = Arc::new(AtomicUsize::new(0));
     let task = launch(
@@ -1008,6 +1014,22 @@ fn begin_scan(state: &mut State, source: PathBuf) -> Task<Message> {
     state.scan_cancel = Some(cancelled);
     state.scan_indexed = Some(indexed);
     task
+}
+
+/// Resolve a selected extracted file without trusting stale indices, links, or
+/// an archive member name that merely resembles a local path.
+fn verified_viewer_file(state: &State) -> Result<PathBuf, String> {
+    let inventory = state.inventory.as_ref().ok_or("No indexed local files")?;
+    let selected = state.selected.ok_or("No file selected")?;
+    let entry = inventory.entries.get(selected).ok_or("Selection is stale")?;
+    let root = std::fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
+    let candidate = PathBuf::from(&inventory.root).join(&entry.relative_path);
+    let metadata = std::fs::symlink_metadata(&candidate).map_err(|e| e.to_string())?;
+    let canonical = std::fs::canonicalize(&candidate).map_err(|e| e.to_string())?;
+    if !metadata.file_type().is_file() || !canonical.starts_with(&root) {
+        return Err("Selected file is not a verified regular file inside the indexed root".into());
+    }
+    Ok(canonical)
 }
 
 fn persist_preferences(state: &mut State) {
@@ -1792,6 +1814,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.zoom = (state.zoom * 1.1f32.powf(amount)).clamp(0.2, 4.0);
         }
         Message::ViewerSearchChanged(filter) => {
+            state.viewer_context_index = None;
             state.viewer_search = filter;
             state.viewer_page = 0;
             refresh_viewer_rows(state);
@@ -1807,6 +1830,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::ViewerSelectFile(index) => {
+            state.viewer_context_index = None;
             let visible: Vec<usize> = state
                 .viewer_rows
                 .iter()
@@ -1861,10 +1885,61 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 );
             }
         }
+        Message::ViewerContextFile(index) => {
+            // Right click selects a file without triggering an expensive decode.
+            if state.inventory.as_ref().and_then(|inv| inv.entries.get(index)).is_none()
+                || !state.viewer_rows.iter().any(|row| row.index == Some(index))
+            {
+                state.viewer_context_index = None;
+                state.status = "Right-click target is no longer in the file explorer.".into();
+                return Task::none();
+            }
+            state.file_selection.click(&[index], index, false, false);
+            state.selected = Some(index);
+            match verified_viewer_file(state) {
+                Ok(path) => {
+                    state.input = path.to_string_lossy().into_owned();
+                    state.viewer_context_index = Some(index);
+                }
+                Err(error) => {
+                    state.viewer_context_index = None;
+                    state.status = error;
+                }
+            }
+        }
+        Message::ViewerContextClose => state.viewer_context_index = None,
+        Message::ViewerCopySelectedPath => match verified_viewer_file(state) {
+            Ok(path) => {
+                state.status = "Selected file path copied to the clipboard.".into();
+                return iced::clipboard::write(path.to_string_lossy().into_owned());
+            }
+            Err(error) => state.status = error,
+        },
+        Message::ViewerRevealSelectedFile => match verified_viewer_file(state) {
+            Ok(path) => {
+                #[cfg(target_os = "windows")]
+                {
+                    let result = std::process::Command::new("explorer.exe")
+                        .arg(format!("/select,{}", path.display()))
+                        .spawn();
+                    state.status = match result {
+                        Ok(_) => "Opened the selected file location in Windows Explorer.".into(),
+                        Err(error) => format!("Could not open Windows Explorer: {error}"),
+                    };
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let _ = path;
+                    state.status = "Show in Explorer is supported on Windows builds.".into();
+                }
+            }
+            Err(error) => state.status = error,
+        },
         Message::ViewerToggleFolder(path) => {
             if !state.viewer_collapsed.insert(path.clone()) {
                 state.viewer_collapsed.remove(&path);
             }
+            state.viewer_context_index = None;
             state.viewer_page = 0;
             refresh_viewer_rows(state);
         }
@@ -4445,6 +4520,42 @@ mod project_edit_tests {
         let _task = update(&mut state, Message::ViewerSelectFile(2));
         assert!(!state.busy);
         assert_eq!(state.file_selection.indices.len(), 3);
+    }
+
+    #[test]
+    fn right_click_opens_file_actions_without_starting_a_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("sample.skin"), b"invalid model").unwrap();
+        let mut state = State {
+            inventory: Some(scan_directory(dir.path()).unwrap()),
+            ..State::default()
+        };
+        refresh_viewer_rows(&mut state);
+        let _ = update(&mut state, Message::ViewerContextFile(0));
+        assert!(!state.busy);
+        assert_eq!(state.selected, Some(0));
+        assert_eq!(state.viewer_context_index, Some(0));
+        assert!(state.input.ends_with("sample.skin"));
+        let _ = update(&mut state, Message::ViewerContextClose);
+        assert_eq!(state.viewer_context_index, None);
+    }
+
+    #[test]
+    fn right_click_never_accepts_unindexed_or_removed_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sample.skin");
+        std::fs::write(&path, b"invalid").unwrap();
+        let mut state = State {
+            inventory: Some(scan_directory(dir.path()).unwrap()),
+            ..State::default()
+        };
+        refresh_viewer_rows(&mut state);
+        let _ = update(&mut state, Message::ViewerContextFile(1234));
+        assert_eq!(state.viewer_context_index, None);
+        std::fs::remove_file(path).unwrap();
+        let _ = update(&mut state, Message::ViewerContextFile(0));
+        assert_eq!(state.viewer_context_index, None);
+        assert!(!state.busy);
     }
 
     #[test]
