@@ -33,9 +33,27 @@ impl OrientationGizmo {
         let center = Point::new(width * 0.5, height * 0.5);
         let mut points = Vec::with_capacity(6);
         for (letter, axis, positive, negative, color) in [
-            ("X", [1.0, 0.0, 0.0], "Right", "Left", Color::from_rgb8(222, 108, 114)),
-            ("Y", [0.0, 1.0, 0.0], "Back", "Front", Color::from_rgb8(117, 195, 132)),
-            ("Z", [0.0, 0.0, 1.0], "Top", "Bottom", Color::from_rgb8(106, 168, 228)),
+            (
+                "X",
+                [1.0, 0.0, 0.0],
+                "Right",
+                "Left",
+                Color::from_rgb8(222, 108, 114),
+            ),
+            (
+                "Y",
+                [0.0, 1.0, 0.0],
+                "Back",
+                "Front",
+                Color::from_rgb8(117, 195, 132),
+            ),
+            (
+                "Z",
+                [0.0, 0.0, 1.0],
+                "Top",
+                "Bottom",
+                Color::from_rgb8(106, 168, 228),
+            ),
         ] {
             for direction in [-1.0, 1.0] {
                 let [x, y, z] = axis.map(|part| part * direction);
@@ -46,10 +64,7 @@ impl OrientationGizmo {
                     depth,
                     letter: if direction > 0.0 { letter } else { "" },
                     color,
-                    point: Point::new(
-                        center.x + horizontal * 33.0,
-                        center.y - vertical * 33.0,
-                    ),
+                    point: Point::new(center.x + horizontal * 33.0, center.y - vertical * 33.0),
                     preset: if direction > 0.0 { positive } else { negative },
                 });
             }
@@ -99,26 +114,43 @@ impl canvas::Program<super::Message> for OrientationGizmo {
                 state.last = Some(position);
                 let dx = position.x - last.x;
                 let dy = position.y - last.y;
-                if !dx.is_finite() || !dy.is_finite() { return Some(canvas::Action::capture()); }
-                if dx.abs() + dy.abs() < 0.001 { return Some(canvas::Action::capture()); }
-                if dx.abs() + dy.abs() >= 2.0 { state.moved = true; }
+                if !dx.is_finite() || !dy.is_finite() {
+                    return Some(canvas::Action::capture());
+                }
+                if dx.abs() + dy.abs() < 0.001 {
+                    return Some(canvas::Action::capture());
+                }
+                if dx.abs() + dy.abs() >= 2.0 {
+                    state.moved = true;
+                }
                 if state.moved {
-                    Some(canvas::Action::publish(
-                        super::Message::ViewerOrbitDelta(dx * 0.55, dy * 0.45)
-                    ).and_capture())
+                    Some(
+                        canvas::Action::publish(super::Message::ViewerOrbitDelta(
+                            dx * 0.55,
+                            dy * 0.45,
+                        ))
+                        .and_capture(),
+                    )
                 } else {
                     Some(canvas::Action::capture())
                 }
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                if state.last.take().is_none() { return None; }
-                let target = if state.moved { None } else { state.target.take() };
+                if state.last.take().is_none() {
+                    return None;
+                }
+                let target = if state.moved {
+                    None
+                } else {
+                    state.target.take()
+                };
                 state.target = None;
                 state.moved = false;
                 Some(match target {
-                    Some(preset) => canvas::Action::publish(
-                        super::Message::ViewerCameraPreset(preset)
-                    ).and_capture(),
+                    Some(preset) => {
+                        canvas::Action::publish(super::Message::ViewerCameraPreset(preset))
+                            .and_capture()
+                    }
                     None => canvas::Action::capture(),
                 })
             }
@@ -158,7 +190,10 @@ impl canvas::Program<super::Message> for OrientationGizmo {
             let color = if front {
                 axis.color
             } else {
-                Color { a: 0.48, ..axis.color }
+                Color {
+                    a: 0.48,
+                    ..axis.color
+                }
             };
             let line = Path::new(|path| {
                 path.move_to(center);
@@ -166,7 +201,9 @@ impl canvas::Program<super::Message> for OrientationGizmo {
             });
             frame.stroke(
                 &line,
-                Stroke::default().with_color(color).with_width(if front { 2.0 } else { 1.0 }),
+                Stroke::default()
+                    .with_color(color)
+                    .with_width(if front { 2.0 } else { 1.0 }),
             );
             frame.fill(
                 &Path::circle(axis.point, if front { 11.0 } else { 6.0 }),
@@ -177,7 +214,11 @@ impl canvas::Program<super::Message> for OrientationGizmo {
                     content: axis.letter.into(),
                     position: Point::new(axis.point.x - 4.5, axis.point.y - 8.0),
                     size: iced::Pixels(13.0),
-                    color: if front { Color::WHITE } else { Color::from_rgb8(195, 198, 210) },
+                    color: if front {
+                        Color::WHITE
+                    } else {
+                        Color::from_rgb8(195, 198, 210)
+                    },
                     ..Default::default()
                 });
             }
@@ -191,15 +232,39 @@ mod tests {
     use super::*;
     #[test]
     fn gizmo_signed_axes_follow_private_camera_presets() {
-        let view = OrientationGizmo { yaw: 0.0, pitch: 0.0 };
+        let view = OrientationGizmo {
+            yaw: 0.0,
+            pitch: 0.0,
+        };
         assert_eq!(view.axes(112.0, 112.0).len(), 6);
-        assert_eq!(view.target(Point::new(89.0, 56.0), Rectangle {
-            x: 0.0, y: 0.0, width: 112.0, height: 112.0
-        }), Some("Right"));
-        let rotated = OrientationGizmo { yaw: 90.0, pitch: 0.0 };
+        assert_eq!(
+            view.target(
+                Point::new(89.0, 56.0),
+                Rectangle {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 112.0,
+                    height: 112.0
+                }
+            ),
+            Some("Right")
+        );
+        let rotated = OrientationGizmo {
+            yaw: 90.0,
+            pitch: 0.0,
+        };
         assert_ne!(
-            view.axes(112.0, 112.0).iter().find(|axis| axis.preset == "Right").unwrap().point,
-            rotated.axes(112.0, 112.0).iter().find(|axis| axis.preset == "Right").unwrap().point
+            view.axes(112.0, 112.0)
+                .iter()
+                .find(|axis| axis.preset == "Right")
+                .unwrap()
+                .point,
+            rotated
+                .axes(112.0, 112.0)
+                .iter()
+                .find(|axis| axis.preset == "Right")
+                .unwrap()
+                .point
         );
     }
 }
