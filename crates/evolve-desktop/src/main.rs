@@ -565,11 +565,13 @@ fn view(state: &State) -> Element<'_, Message> {
                     scene.objects.len(),scene.diagnostics.len())
             }else{"No placement source inspected.".into()}),
             if let Some(mesh)=&state.model {
-                canvas(MeshViewport{
+                let viewport: Element<'_, Message> = canvas(MeshViewport{
                     mesh:mesh.clone(), yaw:state.yaw, pitch:state.pitch, zoom:state.zoom.max(0.2),
-                }).width(Fill).height(Length::Fixed(400.)).into()
+                }).width(Fill).height(Length::Fixed(400.)).into();
+                viewport
             }else{
-                text("Load an original source heightmap to see terrain triangles.").into()
+                let fallback: Element<'_, Message> = text("Load an original source heightmap to see terrain triangles.").into();
+                fallback
             },
             row![
                 text("Yaw"),
