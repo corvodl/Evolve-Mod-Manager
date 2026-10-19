@@ -10,15 +10,16 @@ mod updater;
 mod viewport;
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssetEntry, AssetResolution, BatchJournal, CdfDefinition,
-    CdfDependencyReport, ConvertedMotion, DdsInfo, ImportedLibrary, ImportedPak, Inventory, LevelScene, MaterialReport,
-    ModProfile, ModelInfo, NativeCafMotion, PakInventory, ProfileCatalog, ProfileMod, ProfilePlan,
-    RenderMesh, RigReport, SignedPakInfo, StageTransaction, TerrainInfo, add_mod_to_profile,
-    apply_profile_stage, apply_stage_pak, batch_stage_status, convert_glb_to_fbx,
-    convert_original_motion, create_mod_profile, decode_dds_rgba, export_dds_png,
-    export_level_scene_glb, export_rigged_character_fbx, export_rigged_character_glb,
-    extract_legacy_pak, extract_signed_pak, import_stage_pak, initialize_stage, inspect_dds,
-    imported_archive_files, imported_library, inspect_legacy_pak, inspect_signed_pak, list_mod_profiles, load_level_scene, plan_mod_profile,
-    read_cdf, read_material, read_model, read_native_caf, read_terrain, rebuild_legacy_pak,
+    CdfDependencyReport, ConvertedMotion, DdsInfo, ImportedLibrary, ImportedPak, Inventory,
+    LevelScene, MaterialReport, ModProfile, ModelInfo, NativeCafMotion, PakInventory,
+    ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo,
+    StageTransaction, TerrainInfo, add_mod_to_profile, apply_profile_stage, apply_stage_pak,
+    batch_stage_status, convert_glb_to_fbx, convert_original_motion, create_mod_profile,
+    decode_dds_rgba, export_dds_png, export_level_scene_glb, export_rigged_character_fbx,
+    export_rigged_character_glb, extract_legacy_pak, extract_signed_pak, import_stage_pak,
+    imported_archive_files, imported_library, initialize_stage, inspect_dds, inspect_legacy_pak,
+    inspect_signed_pak, list_mod_profiles, load_level_scene, plan_mod_profile, read_cdf,
+    read_material, read_model, read_native_caf, read_terrain, rebuild_legacy_pak,
     rebuild_signed_pak_entry, resolve_cdf, resolve_materials, restore_profile_stage, restore_stage,
     scan_directory, stage_status,
 };
@@ -675,11 +676,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::Navigate(page) => {
             state.page = Some(page);
-            if page == Page::AssetLibrary && state.library_catalog.is_none()
+            if page == Page::AssetLibrary
+                && state.library_catalog.is_none()
                 && !state.library_root.trim().is_empty()
             {
                 return launch(
-                    state, Operation::LoadImportedLibrary(PathBuf::from(&state.library_root))
+                    state,
+                    Operation::LoadImportedLibrary(PathBuf::from(&state.library_root)),
                 );
             }
         }
@@ -705,26 +708,33 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LibraryRefresh => {
             if state.library_root.trim().is_empty() {
-                state.status = "Choose an existing AssetLibrary folder to browse imported PAKs.".into();
+                state.status =
+                    "Choose an existing AssetLibrary folder to browse imported PAKs.".into();
                 state.library_show_configuration = true;
                 return Task::none();
             }
-            return launch(state, Operation::LoadImportedLibrary(PathBuf::from(&state.library_root)));
+            return launch(
+                state,
+                Operation::LoadImportedLibrary(PathBuf::from(&state.library_root)),
+            );
         }
         Message::LibrarySetByBuild(value) => {
             state.library_by_build = value;
             state.library_page = 0;
         }
         Message::LibraryNextBuild => {
-            if let Some(catalog) = &state.library_catalog && !catalog.builds.is_empty() {
-                state.library_build_index =
-                    (state.library_build_index + 1) % catalog.builds.len();
+            if let Some(catalog) = &state.library_catalog
+                && !catalog.builds.is_empty()
+            {
+                state.library_build_index = (state.library_build_index + 1) % catalog.builds.len();
                 state.library_selected = None;
                 state.library_page = 0;
             }
         }
         Message::LibrarySelect(index) => {
-            if state.library_catalog.as_ref()
+            if state
+                .library_catalog
+                .as_ref()
                 .is_some_and(|catalog| index < catalog.archives.len())
             {
                 state.library_selected = Some(index);
@@ -737,7 +747,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.library_page = state.library_page.saturating_add(1);
         }
         Message::LibraryPreview => {
-            let Some(pak) = state.library_selected
+            let Some(pak) = state
+                .library_selected
                 .and_then(|index| state.library_catalog.as_ref()?.archives.get(index))
                 .cloned()
             else {
@@ -745,7 +756,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             };
             return launch(state, Operation::OpenImportedPak(pak));
-        },
+        }
         Message::ToggleAdvancedTools => state.show_advanced_tools = !state.show_advanced_tools,
         Message::ToggleActivity => state.show_activity = !state.show_activity,
         Message::DeveloperPasswordChanged(value) => {
@@ -2537,10 +2548,7 @@ fn view(state: &State) -> Element<'_, Message> {
     } else {
         workspace
     };
-    let show_tools = matches!(
-        page,
-        Page::Files | Page::Models | Page::Levels
-    );
+    let show_tools = matches!(page, Page::Files | Page::Models | Page::Levels);
     let advanced: Element<'_, Message> = if state.show_advanced_tools {
         container(location).into()
     } else {
@@ -2699,7 +2707,8 @@ impl Desktop {
                 }
             }
             message => {
-                let opens_model = matches!(&message,
+                let opens_model = matches!(
+                    &message,
                     Message::Finished(Ok(Completed::Model(_) | Completed::ImportedPakFiles(_)))
                 );
                 let launched_from_library = self.state.page == Some(Page::AssetLibrary);
