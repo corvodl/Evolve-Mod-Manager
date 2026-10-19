@@ -45,6 +45,14 @@ Do not convert an internal Rust prototype into a public production release just 
 - **Levels**: Heightmap.dat terrain decoding, mission/LYR hierarchy and transforms, non-destructive edits, geometry-scene GLB and Blender FBX bridge exposed in Iced. Full material/geometry dependency assembly, normal maps and real-map scene parity remain unported.
 - **Public output**: no user-owned game files, keys, private repository history, secrets or proprietary assets should be committed. Public release tag 1.0 must be gated by full actual parity.
 
+## Asset Library visual parity: persistent imported archive browser
+
+- Split Asset Library and Modding into separate Iced pages. Archive rebuilding, signing keys, isolated staging and mod profiles are **not** displayed in the read-only Asset Library; they remain on Modding.
+- The Asset Library now follows the established page structure: File/View/Tools strip, Import PAKs and Refresh actions, All Assets / By Build tabs, search and snapshot filter, a five-column Dependency Group / Folder / Description / File / Extracted table, selection, footer totals and Preview Files.
+- The viewer reads existing `Data/AssetLibrary/*/asset-library.json` manifests and `build-collections.json` read-only, with a bounded background indexer and fixed-size table pages. It can auto-detect the established Windows per-user Asset Library folder. No PAK decryption or permanent content import is silently triggered.
+- Preview Files verifies that each manifest-listed file still resides in its imported archive folder with its expected length, then opens the established separate native Asset Viewer window; original library files stay protected.
+- **Still unfinished:** a new-PAK import wizard that generates permanent library manifests, full browse-by-build management, large-list virtualization, editable project copy workflow and source-hash audit on every preview. The Import PAKs control currently exposes the library-folder setup/help panel; it must not be reported as an implemented source archive importer. The Edit / Add to Mod Project action stays disabled until copy-on-write project creation is supported.
+
 ## Desktop GUI parity — private manager reference
 
 - The private v1.3.5 manager is the design reference: dark charcoal surfaces, compact red-accent icon rail, top breadcrumb, Home hero/status dashboard, Instructions, Asset Library, Modding, What's New, Credits and password-gated Developer. Bottom rail is Play with Mods, Play without Mods and Settings. Playback shortcuts deliberately remain disabled until the installed-game launch and recovery implementation is verified.
