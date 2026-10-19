@@ -3,6 +3,7 @@
 mod asset_library_page;
 mod asset_viewer;
 mod developer_auth;
+mod level_workspace;
 mod private_pages;
 mod settings;
 mod textured;
@@ -188,6 +189,9 @@ struct State {
     playback_speed: f32,
     playback_loop: bool,
     viewer_wireframe: bool,
+    level_filter: String,
+    level_selected: Option<usize>,
+    level_zoom: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -585,6 +589,9 @@ enum Message {
     PlaybackSpeedChanged(f32),
     PlaybackLoopChanged,
     ViewerToggleWireframe,
+    LevelSelect(usize),
+    LevelFilterChanged(String),
+    LevelZoomChanged(f32),
     ToggleAdvancedTools,
     ToggleActivity,
     DeveloperPasswordChanged(String),
@@ -904,6 +911,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::PlaybackSpeedChanged(value) => state.playback_speed = value.clamp(0.1, 3.0),
         Message::PlaybackLoopChanged => state.playback_loop = !state.playback_loop,
         Message::ViewerToggleWireframe => state.viewer_wireframe = !state.viewer_wireframe,
+        Message::LevelSelect(index) => {
+            if state.level_scene.as_ref()
+                .is_some_and(|scene| index < scene.objects.len())
+            {
+                state.level_selected = Some(index);
+            }
+        }
+        Message::LevelFilterChanged(value) => state.level_filter = value,
+        Message::LevelZoomChanged(value) => state.level_zoom = value.clamp(0.3, 3.0),
         Message::ViewerSaveLayout => {
             state.preferences.viewer_split = state.viewer_split;
             state.preferences.viewer_show_inspector = state.viewer_show_inspector;
@@ -1972,6 +1988,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         scene.diagnostics.len()
                     );
                     state.level_scene = Some(scene);
+                    state.level_selected = None;
+                    state.level_zoom = 1.0;
                     state.page = Some(Page::Levels);
                 }
                 Ok(Completed::SignedPak(info)) => {
@@ -2607,6 +2625,7 @@ fn view(state: &State) -> Element<'_, Message> {
         }
         Page::Levels => column![
             text("Level source preview").size(19),
+            level_workspace::view(state),
             text("Read Level/LYR or Heightmap.dat without touching installed game assets."),
             row![
                 button("Read level placements").on_press(Message::StartLevelInspection),
@@ -2768,6 +2787,7 @@ fn initial_state() -> State {
         zoom: 1.0,
         playback_speed: 1.0,
         viewer_split: 0.67,
+        level_zoom: 1.0,
         viewer_explorer_visible: true,
         ..State::default()
     };
