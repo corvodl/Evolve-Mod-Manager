@@ -89,7 +89,7 @@ pub fn inspect(game_path: &str, stage_path: &str, projects_path: &str) -> Snapsh
             "Firewall query returned rule information; review Windows Firewall for exact policy"
                 .into()
         };
-        return Snapshot {
+        Snapshot {
             firewall,
             game_process,
             environment,
