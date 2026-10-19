@@ -1471,7 +1471,10 @@ fn view(state: &State) -> Element<'_, Message> {
 }
 
 fn initial_state() -> State {
-    let mut result = State { zoom: 1.0, ..State::default() };
+    let mut result = State {
+        zoom: 1.0,
+        ..State::default()
+    };
     if let Ok(path) = settings_path() {
         match load_from(&path) {
             Ok(saved) => {
