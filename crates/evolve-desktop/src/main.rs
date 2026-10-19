@@ -3949,7 +3949,11 @@ impl Desktop {
                 let finished = matches!(&message, Message::Finished(_));
                 let opens_model = matches!(
                     &message,
-                    Message::Finished(Ok(Completed::Model(_) | Completed::ImportedPakFiles(_)))
+                    Message::Finished(Ok(
+                        Completed::Model(_)
+                            | Completed::StaticCharacter(_, _)
+                            | Completed::ImportedPakFiles(_)
+                    ))
                 ) || project_scan_done;
                 let launched_from_library = self.state.page == Some(Page::AssetLibrary);
                 let before = self.state.status.clone();
