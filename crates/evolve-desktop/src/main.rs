@@ -14,6 +14,8 @@ mod modding_projects;
 mod private_pages;
 mod selection;
 mod settings;
+mod settings_page;
+mod storage_usage;
 mod system_health;
 mod textured;
 mod updater;
@@ -184,6 +186,9 @@ struct State {
     busy: bool,
     preferences: Preferences,
     settings_status: String,
+    settings_advanced_paths: bool,
+    storage_analyzing: bool,
+    storage_usage: Option<storage_usage::StorageUsage>,
     update_status: String,
     available_update: Option<ReleaseUpdate>,
     staged_installer: Option<PathBuf>,
@@ -274,6 +279,7 @@ enum Operation {
     CompareAssets(PathBuf, PathBuf),
     Scan(PathBuf, Arc<AtomicBool>, Arc<AtomicUsize>),
     InspectPak(PathBuf),
+    AnalyzeStorage(PathBuf, PathBuf, PathBuf, PathBuf, PathBuf),
     InspectDds(PathBuf),
     LoadDiffuse(PathBuf, SharedCache),
     LoadNormal(PathBuf, SharedCache),
@@ -347,6 +353,7 @@ enum Completed {
     Inventory(Inventory),
     Pak(PakInventory),
     Texture(DdsInfo),
+    StorageAnalyzed(storage_usage::StorageUsage),
     Diffuse(DdsInfo, Arc<::image::RgbaImage>),
     Normal(DdsInfo, Arc<::image::RgbaImage>),
     Emissive(DdsInfo, Arc<::image::RgbaImage>),
@@ -433,6 +440,10 @@ impl Operation {
                 .map(Completed::ImportedLibrary)
                 .map_err(|e| e.to_string()),
             Self::ImportSignedLibrary(root, source, key) => {
+                // Import is explicitly requested; don't create any directory while browsing.
+                if !root.exists() {
+                    std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+                }
                 let report = import_signed_library_pak(&root, &source, &key)?;
                 let catalog = imported_library(&root).map_err(|e| e.to_string())?;
                 Ok(Completed::ImportedSignedLibrary(report, catalog))
@@ -455,6 +466,9 @@ impl Operation {
                 scan_directory_with_progress(&source, &cancelled, &indexed)
                     .map(Completed::Inventory)
                     .map_err(|e| e.to_string())
+            }
+            Self::AnalyzeStorage(data, games, stage, projects, library) => {
+                Ok(Completed::StorageAnalyzed(storage_usage::analyze(&data, &games, &stage, &projects, &library)))
             }
             Self::InspectPak(source) => inspect_legacy_pak(&source)
                 .map(Completed::Pak)
@@ -944,6 +958,9 @@ enum Message {
     PreferenceExperimental,
     PreferenceAutoUpdates,
     PreferenceStage(String),
+    PreferenceGameStorage(String),
+    SettingsToggleAdvancedPaths,
+    SettingsAnalyzeStorage,
     PreferenceSwap(String),
     PreferenceProjects(String),
     PreferenceAssets(String),
@@ -1199,14 +1216,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     ),
                 );
             }
-            if page == Page::AssetLibrary
-                && state.library_catalog.is_none()
-                && !state.library_root.trim().is_empty()
-            {
-                return launch(
-                    state,
-                    Operation::LoadImportedLibrary(PathBuf::from(&state.library_root)),
-                );
+            if page == Page::AssetLibrary && state.library_catalog.is_none() {
+                let root = PathBuf::from(&state.library_root);
+                if root.is_dir() {
+                    return launch(state, Operation::LoadImportedLibrary(root));
+                }
+                state.status = "Asset Library is ready at the detected manager data location. Import a local signed PAK to populate it.".into();
             }
         }
         Message::ModdingMenu(menu) => {
@@ -1461,11 +1476,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.library_import_source = path;
         }
         Message::LibraryImportStart => {
-            if state.library_root.trim().is_empty() || state.library_import_source.trim().is_empty()
+            if state.library_import_source.trim().is_empty()
             {
                 state.status =
-                    "Specify an existing AssetLibrary directory and signed Stage 2 PAK file first."
-                        .into();
+                    "Select a local signed Stage 2 PAK to import. The Asset Library location is detected automatically.".into();
                 state.library_show_configuration = true;
                 return Task::none();
             }
@@ -1509,10 +1523,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.library_show_configuration = !state.library_show_configuration;
         }
         Message::LibraryRefresh => {
-            if state.library_root.trim().is_empty() {
-                state.status =
-                    "Choose an existing AssetLibrary folder to browse imported PAKs.".into();
-                state.library_show_configuration = true;
+            if !PathBuf::from(&state.library_root).is_dir() {
+                state.library_catalog = None;
+                state.library_selection.clear();
+                state.library_selected = None;
+                state.library_page = 0;
+                refresh_library_matches(state);
+                state.status = "No imported PAKs at the detected Asset Library location. Use Import PAKs to add one.".into();
                 return Task::none();
             }
             return launch(
@@ -2234,6 +2251,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.preferences.automatic_update_checks = !state.preferences.automatic_update_checks;
             persist_preferences(state);
         }
+        Message::SettingsToggleAdvancedPaths => state.settings_advanced_paths = !state.settings_advanced_paths,
+        Message::PreferenceGameStorage(value) => {
+            state.preferences.game_storage_root = value;
+            state.storage_usage = None;
+        }
+        Message::SettingsAnalyzeStorage => {
+            if state.busy || state.storage_analyzing { return Task::none(); }
+            let games = PathBuf::from(&state.preferences.game_storage_root);
+            let data = games.parent().map(PathBuf::from).unwrap_or_else(|| games.clone());
+            let stage = PathBuf::from(&state.preferences.stage);
+            let projects = PathBuf::from(&state.preferences.projects);
+            let library = PathBuf::from(&state.library_root);
+            state.storage_analyzing = true;
+            return launch(state, Operation::AnalyzeStorage(data, games, stage, projects, library));
+        }
         Message::PreferenceStage(value) => {
             state.preferences.stage = value;
             state.modding_projects = None;
@@ -2245,6 +2277,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::PreferenceAssets(value) => {
             state.library_root = value.clone();
+            state.storage_usage = None;
             state.library_catalog = None;
             state.library_selected = None;
             state.preferences.asset_library_root = value;
@@ -2995,9 +3028,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::Finished(result) => {
             state.busy = false;
+            state.storage_analyzing = false;
             state.scan_cancel = None;
             state.scan_indexed = None;
             match result {
+                Ok(Completed::StorageAnalyzed(usage)) => {
+                    state.status = format!("Read-only storage analysis complete: {} files checked.", usage.files);
+                    state.storage_usage = Some(usage);
+                }
                 Ok(Completed::Dependencies(graph)) => {
                     state.status = format!(
                         "Dependency graph: {} explicit links, {} missing, {} ambiguous.",
@@ -4167,52 +4205,7 @@ fn view(state: &State) -> Element<'_, Message> {
                 .on_input(Message::BlenderChanged),
             text("GLB/FBX includes verified mesh instances and optional terrain. Texture/material, compiled vegetation, scripting and full map fidelity remain gated."),
         ].spacing(14).into(),
-        Page::Settings => column![
-            text("Settings").size(23),
-            text("UPDATES").size(18),
-            text(format!("Installed version: {}. Downloads require a verified public release.",env!("CARGO_PKG_VERSION"))),
-            button("Check for Updates").on_press(Message::CheckUpdates),
-            text(state.update_status.as_str()),
-            download_action(state),
-            run_installer_action(state),
-            button(text(format!("Experimental update channel: {}", if state.preferences.experimental_updates {"Enabled"} else {"Disabled"})))
-                .on_press(Message::PreferenceExperimental),
-            button(text(format!("Automatic update checks: {}", if state.preferences.automatic_update_checks {"Enabled"} else {"Disabled"})))
-                .on_press(Message::PreferenceAutoUpdates),
-            text("GENERAL & APPEARANCE").size(18),
-            row![
-                button(text(format!("Appearance: {}",state.preferences.appearance_mode))).on_press(Message::PreferenceAppearance),
-                button(text(format!("Density: {}",state.preferences.ui_density))).on_press(Message::PreferenceDensity),
-                button(text(format!("Explorer side: {}",state.preferences.file_explorer_side))).on_press(Message::PreferenceExplorerSide),
-            ].spacing(9),
-            button(text(format!("Reduce menu animation: {}",state.preferences.reduce_motion)))
-                .on_press(Message::PreferenceReduceMotion),
-            text("Theme color overrides, presets and font preference persist in settings.json; dedicated pickers are planned."),
-            text("GAME STORAGE").size(18),
-            text_input("Staging folder", &state.preferences.stage)
-                .on_input(Message::PreferenceStage),
-            text_input("Swap / restoration journal folder", &state.preferences.swap)
-                .on_input(Message::PreferenceSwap),
-            text_input("Projects folder", &state.preferences.projects)
-                .on_input(Message::PreferenceProjects),
-            text_input("Asset Library folder", &state.preferences.asset_library_root)
-                .on_input(Message::PreferenceAssets),
-            text("BLENDER INTEGRATION").size(18),
-            text_input("Blender executable", &state.preferences.blender_executable)
-                .on_input(Message::PreferenceBlender),
-            text("BACKUPS & RECOVERY").size(18),
-            button(text(format!("Keep permanent original snapshots: {}",state.preferences.keep_original_snapshots)))
-                .on_press(Message::PreferenceSnapshots),
-            text("Recovery snapshots are a preference, not an indication that the Rust mod swap is implemented yet."),
-            text("LAUNCH PREFERENCES").size(18),
-            button(text(format!("Open activity log during tasks: {}",state.preferences.show_activity_on_tasks)))
-                .on_press(Message::PreferenceActivity),
-            text("ADVANCED & MAINTENANCE").size(18),
-            text_input("Current workspace",&state.preferences.current_workspace)
-                .on_input(Message::PreferenceWorkspace),
-            button("Save Settings").on_press(Message::SavePreferences),
-            text(state.settings_status.as_str()).size(13),
-        ].spacing(12).into(),
+        Page::Settings => settings_page::view(state),
     };
 
     let workspace: Element<'_, Message> = if page == Page::Settings || page == Page::Files {
@@ -4311,18 +4304,21 @@ fn initial_state() -> State {
             }
         }
     }
-    if result.preferences.asset_library_root.trim().is_empty()
-        && let Ok(settings) = settings_path()
-        && let Some(parent) = settings.parent()
-    {
-        // The established manager stores persistent imported PAK manifests here.
-        // Prefer its existing library without decrypting or copying originals.
-        let existing = parent.join("Data").join("AssetLibrary");
-        if existing.is_dir() {
-            result.preferences.asset_library_root = existing.to_string_lossy().into_owned();
+    if let Ok(file) = settings_path() {
+        if let Ok(location) = settings::library_directory(&file, &result.preferences.asset_library_root) {
+            result.preferences.asset_library_root = location.to_string_lossy().into_owned();
+        }
+        if let Ok(location) = settings::game_storage_directory(&file, &result.preferences.game_storage_root) {
+            result.preferences.game_storage_root = location.to_string_lossy().into_owned();
+        }
+        if result.preferences.projects.trim().is_empty() {
+            if let Some(parent) = file.parent() {
+                result.preferences.projects = parent.join("Data").join("Projects").to_string_lossy().into_owned();
+            }
         }
     }
     result.library_root = result.preferences.asset_library_root.clone();
+    result.assets_root = result.library_root.clone();
     if let Ok(executable) = std::env::current_exe()
         && let Some(parent) = executable.parent()
     {
