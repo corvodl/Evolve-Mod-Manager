@@ -56,11 +56,11 @@ pub use inventory::{
     scan_directory_with_progress, write_inventory_json,
 };
 pub use level_export::{LevelExportError, LevelExportReport, export_level_scene_glb};
-pub use library_import::{LibraryImportReport, import_signed_library_pak};
 pub use library_catalog::{
     ImportedLibrary, ImportedPak, LibraryError, describe_archive, imported_archive_files,
     imported_library,
 };
+pub use library_import::{LibraryImportReport, import_signed_library_pak};
 pub use model::{
     ModelError, ModelInfo, RenderMesh, export_model_obj, parse_model_bytes, read_model,
 };
