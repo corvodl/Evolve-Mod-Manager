@@ -13,7 +13,7 @@ Independent Windows desktop modding toolkit rewrite using **Rust**, **Iced 0.14*
 - **CDF XML character-definition inspection**, retaining explicit skeleton, CA_SKIN/CA_SKIN_UNIQUE attachments, and skin-set references. An ambiguity-aware asset resolver refuses to guess among duplicate workspace references.
 - Off-thread filesystem operations in the GUI, Rust unit tests, and Linux + Windows CI checks.
 
-**Experimental modules on this branch:** signed Stage 2 PAK RSA-PSS verification, Twofish decrypt/extract, and single-member rebuilding with user-provided custom keys; isolated PAK staging with verified import, undo journal and recovery; CryTek/CrChF geometry with preserved UV0 and strict single-mesh rig checks; explicit source DDS diffuse/normal/emissive preview through wgpu; exact CDF dependency resolution; native CAF sampling and converter-backed DBA/GLB clips; Blender GLB-to-FBX conversion (verified animations **OFF by default**); Level Editor terrain/LYR geometry assembly and Blender GLB/FBX output. Real-game validation is still required.
+**Experimental modules on this branch:** signed Stage 2 PAK RSA-PSS verification, Twofish decrypt/extract, and single-member rebuilding with user-provided custom keys; isolated single-PAK and recoverable multi-PAK profile staging, integrity-checked backup journals and recovery; CryTek/CrChF geometry with preserved UV0 and strict single-mesh rig checks; authored CryEngine .mtl texture mapping to highest-resolution DDS with ambiguous-reference diagnostics and source diffuse/normal/emissive preview through wgpu; exact CDF dependency resolution; native CAF sampling and converter-backed DBA/GLB clips; Blender GLB-to-FBX conversion (verified animations **OFF by default**); Level Editor terrain/LYR geometry assembly and Blender GLB/FBX output. Real-game validation is still required.
 
 **Not yet at feature parity:** installed-game mod injection/rollback and multi-mod profiles, complete CDF hunter/monster assemblies and validated FBX skeleton/UV/material fidelity, automatic MTL resolution, skinned GPU playback, native DBA decoding/layering, complete textured Blender level scenes, GFX editor, and real-game updater/installer validation. Signed-PAK operations remain offline with independently supplied keys; synthetic success is not proof that the game will load a rewritten archive. This preview is **not** a replacement for the current production manager.
 
@@ -47,6 +47,7 @@ cargo run -p evolve-core --bin evolve-cli -- pak rebuild "C:\Archives\Legacy.pak
 cargo run -p evolve-core --bin evolve-cli -- dds info "C:\Assets\body.dds.0"
 cargo run -p evolve-core --bin evolve-cli -- dds png "C:\Assets\body.dds.0" "C:\Exports\body.png"
 cargo run -p evolve-core --bin evolve-cli -- cdf inspect "C:\Assets\character.cdf" "character-info.json"
+cargo run -p evolve-core --bin evolve-cli -- material resolve "C:\\Assets\\monster.mtl" "C:\\Assets" "material-references.json"
 cargo run -p evolve-core --bin evolve-cli -- cdf resolve "C:\Assets\character.cdf" "C:\Assets" "character-dependencies.json"
 cargo run -p evolve-core --bin evolve-cli -- model glb "C:\Assets\model.cgf" "C:\Exports\model.glb"
 cargo run -p evolve-core --bin evolve-cli -- terrain obj "C:\Assets\Heightmap.dat" "C:\Exports\terrain.obj"
@@ -61,7 +62,7 @@ cargo run -p evolve-core --bin evolve-cli -- stage status "C:\Exports\NewOffline
 cargo run -p evolve-core --bin evolve-cli -- fbx export "C:\Exports\verified.glb" "C:\Program Files\Blender Foundation\Blender 4.2\blender.exe" "C:\Exports\body.fbx"
 ```
 
-Extraction output must be an **absent folder**; PNG and JSON outputs must be **new files**. Rebuilds refuse existing outputs. Signed Stage 2 rebuilding and staging are limited experimental offline workflows with user-provided RSA keys: there is no installed-game swap or automatic profile manager. Never use the installed game directory as the isolated stage, and restore any pending journal before applying another replacement.
+Extraction output must be an **absent folder**; PNG and JSON outputs must be **new files**. Rebuilds refuse existing outputs. Signed Stage 2 rebuilding and staging are limited experimental offline workflows with user-provided RSA keys: the signed profile catalog and batch offline stage are experimental, with no installed-game swap. Never use the installed game directory as the isolated stage, and restore any pending journal before applying another replacement.
 
 ## Public release policy
 
