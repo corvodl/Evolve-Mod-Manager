@@ -74,7 +74,11 @@ pub(crate) fn digest(path: &Path) -> Result<String, StageError> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-pub(crate) fn copy_checked(source: &Path, destination: &Path, expected: &str) -> Result<(), StageError> {
+pub(crate) fn copy_checked(
+    source: &Path,
+    destination: &Path,
+    expected: &str,
+) -> Result<(), StageError> {
     ordinary(source)?;
     let mut input = File::open(source)?;
     let mut output = OpenOptions::new()
@@ -122,7 +126,11 @@ pub(crate) fn target_name(raw: &str) -> Result<String, StageError> {
     Ok(clean)
 }
 
-pub(crate) fn stage_target(root: &Path, name: &str, create_parent: bool) -> Result<PathBuf, StageError> {
+pub(crate) fn stage_target(
+    root: &Path,
+    name: &str,
+    create_parent: bool,
+) -> Result<PathBuf, StageError> {
     let mut path = root.join("paks");
     let pieces = name.split('/').collect::<Vec<_>>();
     for component in &pieces[..pieces.len() - 1] {
