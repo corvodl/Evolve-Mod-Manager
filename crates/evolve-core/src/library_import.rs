@@ -24,6 +24,21 @@ pub struct LibraryImportReport {
     pub already_imported: bool,
 }
 
+/// Results of an explicitly requested bounded multi-PAK import. Each archive
+/// is independently verified and published; a failed archive cannot overwrite
+/// a previous import. Partial success is always reported to the caller.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LibraryBatchImportReport {
+    pub imported: Vec<LibraryImportReport>,
+    pub failed: Vec<LibraryImportFailure>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LibraryImportFailure {
+    pub archive: String,
+    pub reason: String,
+}
+
 /// Only the exact original archive basename and SHA-256 establish the ID.
 /// Never put an absolute path, username, or a signing key in the directory name.
 fn archive_id(name: &str, source_sha: &str) -> String {
@@ -272,9 +287,130 @@ pub fn import_signed_library_pak(
     })
 }
 
+/// Import one user-selected PAK, or the direct .pak children of one folder.
+///
+/// Directory selection does not recurse, follow symlinks, or silently treat
+/// unrelated files as archives. At most 64 signed archives are attempted per
+/// explicit request. An individual bad signature is reported without hiding
+/// any successful, independently verified imports.
+pub fn import_signed_library_selection(
+    root: &Path,
+    source: &Path,
+    public_key: &Path,
+) -> Result<LibraryBatchImportReport, String> {
+    let source_meta = fs::symlink_metadata(source).map_err(|e| e.to_string())?;
+    if source_meta.file_type().is_file() {
+        return import_signed_library_pak(root, source, public_key).map(|report| {
+            LibraryBatchImportReport {
+                imported: vec![report],
+                failed: Vec::new(),
+            }
+        });
+    }
+    if !source_meta.file_type().is_dir() {
+        return Err("Select one regular signed PAK or a real folder containing PAKs".into());
+    }
+    let source_root = fs::canonicalize(source).map_err(|e| e.to_string())?;
+    let library_root = fs::canonicalize(root).map_err(|e| e.to_string())?;
+    if source_root.starts_with(&library_root) {
+        return Err("Cannot batch-import PAKs from inside the Asset Library".into());
+    }
+
+    let mut sources = Vec::new();
+    for (index, item) in fs::read_dir(&source_root)
+        .map_err(|e| e.to_string())?
+        .enumerate()
+    {
+        if index >= 8192 {
+            return Err("Source folder has too many entries; select a smaller folder".into());
+        }
+        let item = item.map_err(|e| e.to_string())?;
+        let path = item.path();
+        if path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("pak"))
+        {
+            sources.push(path);
+            if sources.len() > 64 {
+                return Err("Batch import is limited to 64 PAKs per request".into());
+            }
+        }
+    }
+    if sources.is_empty() {
+        return Err("The selected folder has no directly contained .pak files".into());
+    }
+    sources.sort_by(|a, b| {
+        a.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .cmp(&b.file_name().unwrap_or_default().to_string_lossy().to_ascii_lowercase())
+            .then_with(|| a.cmp(b))
+    });
+
+    let mut report = LibraryBatchImportReport {
+        imported: Vec::new(),
+        failed: Vec::new(),
+    };
+    for path in sources {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "<invalid filename>".into());
+        match import_signed_library_pak(root, &path, public_key) {
+            Ok(imported) => report.imported.push(imported),
+            Err(reason) => report.failed.push(LibraryImportFailure {
+                archive: name,
+                reason,
+            }),
+        }
+    }
+    Ok(report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn folder_import_is_bounded_and_does_not_recurse() {
+        let home = tempfile::tempdir().unwrap();
+        let library = home.path().join("AssetLibrary");
+        let source = home.path().join("PAKs");
+        fs::create_dir(&library).unwrap();
+        fs::create_dir(&source).unwrap();
+        assert!(import_signed_library_selection(&library, &source, Path::new("unused")).is_err());
+        fs::create_dir(source.join("nested")).unwrap();
+        fs::write(source.join("nested/hidden.pak"), b"fake").unwrap();
+        assert!(import_signed_library_selection(&library, &source, Path::new("unused")).is_err());
+        for index in 0..65 {
+            fs::write(source.join(format!("source_{index:02}.pak")), b"fake").unwrap();
+        }
+        assert!(import_signed_library_selection(&library, &source, Path::new("unused"))
+            .unwrap_err().contains("64 PAKs"));
+        assert_eq!(fs::read_dir(&library).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn folder_import_reports_individual_failures_without_modifying_sources() {
+        let home = tempfile::tempdir().unwrap();
+        let library = home.path().join("AssetLibrary");
+        let source = home.path().join("PAKs");
+        fs::create_dir(&library).unwrap();
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("readme.txt"), b"ignored").unwrap();
+        fs::write(source.join("invalid.pak"), b"not a signed PAK").unwrap();
+        let key = home.path().join("public.der");
+        fs::write(&key, b"not a real verification key").unwrap();
+        let report = import_signed_library_selection(&library, &source, &key).unwrap();
+        assert!(report.imported.is_empty());
+        assert_eq!(report.failed.len(), 1);
+        assert_eq!(report.failed[0].archive, "invalid.pak");
+        assert!(!report.failed[0].reason.is_empty());
+        assert_eq!(fs::read(source.join("invalid.pak")).unwrap(), b"not a signed PAK");
+        assert_eq!(fs::read_dir(&library).unwrap().count(), 0);
+    }
+
     #[test]
     fn stable_private_compatible_archive_directory() {
         let source = "Characters_Hunters_Merc_Emet_Data.pak";
