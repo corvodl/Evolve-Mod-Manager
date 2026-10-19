@@ -12,6 +12,7 @@ mod updater;
 mod uv_preview;
 mod viewer_inspector;
 mod viewport;
+use asset_cache::{PreviewCache, SharedCache, decoded_dds};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssetComparison, AssetEntry, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph, ImportedLibrary,
@@ -25,8 +26,10 @@ use evolve_core::{
     initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_signed_pak,
     list_mod_profiles, load_level_scene, plan_mod_profile, read_cdf, read_material, read_model,
     read_native_caf, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry, resolve_cdf,
-    resolve_materials, restore_profile_stage, restore_stage, scan_directory, scan_directory_with_progress, stage_status,
+    resolve_materials, restore_profile_stage, restore_stage, scan_directory,
+    scan_directory_with_progress, stage_status,
 };
+use asset_cache::{SharedCache, decoded_dds};
 use iced::widget::{
     button, canvas, column, container, image, row, scrollable, shader, slider, space, svg, text,
     text_input, tooltip,
@@ -37,7 +40,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}};
 use std::time::Duration;
 use textured::Scene as TexturedScene;
-use asset_cache::{SharedCache, decoded_dds};
 use updater::{
     ReleaseUpdate, UpdateChannel, discover_update, download_installer, launch_verified_installer,
 };
@@ -333,10 +335,11 @@ impl Operation {
             Self::OpenImportedPak(pak) => imported_archive_files(&pak)
                 .map(Completed::ImportedPakFiles)
                 .map_err(|e| e.to_string()),
-            Self::Scan(source, cancelled, indexed) =>
+            Self::Scan(source, cancelled, indexed) => {
                 scan_directory_with_progress(&source, &cancelled, &indexed)
-                .map(Completed::Inventory)
-                .map_err(|e| e.to_string()),
+                    .map(Completed::Inventory)
+                    .map_err(|e| e.to_string())
+            }
             Self::InspectPak(source) => inspect_legacy_pak(&source)
                 .map(Completed::Pak)
                 .map_err(|e| e.to_string()),
@@ -400,12 +403,15 @@ impl Operation {
                     report, diffuse, normal, emissive,
                 ))
             }
-            Self::LoadNormal(source, cache) => decoded_dds(&cache, &source)
-                .map(|(info, image)| Completed::Normal(info, image)),
-            Self::LoadEmissive(source, cache) => decoded_dds(&cache, &source)
-                .map(|(info, image)| Completed::Emissive(info, image)),
-            Self::LoadDiffuse(source, cache) => decoded_dds(&cache, &source)
-                .map(|(info, image)| Completed::Diffuse(info, image)),
+            Self::LoadNormal(source, cache) => {
+                decoded_dds(&cache, &source).map(|(info, image)| Completed::Normal(info, image))
+            }
+            Self::LoadEmissive(source, cache) => {
+                decoded_dds(&cache, &source).map(|(info, image)| Completed::Emissive(info, image))
+            }
+            Self::LoadDiffuse(source, cache) => {
+                decoded_dds(&cache, &source).map(|(info, image)| Completed::Diffuse(info, image))
+            }
             Self::InspectDds(source) => inspect_dds(&source)
                 .map(Completed::Texture)
                 .map_err(|e| e.to_string()),
@@ -720,7 +726,10 @@ fn begin_scan(state: &mut State, source: PathBuf) -> Task<Message> {
     }
     let cancelled = Arc::new(AtomicBool::new(false));
     let indexed = Arc::new(AtomicUsize::new(0));
-    let task = launch(state, Operation::Scan(source, cancelled.clone(), indexed.clone()));
+    let task = launch(
+        state,
+        Operation::Scan(source, cancelled.clone(), indexed.clone()),
+    );
     state.scan_cancel = Some(cancelled);
     state.scan_indexed = Some(indexed);
     task
@@ -920,8 +929,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 };
             }
         }
-        Message::OpenViewer | Message::ViewerOpened | Message::WindowClosed(_) |
-        Message::FileDropped(_, _) => {},
+        Message::OpenViewer
+        | Message::ViewerOpened
+        | Message::WindowClosed(_)
+        | Message::FileDropped(_, _) => {}
         Message::CancelScan => {
             if let Some(cancel) = &state.scan_cancel {
                 cancel.store(true, Ordering::Relaxed);
@@ -930,8 +941,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ScanPulse => {
             if let Some(indexed) = &state.scan_indexed {
-                state.status = format!("Indexed {} local assets; working asynchronously...",
-                    indexed.load(Ordering::Relaxed));
+                state.status = format!(
+                    "Indexed {} local assets; working asynchronously...",
+                    indexed.load(Ordering::Relaxed)
+                );
             }
         }
         Message::DropPath(path) => {
@@ -955,8 +968,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Some(Operation::InspectDds(path))
             } else if name.ends_with(".cdf") {
                 Some(Operation::InspectCdf(path))
-            } else if [".skin", ".skinm", ".chr", ".cgf"].iter()
-                .any(|ext| name.ends_with(ext)) {
+            } else if [".skin", ".skinm", ".chr", ".cgf"]
+                .iter()
+                .any(|ext| name.ends_with(ext))
+            {
                 Some(Operation::InspectModel(path))
             } else if name.ends_with(".caf") {
                 Some(Operation::LoadCaf(path))
@@ -968,7 +983,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if let Some(operation) = operation {
                 return launch(state, operation);
             }
-            state.status = "Source path selected. Choose the relevant safe inspector in Modding.".into();
+            state.status =
+                "Source path selected. Choose the relevant safe inspector in Modding.".into();
         }
         Message::ViewerMenu(section) => {
             state.viewer_menu = if section.is_empty() || state.viewer_menu == Some(section) {
@@ -1619,7 +1635,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             return launch(
                 state,
-                Operation::LoadNormal(PathBuf::from(&state.normal_input), state.preview_cache.clone()),
+                Operation::LoadNormal(
+                    PathBuf::from(&state.normal_input),
+                    state.preview_cache.clone(),
+                ),
             );
         }
         Message::StartEmissiveLoad => {
@@ -1630,7 +1649,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             return launch(
                 state,
-                Operation::LoadEmissive(PathBuf::from(&state.emissive_input), state.preview_cache.clone()),
+                Operation::LoadEmissive(
+                    PathBuf::from(&state.emissive_input),
+                    state.preview_cache.clone(),
+                ),
             );
         }
         Message::StartDiffuseLoad => {
@@ -1641,7 +1663,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             return launch(
                 state,
-                Operation::LoadDiffuse(PathBuf::from(&state.diffuse_input), state.preview_cache.clone()),
+                Operation::LoadDiffuse(
+                    PathBuf::from(&state.diffuse_input),
+                    state.preview_cache.clone(),
+                ),
             );
         }
         Message::StartDdsInspection => {
@@ -2363,9 +2388,13 @@ fn view(state: &State) -> Element<'_, Message> {
         text(format!("  /  {}", page.title())).size(12),
         space().width(Fill),
         button("Help").on_press(Message::Navigate(Page::Instructions)),
-        button("Activity").on_press(Message::ToggleActivity).style(button::secondary),
+        button("Activity")
+            .on_press(Message::ToggleActivity)
+            .style(button::secondary),
         if state.scan_cancel.is_some() {
-            button("Cancel Scan").on_press(Message::CancelScan).style(button::secondary)
+            button("Cancel Scan")
+                .on_press(Message::CancelScan)
+                .style(button::secondary)
         } else {
             button("Cancel Scan").style(button::secondary)
         },
