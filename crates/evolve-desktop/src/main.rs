@@ -212,6 +212,7 @@ struct State {
     light_strength: f32,
     level_filter: String,
     level_selected: Option<usize>,
+    level_selection: MultiSelection,
     level_zoom: f32,
     scan_cancel: Option<Arc<AtomicBool>>,
     scan_indexed: Option<Arc<AtomicUsize>>,
@@ -1467,12 +1468,30 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ViewerToggleWireframe => state.viewer_wireframe = !state.viewer_wireframe,
         Message::LightStrengthChanged(value) => state.light_strength = value.clamp(0.1, 2.0),
         Message::LevelSelect(index) => {
-            if state
-                .level_scene
-                .as_ref()
-                .is_some_and(|scene| index < scene.objects.len())
+            if let Some(scene) = &state.level_scene
+                && index < scene.objects.len()
             {
-                state.level_selected = Some(index);
+                let query = state.level_filter.to_ascii_lowercase();
+                let visible: Vec<usize> = scene.objects.iter().enumerate()
+                    .filter(|(_, obj)| {
+                        query.is_empty()
+                            || obj.name.to_ascii_lowercase().contains(&query)
+                            || obj.layer.to_ascii_lowercase().contains(&query)
+                            || obj.model.to_ascii_lowercase().contains(&query)
+                    })
+                    .map(|(i, _)| i).take(180).collect();
+                if visible.contains(&index) {
+                    state.level_selection.click(
+                        &visible, index,
+                        state.keyboard_modifiers.shift(),
+                        state.keyboard_modifiers.control(),
+                    );
+                } else {
+                    // Clicking a source-space point on the map picks an exact
+                    // object even when filtered out of the outliner.
+                    state.level_selection.click(&[index], index, false, false);
+                }
+                state.level_selected = state.level_selection.primary_after(index);
             }
         }
         Message::LevelFilterChanged(value) => state.level_filter = value,
@@ -2808,6 +2827,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                     state.level_scene = Some(Arc::new(scene));
                     state.level_selected = None;
+                    state.level_selection.clear();
                     state.level_zoom = 1.0;
                     state.page = Some(Page::Levels);
                 }
