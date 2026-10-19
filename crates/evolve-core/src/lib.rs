@@ -25,9 +25,9 @@ pub mod native_caf;
 pub mod policy;
 pub mod profiles;
 pub mod rig;
-pub mod skin_preview;
 pub mod scene;
 pub mod signed_pak;
+pub mod skin_preview;
 pub mod staging;
 pub mod terrain;
 
@@ -78,7 +78,6 @@ pub use native_caf::{
     CafBonePose, CafController, NativeCafError, NativeCafMotion, decode_native_caf, read_native_caf,
 };
 pub use policy::{AnimationPolicy, ExportFeature, FeatureStatus, PARITY_MATRIX};
-pub use skin_preview::VerifiedCafSkin;
 pub use rig::{
     CompiledSkeleton, RigError, RigReport, VerifiedWeights, export_rigged_character_fbx,
     export_rigged_character_fbx_textured, export_rigged_character_fbx_textured_animated,
@@ -93,6 +92,7 @@ pub use signed_pak::{
     inspect_signed_pak, open_verified_signed_pak, rebuild_signed_pak_entries,
     rebuild_signed_pak_entry,
 };
+pub use skin_preview::VerifiedCafSkin;
 pub use terrain::{
     TerrainError, TerrainInfo, TerrainMesh, decode_terrain_bytes, export_terrain_obj, read_terrain,
 };
