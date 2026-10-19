@@ -29,20 +29,21 @@ use asset_cache::{SharedCache, decoded_dds};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph,
-    FlatCdfFbxReport, ImportedLibrary, ImportedPak, Inventory, LevelScene, LibraryBatchImportReport,
-    LibraryReferenceStatus, MaterialReport, ModProfile, ModelInfo, NativeCafMotion, PakInventory,
-    ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo,
-    StageTransaction, TerrainInfo, add_mod_to_profile, apply_profile_stage, apply_stage_pak,
-    batch_stage_status, compare_assets, convert_glb_to_fbx, convert_original_motion,
-    create_mod_profile, decode_dds_rgba, export_dds_png, export_flat_cdf_parts_fbx,
-    export_level_scene_glb, export_rigged_character_fbx_textured_animated,
-    export_rigged_character_glb, extract_legacy_pak, extract_signed_pak, import_signed_library_selection,
-    import_stage_pak, imported_archive_files, imported_library, initialize_stage, inspect_dds,
-    inspect_dependencies, inspect_legacy_pak, inspect_signed_pak, list_mod_profiles,
-    load_level_scene, plan_mod_profile, read_cdf, read_material, read_model, read_native_caf,
-    read_static_cdf_assembly, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry,
-    resolve_cdf, resolve_imported_reference, resolve_materials, restore_profile_stage,
-    restore_stage, scan_directory, scan_directory_with_progress, stage_status,
+    FlatCdfFbxReport, ImportedLibrary, ImportedPak, Inventory, LevelScene,
+    LibraryBatchImportReport, LibraryReferenceStatus, MaterialReport, ModProfile, ModelInfo,
+    NativeCafMotion, PakInventory, ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport,
+    SignedPakInfo, StageTransaction, TerrainInfo, add_mod_to_profile, apply_profile_stage,
+    apply_stage_pak, batch_stage_status, compare_assets, convert_glb_to_fbx,
+    convert_original_motion, create_mod_profile, decode_dds_rgba, export_dds_png,
+    export_flat_cdf_parts_fbx, export_level_scene_glb,
+    export_rigged_character_fbx_textured_animated, export_rigged_character_glb, extract_legacy_pak,
+    extract_signed_pak, import_signed_library_selection, import_stage_pak, imported_archive_files,
+    imported_library, initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak,
+    inspect_signed_pak, list_mod_profiles, load_level_scene, plan_mod_profile, read_cdf,
+    read_material, read_model, read_native_caf, read_static_cdf_assembly, read_terrain,
+    rebuild_legacy_pak, rebuild_signed_pak_entry, resolve_cdf, resolve_imported_reference,
+    resolve_materials, restore_profile_stage, restore_stage, scan_directory,
+    scan_directory_with_progress, stage_status,
 };
 use iced::widget::{
     canvas, column, container, image, row, scrollable, shader, slider, space, svg, text, tooltip,
@@ -3273,15 +3274,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                 }
                 Ok(Completed::ImportedSignedLibrary(report, catalog)) => {
-                    let already = report.imported.iter().filter(|r| r.already_imported).count();
+                    let already = report
+                        .imported
+                        .iter()
+                        .filter(|r| r.already_imported)
+                        .count();
                     let added = report.imported.len() - already;
                     let failed = report.failed.len();
-                    let details = report.failed.iter().take(3).map(|f| {
-                        format!("{}: {}", f.archive, f.reason)
-                    }).collect::<Vec<_>>().join("; ");
+                    let details = report
+                        .failed
+                        .iter()
+                        .take(3)
+                        .map(|f| format!("{}: {}", f.archive, f.reason))
+                        .collect::<Vec<_>>()
+                        .join("; ");
                     state.status = format!(
                         "Asset Library import: {added} new, {already} already verified, {failed} failed. Originals unchanged.{}",
-                        if details.is_empty() { String::new() } else { format!(" {details}") }
+                        if details.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" {details}")
+                        }
                     );
                     state.library_root = catalog.root.clone();
                     state.preferences.asset_library_root = catalog.root.clone();
