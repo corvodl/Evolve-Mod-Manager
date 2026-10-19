@@ -21,12 +21,18 @@ fn measure(path: &Path, files: &mut usize, truncated: &mut bool) -> u64 {
             *truncated = true;
             break;
         }
-        let Ok(meta) = fs::symlink_metadata(&next) else { continue; };
-        if meta.file_type().is_symlink() { continue; }
+        let Ok(meta) = fs::symlink_metadata(&next) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
         #[cfg(windows)]
         {
             use std::os::windows::fs::MetadataExt;
-            if meta.file_attributes() & 0x400 != 0 { continue; } // reparse point
+            if meta.file_attributes() & 0x400 != 0 {
+                continue;
+            } // reparse point
         }
         if meta.is_file() {
             *files += 1;
@@ -48,7 +54,13 @@ fn measure(path: &Path, files: &mut usize, truncated: &mut bool) -> u64 {
 
 /// Bucket order: active setup, old setups, projects, Asset Library, other.
 /// Uses installed manager Data/GameSets, never scans entire game installs.
-pub fn analyze(data: &Path, games: &Path, active_stage: &Path, projects: &Path, library: &Path) -> StorageUsage {
+pub fn analyze(
+    data: &Path,
+    games: &Path,
+    active_stage: &Path,
+    projects: &Path,
+    library: &Path,
+) -> StorageUsage {
     let mut report = StorageUsage::default();
     let mut active_setup: Option<PathBuf> = None;
     for ancestor in active_stage.ancestors() {
@@ -61,7 +73,11 @@ pub fn analyze(data: &Path, games: &Path, active_stage: &Path, projects: &Path, 
         for entry in entries.flatten() {
             let location = entry.path();
             let value = measure(&location, &mut report.files, &mut report.truncated);
-            let bucket = if active_setup.as_deref() == Some(location.as_path()) { 0 } else { 1 };
+            let bucket = if active_setup.as_deref() == Some(location.as_path()) {
+                0
+            } else {
+                1
+            };
             report.buckets[bucket] = report.buckets[bucket].saturating_add(value);
         }
     }
@@ -73,9 +89,11 @@ pub fn analyze(data: &Path, games: &Path, active_stage: &Path, projects: &Path, 
             if location == games || location == projects || location == library {
                 continue;
             }
-            report.buckets[4] = report.buckets[4].saturating_add(
-                measure(&location, &mut report.files, &mut report.truncated)
-            );
+            report.buckets[4] = report.buckets[4].saturating_add(measure(
+                &location,
+                &mut report.files,
+                &mut report.truncated,
+            ));
         }
     }
     report
@@ -91,11 +109,22 @@ mod tests {
         let games = data.join("GameSets");
         let projects = data.join("Projects");
         let library = data.join("AssetLibrary");
-        for dir in [games.join("Setup_1"), games.join("Setup_2"), projects.clone(), library.clone()] {
+        for dir in [
+            games.join("Setup_1"),
+            games.join("Setup_2"),
+            projects.clone(),
+            library.clone(),
+        ] {
             fs::create_dir_all(&dir).unwrap();
             fs::write(dir.join("asset.bin"), b"12345").unwrap();
         }
-        let report = analyze(&data, &games, &games.join("Setup_1/staged"), &projects, &library);
+        let report = analyze(
+            &data,
+            &games,
+            &games.join("Setup_1/staged"),
+            &projects,
+            &library,
+        );
         assert_eq!(report.buckets, [5, 5, 5, 5, 0]);
         assert_eq!(report.files, 4);
         assert!(library.join("asset.bin").is_file());
