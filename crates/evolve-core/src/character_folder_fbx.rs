@@ -93,13 +93,12 @@ pub fn export_flat_cdf_parts_fbx(
             verified_file(&root, &relative.to_string_lossy())
         })
         .transpose()?;
-    if let Some(ref clip) = caf {
-        if !clip
+    if let Some(ref clip) = caf
+        && !clip
             .extension()
             .is_some_and(|v| v.eq_ignore_ascii_case("caf"))
-        {
-            return Err("Only verified original CAF Actions are supported".into());
-        }
+    {
+        return Err("Only verified original CAF Actions are supported".into());
     }
     let mut attachments = Vec::new();
     let mut names = HashSet::new();
