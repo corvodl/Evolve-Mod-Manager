@@ -286,6 +286,112 @@ pub fn discover_projects(root: &Path, stage: &Path) -> Result<Vec<ProjectRow>, S
     Ok(projects)
 }
 
+/// Build a single changed *raw* member only. CryXmlB needs a validated
+/// round-trip serializer and multi-entry projects need an atomic multi-patch
+/// rebuild; neither is silently approximated by this operation.
+pub fn build_single_raw(
+    project: &ProjectRow,
+    projects: &Path,
+    stage: &Path,
+) -> Result<(String, PathBuf), String> {
+    if !project.changed_known || project.modified.len() != 1 || project.status != "Modified" {
+        return Err("Rust preview supports rebuilding exactly one verified modified raw member; no partial multi-file builds.".into());
+    }
+    let parent = fs::canonicalize(projects).map_err(|e| e.to_string())?;
+    if !fs::symlink_metadata(projects).is_ok_and(|m| m.file_type().is_dir()) {
+        return Err("Projects path must be a real directory".into());
+    }
+    let folder = fs::canonicalize(&project.workspace).map_err(|e| e.to_string())?;
+    if !folder.starts_with(&parent) || folder == parent {
+        return Err("Selected workspace is outside Projects".into());
+    }
+    let manifest = read_json(&folder.join(".evolve-pak-workspace.json"), 8 * 1024 * 1024)?;
+    let rel = &project.modified[0];
+    if !safe_member(rel) {
+        return Err("Unsafe modified member".into());
+    }
+    let expected = manifest.get("entries").and_then(Value::as_array)
+        .and_then(|entries| entries.iter().find(|entry|
+            entry.get("path").and_then(Value::as_str) == Some(rel.as_str())
+        ))
+        .ok_or("Modified member is absent from the verified original manifest")?;
+    if expected.get("format").and_then(Value::as_str) != Some("raw") {
+        return Err("This CryXmlB/converted member requires semantic round-trip serialization, not raw signed replacement.".into());
+    }
+    let original = stage.join("paks").join(&project.target);
+    let relative = super::modding_keys::staged_target(stage, &original)?;
+    if relative != project.target {
+        return Err("Manifest target and staged original disagree".into());
+    }
+    let manifest_source = manifest.get("source_pak").and_then(Value::as_str)
+        .ok_or("Original manifest source path missing")?;
+    if fs::canonicalize(manifest_source).map_err(|e| e.to_string())?
+        != fs::canonicalize(&original).map_err(|e| e.to_string())?
+    {
+        return Err("Workspace source archive differs from the selected staged PAK".into());
+    }
+    let baseline = manifest.get("source_sha256").and_then(Value::as_str)
+        .ok_or("Source archive identity digest missing")?;
+    if !digest(&original).map_err(|e| e.to_string())?.eq_ignore_ascii_case(baseline) {
+        return Err("Source PAK changed since extraction; refusing to build".into());
+    }
+    // A fresh inspection also detects edits that occurred after project-list
+    // indexing. Do not issue a partial or stale rebuild.
+    let fresh = inspect_project(
+        &folder, stage, project.label.clone(), project.source_build.clone()
+    );
+    if !fresh.changed_known || fresh.modified != project.modified {
+        return Err("Project edits changed during preparation; refresh and review before building".into());
+    }
+    let keys = super::modding_keys::signing_keys(stage)?;
+    if let Some(hash) = manifest.get("public_key_sha256").and_then(Value::as_str) {
+        if !digest(&keys.public).map_err(|e| e.to_string())?.eq_ignore_ascii_case(hash) {
+            return Err("Stage signing key no longer matches the original extracted archive".into());
+        }
+    }
+    let basename = super::modding_keys::signed_basename(&original)?;
+    if let Some(name) = manifest.get("signed_basename").and_then(Value::as_str)
+        && name != basename
+    {
+        return Err("Archive signed basename mismatch".into());
+    }
+    let replacement = folder.join("files").join(rel);
+    let source_files = fs::canonicalize(folder.join("files"))
+        .map_err(|e| e.to_string())?;
+    let canonical = fs::canonicalize(&replacement).map_err(|e| e.to_string())?;
+    if !canonical.starts_with(&source_files)
+        || !fs::symlink_metadata(&replacement).is_ok_and(|m| m.file_type().is_file())
+    {
+        return Err("Replacement is not a regular file inside the selected project".into());
+    }
+    let built = parent.join("Built");
+    if !built.exists() {
+        fs::create_dir(&built).map_err(|e| e.to_string())?;
+    }
+    if !fs::symlink_metadata(&built).is_ok_and(|m| m.file_type().is_dir()) {
+        return Err("Built output folder cannot be a symlink".into());
+    }
+    let number = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?.as_nanos();
+    let output_folder = built.join(format!("Rust-Raw-{:x}", number));
+    fs::create_dir(&output_folder).map_err(|e| e.to_string())?;
+    let output = output_folder.join(&basename);
+    let result = evolve_core::rebuild_signed_pak_entry(
+        &original, &keys.public, &keys.private, &keys.public,
+        &basename, rel, &replacement, &output,
+    );
+    match result {
+        Ok(report) => Ok((report.changed_entry, output)),
+        Err(error) => {
+            // The core uses an atomic tempfile on failure. Remove only our
+            // new empty output directory, never an existing user's path.
+            let _ = fs::remove_dir(output_folder);
+            Err(error.to_string())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
