@@ -47,8 +47,18 @@ jobs:
           # Require every acceptance row to be independently marked verified.
           # A status such as **Partial: ...** must NOT slip past a bare
           # **Partial** string match.
-          $rows = @(Get-Content -LiteralPath "docs/PARITY.md" |
-            Where-Object { $_ -match '^\| ' -and $_ -notmatch '^\| (Feature|---)' })
+          $rows = @()
+          $inside = $false
+          foreach ($line in (Get-Content -LiteralPath "docs/PARITY.md")) {
+            if ($line -match '^\| Feature \| Rust rewrite status \|') {
+              $inside = $true
+              continue
+            }
+            if ($inside -and $line -notmatch '^\|') { break }
+            if ($inside -and $line -match '^\| ' -and $line -notmatch '^\| ---') {
+              $rows += $line
+            }
+          }
           if ($rows.Count -lt 15) {
             throw "Feature parity checklist missing or unexpectedly short."
           }
