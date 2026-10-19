@@ -32,6 +32,10 @@ pub struct Preferences {
     pub experimental_updates: bool,
     pub automatic_update_checks: bool,
     pub create_desktop_shortcut: bool,
+    /// Retain older application settings that the Rust interface does not
+    /// interpret yet. Existing user choices survive a Save Settings action.
+    #[serde(flatten, skip_serializing_if = "BTreeMap::is_empty")]
+    pub previous_options: BTreeMap<String, serde_json::Value>,
 }
 
 impl Default for Preferences {
@@ -59,6 +63,7 @@ impl Default for Preferences {
             experimental_updates: false,
             automatic_update_checks: true,
             create_desktop_shortcut: false,
+            previous_options: BTreeMap::new(),
         }
     }
 }
@@ -116,6 +121,9 @@ impl Preferences {
             if path.len() > 4096 || path.contains('\0') {
                 return Err(SettingsError::InvalidValue);
             }
+        }
+        if self.previous_options.len() > 256 {
+            return Err(SettingsError::InvalidValue);
         }
         if self.appearance_colors.len() > 64 || self.theme_presets.len() > 64 {
             return Err(SettingsError::InvalidValue);
@@ -212,7 +220,9 @@ mod tests {
         assert_eq!(prefs.file_explorer_side, "Left");
         assert!(!prefs.keep_original_snapshots);
         assert!(!prefs.experimental_updates);
+        assert_eq!(prefs.previous_options.get("another_old_option"), Some(&serde_json::json!(true)));
         save_to(&path, &prefs).unwrap();
+        assert!(fs::read_to_string(&path).unwrap().contains("another_old_option"));
         assert_eq!(load_from(&path).unwrap().appearance_mode, "Light");
     }
     #[test]
