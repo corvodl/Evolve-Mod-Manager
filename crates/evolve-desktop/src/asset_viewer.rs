@@ -305,32 +305,32 @@ fn explorer(state: &State) -> Element<'_, Message> {
             Message::ViewerSelectFile(entry.index.expect("file row has source index"))
         };
         let item = button(
-                row![
-                    text(title).size(12).width(Fill),
-                    text(if entry.directory {
-                        String::new()
-                    } else {
-                        format!("{} KiB", entry.bytes.div_ceil(1024))
-                    })
-                    .size(12)
-                    .width(90),
-                ]
-                .spacing(7),
-            )
-            .width(Fill)
-            .padding(5)
-            .style(
-                if entry.index.is_some()
-                    && entry
-                        .index
-                        .is_some_and(|i| state.file_selection.indices.contains(&i))
-                {
-                    button::primary
+            row![
+                text(title).size(12).width(Fill),
+                text(if entry.directory {
+                    String::new()
                 } else {
-                    button::text
-                },
-            )
-            .on_press(action);
+                    format!("{} KiB", entry.bytes.div_ceil(1024))
+                })
+                .size(12)
+                .width(90),
+            ]
+            .spacing(7),
+        )
+        .width(Fill)
+        .padding(5)
+        .style(
+            if entry.index.is_some()
+                && entry
+                    .index
+                    .is_some_and(|i| state.file_selection.indices.contains(&i))
+            {
+                button::primary
+            } else {
+                button::text
+            },
+        )
+        .on_press(action);
         let item: Element<'_, Message> = if let Some(index) = entry.index {
             mouse_area(item)
                 .on_right_press(Message::ViewerContextFile(index))
@@ -373,7 +373,11 @@ fn explorer(state: &State) -> Element<'_, Message> {
                 ]
                 .spacing(8),
                 if let Some(index) = state.viewer_context_index {
-                    if let Some(entry) = state.inventory.as_ref().and_then(|inv| inv.entries.get(index)) {
+                    if let Some(entry) = state
+                        .inventory
+                        .as_ref()
+                        .and_then(|inv| inv.entries.get(index))
+                    {
                         let filename = entry.relative_path.as_str();
                         let is_cdf = filename.to_ascii_lowercase().ends_with(".cdf");
                         let is_dds = filename.to_ascii_lowercase().ends_with(".dds")
@@ -384,33 +388,43 @@ fn explorer(state: &State) -> Element<'_, Message> {
                                     text("FILE ACTIONS").size(13),
                                     text(filename).size(11).color(MUTED).width(Fill),
                                     button("✕").on_press(Message::ViewerContextClose),
-                                ].spacing(7),
+                                ]
+                                .spacing(7),
                                 row![
                                     button("Preview").on_press(Message::ViewerPreviewSelected),
                                     button("Copy path").on_press(Message::ViewerCopySelectedPath),
-                                    button("Show in Explorer").on_press(Message::ViewerRevealSelectedFile),
-                                    button("Dependencies").on_press(Message::StartDependencyInspection),
-                                ].spacing(6),
+                                    button("Show in Explorer")
+                                        .on_press(Message::ViewerRevealSelectedFile),
+                                    button("Dependencies")
+                                        .on_press(Message::StartDependencyInspection),
+                                ]
+                                .spacing(6),
                                 row![
                                     button("Preview full CDF").on_press_maybe(
                                         is_cdf.then_some(Message::ViewerPreviewStaticCdf)
                                     ),
-                                    button("Export DDS → PNG").on_press_maybe(
-                                        is_dds.then_some(Message::StartPngExport)
-                                    ),
+                                    button("Export DDS → PNG")
+                                        .on_press_maybe(is_dds.then_some(Message::StartPngExport)),
                                     button("Rigged FBX").on_press(Message::StartRigFbx),
                                     button("Restore original").on_press_maybe(
                                         (!state.viewer_from_library && !state.busy)
                                             .then_some(Message::EditorRestoreRawMember)
                                     ),
-                                ].spacing(6),
-                            ].spacing(6),
-                        ).into()
+                                ]
+                                .spacing(6),
+                            ]
+                            .spacing(6),
+                        )
+                        .into()
                     } else {
                         Element::<Message>::from(text("Selected file is no longer indexed."))
                     }
                 } else {
-                    Element::<Message>::from(text("Right-click a file for actions.").size(11).color(MUTED))
+                    Element::<Message>::from(
+                        text("Right-click a file for actions.")
+                            .size(11)
+                            .color(MUTED),
+                    )
                 },
                 if state.viewer_from_library {
                     Element::<Message>::from(
