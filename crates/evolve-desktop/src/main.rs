@@ -1,7 +1,7 @@
 //! Native wgpu-backed desktop shell. Asset operations use blocking workers, so
 //! file I/O/decompression never runs in the interactive Iced view/update path.
 use evolve_core::{
-    AssetEntry, DdsInfo, Inventory, PakInventory, decode_dds_rgba, export_dds_png,
+    AssetEntry, DdsInfo, Inventory, PakInventory, export_dds_png,
     extract_legacy_pak, inspect_dds, inspect_legacy_pak, scan_directory,
 };
 use iced::widget::{button, column, container, row, scrollable, text, text_input};
@@ -125,32 +125,35 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::OutputChanged(output) => state.output = output,
         Message::SearchChanged(query) => state.search = query,
         Message::Select(index) => state.selected = Some(index),
-        Message::StartScan => return launch(state, Operation::Scan(PathBuf::from(&state.input))),
+        Message::StartScan => {
+            let source = PathBuf::from(&state.input);
+            return launch(state, Operation::Scan(source));
+        }
         Message::StartPakInspection => {
-            return launch(state, Operation::InspectPak(PathBuf::from(&state.input)));
+            let source = PathBuf::from(&state.input);
+            return launch(state, Operation::InspectPak(source));
         }
         Message::StartDdsInspection => {
-            return launch(state, Operation::InspectDds(PathBuf::from(&state.input)));
+            let source = PathBuf::from(&state.input);
+            return launch(state, Operation::InspectDds(source));
         }
         Message::StartExtract => {
             if state.output.trim().is_empty() {
                 state.status = "Choose a NEW extraction directory first.".into();
                 return Task::none();
             }
-            return launch(state, Operation::ExtractPak(
-                PathBuf::from(&state.input),
-                PathBuf::from(&state.output),
-            ));
+            let source = PathBuf::from(&state.input);
+            let output = PathBuf::from(&state.output);
+            return launch(state, Operation::ExtractPak(source, output));
         }
         Message::StartPngExport => {
             if state.output.trim().is_empty() {
                 state.status = "Choose a NEW output PNG file first.".into();
                 return Task::none();
             }
-            return launch(state, Operation::ExportPng(
-                PathBuf::from(&state.input),
-                PathBuf::from(&state.output),
-            ));
+            let source = PathBuf::from(&state.input);
+            let output = PathBuf::from(&state.output);
+            return launch(state, Operation::ExportPng(source, output));
         }
         Message::Finished(result) => {
             state.busy = false;

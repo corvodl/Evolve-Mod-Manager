@@ -4,7 +4,7 @@
 use image::{DynamicImage, ImageFormat, RgbaImage};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fs::{self, File};
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -184,7 +184,9 @@ fn parse_part_name(path: &Path) -> Result<(String, Option<usize>), DdsError> {
 
 /// Reconstruct the highest mip from a complete texture or the verified
 /// .dds.0 + .dds.1..N streaming set. Never guesses missing fragments.
-fn load_dds(source: &Path) -> Result<(DdsInfo, Vec<u8>, usize, Option<[u32; 4]>), DdsError> {
+type LoadedDds = (DdsInfo, Vec<u8>, usize, Option<[u32; 4]>);
+
+fn load_dds(source: &Path) -> Result<LoadedDds, DdsError> {
     let (base, index) = parse_part_name(source)?;
     let header_path = if index.is_some_and(|i| i != 0) {
         source.with_file_name(format!("{base}.0"))
@@ -208,10 +210,9 @@ fn load_dds(source: &Path) -> Result<(DdsInfo, Vec<u8>, usize, Option<[u32; 4]>)
     let mut parts: BTreeMap<usize, PathBuf> = BTreeMap::new();
     for candidate in fs::read_dir(parent)? {
         let path = candidate?.path();
-        if let Ok((name, Some(n))) = parse_part_name(&path) {
-            if name == base && parts.insert(n, path).is_some() {
-                return Err(DdsError::Unsupported("duplicate numbered DDS fragment".into()));
-            }
+        if let Ok((name, Some(n))) = parse_part_name(&path)
+            && name == base && parts.insert(n, path).is_some() {
+            return Err(DdsError::Unsupported("duplicate numbered DDS fragment".into()));
         }
     }
     if !parts.contains_key(&0) || !parts.get(&0).is_some_and(|p| p == &header_path) {
@@ -397,7 +398,7 @@ pub fn decode_dds_rgba(source: &Path) -> Result<(DdsInfo, RgbaImage), DdsError> 
     if info.format == DdsFormat::Rgba32 {
         let masks = masks.ok_or_else(|| DdsError::Unsupported("missing channel masks".into()))?;
         validate_masks(masks)?;
-        for (src, dest) in payload.chunks_exact(4).zip(rgba.chunks_exact_mut(4)) {
+        for (src, dest) in payload.as_chunks::<4>().0.iter().zip(rgba.as_chunks_mut::<4>()) {
             let pixel = u32::from_le_bytes(src.try_into().unwrap_or([0; 4]));
             dest.copy_from_slice(&[
                 channel(pixel, masks[0], 0),

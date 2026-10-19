@@ -6,7 +6,7 @@ use evolve_core::{
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 fn main() {
