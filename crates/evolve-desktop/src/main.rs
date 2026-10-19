@@ -3069,7 +3069,10 @@ impl Desktop {
             asset_viewer::view(&self.state)
         } else if self.inspector_id == Some(id) {
             container(viewer_inspector::view(&self.state))
-                .padding(12).width(Fill).height(Fill).into()
+                .padding(12)
+                .width(Fill)
+                .height(Fill)
+                .into()
         } else if id == self.main_id {
             view(&self.state)
         } else {
