@@ -1,7 +1,7 @@
 //! Safe command-line functions shared with the desktop application.
 use evolve_core::{
-    export_dds_png, extract_legacy_pak, inspect_dds, inspect_legacy_pak, read_cdf, rebuild_legacy_pak, scan_directory,
-    write_inventory_json,
+    export_dds_png, extract_legacy_pak, inspect_dds, inspect_legacy_pak, read_cdf,
+    rebuild_legacy_pak, scan_directory, write_inventory_json,
 };
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
@@ -115,8 +115,8 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
     } else if verb == OsStr::new("pak") && subcommand == OsStr::new("rebuild") {
         let overrides = output.ok_or_else(usage)?;
         let new_pak = extra.ok_or_else(usage)?;
-        let report = rebuild_legacy_pak(&source, &overrides, &new_pak)
-            .map_err(|e| e.to_string())?;
+        let report =
+            rebuild_legacy_pak(&source, &overrides, &new_pak).map_err(|e| e.to_string())?;
         println!(
             "Rebuilt UNSIGNED historical ZIP PAK with {} replacement(s): {}",
             report.changed_entries,

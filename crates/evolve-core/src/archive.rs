@@ -278,9 +278,15 @@ pub fn rebuild_legacy_pak(
     let changes = crate::inventory::scan_directory(&replacement_root)
         .map_err(|e| PakError::Unsupported(format!("Invalid replacement directory: {e}")))?;
     if changes.skipped_symlinks != 0 {
-        return Err(PakError::Unsupported("Replacement directory contains symlinks".into()));
+        return Err(PakError::Unsupported(
+            "Replacement directory contains symlinks".into(),
+        ));
     }
-    let known: HashSet<String> = original.entries.iter().map(|e| e.path.to_lowercase()).collect();
+    let known: HashSet<String> = original
+        .entries
+        .iter()
+        .map(|e| e.path.to_lowercase())
+        .collect();
     for file in changes.entries {
         let clean = safe_member_name(&file.relative_path)?;
         let key = clean.to_lowercase();
@@ -290,14 +296,19 @@ pub fn rebuild_legacy_pak(
         if file.byte_size > MAX_ENTRY_BYTES {
             return Err(PakError::LimitsExceeded);
         }
-        if overrides.insert(key, replacement_root.join(PathBuf::from(clean))).is_some() {
+        if overrides
+            .insert(key, replacement_root.join(PathBuf::from(clean)))
+            .is_some()
+        {
             return Err(PakError::DuplicatePath(file.relative_path));
         }
     }
     if overrides.is_empty() {
         return Err(PakError::NoChanges);
     }
-    let staged = tempfile::Builder::new().prefix(".evolve-repack-").tempfile_in(parent)?;
+    let staged = tempfile::Builder::new()
+        .prefix(".evolve-repack-")
+        .tempfile_in(parent)?;
     let mut writer = zip::ZipWriter::new(staged.reopen()?);
     let mut total = 0u64;
     let mut index = 0usize;
@@ -322,15 +333,26 @@ pub fn rebuild_legacy_pak(
         let written = if let Some(replacement) = changed {
             let meta = fs::symlink_metadata(replacement)?;
             if !meta.file_type().is_file() || meta.len() > MAX_ENTRY_BYTES {
-                return Err(PakError::Unsupported("Replacement changed or is not regular".into()));
+                return Err(PakError::Unsupported(
+                    "Replacement changed or is not regular".into(),
+                ));
             }
             let mut file = File::open(replacement)?;
-            io::copy(&mut (&mut file).take(MAX_ENTRY_BYTES.saturating_add(1)), &mut writer)?
+            io::copy(
+                &mut (&mut file).take(MAX_ENTRY_BYTES.saturating_add(1)),
+                &mut writer,
+            )?
         } else {
-            io::copy(&mut (&mut entry).take(record.size.saturating_add(1)), &mut writer)?
+            io::copy(
+                &mut (&mut entry).take(record.size.saturating_add(1)),
+                &mut writer,
+            )?
         };
         if (changed.is_none() && written != record.size) || written > MAX_ENTRY_BYTES {
-            return Err(PakError::Unsupported(format!("Entry length mismatch: {}", record.path)));
+            return Err(PakError::Unsupported(format!(
+                "Entry length mismatch: {}",
+                record.path
+            )));
         }
         total = total.checked_add(written).ok_or(PakError::LimitsExceeded)?;
         if total > MAX_TOTAL_BYTES {
@@ -342,7 +364,9 @@ pub fn rebuild_legacy_pak(
         return Err(PakError::UnsafeDestination);
     }
     // Atomic no-overwrite handoff of an already-finished archive.
-    staged.persist_noclobber(destination).map_err(|e| PakError::Io(e.error))?;
+    staged
+        .persist_noclobber(destination)
+        .map_err(|e| PakError::Io(e.error))?;
     let info = fs::metadata(destination)?;
     Ok(RebuildReport {
         schema: 1,
@@ -441,10 +465,16 @@ mod tests {
         assert_eq!(fs::read(&original).unwrap(), source_bytes);
         let mut zip = ZipArchive::new(File::open(&destination).unwrap()).unwrap();
         let mut body = Vec::new();
-        zip.by_name("characters/tech_3p.cdf").unwrap().read_to_end(&mut body).unwrap();
+        zip.by_name("characters/tech_3p.cdf")
+            .unwrap()
+            .read_to_end(&mut body)
+            .unwrap();
         assert_eq!(body, b"<Changed/>");
         let mut motion = Vec::new();
-        zip.by_name("animations/idle.caf").unwrap().read_to_end(&mut motion).unwrap();
+        zip.by_name("animations/idle.caf")
+            .unwrap()
+            .read_to_end(&mut motion)
+            .unwrap();
         assert_eq!(motion, b"CAF!");
         assert!(rebuild_legacy_pak(&original, &overrides, &destination).is_err());
         fs::write(overrides.join("extra.txt"), b"not in archive").unwrap();
