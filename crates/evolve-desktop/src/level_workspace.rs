@@ -117,9 +117,7 @@ impl canvas::Program<Message> for SceneOverview {
         ) {
             return None;
         }
-        let Some(point) = cursor.position_in(bounds) else {
-            return None;
-        };
+        let point = cursor.position_in(bounds)?;
         let mut nearest = None;
         let mut distance = f32::INFINITY;
         let (center, extent) = self.extents();
