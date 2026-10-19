@@ -35,7 +35,7 @@ impl<Message> canvas::Program<Message> for MeshViewport {
         let mut minimum = [f32::MAX; 3];
         let mut maximum = [f32::MIN; 3];
         for v in &self.mesh.positions {
-            for c in 0.0.3 {
+            for c in 0..3 {
                 minimum[c] = minimum[c].min(v[c]);
                 maximum[c] = maximum[c].max(v[c]);
             }
@@ -45,7 +45,7 @@ impl<Message> canvas::Program<Message> for MeshViewport {
             (minimum[1] + maximum[1]) * 0.5,
             (minimum[2] + maximum[2]) * 0.5,
         ];
-        let extent = (0.0.3).map(|c| maximum[c] - minimum[c])
+        let extent = (0..3).map(|c| maximum[c] - minimum[c])
             .fold(0f32, f32::max).max(0.00001);
         let (yaw_sin, yaw_cos) = self.yaw.to_radians().sin_cos();
         let (pitch_sin, pitch_cos) = self.pitch.to_radians().sin_cos();
@@ -73,7 +73,7 @@ impl<Message> canvas::Program<Message> for MeshViewport {
         let step = count.div_ceil(16000).max(1);
         let source = &self.mesh.positions;
         let lines = Path::new(|path| {
-            for tri in self.mesh.indices.as_chunks::<3>()0.0.iter().step_by(step) {
+            for tri in self.mesh.indices.as_chunks::<3>().0.iter().step_by(step) {
                 let a = source.get(tri[0] as usize).copied().and_then(project);
                 let b = source.get(tri[1] as usize).copied().and_then(project);
                 let c = source.get(tri[2] as usize).copied().and_then(project);
