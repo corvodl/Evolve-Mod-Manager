@@ -4,7 +4,7 @@ use evolve_core::{
     export_dds_png, export_edited_layer, export_model_glb, export_model_obj, export_terrain_obj,
     extract_legacy_pak, extract_signed_pak, inspect_caf_file, inspect_dds, inspect_legacy_pak,
     inspect_signed_pak, load_level_scene, read_cdf, read_model, read_terrain, rebuild_legacy_pak,
-    scan_directory, write_inventory_json,
+    scan_directory, write_inventory_json, rebuild_signed_pak_entry, export_level_scene_glb,
 };
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
@@ -35,6 +35,7 @@ fn usage() -> String {
         "  evolve-cli fbx export <rigged.glb> <Blender.exe> <new.fbx> [--animations]",
         "  evolve-cli signed inspect <original.pak> <public-key.der> <signed-basename> [info.json]",
         "  evolve-cli signed extract <original.pak> <public-key.der> <signed-basename> <new-folder>",
+        "  evolve-cli signed rebuild <original.pak> <old-public.der> <new-private.pem> <new-public.der> <basename> <member> <replacement> <new.pak>",
         "  evolve-cli model inspect <model.cgf|model.skin> [model-info.json]",
         "  evolve-cli model obj <model.cgf|model.skin> <new.obj>",
         "  evolve-cli model glb <model.cgf|model.skin> <new.glb>",
@@ -42,10 +43,12 @@ fn usage() -> String {
         "  evolve-cli terrain inspect <Heightmap.dat> [terrain-info.json]",
         "  evolve-cli terrain obj <Heightmap.dat> <new-terrain.obj>",
         "  evolve-cli level inspect <mission.xml|layer.lyr> [scene-info.json]",
+        "  evolve-cli level glb <mission.xml|layer.lyr> <asset-folder> <new-scene.glb> [Heightmap.dat]",
+        "  evolve-cli level fbx <mission.xml|layer.lyr> <asset-folder> <Blender.exe> <new-scene.fbx> [Heightmap.dat]",
         "  evolve-cli level edit <mission.xml|layer.lyr> <new.xml> <GUID> <x,y,z> [w,x,y,z] [sx,sy,sz]",
         "",
         "Signed Stage 2 PAKs require the matching local PUBLIC RSA key and exact signed basename.",
-        "Native Stage 2 re-signing and mod-injection are NOT available.",
+        "Signed Stage 2 replacement requires a separate local RSA private key; game acceptance is unverified.",
         "Outputs are never silently overwritten.",
     ]
     .join("\n")
@@ -121,6 +124,51 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
     }
     let subcommand = pop(&mut args)?;
     let source: PathBuf = pop(&mut args)?.into();
+    if verb == OsStr::new("signed") && subcommand == OsStr::new("rebuild") {
+        let old_public: PathBuf = pop(&mut args)?.into();
+        let new_private: PathBuf = pop(&mut args)?.into();
+        let new_public: PathBuf = pop(&mut args)?.into();
+        let basename=pop(&mut args)?.into_string().map_err(|_|usage())?;
+        let member=pop(&mut args)?.into_string().map_err(|_|usage())?;
+        let replacement:PathBuf=pop(&mut args)?.into();
+        let destination:PathBuf=pop(&mut args)?.into();
+        no_extra(&mut args)?;
+        let report=rebuild_signed_pak_entry(
+            &source,&old_public,&new_private,&new_public,&basename,&member,
+            &replacement,&destination,
+        ).map_err(|e|e.to_string())?;
+        println!("Re-signed and independently verified {} ({} -> {} bytes)",
+            report.changed_entry,report.original_bytes,report.replacement_bytes);
+        println!("Output: {}. Original PAK was not modified.",destination.display());
+        return Ok(());
+    }
+    if verb == OsStr::new("level") && subcommand == OsStr::new("glb") {
+        let library:PathBuf=pop(&mut args)?.into();
+        let destination:PathBuf=pop(&mut args)?.into();
+        let terrain:Option<PathBuf>=args.next().map(Into::into);
+        no_extra(&mut args)?;
+        let report=export_level_scene_glb(&source,&library,terrain.as_deref(),&destination)
+            .map_err(|e|e.to_string())?;
+        println!("Blender GLB scene: {} model resources, {} placed meshes, {} metadata-only nodes",
+            report.exported_mesh_resources,report.exported_mesh_instances,report.metadata_only_objects);
+        println!("Output: {} ({} bytes). Geometry-only export.",destination.display(),report.output_bytes);
+        return Ok(());
+    }
+    if verb == OsStr::new("level") && subcommand == OsStr::new("fbx") {
+        let library:PathBuf=pop(&mut args)?.into();
+        let blender:PathBuf=pop(&mut args)?.into();
+        let destination:PathBuf=pop(&mut args)?.into();
+        let terrain:Option<PathBuf>=args.next().map(Into::into);
+        no_extra(&mut args)?;
+        let tmp=tempfile::tempdir().map_err(|e|e.to_string())?;
+        let glb=tmp.path().join("map.glb");
+        export_level_scene_glb(&source,&library,terrain.as_deref(),&glb)
+            .map_err(|e|e.to_string())?;
+        let report=convert_glb_to_fbx(&blender,&glb,&destination,AnimationPolicy::default())
+            .map_err(|e|e.to_string())?;
+        println!("Blender map scene FBX: {} bytes, source geometry only.",report.output_size);
+        return Ok(());
+    }
     if verb == OsStr::new("signed") {
         let key: PathBuf = pop(&mut args)?.into();
         let basename = pop(&mut args)?
