@@ -15,6 +15,7 @@ pub mod policy;
 pub mod rig;
 pub mod scene;
 pub mod signed_pak;
+pub mod staging;
 pub mod terrain;
 
 pub use animation::{
@@ -60,3 +61,5 @@ pub use signed_pak::{
 pub use terrain::{
     TerrainError, TerrainInfo, TerrainMesh, decode_terrain_bytes, export_terrain_obj, read_terrain,
 };
+
+pub use staging::{StageError, StageTransaction, apply_stage_pak, import_stage_pak, initialize_stage, restore_stage, stage_status};
