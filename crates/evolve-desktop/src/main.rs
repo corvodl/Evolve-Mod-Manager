@@ -1043,7 +1043,7 @@ fn view(state: &State) -> Element<'_, Message> {
                 if !state.converted_glbs.is_empty() {
                     let mut items=column![text("Verified converter GLB outputs (select exact file)")].spacing(4);
                     for (index,file) in state.converted_glbs.iter().enumerate().take(32) {
-                        items=items.push(button(file.file_name().unwrap_or_default().to_string_lossy().to_string())
+                        items=items.push(button(text(file.file_name().unwrap_or_default().to_string_lossy().to_string()))
                             .on_press(Message::OpenConvertedGlb(index)));
                     }
                     scrollable(items).height(Length::Fixed(160.)).into()
@@ -1055,7 +1055,7 @@ fn view(state: &State) -> Element<'_, Message> {
                     let clips=loaded.list_clips();
                     let mut chooser=column![text(format!("Verified glTF animation clips: {}",clips.len()))].spacing(4);
                     for (i,clip) in clips.iter().enumerate().take(64) {
-                        chooser=chooser.push(button(format!("{} • {:.2}s • {} channels",clip.name,clip.duration,clip.channels))
+                        chooser=chooser.push(button(text(format!("{} • {:.2}s • {} channels",clip.name,clip.duration,clip.channels)))
                             .on_press(Message::SelectMotionClip(i)));
                     }
                     let chosen=clips.get(state.selected_motion_clip);
