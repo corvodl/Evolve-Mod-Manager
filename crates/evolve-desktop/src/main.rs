@@ -1,6 +1,7 @@
 //! Native wgpu-backed desktop shell. Asset operations use blocking workers, so
 //! file I/O/decompression never runs in the interactive Iced view/update path.
 mod asset_viewer;
+mod developer_auth;
 mod private_pages;
 mod settings;
 mod textured;
@@ -161,6 +162,7 @@ struct State {
     developer_status: String,
     developer_unlocked: bool,
     developer_attempts: u8,
+    developer_checking: bool,
     show_advanced_tools: bool,
     show_activity: bool,
 }
@@ -508,6 +510,7 @@ enum Message {
     ToggleActivity,
     DeveloperPasswordChanged(String),
     UnlockDeveloper,
+    DeveloperChecked(bool),
     LockDeveloper,
     InputChanged(String),
     OutputChanged(String),
@@ -642,31 +645,54 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::Navigate(page) => state.page = Some(page),
         Message::ToggleAdvancedTools => state.show_advanced_tools = !state.show_advanced_tools,
         Message::ToggleActivity => state.show_activity = !state.show_activity,
-        Message::DeveloperPasswordChanged(value) => state.developer_password = value,
+        Message::DeveloperPasswordChanged(value) => {
+            if !state.developer_checking && value.len() <= 128 {
+                state.developer_password = value;
+            }
+        }
         Message::LockDeveloper => {
             state.developer_unlocked = false;
+            state.developer_checking = false;
             state.developer_password.clear();
             state.developer_status.clear();
         }
         Message::UnlockDeveloper => {
-            use sha2::{Digest, Sha256};
-            let expected = std::env::var("EVOLVE_MOD_MANAGER_DEV_SHA256").unwrap_or_default();
-            let digest = format!("{:x}", Sha256::digest(state.developer_password.as_bytes()));
-            let authenticated = expected.len() == 64
-                && digest
-                    .bytes()
-                    .zip(expected.bytes())
-                    .fold(0u8, |diff, (a, b)| diff | a ^ b)
-                    == 0;
-            state.developer_password.clear();
+            if state.developer_unlocked || state.developer_checking {
+                return Task::none();
+            }
             if state.developer_attempts >= 5 {
+                state.developer_password.clear();
                 state.developer_status = "Developer access locked for this session.".into();
-            } else if authenticated {
+                return Task::none();
+            }
+            let password = zeroize::Zeroizing::new(std::mem::take(&mut state.developer_password));
+            state.developer_checking = true;
+            state.developer_status = "Checking developer credentials...".into();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || developer_auth::verify(password.as_str()))
+                        .await
+                        .unwrap_or(false)
+                },
+                Message::DeveloperChecked,
+            );
+        }
+        Message::DeveloperChecked(authenticated) => {
+            // Ignore a stale verification result if the user locked the panel.
+            if !state.developer_checking {
+                return Task::none();
+            }
+            state.developer_checking = false;
+            if authenticated {
                 state.developer_unlocked = true;
                 state.developer_status.clear();
             } else {
-                state.developer_attempts += 1;
-                state.developer_status = "Invalid or unavailable developer credentials.".into();
+                state.developer_attempts = state.developer_attempts.saturating_add(1);
+                state.developer_status = if state.developer_attempts >= 5 {
+                    "Developer access locked for this session.".into()
+                } else {
+                    "Invalid developer credentials.".into()
+                };
             }
         }
         Message::OpenViewer | Message::ViewerOpened | Message::WindowClosed(_) => {}
