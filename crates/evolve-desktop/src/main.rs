@@ -52,7 +52,8 @@ use iced::{Element, Fill, Length, Subscription, Task, Theme, window};
 use modding_projects::{ProjectRow, discover_projects};
 use selection::MultiSelection;
 use settings::{Preferences, load_from, save_to, settings_path};
-use std::collections::HashSet;
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
@@ -245,6 +246,15 @@ struct State {
     level_selected: Option<usize>,
     level_selection: MultiSelection,
     level_zoom: f32,
+    level_source: Option<PathBuf>,
+    level_source_sha: String,
+    level_original_transforms: HashMap<String, evolve_core::Transform>,
+    level_undo: Vec<(String, evolve_core::Transform)>,
+    level_redo: Vec<(String, evolve_core::Transform)>,
+    level_edit_position: String,
+    level_edit_rotation: String,
+    level_edit_scale: String,
+    level_edit_output: String,
     scan_cancel: Option<Arc<AtomicBool>>,
     scan_indexed: Option<Arc<AtomicUsize>>,
     preview_cache: SharedCache,
@@ -313,6 +323,7 @@ enum Operation {
     LoadDeclaredClip(usize, String, Inventory, Option<PathBuf>, Option<String>),
     LoadDeclaredDba(String, Inventory, Option<PathBuf>, Option<String>, PathBuf),
     InspectLevel(PathBuf),
+    ExportEditedLevel(PathBuf, PathBuf, Vec<(String, evolve_core::Transform)>, String),
     InspectTerrain(PathBuf),
     InspectSignedPak(PathBuf, PathBuf, String),
     ExtractSignedPak(PathBuf, PathBuf, String, PathBuf),
@@ -383,7 +394,8 @@ enum Completed {
     Model(RenderMesh),
     ModelResources(String, auto_resources::AutoDiscovery),
     DeclaredClip(usize, String, NativeCafMotion),
-    Level(LevelScene),
+    Level(LevelScene, PathBuf, String),
+    EditedLevelExported(PathBuf, usize),
     Terrain(RenderMesh, TerrainInfo),
     SignedPak(SignedPakInfo),
     ExtractedSigned(usize, PathBuf),
@@ -694,9 +706,23 @@ impl Operation {
                     .map(Completed::Model)
                     .map_err(|e| format!("{}: {e}", render_source.display()))
             }
-            Self::InspectLevel(source) => load_level_scene(&source)
-                .map(Completed::Level)
-                .map_err(|e| e.to_string()),
+            Self::InspectLevel(source) => {
+                let scene = load_level_scene(&source).map_err(|e| e.to_string())?;
+                let checksum = level_source_hash(&source)?;
+                Ok(Completed::Level(scene, source, checksum))
+            }
+            Self::ExportEditedLevel(source, destination, edits, expected_sha) => {
+                if level_source_hash(&source)? != expected_sha {
+                    return Err("Level source changed since inspection; reload before exporting".into());
+                }
+                evolve_core::export_edited_layers(&source, &destination, &edits)
+                    .map_err(|e| e.to_string())?;
+                if level_source_hash(&source)? != expected_sha {
+                    let _ = std::fs::remove_file(&destination);
+                    return Err("Level source changed during export; incomplete output removed".into());
+                }
+                Ok(Completed::EditedLevelExported(destination, edits.len()))
+            },
             Self::InspectTerrain(source) => {
                 let terrain = read_terrain(&source, 129).map_err(|e| e.to_string())?;
                 let info = terrain.info.clone();
@@ -937,6 +963,14 @@ enum Message {
     LevelSelect(usize),
     LevelFilterChanged(String),
     LevelZoomChanged(f32),
+    LevelEditPositionChanged(String),
+    LevelEditRotationChanged(String),
+    LevelEditScaleChanged(String),
+    LevelEditOutputChanged(String),
+    LevelApplyTransform,
+    LevelUndoTransform,
+    LevelRedoTransform,
+    LevelExportEdits,
     ToggleAdvancedTools,
     ToggleActivity,
     ClearActivity,
@@ -1035,6 +1069,40 @@ enum Message {
     StartRebuild,
     StartPngExport,
     Finished(Result<Completed, String>),
+}
+
+fn level_source_hash(source: &Path) -> Result<String, String> {
+    use std::io::Read;
+    let file = std::fs::File::open(source).map_err(|e| e.to_string())?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut hash = Sha256::new();
+    let mut chunk = [0u8; 64 * 1024];
+    loop {
+        let count = reader.read(&mut chunk).map_err(|e| e.to_string())?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&chunk[..count]);
+    }
+    Ok(format!("{:x}", hash.finalize()))
+}
+
+fn sync_level_fields(state: &mut State) {
+    let transform = state
+        .level_selected
+        .and_then(|index| state.level_scene.as_ref()?.objects.get(index))
+        .map(|object| object.local);
+    if let Some(transform) = transform {
+        (
+            state.level_edit_position,
+            state.level_edit_rotation,
+            state.level_edit_scale,
+        ) = level_workspace::format_transform(transform);
+    } else {
+        state.level_edit_position.clear();
+        state.level_edit_rotation.clear();
+        state.level_edit_scale.clear();
+    }
 }
 
 fn launch(state: &mut State, operation: Operation) -> Task<Message> {
