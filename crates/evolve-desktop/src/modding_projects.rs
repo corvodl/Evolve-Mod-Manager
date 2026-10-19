@@ -378,7 +378,11 @@ pub fn build_project_raw(
     projects: &Path,
     stage: &Path,
 ) -> Result<(String, PathBuf), String> {
-    if !project.changed_known || project.modified.is_empty() || project.modified.len() > 64 || project.status != "Modified" {
+    if !project.changed_known
+        || project.modified.is_empty()
+        || project.modified.len() > 64
+        || project.status != "Modified"
+    {
         return Err("A signed build requires 1–64 verified changed raw members; refresh the project before building.".into());
     }
     let parent = fs::canonicalize(projects).map_err(|e| e.to_string())?;
@@ -390,13 +394,16 @@ pub fn build_project_raw(
         return Err("Selected workspace is outside Projects".into());
     }
     let manifest = read_json(&folder.join(".evolve-pak-workspace.json"), 8 * 1024 * 1024)?;
-    let records = manifest.get("entries")
-        .and_then(Value::as_array).ok_or("Original manifest has no file records")?;
+    let records = manifest
+        .get("entries")
+        .and_then(Value::as_array)
+        .ok_or("Original manifest has no file records")?;
     for rel in &project.modified {
         if !safe_member(rel) {
             return Err("Unsafe modified member".into());
         }
-        let expected = records.iter()
+        let expected = records
+            .iter()
             .find(|entry| entry.get("path").and_then(Value::as_str) == Some(rel.as_str()))
             .ok_or("Modified member is absent from the verified original manifest")?;
         if expected.get("format").and_then(Value::as_str) != Some("raw") {
@@ -481,8 +488,13 @@ pub fn build_project_raw(
     fs::create_dir(&output_folder).map_err(|e| e.to_string())?;
     let output = output_folder.join(&basename);
     let result = evolve_core::rebuild_signed_pak_entries(
-        &original, &keys.public, &keys.private, &keys.public,
-        &basename, &replacements, &output,
+        &original,
+        &keys.public,
+        &keys.private,
+        &keys.public,
+        &basename,
+        &replacements,
+        &output,
     );
     match result {
         Ok(reports) => Ok((format!("{} modified raw member(s)", reports.len()), output)),
