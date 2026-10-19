@@ -47,14 +47,14 @@ pub struct StageTransaction {
     pub after_sha256: String,
 }
 
-fn ordinary(path: &Path) -> Result<(), StageError> {
+pub(crate) fn ordinary(path: &Path) -> Result<(), StageError> {
     if !fs::symlink_metadata(path)?.file_type().is_file() {
         return Err(StageError::UnsafePath(path.display().to_string()));
     }
     Ok(())
 }
 
-fn digest(path: &Path) -> Result<String, StageError> {
+pub(crate) fn digest(path: &Path) -> Result<String, StageError> {
     ordinary(path)?;
     if fs::metadata(path)?.len() > LIMIT {
         return Err(StageError::Verification(
@@ -74,7 +74,7 @@ fn digest(path: &Path) -> Result<String, StageError> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn copy_checked(source: &Path, destination: &Path, expected: &str) -> Result<(), StageError> {
+pub(crate) fn copy_checked(source: &Path, destination: &Path, expected: &str) -> Result<(), StageError> {
     ordinary(source)?;
     let mut input = File::open(source)?;
     let mut output = OpenOptions::new()
@@ -89,7 +89,7 @@ fn copy_checked(source: &Path, destination: &Path, expected: &str) -> Result<(),
     Ok(())
 }
 
-fn workspace(root: &Path) -> Result<PathBuf, StageError> {
+pub(crate) fn workspace(root: &Path) -> Result<PathBuf, StageError> {
     let kind = fs::symlink_metadata(root)
         .map_err(|_| StageError::InvalidWorkspace)?
         .file_type();
@@ -114,7 +114,7 @@ fn workspace(root: &Path) -> Result<PathBuf, StageError> {
     Ok(root)
 }
 
-fn target_name(raw: &str) -> Result<String, StageError> {
+pub(crate) fn target_name(raw: &str) -> Result<String, StageError> {
     let clean = safe_member_name(raw).map_err(|e| StageError::UnsafePath(e.to_string()))?;
     if !clean.to_ascii_lowercase().ends_with(".pak") {
         return Err(StageError::UnsafePath(clean));
@@ -122,7 +122,7 @@ fn target_name(raw: &str) -> Result<String, StageError> {
     Ok(clean)
 }
 
-fn stage_target(root: &Path, name: &str, create_parent: bool) -> Result<PathBuf, StageError> {
+pub(crate) fn stage_target(root: &Path, name: &str, create_parent: bool) -> Result<PathBuf, StageError> {
     let mut path = root.join("paks");
     let pieces = name.split('/').collect::<Vec<_>>();
     for component in &pieces[..pieces.len() - 1] {
@@ -173,6 +173,10 @@ fn verify(path: &Path, public_key: &Path, basename: &str) -> Result<HashSet<Stri
 }
 
 fn active(root: &Path) -> Result<Option<StageTransaction>, StageError> {
+    // Single-file transactions cannot overlap with a batch profile swap.
+    if fs::symlink_metadata(root.join("bundle-active.json")).is_ok() {
+        return Err(StageError::Pending);
+    }
     let path = root.join(JOURNAL);
     if fs::symlink_metadata(&path).is_err() {
         return Ok(None);
