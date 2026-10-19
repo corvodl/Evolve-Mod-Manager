@@ -47,6 +47,7 @@ pub use fbx::{FbxError, FbxReport, convert_glb_to_fbx, validate_glb_source};
 pub use glb::{GlbError, export_model_glb, geometry_glb_bytes};
 pub use inventory::{
     AssetEntry, AssetKind, Inventory, InventoryError, MAX_ENTRIES, scan_directory,
+    scan_directory_with_progress,
     write_inventory_json,
 };
 pub use level_export::{LevelExportError, LevelExportReport, export_level_scene_glb};
