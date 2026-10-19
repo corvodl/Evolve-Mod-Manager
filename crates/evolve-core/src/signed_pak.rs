@@ -937,7 +937,6 @@ pub fn rebuild_signed_pak_entry(
     })
 }
 
-
 /// Build several modified members into ONE newly signed archive. Each
 /// intermediate archive stays in a private temporary directory inside the
 /// requested output volume. The final name is published only after the new
@@ -976,8 +975,11 @@ pub fn rebuild_signed_pak_entries(
     for (path, replacement) in changes {
         if safe_member_name(path).map_err(|_| SignedPakError::UnsafePath(path.clone()))? != *path
             || !seen.insert(path.to_ascii_lowercase())
-            || !original.info.entries.iter().any(|member| member.path == *path
-                && matches!(member.method, 13 | 14))
+            || !original
+                .info
+                .entries
+                .iter()
+                .any(|member| member.path == *path && matches!(member.method, 13 | 14))
         {
             return Err(SignedPakError::Format(format!(
                 "Unsupported, missing, or duplicate replacement entry: {path}"
@@ -988,23 +990,35 @@ pub fn rebuild_signed_pak_entries(
             return Err(SignedPakError::Limits);
         }
         replacement_total = replacement_total
-            .checked_add(metadata.len()).ok_or(SignedPakError::Limits)?;
+            .checked_add(metadata.len())
+            .ok_or(SignedPakError::Limits)?;
         if replacement_total > MAX_TOTAL_BYTES {
             return Err(SignedPakError::Limits);
         }
     }
     let work = tempfile::Builder::new()
-        .prefix(".signed-batch-").tempdir_in(parent)?;
+        .prefix(".signed-batch-")
+        .tempdir_in(parent)?;
     let mut current = source.to_path_buf();
     let mut reports = Vec::with_capacity(changes.len());
     for (index, (member, replacement)) in changes.iter().enumerate() {
         let step = work.path().join(format!("step-{index}"));
         fs::create_dir(&step)?;
         let next = step.join(basename);
-        let from_public = if index == 0 { original_public } else { signing_public };
+        let from_public = if index == 0 {
+            original_public
+        } else {
+            signing_public
+        };
         let report = rebuild_signed_pak_entry(
-            &current, from_public, signing_private, signing_public,
-            basename, member, replacement, &next,
+            &current,
+            from_public,
+            signing_private,
+            signing_public,
+            basename,
+            member,
+            replacement,
+            &next,
         )?;
         current = next;
         reports.push(report);
@@ -1016,7 +1030,8 @@ pub fn rebuild_signed_pak_entries(
     }
     // No-clobber publication, including a destination created while building.
     let mut staging = tempfile::Builder::new()
-        .prefix(".signed-publish-").tempfile_in(parent)?;
+        .prefix(".signed-publish-")
+        .tempfile_in(parent)?;
     let mut final_input = File::open(&current)?;
     io::copy(&mut final_input, staging.as_file_mut())?;
     staging.as_file_mut().sync_all()?;
