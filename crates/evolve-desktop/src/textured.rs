@@ -39,6 +39,7 @@ impl Vertex {
         }
     }
 }
+#[derive(Debug)]
 pub struct Primitive {
     points:Vec<Vertex>,
     indices:Vec<u32>,
