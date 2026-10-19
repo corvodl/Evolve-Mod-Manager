@@ -63,7 +63,8 @@ fn preferred_compiled_mesh(
         _ => return Ok(original.to_path_buf()),
     };
     let candidate = original.with_extension(extension);
-    let relative = candidate.strip_prefix(root)
+    let relative = candidate
+        .strip_prefix(root)
         .map_err(|_| "Compiled mesh escaped original asset root")?;
     let virtual_path = relative.to_string_lossy().replace('\\', "/");
     match resolve_virtual(inventory, &virtual_path) {
