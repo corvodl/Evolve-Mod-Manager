@@ -113,10 +113,6 @@ struct State {
     input: String,
     output: String,
     replacements: String,
-    public_key: String,
-    signed_name: String,
-    signing_private: String,
-    signing_public: String,
     signed_entry: String,
     signed_replacement: String,
     stage_target: String,
@@ -649,10 +645,6 @@ enum Message {
     InputChanged(String),
     OutputChanged(String),
     ReplacementsChanged(String),
-    PublicKeyChanged(String),
-    SignedNameChanged(String),
-    SigningPrivateChanged(String),
-    SigningPublicChanged(String),
     SignedMemberChanged(String),
     SignedReplacementChanged(String),
     StageTargetChanged(String),
@@ -1499,10 +1491,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::InputChanged(input) => state.input = input,
         Message::OutputChanged(output) => state.output = output,
         Message::ReplacementsChanged(replacements) => state.replacements = replacements,
-        Message::PublicKeyChanged(key) => state.public_key = key,
-        Message::SignedNameChanged(name) => state.signed_name = name,
-        Message::SigningPrivateChanged(value) => state.signing_private = value,
-        Message::SigningPublicChanged(value) => state.signing_public = value,
         Message::SignedMemberChanged(value) => state.signed_entry = value,
         Message::SignedReplacementChanged(value) => state.signed_replacement = value,
         Message::StageTargetChanged(value) => state.stage_target = value,
@@ -2658,7 +2646,7 @@ fn view(state: &State) -> Element<'_, Message> {
         text("EVOLVE / MOD MANAGER").size(18),
         text(format!("  /  {}", page.title())).size(12),
         space().width(Fill),
-        button("Help").on_press(Message::Navigate(Page::Instructions)),
+        button("Help").on_press(Message::Navigate(Page::Instructions)).style(button::secondary),
         button("Activity")
             .on_press(Message::ToggleActivity)
             .style(button::secondary),
@@ -2678,8 +2666,8 @@ fn view(state: &State) -> Element<'_, Message> {
             text_input("Local asset folder, .pak or .dds path...", &state.input)
                 .on_input(Message::InputChanged)
                 .width(Fill),
-            button("Scan folder").on_press(Message::StartScan),
-            button("Open Asset Viewer").on_press(Message::OpenViewer),
+            button("Scan folder").on_press(Message::StartScan).style(button::secondary),
+            button("Open Asset Viewer").on_press(Message::OpenViewer).style(button::secondary),
         ]
         .spacing(8),
         row![
@@ -2708,22 +2696,13 @@ fn view(state: &State) -> Element<'_, Message> {
         ]
         .spacing(8),
         row![
-            text_input(
-                "Local signed archive RSA public DER key...",
-                &state.public_key
-            )
-            .on_input(Message::PublicKeyChanged)
-            .width(Fill),
-            text_input(
-                "Original signed basename (e.g. libs.pak)...",
-                &state.signed_name
-            )
-            .on_input(Message::SignedNameChanged)
-            .width(220),
-            button("Verify Stage 2 PAK").on_press(Message::StartSignedInspection),
-            button("Extract signed PAK").on_press(Message::StartSignedExtraction),
-        ]
-        .spacing(8),
+            text("PAK signing: use the selected stage's local mykeys/ resources.")
+                .size(12),
+            button("Verify signed PAK").style(button::secondary)
+                .on_press(Message::StartSignedInspection),
+            button("Extract signed PAK").style(button::secondary)
+                .on_press(Message::StartSignedExtraction),
+        ].spacing(8),
     ]
     .spacing(9);
 
@@ -3021,7 +3000,7 @@ fn view(state: &State) -> Element<'_, Message> {
                     .on_input(Message::InputChanged)
                     .width(Fill),
                 button("Scan Folder").on_press(Message::StartScan),
-                button("Open Asset Viewer").on_press(Message::OpenViewer),
+                button("Open Asset Viewer").on_press(Message::OpenViewer).style(button::secondary),
                 button(if state.show_advanced_tools {
                     "Hide Archive Tools"
                 } else {
