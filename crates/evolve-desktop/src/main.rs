@@ -2927,12 +2927,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.status = format!("Automatic model dependencies: {} declared clips. {}", state.auto_clips.len(), state.auto_resource_note);
                     if let Some(source) = resources.material {
                         if let Some(inv) = &state.inventory {
-                            return launch(state, Operation::ResolveMaterial(
+                            let operation = Operation::ResolveMaterial(
                                 source,
                                 PathBuf::from(&inv.root),
                                 state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
                                 state.library_by_build.then(|| state.library_catalog.as_ref().and_then(|c| c.builds.get(state.library_build_index)).cloned()).flatten(),
-                            ));
+                            );
+                            return launch(state, operation);
                         }
                     }
                     if let Some(idle) = state.auto_idle_pending.take() {
@@ -3102,12 +3103,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         let root = PathBuf::from(&inv.root);
                         let input = PathBuf::from(&state.input);
                         if let Ok(relative) = input.strip_prefix(&root) {
-                            return launch(state, Operation::DiscoverModelResources(
+                            let operation = Operation::DiscoverModelResources(
                                 relative.to_string_lossy().replace('\\', "/"),
                                 inv.clone(),
                                 state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
                                 state.library_by_build.then(|| state.library_catalog.as_ref().and_then(|c| c.builds.get(state.library_build_index)).cloned()).flatten(),
-                            ));
+                            );
+                            return launch(state, operation);
                         }
                     }
                 }
