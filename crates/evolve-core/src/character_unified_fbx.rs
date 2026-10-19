@@ -4,8 +4,8 @@
 use crate::cdf::{AssetResolution, read_cdf, resolve_cdf, resolve_virtual};
 use crate::character_assembly::select_attachments;
 use crate::inventory::Inventory;
-use crate::model::read_model;
 use crate::materials::{read_material, resolve_materials};
+use crate::model::read_model;
 use crate::native_caf::read_native_caf;
 use crate::rig::{embed_diffuse_png_glb, rigged_glb_bytes, rigged_glb_bytes_with_caf};
 use image::ImageEncoder;
@@ -141,7 +141,8 @@ fn exact_single_slot_diffuse(
     inventory: &Inventory,
 ) -> Result<Option<PathBuf>, String> {
     let material = mesh_path.with_extension("mtl");
-    let rel = material.strip_prefix(root)
+    let rel = material
+        .strip_prefix(root)
         .map_err(|_| "Material path escaped the original asset root")?;
     let candidate = rel.to_string_lossy().replace('\\', "/");
     let found = match resolve_virtual(inventory, &candidate) {
@@ -157,8 +158,11 @@ fn exact_single_slot_diffuse(
         return Ok(None);
     }
     let resolved = resolve_materials(inventory, &document);
-    let diffuse = resolved.textures.iter()
-        .filter(|t| t.role == "diffuse").collect::<Vec<_>>();
+    let diffuse = resolved
+        .textures
+        .iter()
+        .filter(|t| t.role == "diffuse")
+        .collect::<Vec<_>>();
     if diffuse.is_empty() {
         return Ok(None);
     }
@@ -169,7 +173,8 @@ fn exact_single_slot_diffuse(
         AssetResolution::Found(path) => input_file(root, path).map(Some),
         AssetResolution::Missing => Ok(None),
         AssetResolution::Ambiguous(_) => Err(format!(
-            "Ambiguous authored diffuse {} in {candidate}", diffuse[0].authored_path
+            "Ambiguous authored diffuse {} in {candidate}",
+            diffuse[0].authored_path
         )),
     }
 }
@@ -239,7 +244,11 @@ pub fn export_unified_cdf_fbx(
     let mut diffuse_textured_parts = 0usize;
     for (index, (name, original)) in parts.iter().enumerate() {
         let mesh = read_model(original).map_err(|e| format!("CDF part {name}: {e}"))?;
-        if mesh.uv0.as_ref().is_none_or(|uv| uv.len() != mesh.positions.len()) {
+        if mesh
+            .uv0
+            .as_ref()
+            .is_none_or(|uv| uv.len() != mesh.positions.len())
+        {
             return Err(format!("CDF part {name} has no verified original UV0"));
         }
         let raw = fs::read(original).map_err(|e| e.to_string())?;
@@ -249,12 +258,14 @@ pub fn export_unified_cdf_fbx(
         let (mut glb, verified) = match (&motion, index) {
             (Some(clip), 0) => rigged_glb_bytes_with_caf(&mesh, &raw, &skeleton_bytes, clip),
             _ => rigged_glb_bytes(&mesh, &raw, &skeleton_bytes),
-        }.map_err(|e| format!("CDF part {name} cannot be rigged: {e}"))?;
+        }
+        .map_err(|e| format!("CDF part {name} cannot be rigged: {e}"))?;
         if bone_count.is_some_and(|count| count != verified.bone_count) {
             return Err("Compiled bone count changes between CDF parts".into());
         }
         bone_count = Some(verified.bone_count);
-        vertices = vertices.checked_add(verified.weighted_vertices)
+        vertices = vertices
+            .checked_add(verified.weighted_vertices)
             .ok_or("Vertex count overflow")?;
         if let Some(dds_path) = exact_single_slot_diffuse(&root, original, inventory)? {
             let (_info, rgba) = crate::dds::decode_dds_rgba(&dds_path)
@@ -262,9 +273,12 @@ pub fn export_unified_cdf_fbx(
             let mut png = Vec::new();
             image::codecs::png::PngEncoder::new(&mut png)
                 .write_image(
-                    rgba.as_raw(), rgba.width(), rgba.height(),
+                    rgba.as_raw(),
+                    rgba.width(),
+                    rgba.height(),
                     image::ExtendedColorType::Rgba8,
-                ).map_err(|e| format!("CDF part {name}: PNG encoding: {e}"))?;
+                )
+                .map_err(|e| format!("CDF part {name}: PNG encoding: {e}"))?;
             glb = embed_diffuse_png_glb(&glb, &png).map_err(|e| e.to_string())?;
             diffuse_textured_parts += 1;
         }
