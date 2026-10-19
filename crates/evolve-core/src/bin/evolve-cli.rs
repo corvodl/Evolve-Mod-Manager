@@ -19,8 +19,12 @@ fn run() -> Result<(), String> {
         return Err("Unexpected extra argument".into());
     }
     let inventory = scan_directory(&root).map_err(|e| e.to_string())?;
-    println!("Scanned {} assets ({} bytes); skipped {} links",
-             inventory.entries.len(), inventory.total_bytes, inventory.skipped_symlinks);
+    println!(
+        "Scanned {} assets ({} bytes); skipped {} links",
+        inventory.entries.len(),
+        inventory.total_bytes,
+        inventory.skipped_symlinks
+    );
     if let Some(output) = output {
         write_inventory_json(&inventory, &output).map_err(|e| e.to_string())?;
         println!("Report written to {}", output.display());
