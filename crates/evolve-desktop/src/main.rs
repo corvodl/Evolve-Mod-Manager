@@ -323,7 +323,12 @@ enum Operation {
     LoadDeclaredClip(usize, String, Inventory, Option<PathBuf>, Option<String>),
     LoadDeclaredDba(String, Inventory, Option<PathBuf>, Option<String>, PathBuf),
     InspectLevel(PathBuf),
-    ExportEditedLevel(PathBuf, PathBuf, Vec<(String, evolve_core::Transform)>, String),
+    ExportEditedLevel(
+        PathBuf,
+        PathBuf,
+        Vec<(String, evolve_core::Transform)>,
+        String,
+    ),
     InspectTerrain(PathBuf),
     InspectSignedPak(PathBuf, PathBuf, String),
     ExtractSignedPak(PathBuf, PathBuf, String, PathBuf),
@@ -713,16 +718,20 @@ impl Operation {
             }
             Self::ExportEditedLevel(source, destination, edits, expected_sha) => {
                 if level_source_hash(&source)? != expected_sha {
-                    return Err("Level source changed since inspection; reload before exporting".into());
+                    return Err(
+                        "Level source changed since inspection; reload before exporting".into(),
+                    );
                 }
                 evolve_core::export_edited_layers(&source, &destination, &edits)
                     .map_err(|e| e.to_string())?;
                 if level_source_hash(&source)? != expected_sha {
                     let _ = std::fs::remove_file(&destination);
-                    return Err("Level source changed during export; incomplete output removed".into());
+                    return Err(
+                        "Level source changed during export; incomplete output removed".into(),
+                    );
                 }
                 Ok(Completed::EditedLevelExported(destination, edits.len()))
-            },
+            }
             Self::InspectTerrain(source) => {
                 let terrain = read_terrain(&source, 129).map_err(|e| e.to_string())?;
                 let info = terrain.info.clone();
@@ -1116,7 +1125,10 @@ fn restore_level_history(state: &mut State, undo: bool) {
     };
     let result = state.level_scene.as_ref().and_then(|scene| {
         let current = scene.objects.iter().find(|object| object.id == id)?.local;
-        Some((current, evolve_core::edit_level_transform(scene, &id, previous)))
+        Some((
+            current,
+            evolve_core::edit_level_transform(scene, &id, previous),
+        ))
     });
     match result {
         Some((current, Ok(scene))) => {
@@ -2097,7 +2109,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Ok(edited) => {
                     let applied = edited.objects[index].local;
                     if applied != previous {
-                        state.level_original_transforms.entry(id.clone()).or_insert(previous);
+                        state
+                            .level_original_transforms
+                            .entry(id.clone())
+                            .or_insert(previous);
                         if state.level_undo.len() >= 64 {
                             state.level_undo.remove(0);
                         }
@@ -2106,7 +2121,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.level_scene = Some(Arc::new(edited));
                         sync_level_fields(state);
                         state.status =
-                            "Local transform preview updated; export a separate layer to save it.".into();
+                            "Local transform preview updated; export a separate layer to save it."
+                                .into();
                     }
                 }
                 Err(error) => state.status = format!("Invalid level transform: {error}"),
@@ -2122,10 +2138,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
             let destination = PathBuf::from(state.level_edit_output.trim());
             if !destination.is_absolute()
-                || destination.extension().and_then(|e| e.to_str()).is_none_or(|extension| {
-                    !extension.eq_ignore_ascii_case("lyr")
-                        && !extension.eq_ignore_ascii_case("xml")
-                })
+                || destination
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_none_or(|extension| {
+                        !extension.eq_ignore_ascii_case("lyr")
+                            && !extension.eq_ignore_ascii_case("xml")
+                    })
                 || destination.exists()
             {
                 state.status = "Choose a NEW absolute .lyr or .xml output file.".into();
@@ -2148,18 +2167,25 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if !state.library_root.trim().is_empty() {
                 protected.push(PathBuf::from(&state.library_root));
             }
-            if protected.iter().any(|root| {
-                std::fs::canonicalize(root).is_ok_and(|root| parent.starts_with(root))
-            }) {
-                state.status = "Export outside the original extracted assets and Asset Library.".into();
+            if protected
+                .iter()
+                .any(|root| std::fs::canonicalize(root).is_ok_and(|root| parent.starts_with(root)))
+            {
+                state.status =
+                    "Export outside the original extracted assets and Asset Library.".into();
                 return Task::none();
             }
             let edits = state
                 .level_original_transforms
                 .iter()
                 .filter_map(|(id, original)| {
-                    scene.objects.iter().find(|object| &object.id == id)
-                        .and_then(|object| (object.local != *original).then_some((id.clone(), object.local)))
+                    scene
+                        .objects
+                        .iter()
+                        .find(|object| &object.id == id)
+                        .and_then(|object| {
+                            (object.local != *original).then_some((id.clone(), object.local))
+                        })
                 })
                 .collect::<Vec<_>>();
             if edits.is_empty() || edits.len() > 128 {
