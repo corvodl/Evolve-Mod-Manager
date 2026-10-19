@@ -120,12 +120,11 @@ impl Preferences {
         if !self.viewer_split.is_finite() || !(0.25..=0.8).contains(&self.viewer_split) {
             self.viewer_split = 0.67;
         }
-        if !self.animation_speed.is_finite()
-            || !(0.1..=3.0).contains(&self.animation_speed)
-        {
+        if !self.animation_speed.is_finite() || !(0.1..=3.0).contains(&self.animation_speed) {
             self.animation_speed = 1.0;
         }
-        if !self.saved_yaw.is_finite() || !self.saved_pitch.is_finite()
+        if !self.saved_yaw.is_finite()
+            || !self.saved_pitch.is_finite()
             || !self.saved_zoom.is_finite()
         {
             self.saved_yaw = 0.0;
