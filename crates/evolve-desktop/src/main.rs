@@ -5,14 +5,14 @@ mod textured;
 mod updater;
 mod viewport;
 use evolve_core::{
-    AnimatedGlb, AnimationPolicy, AssetEntry, CdfDefinition, ConvertedMotion, DdsInfo, Inventory,
+    AnimatedGlb, AnimationPolicy, AssetEntry, AssetResolution, CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, Inventory,
     LevelScene, ModelInfo, NativeCafMotion, PakInventory, RenderMesh, RigReport, SignedPakInfo,
     StageTransaction, TerrainInfo, apply_stage_pak, convert_glb_to_fbx, convert_original_motion,
     decode_dds_rgba, export_dds_png, export_level_scene_glb, export_rigged_character_fbx,
     export_rigged_character_glb, extract_legacy_pak, extract_signed_pak, import_stage_pak,
     initialize_stage, inspect_dds, inspect_legacy_pak, inspect_signed_pak, load_level_scene,
     read_cdf, read_model, read_native_caf, read_terrain, rebuild_legacy_pak,
-    rebuild_signed_pak_entry, restore_stage, scan_directory, stage_status,
+    rebuild_signed_pak_entry, resolve_cdf, restore_stage, scan_directory, stage_status,
 };
 use iced::widget::{
     button, canvas, column, container, image, row, scrollable, shader, slider, svg, text,
@@ -142,6 +142,7 @@ enum Operation {
     ConvertMotion(PathBuf, PathBuf, PathBuf, PathBuf),
     LoadGlbMotion(PathBuf),
     InspectCdf(PathBuf),
+    ResolveCdf(PathBuf, PathBuf),
     InspectModel(PathBuf),
     InspectLevel(PathBuf),
     InspectTerrain(PathBuf),
@@ -182,6 +183,7 @@ enum Completed {
     MotionConverted(ConvertedMotion, PathBuf),
     MotionGlb(AnimatedGlb),
     Character(CdfDefinition),
+    CharacterDependencies(CdfDependencyReport),
     Model(RenderMesh),
     Level(LevelScene),
     Terrain(RenderMesh, TerrainInfo),
@@ -275,6 +277,11 @@ impl Operation {
                 extract_signed_pak(&source, &key, &name, &dest)
                     .map(|i| Completed::ExtractedSigned(i.entries.len(), dest))
                     .map_err(|e| e.to_string())
+            }
+            Self::ResolveCdf(source, asset_root) => {
+                let definition = read_cdf(&source).map_err(|e| e.to_string())?;
+                let inventory = scan_directory(&asset_root).map_err(|e| e.to_string())?;
+                Ok(Completed::CharacterDependencies(resolve_cdf(&inventory, &definition)))
             }
             Self::InspectCdf(source) => read_cdf(&source)
                 .map(Completed::Character)
@@ -426,6 +433,7 @@ enum Message {
     StartRigFbx,
     StartMotionConversion,
     StartCdfInspection,
+    StartCdfResolve,
     StartModelInspection,
     StartLevelInspection,
     StartTerrainInspection,
@@ -872,6 +880,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let source = PathBuf::from(&state.input);
             return launch(state, Operation::InspectDds(source));
         }
+        Message::StartCdfResolve => {
+            if state.input.trim().is_empty() || state.assets_root.trim().is_empty() {
+                state.status = "Select character CDF and extracted Asset Library root.".into();
+                return Task::none();
+            }
+            return launch(state, Operation::ResolveCdf(
+                PathBuf::from(&state.input),
+                PathBuf::from(&state.assets_root),
+            ));
+        }
         Message::StartCdfInspection => {
             let source = PathBuf::from(&state.input);
             return launch(state, Operation::InspectCdf(source));
@@ -1145,6 +1163,24 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         texture.streaming_parts
                     );
                     state.texture = Some(texture);
+                    state.page = Some(Page::Models);
+                }
+                Ok(Completed::CharacterDependencies(report)) => {
+                    let entries = std::iter::once(&report.skeleton)
+                        .chain(report.attachments.iter().map(|(_, status)| status));
+                    let mut found = 0;
+                    let mut missing = 0;
+                    let mut ambiguous = 0;
+                    for result in entries {
+                        match result {
+                            AssetResolution::Found(_) => found += 1,
+                            AssetResolution::Missing => missing += 1,
+                            AssetResolution::Ambiguous(_) => ambiguous += 1,
+                        }
+                    }
+                    state.status = format!(
+                        "CDF dependencies: {found} exact resolved, {missing} missing, {ambiguous} ambiguous. No filename guessing."
+                    );
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::Character(character)) => {
@@ -1526,7 +1562,12 @@ fn view(state: &State) -> Element<'_, Message> {
                 } else {
                     "CDF: select a local character definition and choose Inspect CDF.".to_owned()
                 }),
-                text("GPU viewer draws real triangles and samples verified DDS diffuse with original UV0. Automatic material matching and skeletal skinning remain gated."),
+                text("GPU viewer uses source UV0 and explicitly selected DDS diffuse, normal and emissive. Automatic MTL matching and skeletal skinning remain gated."),
+                row![
+                    text_input("Extracted Asset Library root for CDF dependency resolution...", &state.assets_root)
+                        .on_input(Message::AssetsRootChanged).width(Fill),
+                    button("Resolve CDF parts").on_press(Message::StartCdfResolve),
+                ].spacing(8),
                 row![
                     text_input("Exact DDS diffuse (.dds or .dds.0) path...",&state.diffuse_input)
                         .on_input(Message::DiffuseInputChanged).width(Fill),
