@@ -52,11 +52,17 @@ pub fn select_attachments<'a>(
         ));
     };
     let keys = chosen.as_deref().and_then(|name| cdf.skin_sets.get(name));
-    let selected = cdf.attachments.iter()
+    let selected = cdf
+        .attachments
+        .iter()
         .filter(|part| {
             keys.is_none_or(|keys| {
-                let normalized: String = part.name.to_ascii_lowercase().chars()
-                    .filter(char::is_ascii_alphanumeric).collect();
+                let normalized: String = part
+                    .name
+                    .to_ascii_lowercase()
+                    .chars()
+                    .filter(char::is_ascii_alphanumeric)
+                    .collect();
                 keys.contains(&normalized)
                     || !cdf.skin_sets.values().any(|set| set.contains(&normalized))
             })
@@ -173,14 +179,16 @@ pub fn read_static_cdf_assembly(
     let cdf_location = fs::canonicalize(cdf_file)?;
     if !cdf_metadata.file_type().is_file() || !cdf_location.starts_with(&root) {
         return Err(AssemblyError::Incomplete(
-            "CDF file must be a real indexed file inside the selected asset root".into()
+            "CDF file must be a real indexed file inside the selected asset root".into(),
         ));
     }
     let definition = read_cdf(&cdf_location)?;
     let (skin_set, selected) = select_attachments(&definition)?;
     let dependencies = resolve_cdf(library, &definition);
     if !matches!(dependencies.skeleton, AssetResolution::Found(_)) {
-        return Err(AssemblyError::Incomplete("CDF skeleton missing or ambiguous".into()));
+        return Err(AssemblyError::Incomplete(
+            "CDF skeleton missing or ambiguous".into(),
+        ));
     }
     let mut names_seen = HashSet::new();
     let mut meshes = Vec::new();
