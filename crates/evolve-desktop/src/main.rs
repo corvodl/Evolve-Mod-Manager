@@ -150,6 +150,8 @@ struct State {
     blender_path: String,
     converter_path: String,
     converted_glbs: Vec<PathBuf>,
+    // Ephemeral auto-DBA converter output is deleted when this state drops.
+    converted_dba_cache: Option<Arc<tempfile::TempDir>>,
     glb_motion: Option<Arc<AnimatedGlb>>,
     selected_motion_clip: usize,
     native_caf: Option<Arc<NativeCafMotion>>,
@@ -297,6 +299,7 @@ enum Operation {
     InspectModel(PathBuf),
     DiscoverModelResources(String, Inventory, Option<PathBuf>, Option<String>),
     LoadDeclaredClip(usize, String, Inventory, Option<PathBuf>, Option<String>),
+    LoadDeclaredDba(String, Inventory, Option<PathBuf>, Option<String>, PathBuf),
     InspectLevel(PathBuf),
     InspectTerrain(PathBuf),
     InspectSignedPak(PathBuf, PathBuf, String),
@@ -357,6 +360,7 @@ enum Completed {
     RiggedExport(RigReport, PathBuf),
     FlatCdfFbxExport(FlatCdfFbxReport, PathBuf),
     MotionConverted(ConvertedMotion, PathBuf),
+    DbaConverted(ConvertedMotion, PathBuf, Arc<tempfile::TempDir>),
     MotionGlb(AnimatedGlb),
     Character(CdfDefinition),
     CharacterResolved(CdfDefinition, CdfDependencyReport),
@@ -493,6 +497,36 @@ impl Operation {
             Self::LoadCaf(source) => read_native_caf(&source)
                 .map(Completed::Caf)
                 .map_err(|e| e.to_string()),
+            Self::LoadDeclaredDba(virtual_path, inventory, imported_root, build, converter) => {
+                let source = auto_resources::resolve_declared_dba(
+                    &inventory, &virtual_path, imported_root.as_deref(), build.as_deref(),
+                )?.ok_or("Declared DBA is not present in verified extracted assets")?;
+                let local_root = std::fs::canonicalize(&inventory.root)
+                    .map_err(|e| e.to_string())?;
+                let root = if source.starts_with(&local_root) {
+                    local_root
+                } else if let Some(library_root) = imported_root {
+                    let library_root = std::fs::canonicalize(library_root)
+                        .map_err(|e| e.to_string())?;
+                    if !source.starts_with(&library_root) {
+                        return Err("DBA escaped verified local and imported asset roots".into());
+                    }
+                    let files = source.ancestors().find(|part| {
+                        part.starts_with(&library_root)
+                            && part.file_name().is_some_and(|f| f == "files")
+                    }).ok_or("Imported DBA has no verified extracted files root")?;
+                    files.to_path_buf()
+                } else {
+                    return Err("DBA has no verified extracted source root".into());
+                };
+                let temp = Arc::new(tempfile::Builder::new()
+                    .prefix("evolve-verified-dba-")
+                    .tempdir().map_err(|e| e.to_string())?);
+                let dest = temp.path().join("tracks");
+                let report = convert_original_motion(&converter, &source, &root, &dest)
+                    .map_err(|e| e.to_string())?;
+                Ok(Completed::DbaConverted(report, dest, temp))
+            }
             Self::ResolveMaterial(source, root, imported_root, build_label) => {
                 let authored = read_material(&source).map_err(|e| e.to_string())?;
                 let library = scan_directory(&root).map_err(|e| e.to_string())?;
@@ -2012,8 +2046,29 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let Some(clip) = state.auto_clips.get(index) else {
                 return Task::none();
             };
+            if clip.kind == "dba" {
+                let Some(inventory) = state.inventory.clone() else {
+                    state.status = "Index exact extracted assets to open a declared DBA.".into();
+                    return Task::none();
+                };
+                if state.converter_path.trim().is_empty() {
+                    state.status = "Configure an installed Cryengine-Converter in Settings before opening DBA tracks.".into();
+                    return Task::none();
+                }
+                let operation = Operation::LoadDeclaredDba(
+                    clip.virtual_path.clone(),
+                    inventory,
+                    state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
+                    state.library_by_build.then(|| {
+                        state.library_catalog.as_ref()
+                            .and_then(|c| c.builds.get(state.library_build_index)).cloned()
+                    }).flatten(),
+                    PathBuf::from(&state.converter_path),
+                );
+                return launch(state, operation);
+            }
             if clip.kind != "caf" {
-                state.status = "This character references a database or blendspace; native verified DBA playback is not supported yet.".into();
+                state.status = "Blendspaces and combo graphs require verified bone bindings and are not directly playable.".into();
                 return Task::none();
             }
             if let Some(path) = clip.source.clone() {
@@ -3119,6 +3174,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                     state.page = Some(Page::Models);
                 }
+                Ok(Completed::DbaConverted(result, dir, temp)) => {
+                    let count = result.clips.len();
+                    state.converted_dba_cache = Some(temp);
+                    state.converted_glbs = result.glb_files.iter().map(|relative| dir.join(relative)).collect();
+                    state.native_caf = None;
+                    state.glb_motion = None;
+                    state.playing = false;
+                    state.status = format!(
+                        "Verified {} converter-backed DBA tracks from {}. Choose an output clip; no native DBA decoder or live mesh binding is implied.",
+                        count, result.virtual_source
+                    );
+                    state.page = Some(Page::Models);
+                    if state.converted_glbs.len() == 1 {
+                        return launch(state, Operation::LoadGlbMotion(state.converted_glbs[0].clone()));
+                    }
+                }
                 Ok(Completed::MotionConverted(result, dir)) => {
                     state.status = format!(
                         "Converter produced {} validated GLB animation files, {} source clips from {}.",
@@ -3387,6 +3458,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         mesh.info.vertex_count, mesh.info.triangle_count
                     );
                     state.model = Some(Arc::new(mesh));
+                    state.converted_dba_cache = None;
+                    state.converted_glbs.clear();
                     state.auto_clips.clear();
                     state.auto_clip_filter.clear();
                     state.export_include_animation = false;
