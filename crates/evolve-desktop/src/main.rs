@@ -177,6 +177,7 @@ struct State {
     library_page: usize,
     library_show_configuration: bool,
     library_menu: Option<&'static str>,
+    library_matches: Vec<usize>,
     dependency_graph: Option<DependencyGraph>,
     comparison: Option<AssetComparison>,
     compare_original: String,
@@ -718,6 +719,31 @@ fn check_updates_task(channel: UpdateChannel) -> Task<Message> {
     )
 }
 
+/// Rebuild filtering only when the catalog, query or selected snapshot changes.
+fn refresh_library_matches(state: &mut State) {
+    let Some(catalog) = &state.library_catalog else {
+        state.library_matches.clear();
+        return;
+    };
+    let needle = state.library_search.to_ascii_lowercase();
+    let build = state.library_by_build
+        .then(|| catalog.builds.get(state.library_build_index)).flatten();
+    state.library_matches = catalog.archives.iter().enumerate().filter_map(|(i, entry)| {
+        if state.library_by_build &&
+            !build.is_some_and(|label| entry.builds.contains(label)) {
+            return None;
+        }
+        if !needle.is_empty() && !entry.name.to_ascii_lowercase().contains(&needle)
+            && !entry.description.to_ascii_lowercase().contains(&needle)
+            && !entry.group.to_ascii_lowercase().contains(&needle)
+            && !entry.source.to_ascii_lowercase().contains(&needle)
+        {
+            return None;
+        }
+        Some(i)
+    }).collect();
+}
+
 fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::Navigate(page) => {
@@ -737,10 +763,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.library_catalog = None;
             state.library_selected = None;
             state.library_page = 0;
+            refresh_library_matches(state);
         }
         Message::LibrarySearchChanged(value) => {
             state.library_search = value;
             state.library_page = 0;
+            refresh_library_matches(state);
         }
         Message::LibraryMenu(menu) => {
             state.library_menu = if state.library_menu == Some(menu) {
@@ -767,6 +795,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::LibrarySetByBuild(value) => {
             state.library_by_build = value;
             state.library_page = 0;
+            refresh_library_matches(state);
         }
         Message::LibraryNextBuild => {
             if let Some(catalog) = &state.library_catalog
@@ -775,6 +804,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.library_build_index = (state.library_build_index + 1) % catalog.builds.len();
                 state.library_selected = None;
                 state.library_page = 0;
+                refresh_library_matches(state);
             }
         }
         Message::LibrarySelect(index) => {
@@ -1726,6 +1756,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.library_page = 0;
                     state.library_menu = None;
                     state.library_show_configuration = false;
+                    refresh_library_matches(state);
                     state.page = Some(Page::AssetLibrary);
                     persist_preferences(state);
                 }
