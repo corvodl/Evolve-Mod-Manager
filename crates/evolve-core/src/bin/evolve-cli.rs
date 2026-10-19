@@ -1,12 +1,12 @@
 //! Safe command-line functions shared with the desktop application.
 use evolve_core::{
-    AnimatedGlb, AnimationPolicy, Transform, animation_references, apply_stage_pak, convert_glb_to_fbx,
-    convert_original_motion, export_dds_png, export_edited_layer, export_level_scene_glb,
-    export_model_glb, export_model_obj, export_rigged_character_fbx, export_rigged_character_glb,
-    export_terrain_obj, extract_legacy_pak, extract_signed_pak, inspect_caf_file, inspect_dds,
-    inspect_legacy_pak, inspect_signed_pak, load_level_scene, read_cdf, read_model, read_terrain,
-    rebuild_legacy_pak, rebuild_signed_pak_entry, scan_directory, write_inventory_json,
-    import_stage_pak, initialize_stage, restore_stage, stage_status,
+    AnimatedGlb, AnimationPolicy, Transform, animation_references, apply_stage_pak,
+    convert_glb_to_fbx, convert_original_motion, export_dds_png, export_edited_layer,
+    export_level_scene_glb, export_model_glb, export_model_obj, export_rigged_character_fbx,
+    export_rigged_character_glb, export_terrain_obj, extract_legacy_pak, extract_signed_pak,
+    import_stage_pak, initialize_stage, inspect_caf_file, inspect_dds, inspect_legacy_pak,
+    inspect_signed_pak, load_level_scene, read_cdf, read_model, read_terrain, rebuild_legacy_pak,
+    rebuild_signed_pak_entry, restore_stage, scan_directory, stage_status, write_inventory_json,
 };
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
@@ -166,9 +166,18 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
             let basename = pop(&mut args)?.into_string().map_err(|_| usage())?;
             no_extra(&mut args)?;
             let tx = apply_stage_pak(
-                &root, &replacement, &target, &original_key, &replacement_key, &basename
-            ).map_err(|e| e.to_string())?;
-            println!("Applied staged mod {}; recovery journal {}", tx.target, tx.id);
+                &root,
+                &replacement,
+                &target,
+                &original_key,
+                &replacement_key,
+                &basename,
+            )
+            .map_err(|e| e.to_string())?;
+            println!(
+                "Applied staged mod {}; recovery journal {}",
+                tx.target, tx.id
+            );
         } else {
             return Err(usage());
         }
