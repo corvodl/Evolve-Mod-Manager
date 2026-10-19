@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use settings::{Preferences, load_from, save_to, settings_path};
+use updater::{ReleaseUpdate, UpdateChannel, discover_update, download_installer, launch_verified_installer};
 use textured::Scene as TexturedScene;
 use viewport::MeshViewport;
 
@@ -112,6 +113,9 @@ struct State {
     busy: bool,
     preferences: Preferences,
     settings_status: String,
+    update_status: String,
+    available_update: Option<ReleaseUpdate>,
+    staged_installer: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -327,6 +331,11 @@ enum Message {
     PreferenceBlender(String),
     PreferenceWorkspace(String),
     SavePreferences,
+    CheckUpdates,
+    UpdateChecked(Result<Option<ReleaseUpdate>, String>),
+    DownloadUpdate,
+    UpdateDownloaded(Result<PathBuf, String>),
+    RunVerifiedInstaller,
     AssetsRootChanged(String),
     TerrainSourceChanged(String),
     YawChanged(f32),
@@ -381,6 +390,17 @@ fn persist_preferences(state: &mut State) {
     };
 }
 
+fn check_updates_task(channel: UpdateChannel) -> Task<Message> {
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                discover_update(channel, env!("CARGO_PKG_VERSION")).map_err(|e| e.to_string())
+            }).await.map_err(|e| format!("Update checker crashed: {e}"))?
+        },
+        Message::UpdateChecked,
+    )
+}
+
 fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::Navigate(page) => state.page = Some(page),
@@ -429,6 +449,78 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::PreferenceBlender(value) => state.preferences.blender_executable = value,
         Message::PreferenceWorkspace(value) => state.preferences.current_workspace = value,
         Message::SavePreferences => persist_preferences(state),
+        Message::CheckUpdates => {
+            state.update_status = "Checking public GitHub Releases for verified updates...".into();
+            state.available_update = None;
+            state.staged_installer = None;
+            let channel = if state.preferences.experimental_updates {
+                UpdateChannel::Beta
+            } else {
+                UpdateChannel::Stable
+            };
+            return check_updates_task(channel);
+        }
+        Message::UpdateChecked(result) => {
+            match result {
+                Ok(Some(update)) => {
+                    state.update_status = format!("Update {} ({:?}) is available.",
+                        update.version, update.channel);
+                    state.available_update = Some(update);
+                }
+                Ok(None) => state.update_status = "No newer verified release on the selected channel.".into(),
+                Err(error) => state.update_status = format!("Cannot verify latest release: {error}"),
+            }
+        }
+        Message::DownloadUpdate => {
+            let Some(update) = state.available_update.clone() else { return Task::none(); };
+            if state.busy { return Task::none(); }
+            let Ok(settings) = settings_path() else {
+                state.update_status = "Windows user settings folder could not be located.".into();
+                return Task::none();
+            };
+            let Some(root) = settings.parent().map(PathBuf::from) else {
+                return Task::none();
+            };
+            state.busy = true;
+            state.update_status = "Downloading and verifying installer checksum...".into();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || download_installer(&update, &root)
+                        .map_err(|e| e.to_string())
+                    ).await.map_err(|e| format!("Download worker stopped: {e}"))?
+                },
+                Message::UpdateDownloaded,
+            );
+        }
+        Message::UpdateDownloaded(result) => {
+            state.busy = false;
+            match result {
+                Ok(path) => {
+                    state.update_status = "Installer checksum verified. Run it only if you approve this update.".into();
+                    state.staged_installer = Some(path);
+                }
+                Err(error) => {
+                    state.update_status = format!("Update rejected: {error}");
+                    state.staged_installer = None;
+                }
+            }
+        }
+        Message::RunVerifiedInstaller => {
+            let (Some(installer), Some(update)) =
+                (&state.staged_installer, &state.available_update)
+            else { return Task::none(); };
+            let root = settings_path().ok().and_then(|p| p.parent().map(PathBuf::from));
+            match root {
+                Some(root) => {
+                    state.update_status = match launch_verified_installer(installer, update, &root) {
+                        Ok(()) => "Verified installer opened. Close the manager when the installer requests it.".into(),
+                        Err(err) => format!("Could not launch verified installer: {err}"),
+                    };
+                }
+                None => state.update_status = "User update folder unavailable.".into(),
+            }
+        }
+
         Message::InputChanged(input) => state.input = input,
         Message::OutputChanged(output) => state.output = output,
         Message::ReplacementsChanged(replacements) => state.replacements = replacements,
@@ -1258,7 +1350,20 @@ fn view(state: &State) -> Element<'_, Message> {
         Page::Settings => column![
             text("Settings").size(23),
             text("UPDATES").size(18),
-            text("Installed version: development preview. Public release checks require approved installer builds."),
+            text(format!("Installed version: {}. Downloads require a verified public release.",env!("CARGO_PKG_VERSION"))),
+            button("Check for Updates").on_press(Message::CheckUpdates),
+            text(state.update_status.as_str()),
+            if let Some(update) = &state.available_update {
+                button(format!("Download verified {} installer",update.version))
+                    .on_press(Message::DownloadUpdate).into()
+            } else {
+                text("Stable updates appear after the public release is published.").into()
+            },
+            if state.staged_installer.is_some() {
+                button("Run verified installer (requires approval)").on_press(Message::RunVerifiedInstaller).into()
+            } else {
+                text("No installer staged. The game and its PAKs are never modified by update checks.").into()
+            },
             button(format!("Experimental update channel: {}", if state.preferences.experimental_updates {"Enabled"} else {"Disabled"}))
                 .on_press(Message::PreferenceExperimental),
             button(format!("Automatic update checks: {}", if state.preferences.automatic_update_checks {"Enabled"} else {"Disabled"}))
@@ -1380,5 +1485,18 @@ fn main() -> iced::Result {
                 },
             )
         })
-        .run()
+        .run_with(|| {
+            let state = initial_state();
+            let task = if state.preferences.automatic_update_checks {
+                let channel = if state.preferences.experimental_updates {
+                    UpdateChannel::Beta
+                } else {
+                    UpdateChannel::Stable
+                };
+                check_updates_task(channel)
+            } else {
+                Task::none()
+            };
+            (state, task)
+        })
 }
