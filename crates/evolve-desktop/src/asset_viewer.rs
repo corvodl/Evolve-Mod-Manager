@@ -102,6 +102,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
                 yaw: state.yaw,
                 pitch: state.pitch,
                 zoom: state.zoom.max(0.2),
+                light_strength: state.light_strength,
             })
             .width(Fill)
             .height(Fill)
@@ -139,6 +140,9 @@ fn viewport(state: &State) -> Element<'_, Message> {
 
     let toolbar = row![
         button("Orbit").on_press(Message::ViewerResetCamera),
+        text("Light").size(12),
+        slider(0.1..=2.0, state.light_strength.max(0.1), Message::LightStrengthChanged)
+            .width(Length::Fixed(90.0)),
         text("Yaw").size(12),
         slider(-180.0..=180.0, state.yaw, Message::YawChanged).width(Length::FillPortion(2)),
         text("Pitch").size(12),
