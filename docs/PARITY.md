@@ -5,9 +5,9 @@ This table tracks **actual Rust implementation state**, not feature mockups. The
 | Feature | Rust rewrite status | 1.0 acceptance |
 | --- | --- | --- |
 | Local indexed file browser and deterministic inventory | **Initial implementation** | Fast search for realistic libraries, virtualized GUI, no freezing |
-| Historical ZIP-compatible PAK inspection/extraction | **Implemented subset** | Original archive untouched, bounded CRC-verified extraction, file-path safety |
+| Historical ZIP-compatible PAK inspect/extract/rebuild | **Implemented subset** | Original archive untouched, bounded CRC-verified extraction, file-path safety |
 | Stage 2 signed/encrypted CryPAK RSA/Twofish | **Not ported** | Verify signatures and central-directory/local offsets, native decrypted streaming |
-| PAK editing, changed-only rebuild and custom signing | **Not ported** | Golden round-trips and signature verification after patch injection |
+| Signed Stage 2 PAK editing and repacking | **Not ported** | Golden round-trips and signature verification after patch injection |
 | Staged offline mods, backups and crash-safe restore | **Not ported** | Journaling and rollback after cancel, crash and power loss |
 | Asset Library multi-PAK resolution and provenance | **Initial resolver** | Cross-PAK matching only when exact and unambiguous |
 | DDS/streaming top mip and BCn → PNG | **Implemented subset** | Golden pixel comparisons, signed BC5, BC6/BC7, console endian/split variants |
