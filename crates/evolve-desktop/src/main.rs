@@ -30,12 +30,13 @@ use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph,
     FlatCdfFbxReport, ImportedLibrary, ImportedPak, Inventory, LevelScene,
+    UnifiedCdfFbxReport,
     LibraryBatchImportReport, LibraryReferenceStatus, MaterialReport, ModProfile, ModelInfo,
     NativeCafMotion, PakInventory, ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport,
     SignedPakInfo, StageTransaction, TerrainInfo, add_mod_to_profile, apply_profile_stage,
     apply_stage_pak, batch_stage_status, compare_assets, convert_glb_to_fbx,
     convert_original_motion, create_mod_profile, decode_dds_rgba, export_dds_png,
-    export_flat_cdf_parts_fbx, export_level_scene_glb,
+    export_flat_cdf_parts_fbx, export_level_scene_glb, export_unified_cdf_fbx,
     export_rigged_character_fbx_textured_animated, export_rigged_character_glb, extract_legacy_pak,
     extract_signed_pak, import_signed_library_selection, import_stage_pak, imported_archive_files,
     imported_library, initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak,
@@ -304,6 +305,7 @@ enum Operation {
     LoadCaf(PathBuf),
     RiggedGlb(PathBuf, PathBuf, PathBuf),
     FlatCdfFbx(PathBuf, Inventory, PathBuf, PathBuf, Option<PathBuf>),
+    UnifiedCdfFbx(PathBuf, Inventory, PathBuf, PathBuf, Option<PathBuf>),
     RiggedFbx(
         PathBuf,
         PathBuf,
@@ -389,6 +391,7 @@ enum Completed {
     Caf(NativeCafMotion),
     RiggedExport(RigReport, PathBuf),
     FlatCdfFbxExport(FlatCdfFbxReport, PathBuf),
+    UnifiedCdfFbxExport(UnifiedCdfFbxReport, PathBuf),
     MotionConverted(ConvertedMotion, PathBuf),
     DbaConverted(ConvertedMotion, PathBuf, Arc<tempfile::TempDir>),
     MotionGlb(AnimatedGlb),
@@ -513,6 +516,12 @@ impl Operation {
                     caf.as_deref(),
                 )?;
                 Ok(Completed::FlatCdfFbxExport(report, destination))
+            }
+            Self::UnifiedCdfFbx(source, inventory, blender, destination, caf) => {
+                let report = export_unified_cdf_fbx(
+                    &source, &inventory, &blender, &destination, caf.as_deref(),
+                )?;
+                Ok(Completed::UnifiedCdfFbxExport(report, destination))
             }
             Self::RiggedFbx(mesh, skeleton, blender, diffuse, caf, dest) => {
                 export_rigged_character_fbx_textured_animated(
@@ -1066,6 +1075,7 @@ enum Message {
     StartRigGlb,
     StartRigFbx,
     ViewerExportFlatCdf,
+    ViewerExportUnifiedCdf,
     StartMotionConversion,
     StartCdfInspection,
     StartCdfResolve,
@@ -3132,6 +3142,32 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 ),
             );
         }
+        Message::ViewerExportUnifiedCdf => {
+            let Some(inventory) = state.inventory.clone() else {
+                state.status = "Index an extracted CDF character folder first.".into();
+                return Task::none();
+            };
+            let Some(entry) = state.selected.and_then(|i| inventory.entries.get(i)) else {
+                state.status = "Select a CDF character definition for unified FBX.".into();
+                return Task::none();
+            };
+            if !entry.relative_path.to_ascii_lowercase().ends_with(".cdf")
+                || state.blender_path.trim().is_empty()
+                || !state.output.to_ascii_lowercase().ends_with(".fbx")
+            {
+                state.status = "Select a CDF, installed Blender, and NEW absolute .fbx destination.".into();
+                return Task::none();
+            }
+            let source = PathBuf::from(&inventory.root).join(&entry.relative_path);
+            let blender = PathBuf::from(&state.blender_path);
+            let destination = PathBuf::from(&state.output);
+            let caf = (state.export_include_animation && !state.caf_path.trim().is_empty())
+                .then(|| PathBuf::from(&state.caf_path));
+            return launch(
+                state,
+                Operation::UnifiedCdfFbx(source, inventory, blender, destination, caf),
+            );
+        }
         Message::StartRigFbx => {
             if state.input.trim().is_empty()
                 || state.skeleton_path.trim().is_empty()
@@ -3629,6 +3665,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         "Exported {} verified CDF part FBXs into one flat folder: {}. Separate FBXs remain experimental, not a unified character rig.",
                         report.files.len(),
                         destination.display()
+                    );
+                    state.page = Some(Page::Models);
+                }
+                Ok(Completed::UnifiedCdfFbxExport(report, destination)) => {
+                    state.status = format!(
+                        "Exported {} original-weight CDF part(s) with one verified {}-bone armature to {}. Textures and material slots are not yet complete.",
+                        report.parts.len(), report.bones, destination.display()
                     );
                     state.page = Some(Page::Models);
                 }
