@@ -1913,7 +1913,7 @@ fn view(state: &State) -> Element<'_, Message> {
                     let mut rows = column![].spacing(4);
                     for profile in catalog.profiles.iter().take(100) {
                         rows = rows.push(
-                            button(format!("{} ({} mod(s))", profile.name, profile.mods.len()))
+                            button(text(format!("{} ({} mod(s))", profile.name, profile.mods.len())))
                                 .on_press(Message::SelectProfile(profile.id.clone()))
                         );
                     }
