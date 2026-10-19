@@ -4,9 +4,7 @@ use super::{Message, State, ViewerTab, uv_preview};
 use crate::design;
 use evolve_core::{DependencyGraph, DependencyStatus};
 use iced::widget::canvas::{self, Path, Stroke};
-use iced::widget::{
-    canvas as canvas_widget, column, container, row, scrollable, space, text,
-};
+use iced::widget::{canvas as canvas_widget, column, container, row, scrollable, space, text};
 use iced::{Color, Element, Fill, Length, Point, Rectangle, Renderer, Theme, mouse};
 use std::sync::Arc;
 
@@ -93,7 +91,11 @@ fn tab_button(
     selected: ViewerTab,
 ) -> iced::widget::Button<'static, Message> {
     design::button(label)
-        .style(if tab == selected { design::primary } else { design::secondary })
+        .style(if tab == selected {
+            design::primary
+        } else {
+            design::secondary
+        })
         .on_press(Message::ViewerSelectTab(tab))
 }
 
@@ -240,7 +242,8 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     text("Inspect a selected CDF or MTL to see the actual authored references.")
                         .size(12)
                         .style(design::muted),
-                    design::button("Build dependency graph").on_press(Message::StartDependencyInspection),
+                    design::button("Build dependency graph")
+                        .on_press(Message::StartDependencyInspection),
                 ]
                 .spacing(7)
                 .into()
