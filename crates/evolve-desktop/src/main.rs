@@ -3037,10 +3037,12 @@ fn view(state: &State) -> Element<'_, Message> {
                             normal_map:state.normal_map.clone(),emissive:state.emissive_map.clone(),
                             yaw:state.yaw,pitch:state.pitch,zoom:state.zoom,
                             light_strength:state.light_strength,
+                            pan_x:state.pan_x,pan_y:state.pan_y,shift:state.keyboard_modifiers.shift(),
                         }).width(Fill).height(Length::Fixed(400.)).into()
                     }else{
                         canvas(MeshViewport{
                             mesh:mesh.clone(),yaw:state.yaw,pitch:state.pitch,zoom:state.zoom,
+                            pan_x:state.pan_x,pan_y:state.pan_y,shift:state.keyboard_modifiers.shift(),
                         }).width(Fill).height(Length::Fixed(400.)).into()
                     };
                     display
@@ -3162,10 +3164,12 @@ fn view(state: &State) -> Element<'_, Message> {
                             normal_map:state.normal_map.clone(),emissive:state.emissive_map.clone(),
                         yaw:state.yaw,pitch:state.pitch,zoom:state.zoom.max(0.2),
                             light_strength:state.light_strength,
+                            pan_x:state.pan_x,pan_y:state.pan_y,shift:state.keyboard_modifiers.shift(),
                     }).width(Fill).height(Length::Fixed(400.)).into()
                 }else{
                     canvas(MeshViewport{
                         mesh:mesh.clone(),yaw:state.yaw,pitch:state.pitch,zoom:state.zoom.max(0.2),
+                            pan_x:state.pan_x,pan_y:state.pan_y,shift:state.keyboard_modifiers.shift(),
                     }).width(Fill).height(Length::Fixed(400.)).into()
                 };
                 display
