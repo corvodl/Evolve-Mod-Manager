@@ -228,9 +228,16 @@ mod tests {
         assert_eq!(prefs.file_explorer_side, "Left");
         assert!(!prefs.keep_original_snapshots);
         assert!(!prefs.experimental_updates);
-        assert_eq!(prefs.previous_options.get("another_old_option"), Some(&serde_json::json!(true)));
+        assert_eq!(
+            prefs.previous_options.get("another_old_option"),
+            Some(&serde_json::json!(true))
+        );
         save_to(&path, &prefs).unwrap();
-        assert!(fs::read_to_string(&path).unwrap().contains("another_old_option"));
+        assert!(
+            fs::read_to_string(&path)
+                .unwrap()
+                .contains("another_old_option")
+        );
         assert_eq!(load_from(&path).unwrap().appearance_mode, "Light");
     }
     #[test]
