@@ -2,6 +2,7 @@
 //! file I/O/decompression never runs in the interactive Iced view/update path.
 mod asset_cache;
 mod asset_library_page;
+mod activity_window;
 mod asset_viewer;
 mod developer_auth;
 mod explorer_tree;
@@ -189,6 +190,7 @@ struct State {
     developer_checking: bool,
     show_advanced_tools: bool,
     show_activity: bool,
+    activity_log: Vec<String>,
     library_catalog: Option<ImportedLibrary>,
     library_selected: Option<usize>,
     library_root: String,
@@ -753,6 +755,7 @@ enum Message {
     OpenInspectorWindow,
     InspectorOpened,
     ViewerOpened,
+    ActivityOpened,
     WindowClosed(window::Id),
     FileDropped(window::Id, PathBuf),
     DropPath(PathBuf),
@@ -788,6 +791,7 @@ enum Message {
     LevelZoomChanged(f32),
     ToggleAdvancedTools,
     ToggleActivity,
+    ClearActivity,
     DeveloperPasswordChanged(String),
     UnlockDeveloper,
     DeveloperChecked(bool),
@@ -1425,7 +1429,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::ToggleAdvancedTools => state.show_advanced_tools = !state.show_advanced_tools,
-        Message::ToggleActivity => state.show_activity = !state.show_activity,
+        Message::ToggleActivity => {}
+        Message::ClearActivity => state.activity_log.clear(),
         Message::DeveloperPasswordChanged(value) => {
             if !state.developer_checking && value.len() <= 128 {
                 state.developer_password = value;
@@ -3655,10 +3660,7 @@ fn view(state: &State) -> Element<'_, Message> {
     .padding([10, 16])
     .width(Fill)
     .height(Fill);
-    if state.show_activity {
-        body =
-            body.push(container(text(format!("Activity: {}", state.status)).size(12)).padding(8));
-    }
+    // Activity is detached so it never steals space from the working page.
     container(row![sidebar, body].height(Fill))
         .width(Fill)
         .height(Fill)
@@ -3731,6 +3733,7 @@ struct Desktop {
     main_id: window::Id,
     viewer_id: Option<window::Id>,
     inspector_id: Option<window::Id>,
+    activity_id: Option<window::Id>,
 }
 
 impl Desktop {
@@ -3745,6 +3748,7 @@ impl Desktop {
                 main_id,
                 viewer_id: None,
                 inspector_id: None,
+                activity_id: None,
             },
             opened.map(|_| Message::ViewerOpened),
         )
@@ -3762,6 +3766,18 @@ impl Desktop {
         });
         self.viewer_id = Some(id);
         opened.map(|_| Message::ViewerOpened)
+    }
+
+    fn open_activity(&mut self) -> Task<Message> {
+        if self.activity_id.is_some() {
+            return Task::none();
+        }
+        let (id, opened) = window::open(window::Settings {
+            size: iced::Size::new(740.0, 560.0),
+            ..window::Settings::default()
+        });
+        self.activity_id = Some(id);
+        opened.map(|_| Message::ActivityOpened)
     }
 
     fn open_inspector(&mut self) -> Task<Message> {
@@ -3782,6 +3798,8 @@ impl Desktop {
         match message {
             Message::OpenViewer => self.open_viewer(),
             Message::OpenInspectorWindow => self.open_inspector(),
+            Message::ToggleActivity => self.open_activity(),
+            Message::ActivityOpened => Task::none(),
             Message::InspectorOpened => Task::none(),
             Message::ViewerOpened => Task::none(),
             Message::FileDropped(id, path) => {
@@ -3805,6 +3823,9 @@ impl Desktop {
                     if self.inspector_id == Some(id) {
                         self.inspector_id = None;
                     }
+                    if self.activity_id == Some(id) {
+                        self.activity_id = None;
+                    }
                     Task::none()
                 }
             }
@@ -3817,7 +3838,19 @@ impl Desktop {
                     Message::Finished(Ok(Completed::Model(_) | Completed::ImportedPakFiles(_)))
                 ) || project_scan_done;
                 let launched_from_library = self.state.page == Some(Page::AssetLibrary);
+                let before = self.state.status.clone();
+                let was_busy = self.state.busy;
                 let command = update(&mut self.state, message);
+                if self.state.status != before || self.state.busy != was_busy {
+                    let note = if self.state.busy { "RUNNING" } else { "STATUS" };
+                    let item = format!("{note}: {}", self.state.status);
+                    if self.state.activity_log.last() != Some(&item) {
+                        self.state.activity_log.push(item);
+                        if self.state.activity_log.len() > 250 {
+                            self.state.activity_log.remove(0);
+                        }
+                    }
+                }
                 if finished {
                     self.state.modding_open_editor_when_scanned = false;
                 }
@@ -3833,7 +3866,9 @@ impl Desktop {
     }
 
     fn view(&self, id: window::Id) -> Element<'_, Message> {
-        if self.viewer_id == Some(id) {
+        if self.activity_id == Some(id) {
+            activity_window::view(&self.state)
+        } else if self.viewer_id == Some(id) {
             asset_viewer::view(&self.state)
         } else if self.inspector_id == Some(id) {
             container(viewer_inspector::view(&self.state))
@@ -3849,7 +3884,9 @@ impl Desktop {
     }
 
     fn title(&self, id: window::Id) -> String {
-        if self.inspector_id == Some(id) {
+        if self.activity_id == Some(id) {
+            "Activity | Evolve Mod Manager".into()
+        } else if self.inspector_id == Some(id) {
             "Evolve Mod Manager — Detached Asset Inspector".into()
         } else if self.viewer_id == Some(id) {
             let source = std::path::Path::new(&self.state.input)
