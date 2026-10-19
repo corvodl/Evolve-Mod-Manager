@@ -5,10 +5,10 @@ use iced::widget::{button, column, container, row, scrollable, space, text, text
 use iced::{Background, Border, Color, Element, Fill, Length};
 use std::path::Path;
 
-const PANEL: Color = Color::from_rgb(0.166, 0.175, 0.191);
-const HEADER: Color = Color::from_rgb(0.190, 0.200, 0.217);
-const EDGE: Color = Color::from_rgb(0.26, 0.27, 0.30);
-const MUTED: Color = Color::from_rgb(0.74, 0.76, 0.82);
+const PANEL: Color = Color::from_rgb8(31, 30, 36);
+const HEADER: Color = Color::from_rgb8(35, 34, 41);
+const EDGE: Color = Color::from_rgb8(48, 45, 53);
+const MUTED: Color = Color::from_rgb8(181, 178, 188);
 const PAGE_SIZE: usize = 110;
 
 fn panel<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Container<'a, Message> {
@@ -65,11 +65,11 @@ fn archive_row<'a>(
         .width(Fill)
         .style(move |_| container::Style {
             background: Some(Background::Color(if selected {
-                Color::from_rgb(0.26, 0.18, 0.22)
+                Color::from_rgb8(65, 38, 48)
             } else if index.is_multiple_of(2) {
                 PANEL
             } else {
-                Color::from_rgb(0.185, 0.193, 0.211)
+                Color::from_rgb8(34, 33, 40)
             })),
             ..container::Style::default()
         })
@@ -128,7 +128,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         }),
         menu_details,
         row![
-            button("Import PAKs").style(button::primary)
+            button("Import PAKs").style(button::secondary)
                 .on_press(Message::LibraryToggleConfiguration),
             button("Refresh").on_press(Message::LibraryRefresh),
             space().width(Fill),
@@ -162,14 +162,14 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let tabs = row![
         button("All Assets")
             .style(if !by_build {
-                button::primary
+                button::secondary
             } else {
                 button::text
             })
             .on_press(Message::LibrarySetByBuild(false)),
         button("By Build")
             .style(if by_build {
-                button::primary
+                button::secondary
             } else {
                 button::text
             })
