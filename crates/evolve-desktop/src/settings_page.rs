@@ -250,7 +250,23 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 design::button(text(format!("Explorer: {}", state.preferences.file_explorer_side))).on_press(Message::PreferenceExplorerSide).style(design::secondary)
             ].spacing(8),
             design::button(text(format!("Reduce menu animation: {}", if state.preferences.reduce_motion { "On" } else { "Off" }))).on_press(Message::PreferenceReduceMotion).style(design::secondary),
-            text("Color presets and font preferences are preserved in settings.json; visual pickers are not implemented yet.").size(11).style(design::muted),
+            text("ACCENT COLOR").size(12),
+            row![
+                design::button("Default")
+                    .on_press(Message::PreferenceAccentPreset("Default"))
+                    .style(if !state.preferences.appearance_colors.contains_key("accent") { design::primary } else { design::secondary }),
+                design::button("Classic Red")
+                    .on_press(Message::PreferenceAccentPreset("Classic Red"))
+                    .style(if state.preferences.appearance_colors.get("accent").is_some_and(|c| c == "#c9384a") { design::primary } else { design::secondary }),
+                design::button("Evolve Red")
+                    .on_press(Message::PreferenceAccentPreset("Evolve Red"))
+                    .style(if state.preferences.appearance_colors.get("accent").is_some_and(|c| c == "#e0354f") { design::primary } else { design::secondary }),
+                design::button("Deep Red")
+                    .on_press(Message::PreferenceAccentPreset("Deep Red"))
+                    .style(if state.preferences.appearance_colors.get("accent").is_some_and(|c| c == "#a91f38") { design::primary } else { design::secondary }),
+            ].spacing(8),
+            text("Accent presets update the live theme without overwriting custom background, surface or font settings. Arbitrary color and font pickers remain planned.")
+                .size(11).style(design::muted),
         ].spacing(8)),
         ].spacing(12).into(),
         Tab::Updates => column![
