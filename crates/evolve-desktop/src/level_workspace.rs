@@ -12,7 +12,6 @@ const MUTED: Color = Color::from_rgb(0.72, 0.76, 0.83);
 #[derive(Clone)]
 struct SceneOverview {
     scene: Arc<LevelScene>,
-    selected: Option<usize>,
     selected_indices: std::collections::HashSet<usize>,
     zoom: f32,
 }
@@ -208,7 +207,6 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             .spacing(12),
             canvas_widget(SceneOverview {
                 scene: scene.clone(),
-                selected: state.level_selected,
                 selected_indices: state.level_selection.indices.clone(),
                 zoom: state.level_zoom.max(0.3),
             })
