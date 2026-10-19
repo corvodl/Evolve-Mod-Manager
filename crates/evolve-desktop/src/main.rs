@@ -252,6 +252,7 @@ enum Operation {
     ConvertMotion(PathBuf, PathBuf, PathBuf, PathBuf),
     LoadGlbMotion(PathBuf),
     InspectCdf(PathBuf),
+    InspectCdfResolved(PathBuf, Inventory),
     ResolveCdf(PathBuf, PathBuf),
     InspectModel(PathBuf),
     InspectLevel(PathBuf),
@@ -312,6 +313,7 @@ enum Completed {
     MotionConverted(ConvertedMotion, PathBuf),
     MotionGlb(AnimatedGlb),
     Character(CdfDefinition),
+    CharacterResolved(CdfDefinition, CdfDependencyReport),
     CharacterDependencies(CdfDependencyReport),
     Model(RenderMesh),
     Level(LevelScene),
@@ -491,6 +493,11 @@ impl Operation {
             Self::InspectCdf(source) => read_cdf(&source)
                 .map(Completed::Character)
                 .map_err(|e| e.to_string()),
+            Self::InspectCdfResolved(source, inventory) => {
+                let cdf = read_cdf(&source).map_err(|e| e.to_string())?;
+                let resolved = resolve_cdf(&inventory, &cdf);
+                Ok(Completed::CharacterResolved(cdf, resolved))
+            },
             Self::RebuildSignedPak(
                 src,
                 old_pub,
@@ -1428,7 +1435,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             {
                 Operation::InspectModel(source)
             } else if filename.ends_with(".cdf") {
-                Operation::InspectCdf(source)
+                Operation::InspectCdfResolved(source, inventory.clone())
             } else if filename.ends_with(".dds") || filename.ends_with(".dds.0") {
                 Operation::InspectDds(source)
             } else if filename.ends_with(".caf") {
@@ -2454,6 +2461,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         "CDF dependencies: {found} exact resolved, {missing} missing, {ambiguous} ambiguous. No filename guessing."
                     );
                     state.cdf_dependencies = Some(report);
+                    state.page = Some(Page::Models);
+                }
+                Ok(Completed::CharacterResolved(character, report)) => {
+                    let mut found = 0usize;
+                    let mut missing = 0usize;
+                    let mut ambiguous = 0usize;
+                    for dependency in std::iter::once(&report.skeleton)
+                        .chain(report.attachments.iter().map(|(_, status)| status))
+                    {
+                        match dependency {
+                            AssetResolution::Found(_) => found += 1,
+                            AssetResolution::Missing => missing += 1,
+                            AssetResolution::Ambiguous(_) => ambiguous += 1,
+                        }
+                    }
+                    state.status = format!(
+                        "Character definition: {found} exact dependencies, {missing} missing, {ambiguous} ambiguous. Assembly rendering still requires verified skeleton/weights."
+                    );
+                    state.character = Some(character);
+                    state.cdf_dependencies = Some(report);
+                    state.viewer_tab = ViewerTab::Dependencies;
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::Character(character)) => {
