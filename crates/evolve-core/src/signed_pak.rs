@@ -68,6 +68,10 @@ pub struct SignedPakInfo {
 pub struct VerifiedSignedPak {
     pub info: SignedPakInfo,
     keys: [[u8; 16]; 16],
+    cdr: Vec<u8>,
+    comment: [u8; TRAILER_BYTES],
+    iv: [u8; 16],
+    cdr_pos: u64,
 }
 
 fn read_u16(data: &[u8], at: usize) -> Result<u16, SignedPakError> {
@@ -425,7 +429,8 @@ pub fn open_verified_signed_pak(
         .verify(Pss::new_with_salt::<Sha256>(0), &digest, &comment[11..139])
         .map_err(|_| SignedPakError::Crypto("RSA-PSS SHA256 signature incorrect".into()))?;
     let info = parse_cdr(&cdr, signed_basename, cd_pos, count)?;
-    Ok(VerifiedSignedPak { info, keys })
+    let comment: [u8; TRAILER_BYTES] = comment.try_into().map_err(|_| SignedPakError::Limits)?;
+    Ok(VerifiedSignedPak { info, keys, cdr, comment, iv, cdr_pos: cd_pos })
 }
 
 pub fn inspect_signed_pak(
@@ -509,6 +514,308 @@ pub fn extract_signed_pak(
     }
     fs::rename(stage.path(), destination)?;
     Ok(verified.info)
+}
+
+
+/// Result of a native Stage 2 signed replacement. Outputs are for explicit
+/// offline modding; signing with a local key does NOT prove retail acceptance.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SignedRebuildReport {
+    pub changed_entry: String,
+    pub original_bytes: u64,
+    pub replacement_bytes: u64,
+    pub signed_basename: String,
+    pub verified_with_new_public_key: bool,
+}
+
+fn rsa_private_wrap(
+    secret: &[u8; 16], private: &rsa::RsaPrivateKey, public: &RsaPublicKey,
+) -> Result<[u8; RSA_BYTES], SignedPakError> {
+    use rsa::traits::PrivateKeyParts;
+    use rand::RngCore;
+    let mut db = [0u8; 95];
+    db[..32].copy_from_slice(&Sha256::digest([]));
+    db[78] = 1;
+    db[79..].copy_from_slice(secret);
+    let mut seed = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut seed);
+    for (v, m) in db.iter_mut().zip(mgf1(&seed, db.len())) { *v ^= m; }
+    for (v, m) in seed.iter_mut().zip(mgf1(&db, seed.len())) { *v ^= m; }
+    let mut encoded = [0u8; RSA_BYTES];
+    encoded[1..33].copy_from_slice(&seed);
+    encoded[33..].copy_from_slice(&db);
+    let number = BigUint::from_bytes_be(&encoded).modpow(private.d(), private.n());
+    let result = number.to_bytes_be();
+    if result.len() > RSA_BYTES { return Err(SignedPakError::Limits); }
+    let mut wrapped = [0u8; RSA_BYTES];
+    wrapped[RSA_BYTES - result.len()..].copy_from_slice(&result);
+    if unwrap_key(&wrapped, public)? != *secret {
+        return Err(SignedPakError::Crypto("local RSA key wrapping self-test failed".into()));
+    }
+    Ok(wrapped)
+}
+
+fn signed_comment(
+    old: &[u8; TRAILER_BYTES], cdr: &[u8], basename: &str,
+    private: &rsa::RsaPrivateKey, public: &RsaPublicKey,
+    iv: &[u8; 16], keys: &[[u8; 16]; 16],
+) -> Result<[u8; TRAILER_BYTES], SignedPakError> {
+    use rand::rngs::OsRng;
+    let mut changed = *old;
+    let mut message = Vec::with_capacity(cdr.len()+basename.len());
+    message.extend_from_slice(cdr);
+    message.extend_from_slice(basename.as_bytes());
+    let digest = Sha256::digest(&message);
+    let signature = private.sign_with_rng(
+        &mut OsRng, Pss::new_with_salt::<Sha256>(0), &digest
+    ).map_err(|_| SignedPakError::Crypto("unable to sign replacement directory".into()))?;
+    if signature.len()!=RSA_BYTES {return Err(SignedPakError::Limits);}
+    changed[11..139].copy_from_slice(&signature);
+    changed[143..271].copy_from_slice(&rsa_private_wrap(iv, private, public)?);
+    for (index, key) in keys.iter().enumerate() {
+        let at=272 + index*RSA_BYTES;
+        changed[at..at+RSA_BYTES].copy_from_slice(&rsa_private_wrap(key, private, public)?);
+    }
+    public.verify(Pss::new_with_salt::<Sha256>(0), &digest, &changed[11..139])
+        .map_err(|_|SignedPakError::Crypto("replacement signature verification failed".into()))?;
+    Ok(changed)
+}
+
+fn scan_cdr_entry(data: &[u8], path: &str) -> Result<usize, SignedPakError> {
+    let mut at = 0usize;
+    let mut match_at = None;
+    while at < data.len() {
+        if data.get(at..at+4)!=Some(b"PK\x01\x02") {
+            return Err(SignedPakError::Format("corrupt signed directory record".into()));
+        }
+        let n=read_u16(data,at+28)? as usize;
+        let e=read_u16(data,at+30)? as usize;
+        let c=read_u16(data,at+32)? as usize;
+        let end=at.checked_add(46).and_then(|v|v.checked_add(n))
+            .and_then(|v|v.checked_add(e)).and_then(|v|v.checked_add(c))
+            .ok_or(SignedPakError::Limits)?;
+        let raw=data.get(at+46..at+46+n).ok_or(SignedPakError::Limits)?;
+        if raw==path.as_bytes() {
+            if match_at.replace(at).is_some() {
+                return Err(SignedPakError::Format("ambiguous signed entry".into()));
+            }
+        }
+        at=end;
+    }
+    match_at.ok_or_else(||SignedPakError::Format("replacement entry not found".into()))
+}
+
+fn put_u32(slice: &mut [u8], offset: usize, value: u64) -> Result<(), SignedPakError> {
+    let v=u32::try_from(value).map_err(|_|SignedPakError::Limits)?;
+    let end=offset.checked_add(4).ok_or(SignedPakError::Limits)?;
+    let field=slice.get_mut(offset..end).ok_or(SignedPakError::Limits)?;
+    field.copy_from_slice(&v.to_le_bytes());
+    Ok(())
+}
+
+fn verify_replaced_data(
+    archive: &Path, public: &Path, basename: &str,
+    entry_path: &str, replacement: &Path,
+) -> Result<(),SignedPakError> {
+    let verified=open_verified_signed_pak(archive,public,basename)?;
+    let entry=verified.info.entries.iter().find(|e|e.path==entry_path)
+        .ok_or_else(||SignedPakError::Format("replaced member missing after re-signing".into()))?;
+    let mut input=File::open(archive)?;
+    input.seek(SeekFrom::Start(entry.encrypted_data_offset))?;
+    let slot=(!(entry.crc32>>2)&15) as usize;
+    let decrypt=CtrRead::new(input.take(entry.compressed_size),&verified.keys[slot],entry_iv(entry));
+    let mut decoded:Box<dyn Read> = if entry.method==14 {
+        Box::new(DeflateDecoder::new(decrypt))
+    }else{Box::new(decrypt)};
+    let mut original=File::open(replacement)?;
+    let mut got=[0u8;128*1024];
+    let mut expected=[0u8;128*1024];
+    let mut count=0u64;
+    let mut crc=Hasher::new();
+    loop {
+        let n=decoded.read(&mut got)?;
+        if n==0{break;}
+        count=count.checked_add(n as u64).ok_or(SignedPakError::Limits)?;
+        if count>entry.size {
+            return Err(SignedPakError::Crypto("replacement expanded beyond signed size".into()));
+        }
+        original.read_exact(&mut expected[..n])?;
+        if expected[..n]!=got[..n] {
+            return Err(SignedPakError::Crypto("re-signed entry differed from requested bytes".into()));
+        }
+        crc.update(&got[..n]);
+    }
+    if count!=entry.size || crc.finalize()!=entry.crc32 ||
+        original.read(&mut expected[..1])?!=0 {
+        return Err(SignedPakError::Crypto("replacement output did not round-trip exactly".into()));
+    }
+    Ok(())
+}
+
+/// Modify one existing method-13 (stored) or method-14 (raw DEFLATE) entry and
+/// publish a *new* signed PAK using the local, user-provided RSA signing key.
+/// The source is never written, and original encrypted records are preserved.
+/// Compression uses a bounded spool; all 17 CryPAK secret blocks are rewrapped
+/// to the matching new public key. No proprietary keys ship with the manager.
+#[allow(clippy::too_many_arguments)]
+pub fn rebuild_signed_pak_entry(
+    source: &Path, original_public: &Path, new_private_pem: &Path,
+    new_public_der: &Path, basename: &str, entry_path: &str,
+    replacement: &Path, destination: &Path,
+) -> Result<SignedRebuildReport,SignedPakError> {
+    use rsa::{RsaPrivateKey, pkcs1::DecodeRsaPrivateKey, pkcs8::DecodePrivateKey};
+    let expected=safe_member_name(entry_path)
+        .map_err(|_|SignedPakError::UnsafePath(entry_path.into()))?;
+    if expected != entry_path || destination.file_name().and_then(|n|n.to_str())!=Some(basename)
+        || fs::symlink_metadata(destination).is_ok() || source == destination
+    {
+        return Err(SignedPakError::UnsafeOutput);
+    }
+    let parent=destination.parent().ok_or(SignedPakError::UnsafeOutput)?;
+    if !parent.is_dir() || fs::symlink_metadata(parent)?.file_type().is_symlink(){
+        return Err(SignedPakError::UnsafeOutput);
+    }
+    let source_meta=fs::symlink_metadata(source)?;
+    let replacement_meta=fs::symlink_metadata(replacement)?;
+    let private_meta=fs::symlink_metadata(new_private_pem)?;
+    let new_public_meta=fs::symlink_metadata(new_public_der)?;
+    if !source_meta.file_type().is_file() || !replacement_meta.file_type().is_file()
+        || !private_meta.file_type().is_file() || !new_public_meta.file_type().is_file()
+        || private_meta.len()>8192 || new_public_meta.len()>8192
+        || replacement_meta.len()>MAX_ENTRY_BYTES || replacement_meta.len()>u32::MAX as u64
+    {return Err(SignedPakError::Limits);}
+    let private_bytes=fs::read(new_private_pem)?;
+    let private_str=std::str::from_utf8(&private_bytes)
+        .map_err(|_|SignedPakError::Crypto("private key PEM is not UTF-8".into()))?;
+    let private=RsaPrivateKey::from_pkcs1_pem(private_str).ok()
+        .or_else(||RsaPrivateKey::from_pkcs8_pem(private_str).ok())
+        .ok_or_else(||SignedPakError::Crypto("expected local PKCS1/PKCS8 RSA PEM".into()))?;
+    let public=parse_public_key(&fs::read(new_public_der)?)?;
+    if private.size()!=RSA_BYTES || *private.n()!=*public.n() || *private.e()!=*public.e(){
+        return Err(SignedPakError::Crypto("local signing public/private keys do not match".into()));
+    }
+    let verified=open_verified_signed_pak(source,original_public,basename)?;
+    let old=verified.info.entries.iter().find(|e|e.path==expected)
+        .ok_or_else(||SignedPakError::Format("exact signed replacement path missing".into()))?;
+    let old_cdr_pos=verified.cdr_pos;
+    if old_cdr_pos>u32::MAX as u64 {return Err(SignedPakError::Limits);}
+    let offset=scan_cdr_entry(&verified.cdr,&expected)?;
+    let name=expected.as_bytes();
+    let nlen=read_u16(&verified.cdr,offset+28)? as usize;
+    if name.len()!=nlen {return Err(SignedPakError::Limits);}
+    let version=read_u16(&verified.cdr,offset+6)?;
+    let flags=read_u16(&verified.cdr,offset+8)?;
+    let method=read_u16(&verified.cdr,offset+10)?;
+    let timestamp=read_u16(&verified.cdr,offset+12)?;
+    let date=read_u16(&verified.cdr,offset+14)?;
+    if old.method!=method || !matches!(method,13|14)
+        || read_u16(&verified.cdr,offset+30)?!=0 {
+        return Err(SignedPakError::Format("unsupported signed replacement layout".into()));
+    }
+    let mut temporary=tempfile::tempfile()?;
+    let mut replacement_file=File::open(replacement)?;
+    let mut crc=Hasher::new();
+    let mut original_size=0u64;
+    {
+        let mut packed:Box<dyn Write> = if method==14 {
+            Box::new(flate2::write::DeflateEncoder::new(
+                &mut temporary,flate2::Compression::new(9)))
+        }else{
+            Box::new(&mut temporary)
+        };
+        let mut buffer=[0u8;128*1024];
+        loop{
+            let n=replacement_file.read(&mut buffer)?;
+            if n==0{break;}
+            original_size=original_size.checked_add(n as u64).ok_or(SignedPakError::Limits)?;
+            if original_size>MAX_ENTRY_BYTES{return Err(SignedPakError::Limits);}
+            crc.update(&buffer[..n]);
+            packed.write_all(&buffer[..n])?;
+        }
+        packed.flush()?;
+    }
+    // Box<Write> drop may not finalize DEFLATE. Rewind and compress directly
+    // with a concrete encoder in a separate branch to force finish().
+    if method == 14 {
+        temporary.set_len(0)?;
+        temporary.seek(SeekFrom::Start(0))?;
+        replacement_file.seek(SeekFrom::Start(0))?;
+        let mut encoder=flate2::write::DeflateEncoder::new(
+            &mut temporary,flate2::Compression::new(9));
+        io::copy(&mut replacement_file,&mut encoder)?;
+        encoder.finish()?;
+    }
+    let compressed_size=temporary.seek(SeekFrom::End(0))?;
+    if compressed_size>u32::MAX as u64{return Err(SignedPakError::Limits);}
+    temporary.seek(SeekFrom::Start(0))?;
+    let crc=crc.finalize();
+    let candidate=SignedEntry{
+        path:expected.clone(),method,flags,crc32:crc,
+        compressed_size,size:original_size,
+        encrypted_data_offset:old_cdr_pos+30+name.len() as u64,
+    };
+    let slot=(!(crc>>2)&15) as usize;
+    let mut cdr=verified.cdr.clone();
+    put_u32(&mut cdr,offset+16,crc as u64)?;
+    put_u32(&mut cdr,offset+20,compressed_size)?;
+    put_u32(&mut cdr,offset+24,original_size)?;
+    put_u32(&mut cdr,offset+42,old_cdr_pos)?;
+    let cdr_pos=old_cdr_pos.checked_add(30+name.len() as u64)
+        .and_then(|v|v.checked_add(compressed_size)).ok_or(SignedPakError::Limits)?;
+    if cdr_pos.checked_add(cdr.len() as u64).is_none_or(|v|v>u32::MAX as u64){
+        return Err(SignedPakError::Limits);
+    }
+    let altered_comment=signed_comment(
+        &verified.comment,&cdr,basename,&private,&public,&verified.iv,&verified.keys)?;
+    let encrypted_cdr=crypt_bytes(&cdr,&verified.keys[0],verified.iv)?;
+    let mut old_file=File::open(source)?;
+    old_file.seek(SeekFrom::Start(old_cdr_pos+verified.cdr.len() as u64))?;
+    let mut eocd=[0u8;22];
+    old_file.read_exact(&mut eocd)?;
+    if &eocd[..4]!=b"PK\x05\x06"{
+        return Err(SignedPakError::Format("source signed EOCD missing".into()));
+    }
+    put_u32(&mut eocd,12,cdr.len() as u64)?;
+    put_u32(&mut eocd,16,cdr_pos)?;
+    let stage=tempfile::Builder::new().prefix(".signed-rebuild-")
+        .tempfile_in(parent)?;
+    let mut out=stage.reopen()?;
+    old_file.seek(SeekFrom::Start(0))?;
+    if io::copy(&mut old_file.take(old_cdr_pos),&mut out)? != old_cdr_pos{
+        return Err(SignedPakError::Format("truncated signed source while rebuilding".into()));
+    }
+    out.write_all(b"PK\x03\x04")?;
+    for field in [version,flags,method,timestamp,date]{
+        out.write_all(&field.to_le_bytes())?;
+    }
+    for field in [crc as u64,compressed_size,original_size]{
+        let field=u32::try_from(field).map_err(|_|SignedPakError::Limits)?;
+        out.write_all(&field.to_le_bytes())?;
+    }
+    out.write_all(&(name.len() as u16).to_le_bytes())?;
+    out.write_all(&0u16.to_le_bytes())?;
+    out.write_all(name)?;
+    let mut cipher=CtrRead::new(&mut temporary,&verified.keys[slot],entry_iv(&candidate));
+    if io::copy(&mut cipher,&mut out)?!=compressed_size {
+        return Err(SignedPakError::Format("incomplete encrypted replacement".into()));
+    }
+    out.write_all(&encrypted_cdr)?;
+    out.write_all(&eocd)?;
+    out.write_all(&altered_comment)?;
+    out.sync_all()?;
+    drop(out);
+    verify_replaced_data(stage.path(),new_public_der,basename,&expected,replacement)?;
+    stage.persist_noclobber(destination).map_err(|e|
+        if e.error.kind()==io::ErrorKind::AlreadyExists {SignedPakError::UnsafeOutput}
+        else {SignedPakError::Io(e.error)}
+    )?;
+    Ok(SignedRebuildReport{
+        changed_entry:expected,
+        original_bytes:old.size,
+        replacement_bytes:original_size,
+        signed_basename:basename.into(),
+        verified_with_new_public_key:true,
+    })
 }
 
 #[cfg(test)]
