@@ -1,0 +1,167 @@
+//! Interactive viewer inspector: source-grounded dependency diagram and
+//! original-vs-modified diagnostics. No graph edges are inferred from names.
+use super::{Message, State, ViewerTab};
+use evolve_core::{DependencyGraph, DependencyStatus};
+use iced::widget::canvas::{self, Path, Stroke};
+use iced::widget::{button, canvas as canvas_widget, column, container, row, scrollable, space, text, text_input};
+use iced::{Color, Element, Fill, Length, Point, Rectangle, Renderer, Theme, mouse};
+use std::sync::Arc;
+
+const MUTED: Color = Color::from_rgb(0.72, 0.76, 0.82);
+const OK: Color = Color::from_rgb(0.26, 0.73, 0.51);
+const BAD: Color = Color::from_rgb(0.94, 0.34, 0.38);
+const WARN: Color = Color::from_rgb(0.93, 0.70, 0.32);
+const BASE: Color = Color::from_rgb(0.17, 0.18, 0.20);
+
+fn mark(status: &DependencyStatus) -> Color {
+    match status {
+        DependencyStatus::Source => Color::from_rgb(0.83, 0.37, 0.43),
+        DependencyStatus::Resolved => OK,
+        DependencyStatus::Missing => BAD,
+        DependencyStatus::Ambiguous => WARN,
+    }
+}
+
+struct DependencyCanvas {
+    graph: Arc<DependencyGraph>,
+}
+impl<Message> canvas::Program<Message> for DependencyCanvas {
+    type State = ();
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        frame.fill_rectangle(Point::ORIGIN, frame.size(), BASE);
+        let count = self.graph.nodes.len().saturating_sub(1).min(12);
+        let root = Point::new(16.0, bounds.height * 0.5 - 24.0);
+        frame.fill_rectangle(root, iced::Size::new(142.0, 48.0), mark(&DependencyStatus::Source));
+        frame.fill_text(canvas::Text {
+            content: "CDF / MTL source".into(),
+            position: Point::new(root.x + 8.0, root.y + 29.0),
+            color: Color::WHITE,
+            size: iced::Pixels(13.0),
+            ..canvas::Text::default()
+        });
+        for (i, node) in self.graph.nodes.iter().skip(1).take(count).enumerate() {
+            let row_h = (bounds.height - 14.0).max(5.0) / count.max(1) as f32;
+            let y = 8.0 + i as f32 * row_h;
+            let x = (bounds.width * 0.47).max(168.0);
+            let w = (bounds.width - x - 12.0).max(30.0);
+            let height = (row_h - 4.0).clamp(12.0, 34.0);
+            let line = Path::line(
+                Point::new(root.x + 142.0, root.y + 24.0),
+                Point::new(x, y + height * 0.5),
+            );
+            frame.stroke(&line, Stroke::default().with_color(mark(&node.status)).with_width(1.0));
+            frame.fill_rectangle(Point::new(x, y), iced::Size::new(w, height), mark(&node.status));
+            if height > 20.0 {
+                frame.fill_text(canvas::Text {
+                    content: node.label.chars().take(42).collect(),
+                    position: Point::new(x + 6.0, y + 19.0),
+                    color: Color::WHITE,
+                    size: iced::Pixels(11.0),
+                    ..canvas::Text::default()
+                });
+            }
+        }
+        vec![frame.into_geometry()]
+    }
+}
+
+pub(super) fn view(state: &State) -> Element<'_, Message> {
+    let tabs = row![
+        button("MODEL").on_press(Message::ViewerSelectTab(ViewerTab::Model)),
+        button("DEPENDENCIES").on_press(Message::ViewerSelectTab(ViewerTab::Dependencies)),
+        button("COMPARE").on_press(Message::ViewerSelectTab(ViewerTab::Compare)),
+        space().width(Fill),
+        button(if state.viewer_show_inspector { "Hide" } else { "Show" })
+            .on_press(Message::ViewerToggleInspector),
+    ].spacing(7);
+    if !state.viewer_show_inspector {
+        return tabs.into();
+    }
+    let content: Element<'_, Message> = match state.viewer_tab {
+        ViewerTab::Model => column![
+            text("Viewer controls").size(14),
+            text("The original CryEngine mesh and UV0 remain unmodified. Camera and panel layout can be saved.")
+                .size(12).color(MUTED),
+            row![
+                button("Inspect CDF/MTL links").on_press(Message::StartDependencyInspection),
+                button(if state.viewer_wireframe { "Shaded view" } else { "Wireframe view" })
+                    .on_press(Message::ViewerToggleWireframe),
+                button("Save workspace").on_press(Message::ViewerSaveLayout),
+            ].spacing(8),
+        ].spacing(6).into(),
+        ViewerTab::Dependencies => {
+            if let Some(report) = &state.dependency_graph {
+                let mut nodes = column![].spacing(4);
+                for edge in report.edges.iter().take(80) {
+                    if let Some(node) = report.nodes.get(edge.to) {
+                        nodes = nodes.push(row![
+                            text(edge.label.as_str()).size(12).width(Length::FillPortion(2)),
+                            text(node.label.as_str()).size(12).width(Length::FillPortion(4)),
+                            text(format!("{:?}", node.status))
+                                .size(12).color(mark(&node.status))
+                                .width(Length::FillPortion(1)),
+                        ].spacing(8));
+                    }
+                }
+                column![
+                    row![
+                        text(format!("{} explicit references · {} missing · {} ambiguous",
+                            report.edges.len(), report.missing, report.ambiguous)).size(12),
+                        button("Refresh").on_press(Message::StartDependencyInspection),
+                    ].spacing(10),
+                    canvas_widget(DependencyCanvas { graph: Arc::new(report.clone()) })
+                        .height(Length::Fixed(156.0)).width(Fill),
+                    scrollable(nodes).height(Length::Fixed(105.0)),
+                ].spacing(8).into()
+            } else {
+                column![
+                    text("Inspect a selected CDF or MTL to see the actual authored references.")
+                        .size(12).color(MUTED),
+                    button("Build dependency graph").on_press(Message::StartDependencyInspection),
+                ].spacing(7).into()
+            }
+        }
+        ViewerTab::Compare => {
+            let mut rows = column![
+                row![
+                    text_input("Original extracted asset...", &state.compare_original)
+                        .on_input(Message::CompareOriginalChanged).width(Fill),
+                    text_input("Modified working copy...", &state.compare_modified)
+                        .on_input(Message::CompareModifiedChanged).width(Fill),
+                    button("Compare").on_press(Message::StartAssetCompare),
+                ].spacing(7),
+            ].spacing(8);
+            if let Some(result) = &state.comparison {
+                rows = rows.push(text(if result.identical {
+                    "Identical contents"
+                } else {
+                    "Changed contents (SHA-256 verified)"
+                }).size(14).color(if result.identical { OK } else { WARN }));
+                rows = rows.push(row![
+                    text(format!("Original: {} bytes", result.original.bytes)).size(12),
+                    text(format!("Modified: {} bytes", result.modified.bytes)).size(12),
+                    text(match result.same_dds_dimensions {
+                        Some(true) => "Same DDS dimensions",
+                        Some(false) => "DDS dimensions differ",
+                        None => "No paired DDS dimensions",
+                    }).size(12)
+                ].spacing(16));
+                rows = rows.push(text("Read-only comparison. Visual pixel and geometry diffs are not implemented yet.")
+                    .size(12).color(MUTED));
+            } else {
+                rows = rows.push(text("Files are compared without modifying originals, using full content hashes and DDS metadata.")
+                    .size(12).color(MUTED));
+            }
+            rows.into()
+        }
+    };
+    column![tabs, container(content).width(Fill).padding(8)].spacing(6).into()
+}
