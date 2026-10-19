@@ -180,3 +180,22 @@ animation playback, full-character FBX folder/action exports, game-level
 texture effects, and native export dialogs/workflow. CAF controller decoding
 does **not** imply its pose is applied to the rendered mesh. Real Stage 2
 character, Windows GUI and Blender acceptance remains a release gate.
+
+
+## October 19 — bounded CAF pose layer foundation
+
+The Rust core now has a separately tested `sample_verified_caf_layers` routine.
+It blends at most eight **decoded, non-additive CAF** layers by exact bone
+CRC on a caller-supplied original skeleton identity set, normalizing quaternion
+results and rejecting unknown/duplicate controllers, invalid weights, missing
+base transform channels and incompatible additive input. Layer data remains
+read-only; this does **not** mean live skinned viewport animation, a direct
+DBA decoder, imported character bind-pose reconciliation, or multi-action FBX
+embedding has been implemented. Those remain 1.0 release blockers.
+
+Complete private-manager parity additionally requires verified CDF per-part
+materials and rigs, all animation database paths, layered GPU deformation,
+atomic flat whole-character FBX exports with correctly embedded assets, and
+native right-click file operations; these are **not complete** in the public
+rewrite. Test each using real permitted Stage 2 assets and Blender before
+changing these labels or authorizing v1.0.
