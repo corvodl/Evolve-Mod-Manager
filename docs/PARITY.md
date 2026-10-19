@@ -21,7 +21,7 @@ This table tracks **actual Rust implementation state**, not feature mockups. The
 | Level Editor and Blender scene export | **Partial: terrain, XML/LYR object placement, geometry-scene GLB and Blender FBX through converter; incomplete map textures and dependencies** | Correct complete-scene placements, terrain, textures and dependencies |
 | GFX, USM and loose-file editing | **Not ported** | Real-asset read/preview/edit/repack integrity |
 | Settings, mod profiles, signed updater and installer | **Partial: persisted preferences, verified public update checks and installer, isolated signed-PAK mod profile catalog/planning and batch stage transactions; production game profiles and upgrade tests incomplete** | Versioned releases, recovery, private-data exclusion, tested installs and rollback |
-| Responsive UI and safe long-running jobs | **Partial** | Cancellation, progress, large-input and Windows GUI tests |
+| Responsive UI and safe long-running jobs | **Partial: detached Activity monitor with live task status and optional automatic opening, plus opt-in read-only System Health, immediate single-click asset preview and LMB/Shift/RMB Blender-like viewport navigation; GUI frame/Windows interaction verification pending** | Cancellation, progress, large-input and Windows GUI tests |
 
 ### Binary XML reader compatibility
 
@@ -113,7 +113,7 @@ The following are **new implementation work**, not a claim of complete Qt parity
 
 | Capability | Implemented in the preview | Still required |
 |---|---|---|
-| GPU character preview | Existing source-textured wgpu renderer, wireframe switch, camera persistence, mouse middle-drag orbit / Shift+middle-drag pan / scroll zoom, GPU-backed UV0 visualization preserving tiling; explicit CDF static assembly preview | Per-part GPU selection, skinned 3D animation, multiple material slots, full CDF equipment composition, real-time shadows and faithful transparency |
+| GPU character preview | Existing source-textured wgpu renderer, wireframe switch, camera persistence, left/middle-drag orbit, Shift+drag/right-drag pan and scroll zoom, GPU-backed UV0 visualization preserving tiling; explicit CDF static assembly preview | Per-part GPU selection, skinned 3D animation, multiple material slots, full CDF equipment composition, real-time shadows and faithful transparency |
 | Asset Library responsiveness | Catalog filtering cached on search/build changes; bounded page rendering instead of generating all rows, background index and scanned-file progress | Truly virtual scrolling, thumbnail workers, 40 GiB stress benchmarks and sustained frame-time tests |
 | CAF/DBA animation timeline | Real sampled CAF or validated converted GLB scrubbing, speed range 0.1–3.0×, loop control and saved animation options | DBA direct playback, layered track mixer, verified bone bindings and actions applied to skinned meshes |
 | Level Editor | GPU-backed 2D placement overview from source transform coordinates, point-picking, hierarchy, object details, zoom and bounded culling | GPU instanced 3D geometry, terrain material rendering, object transform gizmos, full editor undo/redo |
@@ -126,6 +126,11 @@ The following are **new implementation work**, not a claim of complete Qt parity
 | Appearance | Private-like charcoal Home cards, compact controls and red primary action accents | Full per-widget theme audit, focus accessibility and actual-frame rendering comparisons |
 
 All source libraries stay read-only. New PAK installation/rebuilding must keep its existing transaction and restore checks. Missing features remain gated and must be tested against representative Stage 2 assets before public 1.0.
+
+- **GUI styling progress:** applied subdued charcoal surfaces, neutral library/tool buttons and compact neutral sidebar selection, leaving the red accent for primary actions. Sidebar icon labels remain hover-only; genuine screenshot-based Windows comparison with the private Qt executable is still needed. The settings icon and responsive layout should be verified by screenshots in the built Windows app.
+- **Home:** a collapsed System Health disclosure now allows on-demand, **read-only** inspection of configured game/stage/project paths, process presence and limited firewall rule information. It does **not** change Windows settings or claim feature parity for dump setup, firewall actions or cleanup.
+- **Activity:** separate nonmodal window with bounded task-status history and scan cancellation; honors the optional automatic-open preference and can be closed without cancelling work. Real full workflow progress indicators are still incomplete.
+- **Viewer:** selecting a supported source file launches its preview without an extra Preview click. CDF rows start the separately verified static assembly preview. Selection modifiers remain separate from previews. Both wgpu/canvas viewports accept LMB and middle-drag orbit, Shift-drag/right-drag pan, and wheel zoom. Full per-part rigging remains incomplete.
 
 ## Desktop GUI parity — private manager reference
 
