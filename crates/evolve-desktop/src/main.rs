@@ -1541,7 +1541,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.library_page = 0;
                     refresh_library_matches(state);
                 }
-                Err(error) => state.status = format!("Could not index saved Asset Library: {error}"),
+                Err(error) => {
+                    state.status = format!("Could not index saved Asset Library: {error}")
+                }
             }
         }
         Message::LibraryRefresh => {
@@ -4405,10 +4407,11 @@ impl Desktop {
             Task::perform(
                 async move {
                     let expected = library_root.clone();
-                    let result = tokio::task::spawn_blocking(move || imported_library(&library_root))
-                        .await
-                        .map_err(|e| format!("Asset Library worker stopped: {e}"))
-                        .and_then(|outcome| outcome.map_err(|e| e.to_string()));
+                    let result =
+                        tokio::task::spawn_blocking(move || imported_library(&library_root))
+                            .await
+                            .map_err(|e| format!("Asset Library worker stopped: {e}"))
+                            .and_then(|outcome| outcome.map_err(|e| e.to_string()));
                     (expected, result)
                 },
                 |(expected, result)| Message::StartupLibraryIndexed(expected, result),
