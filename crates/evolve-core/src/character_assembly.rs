@@ -37,9 +37,9 @@ pub struct AssemblyReport {
     pub skeletal_animation_enabled: bool,
 }
 
-pub fn select_attachments<'a>(
-    cdf: &'a CdfDefinition,
-) -> Result<(Option<String>, Vec<&'a str>), AssemblyError> {
+pub fn select_attachments(
+    cdf: &CdfDefinition,
+) -> Result<(Option<String>, Vec<&str>), AssemblyError> {
     let chosen = if cdf.skin_sets.is_empty() {
         None
     } else if cdf.skin_sets.contains_key("default") {
@@ -193,7 +193,7 @@ pub fn read_static_cdf_assembly(
     let mut names_seen = HashSet::new();
     let mut meshes = Vec::new();
     for (part, resolution) in dependencies.attachments.iter() {
-        if !selected.iter().any(|name| *name == part.as_str()) {
+        if !selected.contains(&part.as_str()) {
             continue;
         }
         let AssetResolution::Found(relative) = resolution else {
