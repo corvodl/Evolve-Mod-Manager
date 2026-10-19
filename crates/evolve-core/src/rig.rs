@@ -891,10 +891,13 @@ pub(crate) fn embed_verified_maps_png_glb(
     normal: Option<&[u8]>,
     emissive: Option<&[u8]>,
 ) -> Result<Vec<u8>, RigError> {
-    if source.len() < 28 || &source[..4] != b"glTF"
+    if source.len() < 28
+        || &source[..4] != b"glTF"
         || [diffuse, normal, emissive].iter().all(|map| map.is_none())
     {
-        return Err(RigError::Invalid("Expected a rigged GLB and source PNG map".into()));
+        return Err(RigError::Invalid(
+            "Expected a rigged GLB and source PNG map".into(),
+        ));
     }
     let json_size =
         u32::from_le_bytes(source[12..16].try_into().map_err(|_| RigError::Limits)?) as usize;
@@ -902,11 +905,17 @@ pub(crate) fn embed_verified_maps_png_glb(
     let mut document: Value =
         serde_json::from_slice(source.get(20..document_end).ok_or(RigError::Limits)?)?;
     if document["meshes"][0]["primitives"][0]["attributes"]["TEXCOORD_0"].is_null()
-        || document["skins"].as_array().is_none_or(|skins| skins.is_empty())
-        || document["images"].as_array().is_some_and(|images| !images.is_empty())
+        || document["skins"]
+            .as_array()
+            .is_none_or(|skins| skins.is_empty())
+        || document["images"]
+            .as_array()
+            .is_some_and(|images| !images.is_empty())
         || document["buffers"][0]["byteLength"].as_u64().is_none()
     {
-        return Err(RigError::Invalid("Cannot bind images to an unverified rig/UV0".into()));
+        return Err(RigError::Invalid(
+            "Cannot bind images to an unverified rig/UV0".into(),
+        ));
     }
     let bin_at = document_end.checked_add(8).ok_or(RigError::Limits)?;
     if source.get(document_end + 4..document_end + 8) != Some(b"BIN\0") {
@@ -926,18 +935,24 @@ pub(crate) fn embed_verified_maps_png_glb(
     ] {
         let Some(png) = data else { continue };
         if png.is_empty() {
-            return Err(RigError::Invalid("Original authored map has no PNG bytes".into()));
+            return Err(RigError::Invalid(
+                "Original authored map has no PNG bytes".into(),
+            ));
         }
         let view = add_view(&mut binary, &mut document, png, None)?;
-        images.push(json!({"name":format!("Original {role} DDS"),"mimeType":"image/png","bufferView":view}));
+        images.push(
+            json!({"name":format!("Original {role} DDS"),"mimeType":"image/png","bufferView":view}),
+        );
         let index = textures.len();
         textures.push(json!({"source":index}));
         match role {
-            "diffuse" => material["pbrMetallicRoughness"]["baseColorTexture"] = json!({"index":index}),
+            "diffuse" => {
+                material["pbrMetallicRoughness"]["baseColorTexture"] = json!({"index":index})
+            }
             "normal" => material["normalTexture"] = json!({"index":index}),
             "emissive" => {
                 material["emissiveTexture"] = json!({"index":index});
-                material["emissiveFactor"] = json!([1.0,1.0,1.0]);
+                material["emissiveFactor"] = json!([1.0, 1.0, 1.0]);
             }
             _ => unreachable!(),
         }
