@@ -37,6 +37,22 @@ An Inno Setup script installs per-user under LocalAppData with the original icon
 - `EvolveModManager-Setup-VERSION.exe`
 - `EvolveModManager-Portable-VERSION.zip`
 
+## Windows administrator approval
+
+Like the private Qt manager, the Windows **GUI executable** embeds a
+`requireAdministrator` application manifest. Windows requests UAC approval
+**when Evolve Mod Manager starts**, including from the portable ZIP and
+after the per-user installer finishes. If elevation is declined, Windows does
+not open the manager. The installer itself remains per-user in LocalAppData.
+The separate `evolve-cli.exe` has no mandatory UAC manifest; a worker started
+by an already-elevated GUI may still inherit its parent's privileges.
+
+Elevation only grants operating-system permissions; it does not enable
+unfinished game launch, firewall configuration or recovery operations. Do not
+install or run unknown mods merely because the manager has administrator
+rights. On Windows, drag-and-drop from a non-elevated Explorer window into an
+elevated manager can be blocked; use the manager's file-path controls instead.
+
 ## Build on Windows
 
 Install current stable Rust, Visual Studio C++ Build Tools with Windows SDK, then:
