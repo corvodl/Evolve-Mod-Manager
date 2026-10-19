@@ -304,6 +304,19 @@ fn archive_browser(state: &State) -> Element<'_, Message> {
             button("Level Editor").style(button::secondary)
                 .on_press(Message::Navigate(super::Page::Levels)),
         ].spacing(8),
+        text("SPECIALIST · REBUILD ONE SIGNED MEMBER").size(12).color(MUTED),
+        row![
+            text_input("Exact archive member path…", &state.signed_entry)
+                .on_input(Message::SignedMemberChanged).width(Fill),
+            text_input("Modified replacement file…", &state.signed_replacement)
+                .on_input(Message::SignedReplacementChanged).width(Fill),
+        ].spacing(7),
+        row![
+            text_input("NEW output path ending in original .pak basename…", &state.output)
+                .on_input(Message::OutputChanged).width(Fill),
+            button("Rebuild one member").style(button::secondary)
+                .on_press(Message::StartSignedRebuild),
+        ].spacing(7),
         text("Signing keys and the signed basename are resolved from your prepared stage and selected archive.")
             .size(12).color(MUTED),
     ].spacing(8)).into()
