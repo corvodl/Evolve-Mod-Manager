@@ -1586,7 +1586,7 @@ fn view(state: &State) -> Element<'_, Message> {
                     button("Resolve CDF parts").on_press(Message::StartCdfResolve),
                 ].spacing(8),
                 if let Some(dependencies) = &state.cdf_dependencies {
-                    let mut items = column![
+                    let mut items: iced::widget::Column<'_, Message> = column![
                         text(format!("Skeleton: {:?}", dependencies.skeleton))
                     ].spacing(4);
                     for (binding, status) in dependencies.attachments.iter().take(100) {
