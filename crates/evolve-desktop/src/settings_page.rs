@@ -163,11 +163,19 @@ const REQUIRED_ANIMATIONS: [&str; 3] = [
     "animationsdba.pak",
 ];
 fn required_reference_counts(names: impl IntoIterator<Item = String>) -> (usize, usize) {
-    let present = names.into_iter().map(|name| name.to_ascii_lowercase())
+    let present = names
+        .into_iter()
+        .map(|name| name.to_ascii_lowercase())
         .collect::<std::collections::HashSet<_>>();
     (
-        REQUIRED_SHARED.iter().filter(|name| present.contains(**name)).count(),
-        REQUIRED_ANIMATIONS.iter().filter(|name| present.contains(**name)).count(),
+        REQUIRED_SHARED
+            .iter()
+            .filter(|name| present.contains(**name))
+            .count(),
+        REQUIRED_ANIMATIONS
+            .iter()
+            .filter(|name| present.contains(**name))
+            .count(),
     )
 }
 
