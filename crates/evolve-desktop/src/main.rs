@@ -1,7 +1,7 @@
 //! Native desktop shell. GPU-powered Iced UI; custom CryEngine scene rendering
 //! will be added once format parity and asset safety checks are complete.
 use evolve_core::{AssetEntry, Inventory, scan_directory};
-use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
+use iced::widget::{Space, button, column, container, row, scrollable, text, text_input};
 use iced::{Element, Fill, Task, Theme};
 use std::path::PathBuf;
 
@@ -17,8 +17,12 @@ enum Page {
 
 impl Page {
     const ALL: [Self; 6] = [
-        Self::Home, Self::Files, Self::AssetLibrary,
-        Self::Models, Self::Levels, Self::Settings,
+        Self::Home,
+        Self::Files,
+        Self::AssetLibrary,
+        Self::Models,
+        Self::Levels,
+        Self::Settings,
     ];
     fn title(self) -> &'static str {
         match self {
@@ -63,14 +67,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.scanning = true;
             state.selected = None;
             let root = PathBuf::from(state.input.trim());
-            return Task::perform(async move { scan_directory(&root).map_err(|err| err.to_string()) }, Message::Scanned);
+            return Task::perform(
+                async move { scan_directory(&root).map_err(|err| err.to_string()) },
+                Message::Scanned,
+            );
         }
         Message::Scan => {}
         Message::Scanned(result) => {
             state.scanning = false;
             match result {
                 Ok(inventory) => {
-                    state.status = format!("{} local files indexed without modification.", inventory.entries.len());
+                    state.status = format!(
+                        "{} local files indexed without modification.",
+                        inventory.entries.len()
+                    );
                     state.inventory = Some(inventory);
                     state.page = Some(Page::Files);
                 }
@@ -99,11 +109,13 @@ fn view(state: &State) -> Element<'_, Message> {
     let page = state.page.unwrap_or(Page::Home);
     let navigation = Page::ALL.into_iter().fold(
         column![text("EVOLVE").size(26), text("MOD MANAGER").size(14)].spacing(12),
-        |content, item| content.push(
-            button(text(item.title()))
-                .width(Fill)
-                .on_press(Message::Navigate(item)),
-        ),
+        |content, item| {
+            content.push(
+                button(text(item.title()))
+                    .width(Fill)
+                    .on_press(Message::Navigate(item)),
+            )
+        },
     );
     let sidebar = container(navigation.spacing(10).padding(16)).width(205);
 
@@ -114,9 +126,12 @@ fn view(state: &State) -> Element<'_, Message> {
     .spacing(6);
 
     let location = row![
-        text_input("Enter a local extracted PAK or game asset folder...", &state.input)
-            .on_input(Message::InputChanged)
-            .width(Fill),
+        text_input(
+            "Enter a local extracted PAK or game asset folder...",
+            &state.input
+        )
+        .on_input(Message::InputChanged)
+        .width(Fill),
         button("Scan directory").on_press(Message::Scan),
     ]
     .spacing(8);
@@ -168,7 +183,12 @@ fn view(state: &State) -> Element<'_, Message> {
     let body = column![
         headline,
         location,
-        text(if state.scanning { "Scanning..." } else { state.status.as_str() }).size(13),
+        text(if state.scanning {
+            "Scanning..."
+        } else {
+            state.status.as_str()
+        })
+        .size(13),
         workspace,
         Space::new().height(0),
     ]
