@@ -325,6 +325,79 @@ pub fn imported_archive_files(archive: &ImportedPak) -> Result<Inventory, Librar
     })
 }
 
+
+/// Provenance-aware cross-PAK resolution. This is deliberately exact virtual
+/// path matching, NOT basename matching or a closest-looking texture guess.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LibraryReference {
+    pub archive_id: String,
+    pub archive_name: String,
+    pub relative_path: String,
+    pub absolute_path: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum LibraryReferenceStatus {
+    Missing,
+    Found(LibraryReference),
+    Ambiguous(Vec<LibraryReference>),
+}
+
+/// Read imported manifests on demand in a background job and check every
+/// matching candidate against the read-only file location and byte length.
+/// Without an explicit build label, multiple archives remain ambiguous.
+pub fn resolve_imported_reference(
+    root: &Path,
+    authored_path: &str,
+    build_label: Option<&str>,
+) -> Result<LibraryReferenceStatus, LibraryError> {
+    let source = safe_member_name(&authored_path.replace('\\', "/"))
+        .map_err(|_| LibraryError::UnsafeArchive)?;
+    let source = source.to_ascii_lowercase();
+    let candidates = if source.ends_with(".dds.0") {
+        vec![source]
+    } else if source.ends_with(".dds") || source.ends_with(".tif") {
+        let base = &source[..source.len() - 4];
+        vec![format!("{base}.dds.0"), format!("{base}.dds")]
+    } else {
+        vec![source]
+    };
+    let library = imported_library(root)?;
+    let mut found: Vec<Vec<LibraryReference>> = vec![Vec::new(); candidates.len()];
+    for archive in &library.archives {
+        if let Some(label) = build_label
+            && !archive.builds.iter().any(|build| build == label)
+        {
+            continue;
+        }
+        let inv = imported_archive_files(archive)?;
+        for entry in inv.entries {
+            let path = entry.relative_path.to_ascii_lowercase();
+            for (i, candidate) in candidates.iter().enumerate() {
+                if path == *candidate {
+                    found[i].push(LibraryReference {
+                        archive_id: archive.id.clone(),
+                        archive_name: archive.name.clone(),
+                        relative_path: entry.relative_path.clone(),
+                        absolute_path: PathBuf::from(&inv.root)
+                            .join(&entry.relative_path).to_string_lossy().into_owned(),
+                    });
+                }
+            }
+        }
+    }
+    // A high-resolution .dds.0 has priority over .dds, but never prefer one
+    // archive over another with the same exact relative texture path.
+    let mut hits = found.into_iter().find(|group| !group.is_empty())
+        .unwrap_or_default();
+    hits.sort_by(|a, b| a.archive_id.cmp(&b.archive_id));
+    match hits.len() {
+        0 => Ok(LibraryReferenceStatus::Missing),
+        1 => Ok(LibraryReferenceStatus::Found(hits.remove(0))),
+        _ => Ok(LibraryReferenceStatus::Ambiguous(hits)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
