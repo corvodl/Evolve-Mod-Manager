@@ -13,6 +13,7 @@ mod modding_projects;
 mod private_pages;
 mod selection;
 mod settings;
+mod system_health;
 mod textured;
 mod updater;
 mod uv_preview;
@@ -191,6 +192,9 @@ struct State {
     show_advanced_tools: bool,
     show_activity: bool,
     activity_log: Vec<String>,
+    health_expanded: bool,
+    health_checking: bool,
+    health_report: Option<system_health::Snapshot>,
     library_catalog: Option<ImportedLibrary>,
     library_selected: Option<usize>,
     library_root: String,
@@ -792,6 +796,9 @@ enum Message {
     ToggleAdvancedTools,
     ToggleActivity,
     ClearActivity,
+    ToggleSystemHealth,
+    CheckSystemHealth,
+    SystemHealthChecked(system_health::Snapshot),
     DeveloperPasswordChanged(String),
     UnlockDeveloper,
     DeveloperChecked(bool),
@@ -1431,6 +1438,37 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ToggleAdvancedTools => state.show_advanced_tools = !state.show_advanced_tools,
         Message::ToggleActivity => {}
         Message::ClearActivity => state.activity_log.clear(),
+        Message::ToggleSystemHealth => state.health_expanded = !state.health_expanded,
+        Message::CheckSystemHealth => {
+            if state.health_checking {
+                return Task::none();
+            }
+            state.health_expanded = true;
+            state.health_checking = true;
+            let game = state.preferences.game_storage_root.clone();
+            let stage = state.preferences.stage.clone();
+            let projects = state.preferences.projects.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || system_health::inspect(&game, &stage, &projects))
+                        .await
+                        .unwrap_or_else(|error| system_health::Snapshot {
+                            firewall: format!("Read-only health check failed: {error}"),
+                            game_process: "Unavailable".into(),
+                            storage: "Unavailable".into(),
+                            dumps: "Unavailable".into(),
+                            environment: "Unavailable".into(),
+                            recovery: "Unavailable".into(),
+                        })
+                },
+                Message::SystemHealthChecked,
+            );
+        }
+        Message::SystemHealthChecked(report) => {
+            state.health_report = Some(report);
+            state.health_checking = false;
+            state.status = "Read-only System Health check completed.".into();
+        },
         Message::DeveloperPasswordChanged(value) => {
             if !state.developer_checking && value.len() <= 128 {
                 state.developer_password = value;
