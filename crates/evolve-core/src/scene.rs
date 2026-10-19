@@ -382,6 +382,57 @@ pub fn parse_level_scene(layers: &[(&str, &[u8])]) -> Result<LevelScene, SceneEr
     })
 }
 
+/// Modify exactly one existing local transform in memory and recalculate
+/// world transforms for its entire parent hierarchy. Source XML is untouched.
+pub fn edit_level_transform(
+    scene: &LevelScene,
+    guid: &str,
+    transform: Transform,
+) -> Result<LevelScene, SceneError> {
+    let mut edited = scene.clone();
+    let index = edited
+        .objects
+        .iter()
+        .enumerate()
+        .map(|(i, object)| (object.id.clone(), i))
+        .collect::<HashMap<_, _>>();
+    let selected = index
+        .get(&guid.to_ascii_lowercase())
+        .copied()
+        .ok_or(SceneError::NoMatchingGuid)?;
+    edited.objects[selected].local = transform.normalize()?;
+    let mut world: Vec<Option<Transform>> = vec![None; edited.objects.len()];
+    for start in 0..edited.objects.len() {
+        if world[start].is_some() {
+            continue;
+        }
+        let mut order = Vec::new();
+        let mut visiting = HashSet::new();
+        let mut current = Some(start);
+        while let Some(idx) = current {
+            if world[idx].is_some() {
+                break;
+            }
+            if !visiting.insert(idx) {
+                return Err(SceneError::Cycle(edited.objects[idx].id.clone()));
+            }
+            order.push(idx);
+            current = index.get(&edited.objects[idx].parent).copied();
+        }
+        while let Some(idx) = order.pop() {
+            let base = index
+                .get(&edited.objects[idx].parent)
+                .and_then(|parent| world[*parent])
+                .unwrap_or_default();
+            world[idx] = Some(base.combine(edited.objects[idx].local)?);
+        }
+    }
+    for (object, world) in edited.objects.iter_mut().zip(world) {
+        object.world = world.ok_or(SceneError::Limits)?;
+    }
+    Ok(edited)
+}
+
 pub fn load_level_scene(path: &Path) -> Result<LevelScene, SceneError> {
     let stat = fs::symlink_metadata(path)?;
     if !stat.file_type().is_file() || stat.len() > MAX_LAYER_BYTES as u64 {
@@ -396,15 +447,19 @@ pub fn load_level_scene(path: &Path) -> Result<LevelScene, SceneError> {
 
 /// Creates a modified COPY of one XML layer with a single exact GUID's
 /// transforms changed. No mission/LYR file is altered in place.
-pub fn export_edited_layer(
+pub fn export_edited_layers(
     source: &Path,
     target: &Path,
-    guid: &str,
-    transform: Transform,
+    edits: &[(String, Transform)],
 ) -> Result<(), SceneError> {
-    let valid = transform.normalize()?;
-    if guid.is_empty() {
-        return Err(SceneError::NoMatchingGuid);
+    if edits.is_empty() || edits.len() > 128 {
+        return Err(SceneError::Limits);
+    }
+    let mut requested = HashMap::new();
+    for (guid, transform) in edits {
+        if guid.is_empty() || requested.insert(guid.to_ascii_lowercase(), transform.normalize()?).is_some() {
+            return Err(SceneError::NoMatchingGuid);
+        }
     }
     let bytes = fs::read(source)?;
     let bytes = crate::cryxml::xml_bytes(&bytes, MAX_LAYER_BYTES)
@@ -419,13 +474,9 @@ pub fn export_edited_layer(
             .unwrap_or("layer"),
         &bytes,
     )])?;
-    if parsed
-        .objects
-        .iter()
-        .filter(|o| o.id.eq_ignore_ascii_case(guid))
-        .count()
-        != 1
-    {
+    if requested.keys().any(|guid| {
+        parsed.objects.iter().filter(|object| &object.id == guid).count() != 1
+    }) {
         return Err(SceneError::NoMatchingGuid);
     }
     let mut reader = Reader::from_reader(bytes.as_ref());
@@ -457,7 +508,7 @@ pub fn export_edited_layer(
                 let found = attr(e, b"Id")?
                     .or(attr(e, b"EntityId")?)
                     .unwrap_or_default();
-                if found.eq_ignore_ascii_case(guid) {
+                if let Some(valid) = requested.get(&found.to_ascii_lowercase()) {
                     edited += 1;
                     let mut attrs = Vec::new();
                     for a in e.attributes() {
@@ -524,7 +575,7 @@ pub fn export_edited_layer(
             .write_event(adjusted)
             .map_err(|e| SceneError::Xml(e.to_string()))?;
     }
-    if edited != 1 {
+    if edited != requested.len() {
         return Err(SceneError::NoMatchingGuid);
     }
     let new_bytes = writer.into_inner();
@@ -548,9 +599,64 @@ pub fn export_edited_layer(
     Ok(())
 }
 
+/// Compatibility convenience API for a single verified GUID edit.
+pub fn export_edited_layer(
+    source: &Path,
+    target: &Path,
+    guid: &str,
+    transform: Transform,
+) -> Result<(), SceneError> {
+    export_edited_layers(source, target, &[(guid.to_owned(), transform)])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn undoable_local_edit_propagates_to_child_world_transform() {
+        let src = br#"<Objects><Object Id="parent" Pos="1,2,3"/><Object Id="child" Parent="parent" Pos="4,5,6"/></Objects>"#;
+        let original = parse_level_scene(&[("example.lyr", src)]).unwrap();
+        let changed = edit_level_transform(
+            &original,
+            "parent",
+            Transform {
+                position: [11.0, 12.0, 13.0],
+                ..Transform::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(changed.objects[0].world.position, [11.0, 12.0, 13.0]);
+        assert_eq!(changed.objects[1].world.position, [15.0, 17.0, 19.0]);
+        assert_eq!(original.objects[1].world.position, [5.0, 7.0, 9.0]);
+        let restored = edit_level_transform(&changed, "parent", original.objects[0].local).unwrap();
+        assert_eq!(restored.objects[1].world.position, original.objects[1].world.position);
+    }
+
+    #[test]
+    fn batch_export_edits_only_exact_guids_and_preserves_original() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.lyr");
+        let dest = dir.path().join("modified.lyr");
+        let bytes = br#"<Objects><Object Id="p" Name="Parent"/><Object Id="c" Parent="p" Pos="1,0,0"/></Objects>"#;
+        fs::write(&source, bytes).unwrap();
+        let changed = Transform {
+            position: [3.0, 4.0, 5.0],
+            ..Transform::default()
+        };
+        export_edited_layers(
+            &source,
+            &dest,
+            &[("p".into(), changed), ("c".into(), changed)],
+        ).unwrap();
+        let result = load_level_scene(&dest).unwrap();
+        assert_eq!(result.objects[0].local.position, changed.position);
+        assert_eq!(result.objects[1].local.position, changed.position);
+        assert_eq!(result.objects[1].world.position, [6.0, 8.0, 10.0]);
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+        assert!(export_edited_layers(&source, &dest, &[("p".into(), changed)]).is_err());
+        assert!(export_edited_layers(&source, &dir.path().join("bad.lyr"), &[("missing".into(), changed)]).is_err());
+    }
+
     #[test]
     fn entity_links_are_not_placements_and_are_not_edited() {
         let xml = br#"<Objects><Object Id="a" Name="reverb" Pos="1,2,3"/>
