@@ -111,6 +111,26 @@ pub fn settings_path() -> Result<PathBuf, SettingsError> {
     Ok(root.join("settings.json"))
 }
 
+/// Keep the private manager's on-disk layout. The Rust rewrite should
+/// never require users to re-enter the location on the Asset Library page.
+pub fn library_directory(settings_file: &Path, preference: &str) -> Result<PathBuf, SettingsError> {
+    if !preference.trim().is_empty() {
+        return Ok(PathBuf::from(preference));
+    }
+    let profile = settings_file.parent().ok_or(SettingsError::InvalidValue)?;
+    Ok(profile.join("Data").join("AssetLibrary"))
+}
+
+/// Shared GameSets root for new installations. Existing stage/swap/projects
+/// preferences remain untouched and continue to point at their old setup.
+pub fn game_storage_directory(settings_file: &Path, preference: &str) -> Result<PathBuf, SettingsError> {
+    if !preference.trim().is_empty() {
+        return Ok(PathBuf::from(preference));
+    }
+    let profile = settings_file.parent().ok_or(SettingsError::InvalidValue)?;
+    Ok(profile.join("Data").join("GameSets"))
+}
+
 impl Preferences {
     pub fn validate(&mut self) -> Result<(), SettingsError> {
         if !["Compact", "Comfortable"].contains(&self.ui_density.as_str()) {
@@ -245,6 +265,19 @@ pub fn save_to(path: &Path, prefs: &Preferences) -> Result<(), SettingsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn detects_existing_manager_library_and_gamesets_without_user_input() {
+        let home = tempfile::tempdir().unwrap();
+        let settings = home.path().join("settings.json");
+        let library = home.path().join("Data").join("AssetLibrary");
+        let games = home.path().join("Data").join("GameSets");
+        assert_eq!(library_directory(&settings, "").unwrap(), library);
+        assert_eq!(game_storage_directory(&settings, "").unwrap(), games);
+        assert_eq!(library_directory(&settings, "D:/MyLibrary").unwrap(), PathBuf::from("D:/MyLibrary"));
+        assert_eq!(game_storage_directory(&settings, "D:/NewGameSets").unwrap(), PathBuf::from("D:/NewGameSets"));
+        assert!(!library.exists(), "Discovery must not silently create or modify source data");
+    }
+
     #[test]
     fn migrates_familiar_settings_keys_without_forgetting_defaults() {
         let dir = tempfile::tempdir().unwrap();
