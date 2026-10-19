@@ -89,6 +89,10 @@ struct State {
     diffuse_input: String,
     diffuse: Option<Arc<::image::RgbaImage>>,
     diffuse_status: String,
+    normal_input: String,
+    normal_map: Option<Arc<::image::RgbaImage>>,
+    emissive_input: String,
+    emissive_map: Option<Arc<::image::RgbaImage>>,
     caf_path: String,
     skeleton_path: String,
     blender_path: String,
@@ -130,6 +134,8 @@ enum Operation {
     InspectPak(PathBuf),
     InspectDds(PathBuf),
     LoadDiffuse(PathBuf),
+    LoadNormal(PathBuf),
+    LoadEmissive(PathBuf),
     LoadCaf(PathBuf),
     RiggedGlb(PathBuf, PathBuf, PathBuf),
     RiggedFbx(PathBuf, PathBuf, PathBuf, PathBuf),
@@ -169,6 +175,8 @@ enum Completed {
     Pak(PakInventory),
     Texture(DdsInfo),
     Diffuse(DdsInfo, ::image::RgbaImage),
+    Normal(DdsInfo, ::image::RgbaImage),
+    Emissive(DdsInfo, ::image::RgbaImage),
     Caf(NativeCafMotion),
     RiggedExport(RigReport, PathBuf),
     MotionConverted(ConvertedMotion, PathBuf),
@@ -221,6 +229,12 @@ impl Operation {
                 .map_err(|e| e.to_string()),
             Self::LoadCaf(source) => read_native_caf(&source)
                 .map(Completed::Caf)
+                .map_err(|e| e.to_string()),
+            Self::LoadNormal(source) => decode_dds_rgba(&source)
+                .map(|(info, image)| Completed::Normal(info, image))
+                .map_err(|e| e.to_string()),
+            Self::LoadEmissive(source) => decode_dds_rgba(&source)
+                .map(|(info, image)| Completed::Emissive(info, image))
                 .map_err(|e| e.to_string()),
             Self::LoadDiffuse(source) => decode_dds_rgba(&source)
                 .map(|(info, image)| Completed::Diffuse(info, image))
@@ -364,6 +378,8 @@ enum Message {
     StartStageApply,
     StartStageRestore,
     DiffuseInputChanged(String),
+    NormalInputChanged(String),
+    EmissiveInputChanged(String),
     CafInputChanged(String),
     SkeletonChanged(String),
     BlenderChanged(String),
@@ -403,6 +419,8 @@ enum Message {
     StartPakInspection,
     StartDdsInspection,
     StartDiffuseLoad,
+    StartNormalLoad,
+    StartEmissiveLoad,
     StartCafLoad,
     StartRigGlb,
     StartRigFbx,
@@ -695,6 +713,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::DiffuseInputChanged(value) => state.diffuse_input = value,
+        Message::NormalInputChanged(value) => state.normal_input = value,
+        Message::EmissiveInputChanged(value) => state.emissive_input = value,
         Message::CafInputChanged(value) => state.caf_path = value,
         Message::SkeletonChanged(value) => state.skeleton_path = value,
         Message::BlenderChanged(value) => state.blender_path = value,
@@ -822,6 +842,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             }
             return launch(state, Operation::LoadCaf(PathBuf::from(&state.caf_path)));
+        }
+        Message::StartNormalLoad => {
+            if state.normal_input.trim().is_empty() {
+                state.status = "Select a source tangent-space normal DDS (BC5 recommended).".into();
+                return Task::none();
+            }
+            return launch(state, Operation::LoadNormal(PathBuf::from(&state.normal_input)));
+        }
+        Message::StartEmissiveLoad => {
+            if state.emissive_input.trim().is_empty() {
+                state.status = "Select the exact source emissive DDS; no color tint will be guessed.".into();
+                return Task::none();
+            }
+            return launch(state, Operation::LoadEmissive(PathBuf::from(&state.emissive_input)));
         }
         Message::StartDiffuseLoad => {
             if state.diffuse_input.trim().is_empty() {
@@ -1074,6 +1108,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.playing = false;
                     state.native_caf = Some(Arc::new(motion));
                     state.glb_motion = None;
+                    state.page = Some(Page::Models);
+                }
+                Ok(Completed::Normal(info, pixels)) => {
+                    state.status = format!(
+                        "GPU normal map loaded: {} × {} ({:?}) in linear color space. Tangents derive from original UV0.",
+                        info.width, info.height, info.format
+                    );
+                    state.normal_map = Some(Arc::new(pixels));
+                    state.page = Some(Page::Models);
+                }
+                Ok(Completed::Emissive(info, pixels)) => {
+                    state.status = format!(
+                        "GPU emissive map loaded: {} × {} ({:?}). MTL GlowAmount is not inferred.",
+                        info.width, info.height, info.format
+                    );
+                    state.emissive_map = Some(Arc::new(pixels));
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::Diffuse(info, pixels)) => {
@@ -1483,10 +1533,19 @@ fn view(state: &State) -> Element<'_, Message> {
                     button("Load GPU diffuse").on_press(Message::StartDiffuseLoad),
                 ].spacing(8),
                 text(state.diffuse_status.as_str()),
+                row![
+                    text_input("Source normal map DDS (BC5)...", &state.normal_input)
+                        .on_input(Message::NormalInputChanged).width(Fill),
+                    button("Load GPU normal").on_press(Message::StartNormalLoad),
+                    text_input("Source emissive or glow DDS...", &state.emissive_input)
+                        .on_input(Message::EmissiveInputChanged).width(Fill),
+                    button("Load GPU emissive").on_press(Message::StartEmissiveLoad),
+                ].spacing(8),
                 if let Some(mesh)=&state.model {
                     let display:Element<'_,Message> = if mesh.uv0.is_some(){
                         shader(TexturedScene{
                             mesh:mesh.clone(),diffuse:state.diffuse.clone(),
+                            normal_map:state.normal_map.clone(),emissive:state.emissive_map.clone(),
                             yaw:state.yaw,pitch:state.pitch,zoom:state.zoom,
                         }).width(Fill).height(Length::Fixed(400.)).into()
                     }else{
@@ -1609,6 +1668,7 @@ fn view(state: &State) -> Element<'_, Message> {
                 let display:Element<'_,Message> = if mesh.uv0.is_some(){
                     shader(TexturedScene{
                         mesh:mesh.clone(),diffuse:state.diffuse.clone(),
+                            normal_map:state.normal_map.clone(),emissive:state.emissive_map.clone(),
                         yaw:state.yaw,pitch:state.pitch,zoom:state.zoom.max(0.2),
                     }).width(Fill).height(Length::Fixed(400.)).into()
                 }else{
