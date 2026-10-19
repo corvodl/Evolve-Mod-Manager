@@ -316,6 +316,17 @@ fn explorer(state: &State) -> Element<'_, Message> {
                     button("Index folder").on_press(Message::StartScan),
                 ]
                 .spacing(8),
+                if state.viewer_from_library {
+                    text("Protected read-only source. To edit, open a separate Modding project.")
+                        .size(11).color(MUTED).into()
+                } else {
+                    column![
+                        text_input("Existing local file to import over selected project asset...", &state.editor_replace_source)
+                            .on_input(Message::EditorReplacementChanged),
+                        button("Import over selected raw asset (backup)")
+                            .on_press(Message::EditorImportRawMember),
+                    ].spacing(5).into()
+                },
                 scrollable(rows).height(Fill),
                 text("Shift: range  •  Ctrl: toggle  •  CDF: assembly definition  •  350 visible rows")
                     .size(11)
