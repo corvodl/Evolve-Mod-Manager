@@ -187,6 +187,8 @@ struct State {
     startup_update_checked: bool,
     viewer_search: String,
     viewer_rows: Vec<explorer_tree::ExplorerRow>,
+    viewer_page: usize,
+    viewer_more_rows: bool,
     // Latest selected asset while an earlier worker is running. Never replay
     // a stale index after the indexed source folder changes.
     viewer_queued_preview: Option<usize>,
@@ -802,6 +804,8 @@ enum Message {
     ViewerPanDelta(f32, f32),
     ViewerZoomWheel(f32),
     ViewerSearchChanged(String),
+    ViewerPreviousPage,
+    ViewerNextPage,
     ViewerSelectFile(usize),
     ModifiersChanged(iced::keyboard::Modifiers),
     ViewerToggleFolder(String),
@@ -1078,12 +1082,18 @@ fn refresh_viewer_rows(state: &mut State) {
     } else {
         Vec::new()
     };
-    state.viewer_rows = explorer_tree::visible_rows(
+    const PAGE: usize = 350;
+    let offset = state.viewer_page.saturating_mul(PAGE);
+    let mut visible = explorer_tree::visible_rows_page(
         rows.iter().map(|(i, path, size)| (*i, *path, *size)),
         &state.viewer_search,
         &state.viewer_collapsed,
-        350,
+        offset,
+        PAGE + 1,
     );
+    state.viewer_more_rows = visible.len() > PAGE;
+    visible.truncate(PAGE);
+    state.viewer_rows = visible;
 }
 
 fn update(state: &mut State, message: Message) -> Task<Message> {
@@ -1779,7 +1789,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ViewerSearchChanged(filter) => {
             state.viewer_search = filter;
+            state.viewer_page = 0;
             refresh_viewer_rows(state);
+        }
+        Message::ViewerPreviousPage => {
+            state.viewer_page = state.viewer_page.saturating_sub(1);
+            refresh_viewer_rows(state);
+        }
+        Message::ViewerNextPage => {
+            if state.viewer_more_rows {
+                state.viewer_page += 1;
+                refresh_viewer_rows(state);
+            }
         }
         Message::ViewerSelectFile(index) => {
             let visible: Vec<usize> = state
@@ -1840,6 +1861,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if !state.viewer_collapsed.insert(path.clone()) {
                 state.viewer_collapsed.remove(&path);
             }
+            state.viewer_page = 0;
             refresh_viewer_rows(state);
         }
         Message::ViewerOpenStaticCdf(index) => {
@@ -2901,6 +2923,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::ImportedPakFiles(inventory)) => {
                     state.viewer_queued_preview = None;
+                    state.viewer_page = 0;
                     state.status = format!(
                         "Read-only preview: {} manifest-listed files checked for size and location.",
                         inventory.entries.len()
@@ -2917,6 +2940,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::Inventory(inventory)) => {
                     state.viewer_queued_preview = None;
+                    state.viewer_page = 0;
                     state.file_selection.clear();
                     state.status = format!(
                         "{} files indexed; no originals modified.",
