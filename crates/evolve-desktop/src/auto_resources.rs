@@ -378,9 +378,21 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("selected.caf"), b"fixture").unwrap();
         let inventory = scan_directory(temp.path()).unwrap();
-        assert!(resolve_declared(&inventory, "selected.caf", None, None).unwrap().is_some());
-        assert!(resolve_declared(&inventory, "other.caf", None, None).unwrap().is_none());
-        assert!(resolve_declared(&inventory, "../selected.caf", None, None).unwrap().is_none());
+        assert!(
+            resolve_declared(&inventory, "selected.caf", None, None)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            resolve_declared(&inventory, "other.caf", None, None)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            resolve_declared(&inventory, "../selected.caf", None, None)
+                .unwrap()
+                .is_none()
+        );
         assert!(resolve_declared(&inventory, "selected.dba", None, None).is_err());
     }
 
