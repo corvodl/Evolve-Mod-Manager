@@ -82,6 +82,10 @@ def main():
 
     check(master is not None and len(meshes) == len(parts), "incomplete assembly")
     bone_count = len(master.data.bones)
+    source_hierarchy = {
+        bone.name: (bone.parent.name if bone.parent else None)
+        for bone in master.data.bones
+    }
     if not animate:
         for obj in bpy.data.objects:
             obj.animation_data_clear()
@@ -108,6 +112,12 @@ def main():
     result_meshes = [o for o in bpy.data.objects if o.type == "MESH"]
     check(len(result_arms) == 1 and len(result_arms[0].data.bones) == bone_count,
           "round-trip lost original skeleton")
+    target_hierarchy = {
+        bone.name: (bone.parent.name if bone.parent else None)
+        for bone in result_arms[0].data.bones
+    }
+    check(source_hierarchy == target_hierarchy,
+          "FBX round-trip changed the original bone hierarchy")
     check(len(result_meshes) >= len(parts), "round-trip lost character parts")
     if animate:
         check(bool(bpy.data.actions), "FBX round-trip lost the verified CAF Action")
