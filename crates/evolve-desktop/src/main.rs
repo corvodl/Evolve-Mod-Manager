@@ -5,11 +5,12 @@ mod textured;
 mod updater;
 mod viewport;
 use evolve_core::{
-    AnimatedGlb, AnimationPolicy, AssetEntry, CdfDefinition, ConvertedMotion, DdsInfo, Inventory, LevelScene,
-    ModelInfo, NativeCafMotion, PakInventory, RenderMesh, RigReport, SignedPakInfo, StageTransaction, TerrainInfo,
-    apply_stage_pak, convert_glb_to_fbx, convert_original_motion, decode_dds_rgba, export_dds_png, export_level_scene_glb,
-    export_rigged_character_fbx, export_rigged_character_glb, extract_legacy_pak,
-    extract_signed_pak, import_stage_pak, initialize_stage, inspect_dds, inspect_legacy_pak, inspect_signed_pak, load_level_scene,
+    AnimatedGlb, AnimationPolicy, AssetEntry, CdfDefinition, ConvertedMotion, DdsInfo, Inventory,
+    LevelScene, ModelInfo, NativeCafMotion, PakInventory, RenderMesh, RigReport, SignedPakInfo,
+    StageTransaction, TerrainInfo, apply_stage_pak, convert_glb_to_fbx, convert_original_motion,
+    decode_dds_rgba, export_dds_png, export_level_scene_glb, export_rigged_character_fbx,
+    export_rigged_character_glb, extract_legacy_pak, extract_signed_pak, import_stage_pak,
+    initialize_stage, inspect_dds, inspect_legacy_pak, inspect_signed_pak, load_level_scene,
     read_cdf, read_model, read_native_caf, read_terrain, rebuild_legacy_pak,
     rebuild_signed_pak_entry, restore_stage, scan_directory, stage_status,
 };
@@ -616,14 +617,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Choose a NEW isolated PAK workspace path under Settings.".into();
                 return Task::none();
             }
-            return launch(state, Operation::StageInit(PathBuf::from(&state.preferences.stage)));
+            return launch(
+                state,
+                Operation::StageInit(PathBuf::from(&state.preferences.stage)),
+            );
         }
         Message::StartStageStatus => {
             if state.preferences.stage.trim().is_empty() {
                 state.status = "Specify the isolated staging workspace path.".into();
                 return Task::none();
             }
-            return launch(state, Operation::StageStatus(PathBuf::from(&state.preferences.stage)));
+            return launch(
+                state,
+                Operation::StageStatus(PathBuf::from(&state.preferences.stage)),
+            );
         }
         Message::StartStageImport => {
             if [
@@ -632,17 +639,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 &state.stage_target,
                 &state.public_key,
                 &state.signed_name,
-            ].iter().any(|x| x.trim().is_empty()) {
+            ]
+            .iter()
+            .any(|x| x.trim().is_empty())
+            {
                 state.status = "Specify stage root, original PAK, relative target, public key, and signed basename.".into();
                 return Task::none();
             }
-            return launch(state, Operation::StageImport(
-                PathBuf::from(&state.preferences.stage),
-                PathBuf::from(&state.input),
-                state.stage_target.clone(),
-                PathBuf::from(&state.public_key),
-                state.signed_name.clone(),
-            ));
+            return launch(
+                state,
+                Operation::StageImport(
+                    PathBuf::from(&state.preferences.stage),
+                    PathBuf::from(&state.input),
+                    state.stage_target.clone(),
+                    PathBuf::from(&state.public_key),
+                    state.signed_name.clone(),
+                ),
+            );
         }
         Message::StartStageApply => {
             if [
@@ -652,25 +665,34 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 &state.public_key,
                 &state.signing_public,
                 &state.signed_name,
-            ].iter().any(|x| x.trim().is_empty()) {
+            ]
+            .iter()
+            .any(|x| x.trim().is_empty())
+            {
                 state.status = "Specify stage, replacement PAK path, relative target, original and new public keys, and signed basename.".into();
                 return Task::none();
             }
-            return launch(state, Operation::StageApply(
-                PathBuf::from(&state.preferences.stage),
-                PathBuf::from(&state.input),
-                state.stage_target.clone(),
-                PathBuf::from(&state.public_key),
-                PathBuf::from(&state.signing_public),
-                state.signed_name.clone(),
-            ));
+            return launch(
+                state,
+                Operation::StageApply(
+                    PathBuf::from(&state.preferences.stage),
+                    PathBuf::from(&state.input),
+                    state.stage_target.clone(),
+                    PathBuf::from(&state.public_key),
+                    PathBuf::from(&state.signing_public),
+                    state.signed_name.clone(),
+                ),
+            );
         }
         Message::StartStageRestore => {
             if state.preferences.stage.trim().is_empty() {
                 state.status = "Specify the isolated staging workspace path.".into();
                 return Task::none();
             }
-            return launch(state, Operation::StageRestore(PathBuf::from(&state.preferences.stage)));
+            return launch(
+                state,
+                Operation::StageRestore(PathBuf::from(&state.preferences.stage)),
+            );
         }
         Message::DiffuseInputChanged(value) => state.diffuse_input = value,
         Message::CafInputChanged(value) => state.caf_path = value,
@@ -897,7 +919,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 &state.assets_root,
                 &state.output,
                 &state.blender_path,
-            ].iter().any(|x| x.trim().is_empty()) || !state.output.to_ascii_lowercase().ends_with(".fbx") {
+            ]
+            .iter()
+            .any(|x| x.trim().is_empty())
+                || !state.output.to_ascii_lowercase().ends_with(".fbx")
+            {
                 state.status = "Select level XML/LYR, extracted asset root, Blender executable and NEW .fbx output.".into();
                 return Task::none();
             }
@@ -906,13 +932,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             } else {
                 Some(PathBuf::from(&state.terrain_source))
             };
-            return launch(state, Operation::ExportLevelFbx(
-                PathBuf::from(&state.input),
-                PathBuf::from(&state.assets_root),
-                terrain,
-                PathBuf::from(&state.blender_path),
-                PathBuf::from(&state.output),
-            ));
+            return launch(
+                state,
+                Operation::ExportLevelFbx(
+                    PathBuf::from(&state.input),
+                    PathBuf::from(&state.assets_root),
+                    terrain,
+                    PathBuf::from(&state.blender_path),
+                    PathBuf::from(&state.output),
+                ),
+            );
         }
         Message::StartLevelGlbExport => {
             if state.input.trim().is_empty()
@@ -1120,13 +1149,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                 }
                 Ok(Completed::StageInitialized(path)) => {
-                    state.stage_feedback = format!("Initialized isolated PAK workspace at {}", path.display());
+                    state.stage_feedback =
+                        format!("Initialized isolated PAK workspace at {}", path.display());
                     state.status = state.stage_feedback.clone();
                     state.page = Some(Page::Files);
                 }
                 Ok(Completed::StageStatus(transaction)) => {
                     state.stage_feedback = if let Some(transaction) = transaction {
-                        format!("Swap journal pending: {}. Restore before applying another mod.", transaction.target)
+                        format!(
+                            "Swap journal pending: {}. Restore before applying another mod.",
+                            transaction.target
+                        )
                     } else {
                         "No active stage swap journal. The workspace is ready.".into()
                     };
@@ -1134,7 +1167,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::Files);
                 }
                 Ok(Completed::StageImported(hash)) => {
-                    state.stage_feedback = format!("Signed archive imported to isolated stage; SHA-256: {hash}");
+                    state.stage_feedback =
+                        format!("Signed archive imported to isolated stage; SHA-256: {hash}");
                     state.status = state.stage_feedback.clone();
                     state.page = Some(Page::Files);
                 }
@@ -1147,7 +1181,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::Files);
                 }
                 Ok(Completed::StageRestored(transaction)) => {
-                    state.stage_feedback = format!("Restored original PAK in isolated workspace: {}", transaction.target);
+                    state.stage_feedback = format!(
+                        "Restored original PAK in isolated workspace: {}",
+                        transaction.target
+                    );
                     state.status = state.stage_feedback.clone();
                     state.page = Some(Page::Files);
                 }
