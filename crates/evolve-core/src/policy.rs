@@ -9,7 +9,9 @@ pub struct AnimationPolicy {
 
 impl Default for AnimationPolicy {
     fn default() -> Self {
-        Self { embed_verified_animations: false }
+        Self {
+            embed_verified_animations: false,
+        }
     }
 }
 
@@ -27,18 +29,54 @@ pub struct ExportFeature {
 }
 
 pub const PARITY_MATRIX: &[ExportFeature] = &[
-    ExportFeature { name: "Read-only scoped asset inventory and JSON report", status: FeatureStatus::Implemented },
-    ExportFeature { name: "PAK verification, extraction, rebuilding and signing", status: FeatureStatus::Planned },
-    ExportFeature { name: "Staged offline mods, backups and crash-safe restoration", status: FeatureStatus::Planned },
-    ExportFeature { name: "Asset Library, dependency resolution and texture provenance", status: FeatureStatus::Planned },
-    ExportFeature { name: "DDS high-resolution split streams, PNG and normal maps", status: FeatureStatus::Planned },
-    ExportFeature { name: "CDF character assembly, original UV0, rigs and skeletons", status: FeatureStatus::Planned },
-    ExportFeature { name: "FBX export: all stages, LOD0, hunter 1P/3P and equipment", status: FeatureStatus::Planned },
-    ExportFeature { name: "Optional verified CAF/DBA FBX Actions (default off)", status: FeatureStatus::Planned },
-    ExportFeature { name: "Blender Animation Browser interoperability", status: FeatureStatus::Planned },
-    ExportFeature { name: "GPU model renderer, materials and animation timeline", status: FeatureStatus::Planned },
-    ExportFeature { name: "CryEngine GFX and Level Editor with Blender scene export", status: FeatureStatus::Planned },
-    ExportFeature { name: "Mod profiles, settings and signed release updater", status: FeatureStatus::Planned },
+    ExportFeature {
+        name: "Read-only scoped asset inventory and JSON report",
+        status: FeatureStatus::Implemented,
+    },
+    ExportFeature {
+        name: "PAK verification, extraction, rebuilding and signing",
+        status: FeatureStatus::Planned,
+    },
+    ExportFeature {
+        name: "Staged offline mods, backups and crash-safe restoration",
+        status: FeatureStatus::Planned,
+    },
+    ExportFeature {
+        name: "Asset Library, dependency resolution and texture provenance",
+        status: FeatureStatus::Planned,
+    },
+    ExportFeature {
+        name: "DDS high-resolution split streams, PNG and normal maps",
+        status: FeatureStatus::Planned,
+    },
+    ExportFeature {
+        name: "CDF character assembly, original UV0, rigs and skeletons",
+        status: FeatureStatus::Planned,
+    },
+    ExportFeature {
+        name: "FBX export: all stages, LOD0, hunter 1P/3P and equipment",
+        status: FeatureStatus::Planned,
+    },
+    ExportFeature {
+        name: "Optional verified CAF/DBA FBX Actions (default off)",
+        status: FeatureStatus::Planned,
+    },
+    ExportFeature {
+        name: "Blender Animation Browser interoperability",
+        status: FeatureStatus::Planned,
+    },
+    ExportFeature {
+        name: "GPU model renderer, materials and animation timeline",
+        status: FeatureStatus::Planned,
+    },
+    ExportFeature {
+        name: "CryEngine GFX and Level Editor with Blender scene export",
+        status: FeatureStatus::Planned,
+    },
+    ExportFeature {
+        name: "Mod profiles, settings and signed release updater",
+        status: FeatureStatus::Planned,
+    },
 ];
 
 #[cfg(test)]
