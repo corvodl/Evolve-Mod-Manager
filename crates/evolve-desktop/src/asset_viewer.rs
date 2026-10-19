@@ -118,6 +118,15 @@ fn strip(state: &State) -> Element<'_, Message> {
                         .style(button::text)
                 );
             }
+            if !state.converted_glbs.is_empty() {
+                clips = clips.push(text("VERIFIED CONVERTED DBA TRACKS").size(12).color(MUTED));
+                for (index, source) in state.converted_glbs.iter().enumerate().take(64) {
+                    let name = source.file_name().map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| format!("Track {}", index + 1));
+                    clips = clips.push(button(text(name).size(12))
+                        .on_press(Message::OpenConvertedGlb(index)).style(button::text));
+                }
+            }
             scrollable(clips).height(Length::Fixed(250.0)).into()
         },
         Some("Tools") => row![
