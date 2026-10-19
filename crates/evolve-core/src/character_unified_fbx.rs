@@ -91,10 +91,12 @@ fn safe_part_name(raw: &str) -> Result<String, String> {
     Ok(filtered)
 }
 
+type ResolvedCdfParts = (PathBuf, String, Option<String>, Vec<(String, PathBuf)>);
+
 fn plan_parts(
     source: &Path,
     inventory: &Inventory,
-) -> Result<(PathBuf, String, Option<String>, Vec<(String, PathBuf)>), String> {
+) -> Result<ResolvedCdfParts, String> {
     let root = fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
     let original = fs::symlink_metadata(source).map_err(|e| e.to_string())?;
     let actual = fs::canonicalize(source).map_err(|e| e.to_string())?;
