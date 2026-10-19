@@ -119,7 +119,15 @@ fn strip(state: &State) -> Element<'_, Message> {
                 );
             }
             if !state.converted_glbs.is_empty() {
-                clips = clips.push(text("VERIFIED CONVERTED DBA TRACKS").size(12).color(MUTED));
+                clips = clips.push(
+                    text(if state.converted_dba_cache.is_some() {
+                        "VERIFIED TEMPORARY DBA TRACKS"
+                    } else {
+                        "VERIFIED CONVERTED MOTION FILES"
+                    })
+                    .size(12)
+                    .color(MUTED),
+                );
                 for (index, source) in state.converted_glbs.iter().enumerate().take(64) {
                     let name = source.file_name().map(|s| s.to_string_lossy().into_owned())
                         .unwrap_or_else(|| format!("Track {}", index + 1));
