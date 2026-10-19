@@ -110,6 +110,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         .into(),
         Some("Tools") => row![
             button("Preview selected PAK").on_press(Message::LibraryPreview),
+            button("Create editable project").on_press(Message::LibraryMakeModProject),
             button("Open Modding").on_press(Message::Navigate(Page::Files)),
         ]
         .spacing(8)
@@ -278,9 +279,10 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     ].spacing(10).align_y(iced::Center));
     layout = layout.push(row![
         button("Preview Files").on_press_maybe(selected.map(|_| Message::LibraryPreview)),
-        button("Edit / Add to Mod Project"),
+        button("Edit / Add to Mod Project")
+            .on_press_maybe(selected.map(|_| Message::LibraryMakeModProject)),
         text(if selected.is_some() {
-            "Shift: range • Ctrl: toggle. Library originals are protected; editable project copies are not yet available."
+            "Shift: range • Ctrl: toggle. A project copy requires an exact verified staged PAK; the Library remains read-only."
         } else {
             "Select an imported archive to preview its extracted files."
         }).size(12).color(MUTED),
