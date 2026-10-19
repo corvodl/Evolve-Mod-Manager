@@ -240,6 +240,7 @@ enum Operation {
     IndexProjects(PathBuf, PathBuf),
     BuildRawProject(ProjectRow, PathBuf, PathBuf),
     ImportRawProjectMember(ProjectRow, PathBuf, String, PathBuf),
+    RestoreRawProjectMember(ProjectRow, PathBuf, String),
     UnpackRawProject(PathBuf, PathBuf, PathBuf),
     LoadImportedLibrary(PathBuf),
     OpenImportedPak(ImportedPak),
@@ -307,6 +308,7 @@ enum Completed {
     Projects(Vec<ProjectRow>),
     UnpackedProject(PathBuf, usize),
     ImportedRawProjectMember(bool, String, PathBuf),
+    RestoredRawProjectMember(bool, String, PathBuf),
     ImportedLibrary(ImportedLibrary),
     ImportedPakFiles(Inventory),
     Dependencies(DependencyGraph),
@@ -370,6 +372,13 @@ impl Operation {
                 modding_projects::import_raw_member(&project, &projects, &member, &source).map(
                     |changed| {
                         Completed::ImportedRawProjectMember(changed, member, project.workspace)
+                    },
+                )
+            }
+            Self::RestoreRawProjectMember(project, projects, member) => {
+                modding_projects::restore_original_raw_member(&project, &projects, &member).map(
+                    |changed| {
+                        Completed::RestoredRawProjectMember(changed, member, project.workspace)
                     },
                 )
             }
@@ -659,6 +668,7 @@ enum Message {
     ModdingUnpackPak,
     EditorReplacementChanged(String),
     EditorImportRawMember,
+    EditorRestoreRawMember,
     ModdingToggleProfiles,
     LibraryToggleConfiguration,
     LibraryRefresh,
@@ -1068,7 +1078,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::EditorReplacementChanged(value) => state.editor_replace_source = value,
-        Message::EditorImportRawMember => {
+        Message::EditorImportRawMember | Message::EditorRestoreRawMember => {
+            let restore = matches!(message, Message::EditorRestoreRawMember);
             if state.viewer_from_library {
                 state.status = "Asset Library source files are always read-only.".into();
                 return Task::none();
@@ -1078,7 +1089,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .and_then(|i| state.modding_projects.as_ref().and_then(|p| p.get(i)))
                 .cloned()
             else {
-                state.status = "Open a managed editable project to import a raw member.".into();
+                state.status = "Open a managed editable project to edit a raw member.".into();
                 return Task::none();
             };
             let Some(inventory) = &state.inventory else {
@@ -1093,7 +1104,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             }
             if state.file_selection.indices.len() != 1 {
-                state.status = "Select exactly one raw asset to import over (Shift/Ctrl selections are supported for inspection).".into();
+                state.status = "Select exactly one raw asset to edit (Shift/Ctrl selections are supported for inspection).".into();
                 return Task::none();
             }
             let Some(member) = state
@@ -1104,6 +1115,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Select one manifest-listed extracted file.".into();
                 return Task::none();
             };
+            if restore {
+                return launch(
+                    state,
+                    Operation::RestoreRawProjectMember(
+                        project,
+                        PathBuf::from(&state.preferences.projects),
+                        member,
+                    ),
+                );
+            }
             if state.editor_replace_source.trim().is_empty() {
                 state.status = "Choose a separate local replacement file path.".into();
                 return Task::none();
@@ -2402,6 +2423,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         ),
                     );
                 }
+                Ok(Completed::RestoredRawProjectMember(changed, member, workspace)) => {
+                    state.status = if changed {
+                        format!(
+                            "Restored original {member}; the edited revision is retained in EditorBackups. Preview selected to reload."
+                        )
+                    } else {
+                        format!("{member} already matches its verified original.")
+                    };
+                    state.modding_pending_focus = Some(workspace);
+                    return launch(
+                        state,
+                        Operation::IndexProjects(
+                            PathBuf::from(&state.preferences.projects),
+                            PathBuf::from(&state.preferences.stage),
+                        ),
+                    );
+                }
                 Ok(Completed::UnpackedProject(path, count)) => {
                     state.status = format!(
                         "Unpacked {count} original assets into a new raw editing project; originals unchanged."
@@ -3672,4 +3710,51 @@ fn main() -> iced::Result {
         .title(Desktop::title)
         .theme(Desktop::theme)
         .run()
+}
+
+#[cfg(test)]
+mod project_edit_tests {
+    use super::*;
+
+    #[test]
+    fn restore_rejects_protected_library_and_unmanaged_viewers() {
+        let mut state = State {
+            viewer_from_library: true,
+            ..State::default()
+        };
+        let _ = update(&mut state, Message::EditorRestoreRawMember);
+        assert!(!state.busy);
+        assert!(state.status.contains("read-only"));
+        state.viewer_from_library = false;
+        let _ = update(&mut state, Message::EditorRestoreRawMember);
+        assert!(!state.busy);
+        assert!(state.status.contains("managed editable project"));
+    }
+
+    #[test]
+    fn restore_rejects_an_inventory_outside_the_selected_project() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        let other = temp.path().join("other");
+        std::fs::create_dir_all(project.join("files")).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        let mut state = State {
+            modding_selected: Some(0),
+            modding_projects: Some(vec![ProjectRow {
+                label: "test".into(),
+                target: "test.pak".into(),
+                source_build: String::new(),
+                status: "Modified".into(),
+                details: String::new(),
+                workspace: project,
+                modified: vec![],
+                changed_known: true,
+            }]),
+            inventory: Some(scan_directory(&other).unwrap()),
+            ..State::default()
+        };
+        let _ = update(&mut state, Message::EditorRestoreRawMember);
+        assert!(!state.busy);
+        assert!(state.status.contains("do not belong"));
+    }
 }

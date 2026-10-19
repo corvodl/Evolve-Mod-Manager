@@ -629,7 +629,6 @@ pub fn import_raw_member(
     Ok(true)
 }
 
-
 /// Restore one original, manifest-verified raw workspace member from a
 /// trustworthy EditorBackups revision. Unlike 'reload', this makes a real,
 /// reversible change and never modifies the signed source PAK.
@@ -654,14 +653,21 @@ pub fn restore_original_raw_member(
     {
         return Err("Read-only or unsupported project manifest".into());
     }
-    let record = manifest.get("entries").and_then(Value::as_array)
-        .and_then(|entries| entries.iter()
-            .find(|entry| entry.get("path").and_then(Value::as_str) == Some(member)))
+    let record = manifest
+        .get("entries")
+        .and_then(Value::as_array)
+        .and_then(|entries| {
+            entries
+                .iter()
+                .find(|entry| entry.get("path").and_then(Value::as_str) == Some(member))
+        })
         .ok_or("The member is not in this project's original manifest")?;
     if record.get("format").and_then(Value::as_str) != Some("raw") {
         return Err("CryXmlB originals require semantic restoration".into());
     }
-    let baseline = record.get("sha256").and_then(Value::as_str)
+    let baseline = record
+        .get("sha256")
+        .and_then(Value::as_str)
         .ok_or("Original extracted digest missing")?;
     if baseline.len() != 64 || !baseline.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("Original extracted digest is invalid".into());
@@ -704,7 +710,10 @@ pub fn restore_original_raw_member(
         if !clean.starts_with(&backups) {
             continue;
         }
-        if digest(&clean).map_err(|e| e.to_string())?.eq_ignore_ascii_case(baseline) {
+        if digest(&clean)
+            .map_err(|e| e.to_string())?
+            .eq_ignore_ascii_case(baseline)
+        {
             found = Some(clean);
             break;
         }
@@ -712,13 +721,17 @@ pub fn restore_original_raw_member(
     let original = found.ok_or("No SHA-verified extracted original exists in EditorBackups")?;
     // Snapshot the current edited bytes first; a restore is also undoable.
     let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
         .as_nanos();
     let mut revision = None;
     for sequence in 0..10 {
         let dir = backups.join(format!("restore-{stamp:x}-{sequence}"));
         match fs::create_dir(&dir) {
-            Ok(()) => { revision = Some(dir); break; }
+            Ok(()) => {
+                revision = Some(dir);
+                break;
+            }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e.to_string()),
         }
@@ -734,19 +747,35 @@ pub fn restore_original_raw_member(
     }
     let parent = current.parent().ok_or("Target parent is missing")?;
     let mut pending = tempfile::Builder::new()
-        .prefix(".evolve-restore-").tempfile_in(parent).map_err(|e| e.to_string())?;
+        .prefix(".evolve-restore-")
+        .tempfile_in(parent)
+        .map_err(|e| e.to_string())?;
     let mut input = File::open(&original).map_err(|e| e.to_string())?;
     io::copy(&mut input, pending.as_file_mut()).map_err(|e| e.to_string())?;
-    pending.as_file_mut().sync_all().map_err(|e| e.to_string())?;
-    if !digest(pending.path()).map_err(|e| e.to_string())?.eq_ignore_ascii_case(baseline)
+    pending
+        .as_file_mut()
+        .sync_all()
+        .map_err(|e| e.to_string())?;
+    if !digest(pending.path())
+        .map_err(|e| e.to_string())?
+        .eq_ignore_ascii_case(baseline)
         || digest(&current).map_err(|e| e.to_string())? != present_digest
-        || !digest(&original).map_err(|e| e.to_string())?.eq_ignore_ascii_case(baseline)
+        || !digest(&original)
+            .map_err(|e| e.to_string())?
+            .eq_ignore_ascii_case(baseline)
     {
-        return Err("Source or target changed during verified restoration; revision retained".into());
+        return Err(
+            "Source or target changed during verified restoration; revision retained".into(),
+        );
     }
     pending.persist(&current).map_err(|e| e.error.to_string())?;
-    if !digest(&current).map_err(|e| e.to_string())?.eq_ignore_ascii_case(baseline) {
-        return Err("Restoration verification failed; edited revision remains in EditorBackups".into());
+    if !digest(&current)
+        .map_err(|e| e.to_string())?
+        .eq_ignore_ascii_case(baseline)
+    {
+        return Err(
+            "Restoration verification failed; edited revision remains in EditorBackups".into(),
+        );
     }
     Ok(true)
 }
@@ -801,24 +830,26 @@ mod tests {
         assert!(!import_raw_member(&project, &projects, "hunters/example.bin", &external).unwrap());
         assert!(import_raw_member(&project, &projects, "unlisted.dat", &external).is_err());
         assert_eq!(fs::read(&external).unwrap(), b"edited content");
-        assert!(restore_original_raw_member(
-            &project, &projects, "hunters/example.bin"
-        ).unwrap());
-        assert_eq!(fs::read(workspace.join("files/hunters/example.bin")).unwrap(), b"original");
-        assert!(!restore_original_raw_member(
-            &project, &projects, "hunters/example.bin"
-        ).unwrap());
+        assert!(restore_original_raw_member(&project, &projects, "hunters/example.bin").unwrap());
+        assert_eq!(
+            fs::read(workspace.join("files/hunters/example.bin")).unwrap(),
+            b"original"
+        );
+        assert!(!restore_original_raw_member(&project, &projects, "hunters/example.bin").unwrap());
         assert_eq!(fs::read_dir(&backups).unwrap().count(), 2);
-        assert!(restore_original_raw_member(
-            &project, &projects, "../outside"
-        ).is_err());
-        fs::write(workspace.join("files/hunters/example.bin"), b"bad external edit").unwrap();
+        assert!(restore_original_raw_member(&project, &projects, "../outside").is_err());
+        fs::write(
+            workspace.join("files/hunters/example.bin"),
+            b"bad external edit",
+        )
+        .unwrap();
         let renamed = backups.with_extension("hidden");
         fs::rename(&backups, &renamed).unwrap();
-        assert!(restore_original_raw_member(
-            &project, &projects, "hunters/example.bin"
-        ).is_err());
-        assert_eq!(fs::read(workspace.join("files/hunters/example.bin")).unwrap(), b"bad external edit");
+        assert!(restore_original_raw_member(&project, &projects, "hunters/example.bin").is_err());
+        assert_eq!(
+            fs::read(workspace.join("files/hunters/example.bin")).unwrap(),
+            b"bad external edit"
+        );
     }
 
     #[test]

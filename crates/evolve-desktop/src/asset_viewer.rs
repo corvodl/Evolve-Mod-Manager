@@ -328,7 +328,9 @@ fn explorer(state: &State) -> Element<'_, Message> {
                         text_input("Existing local file to import over selected project asset...", &state.editor_replace_source)
                             .on_input(Message::EditorReplacementChanged),
                         button("Import over selected raw asset (backup)")
-                            .on_press(Message::EditorImportRawMember),
+                            .on_press_maybe((!state.busy).then_some(Message::EditorImportRawMember)),
+                        button("Restore selected original (keep edited backup)")
+                            .on_press_maybe((!state.busy).then_some(Message::EditorRestoreRawMember)),
                     ].spacing(5).into()
                 },
                 scrollable(rows).height(Fill),

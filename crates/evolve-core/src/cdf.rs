@@ -175,6 +175,9 @@ fn handle_element(
 /// Parse a CDF's skeleton, actual skin/CHR attachments, and explicit skin sets.
 /// Does not infer or manufacture missing meshes, bones, or equipment.
 pub fn parse_cdf(bytes: &[u8]) -> Result<CdfDefinition, CdfError> {
+    let decoded =
+        crate::cryxml::xml_bytes(bytes, MAX_CDF_BYTES).map_err(|e| CdfError::Xml(e.to_string()))?;
+    let bytes = decoded.as_ref();
     if bytes.is_empty()
         || bytes.len() > MAX_CDF_BYTES
         || bytes

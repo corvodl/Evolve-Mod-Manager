@@ -70,7 +70,16 @@ fn attr(node: &BytesStart<'_>, wanted: &[u8]) -> Result<Option<String>, Material
 }
 
 fn normalize_texture(raw: &str) -> Result<String, MaterialError> {
-    safe_member_name(raw.trim()).map_err(|_| MaterialError::Path(raw.into()))
+    let slashes = raw.trim().replace('\\', "/");
+    // Authored game materials sometimes repeat an interior separator. Keep
+    // rooted paths rooted so the archive path validator still rejects them.
+    let mut normalized = String::with_capacity(slashes.len());
+    for c in slashes.chars() {
+        if c != '/' || !normalized.ends_with('/') {
+            normalized.push(c);
+        }
+    }
+    safe_member_name(&normalized).map_err(|_| MaterialError::Path(raw.into()))
 }
 
 fn append_texture(
@@ -118,6 +127,9 @@ fn append_texture(
 /// Parse explicit root/submaterial texture references, without XXE, DTD or
 /// path traversal. Does not infer values from same-named model files.
 pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
+    let decoded = crate::cryxml::xml_bytes(bytes, MAX_MTL_BYTES)
+        .map_err(|e| MaterialError::Xml(e.to_string()))?;
+    let bytes = decoded.as_ref();
     if bytes.is_empty()
         || bytes.len() > MAX_MTL_BYTES
         || bytes
@@ -263,6 +275,16 @@ pub fn resolve_materials(inventory: &Inventory, document: &MaterialDocument) -> 
 mod tests {
     use super::*;
     use crate::inventory::{AssetEntry, AssetKind};
+    #[test]
+    fn repeated_interior_separators_preserve_virtual_texture_identity() {
+        assert_eq!(
+            normalize_texture("textures/particle//misc/void03.tif").unwrap(),
+            "textures/particle/misc/void03.tif"
+        );
+        assert!(normalize_texture("//server/share/file.tif").is_err());
+        assert!(normalize_texture("textures//../secret.tif").is_err());
+        assert!(normalize_texture("C:\\secret.tif").is_err());
+    }
     #[test]
     fn mtl_parser_preserves_authored_maps_and_rejects_unsafe() {
         let data = br#"<Material Name="Kala" Shader="Illum"><Textures>

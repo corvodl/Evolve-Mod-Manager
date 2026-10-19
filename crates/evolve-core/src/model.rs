@@ -497,9 +497,9 @@ pub fn export_model_obj(mesh: &RenderMesh, target: &Path) -> Result<(), ModelErr
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    fn fixture() -> Vec<u8> {
+    pub(crate) fn fixture() -> Vec<u8> {
         let streams = [(0u32, 3u32, 12u32), (5u32, 3u32, 2u32), (2u32, 3u32, 8u32)];
         let mut data = vec![0u8; 16 + streams.len() * 16];
         data[..8].copy_from_slice(b"CrChF\x07\0\0");

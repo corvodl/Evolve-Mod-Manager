@@ -181,6 +181,9 @@ fn handle_animation(
     Ok(())
 }
 pub fn animation_references(bytes: &[u8]) -> Result<Vec<AnimationReference>, AnimationError> {
+    let decoded = crate::cryxml::xml_bytes(bytes, MAX_CONFIG)
+        .map_err(|e| AnimationError::Invalid(e.to_string()))?;
+    let bytes = decoded.as_ref();
     if bytes.is_empty()
         || bytes.len() > MAX_CONFIG
         || bytes

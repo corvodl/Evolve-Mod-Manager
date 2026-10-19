@@ -192,7 +192,10 @@ pub fn read_static_cdf_assembly(
     }
     let mut names_seen = HashSet::new();
     let mut meshes = Vec::new();
-    for (part, resolution) in dependencies.attachments.iter() {
+    for (attachment, (_, resolution)) in
+        definition.attachments.iter().zip(&dependencies.attachments)
+    {
+        let part = &attachment.name;
         if !selected.contains(&part.as_str()) {
             continue;
         }
@@ -238,6 +241,32 @@ pub fn read_static_cdf_assembly(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assembly_matches_skin_set_names_to_attachment_bindings() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir(root.join("characters")).unwrap();
+        fs::write(root.join("characters/rig.chr"), b"indexed skeleton").unwrap();
+        fs::write(
+            root.join("characters/body.skin"),
+            crate::model::tests::fixture(),
+        )
+        .unwrap();
+        let cdf = root.join("character.cdf");
+        fs::write(&cdf, br#"<CharacterDefinition><Model File="characters/rig.chr"/>
+            <AttachmentList><Attachment Type="CA_SKIN" AName="body" Binding="characters/body.skin"/>
+            <Attachment Type="CA_SKIN" AName="alternate" Binding="characters/missing.skin"/></AttachmentList>
+            <SkinSets><SkinSet name="default"><skin name="body"/></SkinSet>
+            <SkinSet name="alternate"><skin name="alternate"/></SkinSet></SkinSets></CharacterDefinition>"#).unwrap();
+        let inventory = crate::scan_directory(root).unwrap();
+        let (mesh, report) = read_static_cdf_assembly(&cdf, &inventory).unwrap();
+        assert_eq!(report.original_parts, ["body"]);
+        assert_eq!(report.selected_skin_set.as_deref(), Some("default"));
+        assert_eq!(mesh.indices, [0, 1, 2]);
+        assert_eq!(mesh.uv0.unwrap()[2], [0., 1.]);
+        assert!(!report.skeletal_animation_enabled);
+    }
 
     fn part(count: usize, uv: bool) -> RenderMesh {
         RenderMesh {

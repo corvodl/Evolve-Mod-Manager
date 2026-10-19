@@ -23,6 +23,43 @@ This table tracks **actual Rust implementation state**, not feature mockups. The
 | Settings, mod profiles, signed updater and installer | **Partial: persisted preferences, verified public update checks and installer, isolated signed-PAK mod profile catalog/planning and batch stage transactions; production game profiles and upgrade tests incomplete** | Versioned releases, recovery, private-data exclusion, tested installs and rollback |
 | Responsive UI and safe long-running jobs | **Partial** | Cancellation, progress, large-input and Windows GUI tests |
 
+### Binary XML reader compatibility
+
+CDF, MTL, chrparams animation catalogs and level placements now accept original
+CryXmlB documents as well as text XML. The shared decoder checks file/table
+bounds, table overlap, UTF-8/XML characters, attribute uniqueness, parent/child
+agreement, reachability and expansion/depth limits. Level transform export can
+read a binary source and write a separate text XML copy; it leaves the original
+unchanged and refuses to overwrite an existing destination.
+
+Synthetic fixtures generated with the reference manager's encoder exercise all
+four readers, XML escaping and malformed inputs. This is reader compatibility,
+not binary serialization or signed-project editing parity. Converted project
+repacking, complete character rigs/materials and real-game acceptance remain
+outstanding.
+
+### October 19 source-data compatibility corrections
+
+- Static CDF assembly now matches selected skin-set attachment names to their
+  corresponding binding paths; previously those different identifiers were
+  compared directly and valid parts were skipped.
+- Level import and transform export distinguish ID-only entity links inside
+  object `Entities` lists from placed instances. Links are preserved unchanged;
+  duplicate actual placement IDs still fail validation.
+- Authored texture references with repeated interior separators normalize to
+  the same virtual path. Rooted paths and traversal remain rejected.
+- Editable project explorers expose the existing verified original-file restore
+  operation, retaining edited revisions and reindexing the project afterward.
+  Protected Asset Library views cannot invoke it.
+
+Read-only local acceptance checked 655 CDFs, 582 chrparams catalogs, 455 level
+layers and 9,853 CryEngine materials successfully. Ten additional `.mtl` files
+are Wavefront format and remain unsupported by this CryEngine material reader.
+All 11,555 checked sources retained their SHA-256 hashes. Forty real-source
+documents re-encoded locally with the reference encoder produced equivalent
+reader results to their text forms. These are parser/transform checks, not
+rendering, skeletal animation, signed-gameplay or installer acceptance.
+
 ## Release requirements
 
 1. All important binary operations must have safety and parity tests, bounded memory allocations and safe path handling.

@@ -7,6 +7,7 @@ pub mod batch;
 pub mod cdf;
 pub mod character_assembly;
 pub mod converter;
+pub mod cryxml;
 pub mod dds;
 pub mod dependency_graph;
 pub mod fbx;

@@ -147,6 +147,32 @@ fn attr(e: &BytesStart<'_>, key: &[u8]) -> Result<Option<String>, SceneError> {
     }
     Ok(None)
 }
+// Sound/reverb volumes contain <Entities><Entity Id="..."/></Entities>
+// links. They refer to placements elsewhere; they are not new instances.
+// Require both the reference context and an ID-only record so genuine nested
+// entity definitions with authored properties continue to be inspected.
+fn is_entity_reference(e: &BytesStart<'_>, parents: &[Vec<u8>]) -> Result<bool, SceneError> {
+    if !e.name().as_ref().eq_ignore_ascii_case(b"Entity")
+        || !parents
+            .last()
+            .is_some_and(|p| p.eq_ignore_ascii_case(b"Entities"))
+        || !parents.iter().any(|p| is_placement(p))
+    {
+        return Ok(false);
+    }
+    let mut has_id = false;
+    for attribute in e.attributes() {
+        let attribute = attribute.map_err(|e| SceneError::Xml(e.to_string()))?;
+        if attribute.key.as_ref().eq_ignore_ascii_case(b"Id")
+            || attribute.key.as_ref().eq_ignore_ascii_case(b"EntityId")
+        {
+            has_id = true;
+        } else {
+            return Ok(false);
+        }
+    }
+    Ok(has_id)
+}
 fn vector<const N: usize>(raw: Option<String>, default: [f32; N]) -> [f32; N] {
     let Some(raw) = raw else {
         return default;
@@ -237,6 +263,7 @@ fn scan_placements(xml: &[u8], layer: &str) -> Result<Vec<PlacedObject>, SceneEr
     let mut reader = Reader::from_reader(xml);
     let mut objects = Vec::new();
     let mut depth = 0usize;
+    let mut parents = Vec::new();
     loop {
         match reader
             .read_event()
@@ -247,12 +274,17 @@ fn scan_placements(xml: &[u8], layer: &str) -> Result<Vec<PlacedObject>, SceneEr
                 if depth > MAX_DEPTH {
                     return Err(SceneError::Limits);
                 }
-                if let Some(obj) = parse_element(&e, layer, objects.len())? {
+                if !is_entity_reference(&e, &parents)?
+                    && let Some(obj) = parse_element(&e, layer, objects.len())?
+                {
                     objects.push(obj);
                 }
+                parents.push(e.name().as_ref().to_vec());
             }
             Event::Empty(e) => {
-                if let Some(obj) = parse_element(&e, layer, objects.len())? {
+                if !is_entity_reference(&e, &parents)?
+                    && let Some(obj) = parse_element(&e, layer, objects.len())?
+                {
                     objects.push(obj);
                 }
             }
@@ -261,6 +293,7 @@ fn scan_placements(xml: &[u8], layer: &str) -> Result<Vec<PlacedObject>, SceneEr
                     return Err(SceneError::Xml("extra closing tag".into()));
                 }
                 depth -= 1;
+                parents.pop();
             }
             Event::DocType(_) | Event::GeneralRef(_) => return Err(SceneError::Limits),
             Event::Eof => break,
@@ -284,7 +317,9 @@ pub fn parse_level_scene(layers: &[(&str, &[u8])]) -> Result<LevelScene, SceneEr
     let mut objects = Vec::new();
     let mut seen = HashSet::new();
     for (layer, data) in layers {
-        for obj in scan_placements(data, layer)? {
+        let decoded = crate::cryxml::xml_bytes(data, MAX_LAYER_BYTES)
+            .map_err(|e| SceneError::Xml(e.to_string()))?;
+        for obj in scan_placements(&decoded, layer)? {
             if !seen.insert(obj.id.clone()) {
                 return Err(SceneError::DuplicateGuid(obj.id));
             }
@@ -372,6 +407,8 @@ pub fn export_edited_layer(
         return Err(SceneError::NoMatchingGuid);
     }
     let bytes = fs::read(source)?;
+    let bytes = crate::cryxml::xml_bytes(&bytes, MAX_LAYER_BYTES)
+        .map_err(|e| SceneError::Xml(e.to_string()))?;
     if bytes.len() > MAX_LAYER_BYTES {
         return Err(SceneError::Limits);
     }
@@ -391,9 +428,10 @@ pub fn export_edited_layer(
     {
         return Err(SceneError::NoMatchingGuid);
     }
-    let mut reader = Reader::from_reader(bytes.as_slice());
+    let mut reader = Reader::from_reader(bytes.as_ref());
     let mut writer = Writer::new(Vec::with_capacity(bytes.len() + 128));
     let mut edited = 0usize;
+    let mut parents = Vec::new();
     loop {
         let event = reader
             .read_event()
@@ -401,8 +439,21 @@ pub fn export_edited_layer(
         if matches!(event, Event::Eof) {
             break;
         }
+        let reference = match &event {
+            Event::Start(e) | Event::Empty(e) => is_entity_reference(e, &parents)?,
+            _ => false,
+        };
+        match &event {
+            Event::Start(e) => parents.push(e.name().as_ref().to_vec()),
+            Event::End(_) => {
+                parents.pop();
+            }
+            _ => (),
+        }
         let adjusted = match event {
-            Event::Start(ref e) | Event::Empty(ref e) if is_placement(e.name().as_ref()) => {
+            Event::Start(ref e) | Event::Empty(ref e)
+                if !reference && is_placement(e.name().as_ref()) =>
+            {
                 let found = attr(e, b"Id")?
                     .or(attr(e, b"EntityId")?)
                     .unwrap_or_default();
@@ -500,6 +551,36 @@ pub fn export_edited_layer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn entity_links_are_not_placements_and_are_not_edited() {
+        let xml = br#"<Objects><Object Id="a" Name="reverb" Pos="1,2,3"/>
+            <Object Id="b"><Entities><Entity Id="a"/><Entity Id="a"></Entity></Entities></Object>
+            <Entity Id="c"/></Objects>"#;
+        let scene = parse_level_scene(&[("sound.lyr", xml)]).unwrap();
+        assert_eq!(scene.objects.len(), 3);
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("sound.lyr");
+        let output = temp.path().join("edited.lyr");
+        fs::write(&source, xml).unwrap();
+        export_edited_layer(
+            &source,
+            &output,
+            "a",
+            Transform {
+                position: [7., 8., 9.],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let edited = fs::read_to_string(&output).unwrap();
+        assert!(edited.contains("<Entity Id=\"a\"/>"));
+        assert!(edited.contains("<Entity Id=\"a\"></Entity>"));
+        assert_eq!(
+            load_level_scene(&output).unwrap().objects[0].local.position,
+            [7., 8., 9.]
+        );
+        assert_eq!(fs::read(&source).unwrap(), xml);
+    }
     #[test]
     fn calculates_nested_world_transform_and_refuses_cycles() {
         let xml=br#"<Objects>
