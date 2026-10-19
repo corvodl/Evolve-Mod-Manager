@@ -1319,14 +1319,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .as_ref()
                 .is_some_and(|catalog| index < catalog.archives.len())
             {
-                let begin = state.library_page.saturating_mul(110);
-                let visible: Vec<usize> = state
-                    .library_matches
-                    .iter()
-                    .skip(begin)
-                    .take(110)
-                    .copied()
-                    .collect();
+                // The full filtered catalog, not the current 110-row page,
+                // defines Shift range selection. Anchors survive page changes
+                // without selecting entries excluded by the active filter.
+                let visible = state.library_matches.clone();
                 state.library_selection.click(
                     &visible,
                     index,
