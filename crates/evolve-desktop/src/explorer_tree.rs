@@ -164,7 +164,14 @@ pub fn visible_rows_page<'a>(
         limit,
         seen: 0,
     };
-    walk("", &nodes, collapsed, !query.trim().is_empty(), &mut page, &mut rows);
+    walk(
+        "",
+        &nodes,
+        collapsed,
+        !query.trim().is_empty(),
+        &mut page,
+        &mut rows,
+    );
     rows
 }
 
