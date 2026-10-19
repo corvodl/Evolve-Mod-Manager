@@ -39,7 +39,7 @@ pub use model::{
     ModelError, ModelInfo, RenderMesh, export_model_obj, parse_model_bytes, read_model,
 };
 pub use native_caf::{
-    CafController, NativeCafError, NativeCafMotion, decode_native_caf, read_native_caf,
+    CafBonePose, CafController, NativeCafError, NativeCafMotion, decode_native_caf, read_native_caf,
 };
 pub use policy::{AnimationPolicy, ExportFeature, FeatureStatus, PARITY_MATRIX};
 pub use scene::{

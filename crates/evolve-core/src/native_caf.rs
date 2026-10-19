@@ -378,6 +378,65 @@ pub fn read_native_caf(path: &Path) -> Result<NativeCafMotion, NativeCafError> {
     }
     decode_native_caf(&fs::read(path)?)
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CafBonePose {
+    pub bone_crc32: u32,
+    /// Source translation of this controller, when the key channel exists.
+    pub translation: Option<[f32; 3]>,
+    /// Source quaternion XYZW. Not automatically mapped to an unrelated rig.
+    pub rotation: Option<[f32; 4]>,
+}
+
+fn sample_vec3(times: &[f32], values: &[[f32; 3]], frame: f32) -> Option<[f32; 3]> {
+    if times.is_empty() || values.len() != times.len() {return None;}
+    let upper=times.partition_point(|t|*t <= frame);
+    let a=upper.saturating_sub(1).min(times.len()-1);
+    let b=(a+1).min(times.len()-1);
+    let t=if b>a {((frame-times[a])/(times[b]-times[a])).clamp(0.0,1.0)}else{0.0};
+    Some(std::array::from_fn(|i|values[a][i]*(1.0-t)+values[b][i]*t))
+}
+fn sample_quat(times:&[f32],values:&[[f32;4]],frame:f32)->Option<[f32;4]>{
+    if times.is_empty() || values.len()!=times.len(){return None;}
+    let upper=times.partition_point(|t|*t<=frame);
+    let a=upper.saturating_sub(1).min(times.len()-1);
+    let b=(a+1).min(times.len()-1);
+    let t=if b>a {((frame-times[a])/(times[b]-times[a])).clamp(0.0,1.0)}else{0.0};
+    let sign=if (0..4).map(|i|values[a][i]*values[b][i]).sum::<f32>()<0. {-1.}else{1.};
+    let mut q=std::array::from_fn(|i|values[a][i]*(1.0-t)+values[b][i]*t*sign);
+    let length=q.iter().map(|v|v*v).sum::<f32>().sqrt();
+    if length<1e-7||!length.is_finite(){return None;}
+    for v in &mut q{*v/=length;}
+    Some(q)
+}
+
+impl NativeCafMotion {
+    pub fn duration_seconds(&self)->f32 {
+        ((self.end_frame-self.start_frame)/self.fps).max(0.0)
+    }
+    /// Sample actual source controller tracks without inventing skeleton paths.
+    /// Bind-pose transforms must be verified against matching bone_crc32 before
+    /// rendering these poses on a character model.
+    pub fn sample_seconds(&self, seconds:f32)->Result<Vec<CafBonePose>,NativeCafError>{
+        if !seconds.is_finite()||seconds<0. || !(1.0..=240.0).contains(&self.fps){
+            return Err(NativeCafError::Format("invalid animation frame time".into()));
+        }
+        let duration=self.duration_seconds();
+        let elapsed=if self.cyclic&&duration>0. {seconds%duration}else{seconds.min(duration)};
+        let frame=self.start_frame+elapsed*self.fps;
+        let mut out=Vec::with_capacity(self.controllers.len());
+        for c in &self.controllers {
+            let rot=sample_quat(&c.rotation_times,&c.rotations,frame);
+            let pos=sample_vec3(&c.position_times,&c.positions,frame);
+            if rot.is_none() && pos.is_none(){
+                return Err(NativeCafError::Unsupported);
+            }
+            out.push(CafBonePose{bone_crc32:c.bone_crc32,translation:pos,rotation:rot});
+        }
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,6 +482,16 @@ mod tests {
         assert_eq!(track.rotations[1], [0., 0., 0., 1.]);
         assert_eq!(track.positions[1], [5., 0., 0.]);
         assert_eq!(motion.end_frame, 30.);
+    }
+    #[test]
+    fn samples_native_caf_source_interpolation() {
+        let motion=decode_native_caf(&sample()).unwrap();
+        assert_eq!(motion.duration_seconds(),1.0);
+        let poses=motion.sample_seconds(0.5).unwrap();
+        assert_eq!(poses[0].bone_crc32,123);
+        assert_eq!(poses[0].translation,Some([2.5,0.,0.]));
+        assert_eq!(poses[0].rotation,Some([0.,0.,0.,1.]));
+        assert!(motion.sample_seconds(f32::NAN).is_err());
     }
     #[test]
     fn refuses_unsupported_or_truncated_controller() {
