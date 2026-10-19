@@ -1,6 +1,6 @@
 //! Safe command-line functions shared with the desktop application.
 use evolve_core::{
-    export_dds_png, extract_legacy_pak, inspect_dds, inspect_legacy_pak, scan_directory,
+    export_dds_png, extract_legacy_pak, inspect_dds, inspect_legacy_pak, read_cdf, scan_directory,
     write_inventory_json,
 };
 use serde::Serialize;
@@ -24,6 +24,7 @@ fn usage() -> String {
         "  evolve-cli pak extract <legacy.pak> <new-output-directory>",
         "  evolve-cli dds info <texture.dds|texture.dds.0> [dds-info.json]",
         "  evolve-cli dds png <texture.dds|texture.dds.0> <new-output.png>",
+        "  evolve-cli cdf inspect <character.cdf> [cdf-info.json]",
         "",
         "Stage 2 signed/encrypted CryPAKs cannot yet be extracted.",
         "Outputs are never silently overwritten.",
@@ -111,6 +112,15 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
         );
         if let Some(path) = output {
             write_report(&info, &path)?;
+        }
+    } else if verb == OsStr::new("cdf") && subcommand == OsStr::new("inspect") {
+        let cdf = read_cdf(&source).map_err(|e| e.to_string())?;
+        println!("CDF: {} | {} valid skin/CHR attachment(s)", cdf.skeleton, cdf.attachments.len());
+        for attachment in &cdf.attachments {
+            println!("  {} -> {}", attachment.name, attachment.binding);
+        }
+        if let Some(path) = output {
+            write_report(&cdf, &path)?;
         }
     } else if verb == OsStr::new("dds") && subcommand == OsStr::new("png") {
         let target = output.ok_or_else(usage)?;

@@ -1,43 +1,48 @@
 # Evolve Mod Manager
 
-Windows desktop modding toolkit — independent Rust rewrite using **Iced** and **wgpu**.
+Independent Windows desktop modding toolkit rewrite using **Rust**, **Iced 0.14**, and **wgpu 27**.
 
-> **Status: early development (0.1.0). NOT a 1.0 release.** This repository is a new public codebase with its own history. The existing production manager's capabilities must be reimplemented and verified before a public 1.0 can replace it.
+> **Development preview: 0.1.0 — NOT a 1.0 release.** Only the implemented components listed here work. Porting and validating the complete feature set from the existing manager is an ongoing prerequisite for the first public 1.0.
 
-## What works today
+## Currently implemented in Rust
 
-- Native Iced desktop shell using the wgpu GPU renderer.
-- Explicit local-directory scanning, read-only bounded inventory of CryEngine assets.
-- Basic file-type classification for PAK, CDF, skin, mesh, material, split DDS, CAF, DBA, GFX and levels.
-- Searchable inventory list and safe JSON report export from the CLI.
-- Automated Rust unit tests and Windows compile checks.
+- Responsive Iced dark desktop shell with navigation, searchable file inventory, PAK member browsing, DDS metadata inspection, and explicit output fields.
+- Bounded read-only scanning of local CryEngine assets, classification by extension, deterministic results, and an optional JSON inventory report.
+- **Historical 2012 ZIP-compatible PAK** inspection and extraction (stored and DEFLATE methods), with bounded sizes, unsafe-name and symlink rejection, duplicate detection, CRC-checked streaming, and newly created staging/output folders. Original PAK files are never modified.
+- **DDS texture inspection and highest-resolution PNG export** for BC1, BC2, BC3, unsigned BC4/BC5, and common 32-bit RGBA/BGRA. Supports complete `.dds`, complete `.dds.0`, and fully extracted consecutive `.dds.0`–`.dds.N` mip fragments. BC5 is exported as raw red/green channels rather than simulated normal-map shading.
+- **CDF XML character-definition inspection**, retaining explicit skeleton, CA_SKIN/CA_SKIN_UNIQUE attachments, and skin-set references. An ambiguity-aware asset resolver refuses to guess among duplicate workspace references.
+- Off-thread filesystem operations in the GUI, Rust unit tests, and Linux + Windows CI checks.
 
-**Not implemented yet:** PAK decryption/extraction/rebuilding/signing, game launch and restore, DDS decoding, model/texture/animation viewing, FBX exports, Blender integration, map editor, updater and Windows installer. Do not use this preview as a replacement for the existing manager.
+**Not yet implemented:** Stage 2 signed/encrypted PAK decryption, signature verification, re-signing or repacking; installed-game modification or mod launch/restore; CDF geometry and skinning; GPU mesh rendering; CAF/DBA animation decoding; Blender/FBX/level export; GFX editor, profiles, updater and Windows installer. This preview is **not** a replacement for the current production manager.
 
-## Build (Windows)
+## Build on Windows
 
-Install Rust (stable) and Visual Studio C++ Build Tools with a Windows SDK, then run:
+Install current stable Rust, Visual Studio C++ Build Tools with Windows SDK, then:
 
 ```powershell
 cargo run -p evolve-mod-manager
 ```
 
-To inspect an explicitly chosen directory without running the GUI:
+Standalone command-line equivalents:
 
 ```powershell
-cargo run -p evolve-core --bin evolve-cli -- scan "C:\\path\\to\\extracted-assets" "inventory.json"
+cargo run -p evolve-core --bin evolve-cli -- scan "C:\Assets" "inventory.json"
+cargo run -p evolve-core --bin evolve-cli -- pak inspect "C:\Archives\Legacy.pak" "pak-info.json"
+cargo run -p evolve-core --bin evolve-cli -- pak extract "C:\Archives\Legacy.pak" "C:\Exports\LegacyExtracted"
+cargo run -p evolve-core --bin evolve-cli -- dds info "C:\Assets\body.dds.0"
+cargo run -p evolve-core --bin evolve-cli -- dds png "C:\Assets\body.dds.0" "C:\Exports\body.png"
+cargo run -p evolve-core --bin evolve-cli -- cdf inspect "C:\Assets\character.cdf" "character-info.json"
 ```
 
-The output JSON contains relative file names, sizes and recognized types. It contains no game assets, but can still reveal local filenames; don't publish it without reviewing.
+Extraction output must be an **absent folder**; PNG and JSON outputs must be **new files**. The operations refuse existing outputs rather than overwriting them. Legacy ZIP support does not imply that the encrypted, signed Stage 2 PAK format is supported.
 
-## Development contract
+## Public release policy
 
-- Maintain Windows as the primary release target.
-- No proprietary game files, signing keys, account data, or injected binaries in this repository.
-- All CryEngine parsers must reject malformed sizes, offsets, dependencies and paths before writes.
-- Preserving model skeletons, original UV0 and texture quality takes priority over a visually plausible but incorrect conversion.
-- Verified CAF/DBA Actions are **optional**, with animation-free FBX exports the default when the exporter is implemented.
-- Publish 1.0 only after the parity matrix and release checklist in [docs/PARITY.md](docs/PARITY.md) are satisfied.
-- Decide and publish the project's license before distributing the public release.
+- Windows is the primary target. The codebase has independent public Git history.
+- Do not commit original game PAKs, extracted game assets, keys, personal settings, DRM bypass material, or user-specific files.
+- Preserve exact high-resolution textures, original UV0, skeleton and skin weight relationships. Missing/ambiguous references must be reported rather than guessed.
+- The planned complete-character FBX exporter must preserve hunter 1P/3P equipment and all three independently rigged monster stages. Verified animations must be **optional and OFF by default**, matching the existing manager's latest merged behavior.
+- Publish `1.0.0` only once every requirement in [docs/PARITY.md](docs/PARITY.md) is implemented and passes synthetic regression, real Windows build, and real-game compatibility testing.
+- Select and publish a license before distributing binary builds.
 
-The Iced backend currently uses wgpu 27, matching the Iced 0.14 renderer dependency to avoid duplicate incompatible GPU APIs.
+This new public project does not disclose the private development repository history.
