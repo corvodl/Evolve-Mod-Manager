@@ -9,7 +9,6 @@ const PANEL: Color = Color::from_rgb(0.166, 0.175, 0.191);
 const HEADER: Color = Color::from_rgb(0.190, 0.200, 0.217);
 const EDGE: Color = Color::from_rgb(0.26, 0.27, 0.30);
 const MUTED: Color = Color::from_rgb(0.74, 0.76, 0.82);
-const RED: Color = Color::from_rgb(0.91, 0.22, 0.31);
 const PAGE_SIZE: usize = 110;
 
 fn panel<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Container<'a, Message> {
@@ -67,7 +66,7 @@ fn archive_row<'a>(
         .style(move |_| container::Style {
             background: Some(Background::Color(if selected {
                 Color::from_rgb(0.26, 0.18, 0.22)
-            } else if index % 2 == 0 {
+            } else if index.is_multiple_of(2) {
                 PANEL
             } else {
                 Color::from_rgb(0.185, 0.193, 0.211)
