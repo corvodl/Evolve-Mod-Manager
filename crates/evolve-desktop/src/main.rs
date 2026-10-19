@@ -173,6 +173,7 @@ struct State {
     staged_installer: Option<PathBuf>,
     startup_update_checked: bool,
     viewer_search: String,
+    viewer_rows: Vec<explorer_tree::ExplorerRow>,
     viewer_collapsed: HashSet<String>,
     viewer_menu: Option<&'static str>,
     viewer_explorer_visible: bool,
@@ -859,6 +860,24 @@ fn refresh_library_matches(state: &mut State) {
         .collect();
 }
 
+fn refresh_viewer_rows(state: &mut State) {
+    // Geometry and animation frames must not re-sort the Asset Library.
+    let rows: Vec<(usize, &str, u64)> = if let Some(inv) = &state.inventory {
+        inv.entries.iter().enumerate()
+            .map(|(i, e)| (i, e.relative_path.as_str(), e.byte_size)).collect()
+    } else if let Some(pak) = &state.signed_pak {
+        pak.entries.iter().enumerate()
+            .map(|(i, e)| (i, e.path.as_str(), e.size)).collect()
+    } else if let Some(pak) = &state.pak {
+        pak.entries.iter().enumerate()
+            .map(|(i, e)| (i, e.path.as_str(), e.size)).collect()
+    } else { Vec::new() };
+    state.viewer_rows = explorer_tree::visible_rows(
+        rows.iter().map(|(i, path, size)| (*i, *path, *size)),
+        &state.viewer_search, &state.viewer_collapsed, 350,
+    );
+}
+
 fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::Navigate(page) => {
@@ -1360,51 +1379,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.pitch = 0.0;
             state.zoom = 1.0;
         }
-        Message::ViewerSearchChanged(filter) => state.viewer_search = filter,
+        Message::ViewerSearchChanged(filter) => {
+            state.viewer_search = filter;
+            refresh_viewer_rows(state);
+        },
         Message::ViewerSelectFile(index) => {
-            let records: Vec<(usize, &str, u64)> = if let Some(inv) = &state.inventory {
-                inv.entries
-                    .iter()
-                    .enumerate()
-                    .map(|(i, e)| (i, e.relative_path.as_str(), e.byte_size))
-                    .collect()
-            } else if let Some(signed) = &state.signed_pak {
-                signed
-                    .entries
-                    .iter()
-                    .enumerate()
-                    .map(|(i, e)| (i, e.path.as_str(), e.size))
-                    .collect()
-            } else if let Some(pak) = &state.pak {
-                pak.entries
-                    .iter()
-                    .enumerate()
-                    .map(|(i, e)| (i, e.path.as_str(), e.size))
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            let visible: Vec<usize> = explorer_tree::visible_rows(
-                records.iter().map(|(i, path, size)| (*i, *path, *size)),
-                &state.viewer_search,
-                &state.viewer_collapsed,
-                350,
-            )
-            .into_iter()
-            .filter_map(|row| row.index)
-            .collect();
-            state.file_selection.click(
-                &visible,
-                index,
-                state.keyboard_modifiers.shift(),
-                state.keyboard_modifiers.control(),
-            );
+            let visible: Vec<usize> = state.viewer_rows.iter()
+                .filter_map(|row| row.index).collect();
+            state.file_selection.click(&visible, index,
+                state.keyboard_modifiers.shift(), state.keyboard_modifiers.control());
             state.selected = state.file_selection.primary_after(index);
         }
         Message::ViewerToggleFolder(path) => {
             if !state.viewer_collapsed.insert(path.clone()) {
                 state.viewer_collapsed.remove(&path);
             }
+            refresh_viewer_rows(state);
         }
         Message::ViewerPreviewSelected => {
             let Some(inventory) = &state.inventory else {
@@ -2300,6 +2290,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.pak = None;
                     state.signed_pak = None;
                     state.selected = None;
+                    refresh_viewer_rows(state);
                     state.page = Some(Page::AssetLibrary);
                 }
                 Ok(Completed::Inventory(inventory)) => {
@@ -2316,6 +2307,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.normal_map = None;
                     state.emissive_map = None;
                     state.selected = None;
+                    refresh_viewer_rows(state);
                     state.page = Some(Page::Files);
                 }
                 Ok(Completed::Pak(pak)) => {
@@ -2328,6 +2320,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.file_selection.clear();
                     state.signed_pak = None;
                     state.selected = None;
+                    refresh_viewer_rows(state);
                     state.page = Some(Page::Files);
                 }
                 Ok(Completed::RiggedExport(info, target)) => {
@@ -2541,6 +2534,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.pak = None;
                     state.inventory = None;
                     state.selected = None;
+                    state.file_selection.clear();
+                    refresh_viewer_rows(state);
                 }
                 Ok(Completed::RebuiltSigned(name, dir)) => {
                     state.status = format!(
