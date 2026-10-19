@@ -13,6 +13,7 @@ mod uv_preview;
 mod viewer_inspector;
 mod viewport;
 use asset_cache::{PreviewCache, SharedCache, decoded_dds};
+use asset_cache::{SharedCache, decoded_dds};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssetComparison, AssetEntry, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph, ImportedLibrary,
@@ -29,7 +30,6 @@ use evolve_core::{
     resolve_materials, restore_profile_stage, restore_stage, scan_directory,
     scan_directory_with_progress, stage_status,
 };
-use asset_cache::{SharedCache, decoded_dds};
 use iced::widget::{
     button, canvas, column, container, image, row, scrollable, shader, slider, space, svg, text,
     text_input, tooltip,
@@ -37,7 +37,10 @@ use iced::widget::{
 use iced::{Element, Fill, Length, Subscription, Task, Theme, window};
 use settings::{Preferences, load_from, save_to, settings_path};
 use std::path::PathBuf;
-use std::sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 use std::time::Duration;
 use textured::Scene as TexturedScene;
 use updater::{
