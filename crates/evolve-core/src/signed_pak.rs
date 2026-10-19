@@ -1165,31 +1165,35 @@ mod tests {
         let library_root = root.path().join("AssetLibrary");
         fs::create_dir(&library_root).unwrap();
         let source_before = fs::read(&archive).unwrap();
-        let imported = crate::library_import::import_signed_library_pak(
-            &library_root, &archive, &key
-        ).unwrap();
+        let imported =
+            crate::library_import::import_signed_library_pak(&library_root, &archive, &key)
+                .unwrap();
         assert_eq!(imported.files, 1);
         assert!(!imported.already_imported);
         assert_eq!(fs::read(&archive).unwrap(), source_before);
         let library = crate::library_catalog::imported_library(&library_root).unwrap();
         assert_eq!(library.archives.len(), 1);
-        let imported_files = crate::library_catalog::imported_archive_files(
-            &library.archives[0]
-        ).unwrap();
+        let imported_files =
+            crate::library_catalog::imported_archive_files(&library.archives[0]).unwrap();
         assert_eq!(imported_files.entries[0].relative_path, "example.caf");
         assert_eq!(
             fs::read(Path::new(&imported_files.root).join("example.caf")).unwrap(),
             payload
         );
-        let repeat = crate::library_import::import_signed_library_pak(
-            &library_root, &archive, &key
-        ).unwrap();
+        let repeat =
+            crate::library_import::import_signed_library_pak(&library_root, &archive, &key)
+                .unwrap();
         assert!(repeat.already_imported);
         assert_eq!(repeat.id, imported.id);
-        fs::write(Path::new(&imported_files.root).join("example.caf"), b"changed!").unwrap();
-        assert!(crate::library_import::import_signed_library_pak(
-            &library_root, &archive, &key
-        ).is_err());
+        fs::write(
+            Path::new(&imported_files.root).join("example.caf"),
+            b"changed!",
+        )
+        .unwrap();
+        assert!(
+            crate::library_import::import_signed_library_pak(&library_root, &archive, &key)
+                .is_err()
+        );
         assert_eq!(fs::read(&archive).unwrap(), source_before);
 
         use rsa::pkcs1::EncodeRsaPrivateKey;
