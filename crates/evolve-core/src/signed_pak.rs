@@ -937,6 +937,99 @@ pub fn rebuild_signed_pak_entry(
     })
 }
 
+
+/// Build several modified members into ONE newly signed archive. Each
+/// intermediate archive stays in a private temporary directory inside the
+/// requested output volume. The final name is published only after the new
+/// signature and EVERY modified member have been independently verified.
+///
+/// The original PAK and the replacement files are never written to. All
+/// source member paths must exist exactly; adding/removing members is a
+/// distinct CryPAK operation and is not silently approximated.
+pub fn rebuild_signed_pak_entries(
+    source: &Path,
+    original_public: &Path,
+    signing_private: &Path,
+    signing_public: &Path,
+    basename: &str,
+    changes: &[(String, PathBuf)],
+    destination: &Path,
+) -> Result<Vec<SignedRebuildReport>, SignedPakError> {
+    const MAX_BATCH: usize = 64;
+    if changes.is_empty() || changes.len() > MAX_BATCH {
+        return Err(SignedPakError::Limits);
+    }
+    let parent = destination.parent().ok_or(SignedPakError::UnsafeOutput)?;
+    if destination.file_name().and_then(|value| value.to_str()) != Some(basename)
+        || !parent.is_dir()
+        || fs::symlink_metadata(parent)?.file_type().is_symlink()
+        || fs::symlink_metadata(destination).is_ok()
+        || source == destination
+    {
+        return Err(SignedPakError::UnsafeOutput);
+    }
+    // Verify the source and *all* requested entries before starting any
+    // potentially costly encryption or output staging.
+    let original = open_verified_signed_pak(source, original_public, basename)?;
+    let mut seen = HashSet::new();
+    let mut replacement_total = 0u64;
+    for (path, replacement) in changes {
+        if safe_member_name(path).map_err(|_| SignedPakError::UnsafePath(path.clone()))? != *path
+            || !seen.insert(path.to_ascii_lowercase())
+            || !original.info.entries.iter().any(|member| member.path == *path
+                && matches!(member.method, 13 | 14))
+        {
+            return Err(SignedPakError::Format(format!(
+                "Unsupported, missing, or duplicate replacement entry: {path}"
+            )));
+        }
+        let metadata = fs::symlink_metadata(replacement)?;
+        if !metadata.file_type().is_file() || metadata.len() > MAX_ENTRY_BYTES {
+            return Err(SignedPakError::Limits);
+        }
+        replacement_total = replacement_total
+            .checked_add(metadata.len()).ok_or(SignedPakError::Limits)?;
+        if replacement_total > MAX_TOTAL_BYTES {
+            return Err(SignedPakError::Limits);
+        }
+    }
+    let work = tempfile::Builder::new()
+        .prefix(".signed-batch-").tempdir_in(parent)?;
+    let mut current = source.to_path_buf();
+    let mut reports = Vec::with_capacity(changes.len());
+    for (index, (member, replacement)) in changes.iter().enumerate() {
+        let step = work.path().join(format!("step-{index}"));
+        fs::create_dir(&step)?;
+        let next = step.join(basename);
+        let from_public = if index == 0 { original_public } else { signing_public };
+        let report = rebuild_signed_pak_entry(
+            &current, from_public, signing_private, signing_public,
+            basename, member, replacement, &next,
+        )?;
+        current = next;
+        reports.push(report);
+    }
+    // Revisit *every* changed member: a later re-sign must not damage an
+    // earlier replacement. This also checks the final central directory.
+    for (member, replacement) in changes {
+        verify_replaced_data(&current, signing_public, basename, member, replacement)?;
+    }
+    // No-clobber publication, including a destination created while building.
+    let mut staging = tempfile::Builder::new()
+        .prefix(".signed-publish-").tempfile_in(parent)?;
+    let mut final_input = File::open(&current)?;
+    io::copy(&mut final_input, staging.as_file_mut())?;
+    staging.as_file_mut().sync_all()?;
+    staging.persist_noclobber(destination).map_err(|err| {
+        if err.error.kind() == io::ErrorKind::AlreadyExists {
+            SignedPakError::UnsafeOutput
+        } else {
+            SignedPakError::Io(err.error)
+        }
+    })?;
+    Ok(reports)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
