@@ -9,6 +9,7 @@ use evolve_core::{
     export_rigged_character_glb, extract_legacy_pak, extract_signed_pak, inspect_dds,
     inspect_legacy_pak, inspect_signed_pak, load_level_scene, read_cdf, read_model,
     read_native_caf, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry, scan_directory,
+    AnimatedGlb, ConvertedMotion, convert_original_motion,
 };
 use iced::widget::{
     button, canvas, column, container, image, row, scrollable, shader, slider, svg, text,
@@ -82,6 +83,10 @@ struct State {
     caf_path: String,
     skeleton_path: String,
     blender_path: String,
+    converter_path:String,
+    converted_glbs:Vec<PathBuf>,
+    glb_motion:Option<Arc<AnimatedGlb>>,
+    selected_motion_clip:usize,
     native_caf: Option<Arc<NativeCafMotion>>,
     motion_time: f32,
     playing: bool,
@@ -113,6 +118,8 @@ enum Operation {
     LoadCaf(PathBuf),
     RiggedGlb(PathBuf, PathBuf, PathBuf),
     RiggedFbx(PathBuf, PathBuf, PathBuf, PathBuf),
+    ConvertMotion(PathBuf,PathBuf,PathBuf,PathBuf),
+    LoadGlbMotion(PathBuf),
     InspectCdf(PathBuf),
     InspectModel(PathBuf),
     InspectLevel(PathBuf),
@@ -143,6 +150,8 @@ enum Completed {
     Diffuse(DdsInfo, ::image::RgbaImage),
     Caf(NativeCafMotion),
     RiggedExport(RigReport, PathBuf),
+    MotionConverted(ConvertedMotion,PathBuf),
+    MotionGlb(AnimatedGlb),
     Character(CdfDefinition),
     Model(RenderMesh),
     Level(LevelScene),
@@ -175,6 +184,10 @@ impl Operation {
                     .map(|(r, _)| Completed::RiggedExport(r, dest))
                     .map_err(|e| e.to_string())
             }
+            Self::ConvertMotion(exe,source,assets,destination)=>convert_original_motion(&exe,&source,&assets,&destination)
+                .map(|result|Completed::MotionConverted(result,destination)).map_err(|e|e.to_string()),
+            Self::LoadGlbMotion(path)=>AnimatedGlb::read(&path)
+                .map(Completed::MotionGlb).map_err(|e|e.to_string()),
             Self::LoadCaf(source) => read_native_caf(&source)
                 .map(Completed::Caf)
                 .map_err(|e| e.to_string()),
@@ -284,6 +297,9 @@ enum Message {
     CafInputChanged(String),
     SkeletonChanged(String),
     BlenderChanged(String),
+    ConverterPathChanged(String),
+    OpenConvertedGlb(usize),
+    SelectMotionClip(usize),
     MotionScrub(f32),
     ToggleMotion,
     Tick,
@@ -300,6 +316,7 @@ enum Message {
     StartCafLoad,
     StartRigGlb,
     StartRigFbx,
+    StartMotionConversion,
     StartCdfInspection,
     StartModelInspection,
     StartLevelInspection,
@@ -347,26 +364,38 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::CafInputChanged(value) => state.caf_path = value,
         Message::SkeletonChanged(value) => state.skeleton_path = value,
         Message::BlenderChanged(value) => state.blender_path = value,
+        Message::ConverterPathChanged(value)=>state.converter_path=value,
+        Message::SelectMotionClip(index)=>{
+            state.selected_motion_clip=index;
+            state.motion_time=0.0;
+            state.playing=false;
+        },
+        Message::OpenConvertedGlb(index)=>{
+            if let Some(path)=state.converted_glbs.get(index).cloned(){
+                return launch(state,Operation::LoadGlbMotion(path));
+            }
+        },
         Message::MotionScrub(value) => state.motion_time = value,
-        Message::ToggleMotion => state.playing = !state.playing && state.native_caf.is_some(),
+        Message::ToggleMotion => state.playing = !state.playing &&
+            (state.native_caf.is_some() || state.glb_motion.as_ref()
+                .is_some_and(|m|m.list_clips().get(state.selected_motion_clip).is_some())),
         Message::Tick => {
             if state.playing {
-                if let Some(motion) = &state.native_caf {
-                    state.motion_time += 0.04;
-                    let duration = motion.duration_seconds();
-                    if duration <= 0.0 {
-                        state.playing = false;
-                    } else if state.motion_time >= duration {
-                        if motion.cyclic {
-                            state.motion_time %= duration;
-                        } else {
-                            state.motion_time = duration;
-                            state.playing = false;
-                        }
+                let duration=if let Some(motion)=&state.native_caf {
+                    Some((motion.duration_seconds(),motion.cyclic))
+                }else{
+                    state.glb_motion.as_ref().and_then(|m|m.list_clips()
+                        .get(state.selected_motion_clip).map(|clip|(clip.duration,false)))
+                };
+                if let Some((duration,looping))=duration {
+                    state.motion_time+=0.04;
+                    if duration<=0.0 {state.playing=false;}
+                    else if state.motion_time>=duration {
+                        if looping{state.motion_time%=duration;}
+                        else{state.motion_time=duration;state.playing=false;}
                     }
-                } else {
-                    state.playing = false;
-                }
+                }else{state.playing=false;}
+
             }
         }
         Message::AssetsRootChanged(value) => state.assets_root = value,
@@ -419,6 +448,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     PathBuf::from(&state.output),
                 ),
             );
+        }
+        Message::StartMotionConversion => {
+            if state.converter_path.trim().is_empty() || state.caf_path.trim().is_empty() ||
+                state.assets_root.trim().is_empty() || state.output.trim().is_empty() {
+                state.status="Select Cryengine-Converter.exe, original CAF/DBA, exact asset root and NEW output folder.".into();
+                return Task::none();
+            }
+            return launch(state,Operation::ConvertMotion(
+                PathBuf::from(&state.converter_path),PathBuf::from(&state.caf_path),
+                PathBuf::from(&state.assets_root),PathBuf::from(&state.output),
+            ));
         }
         Message::StartCafLoad => {
             if state.caf_path.trim().is_empty() {
@@ -603,6 +643,29 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                     state.page = Some(Page::Models);
                 }
+                Ok(Completed::MotionConverted(result,dir))=>{
+                    state.status=format!("Converter produced {} validated GLB animation files, {} source clips from {}.",
+                        result.glb_files.len(),result.clips.len(),result.virtual_source);
+                    state.converted_glbs=result.glb_files.iter().map(|rel|dir.join(rel)).collect();
+                    state.native_caf=None;
+                    state.glb_motion=None;
+                    state.playing=false;
+                    state.page=Some(Page::Models);
+                    if state.converted_glbs.len()==1 {
+                        return launch(state,Operation::LoadGlbMotion(state.converted_glbs[0].clone()));
+                    }
+                }
+                Ok(Completed::MotionGlb(motion))=>{
+                    let clips=motion.list_clips();
+                    state.status=format!("Loaded {} real glTF animation clip(s), {} source nodes.",
+                        clips.len(),motion.node_names.len());
+                    state.motion_time=0.0;
+                    state.playing=false;
+                    state.selected_motion_clip=0;
+                    state.native_caf=None;
+                    state.glb_motion=Some(Arc::new(motion));
+                    state.page=Some(Page::Models);
+                }
                 Ok(Completed::Caf(motion)) => {
                     state.status = format!(
                         "Native CAF decoded: {} controllers at {:.1} FPS; {} seconds. Bind-pose matching is required for mesh animation.",
@@ -613,6 +676,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.motion_time = 0.0;
                     state.playing = false;
                     state.native_caf = Some(Arc::new(motion));
+                    state.glb_motion=None;
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::Diffuse(info, pixels)) => {
@@ -969,6 +1033,49 @@ fn view(state: &State) -> Element<'_, Message> {
                     button("Open CAF").on_press(Message::StartCafLoad),
                     button(if state.playing{"Pause"}else{"Play"}).on_press(Message::ToggleMotion),
                 ].spacing(8),
+                row![
+                    text_input("Bundled or independent Cryengine-Converter.exe...",
+                        &state.converter_path).on_input(Message::ConverterPathChanged).width(Fill),
+                    button("Convert & preview CAF/DBA").on_press(Message::StartMotionConversion),
+                ].spacing(8),
+                text_input("Exact extracted asset root (for converter dependencies)...",
+                    &state.assets_root).on_input(Message::AssetsRootChanged),
+                if !state.converted_glbs.is_empty() {
+                    let mut items=column![text("Verified converter GLB outputs (select exact file)")].spacing(4);
+                    for (index,file) in state.converted_glbs.iter().enumerate().take(32) {
+                        items=items.push(button(file.file_name().unwrap_or_default().to_string_lossy().to_string())
+                            .on_press(Message::OpenConvertedGlb(index)));
+                    }
+                    scrollable(items).height(Length::Fixed(160.)).into()
+                }else{
+                    let placeholder:Element<'_,Message>=text("Packed DBA clips use independently installed Cryengine-Converter (GPLv2).").into();
+                    placeholder
+                },
+                if let Some(loaded)=&state.glb_motion {
+                    let clips=loaded.list_clips();
+                    let mut chooser=column![text(format!("Verified glTF animation clips: {}",clips.len()))].spacing(4);
+                    for (i,clip) in clips.iter().enumerate().take(64) {
+                        chooser=chooser.push(button(format!("{} • {:.2}s • {} channels",clip.name,clip.duration,clip.channels))
+                            .on_press(Message::SelectMotionClip(i)));
+                    }
+                    let chosen=clips.get(state.selected_motion_clip);
+                    let current=chosen.map(|clip|{
+                        let tracks=loaded.sample(state.selected_motion_clip,state.motion_time)
+                            .unwrap_or_default();
+                        format!("Selected {} • {:.2}/{:.2}s • {} decoded node keyframes",
+                            clip.name,state.motion_time,clip.duration,tracks.len())
+                    }).unwrap_or_else(||"Choose a compatible clip.".into());
+                    column![
+                        scrollable(chooser).height(Length::Fixed(180.)),
+                        text(current),
+                        slider(0.0..=chosen.map_or(0.001,|clip|clip.duration.max(0.001)),
+                            state.motion_time,Message::MotionScrub),
+                        text("Converter-backed keys are real. Bone deformation requires matching skin hierarchy."),
+                    ].spacing(6).into()
+                }else{
+                    let placeholder:Element<'_,Message>=text("Native CAF / converter-backed DBA clips appear here.").into();
+                    placeholder
+                },
                 if let Some(clip)=&state.native_caf {
                     let frame=clip.sample_seconds(state.motion_time).unwrap_or_default();
                     let value=frame.iter().take(3).map(|bone|format!(
@@ -1066,9 +1173,19 @@ fn view(state: &State) -> Element<'_, Message> {
         .into()
 }
 
+fn initial_state()->State{
+    let mut result=State::default();
+    result.zoom=1.0;
+    if let Ok(executable)=std::env::current_exe()
+        && let Some(parent)=executable.parent(){
+        let bundled=parent.join("third_party").join("Cryengine-Converter").join("cgf-converter.exe");
+        if bundled.is_file(){result.converter_path=bundled.to_string_lossy().to_string();}
+    }
+    result
+}
 fn main() -> iced::Result {
     let _supported_backends = wgpu::Backends::PRIMARY;
-    iced::application(State::default, update, view)
+    iced::application(initial_state, update, view)
         .subscription(|state: &State| {
             if state.playing {
                 iced::time::every(Duration::from_millis(40)).map(|_| Message::Tick)
