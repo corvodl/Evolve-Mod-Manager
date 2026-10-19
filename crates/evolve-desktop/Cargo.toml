@@ -1,0 +1,15 @@
+[package]
+name = "evolve-mod-manager"
+description = "Evolve Mod Manager desktop rewrite foundation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+evolve-core = { path = "../evolve-core" }
+iced = { version = "0.14", features = ["wgpu", "tokio"] }
+# Explicitly match iced_wgpu 0.14's GPU API generation.
+wgpu = "27.0"
+
+[lints]
+workspace = true
