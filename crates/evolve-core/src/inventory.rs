@@ -46,11 +46,19 @@ impl AssetKind {
 }
 
 pub fn classify_path(path: &Path) -> AssetKind {
-    let name = path.file_name().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
+    let name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_lowercase();
     if name.ends_with(".dds") || name.ends_with(".dds.0") {
         return AssetKind::Dds;
     }
-    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or_default().to_ascii_lowercase();
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     match ext.as_str() {
         "pak" => AssetKind::Pak,
         "cdf" => AssetKind::CharacterDefinition,
@@ -86,7 +94,10 @@ pub struct Inventory {
 
 impl Inventory {
     pub fn count_kind(&self, kind: AssetKind) -> usize {
-        self.entries.iter().filter(|entry| entry.kind == kind).count()
+        self.entries
+            .iter()
+            .filter(|entry| entry.kind == kind)
+            .count()
     }
 }
 
@@ -117,8 +128,7 @@ pub fn scan_directory(root: &Path) -> Result<Inventory, InventoryError> {
         if depth > MAX_DEPTH {
             return Err(InventoryError::TooDeep);
         }
-        let mut children = fs::read_dir(&folder)?
-            .collect::<Result<Vec<_>, io::Error>>()?;
+        let mut children = fs::read_dir(&folder)?.collect::<Result<Vec<_>, io::Error>>()?;
         children.sort_by_key(|entry| entry.file_name());
         for child in children {
             let path = child.path();
@@ -139,7 +149,9 @@ pub fn scan_directory(root: &Path) -> Result<Inventory, InventoryError> {
             if entries.len() == MAX_ENTRIES {
                 return Err(InventoryError::TooManyFiles);
             }
-            let relative = path.strip_prefix(&canonical).map_err(|_| InventoryError::InvalidRoot)?;
+            let relative = path
+                .strip_prefix(&canonical)
+                .map_err(|_| InventoryError::InvalidRoot)?;
             let byte_size = child.metadata()?.len();
             total_bytes = total_bytes.saturating_add(byte_size);
             entries.push(AssetEntry {
@@ -160,7 +172,10 @@ pub fn scan_directory(root: &Path) -> Result<Inventory, InventoryError> {
 }
 
 /// Writes an inventory (not game assets). Refuses overwrites and directory targets.
-pub fn write_inventory_json(inventory: &Inventory, destination: &Path) -> Result<(), InventoryError> {
+pub fn write_inventory_json(
+    inventory: &Inventory,
+    destination: &Path,
+) -> Result<(), InventoryError> {
     let data = serde_json::to_vec_pretty(inventory).map_err(io::Error::other)?;
     let mut output = fs::OpenOptions::new()
         .write(true)
@@ -179,9 +194,18 @@ mod tests {
 
     #[test]
     fn recognizes_cryengine_assets_and_split_textures() {
-        assert_eq!(classify_path(Path::new("textures/Kala_DIFF.DDS.0")), AssetKind::Dds);
-        assert_eq!(classify_path(Path::new("goliath_3p.cdf")), AssetKind::CharacterDefinition);
-        assert_eq!(classify_path(Path::new("Tech_3p.DBA")), AssetKind::AnimationDba);
+        assert_eq!(
+            classify_path(Path::new("textures/Kala_DIFF.DDS.0")),
+            AssetKind::Dds
+        );
+        assert_eq!(
+            classify_path(Path::new("goliath_3p.cdf")),
+            AssetKind::CharacterDefinition
+        );
+        assert_eq!(
+            classify_path(Path::new("Tech_3p.DBA")),
+            AssetKind::AnimationDba
+        );
         assert_eq!(classify_path(Path::new("UI_Data.PAK")), AssetKind::Pak);
     }
 
