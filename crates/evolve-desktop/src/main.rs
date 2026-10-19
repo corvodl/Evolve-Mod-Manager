@@ -689,6 +689,7 @@ enum Message {
     ViewerToggleFolder(String),
     ViewerPreviewSelected,
     ViewerPreviewStaticCdf,
+    ViewerOpenStaticCdf(usize),
     StartDependencyInspection,
     CompareOriginalChanged(String),
     CompareModifiedChanged(String),
@@ -1516,6 +1517,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.viewer_collapsed.remove(&path);
             }
             refresh_viewer_rows(state);
+        }
+        Message::ViewerOpenStaticCdf(index) => {
+            let valid = state.inventory.as_ref()
+                .and_then(|inventory| inventory.entries.get(index))
+                .is_some_and(|entry| entry.relative_path.to_ascii_lowercase().ends_with(".cdf"));
+            if !valid {
+                state.status = "Virtual character entry no longer refers to a valid CDF.".into();
+                return Task::none();
+            }
+            state.selected = Some(index);
+            state.file_selection.click(&[index], index, false, false);
+            return update(state, Message::ViewerPreviewStaticCdf);
         }
         Message::ViewerPreviewStaticCdf => {
             let Some(inventory) = state.inventory.as_ref() else {
