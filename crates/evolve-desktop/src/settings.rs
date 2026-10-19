@@ -136,6 +136,26 @@ pub fn game_storage_directory(
     Ok(profile.join("Data").join("GameSets"))
 }
 
+/// Only change the two accent roles; keep any custom surface, typography,
+/// or other private-manager palette choices intact.
+pub fn apply_accent_preset(prefs: &mut Preferences, preset: &str) -> bool {
+    let colors = match preset {
+        "Classic Red" => Some(("#c9384a", "#48303b")),
+        "Evolve Red" => Some(("#e0354f", "#5d2936")),
+        "Deep Red" => Some(("#a91f38", "#472631")),
+        "Default" => None,
+        _ => return false,
+    };
+    if let Some((accent, selected)) = colors {
+        prefs.appearance_colors.insert("accent".into(), accent.into());
+        prefs.appearance_colors.insert("selection".into(), selected.into());
+    } else {
+        prefs.appearance_colors.remove("accent");
+        prefs.appearance_colors.remove("selection");
+    }
+    true
+}
+
 impl Preferences {
     pub fn validate(&mut self) -> Result<(), SettingsError> {
         if !["Compact", "Comfortable"].contains(&self.ui_density.as_str()) {
@@ -270,6 +290,20 @@ pub fn save_to(path: &Path, prefs: &Preferences) -> Result<(), SettingsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn accent_presets_change_only_accent_roles_and_are_valid() {
+        let mut prefs = Preferences::default();
+        prefs.appearance_colors.insert("surface".into(), "#15171c".into());
+        assert!(apply_accent_preset(&mut prefs, "Deep Red"));
+        assert_eq!(prefs.appearance_colors.get("accent").map(String::as_str), Some("#a91f38"));
+        assert_eq!(prefs.appearance_colors.get("surface").map(String::as_str), Some("#15171c"));
+        assert!(prefs.validate().is_ok());
+        assert!(!apply_accent_preset(&mut prefs, "Not a preset"));
+        assert!(apply_accent_preset(&mut prefs, "Default"));
+        assert!(!prefs.appearance_colors.contains_key("accent"));
+        assert_eq!(prefs.appearance_colors.get("surface").map(String::as_str), Some("#15171c"));
+    }
+
     #[test]
     fn viewer_explorer_preference_roundtrips_and_legacy_defaults_visible() {
         let dir = tempfile::tempdir().unwrap();
