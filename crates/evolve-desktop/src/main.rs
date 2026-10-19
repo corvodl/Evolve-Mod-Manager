@@ -37,7 +37,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}};
 use std::time::Duration;
 use textured::Scene as TexturedScene;
-use asset_cache::{PreviewCache, SharedCache, decoded_dds};
+use asset_cache::{SharedCache, decoded_dds};
 use updater::{
     ReleaseUpdate, UpdateChannel, discover_update, download_installer, launch_verified_installer,
 };
