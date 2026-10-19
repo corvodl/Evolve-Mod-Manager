@@ -2517,9 +2517,12 @@ impl Desktop {
             }
             message => {
                 let opens_model = matches!(&message, Message::Finished(Ok(Completed::Model(_))));
+                let launched_from_library = self.state.page == Some(Page::AssetLibrary);
                 let command = update(&mut self.state, message);
                 if opens_model && self.viewer_id.is_none() {
-                    Task::batch([command, self.open_viewer()])
+                    let open = self.open_viewer();
+                    self.state.viewer_from_library = launched_from_library;
+                    Task::batch([command, open])
                 } else {
                     command
                 }
