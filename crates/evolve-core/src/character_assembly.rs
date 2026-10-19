@@ -48,7 +48,7 @@ pub fn select_attachments<'a>(
         cdf.skin_sets.keys().next().cloned()
     } else {
         return Err(AssemblyError::Incomplete(
-            "Multiple named skin variants and no default: choose a variant explicitly".into()
+            "Multiple named skin variants and no default: choose a variant explicitly".into(),
         ));
     };
     let keys = chosen.as_deref().and_then(|name| cdf.skin_sets.get(name));
@@ -64,7 +64,9 @@ pub fn select_attachments<'a>(
         .map(|part| part.name.as_str())
         .collect::<Vec<_>>();
     if selected.is_empty() {
-        return Err(AssemblyError::Incomplete("Selected CDF has no loadable mesh attachments".into()));
+        return Err(AssemblyError::Incomplete(
+            "Selected CDF has no loadable mesh attachments".into(),
+        ));
     }
     Ok((chosen, selected))
 }
@@ -72,34 +74,71 @@ pub fn select_attachments<'a>(
 /// Merge individual verified meshes, preserving all source vertex attributes
 /// and offsetting triangle indices. Loss of UV0/normals is explicit: mixed
 /// incomplete attributes yield no fabricated combined attribute stream.
-pub fn combine_source_meshes(parts: Vec<(String, RenderMesh)>) -> Result<(RenderMesh, Vec<String>), AssemblyError> {
+pub fn combine_source_meshes(
+    parts: Vec<(String, RenderMesh)>,
+) -> Result<(RenderMesh, Vec<String>), AssemblyError> {
     if parts.is_empty() || parts.len() > 512 {
-        return Err(AssemblyError::Incomplete("No source parts, or too many assembly parts".into()));
+        return Err(AssemblyError::Incomplete(
+            "No source parts, or too many assembly parts".into(),
+        ));
     }
-    let uv_complete = parts.iter().all(|(_, mesh)| mesh.uv0.as_ref().is_some_and(|uv| uv.len() == mesh.positions.len()));
-    let normals_complete = parts.iter().all(|(_, mesh)| mesh.normals.as_ref().is_some_and(|n| n.len() == mesh.positions.len()));
+    let uv_complete = parts.iter().all(|(_, mesh)| {
+        mesh.uv0
+            .as_ref()
+            .is_some_and(|uv| uv.len() == mesh.positions.len())
+    });
+    let normals_complete = parts.iter().all(|(_, mesh)| {
+        mesh.normals
+            .as_ref()
+            .is_some_and(|n| n.len() == mesh.positions.len())
+    });
     let mut positions = Vec::new();
     let mut indices = Vec::new();
     let mut uv0 = uv_complete.then(Vec::new);
     let mut normals = normals_complete.then(Vec::new);
     let mut names = Vec::with_capacity(parts.len());
     for (name, mesh) in parts {
-        if mesh.positions.is_empty() || mesh.indices.is_empty()
+        if mesh.positions.is_empty()
+            || mesh.indices.is_empty()
             || !mesh.indices.len().is_multiple_of(3)
-            || mesh.indices.iter().any(|&index| index as usize >= mesh.positions.len())
+            || mesh
+                .indices
+                .iter()
+                .any(|&index| index as usize >= mesh.positions.len())
         {
-            return Err(AssemblyError::Incomplete(format!("Invalid or empty source part: {name}")));
+            return Err(AssemblyError::Incomplete(format!(
+                "Invalid or empty source part: {name}"
+            )));
         }
-        let offset = u32::try_from(positions.len()).map_err(|_| AssemblyError::Incomplete("Assembly too large".into()))?;
-        let vertices = positions.len().checked_add(mesh.positions.len()).ok_or_else(|| AssemblyError::Incomplete("Vertex arithmetic overflow".into()))?;
-        let faces = indices.len().checked_add(mesh.indices.len()).ok_or_else(|| AssemblyError::Incomplete("Index arithmetic overflow".into()))?;
+        let offset = u32::try_from(positions.len())
+            .map_err(|_| AssemblyError::Incomplete("Assembly too large".into()))?;
+        let vertices = positions
+            .len()
+            .checked_add(mesh.positions.len())
+            .ok_or_else(|| AssemblyError::Incomplete("Vertex arithmetic overflow".into()))?;
+        let faces = indices
+            .len()
+            .checked_add(mesh.indices.len())
+            .ok_or_else(|| AssemblyError::Incomplete("Index arithmetic overflow".into()))?;
         if vertices > MAX_COMBINED_VERTICES || faces > MAX_COMBINED_INDICES {
-            return Err(AssemblyError::Incomplete("Combined character exceeds safe geometry limits".into()));
+            return Err(AssemblyError::Incomplete(
+                "Combined character exceeds safe geometry limits".into(),
+            ));
         }
-        for index in mesh.indices { indices.push(index.checked_add(offset).ok_or_else(|| AssemblyError::Incomplete("Index overflow".into()))?); }
+        for index in mesh.indices {
+            indices.push(
+                index
+                    .checked_add(offset)
+                    .ok_or_else(|| AssemblyError::Incomplete("Index overflow".into()))?,
+            );
+        }
         positions.extend(mesh.positions);
-        if let (Some(out), Some(source)) = (&mut uv0, mesh.uv0) { out.extend(source); }
-        if let (Some(out), Some(source)) = (&mut normals, mesh.normals) { out.extend(source); }
+        if let (Some(out), Some(source)) = (&mut uv0, mesh.uv0) {
+            out.extend(source);
+        }
+        if let (Some(out), Some(source)) = (&mut normals, mesh.normals) {
+            out.extend(source);
+        }
         names.push(name);
     }
     let info = ModelInfo {
@@ -111,7 +150,16 @@ pub fn combine_source_meshes(parts: Vec<(String, RenderMesh)>) -> Result<(Render
         original_uv0: uv0.is_some(),
         original_normals: normals.is_some(),
     };
-    Ok((RenderMesh {info, positions, indices, uv0, normals}, names))
+    Ok((
+        RenderMesh {
+            info,
+            positions,
+            indices,
+            uv0,
+            normals,
+        },
+        names,
+    ))
 }
 
 /// Full attachment index is checked with the same exact resolver as the
@@ -141,21 +189,29 @@ pub fn read_static_cdf_assembly(
             continue;
         }
         let AssetResolution::Found(relative) = resolution else {
-            return Err(AssemblyError::Incomplete(format!("Missing/ambiguous CDF part {part}")));
+            return Err(AssemblyError::Incomplete(format!(
+                "Missing/ambiguous CDF part {part}"
+            )));
         };
         if !names_seen.insert(relative.to_ascii_lowercase()) {
-            return Err(AssemblyError::Incomplete(format!("Repeated mesh attachment without verified transform: {relative}")));
+            return Err(AssemblyError::Incomplete(format!(
+                "Repeated mesh attachment without verified transform: {relative}"
+            )));
         }
         let candidate = root.join(relative);
         let meta = fs::symlink_metadata(&candidate)?;
         let resolved = fs::canonicalize(&candidate)?;
         if !meta.file_type().is_file() || !resolved.starts_with(&root) {
-            return Err(AssemblyError::Incomplete(format!("Unsafe attachment path: {relative}")));
+            return Err(AssemblyError::Incomplete(format!(
+                "Unsafe attachment path: {relative}"
+            )));
         }
         meshes.push((part.clone(), read_model(&resolved)?));
     }
     if meshes.len() != selected.len() {
-        return Err(AssemblyError::Incomplete("Not all CDF attachments resolved uniquely".into()));
+        return Err(AssemblyError::Incomplete(
+            "Not all CDF attachments resolved uniquely".into(),
+        ));
     }
     let (mesh, original_parts) = combine_source_meshes(meshes)?;
     let report = AssemblyReport {
@@ -177,8 +233,15 @@ mod tests {
 
     fn part(count: usize, uv: bool) -> RenderMesh {
         RenderMesh {
-            info: ModelInfo { format: "test".into(), version: 7, chunk_count: 1,
-                vertex_count: count, triangle_count: 1, original_uv0: uv, original_normals: true },
+            info: ModelInfo {
+                format: "test".into(),
+                version: 7,
+                chunk_count: 1,
+                vertex_count: count,
+                triangle_count: 1,
+                original_uv0: uv,
+                original_normals: true,
+            },
             positions: vec![[0.0, 0.0, 0.0]; count],
             indices: vec![0, 1, 2],
             uv0: uv.then(|| vec![[0.5, 0.5]; count]),
@@ -190,8 +253,9 @@ mod tests {
     fn preserves_triangle_offsets_and_unmodified_uv0() {
         let (mesh, names) = combine_source_meshes(vec![
             ("body".into(), part(3, true)),
-            ("equipment".into(), part(3, true))
-        ]).unwrap();
+            ("equipment".into(), part(3, true)),
+        ])
+        .unwrap();
         assert_eq!(mesh.indices, [0, 1, 2, 3, 4, 5]);
         assert_eq!(mesh.uv0.as_ref().unwrap().len(), 6);
         assert_eq!(mesh.info.triangle_count, 2);
@@ -202,8 +266,9 @@ mod tests {
     fn missing_uv_cannot_be_reconstructed_from_other_parts() {
         let (mesh, _) = combine_source_meshes(vec![
             ("body".into(), part(3, true)),
-            ("equipment".into(), part(3, false))
-        ]).unwrap();
+            ("equipment".into(), part(3, false)),
+        ])
+        .unwrap();
         assert!(mesh.uv0.is_none());
         assert!(mesh.normals.is_some());
     }
