@@ -2,7 +2,7 @@
 //! file I/O/decompression never runs in the interactive Iced view/update path.
 use evolve_core::{
     AssetEntry, CdfDefinition, DdsInfo, Inventory, PakInventory, export_dds_png,
-    extract_legacy_pak, inspect_dds, inspect_legacy_pak, read_cdf, scan_directory,
+    extract_legacy_pak, inspect_dds, inspect_legacy_pak, read_cdf, rebuild_legacy_pak, scan_directory,
 };
 use iced::widget::{button, column, container, row, scrollable, text, text_input};
 use iced::{Element, Fill, Task, Theme};
@@ -44,6 +44,7 @@ impl Page {
 struct State {
     input: String,
     output: String,
+    replacements: String,
     search: String,
     page: Option<Page>,
     inventory: Option<Inventory>,
@@ -62,6 +63,7 @@ enum Operation {
     InspectDds(PathBuf),
     InspectCdf(PathBuf),
     ExtractPak(PathBuf, PathBuf),
+    RebuildPak(PathBuf, PathBuf, PathBuf),
     ExportPng(PathBuf, PathBuf),
 }
 
@@ -72,6 +74,7 @@ enum Completed {
     Texture(DdsInfo),
     Character(CdfDefinition),
     Extracted(usize, PathBuf),
+    Rebuilt(usize, PathBuf),
     ExportedPng(DdsInfo, PathBuf),
 }
 
@@ -93,6 +96,9 @@ impl Operation {
             Self::ExtractPak(source, dest) => extract_legacy_pak(&source, &dest)
                 .map(|pak| Completed::Extracted(pak.entries.len(), dest))
                 .map_err(|e| e.to_string()),
+            Self::RebuildPak(source, overrides, dest) => rebuild_legacy_pak(&source, &overrides, &dest)
+                .map(|report| Completed::Rebuilt(report.changed_entries, dest))
+                .map_err(|e| e.to_string()),
             Self::ExportPng(source, dest) => export_dds_png(&source, &dest)
                 .map(|info| Completed::ExportedPng(info, dest))
                 .map_err(|e| e.to_string()),
@@ -105,12 +111,14 @@ enum Message {
     Navigate(Page),
     InputChanged(String),
     OutputChanged(String),
+    ReplacementsChanged(String),
     SearchChanged(String),
     StartScan,
     StartPakInspection,
     StartDdsInspection,
     StartCdfInspection,
     StartExtract,
+    StartRebuild,
     StartPngExport,
     Finished(Result<Completed, String>),
     Select(usize),
@@ -137,6 +145,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::Navigate(page) => state.page = Some(page),
         Message::InputChanged(input) => state.input = input,
         Message::OutputChanged(output) => state.output = output,
+        Message::ReplacementsChanged(replacements) => state.replacements = replacements,
         Message::SearchChanged(query) => state.search = query,
         Message::Select(index) => state.selected = Some(index),
         Message::StartScan => {
@@ -163,6 +172,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let source = PathBuf::from(&state.input);
             let output = PathBuf::from(&state.output);
             return launch(state, Operation::ExtractPak(source, output));
+        }
+        Message::StartRebuild => {
+            if state.output.trim().is_empty() || state.replacements.trim().is_empty() {
+                state.status = "Choose the overrides folder and a NEW output PAK path.".into();
+                return Task::none();
+            }
+            let source = PathBuf::from(&state.input);
+            let overrides = PathBuf::from(&state.replacements);
+            let output = PathBuf::from(&state.output);
+            return launch(state, Operation::RebuildPak(source, overrides, output));
         }
         Message::StartPngExport => {
             if state.output.trim().is_empty() {
@@ -222,6 +241,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.status = format!(
                         "Extracted {count} validated ZIP-compatible PAK entries to {}",
                         folder.display()
+                    );
+                }
+                Ok(Completed::Rebuilt(count, target)) => {
+                    state.status = format!(
+                        "Rebuilt unsigned ZIP-compatible PAK from {count} replacement(s): {}",
+                        target.display()
                     );
                 }
                 Ok(Completed::ExportedPng(info, target)) => {
@@ -292,6 +317,11 @@ fn view(state: &State) -> Element<'_, Message> {
                 .width(Fill),
             button("Extract PAK").on_press(Message::StartExtract),
             button("Export DDS → PNG").on_press(Message::StartPngExport),
+        ].spacing(8),
+        row![
+            text_input("Folder containing exact original PAK member replacements...", &state.replacements)
+                .on_input(Message::ReplacementsChanged).width(Fill),
+            button("Rebuild unsigned PAK").on_press(Message::StartRebuild),
         ]
         .spacing(8),
     ]
@@ -300,7 +330,7 @@ fn view(state: &State) -> Element<'_, Message> {
     let workspace: Element<'_, Message> = match page {
         Page::Home => column![
             text("Inspect local CryEngine assets safely.").size(19),
-            text("ZIP-compatible 2012 PAKs can be inspected/extracted; signed Stage 2 CryPAKs are NOT supported by the new Rust extractor yet."),
+            text("ZIP-compatible 2012 PAKs can be inspected, extracted and rebuilt from exact replacements; signed Stage 2 CryPAKs are NOT supported yet."),
             text("DDS top-mipmap PNG export supports BC1/2/3/4/5 and 32-bit RGB(A); complete split-stream sets are reconstructed first."),
             text("Mod installation, 3D scenes and Blender FBX export still need porting."),
         ].spacing(14).into(),
@@ -373,7 +403,7 @@ fn view(state: &State) -> Element<'_, Message> {
         ].spacing(14).into(),
         Page::Settings => column![
             text("Workspace safety").size(19),
-            text("The new PAK extractor never overwrites an existing destination and stages output before publishing it."),
+            text("The ZIP-compatible PAK extractor and rebuilder never overwrite existing destinations and stage outputs before publishing them."),
             text("Only a directory you explicitly enter can receive extraction files. Stage 2 signed PAK import/mod injection are disabled."),
             text("All expensive file operations run outside the UI thread."),
         ].spacing(14).into(),
