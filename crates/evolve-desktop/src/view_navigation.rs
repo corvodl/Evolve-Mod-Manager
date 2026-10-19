@@ -156,13 +156,33 @@ mod tests {
 
     #[test]
     fn secondary_button_does_not_replace_active_orbit_drag() {
-        let bounds = Rectangle { x: 0.0, y: 0.0, width: 200.0, height: 200.0 };
+        let bounds = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 200.0,
+        };
         let cursor = mouse::Cursor::Available(Point::new(50.0, 50.0));
         let mut nav = Navigation::default();
-        nav.handle(&Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)), bounds, cursor, false);
-        nav.handle(&Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)), bounds, cursor, false);
-        let move_event = Event::Mouse(mouse::Event::CursorMoved { position: Point::new(55.0, 53.0) });
-        assert!(matches!(nav.handle(&move_event, bounds, cursor, false), Some(Gesture::Orbit(..))));
+        nav.handle(
+            &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            bounds,
+            cursor,
+            false,
+        );
+        nav.handle(
+            &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)),
+            bounds,
+            cursor,
+            false,
+        );
+        let move_event = Event::Mouse(mouse::Event::CursorMoved {
+            position: Point::new(55.0, 53.0),
+        });
+        assert!(matches!(
+            nav.handle(&move_event, bounds, cursor, false),
+            Some(Gesture::Orbit(..))
+        ));
     }
 
     #[test]
