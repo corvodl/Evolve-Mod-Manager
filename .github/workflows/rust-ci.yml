@@ -17,6 +17,8 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Validate bundled Blender converter syntax
+        run: python3 -c "import ast,pathlib; [ast.parse(p.read_text(encoding='utf-8'), filename=str(p)) for p in pathlib.Path('crates/evolve-core/src').glob('blender_*.py')]"
       - run: cargo fmt --all -- --check
       - run: cargo test -p evolve-core --all-targets
       - run: cargo clippy -p evolve-core --all-targets -- -D warnings
