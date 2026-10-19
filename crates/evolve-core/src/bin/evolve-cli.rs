@@ -33,7 +33,7 @@ fn usage() -> String {
         "  evolve-cli profile delete <stage> <profile-id>",
         "  evolve-cli profile add <stage> <profile-id> <replacement.pak> <Game/name.pak> <original-public.der> <mod-public.der> <basename>",
         "  evolve-cli profile enable <stage> <profile-id> <mod-id> <true|false>",
-        "  evolve-cli profile plan <stage> <profile-id> <original-public.der> <mod-public.der> <basename>",
+        "  evolve-cli profile plan <stage> <profile-id> <original-public.der> <mod-public.der>",
         "  evolve-cli stage status <stage>",
         "  evolve-cli stage restore <stage>",
         "  evolve-cli stage import <stage> <original.pak> <target-relative.pak> <public.der> <basename>",
@@ -211,9 +211,8 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
             let id = pop(&mut args)?.into_string().map_err(|_| usage())?;
             let original_key: PathBuf = pop(&mut args)?.into();
             let mod_key: PathBuf = pop(&mut args)?.into();
-            let basename = pop(&mut args)?.into_string().map_err(|_| usage())?;
             no_extra(&mut args)?;
-            let plan = plan_mod_profile(&stage, &id, &original_key, &mod_key, &basename)
+            let plan = plan_mod_profile(&stage, &id, &original_key, &mod_key)
                 .map_err(|e| e.to_string())?;
             println!(
                 "Verified {} enabled signed mods ({} bytes); game unchanged.",
