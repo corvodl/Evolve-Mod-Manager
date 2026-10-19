@@ -606,7 +606,7 @@ mod tests {
         message.extend_from_slice(b"sample.pak");
         let digest = Sha256::digest(&message);
         let signature = private
-            .sign(Pss::new_with_salt::<Sha256>(0), &digest)
+            .sign_with_rng(&mut OsRng, Pss::new_with_salt::<Sha256>(0), &digest)
             .unwrap();
         assert_eq!(signature.len(), RSA_BYTES);
         let mut comment = [0u8; TRAILER_BYTES];
