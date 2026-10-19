@@ -16,6 +16,7 @@ mod textured;
 mod updater;
 mod uv_preview;
 mod viewer_inspector;
+mod view_navigation;
 mod viewport;
 use asset_cache::{SharedCache, decoded_dds};
 use evolve_core::{
@@ -148,6 +149,8 @@ struct State {
     yaw: f32,
     pitch: f32,
     zoom: f32,
+    pan_x: f32,
+    pan_y: f32,
     search: String,
     page: Option<Page>,
     inventory: Option<Inventory>,
@@ -650,6 +653,9 @@ enum Message {
     ViewerMenu(&'static str),
     ViewerToggleExplorer,
     ViewerResetCamera,
+    ViewerOrbitDelta(f32, f32),
+    ViewerPanDelta(f32, f32),
+    ViewerZoomWheel(f32),
     ViewerSearchChanged(String),
     ViewerSelectFile(usize),
     ModifiersChanged(iced::keyboard::Modifiers),
@@ -1391,6 +1397,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.yaw = 0.0;
             state.pitch = 0.0;
             state.zoom = 1.0;
+            state.pan_x = 0.0;
+            state.pan_y = 0.0;
+        }
+        Message::ViewerOrbitDelta(dx, dy) => {
+            state.yaw = (state.yaw + dx).rem_euclid(360.0);
+            if state.yaw > 180.0 { state.yaw -= 360.0; }
+            state.pitch = (state.pitch + dy).clamp(-85.0, 85.0);
+        }
+        Message::ViewerPanDelta(dx, dy) => {
+            state.pan_x = (state.pan_x + dx).clamp(-4.0, 4.0);
+            state.pan_y = (state.pan_y + dy).clamp(-4.0, 4.0);
+        }
+        Message::ViewerZoomWheel(amount) => {
+            state.zoom = (state.zoom * 1.1f32.powf(amount)).clamp(0.2, 4.0);
         }
         Message::ViewerSearchChanged(filter) => {
             state.viewer_search = filter;
