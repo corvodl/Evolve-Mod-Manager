@@ -224,3 +224,22 @@ changing these labels or authorizing v1.0.
   deformation, embedded complete texture sets and unified root FBX remain
   release blockers.
 
+
+
+## Character-declared DBA browsing through the external converter
+
+The viewer's character animation list now offers a **converter-backed DBA**
+path for an exact database declared by the selected character's chrparams.
+The worker resolves the original through the extracted folder or verified
+Asset Library manifest, invokes a separately installed Cryengine-Converter,
+and accepts only actual GLB outputs with validated animation tracks.
+Temporary conversion directories remain owned by the session and are removed
+when the viewer drops them. Individual converted GLB tracks can be selected
+from the Animation panel. No unrelated DBA is selected by basename, and no
+native game PAKs are modified.
+
+**Not direct native DBA decoding:** this still depends on the external
+converter and verified extracted source. Skeleton retargeting, live wgpu
+skinning, full layered GPU animation, Action export for complete characters,
+and the private manager's native/on-demand archive handling are not at
+parity. They remain required before public 1.0.
