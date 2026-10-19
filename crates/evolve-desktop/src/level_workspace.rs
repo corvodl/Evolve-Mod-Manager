@@ -13,6 +13,7 @@ const MUTED: Color = Color::from_rgb(0.72, 0.76, 0.83);
 struct SceneOverview {
     scene: Arc<LevelScene>,
     selected: Option<usize>,
+    selected_indices: std::collections::HashSet<usize>,
     zoom: f32,
 }
 impl SceneOverview {
@@ -90,7 +91,7 @@ impl canvas::Program<Message> for SceneOverview {
             {
                 continue;
             }
-            let selected = self.selected == Some(index);
+            let selected = self.selected_indices.contains(&index);
             let dot = Path::circle(point, if selected { 5.0 } else { 2.2 });
             frame.fill(
                 &dot,
@@ -166,7 +167,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 button(text(format!("{}  /  {}", obj.layer, obj.name)).size(12))
                     .width(Fill)
                     .padding(4)
-                    .style(if state.level_selected == Some(index) {
+                    .style(if state.level_selection.indices.contains(&index) {
                         button::primary
                     } else {
                         button::text
@@ -208,6 +209,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             canvas_widget(SceneOverview {
                 scene: scene.clone(),
                 selected: state.level_selected,
+                selected_indices: state.level_selection.indices.clone(),
                 zoom: state.level_zoom.max(0.3),
             })
             .width(Fill)
@@ -231,7 +233,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             text_input("Filter layer, object or model...", &state.level_filter)
                 .on_input(Message::LevelFilterChanged),
             scrollable(outliner).height(Length::Fixed(240.0)),
-            text(format!("{visible} matching placements"))
+            text(format!("{visible} matching placements · {} selected · Shift range / Ctrl toggle", state.level_selection.indices.len()))
                 .size(12)
                 .color(MUTED),
             details,
