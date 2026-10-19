@@ -7,18 +7,18 @@ This table tracks **actual Rust implementation state**, not feature mockups. The
 | Local indexed file browser and deterministic inventory | **Initial implementation** | Fast search for realistic libraries, virtualized GUI, no freezing |
 | Historical ZIP-compatible PAK inspect/extract/rebuild | **Implemented subset** | Original archive untouched, bounded CRC-verified extraction, file-path safety |
 | Stage 2 signed/encrypted CryPAK RSA/Twofish | **Experimental: verify and extract implemented, real-game unverified** | Verify signatures and central-directory/local offsets, native decrypted streaming |
-| Signed Stage 2 PAK editing and repacking | **Not ported** | Golden round-trips and signature verification after patch injection |
-| Staged offline mods, backups and crash-safe restore | **Isolated signed-PAK stage prototype**: CLI import/apply/status/restore with SHA-256 and undo journal; no game launch integration | Journaling and rollback after cancel, crash and power loss |
-| Asset Library multi-PAK resolution and provenance | **Initial resolver** | Cross-PAK matching only when exact and unambiguous |
+| Signed Stage 2 PAK editing and repacking | **Experimental: exact one-member replacement, re-signing with a user-supplied RSA key and independent verification**; no game-acceptance validation | Golden round-trips and signature verification after patch injection |
+| Staged offline mods, backups and crash-safe restore | **Isolated signed-PAK stage prototype**: CLI and Iced GUI import/apply/status/restore, SHA-256 journal and synthetic signed-PAK integration test; no installed-game launch integration | Journaling and rollback after cancel, crash and power loss |
+| Asset Library multi-PAK resolution and provenance | **Initial exact CDF resolver in CLI and GUI**: missing/ambiguous matches are reported, not guessed; no full provenance graph | Cross-PAK matching only when exact and unambiguous |
 | DDS/streaming top mip and BCn → PNG | **Implemented subset** | Golden pixel comparisons, signed BC5, BC6/BC7, console endian/split variants |
 | CDF XML skeleton/attachment parsing | **Implemented subset** | CDF variants, skin sets, dependency graph and verified meshes |
-| CryEngine skin/CHR/CGF/skinm geometry parser | **Partial: CryTek/CrChF geometry, not rigging** | Bone hierarchy, weights, bind pose, LOD, UVs and rig integrity |
-| Original UV0 and highest-quality FBX output | **Partial: original UV0 in OBJ/GLB; Blender FBX bridge, no original skeletal FBX yet** | Independent Blender verification; no invented UVs |
+| CryEngine skin/CHR/CGF/skinm geometry parser | **Partial: bounded CryTek/CrChF geometry and conditional verified native bone/weight parsing**; unsupported layouts fail closed | Bone hierarchy, weights, bind pose, LOD, UVs and rig integrity |
+| Original UV0 and highest-quality FBX output | **Partial: UV0-preserving OBJ/GLB, rigged single-mesh GLB and Blender FBX bridge with verified skeleton/weights**; real character parity unverified | Independent Blender verification; no invented UVs |
 | Monster stages, hunter 1P+3P and equipment | **Not ported** | One painting-ready root FBX with exact per-variant rigs |
 | Optional verified CAF/DBA animation FBX Actions | **Policy default only** | Disabled by default; validated opt-in; smaller FBX test |
-| Animation browser and layered timeline | **Partial: CAF header/catalog and validated converted GLB pose sampling** | Skeleton matching, CAF/DBA clips, scrub and idle |
-| GPU model viewer and CryEngine materials | **Partial: Iced GPU-composited orbit wireframe, no materials/skinning** | Real wgpu mesh, high-res DDS, normal/emissive/transparency parity |
-| Level Editor and Blender scene export | **Partial: terrain OBJ, XML object scene, non-destructive transform editing** | Correct complete-scene placements, terrain, textures and dependencies |
+| Animation browser and layered timeline | **Partial: native CAF controller decoding/sampling, converted DBA/GLB sampling and GUI scrub/play; no verified skeleton deformation/layers** | Skeleton matching, CAF/DBA clips, scrub and idle |
+| GPU model viewer and CryEngine materials | **Partial: Iced/wgpu textured mesh, source UV0, manually provided diffuse, tangent-space normal and emissive DDS; no automatic MTL mapping or skinning** | Real wgpu mesh, high-res DDS, normal/emissive/transparency parity |
+| Level Editor and Blender scene export | **Partial: terrain, XML/LYR object placement, geometry-scene GLB and Blender FBX through converter; incomplete map textures and dependencies** | Correct complete-scene placements, terrain, textures and dependencies |
 | GFX, USM and loose-file editing | **Not ported** | Real-asset read/preview/edit/repack integrity |
 | Settings, mod profiles, signed updater and installer | **Partial: settings migration/persistence, public release check/download and installer/release definitions; game mod profiles not ported** | Versioned releases, recovery, private-data exclusion, tested installs and rollback |
 | Responsive UI and safe long-running jobs | **Partial** | Cancellation, progress, large-input and Windows GUI tests |
@@ -38,11 +38,11 @@ Do not convert an internal Rust prototype into a public production release just 
 
 ## October 2026 technical milestones (experimental)
 
-- **Signed Stage 2 PAK inspection/extraction**: external user-provided RSA public key, exact signed basename, custom Twofish CTR streaming and RSA-PSS verification, capped DEFLATE output and SHA/CRC policies. This has synthetic tests but **no independent real Stage 2 PAK verification**. Signed PAK rebuilding and new key signing remain unfinished. Never ship original game signing material.
-- **Geometry**: bounded CryTek/CrChF source streams, UV0 and mesh normal preservation, geometry OBJ and GLB output, orbiting wireframe through the Iced/wgpu compositor. Not a complete rig or material renderer.
-- **FBX**: external Blender executable translates a prevalidated GLB into binary FBX, optional verified animations OFF by default. Current CryEngine raw-mesh intermediate is unrigged. Do **not** treat it as equivalent to private CDF rigged export.
-- **Animations**: source CAF metadata and chrparams indexes, converted GLB keyframe clip catalog and sampling. Raw CAF controller/DBA decode, bone matching, native playback, mixed animation layers and verified FBX Actions not done.
-- **Levels**: read-only Heightmap.dat decoded terrain plus Blender-compatible OBJ; mission/LYR object hierarchy, world transforms and edits written to distinct output files. Real-game material/geometry assembly and seamless Blender scene export remain unported.
+- **Signed Stage 2 PAK inspection/rebuild/staging**: external user-provided RSA public and private keys, exact signed basename, custom Twofish CTR streaming, RSA-PSS verification, capped DEFLATE output and CRC checks. One-member re-signed rebuild is independently verified; synthetic signed-PAK staging and restore tests cover a complete cycle. **No independent real Stage 2 PAK acceptance verification** and no installed-game swap integration. Never ship game key material.
+- **Geometry**: bounded CryTek/CrChF source streams, UV0 and normal preservation, geometry OBJ/GLB output, strict native bone/weight verification for supported skinm/skeleton pairs, and Iced/wgpu GPU mesh preview with explicitly selected DDS diffuse/normal/emissive textures. Not complete material or skeletal animation parity.
+- **FBX**: external Blender translates validated GLB into binary FBX; original single-mesh rigged exports require matching compiled skeleton and weights. Optional verified animations remain OFF by default. Full multi-part CDF rigs/stages/equipment and animation Actions are **not** equivalent to the private manager yet.
+- **Animations**: source CAF metadata, native CAF controller decoding and time sampling, chrparams indexes, converter-backed DBA clips and GLB preview. Raw DBA decode, verified bone matching and skinning playback, animation layering and FBX Actions remain unfinished.
+- **Levels**: Heightmap.dat terrain decoding, mission/LYR hierarchy and transforms, non-destructive edits, geometry-scene GLB and Blender FBX bridge exposed in Iced. Full material/geometry dependency assembly, normal maps and real-map scene parity remain unported.
 - **Public output**: no user-owned game files, keys, private repository history, secrets or proprietary assets should be committed. Public release tag 1.0 must be gated by full actual parity.
 
 ## Windows packaging and settings milestone (experimental)
