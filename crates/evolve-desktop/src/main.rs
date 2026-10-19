@@ -1,8 +1,8 @@
 //! Native wgpu-backed desktop shell. Asset operations use blocking workers, so
 //! file I/O/decompression never runs in the interactive Iced view/update path.
+mod activity_window;
 mod asset_cache;
 mod asset_library_page;
-mod activity_window;
 mod asset_viewer;
 mod developer_auth;
 mod explorer_tree;
@@ -467,40 +467,37 @@ impl Operation {
                 let authored = read_material(&source).map_err(|e| e.to_string())?;
                 let library = scan_directory(&root).map_err(|e| e.to_string())?;
                 let mut report = resolve_materials(&library, &authored);
-                if authored.slots.len() == 1 && report.textures.len() <= 8
+                if authored.slots.len() == 1
+                    && report.textures.len() <= 8
                     && let Some(imported_root) = &imported_root
                 {
-                        for texture in &mut report.textures {
-                            if !matches!(texture.resolution, AssetResolution::Missing) {
-                                continue;
-                            }
-                            texture.resolution = match resolve_imported_reference(
-                                imported_root,
-                                &texture.authored_path,
-                                build_label.as_deref(),
-                            )
-                            .map_err(|e| e.to_string())?
-                            {
-                                LibraryReferenceStatus::Missing => AssetResolution::Missing,
-                                LibraryReferenceStatus::Found(hit) => {
-                                    AssetResolution::Found(hit.absolute_path)
-                                }
-                                LibraryReferenceStatus::Ambiguous(hits) => {
-                                    AssetResolution::Ambiguous(
-                                        hits.into_iter()
-                                            .map(|hit| {
-                                                format!(
-                                                    "{} [{}] / {}",
-                                                    hit.archive_name,
-                                                    hit.archive_id,
-                                                    hit.relative_path
-                                                )
-                                            })
-                                            .collect(),
-                                    )
-                                }
-                            };
+                    for texture in &mut report.textures {
+                        if !matches!(texture.resolution, AssetResolution::Missing) {
+                            continue;
                         }
+                        texture.resolution = match resolve_imported_reference(
+                            imported_root,
+                            &texture.authored_path,
+                            build_label.as_deref(),
+                        )
+                        .map_err(|e| e.to_string())?
+                        {
+                            LibraryReferenceStatus::Missing => AssetResolution::Missing,
+                            LibraryReferenceStatus::Found(hit) => {
+                                AssetResolution::Found(hit.absolute_path)
+                            }
+                            LibraryReferenceStatus::Ambiguous(hits) => AssetResolution::Ambiguous(
+                                hits.into_iter()
+                                    .map(|hit| {
+                                        format!(
+                                            "{} [{}] / {}",
+                                            hit.archive_name, hit.archive_id, hit.relative_path
+                                        )
+                                    })
+                                    .collect(),
+                            ),
+                        };
+                    }
                 }
                 let get_pixels = |roles: &[&str]| -> Result<Option<::image::RgbaImage>, String> {
                     if authored.slots.len() != 1 {
@@ -1449,16 +1446,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let projects = state.preferences.projects.clone();
             return Task::perform(
                 async move {
-                    tokio::task::spawn_blocking(move || system_health::inspect(&game, &stage, &projects))
-                        .await
-                        .unwrap_or_else(|error| system_health::Snapshot {
-                            firewall: format!("Read-only health check failed: {error}"),
-                            game_process: "Unavailable".into(),
-                            storage: "Unavailable".into(),
-                            dumps: "Unavailable".into(),
-                            environment: "Unavailable".into(),
-                            recovery: "Unavailable".into(),
-                        })
+                    tokio::task::spawn_blocking(move || {
+                        system_health::inspect(&game, &stage, &projects)
+                    })
+                    .await
+                    .unwrap_or_else(|error| system_health::Snapshot {
+                        firewall: format!("Read-only health check failed: {error}"),
+                        game_process: "Unavailable".into(),
+                        storage: "Unavailable".into(),
+                        dumps: "Unavailable".into(),
+                        environment: "Unavailable".into(),
+                        recovery: "Unavailable".into(),
+                    })
                 },
                 Message::SystemHealthChecked,
             );
@@ -1467,7 +1466,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.health_report = Some(report);
             state.health_checking = false;
             state.status = "Read-only System Health check completed.".into();
-        },
+        }
         Message::DeveloperPasswordChanged(value) => {
             if !state.developer_checking && value.len() <= 128 {
                 state.developer_password = value;
