@@ -5188,10 +5188,16 @@ mod project_edit_tests {
         assert_eq!(state.level_undo.len(), 1);
         assert!(state.level_redo.is_empty());
         let _ = update(&mut state, Message::LevelUndoTransform);
-        assert_eq!(state.level_scene.as_ref().unwrap().objects[1].world.position, [5.0, 7.0, 9.0]);
+        assert_eq!(
+            state.level_scene.as_ref().unwrap().objects[1].world.position,
+            [5.0, 7.0, 9.0]
+        );
         assert_eq!(state.level_redo.len(), 1);
         let _ = update(&mut state, Message::LevelRedoTransform);
-        assert_eq!(state.level_scene.as_ref().unwrap().objects[1].world.position, [15.0, 17.0, 19.0]);
+        assert_eq!(
+            state.level_scene.as_ref().unwrap().objects[1].world.position,
+            [15.0, 17.0, 19.0]
+        );
         assert_eq!(initial.objects[1].world.position, [5.0, 7.0, 9.0]);
         assert_eq!(state.level_original_transforms.len(), 1);
     }
