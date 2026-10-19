@@ -2961,6 +2961,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     } else {
                     state.auto_clips = resources.clips;
                     state.auto_idle_pending = resources.idle;
+                    if let Some(skeleton) = resources.skeleton {
+                        state.skeleton_path = skeleton.to_string_lossy().into_owned();
+                    }
                     state.auto_resource_note = resources.material_note;
                     if !resources.warnings.is_empty() {
                         state
@@ -3162,6 +3165,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.auto_clips.clear();
                     state.auto_idle_pending = None;
                     state.auto_material_pending = false;
+                    state.skeleton_path.clear();
                     state.auto_resource_note =
                         "Discovering verified local textures and character animation references..."
                             .into();
