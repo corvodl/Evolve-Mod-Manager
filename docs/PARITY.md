@@ -222,6 +222,23 @@ rewrite. Test each using real permitted Stage 2 assets and Blender before
 changing these labels or authorizing v1.0.
 
 
+## Level Editor local transform editing milestone (preview)
+
+- The native Level Editor lets an inspected .lyr/mission XML placement's **authored
+  local** position, quaternion (WXYZ), and scale be changed in memory. Child
+  world placements are recalculated from the verified parent GUID hierarchy.
+- Up to 64 transform changes are undoable/redoable; edits are not written to
+  the original extracted level file. The original imported source hash is
+  checked before and after export.
+- Up to 128 changed exact-GUID placements can be exported together to a
+  **new** XML/LYR file. Exports inside the original asset directory or
+  imported Asset Library are rejected, and an existing output cannot be
+  replaced.
+- This is not yet full private Level Editor parity: 3D instancing, gizmos,
+  terrain materials, multi-level scene editing, asset placement/removal and
+  broader scene-history operations remain unported. Synthetic regression tests
+  and Windows real-map acceptance remain required.
+
 ## October 19 — file actions and flat CDF FBX staging
 
 - The native Asset Viewer file list now accepts a right-click on indexed
