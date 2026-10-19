@@ -40,10 +40,10 @@ use iced::widget::{
 };
 use iced::{Element, Fill, Length, Subscription, Task, Theme, window};
 use modding_projects::{ProjectRow, discover_projects};
-use settings::{Preferences, load_from, save_to, settings_path};
 use selection::MultiSelection;
-use std::path::PathBuf;
+use settings::{Preferences, load_from, save_to, settings_path};
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -885,15 +885,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ModdingSelectProject(index) => {
             if let Some(project) = state.modding_projects.as_ref().and_then(|p| p.get(index)) {
                 let query = state.modding_filter.to_ascii_lowercase();
-                let visible: Vec<usize> = state.modding_projects.as_deref().unwrap_or(&[])
-                    .iter().enumerate().filter_map(|(i, p)|
-                        (query.is_empty() || p.label.to_ascii_lowercase().contains(&query)
+                let visible: Vec<usize> = state
+                    .modding_projects
+                    .as_deref()
+                    .unwrap_or(&[])
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, p)| {
+                        (query.is_empty()
+                            || p.label.to_ascii_lowercase().contains(&query)
                             || p.target.to_ascii_lowercase().contains(&query)
                             || p.source_build.to_ascii_lowercase().contains(&query))
                         .then_some(i)
-                    ).take(90).collect();
-                state.project_selection.click(&visible, index,
-                    state.keyboard_modifiers.shift(), state.keyboard_modifiers.control());
+                    })
+                    .take(90)
+                    .collect();
+                state.project_selection.click(
+                    &visible,
+                    index,
+                    state.keyboard_modifiers.shift(),
+                    state.keyboard_modifiers.control(),
+                );
                 state.modding_selected = state.project_selection.primary_after(index);
                 state.modding_selected = Some(index);
                 state.preferences.current_workspace =
@@ -950,12 +962,24 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .is_ok()
                 {
                     let filter = state.search.to_ascii_lowercase();
-                    let visible: Vec<usize> = inventory.entries.iter().enumerate()
-                        .filter(|(_, row)| row.relative_path.to_ascii_lowercase().ends_with(".pak")
-                            && (filter.is_empty() || row.relative_path.to_ascii_lowercase().contains(&filter)))
-                        .map(|(i, _)| i).take(90).collect();
-                    state.file_selection.click(&visible, index,
-                        state.keyboard_modifiers.shift(), state.keyboard_modifiers.control());
+                    let visible: Vec<usize> = inventory
+                        .entries
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, row)| {
+                            row.relative_path.to_ascii_lowercase().ends_with(".pak")
+                                && (filter.is_empty()
+                                    || row.relative_path.to_ascii_lowercase().contains(&filter))
+                        })
+                        .map(|(i, _)| i)
+                        .take(90)
+                        .collect();
+                    state.file_selection.click(
+                        &visible,
+                        index,
+                        state.keyboard_modifiers.shift(),
+                        state.keyboard_modifiers.control(),
+                    );
                     state.selected = state.file_selection.primary_after(index);
                     state.input = candidate.to_string_lossy().into_owned();
                     state.status = format!("Selected original staged PAK: {}", entry.relative_path);
@@ -1006,7 +1030,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Select a verified editable project first.".into();
                 return Task::none();
             };
-            if !project.changed_known || project.modified.is_empty() || project.modified.len() > 64 {
+            if !project.changed_known || project.modified.is_empty() || project.modified.len() > 64
+            {
                 state.status = "A signed build needs 1–64 verified changed raw project files. CryXmlB requires the private manager until semantic round-trip conversion is ported.".into();
                 return Task::none();
             }
@@ -1091,9 +1116,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .is_some_and(|catalog| index < catalog.archives.len())
             {
                 let begin = state.library_page.saturating_mul(110);
-                let visible: Vec<usize> = state.library_matches.iter().skip(begin).take(110).copied().collect();
-                state.library_selection.click(&visible, index,
-                    state.keyboard_modifiers.shift(), state.keyboard_modifiers.control());
+                let visible: Vec<usize> = state
+                    .library_matches
+                    .iter()
+                    .skip(begin)
+                    .take(110)
+                    .copied()
+                    .collect();
+                state.library_selection.click(
+                    &visible,
+                    index,
+                    state.keyboard_modifiers.shift(),
+                    state.keyboard_modifiers.control(),
+                );
                 state.library_selected = state.library_selection.primary_after(index);
             }
         }
@@ -1316,30 +1351,49 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ViewerSearchChanged(filter) => state.viewer_search = filter,
         Message::ViewerSelectFile(index) => {
             let records: Vec<(usize, &str, u64)> = if let Some(inv) = &state.inventory {
-                inv.entries.iter().enumerate()
-                    .map(|(i, e)| (i, e.relative_path.as_str(), e.byte_size)).collect()
+                inv.entries
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| (i, e.relative_path.as_str(), e.byte_size))
+                    .collect()
             } else if let Some(signed) = &state.signed_pak {
-                signed.entries.iter().enumerate()
-                    .map(|(i, e)| (i, e.path.as_str(), e.size)).collect()
+                signed
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| (i, e.path.as_str(), e.size))
+                    .collect()
             } else if let Some(pak) = &state.pak {
-                pak.entries.iter().enumerate()
-                    .map(|(i, e)| (i, e.path.as_str(), e.size)).collect()
+                pak.entries
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| (i, e.path.as_str(), e.size))
+                    .collect()
             } else {
                 Vec::new()
             };
             let visible: Vec<usize> = explorer_tree::visible_rows(
                 records.iter().map(|(i, path, size)| (*i, *path, *size)),
-                &state.viewer_search, &state.viewer_collapsed, 350,
-            ).into_iter().filter_map(|row| row.index).collect();
-            state.file_selection.click(&visible, index,
-                state.keyboard_modifiers.shift(), state.keyboard_modifiers.control());
+                &state.viewer_search,
+                &state.viewer_collapsed,
+                350,
+            )
+            .into_iter()
+            .filter_map(|row| row.index)
+            .collect();
+            state.file_selection.click(
+                &visible,
+                index,
+                state.keyboard_modifiers.shift(),
+                state.keyboard_modifiers.control(),
+            );
             state.selected = state.file_selection.primary_after(index);
-        },
+        }
         Message::ViewerToggleFolder(path) => {
             if !state.viewer_collapsed.insert(path.clone()) {
                 state.viewer_collapsed.remove(&path);
             }
-        },
+        }
         Message::ViewerPreviewSelected => {
             let Some(inventory) = &state.inventory else {
                 state.status =
@@ -1840,21 +1894,36 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::SearchChanged(query) => state.search = query,
         Message::Select(index) => {
             let query = state.search.to_ascii_lowercase();
-            let visible: Vec<usize> = state.inventory.as_ref().map(|inventory|
-                inventory.entries.iter().enumerate()
-                    .filter_map(|(i, row)| (query.is_empty() || row.relative_path.to_ascii_lowercase().contains(&query)).then_some(i))
-                    .collect()
-            ).unwrap_or_default();
+            let visible: Vec<usize> = state
+                .inventory
+                .as_ref()
+                .map(|inventory| {
+                    inventory
+                        .entries
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, row)| {
+                            (query.is_empty()
+                                || row.relative_path.to_ascii_lowercase().contains(&query))
+                            .then_some(i)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             if visible.contains(&index) {
-                state.file_selection.click(&visible, index,
-                    state.keyboard_modifiers.shift(), state.keyboard_modifiers.control());
+                state.file_selection.click(
+                    &visible,
+                    index,
+                    state.keyboard_modifiers.shift(),
+                    state.keyboard_modifiers.control(),
+                );
                 state.selected = state.file_selection.primary_after(index);
             } else {
                 state.selected = Some(index);
                 state.file_selection.clear();
                 state.file_selection.click(&[index], index, false, false);
             }
-        },
+        }
         Message::StartScan => {
             let source = PathBuf::from(&state.input);
             return begin_scan(state, source);
