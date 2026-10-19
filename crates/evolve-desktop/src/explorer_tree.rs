@@ -103,32 +103,34 @@ fn add_entries<'a>(
     nodes
 }
 
+struct PageCursor {
+    offset: usize,
+    limit: usize,
+    seen: usize,
+}
+
 fn walk(
     parent: &str,
     nodes: &BTreeMap<String, Vec<ExplorerRow>>,
     collapsed: &HashSet<String>,
     filtering: bool,
-    limit: usize,
-    offset: usize,
-    seen: &mut usize,
+    page: &mut PageCursor,
     result: &mut Vec<ExplorerRow>,
 ) {
-    if result.len() >= limit {
+    if result.len() >= page.limit {
         return;
     }
     if let Some(children) = nodes.get(parent) {
         for item in children {
-            if result.len() >= limit {
+            if result.len() >= page.limit {
                 break;
             }
-            if *seen >= offset {
+            if page.seen >= page.offset {
                 result.push(item.clone());
             }
-            *seen += 1;
+            page.seen += 1;
             if item.directory && (filtering || !collapsed.contains(&item.path)) {
-                walk(
-                    &item.path, nodes, collapsed, filtering, limit, offset, seen, result,
-                );
+                walk(&item.path, nodes, collapsed, filtering, page, result);
             }
         }
     }
@@ -136,6 +138,7 @@ fn walk(
 
 /// Hierarchical rows, folders-first at each depth. Search displays matching
 /// file paths and their ancestors, temporarily overriding collapsed folders.
+#[cfg(test)]
 pub fn visible_rows<'a>(
     entries: impl IntoIterator<Item = (usize, &'a str, u64)>,
     query: &str,
@@ -156,17 +159,12 @@ pub fn visible_rows_page<'a>(
 ) -> Vec<ExplorerRow> {
     let nodes = add_entries(entries, query);
     let mut rows = Vec::new();
-    let mut seen = 0;
-    walk(
-        "",
-        &nodes,
-        collapsed,
-        !query.trim().is_empty(),
-        limit,
+    let mut page = PageCursor {
         offset,
-        &mut seen,
-        &mut rows,
-    );
+        limit,
+        seen: 0,
+    };
+    walk("", &nodes, collapsed, !query.trim().is_empty(), &mut page, &mut rows);
     rows
 }
 
