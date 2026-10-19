@@ -382,9 +382,15 @@ impl Operation {
                     .map_err(|e| e.to_string())
             }
             Self::RiggedFbx(mesh, skeleton, blender, diffuse, dest) => {
-                export_rigged_character_fbx_textured(&mesh, &skeleton, &blender, diffuse.as_deref(), &dest)
-                    .map(|(r, _)| Completed::RiggedExport(r, dest))
-                    .map_err(|e| e.to_string())
+                export_rigged_character_fbx_textured(
+                    &mesh,
+                    &skeleton,
+                    &blender,
+                    diffuse.as_deref(),
+                    &dest,
+                )
+                .map(|(r, _)| Completed::RiggedExport(r, dest))
+                .map_err(|e| e.to_string())
             }
             Self::ConvertMotion(exe, source, assets, destination) => {
                 convert_original_motion(&exe, &source, &assets, &destination)
@@ -1938,7 +1944,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     PathBuf::from(&state.input),
                     PathBuf::from(&state.skeleton_path),
                     PathBuf::from(&state.blender_path),
-                    (!state.diffuse_input.trim().is_empty()).then(|| PathBuf::from(&state.diffuse_input)),
+                    (!state.diffuse_input.trim().is_empty())
+                        .then(|| PathBuf::from(&state.diffuse_input)),
                     PathBuf::from(&state.output),
                 ),
             );
