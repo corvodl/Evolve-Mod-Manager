@@ -294,7 +294,7 @@ pub fn unpack_raw_project(
     stage: &Path,
     source: &Path,
 ) -> Result<(PathBuf, usize), String> {
-    let target = super::modding_keys::staged_target(stage, source)?;
+    let _target = super::modding_keys::staged_target(stage, source)?;
     let basename = super::modding_keys::signed_basename(source)?;
     let public = super::modding_keys::public_key(stage)?;
     if !fs::symlink_metadata(projects).is_ok_and(|meta| meta.file_type().is_dir()) {
@@ -330,12 +330,13 @@ pub fn unpack_raw_project(
         if !fs::symlink_metadata(&asset).is_ok_and(|m| m.file_type().is_file()) {
             return Err("An extracted archive member is missing".into());
         }
+        let sha256 = digest(&asset).map_err(|e| e.to_string())?;
         records.push(serde_json::json!({
             "path":entry.path,
             "archive_name":entry.path,
             "format":"raw",
-            "sha256":digest(&asset).map_err(|e| e.to_string())?,
-            "original_sha256":digest(&asset).map_err(|e| e.to_string())?,
+            "sha256":sha256,
+            "original_sha256":sha256,
             "method":entry.method
         }));
     }
@@ -361,7 +362,6 @@ pub fn unpack_raw_project(
     fs::remove_file(sentinel).map_err(|e| e.to_string())?;
     // raw-mode workspaces are verified by build_single_raw; they are not
     // incorrectly offered as CryXmlB-converted projects.
-    let _ = target;
     Ok((output, info.entries.len()))
 }
 
