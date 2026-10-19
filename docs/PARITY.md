@@ -4,16 +4,16 @@ This table tracks **actual Rust implementation state**, not feature mockups. The
 
 | Feature | Rust rewrite status | 1.0 acceptance |
 | --- | --- | --- |
-| Local indexed file browser and deterministic inventory | **Initial implementation** | Fast search for realistic libraries, virtualized GUI, no freezing |
+| Local indexed file browser and deterministic inventory | **Partial: searchable, folder-grouped Asset Viewer; Shift/Ctrl selection in viewer, project and library tables (native Windows validation pending)** | Fast search for realistic libraries, virtualized GUI, no freezing |
 | Historical ZIP-compatible PAK inspect/extract/rebuild | **Implemented subset** | Original archive untouched, bounded CRC-verified extraction, file-path safety |
 | Stage 2 signed/encrypted CryPAK RSA/Twofish | **Experimental: verify and extract implemented, real-game unverified** | Verify signatures and central-directory/local offsets, native decrypted streaming |
-| Signed Stage 2 PAK editing and repacking | **Experimental: exact one-member replacement, re-signing with a user-supplied RSA key and independent verification**; no game-acceptance validation | Golden round-trips and signature verification after patch injection |
+| Signed Stage 2 PAK editing and repacking | **Experimental: 1–64 exact modified raw members chained in an isolated temporary build, re-signing with local RSA key and final per-member verification**; real-game acceptance and converted CryXmlB still unverified | Golden round-trips and signature verification after patch injection |
 | Staged offline mods, backups and crash-safe restore | **Experimental isolated workspace**: single-PAK and multi-PAK profile staging, before/after SHA-256, journals, recovery tests, CLI/GUI controls; no installed-game launch integration | Journaling and rollback after cancel, crash and power loss |
-| Asset Library multi-PAK resolution and provenance | **Initial exact CDF resolver in CLI and GUI**: missing/ambiguous matches are reported, not guessed; no full provenance graph | Cross-PAK matching only when exact and unambiguous |
+| Asset Library multi-PAK resolution and provenance | **Partial exact CDF resolver in CLI/GUI, now automatic when previewing a CDF from an indexed folder**: missing/ambiguous paths reported, not guessed; no full cross-PAK provenance/assembly graph | Cross-PAK matching only when exact and unambiguous |
 | DDS/streaming top mip and BCn → PNG | **Implemented subset** | Golden pixel comparisons, signed BC5, BC6/BC7, console endian/split variants |
 | CDF XML skeleton/attachment parsing | **Implemented subset** | CDF variants, skin sets, dependency graph and verified meshes |
 | CryEngine skin/CHR/CGF/skinm geometry parser | **Partial: bounded CryTek/CrChF geometry and conditional verified native bone/weight parsing**; unsupported layouts fail closed | Bone hierarchy, weights, bind pose, LOD, UVs and rig integrity |
-| Original UV0 and highest-quality FBX output | **Partial: UV0-preserving OBJ/GLB, rigged single-mesh GLB and Blender FBX bridge with verified skeleton/weights**; real character parity unverified | Independent Blender verification; no invented UVs |
+| Original UV0 and highest-quality FBX output | **Partial: UV0-preserving OBJ/GLB, rigged single-mesh GLB and Blender FBX bridge with verified skeleton/weights; optional explicitly selected highest-mip DDS diffuse embedded in FBX through GLB**; complete materials/real character parity unverified | Independent Blender verification; no invented UVs |
 | Monster stages, hunter 1P+3P and equipment | **Not ported** | One painting-ready root FBX with exact per-variant rigs |
 | Optional verified CAF/DBA animation FBX Actions | **Policy default only** | Disabled by default; validated opt-in; smaller FBX test |
 | Animation browser and layered timeline | **Partial: native CAF controller decoding/sampling, converted DBA/GLB sampling and GUI scrub/play; no verified skeleton deformation/layers** | Skeleton matching, CAF/DBA clips, scrub and idle |
