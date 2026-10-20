@@ -26,7 +26,9 @@ pub fn floor_lines(vertices: &[[f32; 3]]) -> Vec<GridLine> {
             hi[axis] = hi[axis].max(point[axis]);
         }
     }
-    let extent = (0..3).map(|axis| hi[axis] - lo[axis]).fold(1e-6f32, f32::max);
+    let extent = (0..3)
+        .map(|axis| hi[axis] - lo[axis])
+        .fold(1e-6f32, f32::max);
     if !extent.is_finite() || extent <= 1e-6 {
         return Vec::new();
     }
@@ -39,18 +41,30 @@ pub fn floor_lines(vertices: &[[f32; 3]]) -> Vec<GridLine> {
         let position = i as f32 * step;
         let normal = i == 0;
         let major = i % 5 == 0;
-        let gray = if major { [0.52, 0.56, 0.61, 0.37] } else { [0.42, 0.46, 0.51, 0.20] };
+        let gray = if major {
+            [0.52, 0.56, 0.61, 0.37]
+        } else {
+            [0.42, 0.46, 0.51, 0.20]
+        };
         // X=red, Y=green just like the Blender grid. The axis lines
         // intersect under the model rather than necessarily at world (0,0).
         result.push(GridLine {
             start: [middle[0] - span, middle[1] + position, height],
             end: [middle[0] + span, middle[1] + position, height],
-            color: if normal { [0.79, 0.30, 0.34, 0.68] } else { gray },
+            color: if normal {
+                [0.79, 0.30, 0.34, 0.68]
+            } else {
+                gray
+            },
         });
         result.push(GridLine {
             start: [middle[0] + position, middle[1] - span, height],
             end: [middle[0] + position, middle[1] + span, height],
-            color: if normal { [0.35, 0.73, 0.46, 0.68] } else { gray },
+            color: if normal {
+                [0.35, 0.73, 0.46, 0.68]
+            } else {
+                gray
+            },
         });
     }
     result
@@ -66,8 +80,16 @@ mod tests {
         let saved = original.clone();
         let grid = floor_lines(&original);
         assert_eq!(grid.len(), 82);
-        assert!(grid.iter().all(|line| line.start[2] < -3. && line.end[2] < -3.));
-        assert!(grid.iter().all(|line| line.start.iter().chain(line.end.iter()).all(|n| n.is_finite())));
+        assert!(
+            grid.iter()
+                .all(|line| line.start[2] < -3. && line.end[2] < -3.)
+        );
+        assert!(grid.iter().all(|line| {
+            line.start
+                .iter()
+                .chain(line.end.iter())
+                .all(|n| n.is_finite())
+        }));
         assert_eq!(original, saved);
         assert_eq!(grid[40].color, [0.79, 0.30, 0.34, 0.68]);
         assert_eq!(grid[41].color, [0.35, 0.73, 0.46, 0.68]);
