@@ -20,13 +20,25 @@ pub enum DdsFormat {
     Bc3,
     Bc4,
     Bc5,
+    Ctx1,
     Rgba32,
+}
+
+/// GPU layout of the source DDS payload. A CryTek 2012 console texture is
+/// not byte-compatible with a PC DDS even when its FourCC is DXT1/DXT5.
+/// The caller selects this from verified model/build provenance, not from
+/// the filename or a color-based guess that could damage Stage 2 maps.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DdsLayout {
+    Linear,
+    Xbox360Tiled,
 }
 
 impl DdsFormat {
     fn bytes_per_block(self) -> Option<usize> {
         match self {
-            Self::Bc1 | Self::Bc4 => Some(8),
+            Self::Bc1 | Self::Bc4 | Self::Ctx1 => Some(8),
             Self::Bc2 | Self::Bc3 | Self::Bc5 => Some(16),
             Self::Rgba32 => None,
         }
@@ -118,6 +130,7 @@ fn parse_header(bytes: &[u8]) -> Result<(DdsInfo, usize, Option<[u32; 4]>), DdsE
     let format = if format_flags & 4 != 0 {
         match fourcc {
             b"DXT1" => DdsFormat::Bc1,
+            b"CTX1" => DdsFormat::Ctx1,
             b"DXT3" => DdsFormat::Bc2,
             b"DXT5" => DdsFormat::Bc3,
             b"ATI1" | b"BC4U" => DdsFormat::Bc4,
@@ -411,6 +424,27 @@ fn decode_block(format: DdsFormat, bytes: &[u8]) -> [[u8; 4]; 16] {
             }
             pixels
         }
+        DdsFormat::Ctx1 => {
+            // Xbox 360 CTX1 encodes two 8-bit channels with two RG
+            // endpoints and 2-bit indices, interpolated like opaque BC1.
+            let c0 = [bytes[0], bytes[1]];
+            let c1 = [bytes[2], bytes[3]];
+            let palette = [
+                c0,
+                c1,
+                [((u16::from(c0[0]) * 2 + u16::from(c1[0])) / 3) as u8,
+                 ((u16::from(c0[1]) * 2 + u16::from(c1[1])) / 3) as u8],
+                [((u16::from(c0[0]) + u16::from(c1[0]) * 2) / 3) as u8,
+                 ((u16::from(c0[1]) + u16::from(c1[1]) * 2) / 3) as u8],
+            ];
+            let indices = u32::from_le_bytes(bytes[4..8].try_into().unwrap_or([0; 4]));
+            let mut pixels = [[0u8; 4]; 16];
+            for (i, pixel) in pixels.iter_mut().enumerate() {
+                let rg = palette[((indices >> (2 * i)) & 3) as usize];
+                *pixel = [rg[0], rg[1], 0, 255];
+            }
+            pixels
+        }
         DdsFormat::Rgba32 => [[0u8; 4]; 16],
     }
 }
@@ -444,13 +478,79 @@ fn validate_masks(m: [u32; 4]) -> Result<(), DdsError> {
     Ok(())
 }
 
+/// Address one GPU-compressed tile block in an Xbox 360 tiled surface.
+/// All address arithmetic is bounded to the source's validated top mip.
+fn xbox360_tiled_xy(offset: usize, width: usize, pitch: usize) -> (usize, usize) {
+    let aligned_width = (width + 31) & !31;
+    let log_bpp = (pitch >> 2) + ((pitch >> 1) >> (pitch >> 2));
+    let offset_b = offset << log_bpp;
+    let offset_t = ((offset_b & !4095) >> 3) + ((offset_b & 1792) >> 2) + (offset_b & 63);
+    let offset_m = offset_t >> (7 + log_bpp);
+    let macro_x = (offset_m % (aligned_width >> 5)) << 2;
+    let tile_x = (((offset_t >> (5 + log_bpp)) & 2) + (offset_b >> 6)) & 3;
+    let micro_x = ((((offset_t >> 1) & !15) + (offset_t & 15)) & ((pitch << 3) - 1)) >> log_bpp;
+    let x = ((macro_x + tile_x) << 3) + micro_x;
+    let macro_y = (offset_m / (aligned_width >> 5)) << 2;
+    let tile_y = ((offset_t >> (6 + log_bpp)) & 1) + ((offset_b & 2048) >> 10);
+    let micro_y = (((offset_t & (((pitch << 6) - 1) & !31))
+        + ((offset_t & 15) << 1)) >> (3 + log_bpp)) & !1;
+    let y = ((macro_y + tile_y) << 3) + micro_y + ((offset_t & 16) >> 4);
+    (x, y)
+}
+
+/// Convert a console top mip into the ordinary linear, little-endian block
+/// order expected by our BC1/2/3/4/5/CTX1 CPU decoders.
+fn untile_xbox360(
+    tiled: &[u8], width: u32, height: u32, pitch: usize,
+) -> Result<Vec<u8>, DdsError> {
+    let bw = width.div_ceil(4) as usize;
+    let bh = height.div_ceil(4) as usize;
+    if bw == 0 || bh == 0 || !bw.is_multiple_of(32) || !bh.is_multiple_of(32)
+        || bw.checked_mul(bh).and_then(|v| v.checked_mul(pitch)) != Some(tiled.len())
+    {
+        return Err(DdsError::Unsupported(
+            "Xbox 360 tiled surface has a non-macro-aligned or incomplete top mip".into(),
+        ));
+    }
+    let mut linear = vec![0u8; tiled.len()];
+    for offset in 0..bw * bh {
+        let (x, y) = xbox360_tiled_xy(offset, bw, pitch);
+        if x >= bw || y >= bh {
+            return Err(DdsError::Unsupported("Xbox 360 block address out of bounds".into()));
+        }
+        let from = offset * pitch;
+        let to = (y * bw + x) * pitch;
+        linear[to..to + pitch].copy_from_slice(&tiled[from..from + pitch]);
+    }
+    for word in linear.chunks_exact_mut(2) {
+        word.swap(0, 1);
+    }
+    Ok(linear)
+}
+
 /// Decode exactly the highest-quality full-resolution mipmap.
 pub fn decode_dds_rgba(source: &Path) -> Result<(DdsInfo, RgbaImage), DdsError> {
+    decode_dds_rgba_with_layout(source, DdsLayout::Linear)
+}
+
+/// Decode using the verified source platform, without modifying the game DDS.
+pub fn decode_dds_rgba_with_layout(
+    source: &Path, layout: DdsLayout,
+) -> Result<(DdsInfo, RgbaImage), DdsError> {
     let (info, bytes, offset, masks) = load_dds(source)?;
     let pixels_len = u64::from(info.width) * u64::from(info.height) * 4;
     let capacity = usize::try_from(pixels_len).map_err(|_| DdsError::LimitsExceeded)?;
     let mut rgba = vec![0u8; capacity];
-    let payload = &bytes[offset..offset + info.top_mip_bytes];
+    let original = &bytes[offset..offset + info.top_mip_bytes];
+    let converted = if layout == DdsLayout::Xbox360Tiled {
+        let pitch = info.format.bytes_per_block().ok_or_else(|| {
+            DdsError::Unsupported("Console uncompressed surface decoding is not verified".into())
+        })?;
+        Some(untile_xbox360(original, info.width, info.height, pitch)?)
+    } else {
+        None
+    };
+    let payload = converted.as_deref().unwrap_or(original);
     if info.format == DdsFormat::Rgba32 {
         let masks = masks.ok_or_else(|| DdsError::Unsupported("missing channel masks".into()))?;
         validate_masks(masks)?;
@@ -523,6 +623,38 @@ pub fn export_dds_png(source: &Path, destination: &Path) -> Result<DdsInfo, DdsE
 
 #[cfg(test)]
 mod tests {
+    use super::{decode_block, xbox360_tiled_xy, untile_xbox360, DdsFormat};
+
+    #[test]
+    fn xbox360_untile_reverses_block_order_and_16_bit_endian() {
+        // A complete 128x128 DXT1 surface occupies one 32x32-block tile.
+        let mut linear = vec![0u8; 32 * 32 * 8];
+        for i in 0..32 * 32 {
+            linear[i * 8..i * 8 + 2].copy_from_slice(&(i as u16).to_le_bytes());
+        }
+        let mut console = vec![0u8; linear.len()];
+        for i in 0..32 * 32 {
+            let (x, y) = xbox360_tiled_xy(i, 32, 8);
+            let source = (y * 32 + x) * 8;
+            let target = i * 8;
+            console[target..target + 8].copy_from_slice(&linear[source..source + 8]);
+        }
+        for pair in console.chunks_exact_mut(2) {
+            pair.swap(0, 1);
+        }
+        assert_eq!(untile_xbox360(&console, 128, 128, 8).unwrap(), linear);
+        assert!(untile_xbox360(&console, 124, 128, 8).is_err());
+    }
+
+    #[test]
+    fn ctx1_preserves_interpolated_original_rg_channels() {
+        let pixels = decode_block(DdsFormat::Ctx1, &[255, 0, 0, 255, 0xe4, 0, 0, 0]);
+        assert_eq!(pixels[0], [255, 0, 0, 255]);
+        assert_eq!(pixels[1], [0, 255, 0, 255]);
+        assert_eq!(pixels[2], [170, 85, 0, 255]);
+        assert_eq!(pixels[3], [85, 170, 0, 255]);
+    }
+
     use super::*;
 
     fn header(w: u32, h: u32, mipmaps: u32, format: &[u8; 4]) -> Vec<u8> {
