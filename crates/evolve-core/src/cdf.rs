@@ -97,7 +97,7 @@ fn normalize(raw: &str) -> Result<String, CdfError> {
 
 fn numeric_components<const N: usize>(input: &str) -> Result<[f32; N], CdfError> {
     let values = input
-        .split([',', ';', ' ', '\\t'])
+        .split([',', ';', ' ', '\t'])
         .filter(|part| !part.is_empty())
         .map(|part| part.parse::<f32>().map_err(|_| CdfError::Xml("invalid attachment transform".into())))
         .collect::<Result<Vec<_>, _>>()?;
