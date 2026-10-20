@@ -82,7 +82,7 @@ pub use rig::{
 };
 pub use scene::{
     LevelScene, PlacedObject, SceneError, Transform, edit_level_transform, export_edited_layer,
-    export_edited_layers, load_level_scene, parse_level_scene,
+    export_edited_layers, export_edited_layers_guarded, load_level_scene, parse_level_scene,
 };
 pub use signed_pak::{
     SignedEntry, SignedPakError, SignedPakInfo, SignedRebuildReport, extract_signed_pak,
