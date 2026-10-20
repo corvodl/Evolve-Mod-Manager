@@ -1,5 +1,6 @@
 //! Exact indexed model export, staged atomically in a user-named folder.
 //! Source DDS files remain untouched; external texture exports are PNG only.
+use crate::character_unified_fbx::standalone_authored_diffuse;
 use crate::{
     AnimationPolicy, DependencyStatus, EquipmentOverrides, Inventory,
     convert_glb_to_fbx_with_options, export_dds_png, export_model_glb,
@@ -402,11 +403,27 @@ pub fn export_bundle(
                     "Skeleton must be an original regular file within the indexed root".into(),
                 );
             }
+            // The checked box only means Blender may embed real images.
+            // Resolve an original single-slot diffuse from its exact local MTL
+            // when the user did not explicitly select a DDS. Never publish an
+            // apparently "textured" white FBX when neither was verified.
+            let diffuse = if let Some(path) = options.diffuse.as_ref() {
+                Some(path.clone())
+            } else if options.embed_textures {
+                standalone_authored_diffuse(&root, &source, inventory)?
+            } else {
+                None
+            };
+            if options.embed_textures && diffuse.is_none() {
+                return Err(format!(
+                    "{relative}: Embedded textures requested, but no original diffuse DDS was found for this standalone model. Select a verified DDS using Export Settings → Select diffuse DDS, or index the original source MTL and texture first."
+                ));
+            }
             export_rigged_character_fbx_options(
                 &source,
                 skeleton,
                 &options.blender,
-                options.diffuse.as_deref(),
+                diffuse.as_deref(),
                 options.caf.as_deref(),
                 &target,
                 options.embed_textures,
