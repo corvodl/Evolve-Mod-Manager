@@ -8,8 +8,8 @@ mod auto_resources;
 mod design;
 mod developer_auth;
 mod explorer_tree;
-mod level_workspace;
 mod launcher_bridge;
+mod level_workspace;
 mod modding_keys;
 mod modding_page;
 mod modding_projects;
@@ -27,7 +27,6 @@ mod view_navigation;
 mod viewer_inspector;
 mod viewport;
 use asset_cache::{SharedCache, decoded_dds};
-use launcher_bridge::{LaunchReady, inspect_existing_launcher, launch_existing_offline_client};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph,
@@ -53,6 +52,7 @@ use iced::widget::{
     canvas, column, container, image, row, scrollable, shader, slider, space, svg, text, tooltip,
 };
 use iced::{Element, Fill, Length, Subscription, Task, Theme, window};
+use launcher_bridge::{LaunchReady, inspect_existing_launcher, launch_existing_offline_client};
 use modding_projects::{ProjectRow, discover_projects};
 use selection::MultiSelection;
 use settings::{Preferences, load_from, save_to, settings_path};
@@ -3255,8 +3255,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::StartOfflineLauncherCheck | Message::StartOfflineLauncherLaunch => {
-            if state.preferences.stage.trim().is_empty()
-                || state.preferences.swap.trim().is_empty()
+            if state.preferences.stage.trim().is_empty() || state.preferences.swap.trim().is_empty()
             {
                 state.status =
                     "Configure the private CustomSigning/staged and controlled-swap helper folders in Settings first.".into();
@@ -4535,7 +4534,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.status = format!(
                         "Offline launcher preflight PASS: {} original/custom signed PAKs and matching inject.dll verified. Private swap state: {}. This does not establish a successful Evolve mount.",
                         report.archive_count,
-                        if report.prepared { "prepared" } else { "needs preparation" }
+                        if report.prepared {
+                            "prepared"
+                        } else {
+                            "needs preparation"
+                        }
                     );
                     state.page = Some(Page::Files);
                 }
