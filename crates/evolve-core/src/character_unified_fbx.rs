@@ -3,6 +3,7 @@
 //! This is geometry/rig unification; full multi-slot materials remain a separate gate.
 use crate::cdf::{AssetResolution, read_cdf, resolve_cdf, resolve_virtual};
 use crate::character_assembly::select_attachments;
+use crate::character_equipment::{EquipmentOverrides, validated_equipment_overrides};
 use crate::fbx::publish_verified_binary_fbx;
 use crate::inventory::Inventory;
 use crate::materials::{material_texture_candidates, read_material, resolve_materials};
@@ -98,7 +99,11 @@ fn safe_part_name(raw: &str) -> Result<String, String> {
 
 type ResolvedCdfParts = (PathBuf, String, Option<String>, Vec<(String, PathBuf)>);
 
-fn plan_parts(source: &Path, inventory: &Inventory) -> Result<ResolvedCdfParts, String> {
+fn plan_parts(
+    source: &Path,
+    inventory: &Inventory,
+    equipment: &EquipmentOverrides,
+) -> Result<ResolvedCdfParts, String> {
     let root = fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
     let original = fs::symlink_metadata(source).map_err(|e| e.to_string())?;
     let actual = fs::canonicalize(source).map_err(|e| e.to_string())?;
@@ -109,6 +114,7 @@ fn plan_parts(source: &Path, inventory: &Inventory) -> Result<ResolvedCdfParts, 
         return Err("CDF must be a regular indexed original file".into());
     }
     let definition = read_cdf(&actual).map_err(|e| e.to_string())?;
+    let validated = validated_equipment_overrides(&definition, inventory, equipment)?;
     let (skin_set, selected) = select_attachments(&definition).map_err(|e| e.to_string())?;
     let resolved = resolve_cdf(inventory, &definition);
     let AssetResolution::Found(skeleton_ref) = resolved.skeleton else {
@@ -121,7 +127,10 @@ fn plan_parts(source: &Path, inventory: &Inventory) -> Result<ResolvedCdfParts, 
         if !selected.contains(&part.name.as_str()) {
             continue;
         }
-        let AssetResolution::Found(relative) = resolution else {
+        let override_binding = validated.get(&part.name);
+        let alternate = override_binding.map(|binding| resolve_virtual(inventory, binding));
+        let resolved = alternate.as_ref().unwrap_or(resolution);
+        let AssetResolution::Found(relative) = resolved else {
             return Err(format!("Part {} is missing or ambiguous", part.name));
         };
         let name = safe_part_name(&part.name)?;
@@ -342,6 +351,21 @@ pub fn export_unified_cdf_fbx(
     destination: &Path,
     caf: Option<&Path>,
 ) -> Result<UnifiedCdfFbxReport, String> {
+    export_unified_cdf_fbx_with_equipment(
+        source, inventory, blender, destination, caf, &EquipmentOverrides::new()
+    )
+}
+
+/// Export the exact currently selected equipment alternatives as a verified
+/// unified FBX. Unknown variants and mismatched skeletons still fail closed.
+pub fn export_unified_cdf_fbx_with_equipment(
+    source: &Path,
+    inventory: &Inventory,
+    blender: &Path,
+    destination: &Path,
+    caf: Option<&Path>,
+    equipment: &EquipmentOverrides,
+) -> Result<UnifiedCdfFbxReport, String> {
     let root = fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
     if !destination.is_absolute()
         || !destination
@@ -367,7 +391,7 @@ pub fn export_unified_cdf_fbx(
     {
         return Err("Choose an explicitly installed Blender.exe".into());
     }
-    let (skeleton, skeleton_ref, skin_set, parts) = plan_parts(source, inventory)?;
+    let (skeleton, skeleton_ref, skin_set, parts) = plan_parts(source, inventory, equipment)?;
     let skeleton_bytes = fs::read(&skeleton).map_err(|e| e.to_string())?;
     let motion = caf
         .map(|path| {
