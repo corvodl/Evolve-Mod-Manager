@@ -80,7 +80,8 @@ pub use library_import::{
     import_signed_library_selection,
 };
 pub use model::{
-    ModelError, ModelInfo, RenderMesh, export_model_obj, parse_model_bytes, read_model,
+    ModelError, ModelInfo, RenderMesh, export_model_obj, has_original_mesh_subset_table,
+    original_mesh_subsets, parse_model_bytes, read_model,
 };
 pub use native_caf::{
     CafBonePose, CafController, NativeCafError, NativeCafMotion, decode_native_caf, read_native_caf,
