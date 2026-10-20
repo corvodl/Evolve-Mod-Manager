@@ -41,6 +41,9 @@ pub struct AssemblyReport {
     pub skeletal_animation_enabled: bool,
     #[serde(default)]
     pub source_parts: Vec<AssemblyPart>,
+    /// One entry per original render mesh, independently of submaterial count.
+    #[serde(default)]
+    pub geometry_parts: Vec<AssemblyGeometry>,
     #[serde(default)]
     pub verified_bones: Option<usize>,
     /// Canonical, verified compiled skeleton location (not a guess).
@@ -48,6 +51,17 @@ pub struct AssemblyReport {
     pub skeleton_source: Option<std::path::PathBuf>,
     #[serde(default)]
     pub warnings: Vec<String>,
+}
+
+/// Read-only source identity and position spans for validated motion binding.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AssemblyGeometry {
+    pub name: String,
+    pub source: std::path::PathBuf,
+    pub vertex_first: usize,
+    pub vertex_count: usize,
+    pub bone_socket: Option<String>,
+    pub verified_skin_weights: bool,
 }
 
 /// Original index ranges allow separate GPU material bindings without
@@ -395,6 +409,8 @@ pub fn read_static_cdf_assembly_with_imported(
     let mut names_seen = HashSet::new();
     let mut meshes = Vec::new();
     let mut source_parts = Vec::new();
+    let mut geometry_parts = Vec::new();
+    let mut vertex_cursor: usize = 0;
     let mut index_cursor: u32 = 0;
     for attachment in &definition.attachments {
         if !selected.contains(&attachment.name.as_str()) {
@@ -481,6 +497,17 @@ pub fn read_static_cdf_assembly_with_imported(
                 attachment.name
             ));
         }
+        geometry_parts.push(AssemblyGeometry {
+            name: attachment.name.clone(),
+            source: rendered.clone(),
+            vertex_first: vertex_cursor,
+            vertex_count: mesh.positions.len(),
+            bone_socket: (attachment.kind == AttachmentKind::Bone)
+                .then(|| attachment.bone_name.clone()).flatten(),
+            verified_skin_weights,
+        });
+        vertex_cursor = vertex_cursor.checked_add(mesh.positions.len())
+            .ok_or_else(|| AssemblyError::Incomplete("CDF assembly vertex offset overflow".into()))?;
         let count = u32::try_from(mesh.indices.len())
             .map_err(|_| AssemblyError::Incomplete("CDF part exceeds index limits".into()))?;
         let ranges =
@@ -519,6 +546,7 @@ pub fn read_static_cdf_assembly_with_imported(
         original_normals_complete: mesh.normals.is_some(),
         skeletal_animation_enabled: false,
         source_parts,
+        geometry_parts,
         verified_bones: skeleton.as_ref().map(|s| s.names.len()),
         skeleton_source: skeleton.as_ref().map(|_| skeleton_path),
         warnings: notes,
