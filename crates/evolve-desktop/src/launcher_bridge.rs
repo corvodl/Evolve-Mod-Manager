@@ -72,6 +72,18 @@ fn safe_pak_name(raw: &str) -> Result<&str, String> {
     }
     Ok(raw)
 }
+/// Python's pathlib.Path stringifies source-relative PAKs with Windows
+/// backslashes, while rekey_plan.json stores virtual paths using '/'.
+/// Compare only canonical safe relative paths, not raw separator spelling.
+fn normalized_swap_name(raw: &str) -> Result<String, String> {
+    let normalized = raw.replace('\\', "/");
+    if normalized.eq_ignore_ascii_case("bin64_SteamRetail/inject.dll") {
+        return Ok("bin64_SteamRetail/inject.dll".into());
+    }
+    safe_pak_name(&normalized)?;
+    Ok(normalized)
+}
+
 fn within_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
     let candidate = root.join(relative);
     let file = plain(&candidate, 16 * 1024 * 1024 * 1024)?;
@@ -183,7 +195,10 @@ fn verify_prepared_journal(
         let record = records
             .get(index)
             .ok_or("Prepared journal entry ordering/count changed")?;
-        if record["name"].as_str() != Some(name.as_str()) {
+        let actual_name = normalized_swap_name(
+            record["name"].as_str().ok_or("Prepared swap record missing its name")?
+        )?;
+        if !actual_name.eq_ignore_ascii_case(name) {
             return Err(format!(
                 "Prepared swap entry ordering differs from private launcher: {name}"
             ));
@@ -553,8 +568,10 @@ fn guarded_restore_state(stage: &Path, swap: &Path) -> Result<String, String> {
     }
     let mut seen = std::collections::HashSet::new();
     for (record, (name, source, target)) in records.iter().zip(expected) {
-        if record["name"].as_str() != Some(name.as_str()) || !seen.insert(name.to_ascii_lowercase())
-        {
+        let actual_name = normalized_swap_name(
+            record["name"].as_str().ok_or("Recovery journal name missing")?
+        )?;
+        if !actual_name.eq_ignore_ascii_case(&name) || !seen.insert(name.to_ascii_lowercase()) {
             return Err(format!("Recovery journal target ordering changed: {name}"));
         }
         let expected_source = plain(&source, 16 * 1024 * 1024 * 1024)?;
@@ -828,6 +845,28 @@ mod tests {
     }
 
     #[test]
+    fn private_windows_journal_names_normalize_without_path_traversal() {
+        assert_eq!(
+            normalized_swap_name("Game\\\\libs.pak").unwrap(),
+            "Game/libs.pak"
+        );
+        assert_eq!(
+            normalized_swap_name("bin64_SteamRetail\\\\inject.dll").unwrap(),
+            "bin64_SteamRetail/inject.dll"
+        );
+        for invalid in [
+            "../Game/libs.pak",
+            "Game\\\\..\\\\libs.pak",
+            "Game\\\\\\\\libs.pak",
+            "C:\\\\Game\\\\libs.pak",
+            "\\\\server\\\\Game\\\\libs.pak",
+            "Game/not-an-inject.dll",
+        ] {
+            assert!(normalized_swap_name(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
     fn prepared_ledger_must_match_private_launcher_exact_order_and_schema() {
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path();
@@ -854,6 +893,9 @@ mod tests {
         }
         let mut state = serde_json::json!({"version":1,"phase":"prepared","files":rows});
         assert!(verify_prepared_journal(&state, &expected).is_ok());
+        state["files"][0]["name"] = serde_json::json!("Game\\\\first.pak");
+        assert!(verify_prepared_journal(&state, &expected).is_ok());
+        state["files"][0]["name"] = serde_json::json!("Game/first.pak");
         state["files"].as_array_mut().unwrap().reverse();
         assert!(
             verify_prepared_journal(&state, &expected)
