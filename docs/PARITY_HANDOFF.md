@@ -160,6 +160,13 @@ These commits build on the verified FBX publishing and viewport changes. All cha
 4. **Offline mod launch:** Isolated signed-PAK staging and journaled rollback exist. Native installed-game mount/swap, process launch, verified offline safety, emergency recovery and production profiles are not parity-complete; no private launcher script/key should be included in the public repo.
 5. **Secondary parity:** Full Level Editor scene dependencies, original GFX/USM editing, installer/updater upgrade acceptance, asset-library performance and other GUI controls remain release gates in PARITY.md.
 
+## October 20 continuation — automatic Blender executable discovery for FBX
+
+- Requested behavior: **no manual Blender path on normal Windows installations**; show the manual path only when no usable Blender install is found. FBX production still requires a separate Blender executable; no copy of Blender is shipped inside the manager.
+- Desktop now checks the validated user-specified `blender.exe` first, then recognizes versioned `Blender Foundation/Blender X.Y/blender.exe` under Windows Program Files and per-user LocalAppData Programs; the newest discovered Blender **4.2+** takes priority when multiple versions exist. Steam's conventional `Steam/steamapps/common/Blender/blender.exe` is an optional fallback. Only canonical, regular, non-symlink exact executables qualify; no PATH commands, shell, downloads, or unrelated filename searching. If a saved custom path becomes stale, normal-path discovery recovers automatically.
+- Resolution is performed at startup, when File → Export is opened, and when FBX export starts. Routed through bundled FBX, standalone rigged FBX, unified CDF, experimental flat CDF, and level FBX operations. PNG-only exports need **no Blender**. The File → Export dialog and Settings Integration tab only ask for a manual executable path when none was validated. Autodetected paths are **not persisted** as user preferences.
+- Synthetic discovery tests cover multiple side-by-side versions (ignores unsupported 4.1), invalid/missing paths, and a valid manual override. Acceptance still requires Windows desktop CI + live Windows installation with Blender installed in Program Files; no assertion about a user's personal machine installation is made.
+
 ## Last known evidence, provenance and limits
 
 - Before this continuation, PR #6 HEAD was `59a6b1bd69a510f1c5677022f7cb8f5e056bd6f1` and Actions run `39372627121` reported **success**. This was **before** the exporter changes above.

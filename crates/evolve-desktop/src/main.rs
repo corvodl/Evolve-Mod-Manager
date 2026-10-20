@@ -5,6 +5,7 @@ mod assembly_materials;
 mod asset_cache;
 mod asset_library_page;
 mod asset_viewer;
+mod blender_install;
 mod auto_resources;
 mod crash_diagnostics;
 mod design;
@@ -1620,6 +1621,12 @@ fn restore_level_history(state: &mut State, undo: bool) {
     }
 }
 
+fn resolved_blender(state: &mut State) -> Result<PathBuf, String> {
+    let path = blender_install::resolve_blender(&state.blender_path)?;
+    state.blender_path = path.to_string_lossy().into_owned();
+    Ok(path)
+}
+
 fn exportable_asset(relative: &str) -> bool {
     let lower = relative.to_ascii_lowercase();
     lower.ends_with(".dds")
@@ -3206,6 +3213,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.export_include_animation = !state.export_include_animation;
         }
         Message::ExportOpen => {
+            if let Ok(path) = blender_install::resolve_blender(&state.blender_path) {
+                state.blender_path = path.to_string_lossy().into_owned();
+            }
             state.viewer_menu = None;
             state.export_dialog_open = true;
             state.export_selected = state
@@ -3297,14 +3307,24 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Select 1 to 64 source models, CDFs, or DDS textures.".into();
                 return Task::none();
             }
-            if selected.iter().any(|p| {
-                !p.to_ascii_lowercase().ends_with(".dds")
-                    && !p.to_ascii_lowercase().ends_with(".dds.0")
-            }) && state.blender_path.trim().is_empty()
-            {
-                state.status = "Choose an installed Blender executable for FBX export.".into();
-                return Task::none();
-            }
+            // Images export as PNG directly. Model/assembly FBX exports
+            // auto-discover Blender; only a genuinely missing installation
+            // requires the user to select their own blender.exe.
+            let needs_blender = selected.iter().any(|path| {
+                let lower = path.to_ascii_lowercase();
+                !lower.ends_with(".dds") && !lower.ends_with(".dds.0")
+            });
+            let blender = if needs_blender {
+                match resolved_blender(state) {
+                    Ok(path) => path,
+                    Err(message) => {
+                        state.status = message;
+                        return Task::none();
+                    }
+                }
+            } else {
+                PathBuf::new()
+            };
             let cdf_source = (selected.len() == 1
                 && selected[0].to_ascii_lowercase().ends_with(".cdf"))
             .then(|| PathBuf::from(&inventory.root).join(&selected[0]));
@@ -3320,7 +3340,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let options = evolve_core::ExportBundleOptions {
                 destination: original,
                 selected,
-                blender: PathBuf::from(&state.blender_path),
+                blender,
                 skeleton: (!state.skeleton_path.trim().is_empty())
                     .then(|| PathBuf::from(&state.skeleton_path)),
                 diffuse: (!state.diffuse_input.trim().is_empty())
@@ -4081,6 +4101,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::ViewerExportFlatCdf => {
+            let blender = match resolved_blender(state) {
+                Ok(path) => path,
+                Err(message) => {
+                    state.status = message;
+                    return Task::none();
+                }
+            };
             let Some(inventory) = state.inventory.clone() else {
                 state.status = "Index an extracted CDF character folder before exporting.".into();
                 return Task::none();
@@ -4090,7 +4117,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             };
             if !entry.relative_path.to_ascii_lowercase().ends_with(".cdf")
-                || state.blender_path.trim().is_empty()
                 || state.output.trim().is_empty()
             {
                 state.status =
@@ -4102,7 +4128,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Operation::FlatCdfFbx(
                     PathBuf::from(&inventory.root).join(&entry.relative_path),
                     inventory.clone(),
-                    PathBuf::from(&state.blender_path),
+                    blender,
                     PathBuf::from(&state.output),
                     (state.export_include_animation && !state.caf_path.trim().is_empty())
                         .then(|| PathBuf::from(&state.caf_path)),
@@ -4110,6 +4136,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::ViewerExportUnifiedCdf => {
+            let blender = match resolved_blender(state) {
+                Ok(path) => path,
+                Err(message) => {
+                    state.status = message;
+                    return Task::none();
+                }
+            };
             let Some(inventory) = state.inventory.clone() else {
                 state.status = "Index an extracted CDF character folder first.".into();
                 return Task::none();
@@ -4119,7 +4152,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             };
             if !entry.relative_path.to_ascii_lowercase().ends_with(".cdf")
-                || state.blender_path.trim().is_empty()
                 || !state.output.to_ascii_lowercase().ends_with(".fbx")
             {
                 state.status =
@@ -4127,7 +4159,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             }
             let source = PathBuf::from(&inventory.root).join(&entry.relative_path);
-            let blender = PathBuf::from(&state.blender_path);
             let destination = PathBuf::from(&state.output);
             let caf = (state.export_include_animation && !state.caf_path.trim().is_empty())
                 .then(|| PathBuf::from(&state.caf_path));
@@ -4142,9 +4173,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::StartRigFbx => {
+            let blender = match resolved_blender(state) {
+                Ok(path) => path,
+                Err(message) => {
+                    state.status = message;
+                    return Task::none();
+                }
+            };
             if state.input.trim().is_empty()
                 || state.skeleton_path.trim().is_empty()
-                || state.blender_path.trim().is_empty()
                 || state.output.trim().is_empty()
             {
                 state.status="Choose original skin mesh, matching skeleton, Blender executable and NEW .fbx output.".into();
@@ -4155,7 +4192,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Operation::RiggedFbx(
                     PathBuf::from(&state.input),
                     PathBuf::from(&state.skeleton_path),
-                    PathBuf::from(&state.blender_path),
+                    blender,
                     (!state.diffuse_input.trim().is_empty())
                         .then(|| PathBuf::from(&state.diffuse_input)),
                     (state.export_include_animation && !state.caf_path.trim().is_empty())
@@ -4474,14 +4511,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::StartLevelFbxExport => {
-            if [
-                &state.input,
-                &state.assets_root,
-                &state.output,
-                &state.blender_path,
-            ]
-            .iter()
-            .any(|x| x.trim().is_empty())
+            let blender = match resolved_blender(state) {
+                Ok(path) => path,
+                Err(message) => {
+                    state.status = message;
+                    return Task::none();
+                }
+            };
+            if [&state.input, &state.assets_root, &state.output]
+                .iter()
+                .any(|x| x.trim().is_empty())
                 || !state.output.to_ascii_lowercase().ends_with(".fbx")
             {
                 state.status = "Select level XML/LYR, extracted asset root, Blender executable and NEW .fbx output.".into();
@@ -4498,7 +4537,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     PathBuf::from(&state.input),
                     PathBuf::from(&state.assets_root),
                     terrain,
-                    PathBuf::from(&state.blender_path),
+                    blender,
                     PathBuf::from(&state.output),
                 ),
             );
@@ -6026,8 +6065,12 @@ fn view(state: &State) -> Element<'_, Message> {
                 row![
                     design::text_input("Exact original .chr skeleton path...",&state.skeleton_path)
                         .on_input(Message::SkeletonChanged).width(Fill),
-                    design::text_input("Blender.exe path for FBX...",&state.blender_path)
-                        .on_input(Message::BlenderChanged).width(Fill),
+                    if blender_install::valid_blender(&state.blender_path).is_some() {
+                        Element::from(text("Blender detected automatically for FBX").size(12))
+                    } else {
+                        Element::from(design::text_input("Find Blender.exe for FBX…", &state.blender_path)
+                            .on_input(Message::BlenderChanged).width(Fill))
+                    },
                 ].spacing(8),
                 row![
                     design::button("Export rigged GLB").on_press(Message::StartRigGlb),
@@ -6161,8 +6204,12 @@ fn view(state: &State) -> Element<'_, Message> {
                 text("Pitch"),
                 slider(-85.0..=85.0,state.pitch,Message::PitchChanged).width(Fill),
             ].spacing(8),
-            design::text_input("Blender executable for scene FBX...", &state.blender_path)
-                .on_input(Message::BlenderChanged),
+            if blender_install::valid_blender(&state.blender_path).is_some() {
+                Element::from(text("Blender detected automatically for scene FBX").size(12))
+            } else {
+                Element::from(design::text_input("Find Blender.exe for scene FBX…", &state.blender_path)
+                    .on_input(Message::BlenderChanged))
+            },
             text("GLB/FBX includes verified mesh instances and optional terrain. Texture/material, compiled vegetation, scripting and full map fidelity remain gated."),
         ].spacing(14).into(),
         Page::Settings => settings_page::view(state),
@@ -6287,6 +6334,11 @@ fn initial_state() -> State {
                 .to_string_lossy()
                 .into_owned();
         }
+    }
+    // Automatic Blender discovery is intentionally ephemeral: do not save a
+    // machine-specific detected path into user preferences.
+    if let Ok(path) = blender_install::resolve_blender(&result.blender_path) {
+        result.blender_path = path.to_string_lossy().into_owned();
     }
     result.library_root = result.preferences.asset_library_root.clone();
     result.assets_root = result.library_root.clone();

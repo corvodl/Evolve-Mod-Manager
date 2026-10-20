@@ -286,8 +286,16 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         Tab::Integration => column![
         heading("BLENDER INTEGRATION", "Blender is used for verified native FBX export."),
         panel(column![
-            text("Blender executable").size(12),
-            design::text_input("Path to Blender executable", &state.preferences.blender_executable).on_input(Message::PreferenceBlender),
+            if crate::blender_install::valid_blender(&state.blender_path).is_some() {
+                Element::from(text(format!("Blender is ready for FBX export: {}", state.blender_path))
+                    .size(12).style(design::muted))
+            } else {
+                Element::from(column![
+                    text("Blender was not found in its usual installation folders. Install Blender 4.2+ or select blender.exe manually.").size(12),
+                    design::text_input("Path to Blender executable", &state.preferences.blender_executable)
+                        .on_input(Message::PreferenceBlender),
+                ].spacing(6))
+            },
         ].spacing(7)),
         ].spacing(12).into(),
         Tab::Advanced => column![

@@ -863,8 +863,13 @@ fn export_dialog(state: &State) -> Element<'_, Message> {
             .on_input(Message::ExportParentChanged),
         design::text_input("New export folder name (e.g. Scorpid)", &state.export_folder_name)
             .on_input(Message::ExportFolderChanged),
-        design::text_input("Blender executable (.exe)", &state.blender_path)
-            .on_input(Message::BlenderChanged),
+        if crate::blender_install::valid_blender(&state.blender_path).is_some() {
+            Element::from(text(format!("Blender ready: {}", state.blender_path))
+                .size(11).style(design::muted))
+        } else {
+            Element::from(design::text_input("Blender not detected — select blender.exe", &state.blender_path)
+                .on_input(Message::BlenderChanged))
+        },
         if state.export_rigged {
             Element::from(column![
                 design::text_input("Standalone skeleton path (CDF finds its own)", &state.skeleton_path)
