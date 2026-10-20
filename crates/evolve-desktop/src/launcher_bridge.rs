@@ -208,6 +208,21 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
     if sha(&custom)? != expected_shim.to_ascii_lowercase() {
         return Err("Staged custom injector does not match stage_status.json".into());
     }
+    // Never fall back to the original helper's developer-specific default
+    // launcher path. The existing private setup must identify the user's
+    // actual installed ModdedEvolveLauncher executable explicitly.
+    let config = json(&swap.join("launcher_config.json"))?;
+    let launcher_path = config["launcher"]
+        .as_str()
+        .ok_or("Missing launcher executable path in private launcher_config.json")?;
+    let launcher = plain(Path::new(launcher_path), 1024 * 1024 * 1024)?;
+    if launcher
+        .file_name()
+        .and_then(|s| s.to_str())
+        .is_none_or(|name| !name.eq_ignore_ascii_case("ModdedEvolveLauncher.exe"))
+    {
+        return Err("Configured executable is not ModdedEvolveLauncher.exe".into());
+    }
     for name in [
         "controlled_swap.py",
         "auto_launch_frida.py",
