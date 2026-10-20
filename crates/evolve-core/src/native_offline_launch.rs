@@ -39,8 +39,11 @@ fn folder(path: &Path) -> Result<PathBuf, String> {
 fn unlinked_game_member(root: &Path, virtual_path: &str) -> Result<PathBuf, String> {
     let mut parent = root.to_path_buf();
     for (index, component) in virtual_path.split('/').enumerate() {
-        if component.is_empty() || component == "." || component == ".."
-            || component.contains(':') || component.contains('\\')
+        if component.is_empty()
+            || component == "."
+            || component == ".."
+            || component.contains(':')
+            || component.contains('\\')
         {
             return Err("Unsafe game PAK target".into());
         }
@@ -108,8 +111,12 @@ pub fn inspect_native_offline_readiness(
         let basename = item.target.rsplit('/').next().unwrap_or_default();
         // Independently verify the exact *installed* signed original. Matching
         // staged member names alone cannot establish this game's provenance.
-        let verified = inspect_signed_pak(&installed, &original_key, basename)
-            .map_err(|e| format!("Installed PAK {} failed original signature: {e}", item.target))?;
+        let verified = inspect_signed_pak(&installed, &original_key, basename).map_err(|e| {
+            format!(
+                "Installed PAK {} failed original signature: {e}",
+                item.target
+            )
+        })?;
         if verified.entries.is_empty() {
             return Err("Installed PAK has no signed source entries".into());
         }
@@ -145,11 +152,13 @@ mod tests {
         fs::write(&old, b"old").unwrap();
         fs::write(&new, b"new").unwrap();
         let before = fs::read(bin.join("Evolve.exe")).unwrap();
-        assert!(inspect_native_offline_readiness(&root, &stage, &profile.id, &old, &new)
-            .unwrap_err().contains("No enabled"));
+        assert!(
+            inspect_native_offline_readiness(&root, &stage, &profile.id, &old, &new)
+                .unwrap_err()
+                .contains("No enabled")
+        );
         assert_eq!(fs::read(bin.join("Evolve.exe")).unwrap(), before);
-        assert!(inspect_native_offline_readiness(&stage, &root, &profile.id, &old, &new)
-            .is_err());
+        assert!(inspect_native_offline_readiness(&stage, &root, &profile.id, &old, &new).is_err());
         assert!(!root.join("Game").exists());
     }
 
