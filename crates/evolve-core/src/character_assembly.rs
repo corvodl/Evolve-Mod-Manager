@@ -400,7 +400,8 @@ pub fn read_static_cdf_assembly_with_imported(
             None
         }
     };
-    let skeleton = skeleton_path.as_ref()
+    let skeleton = skeleton_path
+        .as_ref()
         .and_then(|path| fs::read(path).ok())
         .and_then(|bytes| parse_compiled_skeleton(&bytes).ok());
     if skeleton.is_none() {
@@ -611,13 +612,18 @@ mod tests {
         fs::write(
             root.join("characters/armor.skinm"),
             crate::model::tests::fixture(),
-        ).unwrap();
+        )
+        .unwrap();
         let cdf = root.join("armor.cdf");
-        fs::write(&cdf, br#"<CharacterDefinition>
+        fs::write(
+            &cdf,
+            br#"<CharacterDefinition>
             <Model File="characters/missing_skeleton.chr"/>
             <AttachmentList><Attachment Type="CA_SKIN" AName="armor"
                 Binding="characters/armor.skin"/></AttachmentList>
-            </CharacterDefinition>"#).unwrap();
+            </CharacterDefinition>"#,
+        )
+        .unwrap();
         let inv = crate::scan_directory(root).unwrap();
         let (mesh, report) = read_static_cdf_assembly(&cdf, &inv).unwrap();
         assert_eq!(mesh.indices.len(), 3);
@@ -625,7 +631,12 @@ mod tests {
         assert_eq!(report.source_parts[0].material_slot, 0);
         assert_eq!(report.verified_bones, None);
         assert!(report.skeleton_source.is_none());
-        assert!(report.warnings.iter().any(|w| w.contains("static skin geometry")));
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("static skin geometry"))
+        );
         assert!(report.warnings.iter().any(|w| w.contains("binding")));
     }
 
