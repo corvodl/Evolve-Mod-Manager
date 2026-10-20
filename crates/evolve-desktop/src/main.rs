@@ -6454,7 +6454,9 @@ impl Desktop {
             }
             Message::ExportBegin => {
                 let command = update(&mut self.state, Message::ExportBegin);
-                if !self.state.export_dialog_open && let Some(id) = self.export_id.take() {
+                if !self.state.export_dialog_open
+                    && let Some(id) = self.export_id.take()
+                {
                     return Task::batch([command, window::close(id)]);
                 }
                 command
