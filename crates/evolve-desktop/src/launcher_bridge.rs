@@ -575,6 +575,9 @@ fn guarded_restore_state(stage: &Path, swap: &Path) -> Result<String, String> {
             return Err(format!("Recovery journal target ordering changed: {name}"));
         }
         let expected_source = plain(&source, 16 * 1024 * 1024 * 1024)?;
+        if !expected_source.starts_with(&stage) {
+            return Err(format!("Recovery source escapes its signing stage: {name}"));
+        }
         let recorded_source = plain(
             Path::new(
                 record["source"]
@@ -589,6 +592,9 @@ fn guarded_restore_state(stage: &Path, swap: &Path) -> Result<String, String> {
             ));
         }
         let expected_parent = directory(target.parent().ok_or("Original target parent missing")?)?;
+        if !expected_parent.starts_with(&game) {
+            return Err(format!("Recovery target escapes its installed game root: {name}"));
+        }
         let target_name = target
             .file_name()
             .and_then(|x| x.to_str())
