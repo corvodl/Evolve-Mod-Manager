@@ -29,23 +29,23 @@ use asset_cache::{SharedCache, decoded_dds};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph,
-    FlatCdfFbxReport, ImportedLibrary, ImportedPak, Inventory, LevelScene,
+    FlatCdfFbxReport, HookPairReport, ImportedLibrary, ImportedPak, Inventory, LevelScene,
     LibraryBatchImportReport, LibraryReferenceStatus, MaterialReport, ModProfile, ModelInfo,
-    NativeCafMotion, PakInventory, ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport,
-    HookPairReport, PakHookPairReport, SignedPakInfo, StageTransaction, TerrainInfo,
-    UnifiedCdfFbxReport, VerifiedCafSkin, add_mod_to_profile, apply_profile_stage, apply_stage_pak, batch_stage_status, compare_assets,
-    convert_glb_to_fbx, convert_original_motion, create_mod_profile, decode_dds_rgba,
-    export_dds_png, export_flat_cdf_parts_fbx, export_level_scene_glb,
+    NativeCafMotion, PakHookPairReport, PakInventory, ProfileCatalog, ProfileMod, ProfilePlan,
+    RenderMesh, RigReport, SignedPakInfo, StageTransaction, TerrainInfo, UnifiedCdfFbxReport,
+    VerifiedCafSkin, add_mod_to_profile, apply_profile_stage, apply_stage_pak, batch_stage_status,
+    compare_assets, convert_glb_to_fbx, convert_original_motion, create_mod_profile,
+    decode_dds_rgba, export_dds_png, export_flat_cdf_parts_fbx, export_level_scene_glb,
     export_rigged_character_fbx_textured_animated, export_rigged_character_glb,
     export_unified_cdf_fbx, extract_legacy_pak, extract_signed_pak,
     import_signed_library_selection, import_stage_pak, imported_archive_files, imported_library,
-    initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_signed_pak,
-    list_mod_profiles, load_level_scene, material_texture_candidates, plan_mod_profile, read_cdf,
-    read_material, read_model, read_native_caf, read_static_cdf_assembly, read_terrain,
-    rebuild_legacy_pak, rebuild_signed_pak_entry, resign_signed_pak,
-    prepare_client_hook, inspect_pak_hook_pair, resolve_cdf, resolve_imported_reference,
-    resolve_materials, restore_profile_stage, restore_stage, scan_directory,
-    scan_directory_with_progress, stage_status,
+    initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_pak_hook_pair,
+    inspect_signed_pak, list_mod_profiles, load_level_scene, material_texture_candidates,
+    plan_mod_profile, prepare_client_hook, read_cdf, read_material, read_model, read_native_caf,
+    read_static_cdf_assembly, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry,
+    resign_signed_pak, resolve_cdf, resolve_imported_reference, resolve_materials,
+    restore_profile_stage, restore_stage, scan_directory, scan_directory_with_progress,
+    stage_status,
 };
 use iced::widget::{
     canvas, column, container, image, row, scrollable, shader, slider, space, svg, text, tooltip,
@@ -834,8 +834,14 @@ impl Operation {
             Self::ResignSignedPak(source, stage, new_private, new_public, basename, dest) => {
                 let original_key = modding_keys::verified_archive_key(&stage, &source, &basename)?;
                 let report = resign_signed_pak(
-                    &source, &original_key, &new_private, &new_public, &basename, &dest,
-                ).map_err(|e| e.to_string())?;
+                    &source,
+                    &original_key,
+                    &new_private,
+                    &new_public,
+                    &basename,
+                    &dest,
+                )
+                .map_err(|e| e.to_string())?;
                 Ok(Completed::ResignedSignedPak(report, dest))
             }
             Self::PrepareClientHook(original, old_key, new_key, dest) => {
@@ -844,13 +850,24 @@ impl Operation {
                 Ok(Completed::HookPrepared(report, dest))
             }
             Self::VerifySignedHookPair(
-                original_pak, custom_pak, original_hook, custom_hook,
-                original_key, custom_key, basename,
+                original_pak,
+                custom_pak,
+                original_hook,
+                custom_hook,
+                original_key,
+                custom_key,
+                basename,
             ) => {
                 let report = inspect_pak_hook_pair(
-                    &original_pak, &custom_pak, &original_hook, &custom_hook,
-                    &original_key, &custom_key, &basename,
-                ).map_err(|e| e.to_string())?;
+                    &original_pak,
+                    &custom_pak,
+                    &original_hook,
+                    &custom_hook,
+                    &original_key,
+                    &custom_key,
+                    &basename,
+                )
+                .map_err(|e| e.to_string())?;
                 Ok(Completed::SignedHookPreflight(report))
             }
             Self::ResolveCdf(source, asset_root) => {
@@ -3528,7 +3545,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let stage = PathBuf::from(&state.preferences.stage);
             let basename = match modding_keys::signed_basename(&source) {
                 Ok(name) => name,
-                Err(error) => { state.status = error; return Task::none(); }
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
             };
             return launch(state, Operation::InspectSignedPak(source, stage, basename));
         }
@@ -3537,71 +3557,114 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let stage = PathBuf::from(&state.preferences.stage);
             let basename = match modding_keys::signed_basename(&source) {
                 Ok(name) => name,
-                Err(error) => { state.status = error; return Task::none(); }
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
             };
             if state.output.trim().is_empty() {
                 state.status = "Choose a new extraction folder.".into();
                 return Task::none();
             }
-            return launch(state,
-                Operation::ExtractSignedPak(source, stage, basename, PathBuf::from(&state.output)));
+            return launch(
+                state,
+                Operation::ExtractSignedPak(source, stage, basename, PathBuf::from(&state.output)),
+            );
         }
         Message::StartSignedRebuild | Message::StartSignedResign => {
             let source = PathBuf::from(&state.input);
             let stage = PathBuf::from(&state.preferences.stage);
             let keys = match modding_keys::signing_keys(&stage) {
                 Ok(keys) => keys,
-                Err(error) => { state.status = error; return Task::none(); }
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
             };
             let basename = match modding_keys::signed_basename(&source) {
                 Ok(name) => name,
-                Err(error) => { state.status = error; return Task::none(); }
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
             };
             if state.output.trim().is_empty() {
-                state.status = "Select a NEW .pak output; the original game PAK is never overwritten.".into();
+                state.status =
+                    "Select a NEW .pak output; the original game PAK is never overwritten.".into();
                 return Task::none();
             }
             let output = PathBuf::from(&state.output);
             if matches!(message, Message::StartSignedResign) {
-                return launch(state,
+                return launch(
+                    state,
                     Operation::ResignSignedPak(
-                        source, stage, keys.private, keys.public, basename, output,
-                    ));
+                        source,
+                        stage,
+                        keys.private,
+                        keys.public,
+                        basename,
+                        output,
+                    ),
+                );
             }
             if state.signed_entry.trim().is_empty() || state.signed_replacement.trim().is_empty() {
                 state.status = "Select an exact existing virtual member and its replacement source file before rebuilding.".into();
                 return Task::none();
             }
-            return launch(state, Operation::RebuildSignedPak(
-                source, stage, keys.private, keys.public, basename,
-                state.signed_entry.clone(),
-                PathBuf::from(&state.signed_replacement),
-                output,
-            ));
+            return launch(
+                state,
+                Operation::RebuildSignedPak(
+                    source,
+                    stage,
+                    keys.private,
+                    keys.public,
+                    basename,
+                    state.signed_entry.clone(),
+                    PathBuf::from(&state.signed_replacement),
+                    output,
+                ),
+            );
         }
         Message::StartHookPrepare => {
             let stage = PathBuf::from(&state.preferences.stage);
             let keys = match modding_keys::signing_keys(&stage) {
                 Ok(keys) => keys,
-                Err(error) => { state.status = error; return Task::none(); }
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
             };
             if state.hook_original.trim().is_empty() || state.hook_prepared.trim().is_empty() {
                 state.status = "Choose the original client inject.dll and a NEW staged inject.dll destination.".into();
                 return Task::none();
             }
-            return launch(state, Operation::PrepareClientHook(
-                PathBuf::from(&state.hook_original), keys.original_public, keys.public,
-                PathBuf::from(&state.hook_prepared),
-            ));
+            return launch(
+                state,
+                Operation::PrepareClientHook(
+                    PathBuf::from(&state.hook_original),
+                    keys.original_public,
+                    keys.public,
+                    PathBuf::from(&state.hook_prepared),
+                ),
+            );
         }
         Message::StartHookPreflight => {
             let stage = PathBuf::from(&state.preferences.stage);
             let keys = match modding_keys::signing_keys(&stage) {
                 Ok(keys) => keys,
-                Err(error) => { state.status = error; return Task::none(); }
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
             };
-            if [&state.input, &state.output, &state.hook_original, &state.hook_prepared]
-                .iter().any(|s| s.trim().is_empty())
+            if [
+                &state.input,
+                &state.output,
+                &state.hook_original,
+                &state.hook_prepared,
+            ]
+            .iter()
+            .any(|s| s.trim().is_empty())
             {
                 state.status = "Select original PAK, custom signed output PAK, original hook, and custom staged hook before preflight.".into();
                 return Task::none();
@@ -3609,13 +3672,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let source = PathBuf::from(&state.input);
             let basename = match modding_keys::signed_basename(&source) {
                 Ok(name) => name,
-                Err(error) => { state.status = error; return Task::none(); }
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
             };
-            return launch(state, Operation::VerifySignedHookPair(
-                source, PathBuf::from(&state.output),
-                PathBuf::from(&state.hook_original), PathBuf::from(&state.hook_prepared),
-                keys.original_public, keys.public, basename,
-            ));
+            return launch(
+                state,
+                Operation::VerifySignedHookPair(
+                    source,
+                    PathBuf::from(&state.output),
+                    PathBuf::from(&state.hook_original),
+                    PathBuf::from(&state.hook_prepared),
+                    keys.original_public,
+                    keys.public,
+                    basename,
+                ),
+            );
         }
         Message::StartLevelFbxExport => {
             if [
@@ -4393,7 +4466,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Ok(Completed::ResignedSignedPak(report, destination)) => {
                     state.status = format!(
                         "Re-signed {} original CryPAK members to {} using the configured custom RSA key. Payloads and original PAK unchanged; hook preflight and offline runtime test still required.",
-                        report.entries.len(), destination.display(),
+                        report.entries.len(),
+                        destination.display(),
                     );
                     state.signed_pak = Some(report);
                     state.page = Some(Page::Files);
@@ -4402,7 +4476,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.hook_prepared = destination.to_string_lossy().into_owned();
                     state.status = format!(
                         "Prepared verified hook copy at {}. Original SHA256 {} → staged SHA256 {}. Only the public-key region changed; installed DLL untouched.",
-                        destination.display(), report.source_sha256, report.custom_sha256,
+                        destination.display(),
+                        report.source_sha256,
+                        report.custom_sha256,
                     );
                     state.page = Some(Page::Files);
                 }
@@ -4790,17 +4866,25 @@ fn view(state: &State) -> Element<'_, Message> {
         ]
         .spacing(8),
         row![
-            design::text_input("Exact existing CryPAK member path (e.g. Libs/UI/file.xml)", &state.signed_entry)
-                .on_input(Message::SignedMemberChanged).width(Fill),
+            design::text_input(
+                "Exact existing CryPAK member path (e.g. Libs/UI/file.xml)",
+                &state.signed_entry
+            )
+            .on_input(Message::SignedMemberChanged)
+            .width(Fill),
             design::text_input("Replacement local file...", &state.signed_replacement)
-                .on_input(Message::SignedReplacementChanged).width(Fill),
+                .on_input(Message::SignedReplacementChanged)
+                .width(Fill),
             design::button("Rebuild + re-sign member")
                 .style(design::secondary)
                 .on_press(Message::StartSignedRebuild),
         ]
         .spacing(8),
         row![
-            text("Stage RSA keys: original RSAKeyData.bin + custom mykeys/ (automatically checked).").size(12),
+            text(
+                "Stage RSA keys: original RSAKeyData.bin + custom mykeys/ (automatically checked)."
+            )
+            .size(12),
             design::button("Verify signed PAK")
                 .style(design::secondary)
                 .on_press(Message::StartSignedInspection),
@@ -4813,17 +4897,24 @@ fn view(state: &State) -> Element<'_, Message> {
         ]
         .spacing(8),
         row![
-            design::text_input("Original client bin64_SteamRetail/inject.dll", &state.hook_original)
-                .on_input(Message::HookOriginalChanged).width(Fill),
+            design::text_input(
+                "Original client bin64_SteamRetail/inject.dll",
+                &state.hook_original
+            )
+            .on_input(Message::HookOriginalChanged)
+            .width(Fill),
             design::text_input("NEW custom hook directory/inject.dll", &state.hook_prepared)
-                .on_input(Message::HookPreparedChanged).width(Fill),
+                .on_input(Message::HookPreparedChanged)
+                .width(Fill),
         ]
         .spacing(8),
         row![
             design::button("Prepare verified client hook copy")
-                .style(design::secondary).on_press(Message::StartHookPrepare),
+                .style(design::secondary)
+                .on_press(Message::StartHookPrepare),
             design::button("Verify PAK + hook for offline swap")
-                .style(design::secondary).on_press(Message::StartHookPreflight),
+                .style(design::secondary)
+                .on_press(Message::StartHookPreflight),
             text("Never modifies installed client or starts Evolve.").size(12),
         ]
         .spacing(8),
