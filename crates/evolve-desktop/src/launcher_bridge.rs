@@ -602,7 +602,9 @@ fn guarded_restore_state(stage: &Path, swap: &Path) -> Result<String, String> {
         }
         let expected_parent = directory(target.parent().ok_or("Original target parent missing")?)?;
         if !expected_parent.starts_with(&game) {
-            return Err(format!("Recovery target escapes its installed game root: {name}"));
+            return Err(format!(
+                "Recovery target escapes its installed game root: {name}"
+            ));
         }
         let target_name = target
             .file_name()
