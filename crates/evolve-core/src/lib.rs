@@ -7,6 +7,7 @@ pub mod batch;
 pub mod caf_layers;
 pub mod cdf;
 pub mod character_assembly;
+pub mod character_equipment;
 pub mod character_folder_fbx;
 pub mod character_unified_fbx;
 pub mod client_hook;
@@ -50,7 +51,12 @@ pub use cdf::{
 };
 pub use character_assembly::{
     AssemblyError, AssemblyGeometry, AssemblyPart, AssemblyReport, combine_source_meshes,
-    read_static_cdf_assembly, read_static_cdf_assembly_with_imported,
+    read_static_cdf_assembly, read_static_cdf_assembly_with_equipment,
+    read_static_cdf_assembly_with_imported,
+};
+pub use character_equipment::{
+    EquipmentChoice, EquipmentOverrides, EquipmentSlot, discover_equipment,
+    validated_equipment_overrides,
 };
 pub use character_folder_fbx::{FlatCdfFbxReport, export_flat_cdf_parts_fbx};
 pub use character_unified_fbx::{UnifiedCdfFbxReport, export_unified_cdf_fbx};
