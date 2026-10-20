@@ -267,14 +267,18 @@ fn move_equipment(
     for vertex in first..end {
         let position = transform_point(delta, rest.positions[vertex]);
         if position.iter().any(|v| !v.is_finite() || v.abs() > 1e8) {
-            return Err(RigError::Invalid("Non-finite mounted equipment pose".into()));
+            return Err(RigError::Invalid(
+                "Non-finite mounted equipment pose".into(),
+            ));
         }
         output.positions[vertex] = position;
         if let (Some(source), Some(target)) = (&rest.normals, &mut output.normals) {
             let normal = transform_normal(delta, source[vertex]);
             let length = normal.iter().map(|v| v * v).sum::<f32>().sqrt();
             if !length.is_finite() || length <= 1e-6 {
-                return Err(RigError::Invalid("Invalid animated equipment normal".into()));
+                return Err(RigError::Invalid(
+                    "Invalid animated equipment normal".into(),
+                ));
             }
             target[vertex] = normal.map(|v| v / length);
         }
@@ -294,43 +298,55 @@ impl VerifiedCafAssembly {
         let original_skeleton = fs::read(skeleton_source)?;
         let skeleton = parse_compiled_skeleton(&original_skeleton)?;
         if rest.positions.len() != report.vertices || report.geometry_parts.is_empty() {
-            return Err(RigError::Invalid("CDF geometry layout is incomplete".into()));
+            return Err(RigError::Invalid(
+                "CDF geometry layout is incomplete".into(),
+            ));
         }
         let mut skins = Vec::new();
         let mut sockets = Vec::new();
         let mut cursor = 0usize;
         for part in &report.geometry_parts {
             if part.vertex_first != cursor || part.vertex_count == 0 {
-                return Err(RigError::Invalid("CDF vertex spans do not match source order".into()));
+                return Err(RigError::Invalid(
+                    "CDF vertex spans do not match source order".into(),
+                ));
             }
-            cursor = cursor.checked_add(part.vertex_count).ok_or(RigError::Limits)?;
+            cursor = cursor
+                .checked_add(part.vertex_count)
+                .ok_or(RigError::Limits)?;
             if cursor > rest.positions.len() {
                 return Err(RigError::Limits);
             }
             if let Some(socket) = &part.bone_socket {
                 let matches = skeleton
-                    .names.iter().enumerate()
+                    .names
+                    .iter()
+                    .enumerate()
                     .filter(|(_, name)| name.eq_ignore_ascii_case(socket))
-                    .map(|(i, _)| i).collect::<Vec<_>>();
+                    .map(|(i, _)| i)
+                    .collect::<Vec<_>>();
                 if matches.len() != 1 {
                     return Err(RigError::Invalid(format!(
-                        "CDF equipment {} has no unique authored bone socket: {}", part.name, socket
+                        "CDF equipment {} has no unique authored bone socket: {}",
+                        part.name, socket
                     )));
                 }
                 sockets.push((part.vertex_first, part.vertex_count, matches[0]));
             } else {
                 if !part.verified_skin_weights {
                     return Err(RigError::Invalid(format!(
-                        "CDF part {} has no verified original skin weights", part.name
+                        "CDF part {} has no verified original skin weights",
+                        part.name
                     )));
                 }
-                let skin = VerifiedCafSkin::from_originals(
-                    &part.source, skeleton_source, motion.clone())?;
+                let skin =
+                    VerifiedCafSkin::from_originals(&part.source, skeleton_source, motion.clone())?;
                 if skin.original_vertices() != part.vertex_count
                     || skin.mesh.positions != rest.positions[part.vertex_first..cursor]
                 {
                     return Err(RigError::Invalid(format!(
-                        "CDF part {} differs from the source rest mesh", part.name
+                        "CDF part {} differs from the source rest mesh",
+                        part.name
                     )));
                 }
                 skins.push((part.vertex_first, skin));
@@ -338,9 +354,14 @@ impl VerifiedCafAssembly {
         }
         if cursor != rest.positions.len() || skins.is_empty() {
             return Err(RigError::Invalid(
-                "CDF has unmatched geometry or no bindable original skin".into()));
+                "CDF has unmatched geometry or no bindable original skin".into(),
+            ));
         }
-        Ok(Self { rest, skins, sockets })
+        Ok(Self {
+            rest,
+            skins,
+            sockets,
+        })
     }
 
     pub fn mesh_at(&self, seconds: f32) -> Result<RenderMesh, RigError> {
@@ -349,7 +370,9 @@ impl VerifiedCafAssembly {
         let world = primary.posed_world(seconds)?;
         for (offset, skin) in &self.skins {
             let animated = skin.mesh_at(seconds)?;
-            let end = offset.checked_add(animated.positions.len()).ok_or(RigError::Limits)?;
+            let end = offset
+                .checked_add(animated.positions.len())
+                .ok_or(RigError::Limits)?;
             if end > output.positions.len() {
                 return Err(RigError::Limits);
             }
@@ -365,9 +388,15 @@ impl VerifiedCafAssembly {
         Ok(output)
     }
 
-    pub fn part_count(&self) -> usize { self.skins.len() + self.sockets.len() }
-    pub fn original_bones(&self) -> usize { self.skins[0].1.original_bones() }
-    pub fn source_motion(&self) -> &NativeCafMotion { self.skins[0].1.source_motion() }
+    pub fn part_count(&self) -> usize {
+        self.skins.len() + self.sockets.len()
+    }
+    pub fn original_bones(&self) -> usize {
+        self.skins[0].1.original_bones()
+    }
+    pub fn source_motion(&self) -> &NativeCafMotion {
+        self.skins[0].1.source_motion()
+    }
 }
 
 #[cfg(test)]
