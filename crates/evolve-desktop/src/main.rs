@@ -2474,7 +2474,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ViewerSidebarClose(tab) => {
             match tab {
-                ViewerSidebarTab::Files => {}, // The file explorer is permanent.
+                ViewerSidebarTab::Files => {} // The file explorer is permanent.
                 ViewerSidebarTab::Animations => state.viewer_sidebar_animations = false,
                 ViewerSidebarTab::Inspector => state.viewer_show_inspector = false,
                 ViewerSidebarTab::Dependencies => state.viewer_sidebar_dependencies = false,
@@ -2508,7 +2508,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.viewer_sidebar_active = ViewerSidebarTab::Dependencies;
                 state.viewer_explorer_visible = true;
             }
-        },
+        }
         Message::PlaybackSpeedChanged(value) => state.playback_speed = value.clamp(0.1, 3.0),
         Message::PlaybackLoopChanged => state.playback_loop = !state.playback_loop,
         Message::ViewerToggleWireframe => state.viewer_wireframe = !state.viewer_wireframe,
@@ -6265,24 +6265,48 @@ mod project_edit_tests {
     #[test]
     fn docked_tools_can_open_switch_and_close_without_closing_files() {
         let mut state = State::default();
-        let _ = update(&mut state, Message::ViewerSidebarSelect(ViewerSidebarTab::Animations));
-        let _ = update(&mut state, Message::ViewerSidebarSelect(ViewerSidebarTab::Inspector));
-        let _ = update(&mut state, Message::ViewerSidebarSelect(ViewerSidebarTab::Dependencies));
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarSelect(ViewerSidebarTab::Animations),
+        );
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarSelect(ViewerSidebarTab::Inspector),
+        );
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarSelect(ViewerSidebarTab::Dependencies),
+        );
         assert!(state.viewer_sidebar_animations);
         assert!(state.viewer_show_inspector);
         assert!(state.viewer_sidebar_dependencies);
         assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Dependencies);
-        let _ = update(&mut state, Message::ViewerSidebarClose(ViewerSidebarTab::Inspector));
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarClose(ViewerSidebarTab::Inspector),
+        );
         assert!(!state.viewer_show_inspector);
         assert!(state.viewer_sidebar_dependencies);
         assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Dependencies);
-        let _ = update(&mut state, Message::ViewerSidebarClose(ViewerSidebarTab::Dependencies));
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarClose(ViewerSidebarTab::Dependencies),
+        );
         assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
-        let _ = update(&mut state, Message::ViewerSidebarClose(ViewerSidebarTab::Files));
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarClose(ViewerSidebarTab::Files),
+        );
         assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
-        let _ = update(&mut state, Message::ViewerSidebarSelect(ViewerSidebarTab::Animations));
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarSelect(ViewerSidebarTab::Animations),
+        );
         assert!(state.viewer_sidebar_animations);
-        let _ = update(&mut state, Message::ViewerSidebarClose(ViewerSidebarTab::Animations));
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarClose(ViewerSidebarTab::Animations),
+        );
         assert!(!state.viewer_sidebar_animations);
         assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
     }
