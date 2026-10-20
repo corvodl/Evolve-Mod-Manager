@@ -168,14 +168,16 @@ fn parse_header(bytes: &[u8]) -> Result<(DdsInfo, usize, Option<[u32; 4]>), DdsE
             _ => return Err(DdsError::Unsupported(format!("FourCC {:?}", fourcc))),
         }
     } else {
-        if format_flags & 1 != 0
-            && u32_at(bytes, 88)? == 8
-            && u32_at(bytes, 104)? == 0xff
-        {
+        if format_flags & 1 != 0 && u32_at(bytes, 88)? == 8 && u32_at(bytes, 104)? == 0xff {
             return Ok((
                 DdsInfo {
-                    schema: 1, width, height, mipmaps, format: DdsFormat::Alpha8,
-                    streaming_parts: 1, top_mip_bytes: 0,
+                    schema: 1,
+                    width,
+                    height,
+                    mipmaps,
+                    format: DdsFormat::Alpha8,
+                    streaming_parts: 1,
+                    top_mip_bytes: 0,
                 },
                 payload_offset,
                 None,
