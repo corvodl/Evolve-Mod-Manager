@@ -5321,13 +5321,23 @@ mod project_edit_tests {
             let _ = update(&mut state, Message::LevelUndoTransform);
         }
         // The five oldest edits aged out; no fabricated full-history undo.
-        assert_eq!(state.level_scene.as_ref().unwrap().objects[0].local.position, [6., 0., 0.]);
+        assert_eq!(
+            state.level_scene.as_ref().unwrap().objects[0]
+                .local
+                .position,
+            [6., 0., 0.]
+        );
         assert_eq!(state.level_redo.len(), 64);
         assert_eq!(state.level_dirty_count, 1);
         for _ in 0..64 {
             let _ = update(&mut state, Message::LevelRedoTransform);
         }
-        assert_eq!(state.level_scene.as_ref().unwrap().objects[0].local.position, [70., 0., 0.]);
+        assert_eq!(
+            state.level_scene.as_ref().unwrap().objects[0]
+                .local
+                .position,
+            [70., 0., 0.]
+        );
         assert_eq!(state.level_original_transforms["parent"], baseline);
     }
 
