@@ -687,7 +687,14 @@ impl Pipeline {
             label: Some("Evolve actual texture sampler group"),
             layout: &layout,
             entries: &material_entries(
-                [&view, &normal_view, &emissive_view, &specular_view, &gloss_view, &opacity_view],
+                [
+                    &view,
+                    &normal_view,
+                    &emissive_view,
+                    &specular_view,
+                    &gloss_view,
+                    &opacity_view,
+                ],
                 &sampler,
             ),
         });
@@ -876,7 +883,9 @@ impl Pipeline {
                 label: Some("Exact CDF attachment material"),
                 layout: &self.layout,
                 entries: &material_entries(
-                    [&views[0], &views[1], &views[2], &views[3], &views[4], &views[5]],
+                    [
+                        &views[0], &views[1], &views[2], &views[3], &views[4], &views[5],
+                    ],
                     &self.sampler,
                 ),
             });
