@@ -314,6 +314,97 @@ pub fn material_texture_candidates(source: &str) -> Vec<String> {
     vec![source.to_owned()]
 }
 
+/// Port of the private manager's owner-qualified MTL lookup. Resolve each
+/// cooked DDS0 before its lower-resolution DDS companion, searching the
+/// material folder, its actual character, then the correct category's Shared
+/// texture namespace. An explicitly global textures/ reference comes last.
+/// Never match a DDS based on another actor's filename.
+pub fn scoped_texture_candidates(
+    authored: &str,
+    material_virtual: &str,
+) -> Result<Vec<String>, String> {
+    let raw = authored.trim().replace('\\', "/");
+    if raw.is_empty()
+        || raw.starts_with('/')
+        || raw.contains(':')
+        || raw.split('/').any(|part| matches!(part, "." | ".."))
+    {
+        return Err(format!("Unsafe original MTL texture reference: {authored}"));
+    }
+    let reference = raw
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("/");
+    if reference.is_empty() {
+        return Err("Empty original material texture reference".into());
+    }
+    let owner = material_virtual.replace('\\', "/");
+    let parents = owner.split('/').collect::<Vec<_>>();
+    let folder = &parents[..parents.len().saturating_sub(1)];
+    let is_character = folder.len() >= 3
+        && folder[0].eq_ignore_ascii_case("characters")
+        && ["hunters", "monsters", "creatures"]
+            .iter()
+            .any(|value| folder[1].eq_ignore_ascii_case(value));
+    let is_legacy_character = folder.len() >= 4
+        && folder[0].eq_ignore_ascii_case("objects")
+        && folder[1].eq_ignore_ascii_case("characters")
+        && ["hunters", "monsters", "creatures"]
+            .iter()
+            .any(|value| folder[2].eq_ignore_ascii_case(value));
+    let category_length = if is_character {
+        2
+    } else if is_legacy_character {
+        3
+    } else {
+        0
+    };
+    let minimum = if category_length > 0 {
+        category_length + 1
+    } else {
+        1
+    };
+    let lower = reference.to_ascii_lowercase();
+    let rooted = ["characters/", "objects/", "materials/", "levels/", "libs/"]
+        .iter()
+        .any(|prefix| lower.starts_with(prefix));
+    let mut paths = Vec::new();
+    for cooked in material_texture_candidates(&reference) {
+        if rooted {
+            paths.push(cooked);
+            continue;
+        }
+        if folder.len() >= minimum {
+            for count in (minimum..=folder.len()).rev() {
+                let parent = folder[..count].join("/");
+                paths.push(format!("{parent}/{cooked}"));
+                if !cooked.contains('/') {
+                    paths.push(format!("{parent}/textures/{cooked}"));
+                }
+            }
+        }
+        if category_length > 0 {
+            let category = folder[..category_length].join("/");
+            let lower_cooked = cooked.to_ascii_lowercase();
+            if lower_cooked.starts_with("shared/") {
+                paths.push(format!("{category}/{cooked}"));
+            } else if lower_cooked.starts_with("textures/") {
+                paths.push(format!("{category}/shared/{cooked}"));
+            } else if !cooked.contains('/') {
+                paths.push(format!("{category}/shared/textures/{cooked}"));
+            }
+            if lower_cooked.starts_with("textures/") {
+                paths.push(cooked);
+            }
+        } else {
+            paths.push(cooked);
+        }
+    }
+    paths.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    Ok(paths)
+}
+
 /// Prefer highest-resolution cooked .dds.0 over .dds for author-provided .tif
 /// references. A true ambiguity is returned, never silently resolved.
 pub fn resolve_materials(inventory: &Inventory, document: &MaterialDocument) -> MaterialReport {
