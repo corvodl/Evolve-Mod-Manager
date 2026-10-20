@@ -166,6 +166,8 @@ fn viewport(state: &State) -> Element<'_, Message> {
                 diffuse: state.diffuse.clone(),
                 normal_map: state.normal_map.clone(),
                 emissive: state.emissive_map.clone(),
+                specular: state.specular_map.clone(),
+                gloss: state.gloss_map.clone(),
                 yaw: state.yaw,
                 pitch: state.pitch,
                 zoom: state.zoom.max(0.2),
