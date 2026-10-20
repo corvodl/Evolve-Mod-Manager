@@ -7,7 +7,7 @@ use iced::widget::{
     canvas, column, container, image, mouse_area, row, scrollable, shader, slider, stack, text,
     tooltip,
 };
-use iced::{Background, Border, Element, Fill, Length};
+use iced::{Background, Border, Color, Element, Event, Fill, Length, Point, Rectangle, Renderer, Theme, mouse};
 
 fn panel<'a>(child: impl Into<Element<'a, Message>>) -> iced::widget::Container<'a, Message> {
     container(child).style(|theme| container::Style {
@@ -44,12 +44,19 @@ fn strip(state: &State) -> Element<'_, Message> {
         Some("File") => row![
             design::button("Inspect original PAK").on_press(Message::StartPakInspection),
             design::button("Export selected DDS → PNG").on_press(Message::StartPngExport),
-            design::button("Close menu").on_press(Message::ViewerMenu("")),
+            design::button("Save viewer layout").on_press(Message::ViewerSaveLayout),
         ].spacing(8).into(),
-        Some("Edit") => text("Asset Library originals are read-only. Edit a separate Modding workspace copy.").size(13).into(),
+        Some("Edit") => row![
+            design::button("Preferences…").on_press(Message::OpenViewerPreferences),
+            text("Library assets are read-only; edit separate workspace copies.").size(12).style(design::muted),
+        ].spacing(8).into(),
         Some("View") => row![
-            design::button("Toggle File Explorer").on_press(Message::ViewerToggleExplorer),
-            design::button("Reset camera").on_press(Message::ViewerResetCamera),
+            design::button("Toggle Explorer").on_press(Message::ViewerToggleExplorer),
+            design::button("Move Explorer").on_press(Message::PreferenceExplorerSide),
+            design::button("Reset Camera").on_press(Message::ViewerResetCamera),
+            design::button("Detach Inspector").on_press(Message::OpenInspectorWindow),
+            design::button(if state.viewer_show_inspector { "Hide Inspector" } else { "Show Inspector" })
+                .on_press(Message::ViewerToggleInspector),
         ].spacing(8).into(),
         Some("Model") => column![
             row![
@@ -90,7 +97,19 @@ fn strip(state: &State) -> Element<'_, Message> {
             design::button("Load normal").on_press(Message::StartNormalLoad),
             design::button("Load emissive").on_press(Message::StartEmissiveLoad),
         ].spacing(8).into(),
-        Some("Animation") => {
+        Some("Animation") => design::button("Open Animation Browser").on_press(Message::ViewerSidebarAnimations(true)).into(),
+        Some("Tools") => row![
+            design::button("Index extracted files").on_press(Message::StartScan),
+            design::button("Inspect selected asset").on_press(Message::ViewerPreviewSelected),
+        ].spacing(8).into(),
+        Some("Help") => text("Read-only preview. Use the file explorer to select extracted assets; original PAK members must be extracted before preview.").size(13).into(),
+        _ => column![].into(),
+    };
+    column![menu, options].spacing(5).into()
+}
+
+fn animation_browser(state: &State) -> Element<'_, Message> {
+    let content: Element<'_, Message> = {
             let mut clips = column![
                 row![
                     design::button("Open CAF").on_press(Message::StartCafLoad),
@@ -143,16 +162,24 @@ fn strip(state: &State) -> Element<'_, Message> {
                         .on_press(Message::OpenConvertedGlb(index)).style(design::text_button));
                 }
             }
-            scrollable(clips).height(Length::Fixed(250.0)).into()
-        },
-        Some("Tools") => row![
-            design::button("Index extracted files").on_press(Message::StartScan),
-            design::button("Inspect selected asset").on_press(Message::ViewerPreviewSelected),
-        ].spacing(8).into(),
-        Some("Help") => text("Read-only preview. Use the file explorer to select extracted assets; original PAK members must be extracted before preview.").size(13).into(),
-        _ => column![].into(),
+            scrollable(clips).height(Fill).into()
     };
-    column![menu, options].spacing(5).into()
+    panel(container(column![
+        text("ANIMATION BROWSER").size(15),
+        text("Only verified clips declared for the selected character are playable.").size(11).style(design::muted),
+        content,
+    ].spacing(9)).padding(12)).width(Fill).height(Fill).into()
+}
+
+fn browser(state: &State) -> Element<'_, Message> {
+    let tabs = row![
+        design::button("Files").on_press(Message::ViewerSidebarAnimations(false))
+            .style(if state.viewer_sidebar_animations { design::secondary } else { design::primary }),
+        design::button("Animations").on_press(Message::ViewerSidebarAnimations(true))
+            .style(if state.viewer_sidebar_animations { design::primary } else { design::secondary }),
+    ].spacing(5);
+    let content = if state.viewer_sidebar_animations { animation_browser(state) } else { explorer(state) };
+    column![tabs, content].spacing(5).height(Fill).width(Fill).into()
 }
 
 fn viewport(state: &State) -> Element<'_, Message> {
@@ -240,34 +267,26 @@ fn viewport(state: &State) -> Element<'_, Message> {
         .into()
     };
 
-    let toolbar = row![
-        design::button("Frame All").on_press(Message::ViewerResetCamera),
-        design::button("Front").on_press(Message::ViewerCameraPreset("Front")),
-        design::button("Right").on_press(Message::ViewerCameraPreset("Right")),
-        design::button("Top").on_press(Message::ViewerCameraPreset("Top")),
-        design::button("Iso").on_press(Message::ViewerCameraPreset("Isometric")),
-        design::button(if state.viewer_wireframe {
-            "Shaded"
-        } else {
-            "Wireframe"
-        })
-        .on_press(Message::ViewerToggleWireframe),
-        text("Drag: orbit • Shift+drag/right-drag: pan • Wheel: zoom").size(11),
-        design::button("−")
-            .on_press(Message::ViewerZoomWheel(-2.0))
-            .style(design::secondary),
-        design::button("+")
-            .on_press(Message::ViewerZoomWheel(2.0))
-            .style(design::secondary),
-        text("CryEngine-style light").size(11),
-        slider(
-            0.1..=2.0,
-            state.light_strength.max(0.1),
-            Message::LightStrengthChanged
+    let camera_icon = |glyph: &'static str, hint: &'static str, action| {
+        tooltip(
+            design::button(text(glyph).size(18)).width(39).height(36).on_press(action),
+            text(hint).size(12),
+            tooltip::Position::Bottom,
         )
-        .width(Length::Fixed(90.0)),
+    };
+    let toolbar = row![
+        camera_icon("⌖", "Frame all", Message::ViewerResetCamera),
+        camera_icon("↑", "Front view", Message::ViewerCameraPreset("Front")),
+        camera_icon("→", "Right view", Message::ViewerCameraPreset("Right")),
+        camera_icon("⊤", "Top view", Message::ViewerCameraPreset("Top")),
+        camera_icon("◇", "Isometric view", Message::ViewerCameraPreset("Isometric")),
+        camera_icon(if state.viewer_wireframe { "◉" } else { "▧" },
+            if state.viewer_wireframe { "Shaded display" } else { "Wireframe display" },
+            Message::ViewerToggleWireframe),
+        camera_icon("−", "Zoom out", Message::ViewerZoomWheel(-2.0)),
+        camera_icon("+", "Zoom in", Message::ViewerZoomWheel(2.0)),
     ]
-    .spacing(8)
+    .spacing(4)
     .align_y(iced::Center);
 
     // Native, perspective-aware signed XYZ gizmo from the private manager:
@@ -607,63 +626,29 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let heading = row![
         text("Asset / Model Viewer").size(16),
         text(readonly).size(12).style(design::muted),
-        text(format!(
-            " • {} selected",
-            state.file_selection.indices.len()
-        ))
-        .size(12),
-        design::button("Toggle Explorer").on_press(Message::ViewerToggleExplorer),
-        design::button(if explorer_on_left(&state.preferences.file_explorer_side) {
-            "Files: left"
-        } else {
-            "Files: right"
-        })
-        .on_press(Message::PreferenceExplorerSide),
-        design::button("Save layout").on_press(Message::ViewerSaveLayout),
-        design::button("Detach Inspector")
-            .on_press(Message::OpenInspectorWindow)
-            .style(design::secondary),
-    ]
-    .spacing(14)
-    .align_y(iced::Center);
-    let ratio = state.viewer_split.clamp(0.25, 0.8);
+        text(format!(" • {} selected", state.file_selection.indices.len())).size(12),
+        iced::widget::space().width(Fill),
+        text("Orbit: drag  •  Pan: Shift/right drag  •  Zoom: wheel").size(11).style(design::muted),
+    ].spacing(10).align_y(iced::Center);
+    let ratio = state.viewer_split.clamp(0.25, 0.85);
     let view_weight = (ratio * 100.0).round() as u16;
     let list_weight = (100.0 - ratio * 100.0).round() as u16;
     let panes: Element<'_, Message> = if state.viewer_explorer_visible {
         let preview = container(viewport(state)).width(Length::FillPortion(view_weight.max(1)));
-        let files = container(explorer(state)).width(Length::FillPortion(list_weight.max(1)));
+        let files = container(browser(state)).width(Length::FillPortion(list_weight.max(1)));
+        let grip = canvas(ExplorerGrip {
+            direction: if explorer_on_left(&state.preferences.file_explorer_side) { -1.0 } else { 1.0 },
+        }).width(Length::Fixed(12.0)).height(Fill);
         let panes = if explorer_on_left(&state.preferences.file_explorer_side) {
-            row![files, preview]
+            row![files, grip, preview]
         } else {
-            row![preview, files]
+            row![preview, grip, files]
         };
         panes.spacing(10).height(Fill).into()
     } else {
         viewport(state)
     };
-    let split_controls: Element<'_, Message> = if state.viewer_explorer_visible {
-        row![
-            text("Viewport").size(12),
-            slider(25.0..=80.0, ratio * 100.0, |value| {
-                Message::ViewerSplitChanged(value / 100.0)
-            })
-            .width(Length::Fixed(200.0)),
-            text("Explorer").size(12),
-            design::button(if state.viewer_show_inspector {
-                "Hide Inspector"
-            } else {
-                "Inspector"
-            })
-            .on_press(Message::ViewerToggleInspector),
-        ]
-        .spacing(10)
-        .align_y(iced::Center)
-        .into()
-    } else {
-        design::button("Show Explorer")
-            .on_press(Message::ViewerToggleExplorer)
-            .into()
-    };
+    // Resize directly on the vertical divider, not through a separate slider.
     let footer = row![
         text(if state.busy {
             "Loading source data..."
@@ -686,7 +671,6 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         column![
             strip(state),
             heading,
-            split_controls,
             panes,
             viewer_inspector::view(state),
             footer
@@ -702,6 +686,106 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         ..container::Style::default()
     })
     .into()
+}
+
+/// The narrow vertical separator is the only splitter control: drag it
+/// horizontally to resize the File/Animation sidebar without stealing camera
+/// gestures from the viewport canvas.
+struct ExplorerGrip {
+    direction: f32,
+}
+
+#[derive(Default)]
+struct ExplorerGripState {
+    dragging: bool,
+    previous_x: f32,
+}
+
+impl canvas::Program<Message> for ExplorerGrip {
+    type State = ExplorerGripState;
+
+    fn update(
+        &self,
+        state: &mut Self::State,
+        event: &Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<Message>> {
+        match event {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+                if cursor.position_in(bounds).is_some() => {
+                state.dragging = true;
+                state.previous_x = cursor.position()?.x;
+                None
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                state.dragging = false;
+                None
+            }
+            Event::Mouse(mouse::Event::CursorMoved { position }) if state.dragging => {
+                let delta = position.x - state.previous_x;
+                state.previous_x = position.x;
+                if delta.is_finite() && delta != 0.0 {
+                    Some(canvas::Action::publish(Message::ViewerSplitDrag(
+                        self.direction * delta / 1000.0,
+                    )).and_capture())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        frame.fill_rectangle(
+            Point::new(bounds.width * 0.5 - 1.0, 0.0),
+            iced::Size::new(2.0, bounds.height),
+            Color::from_rgb8(90, 94, 106),
+        );
+        vec![frame.into_geometry()]
+    }
+}
+
+pub(super) fn preferences_view(state: &State) -> Element<'_, Message> {
+    let mode = state.preferences.appearance_mode.as_str();
+    let pane = panel(container(column![
+        text("Viewer Preferences").size(22),
+        text("Appearance").size(17),
+        row![
+            design::button(format!("Theme: {mode}")).on_press(Message::PreferenceAppearance),
+            design::button(format!("Density: {}", state.preferences.ui_density)).on_press(Message::PreferenceDensity),
+        ].spacing(10),
+        text("Accent color").size(14),
+        row![
+            design::button("Default").on_press(Message::PreferenceAccentPreset("Default")),
+            design::button("Classic Red").on_press(Message::PreferenceAccentPreset("Classic Red")),
+            design::button("Evolve Red").on_press(Message::PreferenceAccentPreset("Evolve Red")),
+            design::button("Deep Red").on_press(Message::PreferenceAccentPreset("Deep Red")),
+        ].spacing(8),
+        text("Viewport").size(17),
+        row![
+            design::button(if state.viewer_wireframe { "Display: Wireframe" } else { "Display: Shaded" })
+                .on_press(Message::ViewerToggleWireframe),
+            design::button(if state.preferences.file_explorer_side.eq_ignore_ascii_case("left") { "Sidebar: Left" } else { "Sidebar: Right" })
+                .on_press(Message::PreferenceExplorerSide),
+        ].spacing(8),
+        row![
+            text("Lighting").size(13),
+            slider(0.1..=2.0, state.light_strength, Message::LightStrengthChanged)
+                .width(Length::Fixed(240.0)),
+        ].spacing(8).align_y(iced::Center),
+        design::button("Save preferences").on_press(Message::ViewerSaveLayout),
+    ].spacing(15)).padding(20));
+    container(pane).width(Fill).height(Fill).center(Fill).padding(18).into()
 }
 
 #[cfg(test)]
