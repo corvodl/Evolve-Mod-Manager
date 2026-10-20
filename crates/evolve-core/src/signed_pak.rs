@@ -712,8 +712,13 @@ pub fn resign_signed_pak(
     let original = open_verified_signed_pak(source, original_public, basename)?;
     let (private, public) = signing_key_pair(signing_private, signing_public)?;
     let comment = signed_comment(
-        &original.comment, &original.cdr, basename, &private, &public,
-        &original.iv, &original.keys,
+        &original.comment,
+        &original.cdr,
+        basename,
+        &private,
+        &public,
+        &original.iv,
+        &original.keys,
     )?;
     let mut stage = tempfile::Builder::new()
         .prefix(".resign-crypak-")
@@ -725,14 +730,18 @@ pub fn resign_signed_pak(
         .ok_or(SignedPakError::Limits)?;
     let mut prefix = (&mut input).take(old_size);
     if io::copy(&mut prefix, stage.as_file_mut())? != old_size {
-        return Err(SignedPakError::Format("signed PAK truncated during re-sign".into()));
+        return Err(SignedPakError::Format(
+            "signed PAK truncated during re-sign".into(),
+        ));
     }
     stage.write_all(&comment)?;
     stage.as_file_mut().sync_all()?;
     // A concurrent changed source or overwritten trailer must never create an
     // archive that cannot be independently authenticated with the client key.
     if fs::metadata(source)?.len() != source_meta.len() {
-        return Err(SignedPakError::Format("source changed during re-sign".into()));
+        return Err(SignedPakError::Format(
+            "source changed during re-sign".into(),
+        ));
     }
     let checked = open_verified_signed_pak(stage.path(), signing_public, basename)?;
     if checked.info.entries.len() != original.info.entries.len()
@@ -1312,9 +1321,14 @@ mod tests {
         let resigned = resign_folder.join("sample.pak");
         let old_bytes = fs::read(&archive).unwrap();
         let resigned_info = resign_signed_pak(
-            &archive, &key, &new_private_file, &new_public_file,
-            "sample.pak", &resigned,
-        ).unwrap();
+            &archive,
+            &key,
+            &new_private_file,
+            &new_public_file,
+            "sample.pak",
+            &resigned,
+        )
+        .unwrap();
         assert!(resigned_info.signature_verified);
         assert_eq!(resigned_info.entries.len(), 1);
         let resigned_bytes = fs::read(&resigned).unwrap();
@@ -1326,10 +1340,18 @@ mod tests {
         );
         assert_eq!(fs::read(&archive).unwrap(), old_bytes);
         assert!(inspect_signed_pak(&resigned, &key, "sample.pak").is_err());
-        assert!(resign_signed_pak(
-            &archive, &key, &new_private_file, &new_public_file,
-            "sample.pak", &resigned,
-        ).is_err(), "never overwrite the preexisting custom-signed output");
+        assert!(
+            resign_signed_pak(
+                &archive,
+                &key,
+                &new_private_file,
+                &new_public_file,
+                "sample.pak",
+                &resigned,
+            )
+            .is_err(),
+            "never overwrite the preexisting custom-signed output"
+        );
         let old_hook = root.path().join("original-hook.dll");
         let hook_root = root.path().join("custom-hook");
         fs::create_dir(&hook_root).unwrap();
@@ -1337,25 +1359,39 @@ mod tests {
         let mut hook = vec![0x6bu8; 4096];
         hook[0x870..0x870 + 140].copy_from_slice(&fs::read(&key).unwrap());
         fs::write(&old_hook, hook.clone()).unwrap();
-        let hook_report = crate::prepare_client_hook(
-            &old_hook, &key, &new_public_file, &custom_hook,
-        ).unwrap();
+        let hook_report =
+            crate::prepare_client_hook(&old_hook, &key, &new_public_file, &custom_hook).unwrap();
         assert!(hook_report.only_public_key_bytes_changed);
         assert_eq!(fs::read(&old_hook).unwrap(), hook);
         let swap = crate::inspect_pak_hook_pair(
-            &archive, &resigned, &old_hook, &custom_hook,
-            &key, &new_public_file, "sample.pak",
-        ).unwrap();
+            &archive,
+            &resigned,
+            &old_hook,
+            &custom_hook,
+            &key,
+            &new_public_file,
+            "sample.pak",
+        )
+        .unwrap();
         assert_eq!(swap.signed_replacement_entries, 1);
         assert!(swap.archive_member_paths_match);
         assert!(!swap.runtime_mount_verified);
         let mut tampered = fs::read(&custom_hook).unwrap();
         tampered[10] ^= 0x80;
         fs::write(&custom_hook, tampered).unwrap();
-        assert!(crate::inspect_pak_hook_pair(
-            &archive, &resigned, &old_hook, &custom_hook,
-            &key, &new_public_file, "sample.pak",
-        ).is_err(), "a modified client hook outside its known RSA slot must fail");
+        assert!(
+            crate::inspect_pak_hook_pair(
+                &archive,
+                &resigned,
+                &old_hook,
+                &custom_hook,
+                &key,
+                &new_public_file,
+                "sample.pak",
+            )
+            .is_err(),
+            "a modified client hook outside its known RSA slot must fail"
+        );
         let replacement = root.path().join("replacement.bin");
         fs::write(
             &replacement,
