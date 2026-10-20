@@ -403,9 +403,13 @@ fn unique_gpu_material_bytes(surfaces: &[Surface]) -> usize {
             &surface.specular,
             &surface.gloss,
             &surface.opacity,
-        ].into_iter().enumerate() {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             if let Some(image) = image
-                && seen.insert((Arc::as_ptr(image) as usize, role)) {
+                && seen.insert((Arc::as_ptr(image) as usize, role))
+            {
                 bytes = bytes.saturating_add(image.as_raw().len());
             }
         }
@@ -510,9 +514,16 @@ mod tests {
     fn shared_dds_counts_once_per_gpu_role_not_per_cdf_attachment() {
         let image = Arc::new(image::RgbaImage::new(4, 4));
         let surface = Surface {
-            first_index: 0, index_count: 3, visible: true, transparent: false,
-            diffuse: Some(Arc::clone(&image)), normal: None, emissive: None,
-            specular: None, gloss: None, opacity: None,
+            first_index: 0,
+            index_count: 3,
+            visible: true,
+            transparent: false,
+            diffuse: Some(Arc::clone(&image)),
+            normal: None,
+            emissive: None,
+            specular: None,
+            gloss: None,
+            opacity: None,
         };
         let mut same = surface.clone();
         same.first_index = 3;
