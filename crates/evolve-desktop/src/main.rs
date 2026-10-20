@@ -4153,6 +4153,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::DbaConverted(result, dir, temp)) => {
+                    state.cdf_caf_preview = None;
                     let count = result.clips.len();
                     state.converted_dba_cache = Some(temp);
                     state.converted_glbs = result
@@ -4176,6 +4177,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                 }
                 Ok(Completed::MotionConverted(result, dir)) => {
+                    state.cdf_caf_preview = None;
                     state.status = format!(
                         "Converter produced {} validated GLB animation files, {} source clips from {}.",
                         result.glb_files.len(),
@@ -4197,6 +4199,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                 }
                 Ok(Completed::MotionGlb(motion)) => {
+                    state.cdf_caf_preview = None;
                     let clips = motion.list_clips();
                     state.status = format!(
                         "Loaded {} real glTF animation clip(s), {} source nodes.",
@@ -4339,6 +4342,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         let count = skin.original_vertices();
                         let bones = skin.original_bones();
                         let cyclic = skin.source_motion().cyclic;
+                        state.cdf_caf_preview = None;
                         state.skin_preview = Some(Arc::new(*skin));
                         state.motion_time = 0.0;
                         apply_current_skin_frame(state);
