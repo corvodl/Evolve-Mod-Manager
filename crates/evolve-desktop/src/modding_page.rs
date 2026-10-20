@@ -46,7 +46,7 @@ fn panel<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Containe
         })
 }
 
-fn menu(state: &State) -> Element<'_, Message> {
+fn menu(_state: &State) -> Element<'_, Message> {
     row![
         design::button("File")
             .style(design::text_button)
