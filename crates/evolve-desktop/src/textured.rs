@@ -9,9 +9,22 @@ use iced::{Event, Rectangle, mouse};
 use std::borrow::Cow;
 use std::sync::Arc;
 
+#[derive(Clone, Debug)]
+pub struct Surface {
+    pub first_index: u32,
+    pub index_count: u32,
+    pub diffuse: Option<Arc<image::RgbaImage>>,
+    pub normal: Option<Arc<image::RgbaImage>>,
+    pub emissive: Option<Arc<image::RgbaImage>>,
+    pub specular: Option<Arc<image::RgbaImage>>,
+    pub gloss: Option<Arc<image::RgbaImage>>,
+}
+
 #[derive(Clone)]
 pub struct Scene {
     pub mesh: Arc<RenderMesh>,
+    /// Per-attachment material ranges for complete CDF previews.
+    pub surfaces: Option<Arc<Vec<Surface>>>,
     pub diffuse: Option<Arc<image::RgbaImage>>,
     pub normal_map: Option<Arc<image::RgbaImage>>,
     pub emissive: Option<Arc<image::RgbaImage>>,
@@ -55,6 +68,7 @@ impl Vertex {
 pub struct Primitive {
     points: Vec<Vertex>,
     indices: Vec<u32>,
+    surfaces: Option<Arc<Vec<Surface>>>,
     diffuse: Option<Arc<image::RgbaImage>>,
     normal_map: Option<Arc<image::RgbaImage>>,
     emissive: Option<Arc<image::RgbaImage>>,
@@ -148,6 +162,7 @@ impl shader::Program<super::Message> for Scene {
         Primitive {
             points,
             indices: data.indices.clone(),
+            surfaces: self.surfaces.clone(),
             diffuse: self.diffuse.clone(),
             normal_map: self.normal_map.clone(),
             emissive: self.emissive.clone(),
@@ -172,6 +187,13 @@ impl shader::Program<super::Message> for Scene {
     }
 }
 
+struct GpuSurface {
+    range: std::ops::Range<u32>,
+    bind_group: wgpu::BindGroup,
+    // Bind groups must retain the original uploaded texture allocations.
+    _textures: Vec<wgpu::Texture>,
+}
+
 pub struct Pipeline {
     render_pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
@@ -186,6 +208,8 @@ pub struct Pipeline {
     last_emissive_identity: usize,
     last_specular_identity: usize,
     last_gloss_identity: usize,
+    last_surfaces_identity: usize,
+    gpu_surfaces: Vec<GpuSurface>,
     specular_texture: wgpu::Texture,
     specular_view: wgpu::TextureView,
     gloss_texture: wgpu::Texture,
@@ -480,6 +504,8 @@ impl Pipeline {
             last_emissive_identity: usize::MAX,
             last_specular_identity: usize::MAX,
             last_gloss_identity: usize::MAX,
+            last_surfaces_identity: usize::MAX,
+            gpu_surfaces: Vec::new(),
             specular_texture,
             specular_view,
             gloss_texture,
@@ -496,6 +522,73 @@ impl Pipeline {
             depth_dimensions: (1, 1),
         }
     }
+    fn upload_surfaces(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        surfaces: Option<&Arc<Vec<Surface>>>,
+        index_count: usize,
+    ) {
+        let identity = surfaces.map_or(0, |parts| Arc::as_ptr(parts) as usize);
+        if identity == self.last_surfaces_identity {
+            return;
+        }
+        self.last_surfaces_identity = identity;
+        self.gpu_surfaces.clear();
+        let Some(surfaces) = surfaces else { return };
+        // Validate the complete contiguous index coverage before rendering;
+        // an incomplete table must never paint unknown faces with a random map.
+        let mut cursor = 0u32;
+        for surface in surfaces.iter() {
+            if surface.first_index != cursor || surface.index_count == 0
+                || surface.index_count % 3 != 0
+            {
+                return;
+            }
+            let Some(end) = cursor.checked_add(surface.index_count) else { return };
+            if usize::try_from(end).is_err_or(|end| end > index_count) {
+                return;
+            }
+            cursor = end;
+        }
+        if usize::try_from(cursor).ok() != Some(index_count) {
+            return;
+        }
+        for part in surfaces.iter() {
+            let inputs = [
+                (part.diffuse.as_ref(), [210,205,205,255], wgpu::TextureFormat::Rgba8UnormSrgb, "CDF part diffuse"),
+                (part.normal.as_ref(), [128,128,255,255], wgpu::TextureFormat::Rgba8Unorm, "CDF part normal"),
+                (part.emissive.as_ref(), [0,0,0,255], wgpu::TextureFormat::Rgba8UnormSrgb, "CDF part emission"),
+                (part.specular.as_ref(), [0,0,0,255], wgpu::TextureFormat::Rgba8UnormSrgb, "CDF part specular"),
+                (part.gloss.as_ref(), [128,128,128,255], wgpu::TextureFormat::Rgba8Unorm, "CDF part gloss"),
+            ];
+            let mut textures = Vec::with_capacity(5);
+            let mut views = Vec::with_capacity(5);
+            for (image, fallback, format, label) in inputs {
+                let (texture, view) = Self::upload_map(device, queue, image, &fallback, format, label);
+                textures.push(texture);
+                views.push(view);
+            }
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Exact CDF attachment material"),
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&views[0]) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&views[1]) },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&views[2]) },
+                    wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&views[3]) },
+                    wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&views[4]) },
+                ],
+            });
+            self.gpu_surfaces.push(GpuSurface {
+                range: part.first_index..part.first_index + part.index_count,
+                bind_group: group,
+                _textures: textures,
+            });
+        }
+    }
+
     fn prepare_scene(
         &mut self,
         device: &wgpu::Device,
@@ -507,6 +600,7 @@ impl Pipeline {
             self.depth = Self::depth_view(device, size);
             self.depth_dimensions = size;
         }
+        self.upload_surfaces(device, queue, primitive.surfaces.as_ref(), primitive.indices.len());
         if !primitive.points.is_empty() && !primitive.indices.is_empty() {
             let vertex_bytes = bytemuck::cast_slice(&primitive.points);
             if vertex_bytes.len() > self.vertex_capacity {
@@ -680,10 +774,17 @@ impl Pipeline {
         );
         pass.set_scissor_rect(clip.x, clip.y, clip.width, clip.height);
         pass.set_pipeline(&self.render_pipeline);
-        pass.set_bind_group(0, &self.group, &[]);
         pass.set_vertex_buffer(0, self.vertex.slice(..));
         pass.set_index_buffer(self.index.slice(..), wgpu::IndexFormat::Uint32);
-        pass.draw_indexed(0..self.index_count, 0, 0..1);
+        if self.gpu_surfaces.is_empty() {
+            pass.set_bind_group(0, &self.group, &[]);
+            pass.draw_indexed(0..self.index_count, 0, 0..1);
+        } else {
+            for surface in &self.gpu_surfaces {
+                pass.set_bind_group(0, &surface.bind_group, &[]);
+                pass.draw_indexed(surface.range.clone(), 0, 0..1);
+            }
+        }
     }
 }
 impl shader::Pipeline for Pipeline {
