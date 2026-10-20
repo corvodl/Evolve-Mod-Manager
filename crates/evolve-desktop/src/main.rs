@@ -4,6 +4,7 @@ mod activity_window;
 mod asset_cache;
 mod asset_library_page;
 mod asset_viewer;
+mod assembly_materials;
 mod auto_resources;
 mod design;
 mod developer_auth;
@@ -43,7 +44,7 @@ use evolve_core::{
     initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_pak_hook_pair,
     inspect_signed_pak, list_mod_profiles, load_level_scene, material_texture_candidates,
     plan_mod_profile, prepare_client_hook, read_cdf, read_material, read_model, read_native_caf,
-    read_static_cdf_assembly, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry,
+    read_static_cdf_assembly_with_imported, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry,
     resign_signed_pak, resolve_cdf, resolve_imported_reference, resolve_materials,
     restore_profile_stage, restore_stage, scan_directory, scan_directory_with_progress,
     stage_status,
@@ -153,6 +154,7 @@ struct State {
     profile_feedback: String,
     diffuse_input: String,
     diffuse: Option<Arc<::image::RgbaImage>>,
+    cdf_surfaces: Option<Arc<Vec<textured::Surface>>>,
     texture_preview: Option<image::Handle>,
     diffuse_status: String,
     normal_input: String,
@@ -341,7 +343,7 @@ enum Operation {
     LoadGlbMotion(PathBuf),
     InspectCdf(PathBuf),
     InspectCdfResolved(PathBuf, Inventory),
-    BuildStaticCdf(PathBuf, Inventory),
+    BuildStaticCdf(PathBuf, Inventory, Option<PathBuf>, Option<String>, SharedCache),
     ResolveCdf(PathBuf, PathBuf),
     InspectModel(PathBuf),
     DiscoverModelResources(String, Inventory, Option<PathBuf>, Option<String>),
@@ -431,7 +433,7 @@ enum Completed {
     MotionGlb(AnimatedGlb),
     Character(CdfDefinition),
     CharacterResolved(CdfDefinition, CdfDependencyReport),
-    StaticCharacter(RenderMesh, AssemblyReport),
+    StaticCharacter(RenderMesh, AssemblyReport, Vec<textured::Surface>, Vec<String>),
     CharacterDependencies(CdfDependencyReport),
     Model(RenderMesh),
     ModelResources(String, auto_resources::AutoDiscovery),
@@ -897,10 +899,14 @@ impl Operation {
                 let resolved = resolve_cdf(&inventory, &cdf);
                 Ok(Completed::CharacterResolved(cdf, resolved))
             }
-            Self::BuildStaticCdf(source, inventory) => {
-                read_static_cdf_assembly(&source, &inventory)
-                    .map(|(mesh, report)| Completed::StaticCharacter(mesh, report))
-                    .map_err(|e| e.to_string())
+            Self::BuildStaticCdf(source, inventory, imported, build, cache) => {
+                let (mesh, report) = read_static_cdf_assembly_with_imported(
+                    &source, &inventory, imported.as_deref(), build.as_deref(),
+                ).map_err(|e| e.to_string())?;
+                let (surfaces, warnings) = assembly_materials::load(
+                    &report, &inventory, imported.as_deref(), build.as_deref(), &cache,
+                );
+                Ok(Completed::StaticCharacter(mesh, report, surfaces, warnings))
             }
             Self::RebuildSignedPak(
                 src,
@@ -2746,7 +2752,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.texture_preview = None;
             state.status =
                 "Validating exact CDF parts for a static preview (not a rigged export)...".into();
-            return launch(state, Operation::BuildStaticCdf(source, inventory.clone()));
+            let operation = Operation::BuildStaticCdf(
+                source,
+                inventory.clone(),
+                state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
+                resource_build(state),
+                state.preview_cache.clone(),
+            );
+            return launch(state, operation);
         }
         Message::ViewerAutoClipFilter(value) => state.auto_clip_filter = value,
         Message::ViewerToggleExportAnimations => {
@@ -4340,6 +4353,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.texture_preview = Some(handle);
                         state.material_report = None;
                         state.model = None;
+                        state.cdf_surfaces = None;
                         state.skin_preview = None;
                         state.native_caf = None;
                         state.glb_motion = None;
@@ -4384,16 +4398,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.cdf_dependencies = Some(report);
                     state.page = Some(Page::Models);
                 }
-                Ok(Completed::StaticCharacter(mesh, report)) => {
+                Ok(Completed::StaticCharacter(mesh, report, surfaces, material_warnings)) => {
                     state.texture_preview = None;
                     state.material_report = None;
                     state.status = format!(
-                        "Static CDF preview: {} exact parts, {} vertices, {} triangles, skin set {:?}. Rigged animation and multi-slot materials not enabled.",
+                        "CDF preview: {} attached parts, {} triangles; {} compiled bones verified, {} parts with original skin weights, {} material warnings.",
                         report.original_parts.len(),
-                        report.vertices,
                         report.triangles,
-                        report.selected_skin_set,
+                        report.verified_bones.unwrap_or(0),
+                        report.source_parts.iter().filter(|p| p.verified_skin_weights).count(),
+                        material_warnings.len(),
                     );
+                    state.auto_resource_note = report.warnings.iter()
+                        .chain(&material_warnings).take(3).cloned()
+                        .collect::<Vec<_>>().join(" | ");
+                    state.cdf_surfaces = Some(Arc::new(surfaces));
                     state.model = Some(Arc::new(mesh));
                     state.diffuse = None;
                     state.normal_map = None;
@@ -4462,6 +4481,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::Model(mesh)) => {
                     state.texture_preview = None;
+                    state.cdf_surfaces = None;
                     state.material_report = None;
                     state.skin_preview = None;
                     state.status = format!(
@@ -4515,6 +4535,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                 }
                 Ok(Completed::Terrain(mesh, info)) => {
+                    state.cdf_surfaces = None;
                     state.status = format!(
                         "Decoded source terrain {}×{} (stride {}).",
                         info.width, info.height, info.stride
