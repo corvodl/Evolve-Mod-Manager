@@ -723,7 +723,8 @@ pub fn resign_signed_pak(
         .len()
         .checked_sub(TRAILER_BYTES as u64)
         .ok_or(SignedPakError::Limits)?;
-    if io::copy(&mut input.by_ref().take(old_size), stage.as_file_mut())? != old_size {
+    let mut prefix = (&mut input).take(old_size);
+    if io::copy(&mut prefix, stage.as_file_mut())? != old_size {
         return Err(SignedPakError::Format("signed PAK truncated during re-sign".into()));
     }
     stage.write_all(&comment)?;
