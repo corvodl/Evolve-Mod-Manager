@@ -192,7 +192,7 @@ fn original_model_material(
     mesh: &Path,
     inventory: &Inventory,
     override_mtl: Option<&str>,
- ) -> Result<Option<(String, PathBuf)>, String> {
+) -> Result<Option<(String, PathBuf)>, String> {
     // Windows can spell an indexed temporary root with a \\?\\ prefix.
     // Compare canonical roots and meshes before producing virtual material paths.
     let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
@@ -325,7 +325,7 @@ fn exact_multi_slot_materials(
     mesh_path: &Path,
     inventory: &Inventory,
     override_mtl: Option<&str>,
- ) -> Result<Option<Vec<OriginalMaterialPng>>, String> {
+) -> Result<Option<Vec<OriginalMaterialPng>>, String> {
     let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
     let Some((virtual_mtl, material)) =
         original_model_material(&root, mesh_path, inventory, override_mtl)?
