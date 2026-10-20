@@ -288,6 +288,50 @@ changing these labels or authorizing v1.0.
   source-asset validation. Do not claim full automatic texture correctness
   or release v1.0 on this development milestone.
 
+## Signed Stage 2 CryPAK and client-hook swap preflight (PR #5)
+
+- Signed CryPAKs authenticate RSA-PSS SHA-256 against the exact case-sensitive
+  signed archive basename, decrypt their directory via original locally
+  supplied RSA-1024 PKCS#1 public key + Twofish keys, and verify member CRCs.
+  The rebuilt archive is signed to a **different, locally supplied matching**
+  private/public RSA pair, independently opened, and replaced member bytes
+  are round-tripped before a NEW output is published.
+- **Whole-archive resign** (no modified member) preserves *every byte* before
+  the 2320-byte signed comment, including encrypted local payloads, central
+  directory, original ZIP offsets and archive member ordering. Only RSA-PSS
+  signature and private-wrapped symmetric keys in the trailer are changed.
+  Outputs are staged, signature-verified, then published without overwriting.
+- The desktop and CLI distinguish the original `RSAKeyData.bin` alongside the
+  configured signing stage from the custom `stage/mykeys/public_key.bin`.
+  The exact old/new key for an archive is chosen by verifying its signature
+  (not by file name). No original or custom keys, DLLs, or game PAKs are
+  embedded in this repository.
+- **Client hook:** prepare a *new copy* of a user-supplied 4096-byte
+  `bin64_SteamRetail/inject.dll` only if its 140-byte RSA-1024 public DER
+  at byte offset `0x870` exactly matches the original known key. Validate
+  that **no other bytes** differ before a new staged `inject.dll` is
+  published. Neither the input DLL nor installed client is modified.
+- **Preflight:** independently verify both PAK signatures, identical
+  archived member names, and the hook's original/custom RSA slots. The
+  manager/CLI reject unexpected hook changes, incorrect keys, duplicate
+  targets and existing outputs. Synthetic RSA/Twofish test fixtures verify
+  re-signing, unchanged payload ciphertext, hook preparation, and corruption
+  rejection without including proprietary game binaries.
+- **Still not validated:** automatic paused-launcher live PAK and DLL swap,
+  hooks actually loading under Evolve Stage 2, real encrypted production PAK
+  acceptance, game-process lifecycle checks, automatic installed-file backup
+  and restore, and postlaunch archive mounting. The current Rust stage remains
+  isolated and offline-only. A successful cryptographic preflight or CI build
+  must **never** be reported as proof of a successful in-game swap.
+
+CLI examples (user-supplied files, with new destinations):
+
+```powershell
+evolve-cli signed resign original.pak RSAKeyData.bin private_key.pem public_key.bin original.pak new-folder/original.pak
+evolve-cli hook prepare bin64_SteamRetail/inject.dll RSAKeyData.bin public_key.bin staging/inject.dll
+evolve-cli hook pak-preflight original.pak new-folder/original.pak bin64_SteamRetail/inject.dll staging/inject.dll RSAKeyData.bin public_key.bin original.pak
+```
+
 ## Integrated Asset Viewer preview — PR #5
 
 - PR #5 combines complete development histories from PR #3 and PR #4
