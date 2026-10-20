@@ -736,6 +736,9 @@ mod tests {
             sections.push((kind, body[offset..offset + size].to_vec()));
         }
         let mut with_path = initial_five_directory(original_container(sections));
+        // Version 0 is the authored metadata record; original_container()
+        // deliberately gave all synthetic chunks version 0x800.
+        put_u32(&mut with_path, 24 + 4, 0);
         let path_at = u32_at(&with_path, 24 + 8).unwrap() as usize;
         let path = b"D:\\TRS_Perforce\\TRS\\Production\\Objects\\Scorpid3.chr\0";
         with_path[path_at..path_at + path.len()].copy_from_slice(path);
