@@ -30,7 +30,7 @@ mod view_navigation;
 mod viewer_grid;
 mod viewer_inspector;
 mod viewport;
-use asset_cache::{SharedCache, decoded_dds};
+use asset_cache::{SharedCache, decoded_dds, decoded_dds_indexed};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph,
@@ -352,7 +352,9 @@ enum Operation {
     InspectPak(PathBuf),
     AnalyzeStorage(PathBuf, PathBuf, PathBuf, PathBuf, PathBuf),
     InspectDds(PathBuf),
-    PreviewDds(PathBuf, SharedCache),
+    PreviewDds(
+        PathBuf, String, Inventory, Option<PathBuf>, Option<String>, SharedCache,
+    ),
     LoadDiffuse(PathBuf, SharedCache),
     LoadNormal(PathBuf, SharedCache),
     LoadEmissive(PathBuf, SharedCache),
@@ -856,8 +858,11 @@ impl Operation {
             Self::InspectDds(source) => inspect_dds(&source)
                 .map(Completed::Texture)
                 .map_err(|e| e.to_string()),
-            Self::PreviewDds(source, cache) => {
-                let (info, pixels) = decoded_dds(&cache, &source)?;
+            Self::PreviewDds(source, relative, inventory, library, build, cache) => {
+                let (info, pixels) = decoded_dds_indexed(
+                    &cache, &source, &relative, &inventory,
+                    library.as_deref(), build.as_deref(),
+                )?;
                 Ok(Completed::DdsPreview(source, info, pixels))
             }
             Self::DiscoverModelResources(relative, inventory, library_root, build) => {
@@ -3201,8 +3206,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .map(|c| PathBuf::from(&c.root)),
                     resource_build(state),
                 )
-            } else if filename.ends_with(".dds") || filename.ends_with(".dds.0") {
-                Operation::PreviewDds(source, state.preview_cache.clone())
+            } else if filename.ends_with(".dds")
+                || filename.rsplit_once(".dds.").is_some_and(|(_, n)| n.parse::<u8>().is_ok())
+            {
+                Operation::PreviewDds(
+                    source,
+                    relative.relative_path.clone(),
+                    inventory.clone(),
+                    state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
+                    resource_build(state),
+                    state.preview_cache.clone(),
+                )
             } else if filename.ends_with(".caf") {
                 Operation::LoadCaf(source)
             } else if filename.ends_with(".mtl") {
