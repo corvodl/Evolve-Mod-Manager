@@ -1238,7 +1238,6 @@ enum Message {
     ExportOpen,
     ExportClose,
     ExportFilterChanged(String),
-    ExportParentChanged(String),
     ExportFolderChanged(String),
     ExportToggleFile(usize),
     ExportToggleRigged,
@@ -1618,11 +1617,11 @@ fn native_export_picker(kind: &str) -> Option<PathBuf> {
             return None;
         }
         let path = PathBuf::from(String::from_utf8(output.stdout).ok()?.trim());
-        return if (kind == "folder" && path.is_dir()) || (kind != "folder" && path.is_file()) {
+        if (kind == "folder" && path.is_dir()) || (kind != "folder" && path.is_file()) {
             Some(path)
         } else {
             None
-        };
+        }
     }
     #[cfg(target_os = "macos")]
     {
@@ -3303,7 +3302,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ExportPicked(_, None) => {}
 
-        Message::ExportParentChanged(value) => state.export_parent = value,
         Message::ExportFolderChanged(value) => state.export_folder_name = value,
         Message::ExportToggleFile(index) => {
             let eligible = state
@@ -6456,10 +6454,8 @@ impl Desktop {
             }
             Message::ExportBegin => {
                 let command = update(&mut self.state, Message::ExportBegin);
-                if !self.state.export_dialog_open {
-                    if let Some(id) = self.export_id.take() {
-                        return Task::batch([command, window::close(id)]);
-                    }
+                if !self.state.export_dialog_open && let Some(id) = self.export_id.take() {
+                    return Task::batch([command, window::close(id)]);
                 }
                 command
             }
