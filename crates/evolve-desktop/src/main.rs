@@ -2972,6 +2972,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.input = source.to_string_lossy().to_string();
             state.texture_preview = None;
             let filename = relative.relative_path.to_ascii_lowercase();
+            // The explicit Preview button must use the same complete CDF
+            // assembly pipeline as single-click auto-preview. Parsing only
+            // dependency metadata here left the viewer with no geometry.
+            if filename.ends_with(".cdf") {
+                return update(state, Message::ViewerPreviewStaticCdf);
+            }
             let operation = if is_viewer_model_source(&filename) {
                 Operation::InspectIndexedModel(
                     source,
@@ -2983,8 +2989,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .map(|c| PathBuf::from(&c.root)),
                     resource_build(state),
                 )
-            } else if filename.ends_with(".cdf") {
-                Operation::InspectCdfResolved(source, inventory.clone())
+
             } else if filename.ends_with(".dds") || filename.ends_with(".dds.0") {
                 Operation::PreviewDds(source, state.preview_cache.clone())
             } else if filename.ends_with(".caf") {
@@ -6173,6 +6178,26 @@ mod project_edit_tests {
         let _task = update(&mut state, Message::ViewerSelectFile(2));
         assert!(!state.busy);
         assert_eq!(state.file_selection.indices.len(), 3);
+    }
+
+    #[test]
+    fn explicit_cdf_preview_uses_full_assembly_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("character.cdf");
+        std::fs::write(&source, b"<CharacterDefinition/>").unwrap();
+        let inventory = scan_directory(dir.path()).unwrap();
+        let mut state = State {
+            inventory: Some(inventory),
+            selected: Some(0),
+            ..State::default()
+        };
+        let _task = update(&mut state, Message::ViewerPreviewSelected);
+        assert!(state.busy, "CDF preview should start a background assembly");
+        assert_eq!(PathBuf::from(&state.input), source);
+        // A metadata-only CDF inspection used to leave the previously
+        // displayed character visible. The full-assembly route clears the
+        // previous DDS preview before starting its worker.
+        assert!(state.texture_preview.is_none());
     }
 
     #[test]
