@@ -428,8 +428,13 @@ mod leaf_slot_tests {
         assert_eq!(parsed.slots[2].name, "unused");
         assert_eq!(parsed.slots[3].name, "equipment");
         assert_eq!(parsed.slots[3].maps[0].role, "emittance");
-        assert_eq!(parse_material(br#"<Material Name="empty"/>"#)
-            .unwrap().slots.len(), 1);
+        assert_eq!(
+            parse_material(br#"<Material Name="empty"/>"#)
+                .unwrap()
+                .slots
+                .len(),
+            1
+        );
     }
 
     #[test]
