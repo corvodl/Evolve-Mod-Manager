@@ -11,6 +11,9 @@ struct Output {
 @group(0) @binding(3) var emissive_map: texture_2d<f32>;
 @group(0) @binding(4) var specular_map: texture_2d<f32>;
 @group(0) @binding(5) var gloss_map: texture_2d<f32>;
+// Explicit authored opacity map. Diffuse alpha may hold CryEngine gloss/mask
+// data, so it is never reused for a separate opacity-reference material.
+@group(0) @binding(6) var opacity_map: texture_2d<f32>;
 
 @vertex
 fn vs_main(
@@ -29,8 +32,7 @@ fn vs_main(
     return out;
 }
 
-@fragment
-fn fs_main(input: Output) -> @location(0) vec4<f32> {
+fn shade(input: Output) -> vec4<f32> {
     let base = textureSample(diffuse, material_sampler, input.uv);
     let encoded_normal = textureSample(normal_map, material_sampler, input.uv).rg;
     let glow = textureSample(emissive_map, material_sampler, input.uv).rgb;
@@ -107,6 +109,25 @@ fn fs_main(input: Output) -> @location(0) vec4<f32> {
     let specular_light = specular_color * highlight * exposure;
     // Emissive is independent of incident light, as in the game material.
     return vec4<f32>(base.rgb * irradiance * exposure + glow + specular_light, base.a);
+}
+
+@fragment
+fn fs_main(input: Output) -> @location(0) vec4<f32> {
+    // WGPU opaque mode disregards alpha entirely. For glass/water this is
+    // the authored diffuse-alpha translucency entrypoint.
+    return shade(input);
+}
+
+@fragment
+fn fs_opacity(input: Output) -> @location(0) vec4<f32> {
+    let color = shade(input);
+    // Use the explicitly authored opacity texture in linear space. This
+    // source controls transparency independently of the diffuse DDS alpha.
+    let opacity = clamp(textureSample(opacity_map, material_sampler, input.uv).r, 0.0, 1.0);
+    if opacity <= 0.001 {
+        discard;
+    }
+    return vec4<f32>(color.rgb, opacity);
 }
 
 // The floor uses a separate untextured line pipeline but the *same*
