@@ -7,6 +7,7 @@ mod asset_library_page;
 mod asset_viewer;
 mod auto_resources;
 mod design;
+mod crash_diagnostics;
 mod developer_auth;
 mod explorer_tree;
 mod launcher_bridge;
@@ -987,6 +988,7 @@ impl Operation {
                 .map(Completed::Character)
                 .map_err(|e| e.to_string()),
             Self::BuildStaticCdf(source, inventory, imported, build, cache) => {
+                crash_diagnostics::record("cdf_worker_begin", "reading authored CDF attachments");
                 let (mesh, report) = read_static_cdf_assembly_with_imported(
                     &source,
                     &inventory,
@@ -994,6 +996,11 @@ impl Operation {
                     build.as_deref(),
                 )
                 .map_err(|e| e.to_string())?;
+                crash_diagnostics::record("cdf_geometry_ready", &format!(
+                    "{} parts, {} vertices, {} triangles", report.original_parts.len(),
+                    report.vertices, report.triangles
+                ));
+                crash_diagnostics::record("cdf_materials_begin", "loading authored material maps");
                 let (surfaces, warnings) = assembly_materials::load(
                     &report,
                     &inventory,
@@ -1001,6 +1008,9 @@ impl Operation {
                     build.as_deref(),
                     &cache,
                 );
+                crash_diagnostics::record("cdf_worker_ready", &format!(
+                    "{} GPU material ranges, {} diagnostics", surfaces.len(), warnings.len()
+                ));
                 Ok(Completed::StaticCharacter(mesh, report, surfaces, warnings))
             }
             Self::RebuildSignedPak(
@@ -2983,6 +2993,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "CDF source changed or escaped the indexed Asset Library.".into();
                 return Task::none();
             }
+            crash_diagnostics::record("cdf_preview_selected", &entry.relative_path);
             state.input = source.to_string_lossy().into_owned();
             state.texture_preview = None;
             state.status =
@@ -4825,6 +4836,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::StaticCharacter(mesh, report, surfaces, material_warnings)) => {
+                    crash_diagnostics::record("cdf_ui_complete", &format!(
+                        "{} sections, {} triangles", surfaces.len(), report.triangles
+                    ));
                     state.render_source = None;
                     state.cdf_rest_mesh = Some(Arc::new(mesh.clone()));
                     state.cdf_report = Some(Arc::new(report.clone()));
@@ -5244,6 +5258,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                 }
                 Err(e) => {
+                    crash_diagnostics::record("worker_refused", &e);
                     state.auto_play_native_caf = false;
                     state.status = format!("Operation refused: {e}");
                     if state.auto_material_pending && state.viewer_queued_preview.is_none() {
@@ -6159,6 +6174,7 @@ impl Desktop {
 }
 
 fn main() -> iced::Result {
+    crash_diagnostics::install();
     let _supported_backends = wgpu::Backends::PRIMARY;
     iced::daemon(Desktop::new, Desktop::update, Desktop::view)
         .subscription(Desktop::subscription)
