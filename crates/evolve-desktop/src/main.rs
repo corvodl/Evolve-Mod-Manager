@@ -35,11 +35,11 @@ use evolve_core::{
     LibraryBatchImportReport, LibraryReferenceStatus, MaterialReport, ModProfile, ModelInfo,
     NativeCafMotion, PakHookPairReport, PakInventory, ProfileCatalog, ProfileMod, ProfilePlan,
     RenderMesh, RigReport, SignedPakInfo, StageTransaction, TerrainInfo, UnifiedCdfFbxReport,
-    VerifiedCafAssembly, VerifiedCafSkin, add_mod_to_profile, apply_profile_stage, apply_stage_pak, batch_stage_status,
-    compare_assets, convert_glb_to_fbx, convert_original_motion, create_mod_profile,
-    decode_dds_rgba, export_dds_png, export_flat_cdf_parts_fbx, export_level_scene_glb,
-    export_rigged_character_fbx_textured_animated, export_rigged_character_glb,
-    export_unified_cdf_fbx, extract_legacy_pak, extract_signed_pak,
+    VerifiedCafAssembly, VerifiedCafSkin, add_mod_to_profile, apply_profile_stage, apply_stage_pak,
+    batch_stage_status, compare_assets, convert_glb_to_fbx, convert_original_motion,
+    create_mod_profile, decode_dds_rgba, export_dds_png, export_flat_cdf_parts_fbx,
+    export_level_scene_glb, export_rigged_character_fbx_textured_animated,
+    export_rigged_character_glb, export_unified_cdf_fbx, extract_legacy_pak, extract_signed_pak,
     import_signed_library_selection, import_stage_pak, imported_archive_files, imported_library,
     initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_pak_hook_pair,
     inspect_signed_pak, list_mod_profiles, load_level_scene, material_texture_candidates,
@@ -331,7 +331,12 @@ enum Operation {
     ResolveMaterial(PathBuf, PathBuf, Option<PathBuf>, Option<String>),
     LoadCaf(PathBuf),
     BindCafPreview(PathBuf, PathBuf, NativeCafMotion),
-    BindCdfCafPreview(PathBuf, Arc<RenderMesh>, Arc<AssemblyReport>, NativeCafMotion),
+    BindCdfCafPreview(
+        PathBuf,
+        Arc<RenderMesh>,
+        Arc<AssemblyReport>,
+        NativeCafMotion,
+    ),
     RiggedGlb(PathBuf, PathBuf, PathBuf),
     FlatCdfFbx(PathBuf, Inventory, PathBuf, PathBuf, Option<PathBuf>),
     UnifiedCdfFbx(PathBuf, Inventory, PathBuf, PathBuf, Option<PathBuf>),
@@ -1289,7 +1294,10 @@ fn bind_current_native_caf(state: &mut State) -> Option<Task<Message>> {
         let report = state.cdf_report.as_ref()?.clone();
         let rest = state.cdf_rest_mesh.as_ref()?.clone();
         let clip = (**motion).clone();
-        return Some(launch(state, Operation::BindCdfCafPreview(source, rest, report, clip)));
+        return Some(launch(
+            state,
+            Operation::BindCdfCafPreview(source, rest, report, clip),
+        ));
     }
     if !["skin", "skinm", "chr", "chrm"]
         .iter()
