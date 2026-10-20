@@ -152,7 +152,9 @@ pub fn original_hook_for_stage(stage: &Path) -> Result<PathBuf, String> {
     let stage = directory(stage)?;
     let plan = json(&stage.join("rekey_plan.json"))?;
     let game = directory(Path::new(
-        plan["source_root"].as_str().ok_or("Signing stage has no original game root")?,
+        plan["source_root"]
+            .as_str()
+            .ok_or("Signing stage has no original game root")?,
     ))?;
     within_file(&game, "bin64_SteamRetail/inject.dll")
 }
@@ -373,15 +375,28 @@ mod tests {
         fs::create_dir(&game).unwrap();
         fs::create_dir(&stage).unwrap();
         fs::create_dir(game.join("bin64_SteamRetail")).unwrap();
-        fs::write(game.join("bin64_SteamRetail/inject.dll"), [0x55u8; HOOK_BYTES]).unwrap();
-        fs::write(stage.join("rekey_plan.json"), serde_json::to_vec(&serde_json::json!({
-            "source_root": game
-        })).unwrap()).unwrap();
+        fs::write(
+            game.join("bin64_SteamRetail/inject.dll"),
+            [0x55u8; HOOK_BYTES],
+        )
+        .unwrap();
+        fs::write(
+            stage.join("rekey_plan.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "source_root": game
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         assert_eq!(
             original_hook_for_stage(&stage).unwrap(),
             fs::canonicalize(game.join("bin64_SteamRetail/inject.dll")).unwrap()
         );
-        fs::write(stage.join("rekey_plan.json"), br#"{"source_root":"../escape"}"#).unwrap();
+        fs::write(
+            stage.join("rekey_plan.json"),
+            br#"{"source_root":"../escape"}"#,
+        )
+        .unwrap();
         assert!(original_hook_for_stage(&stage).is_err());
     }
 
