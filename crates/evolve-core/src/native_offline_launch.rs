@@ -131,6 +131,165 @@ pub fn inspect_native_offline_readiness(
     })
 }
 
+/// Immutable, hash-bound preparation record for a future native offline
+/// game swap. Deliberately read-only; an independent recovery worker and
+/// durable atomic journal are mandatory before mounting installed game files.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NativeOfflineSwapPlan {
+    pub schema: u32,
+    pub game_root: PathBuf,
+    pub stage_root: PathBuf,
+    pub profile_id: String,
+    pub targets: Vec<NativeOfflineTarget>,
+    pub native_launch_armed: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NativeOfflineTarget {
+    pub relative_path: String,
+    pub original_sha256: String,
+    pub replacement_sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NativeRecoveryState {
+    /// Exact installed original with no independent backup.
+    OriginalReady,
+    /// Original moved to an exact backup but custom PAK not yet mounted.
+    InterruptedBeforeMount,
+    /// Exact original backup and exact replacement installed.
+    OfflineReplacementMounted,
+    /// Original restored but the backup has not yet been removed.
+    StrandedOriginalBackup,
+}
+
+/// Pair the signed game original with its exact isolated staging original.
+/// The previous read-only gate checked both signatures but did not prove
+/// the *installed bytes* matched the stage used to build the custom PAK.
+pub fn plan_native_offline_swap(
+    game_root: &Path,
+    isolated_stage: &Path,
+    profile_id: &str,
+    original_public_key: &Path,
+    mod_public_key: &Path,
+) -> Result<NativeOfflineSwapPlan, String> {
+    let ready = inspect_native_offline_readiness(
+        game_root, isolated_stage, profile_id, original_public_key, mod_public_key,
+    )?;
+    let profile = plan_mod_profile(
+        &ready.stage_root, profile_id, original_public_key, mod_public_key,
+    ).map_err(|e| e.to_string())?;
+    let mut targets = Vec::with_capacity(profile.mods.len());
+    for item in &profile.mods {
+        let original = unlinked_game_member(&ready.game_root, &item.target)?;
+        let staged = regular(&ready.stage_root.join("paks").join(&item.target))?;
+        if !staged.starts_with(ready.stage_root.join("paks")) {
+            return Err("Original staged PAK escaped the isolated workspace".into());
+        }
+        let installed_digest = crate::staging::digest(&original)
+            .map_err(|e| format!("Installed original PAK cannot be hashed: {e}"))?;
+        let stage_digest = crate::staging::digest(&staged)
+            .map_err(|e| format!("Stage original PAK cannot be hashed: {e}"))?;
+        if installed_digest != stage_digest {
+            return Err(format!(
+                "Installed original differs from the exact signed staging base: {}",
+                item.target
+            ));
+        }
+        // plan_mod_profile has already verified signed mod pairs, member
+        // inventories and item.sha256. Recheck the replacement hash, since
+        // any bytes written after preflight invalidate this manifest.
+        let replacement = regular(Path::new(&item.source))?;
+        let replacement_sha256 = crate::staging::digest(&replacement)
+            .map_err(|e| format!("Replacement PAK cannot be hashed: {e}"))?;
+        if replacement_sha256 != item.sha256 {
+            return Err("Modified PAK changed while building launch plan".into());
+        }
+        targets.push(NativeOfflineTarget {
+            relative_path: item.target.clone(),
+            original_sha256: installed_digest,
+            replacement_sha256,
+        });
+    }
+    Ok(NativeOfflineSwapPlan {
+        schema: 1,
+        game_root: ready.game_root,
+        stage_root: ready.stage_root,
+        profile_id: ready.profile_id,
+        targets,
+        native_launch_armed: false,
+    })
+}
+
+/// Read only: classify the exact on-disk recovery phase for every planned
+/// target. Any third-party modifications or unexpected links fail CLOSED.
+/// This is NOT a restore operation and never deletes or renames game data.
+pub fn audit_native_offline_swap(
+    plan: &NativeOfflineSwapPlan,
+) -> Result<Vec<(String, NativeRecoveryState)>, String> {
+    if plan.schema != 1 || plan.native_launch_armed || plan.targets.is_empty()
+        || plan.targets.len() > 512
+    {
+        return Err("Untrusted or unsupported native swap manifest".into());
+    }
+    let root = folder(&plan.game_root)?;
+    let stage = folder(&plan.stage_root)?;
+    if root == stage || root.starts_with(&stage) || stage.starts_with(&root) {
+        return Err("Native offline swap roots overlap".into());
+    }
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+    for item in &plan.targets {
+        if item.relative_path.is_empty() || !seen.insert(item.relative_path.to_ascii_lowercase())
+            || item.relative_path.starts_with('/')
+            || item.relative_path.split('/').any(|part| {
+                part.is_empty() || part == "." || part == ".." || part.contains('\\') || part.contains(':')
+            })
+            || !item.relative_path.to_ascii_lowercase().ends_with(".pak")
+            || item.original_sha256.len() != 64
+            || item.replacement_sha256.len() != 64
+            || !item.original_sha256.bytes().all(|b| b.is_ascii_hexdigit())
+            || !item.replacement_sha256.bytes().all(|b| b.is_ascii_hexdigit())
+            || item.original_sha256.eq_ignore_ascii_case(&item.replacement_sha256)
+        {
+            return Err("Invalid or colliding native offline target".into());
+        }
+        let target = root.join(&item.relative_path);
+        let mut parent = root.clone();
+        for component in item.relative_path.split('/').take(item.relative_path.split('/').count() - 1) {
+            parent.push(component);
+            if !fs::symlink_metadata(&parent).map_err(|e| e.to_string())?.file_type().is_dir() {
+                return Err("Symlink or invalid installed game subfolder".into());
+            }
+        }
+        let backup = PathBuf::from(format!("{}.customkey-original", target.display()));
+        let original_exists = fs::symlink_metadata(&target).is_ok();
+        let backup_exists = fs::symlink_metadata(&backup).is_ok();
+        let original_hash = if original_exists {
+            let path = regular(&target)?;
+            Some(crate::staging::digest(&path).map_err(|e| e.to_string())?)
+        } else { None };
+        let backup_hash = if backup_exists {
+            let path = regular(&backup)?;
+            Some(crate::staging::digest(&path).map_err(|e| e.to_string())?)
+        } else { None };
+        if backup_hash.as_deref().is_some_and(|value| value != item.original_sha256) {
+            return Err(format!("Recovery backup changed: {}", item.relative_path));
+        }
+        let state = match (original_hash.as_deref(), backup_hash.as_deref()) {
+            (Some(value), None) if value == item.original_sha256 => NativeRecoveryState::OriginalReady,
+            (None, Some(_)) => NativeRecoveryState::InterruptedBeforeMount,
+            (Some(value), Some(_)) if value == item.replacement_sha256 =>
+                NativeRecoveryState::OfflineReplacementMounted,
+            (Some(value), Some(_)) if value == item.original_sha256 =>
+                NativeRecoveryState::StrandedOriginalBackup,
+            _ => return Err(format!("Unrecognized or changed game PAK state: {}", item.relative_path)),
+        };
+        result.push((item.relative_path.clone(), state));
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
