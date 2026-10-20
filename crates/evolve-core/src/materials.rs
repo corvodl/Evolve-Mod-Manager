@@ -231,7 +231,9 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
     // Source subset IDs address the flattened material leaves, not their
     // parent multi-material container. Keeping the container in slot zero
     // previously shifted every character equipment/emission map by one.
-    let slots = slots.into_iter().enumerate()
+    let slots = slots
+        .into_iter()
+        .enumerate()
         .filter_map(|(index, slot)| (!nonleaf[index]).then_some(slot))
         .collect::<Vec<_>>();
     if slots.is_empty() {
@@ -391,9 +393,9 @@ mod leaf_slot_tests {
             <Material Name="equipment"><Textures><Texture Map="Emittance" File="characters/glow.dds"/></Textures></Material>
             </SubMaterials></Material>"#;
         let parsed = parse_material(xml).unwrap();
-        assert_eq!(parsed.slots.len(),2);
-        assert_eq!(parsed.slots[0].name,"body");
-        assert_eq!(parsed.slots[1].name,"equipment");
-        assert_eq!(parsed.slots[1].maps[0].role,"emittance");
+        assert_eq!(parsed.slots.len(), 2);
+        assert_eq!(parsed.slots[0].name, "body");
+        assert_eq!(parsed.slots[1].name, "equipment");
+        assert_eq!(parsed.slots[1].maps[0].role, "emittance");
     }
 }
