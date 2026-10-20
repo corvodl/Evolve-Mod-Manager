@@ -235,7 +235,8 @@ fn authored_maps(
         let (_info, image) = decoded_dds(cache, &canonical)?;
         let required = image.as_raw().len();
         if !budget.decoded.contains(&canonical) {
-            budget.bytes_loaded = budget.bytes_loaded
+            budget.bytes_loaded = budget
+                .bytes_loaded
                 .checked_add(required)
                 .ok_or("Decoded CDF texture budget overflow")?;
             if budget.bytes_loaded > MAX_DECODED_ASSEMBLY_BYTES {
