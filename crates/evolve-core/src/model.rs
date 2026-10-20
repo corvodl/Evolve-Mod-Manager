@@ -745,8 +745,78 @@ pub(crate) mod tests {
         bytes.extend_from_slice(&99u32.to_le_bytes());
         assert!(has_original_mesh_subset_table(&bytes).unwrap());
         assert_eq!(original_mesh_subsets(&bytes, 3).unwrap(), vec![(0, 3, 10)]);
+        let mut console = bytes.clone();
+        // The historical CGF subset table shares the same original material
+        // index semantics with the old CHR table but uses big-endian fields.
+        convert_2012_streams_to_console(&mut console);
+        console[offset + 4..offset + 8].copy_from_slice(&0x80000800u32.to_le_bytes());
+        for at in (offset + 16..offset + 32).step_by(4) {
+            let value = u32at(&console, at).unwrap();
+            console[at..at + 4].copy_from_slice(&value.to_be_bytes());
+        }
+        for at in (offset + 32..offset + 32 + 20).step_by(4) {
+            let value = u32at(&console, at).unwrap();
+            console[at..at + 4].copy_from_slice(&value.to_be_bytes());
+        }
+        assert_eq!(original_mesh_subsets(&console, 3).unwrap(), vec![(0, 3, 10)]);
         bytes[offset + 48] = 200;
         assert!(original_mesh_subsets(&bytes, 3).is_err());
+    }
+
+    // Synthetic copy of the stream endian variant used by historical 2012
+    // CGFs; the 20-byte outer chunk directory remains little-endian while
+    // the geometry stream payload and dimensions are big-endian.
+    fn convert_2012_streams_to_console(data: &mut [u8]) {
+        let table = u32at(data, 16).unwrap() as usize;
+        let count = u32at(data, table).unwrap() as usize;
+        for row in 0..count {
+            let at = table + 4 + row * 20;
+            if u32at(data, at).unwrap() != CRYTEK_STREAM {
+                continue;
+            }
+            let offset = u32at(data, at + 8).unwrap() as usize;
+            let kind = u32at(data, offset + 20).unwrap();
+            let n = u32at(data, offset + 24).unwrap() as usize;
+            let stride = u32at(data, offset + 28).unwrap() as usize;
+            for field in 0..6 {
+                let pos = offset + 16 + field * 4;
+                let original = u32at(data, pos).unwrap();
+                data[pos..pos + 4].copy_from_slice(&original.to_be_bytes());
+            }
+            match kind {
+                0 | 1 | 2 => {
+                    for pos in (offset + 40..offset + 40 + n * stride).step_by(4) {
+                        let original = u32at(data, pos).unwrap();
+                        data[pos..pos + 4].copy_from_slice(&original.to_be_bytes());
+                    }
+                }
+                5 => {
+                    for pos in (offset + 40..offset + 40 + n * stride).step_by(2) {
+                        data.swap(pos, pos + 1);
+                    }
+                }
+                _ => {}
+            }
+            data[offset + 4..offset + 8].copy_from_slice(&0x80000800u32.to_le_bytes());
+        }
+    }
+
+    #[test]
+    fn historical_console_2012_cgf_coordinates_indices_and_uvs_decode() {
+        let mut raw = legacy_2012_fixture();
+        convert_2012_streams_to_console(&mut raw);
+        let mesh = parse_model_bytes(&raw).unwrap();
+        assert_eq!(mesh.info.format, "CryTek 0x745");
+        assert_eq!(mesh.positions, vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]]);
+        assert_eq!(mesh.indices, vec![0, 1, 2]);
+        assert_eq!(mesh.uv0.unwrap()[2], [0., 1.]);
+        assert_eq!(original_mesh_subsets(&raw, 3).unwrap(), vec![(0, 3, 0)]);
+        // A malformed console stream must still fail instead of displaying
+        // plausibly shaped but incorrect geometry.
+        let table = u32at(&raw, 16).unwrap() as usize;
+        let position = u32at(&raw, table + 4 + 8).unwrap() as usize;
+        raw[position + 40..position + 44].copy_from_slice(&f32::NAN.to_be_bytes());
+        assert!(parse_model_bytes(&raw).is_err());
     }
 
     #[test]
