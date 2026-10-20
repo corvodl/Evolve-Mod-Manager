@@ -755,7 +755,10 @@ pub(crate) mod tests {
             let value = u32at(&console, at).unwrap();
             console[at..at + 4].copy_from_slice(&value.to_be_bytes());
         }
-        assert_eq!(original_mesh_subsets(&console, 3).unwrap(), vec![(0, 3, 10)]);
+        assert_eq!(
+            original_mesh_subsets(&console, 3).unwrap(),
+            vec![(0, 3, 10)]
+        );
         bytes[offset + 48] = 200;
         assert!(original_mesh_subsets(&bytes, 3).is_err());
     }
@@ -809,7 +812,10 @@ pub(crate) mod tests {
         convert_2012_streams_to_console(&mut raw);
         let mesh = parse_model_bytes(&raw).unwrap();
         assert_eq!(mesh.info.format, "CryTek 0x745");
-        assert_eq!(mesh.positions, vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]]);
+        assert_eq!(
+            mesh.positions,
+            vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]]
+        );
         assert_eq!(mesh.indices, vec![0, 1, 2]);
         assert_eq!(mesh.uv0.unwrap()[2], [0., 1.]);
         assert_eq!(original_mesh_subsets(&raw, 3).unwrap(), vec![(0, 3, 0)]);
