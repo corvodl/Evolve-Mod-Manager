@@ -295,6 +295,17 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         panel(column![
             design::button(text(format!("Keep permanent original snapshots: {}", if state.preferences.keep_original_snapshots { "On" } else { "Off" }))).on_press(Message::PreferenceSnapshots).style(design::secondary),
             design::button(text(format!("Show activity during tasks: {}", if state.preferences.show_activity_on_tasks { "On" } else { "Off" }))).on_press(Message::PreferenceActivity).style(design::secondary),
+            text("Crash reports").size(15),
+            text("Local diagnostics for model loading, GPU uploads, and Rust crashes. Enabled by default; logs may include local asset names and file paths.")
+                .size(12).style(design::muted),
+            design::button(text(format!("Crash logging: {}", if state.preferences.crash_logging_enabled { "On" } else { "Off" })))
+                .on_press(Message::PreferenceCrashLogging).style(design::secondary),
+            row![
+                design::button("Open crash log").on_press(Message::OpenCrashLogs).style(design::secondary),
+                design::button("Open logs folder").on_press(Message::OpenCrashLogsFolder).style(design::secondary),
+            ].spacing(8),
+            text("Disabling logging stops new entries but does not delete existing logs. A native Windows fail-fast may not produce a Rust panic entry.")
+                .size(11).style(design::muted),
             text("Recovery settings do not imply that every private-manager swap operation has been ported.").size(11).style(design::muted),
         ].spacing(8)),
         ].spacing(12).into(),
