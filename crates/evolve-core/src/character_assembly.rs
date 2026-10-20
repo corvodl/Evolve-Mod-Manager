@@ -662,7 +662,10 @@ mod tests {
         assert_eq!(report.source_parts.len(), 2);
         assert_eq!(report.source_parts[0].first_index, 0);
         assert_eq!(report.source_parts[1].first_index, 3);
-        assert_eq!(report.source_parts[0].binding, report.source_parts[1].binding);
+        assert_eq!(
+            report.source_parts[0].binding,
+            report.source_parts[1].binding
+        );
     }
 
     #[test]
