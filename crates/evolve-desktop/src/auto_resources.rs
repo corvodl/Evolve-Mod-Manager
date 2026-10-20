@@ -152,14 +152,19 @@ pub fn discover(
                     source = cdf.skeleton.clone();
                     match exact(inv, &cdf.skeleton, imported, build) {
                         Ok(Some(skeleton)) => found.skeleton = Some(skeleton),
-                        Ok(None) => found.warnings.push(format!(
-                            "CDF compiled skeleton not found: {}",cdf.skeleton)),
+                        Ok(None) => found
+                            .warnings
+                            .push(format!("CDF compiled skeleton not found: {}", cdf.skeleton)),
                         Err(error) => found.warnings.push(error),
                     }
                 }
-                Err(error) => found.warnings.push(format!("Cannot read selected CDF: {error}")),
+                Err(error) => found
+                    .warnings
+                    .push(format!("Cannot read selected CDF: {error}")),
             },
-            Ok(None) => found.warnings.push("CDF missing from indexed assets".into()),
+            Ok(None) => found
+                .warnings
+                .push("CDF missing from indexed assets".into()),
             Err(error) => found.warnings.push(error),
         }
     }
