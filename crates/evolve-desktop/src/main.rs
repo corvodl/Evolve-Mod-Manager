@@ -353,7 +353,12 @@ enum Operation {
     AnalyzeStorage(PathBuf, PathBuf, PathBuf, PathBuf, PathBuf),
     InspectDds(PathBuf),
     PreviewDds(
-        PathBuf, String, Inventory, Option<PathBuf>, Option<String>, SharedCache,
+        PathBuf,
+        String,
+        Inventory,
+        Option<PathBuf>,
+        Option<String>,
+        SharedCache,
     ),
     LoadDiffuse(PathBuf, SharedCache),
     LoadNormal(PathBuf, SharedCache),
@@ -860,8 +865,12 @@ impl Operation {
                 .map_err(|e| e.to_string()),
             Self::PreviewDds(source, relative, inventory, library, build, cache) => {
                 let (info, pixels) = decoded_dds_indexed(
-                    &cache, &source, &relative, &inventory,
-                    library.as_deref(), build.as_deref(),
+                    &cache,
+                    &source,
+                    &relative,
+                    &inventory,
+                    library.as_deref(),
+                    build.as_deref(),
                 )?;
                 Ok(Completed::DdsPreview(source, info, pixels))
             }
@@ -3207,13 +3216,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     resource_build(state),
                 )
             } else if filename.ends_with(".dds")
-                || filename.rsplit_once(".dds.").is_some_and(|(_, n)| n.parse::<u8>().is_ok())
+                || filename
+                    .rsplit_once(".dds.")
+                    .is_some_and(|(_, n)| n.parse::<u8>().is_ok())
             {
                 Operation::PreviewDds(
                     source,
                     relative.relative_path.clone(),
                     inventory.clone(),
-                    state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
+                    state
+                        .library_catalog
+                        .as_ref()
+                        .map(|c| PathBuf::from(&c.root)),
                     resource_build(state),
                     state.preview_cache.clone(),
                 )
