@@ -464,6 +464,72 @@ mod tests {
         assert!(png_relative_path("textures/Scorpid.tif").is_err());
     }
     #[test]
+    fn named_folder_texture_export_writes_png_without_blender() {
+        let source = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let mut dds = vec![0u8; 128];
+        dds[..4].copy_from_slice(b"DDS ");
+        dds[4..8].copy_from_slice(&124u32.to_le_bytes());
+        dds[8..12].copy_from_slice(&0x21007u32.to_le_bytes());
+        dds[12..16].copy_from_slice(&4u32.to_le_bytes());
+        dds[16..20].copy_from_slice(&4u32.to_le_bytes());
+        dds[28..32].copy_from_slice(&1u32.to_le_bytes());
+        dds[76..80].copy_from_slice(&32u32.to_le_bytes());
+        dds[80..84].copy_from_slice(&4u32.to_le_bytes());
+        dds[84..88].copy_from_slice(b"DXT1");
+        dds.extend_from_slice(&[0, 248, 224, 7, 0, 0, 0, 0]);
+        fs::create_dir(source.path().join("textures")).unwrap();
+        fs::write(source.path().join("textures/diffuse.dds.0"), dds).unwrap();
+        let inventory = crate::scan_directory(source.path()).unwrap();
+        let output = parent.path().join("My Character Textures");
+        let options = ExportBundleOptions {
+            destination: output.clone(),
+            selected: vec!["textures/diffuse.dds.0".into()],
+            blender: PathBuf::new(),
+            skeleton: None, diffuse: None, caf: None, rigged: false,
+            embed_textures: false, export_dependencies: false,
+            equipment: EquipmentOverrides::new(),
+        };
+        let report = export_bundle(&inventory, &options).unwrap();
+        assert_eq!(report.png_textures, 1);
+        assert_eq!(report.exported, vec!["diffuse.png"]);
+        let image = fs::read(output.join("diffuse.png")).unwrap();
+        assert!(image.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(!output.join("diffuse.dds").exists());
+        assert!(source.path().join("textures/diffuse.dds.0").exists());
+        assert!(export_bundle(&inventory, &options).is_err());
+    }
+
+    #[test]
+    fn mtl_dependencies_export_png_not_raw_dds() {
+        let source = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        fs::create_dir(source.path().join("characters")).unwrap();
+        fs::create_dir(source.path().join("textures")).unwrap();
+        let mut dds = vec![0u8; 128];
+        dds[..4].copy_from_slice(b"DDS ");
+        dds[4..8].copy_from_slice(&124u32.to_le_bytes());
+        dds[8..12].copy_from_slice(&0x21007u32.to_le_bytes());
+        dds[12..16].copy_from_slice(&4u32.to_le_bytes());
+        dds[16..20].copy_from_slice(&4u32.to_le_bytes());
+        dds[28..32].copy_from_slice(&1u32.to_le_bytes());
+        dds[76..80].copy_from_slice(&32u32.to_le_bytes());
+        dds[80..84].copy_from_slice(&4u32.to_le_bytes());
+        dds[84..88].copy_from_slice(b"DXT1");
+        dds.extend_from_slice(&[0, 248, 224, 7, 0, 0, 0, 0]);
+        fs::write(source.path().join("textures/body.dds.0"), dds).unwrap();
+        fs::write(source.path().join("characters/body.mtl"),
+            br#"<Material Name="body"><Textures><Texture Map="Diffuse" File="textures/body.dds"/></Textures></Material>"#).unwrap();
+        let inventory = crate::scan_directory(source.path()).unwrap();
+        let (pngs, other) = dependencies(&fs::canonicalize(source.path()).unwrap(),
+            &inventory, &["characters/body.mtl".to_string()], staging.path()).unwrap();
+        assert_eq!((pngs, other), (1, 0));
+        let png = staging.path().join("textures/textures/body.png");
+        assert!(fs::read(png).unwrap().starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(!staging.path().join("textures/textures/body.dds.0").exists());
+    }
+
+    #[test]
     fn disallow_traversal_and_existing_folder() {
         assert!(relative_path("../escape.cdf").is_err());
         assert!(relative_path("characters/body.cdf").is_ok());
