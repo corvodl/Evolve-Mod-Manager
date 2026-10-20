@@ -61,6 +61,11 @@ fn chunks(data: &[u8]) -> Result<Vec<Chunk<'_>>, RigError> {
     if end > data.len() {
         return Err(invalid("Incomplete historical skeletal chunk directory"));
     }
+    // Five-dword directories in the 2012 console character assets occur at
+    // file offset 20, BEFORE the compiled bone/vertex chunks. The older
+    // synthetic Rust fixtures also cover a five-dword directory at EOF.
+    // Keep both validated layouts, but never accept chunks overlapping the
+    // directory or a mixture of before/after-table ranges.
     let mut records = Vec::with_capacity(count);
     let mut ids = HashSet::new();
     let mut offsets = HashSet::new();
@@ -70,7 +75,7 @@ fn chunks(data: &[u8]) -> Result<Vec<Chunk<'_>>, RigError> {
         let version = u32_at(data, at + 4)?;
         let offset = u32_at(data, at + 8)? as usize;
         let id = u32_at(data, at + 12)?;
-        if !ids.insert(id) || !offsets.insert(offset) || offset < 20 || offset >= table {
+        if !ids.insert(id) || !offsets.insert(offset) || offset < 20 {
             return Err(invalid("Historical bone/stream chunk table mismatch"));
         }
         let declared_size = if terminal_four {
@@ -79,6 +84,16 @@ fn chunks(data: &[u8]) -> Result<Vec<Chunk<'_>>, RigError> {
             Some(u32_at(data, at + 16)? as usize)
         };
         records.push((kind, version, offset, id, declared_size));
+    }
+    let first_data_after_table = !terminal_four && records.iter().all(|r| r.2 >= end);
+    let last_data_before_table = records.iter().all(|r| r.2 < table);
+    if !first_data_after_table && !last_data_before_table {
+        return Err(invalid("Historical chunk directory overlaps source data"));
+    }
+    // The legacy terminal four-dword directory has no sizes, and is valid
+    // only when it exactly consumes the file tail.
+    if terminal_four && !last_data_before_table {
+        return Err(invalid("Historical terminal chunk directory is not at EOF"));
     }
     let mut sorted = records.iter().map(|r| r.2).collect::<Vec<_>>();
     sorted.sort_unstable();
@@ -93,8 +108,13 @@ fn chunks(data: &[u8]) -> Result<Vec<Chunk<'_>>, RigError> {
                 .map_err(|_| RigError::Limits)?;
             sorted.get(index + 1).copied().unwrap_or(table)
         };
+        let valid_region = if first_data_after_table {
+            offset >= end && upper <= data.len()
+        } else {
+            offset < table && upper <= table
+        };
         if upper < offset + 16
-            || upper > table
+            || !valid_region
             || data.get(offset..offset + 4) != Some(&kind.to_le_bytes())
             || u32_at(data, offset + 4)? != version
             || u32_at(data, offset + 8)? as usize != offset
@@ -571,6 +591,68 @@ mod tests {
         assert_eq!(weights.joint_ids[1][0], 1);
         assert_eq!(weights.weight_bytes[1][0], 255);
         assert_eq!(weights.subsets, 1);
+    }
+
+    /// Rebuild an existing validated test body into the original 2012
+    /// layout: five-dword directory immediately after the 20-byte header,
+    /// followed by all the actual source chunks. Unlike the terminal layout,
+    /// the table is BEFORE the compiled streams and skeleton.
+    fn initial_five_directory(data: Vec<u8>) -> Vec<u8> {
+        let table = u32_at(&data, 16).unwrap() as usize;
+        let count = u32_at(&data, table).unwrap() as usize;
+        let mut assembled = data[..20].to_vec();
+        put_u32(&mut assembled, 16, 20);
+        assembled.extend_from_slice(&(count as u32).to_le_bytes());
+        assembled.resize(24 + count * 20, 0);
+
+        for index in 0..count {
+            let original_record = table + 4 + index * 20;
+            let offset = u32_at(&data, original_record + 8).unwrap() as usize;
+            let size = u32_at(&data, original_record + 16).unwrap() as usize;
+            let next = assembled.len();
+            assembled.extend_from_slice(&data[offset..offset + size]);
+            put_u32(&mut assembled, next + 8, next as u32);
+            let destination_record = 24 + index * 20;
+            assembled[destination_record..destination_record + 20]
+                .copy_from_slice(&data[original_record..original_record + 20]);
+            put_u32(&mut assembled, destination_record + 8, next as u32);
+        }
+        assembled
+    }
+
+    #[test]
+    fn original_2012_header_first_chunk_directory_preserves_bones_and_weights() {
+        let body = initial_five_directory(sample_body());
+        let master = initial_five_directory(original_container(vec![(BONE, sample_bones())]));
+        let (skeleton, weights) = read_legacy_skin(&body, &master, 3).unwrap();
+        assert_eq!(skeleton.names, ["root", "arm"]);
+        assert_eq!(skeleton.parents, [None, Some(0)]);
+        assert_eq!(weights.influences, 4);
+        assert_eq!(weights.weight_bytes[1][0], 255);
+        assert_eq!(weights.joint_ids[1][0], 1);
+        assert_eq!(weights.subsets, 1);
+    }
+
+    #[test]
+    fn rejects_header_first_chunk_overlaps_bad_sizes_and_forged_identity() {
+        let fixture = initial_five_directory(sample_body());
+        let mut overlaps_directory = fixture.clone();
+        put_u32(&mut overlaps_directory, 24 + 8, 32);
+        assert!(parse_legacy_skeleton(&overlaps_directory).is_err());
+
+        let mut overlapping_chunks = fixture.clone();
+        let offset = u32_at(&overlapping_chunks, 24 + 8).unwrap();
+        put_u32(&mut overlapping_chunks, 24 + 20 + 8, offset);
+        assert!(parse_legacy_skeleton(&overlapping_chunks).is_err());
+
+        let mut oversized = fixture.clone();
+        put_u32(&mut oversized, 24 + 16, u32::MAX);
+        assert!(parse_legacy_skeleton(&oversized).is_err());
+
+        let mut forged_header = fixture;
+        let first = u32_at(&forged_header, 24 + 8).unwrap() as usize;
+        put_u32(&mut forged_header, first + 12, 999);
+        assert!(parse_legacy_skeleton(&forged_header).is_err());
     }
 
     /// The 2012 private parser accepts this terminal four-dword table.
