@@ -112,6 +112,15 @@ fn shade(input: Output) -> vec4<f32> {
 }
 
 @fragment
+fn fs_opaque(input: Output) -> @location(0) vec4<f32> {
+    // A disabled GPU blend alone does not make the offscreen wgpu target
+    // opaque: copying diffuse alpha into that target can still create holes
+    // when Iced composites the viewport with the rest of the interface.
+    let color = shade(input);
+    return vec4<f32>(color.rgb, 1.0);
+}
+
+@fragment
 fn fs_main(input: Output) -> @location(0) vec4<f32> {
     // WGPU opaque mode disregards alpha entirely. For glass/water this is
     // the authored diffuse-alpha translucency entrypoint.
