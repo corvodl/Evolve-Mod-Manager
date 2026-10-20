@@ -7,9 +7,9 @@ pub mod batch;
 pub mod caf_layers;
 pub mod cdf;
 pub mod character_assembly;
-pub mod client_hook;
 pub mod character_folder_fbx;
 pub mod character_unified_fbx;
+pub mod client_hook;
 pub mod converter;
 pub mod cryxml;
 pub mod dds;
@@ -46,15 +46,15 @@ pub use cdf::{
     AssetResolution, CdfAttachment, CdfDefinition, CdfDependencyReport, CdfError, parse_cdf,
     read_cdf, resolve_cdf, resolve_virtual,
 };
-pub use client_hook::{
-    ClientHookError, HookPairReport, PakHookPairReport, inspect_client_hook_pair,
-    inspect_pak_hook_pair, prepare_client_hook,
-};
 pub use character_assembly::{
     AssemblyError, AssemblyReport, combine_source_meshes, read_static_cdf_assembly,
 };
 pub use character_folder_fbx::{FlatCdfFbxReport, export_flat_cdf_parts_fbx};
 pub use character_unified_fbx::{UnifiedCdfFbxReport, export_unified_cdf_fbx};
+pub use client_hook::{
+    ClientHookError, HookPairReport, PakHookPairReport, inspect_client_hook_pair,
+    inspect_pak_hook_pair, prepare_client_hook,
+};
 pub use converter::{ConvertedMotion, ConverterError, convert_original_motion};
 pub use dds::{DdsError, DdsFormat, DdsInfo, decode_dds_rgba, export_dds_png, inspect_dds};
 pub use dependency_graph::{
