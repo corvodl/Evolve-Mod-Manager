@@ -138,7 +138,7 @@ mod tests {
         fs::create_dir(stage.join("paks")).unwrap();
         fs::write(stage.join("paks").join("libs.pak"), b"fake").unwrap();
         assert_eq!(
-            staged_target(root.path(), &stage.join("paks/libs.pak")).unwrap(),
+            staged_target(&stage, &stage.join("paks/libs.pak")).unwrap(),
             "libs.pak"
         );
         assert!(staged_target(&stage, &keys.join("public_key.bin")).is_err());
