@@ -192,9 +192,13 @@ fn original_model_material(
     mesh: &Path,
     inventory: &Inventory,
     override_mtl: Option<&str>,
-) -> Result<Option<(String, PathBuf)>, String> {
+ ) -> Result<Option<(String, PathBuf)>, String> {
+    // Windows can spell an indexed temporary root with a \\?\\ prefix.
+    // Compare canonical roots and meshes before producing virtual material paths.
+    let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
+    let mesh = fs::canonicalize(mesh).map_err(|e| e.to_string())?;
     let relative = mesh
-        .strip_prefix(root)
+        .strip_prefix(&root)
         .map_err(|_| "Model material lookup escaped original asset root")?;
     let virtual_mesh = relative.to_string_lossy().replace('\\', "/");
     let parent = virtual_mesh
@@ -252,7 +256,7 @@ fn original_model_material(
         }
         match resolve_virtual(inventory, &candidate) {
             AssetResolution::Found(relative) => {
-                let file = input_file(root, &relative)?;
+                let file = input_file(&root, &relative)?;
                 return Ok(Some((relative, file)));
             }
             AssetResolution::Missing => {}
@@ -321,9 +325,10 @@ fn exact_multi_slot_materials(
     mesh_path: &Path,
     inventory: &Inventory,
     override_mtl: Option<&str>,
-) -> Result<Option<Vec<OriginalMaterialPng>>, String> {
+ ) -> Result<Option<Vec<OriginalMaterialPng>>, String> {
+    let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
     let Some((virtual_mtl, material)) =
-        original_model_material(root, mesh_path, inventory, override_mtl)?
+        original_model_material(&root, mesh_path, inventory, override_mtl)?
     else {
         return Ok(None);
     };
@@ -348,7 +353,7 @@ fn exact_multi_slot_materials(
                 "gloss" | "glossiness" | "smoothness" => 4,
                 _ => continue,
             };
-            let Some(file) = exact_original_texture(root, inventory, &virtual_mtl, &map.path)?
+            let Some(file) = exact_original_texture(&root, inventory, &virtual_mtl, &map.path)?
             else {
                 continue;
             };
@@ -745,6 +750,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let model = root.path().join("characters/monsters/scorpid_2");
         fs::create_dir_all(model.join("textures")).unwrap();
+        // Model needs a real source path for the canonical ownership check.
+        fs::write(model.join("scorpid3.chr"), b"source render geometry").unwrap();
         fs::write(
             model.join("scorpid3.mtl"),
             br#"<Material Name="Scorpid"><Textures><Texture Map="Diffuse" File="body.tif"/></Textures></Material>"#,
