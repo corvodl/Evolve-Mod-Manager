@@ -650,7 +650,7 @@ mod tests {
         let cdf = root.path().join("character.cdf");
         fs::write(&cdf, br#"<CharacterDefinition><Model File="missing.chr"/><AttachmentList><Attachment Type="CA_SKIN" AName="Body" Binding="missing.skin"/></AttachmentList></CharacterDefinition>"#).unwrap();
         let inv = crate::scan_directory(root.path()).unwrap();
-        assert!(plan_parts(&cdf, &inv).is_err());
+        assert!(plan_parts(&cdf, &inv, &EquipmentOverrides::new()).is_err());
         let target = output.path().join("character.fbx");
         assert!(
             export_unified_cdf_fbx(&cdf, &inv, Path::new("Blender.exe"), &target, None).is_err()
