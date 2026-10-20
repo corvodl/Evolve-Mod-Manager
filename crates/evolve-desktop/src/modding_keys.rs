@@ -124,19 +124,23 @@ mod tests {
     #[test]
     fn derives_keys_from_selected_stage_without_keys_in_settings() {
         let root = tempfile::tempdir().unwrap();
-        let keys = root.path().join("mykeys");
+        let stage = root.path().join("staged");
+        fs::create_dir(&stage).unwrap();
+        let keys = stage.join("mykeys");
         fs::create_dir(&keys).unwrap();
         fs::write(keys.join("public_key.bin"), b"test-public-only").unwrap();
-        assert!(public_key(root.path()).is_ok());
-        assert!(signing_keys(root.path()).is_err());
+        assert!(public_key(&stage).is_ok());
+        assert!(signing_keys(&stage).is_err());
         fs::write(keys.join("private_key.pem"), b"test-key").unwrap();
-        assert!(signing_keys(root.path()).is_ok());
-        fs::create_dir(root.path().join("paks")).unwrap();
-        fs::write(root.path().join("paks").join("libs.pak"), b"fake").unwrap();
+        assert!(signing_keys(&stage).is_err(), "original RSA key cannot default to custom");
+        fs::write(root.path().join("RSAKeyData.bin"), [0u8; 140]).unwrap();
+        assert!(signing_keys(&stage).is_ok());
+        fs::create_dir(stage.join("paks")).unwrap();
+        fs::write(stage.join("paks").join("libs.pak"), b"fake").unwrap();
         assert_eq!(
-            staged_target(root.path(), &root.path().join("paks/libs.pak")).unwrap(),
+            staged_target(root.path(), &stage.join("paks/libs.pak")).unwrap(),
             "libs.pak"
         );
-        assert!(staged_target(root.path(), &keys.join("public_key.bin")).is_err());
+        assert!(staged_target(&stage, &keys.join("public_key.bin")).is_err());
     }
 }
