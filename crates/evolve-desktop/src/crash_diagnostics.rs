@@ -35,7 +35,13 @@ fn safe_detail(detail: &str) -> String {
     detail
         .chars()
         .take(8_192)
-        .map(|character| if character.is_control() { ' ' } else { character })
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
         .collect()
 }
 
@@ -82,17 +88,24 @@ pub fn install() {
             .copied()
             .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
             .unwrap_or("Non-string panic");
-        let place = info
-            .location()
-            .map_or_else(|| "unknown".to_owned(), |l| format!("{}:{}", l.file(), l.line()));
+        let place = info.location().map_or_else(
+            || "unknown".to_owned(),
+            |l| format!("{}:{}", l.file(), l.line()),
+        );
         record("rust_panic", &format!("{place}: {payload}"));
         let trace = Backtrace::force_capture();
         // Write a bounded number of trace characters; avoid allocating an
         // unbounded diagnostic when an allocator or GPU driver just failed.
-        record("rust_backtrace", &trace.to_string().chars().take(12_000).collect::<String>());
+        record(
+            "rust_backtrace",
+            &trace.to_string().chars().take(12_000).collect::<String>(),
+        );
         original(info);
     }));
-    record("startup", concat!("evolve-mod-manager ", env!("CARGO_PKG_VERSION")));
+    record(
+        "startup",
+        concat!("evolve-mod-manager ", env!("CARGO_PKG_VERSION")),
+    );
 }
 
 #[cfg(test)]
@@ -107,7 +120,10 @@ mod tests {
 
     #[test]
     fn asset_label_is_line_safe_and_limited() {
-        assert_eq!(safe_detail("rocky3.cdf\nfabricated log"), "rocky3.cdf fabricated log");
+        assert_eq!(
+            safe_detail("rocky3.cdf\nfabricated log"),
+            "rocky3.cdf fabricated log"
+        );
         assert_eq!(safe_detail(&"a".repeat(9_000)).chars().count(), 8_192);
     }
 }
