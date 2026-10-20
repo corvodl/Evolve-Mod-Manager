@@ -208,9 +208,100 @@ pub fn decoded_dds_indexed(
     }
     let staged = staging.path().join("preview.dds.0");
     let layout = detect_source_layout(&staged)?;
-    let (info, pixels) = decode_dds_rgba_with_layout(&staged, layout)
+    let (info, pixels) = decode_preview_image(&staged, layout)
         .map_err(|e| format!("Cannot reconstruct {virtual_path} from imported DDS mips: {e}"))?;
     Ok((info, Arc::new(pixels)))
+}
+
+/// Display every face of a verified six-face cube DDS as an ordinary 3x2
+/// image, so even envprobe textures are useful in the 2D asset viewport.
+/// This is a preview, not a reinterpretation of the game's original bytes.
+/// Face-major complete DDS and mip-major split DDS sets are both supported.
+fn decode_preview_image(path: &Path, layout: DdsLayout) -> Result<(DdsInfo, RgbaImage), String> {
+    let bytes = fs::read(path).map_err(|e| e.to_string())?;
+    if bytes.len() < 128 || &bytes[..4] != b"DDS " {
+        return Err("DDS header missing; import the matching low-mip archive".into());
+    }
+    let value = |offset: usize| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+    if value(112) != 0xFE00 {
+        return decode_dds_rgba_with_layout(path, layout).map_err(|e| e.to_string());
+    }
+    // Exactly six declared cube faces; reject partial, volume and DX10 cube
+    // arrays rather than assigning a made-up face to a source bitmap.
+    let width = value(16);
+    let height = value(12);
+    let mips = if value(8) & 0x20000 != 0 { value(28) } else { 1 };
+    if width == 0 || height == 0 || width > 8192 || height > 8192
+        || mips == 0 || mips > 16
+        || u64::from(width) * u64::from(height) * 6 > 40_000_000
+    {
+        return Err("Unsupported cubemap dimensions/mip count".into());
+    }
+    let fourcc = &bytes[84..88];
+    let block = if value(80) & 4 != 0 {
+        match fourcc {
+            b"DXT1" | b"CTX1" | b"ATI1" | b"BC4U" => Some(8u64),
+            b"DXT3" | b"DXT5" | b"ATI2" | b"BC5U" => Some(16u64),
+            _ => return Err("Unknown DDS cubemap compression; no guessed channels".into()),
+        }
+    } else {
+        if value(88) != 32 || value(80) & 0x40 == 0 {
+            return Err("Unknown DDS cubemap pixel layout".into());
+        }
+        None
+    };
+    let surface_size = |w: u32, h: u32| -> Result<usize, String> {
+        let len = if let Some(bytes_per_block) = block {
+            u64::from(w.div_ceil(4)) * u64::from(h.div_ceil(4)) * bytes_per_block
+        } else {
+            u64::from(w) * u64::from(h) * 4
+        };
+        usize::try_from(len).map_err(|e| e.to_string())
+    };
+    let top_size = surface_size(width, height)?;
+    let full_face_size = (0..mips).try_fold(0usize, |total, level| {
+        let w = (width >> level).max(1);
+        let h = (height >> level).max(1);
+        total.checked_add(surface_size(w, h).ok()?)
+    }).ok_or("DDS cubemap size overflow")?;
+    let source_bytes = bytes.len() - 128;
+    if source_bytes != full_face_size * 6 {
+        return Err("Incomplete six-face cubemap mip set".into());
+    }
+    // Complete local .dds.0 is face-major. Split .dds.N files are staged
+    // in descending mip order and each top fragment contains six faces.
+    let split = path.file_name().is_some_and(|n| n.to_string_lossy() == "preview.dds.0");
+    let face_stride = if split { top_size } else { full_face_size };
+    let mut atlas = RgbaImage::new(width * 3, height * 2);
+    let folder = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let mut info = None;
+    for face in 0..6usize {
+        let start = 128 + face * face_stride;
+        let end = start.checked_add(top_size).ok_or("Cubemap face size overflow")?;
+        let pixels = bytes.get(start..end)
+            .ok_or("Cubemap face extends past original texture")?;
+        let mut header = bytes[..128].to_vec();
+        let flags = value(8) & !0x20000;
+        header[8..12].copy_from_slice(&flags.to_le_bytes());
+        header[28..32].copy_from_slice(&1u32.to_le_bytes());
+        header[112..116].copy_from_slice(&0u32.to_le_bytes());
+        header.extend_from_slice(pixels);
+        let file = folder.path().join(format!("cube-face-{face}.dds"));
+        fs::write(&file, &header).map_err(|e| e.to_string())?;
+        let (details, image) = decode_dds_rgba_with_layout(&file, layout)
+            .map_err(|e| format!("Cubemap face {face}: {e}"))?;
+        image::imageops::replace(
+            &mut atlas, &image,
+            i64::from((face % 3) as u32 * width),
+            i64::from((face / 3) as u32 * height),
+        );
+        info = Some(details);
+    }
+    let mut info = info.ok_or("Empty cubemap")?;
+    info.width = atlas.width();
+    info.height = atlas.height();
+    info.top_mip_bytes = top_size * 6;
+    Ok((info, atlas))
 }
 
 pub fn decoded_dds(cache: &SharedCache, path: &Path) -> Result<(DdsInfo, Arc<RgbaImage>), String> {
@@ -229,7 +320,7 @@ pub fn decoded_dds_with_layout(
     {
         return Ok(found);
     }
-    let (info, pixels) = decode_dds_rgba_with_layout(path, layout).map_err(|e| e.to_string())?;
+    let (info, pixels) = decode_preview_image(path, layout)?;
     if key(path, layout)? != before {
         return Err("Source DDS changed while being decoded; try again.".into());
     }
