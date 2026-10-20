@@ -564,7 +564,7 @@ fn guarded_restore_state(stage: &Path, swap: &Path) -> Result<String, String> {
 /// helper which owns the original journal, then re-verifies the restored
 /// original client hook and signed PAKs with the public prelaunch gate.
 #[cfg(windows)]
-pub fn restore_existing_offline_client(stage: &Path, swap: &Path) -> Result<usize, String> {
+pub fn restore_existing_offline_client(stage: &Path, swap: &Path) -> Result<(usize, bool), String> {
     use std::os::windows::process::CommandExt;
     games_closed()?;
     let stage = directory(stage)?;
@@ -572,7 +572,7 @@ pub fn restore_existing_offline_client(stage: &Path, swap: &Path) -> Result<usiz
     let phase = guarded_restore_state(&stage, &swap)?;
     if matches!(phase.as_str(), "prepared" | "restored") {
         let checked = inspect_existing_launcher(&stage, &swap)?;
-        return Ok(checked.archive_count);
+        return Ok((checked.archive_count, checked.prepared));
     }
     // Recovery must remain available even when Frida is missing or broken.
     // reusable_restore.py needs Python 3.11, but does not import Frida.
@@ -599,13 +599,13 @@ pub fn restore_existing_offline_client(stage: &Path, swap: &Path) -> Result<usiz
         ));
     }
     let checked = inspect_existing_launcher(&stage, &swap)?;
-    if checked.prepared {
-        return Err("Recovery unexpectedly left a prepared instead of restored journal".into());
-    }
-    Ok(checked.archive_count)
+    // The private reusable_restore.py intentionally returns to "prepared"
+    // when it can recycle all verified temporary custom files, or "restored"
+    // when fresh preparation will be required. Both mean originals returned.
+    Ok((checked.archive_count, checked.prepared))
 }
 #[cfg(not(windows))]
-pub fn restore_existing_offline_client(_: &Path, _: &Path) -> Result<usize, String> {
+pub fn restore_existing_offline_client(_: &Path, _: &Path) -> Result<(usize, bool), String> {
     Err("Offline Evolve launcher recovery requires Windows x64".into())
 }
 
