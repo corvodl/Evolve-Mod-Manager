@@ -3667,17 +3667,33 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     return Task::none();
                 }
             };
-            if state.hook_original.trim().is_empty() || state.hook_prepared.trim().is_empty() {
-                state.status = "Choose the original client inject.dll and a NEW staged inject.dll destination.".into();
-                return Task::none();
-            }
+            // The established private launcher expects stage/inject-custom.dll,
+            // not a manually named inject.dll in an arbitrary export directory.
+            // Keep a user-selected path when supplied, but allow fully
+            // automatic discovery from this signing stage's source-root plan.
+            let original = if state.hook_original.trim().is_empty() {
+                match launcher_bridge::original_hook_for_stage(&stage) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        state.status = format!("Cannot locate original client hook: {error}");
+                        return Task::none();
+                    }
+                }
+            } else {
+                PathBuf::from(&state.hook_original)
+            };
+            let output = if state.hook_prepared.trim().is_empty() {
+                stage.join("inject-custom.dll")
+            } else {
+                PathBuf::from(&state.hook_prepared)
+            };
             return launch(
                 state,
                 Operation::PrepareClientHook(
-                    PathBuf::from(&state.hook_original),
+                    original,
                     keys.original_public,
                     keys.public,
-                    PathBuf::from(&state.hook_prepared),
+                    output,
                 ),
             );
         }
