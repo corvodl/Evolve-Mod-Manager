@@ -34,16 +34,16 @@ use asset_cache::{SharedCache, decoded_dds};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph,
-    EquipmentOverrides, EquipmentSlot, discover_equipment,
-    FlatCdfFbxReport, HookPairReport, ImportedLibrary, ImportedPak, Inventory, LevelScene,
-    LibraryBatchImportReport, LibraryReferenceStatus, MaterialReport, ModProfile, ModelInfo,
-    NativeCafMotion, PakHookPairReport, PakInventory, ProfileCatalog, ProfileMod, ProfilePlan,
-    RenderMesh, RigReport, SignedPakInfo, StageTransaction, TerrainInfo, UnifiedCdfFbxReport,
-    VerifiedCafAssembly, VerifiedCafSkin, add_mod_to_profile, apply_profile_stage, apply_stage_pak,
-    batch_stage_status, compare_assets, convert_glb_to_fbx, convert_original_motion,
-    create_mod_profile, decode_dds_rgba, export_dds_png, export_flat_cdf_parts_fbx,
-    export_level_scene_glb, export_rigged_character_fbx_textured_animated,
-    export_rigged_character_glb, export_unified_cdf_fbx_with_equipment, extract_legacy_pak, extract_signed_pak,
+    EquipmentOverrides, EquipmentSlot, FlatCdfFbxReport, HookPairReport, ImportedLibrary,
+    ImportedPak, Inventory, LevelScene, LibraryBatchImportReport, LibraryReferenceStatus,
+    MaterialReport, ModProfile, ModelInfo, NativeCafMotion, PakHookPairReport, PakInventory,
+    ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo,
+    StageTransaction, TerrainInfo, UnifiedCdfFbxReport, VerifiedCafAssembly, VerifiedCafSkin,
+    add_mod_to_profile, apply_profile_stage, apply_stage_pak, batch_stage_status, compare_assets,
+    convert_glb_to_fbx, convert_original_motion, create_mod_profile, decode_dds_rgba,
+    discover_equipment, export_dds_png, export_flat_cdf_parts_fbx, export_level_scene_glb,
+    export_rigged_character_fbx_textured_animated, export_rigged_character_glb,
+    export_unified_cdf_fbx_with_equipment, extract_legacy_pak, extract_signed_pak,
     import_signed_library_selection, import_stage_pak, imported_archive_files, imported_library,
     initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_pak_hook_pair,
     inspect_signed_pak, list_mod_profiles, load_level_scene, material_texture_candidates,
@@ -376,7 +376,14 @@ enum Operation {
     ),
     RiggedGlb(PathBuf, PathBuf, PathBuf),
     FlatCdfFbx(PathBuf, Inventory, PathBuf, PathBuf, Option<PathBuf>),
-    UnifiedCdfFbx(PathBuf, Inventory, PathBuf, PathBuf, Option<PathBuf>, EquipmentOverrides),
+    UnifiedCdfFbx(
+        PathBuf,
+        Inventory,
+        PathBuf,
+        PathBuf,
+        Option<PathBuf>,
+        EquipmentOverrides,
+    ),
     RiggedFbx(
         PathBuf,
         PathBuf,
@@ -2511,21 +2518,33 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ViewerEquip(slot, binding) => {
             if state.busy {
-                state.status = "Finish the current character preview before swapping equipment.".into();
+                state.status =
+                    "Finish the current character preview before swapping equipment.".into();
                 return Task::none();
             }
-            let Some(existing) = state.equipment_slots.iter().find(|entry| entry.name == slot) else {
+            let Some(existing) = state
+                .equipment_slots
+                .iter()
+                .find(|entry| entry.name == slot)
+            else {
                 state.status = "Equipment attachment was not verified for this character.".into();
                 return Task::none();
             };
-            if !existing.choices.iter().any(|c| c.binding.eq_ignore_ascii_case(&binding)) {
-                state.status = "Equipment file is not a verified option for this exact slot.".into();
+            if !existing
+                .choices
+                .iter()
+                .any(|c| c.binding.eq_ignore_ascii_case(&binding))
+            {
+                state.status =
+                    "Equipment file is not a verified option for this exact slot.".into();
                 return Task::none();
             }
             if binding.eq_ignore_ascii_case(&existing.original) {
                 state.equipment_overrides.remove(&slot);
             } else {
-                state.equipment_overrides.insert(slot.clone(), binding.clone());
+                state
+                    .equipment_overrides
+                    .insert(slot.clone(), binding.clone());
             }
             state.viewer_sidebar_active = ViewerSidebarTab::Equipment;
             return update(state, Message::ViewerPreviewStaticCdf);
@@ -6477,15 +6496,24 @@ mod project_edit_tests {
     #[test]
     fn equipment_tab_rejects_unverified_cross_character_swaps() {
         let mut state = State::default();
-        let _ = update(&mut state, Message::ViewerSidebarSelect(ViewerSidebarTab::Equipment));
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarSelect(ViewerSidebarTab::Equipment),
+        );
         assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Equipment);
-        let _ = update(&mut state, Message::ViewerEquip(
-            "basher_l".into(),
-            "objects/characters/monsters/scorpid_2/scorpid3_r_shield.chr".into(),
-        ));
+        let _ = update(
+            &mut state,
+            Message::ViewerEquip(
+                "basher_l".into(),
+                "objects/characters/monsters/scorpid_2/scorpid3_r_shield.chr".into(),
+            ),
+        );
         assert!(state.equipment_overrides.is_empty());
         assert!(state.status.contains("not verified"));
-        let _ = update(&mut state, Message::ViewerSidebarClose(ViewerSidebarTab::Equipment));
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarClose(ViewerSidebarTab::Equipment),
+        );
         assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
     }
 
