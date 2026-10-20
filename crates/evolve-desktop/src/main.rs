@@ -6,8 +6,8 @@ mod asset_cache;
 mod asset_library_page;
 mod asset_viewer;
 mod auto_resources;
-mod design;
 mod crash_diagnostics;
+mod design;
 mod developer_auth;
 mod explorer_tree;
 mod launcher_bridge;
@@ -996,10 +996,15 @@ impl Operation {
                     build.as_deref(),
                 )
                 .map_err(|e| e.to_string())?;
-                crash_diagnostics::record("cdf_geometry_ready", &format!(
-                    "{} parts, {} vertices, {} triangles", report.original_parts.len(),
-                    report.vertices, report.triangles
-                ));
+                crash_diagnostics::record(
+                    "cdf_geometry_ready",
+                    &format!(
+                        "{} parts, {} vertices, {} triangles",
+                        report.original_parts.len(),
+                        report.vertices,
+                        report.triangles
+                    ),
+                );
                 crash_diagnostics::record("cdf_materials_begin", "loading authored material maps");
                 let (surfaces, warnings) = assembly_materials::load(
                     &report,
@@ -1008,9 +1013,14 @@ impl Operation {
                     build.as_deref(),
                     &cache,
                 );
-                crash_diagnostics::record("cdf_worker_ready", &format!(
-                    "{} GPU material ranges, {} diagnostics", surfaces.len(), warnings.len()
-                ));
+                crash_diagnostics::record(
+                    "cdf_worker_ready",
+                    &format!(
+                        "{} GPU material ranges, {} diagnostics",
+                        surfaces.len(),
+                        warnings.len()
+                    ),
+                );
                 Ok(Completed::StaticCharacter(mesh, report, surfaces, warnings))
             }
             Self::RebuildSignedPak(
@@ -4836,9 +4846,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::StaticCharacter(mesh, report, surfaces, material_warnings)) => {
-                    crash_diagnostics::record("cdf_ui_complete", &format!(
-                        "{} sections, {} triangles", surfaces.len(), report.triangles
-                    ));
+                    crash_diagnostics::record(
+                        "cdf_ui_complete",
+                        &format!(
+                            "{} sections, {} triangles",
+                            surfaces.len(),
+                            report.triangles
+                        ),
+                    );
                     state.render_source = None;
                     state.cdf_rest_mesh = Some(Arc::new(mesh.clone()));
                     state.cdf_report = Some(Arc::new(report.clone()));
