@@ -189,6 +189,18 @@ struct TextureBudget {
     decoded: HashSet<PathBuf>,
 }
 
+fn role_channel(role: &str) -> Option<usize> {
+    match role {
+        "diffuse" => Some(0),
+        "normals" | "normal" | "bumpmap" => Some(1),
+        "emittance" | "emissive" | "emission" | "glow" => Some(2),
+        "specular" | "specularcolor" => Some(3),
+        "gloss" | "glossiness" | "smoothness" => Some(4),
+        "opacity" => Some(5),
+        _ => None,
+    }
+}
+
 fn authored_maps(
     document: &MaterialDocument,
     material_slot: u32,
@@ -197,7 +209,7 @@ fn authored_maps(
     build: Option<&str>,
     cache: &SharedCache,
     budget: &mut TextureBudget,
-) -> Result<[Option<Arc<image::RgbaImage>>; 6], String> {
+) -> Result<([Option<Arc<image::RgbaImage>>; 6], Vec<String>), String> {
     let slot = document.slots.get(material_slot as usize).ok_or_else(|| {
         format!(
             "Source material slot {} exceeds {} authored leaves",
@@ -206,39 +218,53 @@ fn authored_maps(
         )
     })?;
     let mut result: [Option<Arc<image::RgbaImage>>; 6] = std::array::from_fn(|_| None);
+    let mut warnings = Vec::new();
+    // A failed opacity/normal/gloss lookup must not discard a separately
+    // verified diffuse, nor may duplicate candidate roles pick an arbitrary
+    // layer based on XML ordering.
+    let mut counts = [0usize; 6];
     for map in &slot.maps {
-        let index = match map.role.as_str() {
-            "diffuse" => 0,
-            "normals" | "normal" | "bumpmap" => 1,
-            "emittance" | "emissive" | "emission" | "glow" => 2,
-            "specular" | "specularcolor" => 3,
-            "gloss" | "glossiness" | "smoothness" => 4,
-            "opacity" => 5,
-            _ => continue,
-        };
-        if result[index].is_some() {
-            return Err(format!(
-                "Multiple authored {} maps; no arbitrary layer selection",
-                map.role
-            ));
+        if let Some(index) = role_channel(&map.role) {
+            counts[index] += 1;
         }
-        let mut found = None;
-        for candidate in material_texture_candidates(&map.path) {
-            if let Some(path) = auto_resources::exact(inventory, &candidate, imported, build)? {
-                found = Some(path);
-                break;
+    }
+    for map in &slot.maps {
+        let Some(index) = role_channel(&map.role) else {
+            continue;
+        };
+        if counts[index] > 1 {
+            if !warnings.iter().any(|w: &String| w.contains(&format!("channel {index}"))) {
+                warnings.push(format!(
+                    "Ambiguous authored channel {index}: multiple maps for {}; left unassigned",
+                    map.role
+                ));
             }
+            continue;
         }
-        let Some(path) = found else {
-            return Err(format!("Missing exact cooked DDS for {}", map.path));
+        let decoded = (|| -> Result<(PathBuf, Arc<image::RgbaImage>), String> {
+            let mut found = None;
+            for candidate in material_texture_candidates(&map.path) {
+                if let Some(path) = auto_resources::exact(inventory, &candidate, imported, build)? {
+                    found = Some(path);
+                    break;
+                }
+            }
+            let path = found.ok_or_else(|| format!("Missing exact cooked DDS for {}", map.path))?;
+            let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+            let (_info, image) = decoded_dds(cache, &canonical)?;
+            Ok((canonical, image))
+        })();
+        let (canonical, image) = match decoded {
+            Ok(decoded) => decoded,
+            Err(error) => {
+                warnings.push(format!("{}: {error}", map.role));
+                continue;
+            }
         };
-        let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
-        let (_info, image) = decoded_dds(cache, &canonical)?;
-        let required = image.as_raw().len();
         if !budget.decoded.contains(&canonical) {
             budget.bytes_loaded = budget
                 .bytes_loaded
-                .checked_add(required)
+                .checked_add(image.as_raw().len())
                 .ok_or("Decoded CDF texture budget overflow")?;
             if budget.bytes_loaded > MAX_DECODED_ASSEMBLY_BYTES {
                 return Err("CDF texture budget exceeded (768 MiB)".into());
@@ -247,7 +273,7 @@ fn authored_maps(
         }
         result[index] = Some(image);
     }
-    Ok(result)
+    Ok((result, warnings))
 }
 
 /// The RGB source DDS alpha is *not* automatically an opacity channel:
@@ -326,7 +352,10 @@ pub fn load_model(
                     cache,
                     &mut budget,
                 ) {
-                    Ok([diffuse, normal, emissive, specular, gloss, opacity]) => {
+                    Ok(([diffuse, normal, emissive, specular, gloss, opacity], map_warnings)) => {
+                        warnings.extend(map_warnings.into_iter().map(|w| format!(
+                            "Original material slot {} ({}): {w}", material_slot, leaf.name
+                        )));
                         surface.diffuse = diffuse;
                         surface.normal = normal;
                         surface.emissive = emissive;
@@ -399,7 +428,7 @@ pub fn load(
                 surface.visible = false;
                 return Ok(());
             }
-            let [diffuse, normal, emissive, specular, gloss, opacity] = authored_maps(
+            let ([diffuse, normal, emissive, specular, gloss, opacity], map_warnings) = authored_maps(
                 &authored,
                 part.material_slot,
                 inventory,
@@ -408,6 +437,9 @@ pub fn load(
                 cache,
                 &mut budget,
             )?;
+            warnings.extend(map_warnings.into_iter().map(|w| format!(
+                "{} material slot {}: {w}", part.name, part.material_slot
+            )));
             surface.diffuse = diffuse;
             surface.normal = normal;
             surface.emissive = emissive;
@@ -554,6 +586,47 @@ mod tests {
             .unwrap_err()
             .contains("no original mesh-subset table")
         );
+    }
+
+    #[test]
+    fn all_supported_authored_channels_have_distinct_map_indices() {
+        assert_eq!(role_channel("diffuse"), Some(0));
+        assert_eq!(role_channel("normals"), Some(1));
+        assert_eq!(role_channel("emittance"), Some(2));
+        assert_eq!(role_channel("specular"), Some(3));
+        assert_eq!(role_channel("gloss"), Some(4));
+        assert_eq!(role_channel("opacity"), Some(5));
+        assert_eq!(role_channel("detail"), None);
+    }
+
+    #[test]
+    fn missing_opacity_map_does_not_hide_verified_diffuse() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("textures");
+        std::fs::create_dir(&source).unwrap();
+        let diffuse_file = source.join("color.dds");
+        let mut diffuse = vec![0u8; 128 + 8];
+        diffuse[0..4].copy_from_slice(b"DDS ");
+        diffuse[4..8].copy_from_slice(&124u32.to_le_bytes());
+        diffuse[12..16].copy_from_slice(&4u32.to_le_bytes());
+        diffuse[16..20].copy_from_slice(&4u32.to_le_bytes());
+        diffuse[76..80].copy_from_slice(&32u32.to_le_bytes());
+        diffuse[80..84].copy_from_slice(&0x4u32.to_le_bytes());
+        diffuse[84..88].copy_from_slice(b"DXT1");
+        std::fs::write(&diffuse_file, diffuse).unwrap();
+        let document = evolve_core::parse_material(br#"<Material Name="armor">
+            <Textures>
+                <Texture Map="Diffuse" File="textures/color.dds"/>
+                <Texture Map="Opacity" File="textures/missing.dds"/>
+            </Textures></Material>"#).unwrap();
+        let inventory = evolve_core::scan_directory(dir.path()).unwrap();
+        let mut budget = TextureBudget::default();
+        let (maps, warnings) = authored_maps(
+            &document, 0, &inventory, None, None, &SharedCache::default(), &mut budget,
+        ).unwrap();
+        assert!(maps[0].is_some(), "diffuse must survive a missing opacity map");
+        assert!(maps[5].is_none());
+        assert!(warnings.iter().any(|w| w.contains("Missing exact cooked DDS")));
     }
 
     #[test]
