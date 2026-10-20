@@ -249,6 +249,80 @@ fn authored_maps(
     Ok(result)
 }
 
+/// Load exact source subset/material IDs for a standalone .skinm/.chrm.
+/// The ordinary model viewer previously resolved an MTL's textures but never
+/// built the per-subset GPU surfaces, so 11-slot models appeared untextured.
+pub fn load_model(
+    source: &Path,
+    material: &Path,
+    inventory: &Inventory,
+    imported: Option<&Path>,
+    build: Option<&str>,
+    cache: &SharedCache,
+) -> Result<(Vec<Surface>, Vec<String>), String> {
+    let raw = std::fs::read(source).map_err(|e| e.to_string())?;
+    let mesh = evolve_core::parse_model_bytes(&raw).map_err(|e| e.to_string())?;
+    let document = read_material(material).map_err(|e| e.to_string())?;
+    let ranges = evolve_core::original_mesh_subsets(&raw, mesh.indices.len())
+        .map_err(|e| e.to_string())?;
+    let has_table = evolve_core::has_original_mesh_subset_table(&raw)
+        .map_err(|e| e.to_string())?;
+    if !has_table && document.slots.len() != 1 {
+        return Err(format!(
+            "{} authored materials but no original mesh-subset table. Select the exact CDF or a compiled render model with verified subset IDs; no guessed textures applied",
+            document.slots.len()
+        ));
+    }
+    let mut result = Vec::with_capacity(ranges.len());
+    let mut warnings = Vec::new();
+    let mut budget = TextureBudget::default();
+    for (first_index, index_count, material_slot) in ranges {
+        let mut surface = Surface {
+            first_index,
+            index_count,
+            visible: true,
+            diffuse: None,
+            normal: None,
+            emissive: None,
+            specular: None,
+            gloss: None,
+        };
+        if material_slot == 255 {
+            warnings.push(format!(
+                "Unassigned original face range {}..{} remains untextured",
+                first_index, first_index + index_count
+            ));
+        } else {
+            let leaf = document.slots.get(material_slot as usize).ok_or_else(|| {
+                format!(
+                    "Original mesh subset references slot {} but the MTL has only {} leaves",
+                    material_slot, document.slots.len()
+                )
+            })?;
+            if leaf.shader.eq_ignore_ascii_case("NoDraw") {
+                surface.visible = false;
+            } else {
+                match authored_maps(
+                    &document, material_slot, inventory, imported, build, cache, &mut budget,
+                ) {
+                    Ok([diffuse, normal, emissive, specular, gloss]) => {
+                        surface.diffuse = diffuse;
+                        surface.normal = normal;
+                        surface.emissive = emissive;
+                        surface.specular = specular;
+                        surface.gloss = gloss;
+                    }
+                    Err(error) => warnings.push(format!(
+                        "Original material slot {} ({}): {}", material_slot, leaf.name, error
+                    )),
+                }
+            }
+        }
+        result.push(surface);
+    }
+    Ok((result, warnings))
+}
+
 pub fn load(
     report: &AssemblyReport,
     inventory: &Inventory,
@@ -320,6 +394,19 @@ pub fn load(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn multi_slot_mesh_without_original_subsets_must_not_use_slot_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("legacy.skinm");
+        let material = dir.path().join("legacy.mtl");
+        // Parser must fail rather than manufacture a material assignment
+        // from an unrelated mesh name or from a neighboring MTL slot.
+        std::fs::write(&source, b"not a native mesh").unwrap();
+        std::fs::write(&material, br#"<Material><SubMaterials><Material Name="a"/><Material Name="b"/></SubMaterials></Material>"#).unwrap();
+        let inventory = evolve_core::scan_directory(dir.path()).unwrap();
+        assert!(load_model(&source, &material, &inventory, None, None, &SharedCache::default()).is_err());
+    }
+
     #[test]
     fn cdf_explicit_material_is_not_replaced_with_neighboring_mtl() {
         let root = tempfile::tempdir().unwrap();
