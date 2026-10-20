@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+# Validate the newest PR revision rather than running outdated Windows builds.
+concurrency:
+  group: rust-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   core:
     runs-on: ubuntu-latest
