@@ -3278,7 +3278,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Index a character/asset folder before exporting.".into();
                 return Task::none();
             };
-            let name = state.export_folder_name.trim();
+            // Own the folder name before Blender resolution updates state.
+            let name = state.export_folder_name.trim().to_owned();
             if name.is_empty()
                 || name == "."
                 || name == ".."
