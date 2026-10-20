@@ -6419,7 +6419,7 @@ impl Desktop {
                 let command = update(&mut self.state, Message::ExportOpen);
                 let viewer = self.open_viewer();
                 Task::batch([command, viewer])
-            },
+            }
             Message::OpenViewerPreferences => self.open_viewer_preferences(),
             Message::OpenInspectorWindow => self.open_inspector(),
             Message::ToggleActivity => self.open_activity(),
