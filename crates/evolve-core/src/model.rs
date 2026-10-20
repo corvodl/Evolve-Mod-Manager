@@ -443,7 +443,7 @@ pub fn original_mesh_subsets(
     data: &[u8],
     index_count: usize,
 ) -> Result<Vec<(u32, u32, u32)>, ModelError> {
-    if index_count == 0 || index_count > MAX_INDICES || index_count % 3 != 0 {
+    if index_count == 0 || index_count > MAX_INDICES || !index_count.is_multiple_of(3) {
         return Err(ModelError::Limits);
     }
     let (format, _, chunks) = validate_chunks(data)?;
@@ -469,8 +469,8 @@ pub fn original_mesh_subsets(
         let material = u32at(data, at + 16)?;
         if first != cursor
             || n == 0
-            || first % 3 != 0
-            || n % 3 != 0
+            || !first.is_multiple_of(3)
+            || !n.is_multiple_of(3)
             || first.checked_add(n).is_none_or(|end| end > index_count)
             || material >= 128
         {
