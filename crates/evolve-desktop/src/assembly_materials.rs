@@ -282,11 +282,151 @@ fn role_channel(role: &str) -> Option<usize> {
     }
 }
 
+/// Keep material-relative paths in the original indexed namespace; this is
+/// not a basename scan over unrelated actors or builds. Imported PAK sources
+/// live at <library>/<archive>/files/<game-virtual-path>.
+fn material_virtual_owner(
+    material: &Path,
+    fallback_binding: &str,
+    inventory: &Inventory,
+    imported: Option<&Path>,
+) -> String {
+    if let Ok(real) = std::fs::canonicalize(material) {
+        if let Ok(root) = std::fs::canonicalize(&inventory.root)
+            && let Ok(relative) = real.strip_prefix(root)
+        {
+            return relative.to_string_lossy().replace('\\', "/");
+        }
+        if let Some(imported) = imported
+            && let Ok(root) = std::fs::canonicalize(imported)
+            && let Ok(relative) = real.strip_prefix(root)
+        {
+            let mut components = relative.components();
+            if components.next().is_some()
+                && components
+                    .next()
+                    .is_some_and(|component| component.as_os_str() == "files")
+            {
+                let virtual_path = components.as_path();
+                if !virtual_path.as_os_str().is_empty() {
+                    return virtual_path.to_string_lossy().replace('\\', "/");
+                }
+            }
+        }
+    }
+    fallback_binding.to_owned()
+}
+
+/// Port of the private manager's owner-qualified MTL lookup. Resolve each
+/// cooked DDS0 before its lower-resolution DDS companion, searching the
+/// material folder, its actual character, then the correct category's Shared
+/// texture namespace. An explicitly global textures/ reference comes last.
+/// Never match a DDS based on another actor's filename.
+fn scoped_texture_candidates(authored: &str, material_virtual: &str) -> Result<Vec<String>, String> {
+    let raw = authored.trim().replace('\\', "/");
+    if raw.is_empty()
+        || raw.starts_with('/')
+        || raw.contains(':')
+        || raw.split('/').any(|part| matches!(part, "." | ".."))
+    {
+        return Err(format!("Unsafe original MTL texture reference: {authored}"));
+    }
+    let reference = raw.split('/').filter(|part| !part.is_empty()).collect::<Vec<_>>().join("/");
+    if reference.is_empty() {
+        return Err("Empty original material texture reference".into());
+    }
+    let owner = material_virtual.replace('\\', "/");
+    let parents = owner.split('/').collect::<Vec<_>>();
+    let folder = &parents[..parents.len().saturating_sub(1)];
+    let is_character = folder.len() >= 3
+        && folder[0].eq_ignore_ascii_case("characters")
+        && ["hunters", "monsters", "creatures"]
+            .iter()
+            .any(|value| folder[1].eq_ignore_ascii_case(value));
+    let is_legacy_character = folder.len() >= 4
+        && folder[0].eq_ignore_ascii_case("objects")
+        && folder[1].eq_ignore_ascii_case("characters")
+        && ["hunters", "monsters", "creatures"]
+            .iter()
+            .any(|value| folder[2].eq_ignore_ascii_case(value));
+    let category_length = if is_character { 2 } else if is_legacy_character { 3 } else { 0 };
+    let minimum = if category_length > 0 { category_length + 1 } else { 1 };
+    let lower = reference.to_ascii_lowercase();
+    let rooted = ["characters/", "objects/", "materials/", "levels/", "libs/"]
+        .iter()
+        .any(|prefix| lower.starts_with(prefix));
+    let mut paths = Vec::new();
+    for cooked in material_texture_candidates(&reference) {
+        if rooted {
+            paths.push(cooked);
+            continue;
+        }
+        if folder.len() >= minimum {
+            for count in (minimum..=folder.len()).rev() {
+                let parent = folder[..count].join("/");
+                paths.push(format!("{parent}/{cooked}"));
+                if !cooked.contains('/') {
+                    paths.push(format!("{parent}/textures/{cooked}"));
+                }
+            }
+        }
+        if category_length > 0 {
+            let category = folder[..category_length].join("/");
+            let lower_cooked = cooked.to_ascii_lowercase();
+            if lower_cooked.starts_with("shared/") {
+                paths.push(format!("{category}/{cooked}"));
+            } else if lower_cooked.starts_with("textures/") {
+                paths.push(format!("{category}/shared/{cooked}"));
+            } else if !cooked.contains('/') {
+                paths.push(format!("{category}/shared/textures/{cooked}"));
+            }
+            if lower_cooked.starts_with("textures/") {
+                paths.push(cooked);
+            }
+        } else {
+            paths.push(cooked);
+        }
+    }
+    paths.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    Ok(paths)
+}
+
+fn authored_texture(
+    reference: &str,
+    material: &Path,
+    binding: &str,
+    inventory: &Inventory,
+    imported: Option<&Path>,
+    build: Option<&str>,
+) -> Result<(PathBuf, String), String> {
+    let owner = material_virtual_owner(material, binding, inventory, imported);
+    for candidate in scoped_texture_candidates(reference, &owner)? {
+        if let Some(path) = auto_resources::exact(inventory, &candidate, imported, build)? {
+            // The core imported resolver may normalize a .dds request to a
+            // preferred .dds.0. Keep the exact cooked fragment identity for
+            // subsequent cross-archive high-mip reconstruction.
+            let relative = if candidate.to_ascii_lowercase().ends_with(".dds")
+                && path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().to_ascii_lowercase().ends_with(".dds.0"))
+            {
+                format!("{candidate}.0")
+            } else {
+                candidate
+            };
+            return Ok((path, relative));
+        }
+    }
+    Err(format!("Missing exact cooked DDS for {reference} in material {owner}"))
+}
+
 /// Per-channel resolved source textures and independent missing-map diagnostics.
 type ResolvedMaterialMaps = ([Option<Arc<image::RgbaImage>>; 6], Vec<String>);
 
 fn authored_maps(
     document: &MaterialDocument,
+    material_source: &Path,
+    material_binding: &str,
     material_slot: u32,
     inventory: &Inventory,
     imported: Option<&Path>,
@@ -329,15 +469,9 @@ fn authored_maps(
             continue;
         }
         let decoded = (|| -> Result<(PathBuf, Arc<image::RgbaImage>), String> {
-            let mut found = None;
-            for candidate in material_texture_candidates(&map.path) {
-                if let Some(path) = auto_resources::exact(inventory, &candidate, imported, build)? {
-                    found = Some((path, candidate));
-                    break;
-                }
-            }
-            let (path, virtual_path) =
-                found.ok_or_else(|| format!("Missing exact cooked DDS for {}", map.path))?;
+            let (path, virtual_path) = authored_texture(
+                &map.path, material_source, material_binding, inventory, imported, build,
+            )?;
             let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
             let (_info, image) =
                 decoded_dds_indexed(cache, &canonical, &virtual_path, inventory, imported, build)?;
@@ -470,6 +604,8 @@ pub fn load_model(
             } else {
                 match authored_maps(
                     &document,
+                    material,
+                    &source.to_string_lossy(),
                     material_slot,
                     inventory,
                     imported,
@@ -595,6 +731,8 @@ pub fn load(
             let ([diffuse, normal, emissive, specular, gloss, opacity], map_warnings) =
                 authored_maps(
                     &authored,
+                    &path,
+                    &part.binding,
                     part.material_slot,
                     inventory,
                     imported,
@@ -628,6 +766,61 @@ pub fn load(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn character_relative_dds0_loading_matches_private_material_scoping() {
+        let root = tempfile::tempdir().unwrap();
+        let owner = root.path().join("characters/monsters/teleporter");
+        std::fs::create_dir_all(owner.join("materials")).unwrap();
+        std::fs::create_dir_all(owner.join("textures")).unwrap();
+        let material = owner.join("materials/body.mtl");
+        std::fs::write(
+            &material,
+            br#"<Material><Textures><Texture Map="Diffuse" File="body.tif"/></Textures></Material>"#,
+        )
+        .unwrap();
+        let mut dds = vec![0u8; 128 + 8];
+        dds[..4].copy_from_slice(b"DDS ");
+        dds[4..8].copy_from_slice(&124u32.to_le_bytes());
+        dds[8..12].copy_from_slice(&0x1007u32.to_le_bytes());
+        dds[12..16].copy_from_slice(&4u32.to_le_bytes());
+        dds[16..20].copy_from_slice(&4u32.to_le_bytes());
+        dds[76..80].copy_from_slice(&32u32.to_le_bytes());
+        dds[80..84].copy_from_slice(&4u32.to_le_bytes());
+        dds[84..88].copy_from_slice(b"DXT1");
+        dds[128..136].copy_from_slice(&[0, 248, 0, 0, 0, 0, 0, 0]);
+        std::fs::write(owner.join("textures/body.dds.0"), dds).unwrap();
+        let inventory = evolve_core::scan_directory(root.path()).unwrap();
+        let document = read_material(&material).unwrap();
+        let mut budget = TextureBudget::default();
+        let (maps, diagnostics) = authored_maps(
+            &document, &material, "characters/monsters/teleporter/body.skinm",
+            0, &inventory, None, None, &SharedCache::default(), &mut budget,
+        )
+        .unwrap();
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(maps[0].as_ref().unwrap().dimensions(), (4, 4));
+        assert!(maps[0].as_ref().unwrap().get_pixel(0, 0).0[0] > 200);
+    }
+
+    #[test]
+    fn original_texture_scopes_reject_other_actor_basename_and_bad_paths() {
+        let owner = "characters/monsters/teleporter/materials/body.mtl";
+        let scoped = scoped_texture_candidates("body.tif", owner).unwrap();
+        assert_eq!(
+            scoped[0],
+            "characters/monsters/teleporter/materials/body.dds.0"
+        );
+        assert!(scoped.contains(
+            &"characters/monsters/teleporter/textures/body.dds.0".to_owned()
+        ));
+        assert!(scoped.contains(
+            &"characters/monsters/shared/textures/body.dds.0".to_owned()
+        ));
+        assert!(!scoped.iter().any(|path| path.contains("other_monster")));
+        assert!(scoped_texture_candidates("../body.tif", owner).is_err());
+        assert!(scoped_texture_candidates("C:/body.tif", owner).is_err());
+    }
+
     #[test]
     fn shared_dds_counts_once_per_gpu_role_not_per_cdf_attachment() {
         let image = Arc::new(image::RgbaImage::new(4, 4));
@@ -895,6 +1088,8 @@ mod tests {
         let mut budget = TextureBudget::default();
         let (maps, warnings) = authored_maps(
             &document,
+            &dir.path().join("armor.mtl"),
+            "armor.mtl",
             0,
             &inventory,
             None,
