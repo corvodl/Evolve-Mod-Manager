@@ -6329,7 +6329,10 @@ mod project_edit_tests {
         let _ = update(&mut state, Message::ViewerSidebarAnimations(false));
         assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
         assert!(state.viewer_sidebar_animations);
-        let _ = update(&mut state, Message::ViewerSidebarClose(ViewerSidebarTab::Animations));
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarClose(ViewerSidebarTab::Animations),
+        );
         assert!(!state.viewer_sidebar_animations);
     }
 
