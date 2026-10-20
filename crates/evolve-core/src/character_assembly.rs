@@ -43,6 +43,9 @@ pub struct AssemblyReport {
     pub source_parts: Vec<AssemblyPart>,
     #[serde(default)]
     pub verified_bones: Option<usize>,
+    /// Canonical, verified compiled skeleton location (not a guess).
+    #[serde(default)]
+    pub skeleton_source: Option<std::path::PathBuf>,
     #[serde(default)]
     pub warnings: Vec<String>,
 }
@@ -482,7 +485,8 @@ pub fn read_static_cdf_assembly_with_imported(
         original_normals_complete: mesh.normals.is_some(),
         skeletal_animation_enabled: false,
         source_parts,
-        verified_bones: skeleton.map(|s| s.names.len()),
+        verified_bones: skeleton.as_ref().map(|s| s.names.len()),
+        skeleton_source: skeleton.as_ref().map(|_| skeleton_path),
         warnings: notes,
     };
     Ok((mesh, report))
