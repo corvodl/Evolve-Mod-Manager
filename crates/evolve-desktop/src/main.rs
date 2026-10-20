@@ -1229,6 +1229,26 @@ fn track_level_dirty(
     }
 }
 
+/// Exactly the compiled CryEngine mesh families supported by the original
+/// renderer and its same-stem .skinm/.chrm/.cgfm companion preference. Do not
+/// force the user to press Inspect for compiled-only model variants.
+fn is_viewer_model_source(path: &str) -> bool {
+    let name = path.to_ascii_lowercase();
+    [
+        ".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cgfm", ".cga", ".cgam",
+    ]
+    .iter()
+    .any(|suffix| name.ends_with(suffix))
+}
+
+fn is_viewer_preview_source(path: &str) -> bool {
+    let name = path.to_ascii_lowercase();
+    is_viewer_model_source(&name)
+        || [".cdf", ".dds", ".dds.0", ".caf", ".mtl"]
+            .iter()
+            .any(|suffix| name.ends_with(suffix))
+}
+
 fn sync_level_fields(state: &mut State) {
     let transform = state
         .level_selected
@@ -2138,10 +2158,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Some(Operation::InspectDds(path))
             } else if name.ends_with(".cdf") {
                 Some(Operation::InspectCdf(path))
-            } else if [".skin", ".skinm", ".chr", ".cgf"]
-                .iter()
-                .any(|ext| name.ends_with(ext))
-            {
+            } else if is_viewer_model_source(&name) {
                 Some(Operation::InspectModel(path))
             } else if name.ends_with(".caf") {
                 Some(Operation::LoadCaf(path))
@@ -2503,14 +2520,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .inventory
                     .as_ref()
                     .and_then(|inv| inv.entries.get(index))
-                    .is_some_and(|entry| {
-                        [
-                            ".skin", ".skinm", ".chr", ".cgf", ".cdf", ".dds", ".dds.0", ".caf",
-                            ".mtl",
-                        ]
-                        .iter()
-                        .any(|ext| entry.relative_path.to_ascii_lowercase().ends_with(ext))
-                    })
+                    .is_some_and(|entry| is_viewer_preview_source(&entry.relative_path))
             {
                 let is_cdf = state
                     .inventory
@@ -2739,10 +2749,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.input = source.to_string_lossy().to_string();
             state.texture_preview = None;
             let filename = relative.relative_path.to_ascii_lowercase();
-            let operation = if [".skin", ".skinm", ".chr", ".cgf"]
-                .iter()
-                .any(|s| filename.ends_with(s))
-            {
+            let operation = if is_viewer_model_source(&filename) {
                 Operation::InspectModel(source)
             } else if filename.ends_with(".cdf") {
                 Operation::InspectCdfResolved(source, inventory.clone())
@@ -5539,6 +5546,26 @@ mod project_edit_tests {
         assert_eq!(initial.objects[1].world.position, [5.0, 7.0, 9.0]);
         assert_eq!(state.level_original_transforms.len(), 2);
         assert_eq!(state.level_dirty_count, 1);
+    }
+
+    #[test]
+    fn model_preview_dispatch_includes_compiled_cryengine_variants_without_inspect() {
+        for name in [
+            "Hunters/Kala.SKIN", "Monsters/Goliath.skinm",
+            "Hunters/Griffin.CHR", "Hunters/Griffin.chrm",
+            "Objects/tree.CGF", "Objects/tree.cgfm",
+            "Hunters/Jack.cga", "Hunters/Jack.cgam",
+        ] {
+            assert!(is_viewer_model_source(name), "failed to auto-preview {name}");
+            assert!(is_viewer_preview_source(name));
+        }
+        for name in ["Hunters/Kala.cdf", "models/body.mtl", "tex/body.dds.0"] {
+            assert!(is_viewer_preview_source(name));
+            assert!(!is_viewer_model_source(name));
+        }
+        for name in ["model.skin.tmp", "unknown.bin", "../evil.exe"] {
+            assert!(!is_viewer_preview_source(name));
+        }
     }
 
     #[test]
