@@ -34,7 +34,7 @@ pub fn log_path() -> io::Result<PathBuf> {
 fn safe_detail(detail: &str) -> String {
     detail
         .chars()
-        .take(256)
+        .take(8_192)
         .map(|character| if character.is_control() { ' ' } else { character })
         .collect()
 }
@@ -108,6 +108,6 @@ mod tests {
     #[test]
     fn asset_label_is_line_safe_and_limited() {
         assert_eq!(safe_detail("rocky3.cdf\nfabricated log"), "rocky3.cdf fabricated log");
-        assert_eq!(safe_detail(&"a".repeat(300)).chars().count(), 256);
+        assert_eq!(safe_detail(&"a".repeat(9_000)).chars().count(), 8_192);
     }
 }
