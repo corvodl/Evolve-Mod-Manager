@@ -443,6 +443,103 @@ pub fn read_legacy_skin(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn put_u32(buf: &mut [u8], at: usize, value: u32) {
+        buf[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn sample_bones() -> Vec<u8> {
+        let mut raw = vec![0; 48 + 2 * RECORD];
+        for (index, name) in ["root", "arm"].iter().enumerate() {
+            let at = 48 + index * RECORD;
+            raw[at + 312..at + 312 + name.len()].copy_from_slice(name.as_bytes());
+            for base in [216, 264] {
+                for dimension in 0..3 {
+                    raw[at + base + (dimension * 4 + dimension) * 4..]
+                        .get_mut(..4).unwrap().copy_from_slice(&1f32.to_le_bytes());
+                }
+            }
+            put_u32(&mut raw, at + 572, if index == 0 { 0 } else { u32::MAX });
+        }
+        raw
+    }
+
+    fn stream_chunk(ty: u32, count: u32, stride: u32, payload: &[u8]) -> Vec<u8> {
+        let mut result = vec![0u8; 40];
+        put_u32(&mut result, 20, ty);
+        put_u32(&mut result, 24, count);
+        put_u32(&mut result, 28, stride);
+        result.extend_from_slice(payload);
+        result
+    }
+
+    fn original_container(chunks: Vec<(u32, Vec<u8>)>) -> Vec<u8> {
+        let mut bytes = vec![0u8; 20];
+        bytes[..8].copy_from_slice(b"CryTek\\0\\0");
+        put_u32(&mut bytes, 8, 0xFFFF0000);
+        put_u32(&mut bytes, 12, 0x745);
+        let mut records = Vec::new();
+        for (id, (kind, mut raw)) in chunks.into_iter().enumerate() {
+            let offset = bytes.len();
+            put_u32(&mut raw, 0, kind);
+            put_u32(&mut raw, 4, 0x800);
+            put_u32(&mut raw, 8, offset as u32);
+            put_u32(&mut raw, 12, (id + 1) as u32);
+            records.push((kind, offset, (id + 1) as u32, raw.len()));
+            bytes.extend_from_slice(&raw);
+        }
+        let table = bytes.len();
+        put_u32(&mut bytes, 16, table as u32);
+        bytes.extend_from_slice(&(records.len() as u32).to_le_bytes());
+        for (kind, offset, id, size) in records {
+            for value in [kind, 0x800, offset as u32, id, size as u32] {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        bytes
+    }
+
+    fn sample_body() -> Vec<u8> {
+        let positions = [[0f32, 0f32, 0f32], [1f32, 0f32, 0f32], [0f32, 1f32, 0f32]]
+            .into_iter()
+            .flat_map(|pos| pos.into_iter().flat_map(f32::to_le_bytes))
+            .collect::<Vec<_>>();
+        let indices = [0u16, 1, 2].into_iter()
+            .flat_map(u16::to_le_bytes).collect::<Vec<_>>();
+        let weights = [
+            [0u8, 0, 0, 0, 255, 0, 0, 0],
+            [1u8, 0, 0, 0, 255, 0, 0, 0],
+            [1u8, 0, 0, 0, 255, 0, 0, 0],
+        ].into_iter().flatten().collect::<Vec<_>>();
+        let mut palette = vec![0u8; 32 + 36 + 260];
+        put_u32(&mut palette, 20, 1);
+        put_u32(&mut palette, 32 + 4, 3);
+        put_u32(&mut palette, 32 + 12, 3);
+        let at = 32 + 36;
+        put_u32(&mut palette, at, 2);
+        palette[at + 4..at + 8].copy_from_slice(&[0, 0, 1, 0]);
+        original_container(vec![
+            (BONE, sample_bones()),
+            (STREAM, stream_chunk(0, 3, 12, &positions)),
+            (STREAM, stream_chunk(5, 3, 2, &indices)),
+            (STREAM, stream_chunk(9, 3, 8, &weights)),
+            (SUBSETS, palette),
+        ])
+    }
+
+    #[test]
+    fn original_2012_palettes_produce_real_four_weight_joints() {
+        let body = sample_body();
+        let master = original_container(vec![(BONE, sample_bones())]);
+        let (skeleton, weights) = read_legacy_skin(&body, &master, 3).unwrap();
+        assert_eq!(skeleton.names, ["root", "arm"]);
+        assert_eq!(skeleton.parents, [None, Some(0)]);
+        assert_eq!(weights.influences, 4);
+        assert_eq!(weights.joint_ids.len(), 3);
+        assert_eq!(weights.joint_ids[1][0], 1);
+        assert_eq!(weights.weight_bytes[1][0], 255);
+        assert_eq!(weights.subsets, 1);
+    }
+
     #[test]
     fn rejects_wrong_legacy_header_without_fake_skin() {
         assert!(parse_legacy_skeleton(b"CrChF\x07\0\0").is_err());
