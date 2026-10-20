@@ -303,14 +303,18 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     .color(MUTED),
             ]
             .spacing(8),
-            text("Save edits as a separate new level layer").size(12),
+            text(format!(
+                "Save {} changed placement(s) as a new level layer",
+                state.level_dirty_count
+            ))
+            .size(12),
             text_input(
                 "New absolute .lyr or .xml output path",
                 &state.level_edit_output
             )
             .on_input(Message::LevelEditOutputChanged),
             button("Export edited level copy").on_press_maybe(
-                (!state.level_original_transforms.is_empty()).then_some(Message::LevelExportEdits)
+                (state.level_dirty_count > 0).then_some(Message::LevelExportEdits)
             ),
             text("Original level is read-only. Child world positions update in the preview.")
                 .size(12)
@@ -338,5 +342,12 @@ mod editing_tests {
         assert_eq!(parse_transform(&p, &q, &scale).unwrap(), original);
         assert!(parse_transform("1, 2", &q, &scale).is_err());
         assert!(parse_transform("NaN, 2, 3", &q, &scale).is_err());
+        assert!(parse_transform("1, Infinity, 3", &q, &scale).is_err());
+        assert!(parse_transform(&p, "1, NaN, 0, 0", &scale).is_err());
+        assert!(parse_transform(&p, &q, "1, 1, -inf").is_err());
+        assert!(parse_transform(&p, "1,0,0", &scale).is_err());
+        let local = parse_transform("1, 2, 3", "0.70710677, 0.70710677, 0, 0", "2, 3, 4").unwrap();
+        assert_eq!(local.quaternion[0], local.quaternion[1]);
+        assert_eq!(local.position, [1., 2., 3.]);
     }
 }
