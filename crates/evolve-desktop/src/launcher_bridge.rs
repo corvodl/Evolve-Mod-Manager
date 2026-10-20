@@ -484,29 +484,53 @@ fn guarded_restore_state(stage: &Path, swap: &Path) -> Result<String, String> {
         return Err("Unrecognized private swap recovery journal version".into());
     }
     let phase = journal["phase"].as_str().ok_or("Missing recovery phase")?;
-    if !matches!(phase, "prepared" | "restored" | "swapped" | "interrupted" | "restoring") {
+    if !matches!(
+        phase,
+        "prepared" | "restored" | "swapped" | "interrupted" | "restoring"
+    ) {
         return Err("Unrecognized/unsafe private swap recovery phase".into());
     }
     let plan = json(&stage.join("rekey_plan.json"))?;
     let game = directory(Path::new(
-        plan["source_root"].as_str().ok_or("Missing original game root")?
+        plan["source_root"]
+            .as_str()
+            .ok_or("Missing original game root")?,
     ))?;
-    if game.starts_with(&stage) || stage.starts_with(&game)
-        || game.starts_with(&swap) || swap.starts_with(&game)
+    if game.starts_with(&stage)
+        || stage.starts_with(&game)
+        || game.starts_with(&swap)
+        || swap.starts_with(&game)
     {
         return Err("Game and stage/swap helper directories overlap".into());
     }
-    if directory(Path::new(journal["game"].as_str().ok_or("Journal game root missing")?))? != game
-        || directory(Path::new(journal["stage"].as_str().ok_or("Journal signing stage missing")?))? != stage
+    if directory(Path::new(
+        journal["game"]
+            .as_str()
+            .ok_or("Journal game root missing")?,
+    ))? != game
+        || directory(Path::new(
+            journal["stage"]
+                .as_str()
+                .ok_or("Journal signing stage missing")?,
+        ))? != stage
     {
-        return Err("Recovery journal was created for another installed game or signing stage".into());
+        return Err(
+            "Recovery journal was created for another installed game or signing stage".into(),
+        );
     }
     let mut expected = Vec::new();
-    for entry in plan["entries"].as_array().ok_or("Signing stage plan has no entries")? {
+    for entry in plan["entries"]
+        .as_array()
+        .ok_or("Signing stage plan has no entries")?
+    {
         if entry["kind"].as_str() != Some("signed-encrypted") {
             continue;
         }
-        let name = safe_pak_name(entry["path"].as_str().ok_or("Missing signed archive path")?)?;
+        let name = safe_pak_name(
+            entry["path"]
+                .as_str()
+                .ok_or("Missing signed archive path")?,
+        )?;
         expected.push((
             name.to_owned(),
             stage.join("paks").join(name),
@@ -521,38 +545,59 @@ fn guarded_restore_state(stage: &Path, swap: &Path) -> Result<String, String> {
         stage.join("inject-custom.dll"),
         game.join("bin64_SteamRetail/inject.dll"),
     ));
-    let records = journal["files"].as_array().ok_or("Recovery journal missing files")?;
+    let records = journal["files"]
+        .as_array()
+        .ok_or("Recovery journal missing files")?;
     if records.len() != expected.len() || journal["count"].as_u64() != Some(expected.len() as u64) {
         return Err("Recovery ledger differs from original PAK and hook plan".into());
     }
     let mut seen = std::collections::HashSet::new();
     for (record, (name, source, target)) in records.iter().zip(expected) {
-        if record["name"].as_str() != Some(name.as_str())
-            || !seen.insert(name.to_ascii_lowercase())
+        if record["name"].as_str() != Some(name.as_str()) || !seen.insert(name.to_ascii_lowercase())
         {
             return Err(format!("Recovery journal target ordering changed: {name}"));
         }
         let expected_source = plain(&source, 16 * 1024 * 1024 * 1024)?;
         let recorded_source = plain(
-            Path::new(record["source"].as_str().ok_or("Journal source path missing")?),
-            16 * 1024 * 1024 * 1024
+            Path::new(
+                record["source"]
+                    .as_str()
+                    .ok_or("Journal source path missing")?,
+            ),
+            16 * 1024 * 1024 * 1024,
         )?;
         if expected_source != recorded_source {
-            return Err(format!("Recovery source does not match staged signed asset: {name}"));
+            return Err(format!(
+                "Recovery source does not match staged signed asset: {name}"
+            ));
         }
         let expected_parent = directory(target.parent().ok_or("Original target parent missing")?)?;
-        let target_name = target.file_name().and_then(|x| x.to_str())
+        let target_name = target
+            .file_name()
+            .and_then(|x| x.to_str())
             .ok_or("Original target filename missing")?;
-        for (field, suffix) in [("target", ""), ("backup", ".customkey-original"), ("ready", ".customkey-ready")] {
+        for (field, suffix) in [
+            ("target", ""),
+            ("backup", ".customkey-original"),
+            ("ready", ".customkey-ready"),
+        ] {
             let raw = Path::new(record[field].as_str().ok_or("Recovery file path missing")?);
             let parent = directory(raw.parent().ok_or("Recovery file parent missing")?)?;
-            let filename = raw.file_name().and_then(|x| x.to_str())
+            let filename = raw
+                .file_name()
+                .and_then(|x| x.to_str())
                 .ok_or("Recovery filename missing")?;
-            if parent != expected_parent || !filename.eq_ignore_ascii_case(&format!("{target_name}{suffix}")) {
-                return Err(format!("Recovery {field} path does not match installed original: {name}"));
+            if parent != expected_parent
+                || !filename.eq_ignore_ascii_case(&format!("{target_name}{suffix}"))
+            {
+                return Err(format!(
+                    "Recovery {field} path does not match installed original: {name}"
+                ));
             }
             if fs::symlink_metadata(raw).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
-                return Err(format!("Unsafe symlink in private recovery journal: {name}"));
+                return Err(format!(
+                    "Unsafe symlink in private recovery journal: {name}"
+                ));
             }
         }
     }
@@ -883,23 +928,30 @@ mod tests {
         fs::create_dir(&swap).unwrap();
         fs::write(stage.join("paks/Game/libs.pak"), b"signed staged archive").unwrap();
         fs::write(stage.join("inject-custom.dll"), b"stage hook bytes").unwrap();
-        fs::write(stage.join("rekey_plan.json"), serde_json::to_vec(&serde_json::json!({
-            "source_root": game,
-            "entries": [{"kind": "signed-encrypted", "path": "Game/libs.pak"}]
-        })).unwrap()).unwrap();
+        fs::write(
+            stage.join("rekey_plan.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "source_root": game,
+                "entries": [{"kind": "signed-encrypted", "path": "Game/libs.pak"}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let pak_target = game.join("Game/libs.pak");
         let hook_target = game.join("bin64_SteamRetail/inject.dll");
         let source_pak = stage.join("paks/Game/libs.pak");
         let source_hook = stage.join("inject-custom.dll");
-        let row = |name: &str, source: &Path, target: &Path| serde_json::json!({
-            "name": name,
-            "source": source,
-            "target": target,
-            "ready": format!("{}.customkey-ready", target.display()),
-            "backup": format!("{}.customkey-original", target.display()),
-            "bytes": 5,
-            "sha256": "test-only"
-        });
+        let row = |name: &str, source: &Path, target: &Path| {
+            serde_json::json!({
+                "name": name,
+                "source": source,
+                "target": target,
+                "ready": format!("{}.customkey-ready", target.display()),
+                "backup": format!("{}.customkey-original", target.display()),
+                "bytes": 5,
+                "sha256": "test-only"
+            })
+        };
         let mut journal = serde_json::json!({
             "version": 1, "phase": "interrupted",
             "game": game, "stage": stage, "count": 2,
