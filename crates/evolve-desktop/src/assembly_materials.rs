@@ -49,6 +49,7 @@ fn material_for_part(
 
 fn authored_maps(
     document: &MaterialDocument,
+    material_slot: u32,
     inventory: &Inventory,
     imported: Option<&Path>,
     build: Option<&str>,
@@ -56,11 +57,11 @@ fn authored_maps(
     bytes_loaded: &mut usize,
     decoded: &mut HashSet<PathBuf>,
 ) -> Result<[Option<Arc<image::RgbaImage>>; 5], String> {
-    if document.slots.len() != 1 {
-        return Err(format!("{} source material slots require subset-to-slot mapping", document.slots.len()));
-    }
+    let slot = document.slots.get(material_slot as usize).ok_or_else(||
+        format!("Source material slot {} exceeds {} authored leaves",
+            material_slot, document.slots.len()))?;
     let mut result: [Option<Arc<image::RgbaImage>>; 5] = std::array::from_fn(|_| None);
-    for map in &document.slots[0].maps {
+    for map in &slot.maps {
         let index = match map.role.as_str() {
             "diffuse" => 0,
             "normals" | "normal" | "bumpmap" => 1,
@@ -120,12 +121,17 @@ pub fn load(
             gloss: None,
         };
         let result = (|| -> Result<(),String> {
+            if part.material_slot == 255 {
+                // Explicit incomplete subset table: never borrow a random
+                // material from the previous CryEngine face range.
+                return Ok(());
+            }
             let path = material_for_part(
                 &part.binding, part.material_hint.as_deref(), inventory, imported, build
             )?.ok_or("No explicitly associated or same-stem MTL")?;
             let authored = read_material(&path).map_err(|e| format!("{}: {e}",path.display()))?;
             let [diffuse, normal, emissive, specular, gloss] =
-                authored_maps(&authored, inventory, imported, build, cache,
+                authored_maps(&authored, part.material_slot, inventory, imported, build, cache,
                     &mut bytes_loaded, &mut decoded)?;
             surface.diffuse = diffuse;
             surface.normal = normal;
