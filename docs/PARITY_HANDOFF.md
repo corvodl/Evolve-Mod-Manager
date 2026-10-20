@@ -9,6 +9,27 @@ Updated: **2026-10-20** · Repository: `corvodl/Evolve-Mod-Manager` · Working P
 3. Resume **real Blender 5.2 character acceptance** for unified FBX, then native character CAF/DBA and offline installed-game workflows. Any real extracted assets remain out of Git and release packages.
 4. Update this file after each verified advance with the exact commit/run, observation, blockers, and next operation. Keep PR open until representative real-asset acceptance and CI pass; no release just for green synthetic tests.
 
+## October 20 continuation — original MTL slots, native CAF layers, offline launch gate
+
+These commits build on the verified FBX publishing and viewport changes. All changes remain experimental until the newest CI, real Stage 2 assets and Windows launch recovery are independently checked.
+
+**Source multi-material parity**
+- `materials.rs` now preserves empty/self-closing `<Material .../>` leaves in their exact original depth-first order, including `Shader="NoDraw"`. The previous parser dropped those leaves, shifting GPU subset ID 1 onto material 0 and potentially putting equipment/glow textures on the wrong character part.
+- `assembly_materials.rs` preserves exact source material slot ranges, and `textured.rs` does not draw explicit NoDraw subsets. A valid all-NoDraw table stays hidden instead of rendering the complete model through fallback.
+- Synthetic cases exercise NoDraw/empty/body/emissive slots in their original positions. Still unverified: actual Kala multi-material mapping, texture alpha/opacity, LOD subset IDs, per-face UV assignments, and Blender multi-slot FBX export. No fabricated diffuse DDS fallbacks.
+
+**Native CAF/DBA animation parity**
+- `caf_layers.rs` now applies CryEngine-style additive **local delta** translations/quaternions in the mixer with an explicitly verified full compiled bind pose. Ordinary CAF layers still use controller-CRC-matched nonadditive interpolation. Weighted additive rotation is composed onto the actual base pose; unknown CRCs, missing/incomplete bind or invalid weights fail.
+- The no-bind mixer still rejects additive clips. The source convention is from documented CryEngine animation metadata; synthetic pose tests are not proof all Stage 2 clips obey that exact convention. Native CAF assembly already accepts `mesh_at_layers`; actual GUI selection and layering controls need full live integration/verification.
+- **Direct DBA decoding is not implemented.** DBA bundles have compressed/sharable controller streams (including Controller_905 and multiple storage modes). Do not synthesize missing keys or mark converter-backed GLB playback as native DBA. Next: use allowed real AnimationsDBA.pak samples to identify their exact directory/offset/storage mode, add bounded native DBA parser and track validation, then map original controller CRCs to the compiled skeleton and compare timing against converter output. Do not commit proprietary assets.
+
+**Native offline-launch parity**
+- `native_offline_launch.rs` introduces `inspect_native_offline_readiness`, a **read-only** preflight using the exact isolated stage, enabled validated profile, independently signed installed PAKs, safe game executable, distinct original/custom public keys, nonoverlapping roots and no stranded per-target backups. It returns `native_launch_armed=false` by design.
+- No installed PAK is copied, swapped, injected or executed by this API. Native installed-game launch/swap, crash-safe backup journal, power-loss recovery, process-close verification, DLL offline gating and restore-watchdog handshake remain **blocking**. The private Python/Frida launcher is still a separate compatibility path and must not be silently treated as a native implementation.
+- Next: design an explicit native transaction manifest recording original SHA256, target, temp/backup paths, verified custom digest, restore intent and crash recovery; test simulated mid-copy/mid-rename interruption, symlinks/case aliases, mismatched keys and disk failure in isolated temp game roots. Only after audited recovery and real offline safety should any GUI launch button invoke the native path.
+
+**Verification:** check the latest commit/CI for format, core tests, desktop clippy/tests and portable Windows packaging before marking any of the above green. The previous Wraith Blender 5.2 report is not a checked-in fixture; live game acceptance remains outstanding.
+
 ## Exact exporter work left in progress
 
 ### What was wrong in the public branch
