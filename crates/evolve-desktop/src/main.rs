@@ -52,7 +52,10 @@ use iced::widget::{
     canvas, column, container, image, row, scrollable, shader, slider, space, svg, text, tooltip,
 };
 use iced::{Element, Fill, Length, Subscription, Task, Theme, window};
-use launcher_bridge::{LaunchReady, inspect_existing_launcher, launch_existing_offline_client};
+use launcher_bridge::{
+    LaunchReady, inspect_existing_launcher, launch_existing_offline_client,
+    restore_existing_offline_client,
+};
 use modding_projects::{ProjectRow, discover_projects};
 use selection::MultiSelection;
 use settings::{Preferences, load_from, save_to, settings_path};
@@ -360,6 +363,7 @@ enum Operation {
     VerifySignedHookPair(PathBuf, PathBuf, PathBuf, PathBuf, PathBuf, PathBuf, String),
     CheckExistingOfflineLauncher(PathBuf, PathBuf),
     StartExistingOfflineLauncher(PathBuf, PathBuf),
+    RestoreExistingOfflineLauncher(PathBuf, PathBuf),
     RebuildSignedPak(
         PathBuf,
         PathBuf,
@@ -441,6 +445,7 @@ enum Completed {
     SignedHookPreflight(PakHookPairReport),
     OfflineLauncherReady(LaunchReady),
     OfflineLauncherStarted(usize, u32),
+    OfflineLauncherRestored(usize),
     ExtractedSigned(usize, PathBuf),
     RebuiltSigned(String, PathBuf),
     LevelExported(usize, usize, PathBuf),
@@ -958,6 +963,10 @@ impl Operation {
                 let id = launch_existing_offline_client(&report)?;
                 Ok(Completed::OfflineLauncherStarted(count, id))
             }
+            Self::RestoreExistingOfflineLauncher(stage, swap) => {
+                let count = restore_existing_offline_client(&stage, &swap)?;
+                Ok(Completed::OfflineLauncherRestored(count))
+            }
             Self::StageInit(root) => {
                 initialize_stage(&root).map_err(|e| e.to_string())?;
                 Ok(Completed::StageInitialized(root))
@@ -1129,6 +1138,7 @@ enum Message {
     StartStageRestore,
     StartOfflineLauncherCheck,
     StartOfflineLauncherLaunch,
+    StartOfflineLauncherRestore,
     ProfileNameChanged(String),
     SelectProfile(String),
     StartProfileList,
@@ -3254,7 +3264,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 ),
             );
         }
-        Message::StartOfflineLauncherCheck | Message::StartOfflineLauncherLaunch => {
+        Message::StartOfflineLauncherCheck
+        | Message::StartOfflineLauncherLaunch
+        | Message::StartOfflineLauncherRestore => {
             if state.preferences.stage.trim().is_empty() || state.preferences.swap.trim().is_empty()
             {
                 state.status =
@@ -3265,6 +3277,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let swap = PathBuf::from(&state.preferences.swap);
             if matches!(message, Message::StartOfflineLauncherCheck) {
                 return launch(state, Operation::CheckExistingOfflineLauncher(stage, swap));
+            }
+            if matches!(message, Message::StartOfflineLauncherRestore) {
+                return launch(state, Operation::RestoreExistingOfflineLauncher(stage, swap));
             }
             return launch(state, Operation::StartExistingOfflineLauncher(stage, swap));
         }
@@ -4553,6 +4568,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Ok(Completed::OfflineLauncherStarted(count, id)) => {
                     state.status = format!(
                         "Private launcher CreateProcessW hook READY (helper PID {id}) for {count} signed PAKs + matching custom RSA hook. The actual swap occurs only when the exact game launch is intercepted; watch rust-launch-bridge.log and auto-restore.log for swap/restoration. CryEngine mount is NOT yet verified."
+                    );
+                    state.page = Some(Page::Files);
+                }
+                Ok(Completed::OfflineLauncherRestored(count)) => {
+                    state.status = format!(
+                        "Private offline recovery PASS: originals verified for {count} signed PAKs + the original client hook. No stranded custom-key backups. See rust-restore-bridge.log in your swap folder."
                     );
                     state.page = Some(Page::Files);
                 }
