@@ -47,6 +47,24 @@ fn quaternion_blend(a: [f32; 4], b: [f32; 4], weight: f32) -> Result<[f32; 4], N
     Ok(output)
 }
 
+/// Compose two local CryEngine XYZW unit quaternions. Additive CAF data
+/// stores delta rotations, so apply the weighted delta AFTER the base local
+/// rotation; never reinterpret it as an absolute bone orientation.
+fn quaternion_compose(
+    base: [f32; 4],
+    delta: [f32; 4],
+) -> Result<[f32; 4], NativeCafError> {
+    let [x, y, z, w] = base;
+    let [a, b, c, d] = delta;
+    let result = [
+        w * a + x * d + y * c - z * b,
+        w * b - x * c + y * d + z * a,
+        w * c + x * b - y * a + z * d,
+        w * d - x * a - y * b - z * c,
+    ];
+    quaternion_blend([0., 0., 0., 1.], result, 1.)
+}
+
 fn validate(pose: &[CafBonePose], allowed: &HashSet<u32>) -> Result<(), NativeCafError> {
     let mut seen = HashSet::new();
     if pose.len() > MAX_BONES || allowed.is_empty() || allowed.len() > MAX_BONES {
@@ -130,13 +148,24 @@ pub fn sample_caf_layers_with_bind(
             pose
         })
         .collect();
-    blend_pose(pose, layers, &allowed)
+    // This is the only mixer supplied with independently verified original
+    // bind transforms. Additive CAF local deltas can safely be composed here.
+    blend_pose_inner(pose, layers, &allowed, true)
 }
 
 fn blend_pose(
+    pose: Vec<CafBonePose>,
+    layers: &[CafLayer<'_>],
+    original_bone_crcs: &HashSet<u32>,
+) -> Result<Vec<CafBonePose>, NativeCafError> {
+    blend_pose_inner(pose, layers, original_bone_crcs, false)
+}
+
+fn blend_pose_inner(
     mut pose: Vec<CafBonePose>,
     layers: &[CafLayer<'_>],
     original_bone_crcs: &HashSet<u32>,
+    verified_bind: bool,
 ) -> Result<Vec<CafBonePose>, NativeCafError> {
     let lookup: HashMap<u32, usize> = pose
         .iter()
@@ -144,12 +173,12 @@ fn blend_pose(
         .map(|(i, p)| (p.bone_crc32, i))
         .collect();
     for layer in layers {
-        if layer.motion.additive
+        if (layer.motion.additive && !verified_bind)
             || !layer.weight.is_finite()
             || !(0.0..=1.0).contains(&layer.weight)
         {
             return Err(bad(
-                "Additive clips or invalid layer weight require a verified bind-pose mixer",
+                "Additive clips require verified bind pose and a finite layer weight",
             ));
         }
         if layer.weight == 0.0 {
@@ -165,7 +194,11 @@ fn blend_pose(
             match (target.translation, controller.translation) {
                 (Some(a), Some(b)) => {
                     target.translation = Some(std::array::from_fn(|i| {
-                        a[i] * (1.0 - layer.weight) + b[i] * layer.weight
+                        if layer.motion.additive {
+                            a[i] + b[i] * layer.weight
+                        } else {
+                            a[i] * (1.0 - layer.weight) + b[i] * layer.weight
+                        }
                     }));
                 }
                 (None, Some(_)) => {
@@ -174,7 +207,16 @@ fn blend_pose(
                 _ => {}
             }
             match (target.rotation, controller.rotation) {
-                (Some(a), Some(b)) => target.rotation = Some(quaternion_blend(a, b, layer.weight)?),
+                (Some(a), Some(b)) => {
+                    target.rotation = Some(if layer.motion.additive {
+                        let weighted = quaternion_blend(
+                            [0., 0., 0., 1.], b, layer.weight
+                        )?;
+                        quaternion_compose(a, weighted)?
+                    } else {
+                        quaternion_blend(a, b, layer.weight)?
+                    });
+                }
                 (None, Some(_)) => {
                     return Err(bad("Layer rotation has no verified base transform"));
                 }
@@ -276,6 +318,56 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn verified_bind_mixer_applies_additive_local_deltas_without_losing_rest() {
+        let base = clip(123, 4.);
+        let mut delta = clip(123, 3.);
+        delta.additive = true;
+        delta.controllers[0].rotations = vec![
+            [0., 0., 1., 0.],
+            [0., 0., 1., 0.],
+        ];
+        let bind = vec![CafBonePose {
+            bone_crc32: 123,
+            translation: Some([2., 1., 0.]),
+            rotation: Some([0., 0., 0., 1.]),
+        }];
+        let layers = [CafLayer {
+            motion: &delta,
+            seconds: 0.,
+            weight: 0.5,
+        }];
+        let pose = sample_caf_layers_with_bind(&base, 0., &layers, &bind).unwrap();
+        assert_eq!(pose[0].translation, Some([5.5, 0., 0.]));
+        let q = pose[0].rotation.unwrap();
+        assert!((q[2].abs() - 0.70710677).abs() < 0.0001);
+        assert!((q[3].abs() - 0.70710677).abs() < 0.0001);
+        let no_layer = sample_caf_layers_with_bind(&base, 0., &[], &bind).unwrap();
+        assert_eq!(no_layer[0].translation, Some([4., 0., 0.]));
+        assert!(sample_verified_caf_layers(
+            &base, 0., &layers, &HashSet::from([123]),
+        ).is_err());
+    }
+
+    #[test]
+    fn additive_requires_unambiguous_bind_skeleton_and_bounded_weight() {
+        let base = clip(123, 0.);
+        let mut delta = clip(999, 3.);
+        delta.additive = true;
+        let bind = vec![CafBonePose {
+            bone_crc32: 123,
+            translation: Some([0., 0., 0.]),
+            rotation: Some([0., 0., 0., 1.]),
+        }];
+        assert!(sample_caf_layers_with_bind(&base, 0., &[CafLayer {
+            motion: &delta, seconds: 0., weight: 1.,
+        }], &bind).is_err());
+        delta.controllers[0].bone_crc32 = 123;
+        assert!(sample_caf_layers_with_bind(&base, 0., &[CafLayer {
+            motion: &delta, seconds: 0., weight: 1.5,
+        }], &bind).is_err());
     }
 
     #[test]
