@@ -226,7 +226,7 @@ fn original_model_material(
         });
         use std::io::Read;
         let mut header = [0u8; 16];
-        let historical = fs::File::open(mesh)
+        let historical = fs::File::open(&mesh)
             .and_then(|mut file| file.read_exact(&mut header))
             .is_ok()
             && &header[..8] == b"CryTek\0\0"
