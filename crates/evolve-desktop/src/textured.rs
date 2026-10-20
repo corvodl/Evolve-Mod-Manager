@@ -23,7 +23,6 @@ fn gpu_budget_allows(used: usize, additional: usize) -> bool {
         .is_some_and(|total| total <= MAX_GPU_PREVIEW_TEXTURE_BYTES)
 }
 
-
 #[derive(Clone, Debug)]
 pub struct Surface {
     pub first_index: u32,
@@ -850,9 +849,8 @@ impl Pipeline {
                         Self::upload_map(device, queue, selected, &fallback, format, label);
                     // The fallback is a four-byte neutral placeholder; large
                     // unverified maps are omitted instead of risking GPU OOM.
-                    used_bytes = used_bytes.saturating_add(
-                        selected.map_or(4, |pixels| pixels.as_raw().len()),
-                    );
+                    used_bytes = used_bytes
+                        .saturating_add(selected.map_or(4, |pixels| pixels.as_raw().len()));
                     uploaded.insert(selected_key, view.clone());
                     self._surface_textures.push(texture);
                     views.push(view);
@@ -1177,9 +1175,18 @@ mod tests {
     fn shared_source_images_share_one_gpu_upload_key_per_role() {
         let image = Arc::new(image::RgbaImage::new(8, 8));
         let same = Arc::clone(&image);
-        assert_eq!(super::texture_cache_key(Some(&image), 0), super::texture_cache_key(Some(&same), 0));
-        assert_ne!(super::texture_cache_key(Some(&image), 0), super::texture_cache_key(Some(&image), 1));
-        assert_eq!(super::texture_cache_key(None, 0), super::texture_cache_key(None, 0));
+        assert_eq!(
+            super::texture_cache_key(Some(&image), 0),
+            super::texture_cache_key(Some(&same), 0)
+        );
+        assert_ne!(
+            super::texture_cache_key(Some(&image), 0),
+            super::texture_cache_key(Some(&image), 1)
+        );
+        assert_eq!(
+            super::texture_cache_key(None, 0),
+            super::texture_cache_key(None, 0)
+        );
     }
 
     #[test]
