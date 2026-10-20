@@ -580,7 +580,12 @@ mod tests {
         let inventory = scan_directory(dir.path()).unwrap();
         let found = discover("characters/hunter/torso.skinm", &inventory, None, None);
         assert!(found.skeleton.is_none());
-        assert!(found.warnings.iter().any(|w| w.contains("Multiple authored CDFs")));
+        assert!(
+            found
+                .warnings
+                .iter()
+                .any(|w| w.contains("Multiple authored CDFs"))
+        );
     }
 
     #[test]
