@@ -18,6 +18,7 @@ pub mod dependency_graph;
 pub mod fbx;
 pub mod glb;
 pub mod inventory;
+pub mod legacy_rig;
 pub mod level_export;
 pub mod library_catalog;
 pub mod library_import;
@@ -29,7 +30,6 @@ pub mod native_offline_launch;
 pub mod policy;
 pub mod profiles;
 pub mod rig;
-pub mod legacy_rig;
 pub mod scene;
 pub mod signed_pak;
 pub mod skin_preview;
@@ -82,6 +82,7 @@ pub use inventory::{
     AssetEntry, AssetKind, Inventory, InventoryError, MAX_ENTRIES, scan_directory,
     scan_directory_with_progress, write_inventory_json,
 };
+pub use legacy_rig::{parse_legacy_skeleton, read_legacy_skin};
 pub use level_export::{LevelExportError, LevelExportReport, export_level_scene_glb};
 pub use library_catalog::{
     ImportedLibrary, ImportedPak, LibraryError, LibraryReference, LibraryReferenceStatus,
@@ -107,7 +108,6 @@ pub use native_offline_launch::{
     audit_native_offline_swap, inspect_native_offline_readiness, plan_native_offline_swap,
 };
 pub use policy::{AnimationPolicy, ExportFeature, FeatureStatus, PARITY_MATRIX};
-pub use legacy_rig::{parse_legacy_skeleton, read_legacy_skin};
 pub use rig::{
     CompiledSkeleton, RigError, RigReport, VerifiedWeights, export_rigged_character_fbx,
     export_rigged_character_fbx_textured, export_rigged_character_fbx_textured_animated,
