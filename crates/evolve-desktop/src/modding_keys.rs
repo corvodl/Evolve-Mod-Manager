@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
 pub struct KeyContext {
+    pub original_public: PathBuf,
     pub public: PathBuf,
     pub private: PathBuf,
 }
@@ -26,7 +27,41 @@ pub fn public_key(stage: &Path) -> Result<PathBuf, String> {
     Ok(key)
 }
 
+/// Exact original Stage 2 signing key used by the private manager's
+/// CustomSigning stage. Never substitute a custom signing key when an original
+/// game PAK has not been cryptographically verified.
+pub fn original_public_key(stage: &Path) -> Result<PathBuf, String> {
+    let parent = stage.parent().ok_or("Configured signing stage has no parent directory")?;
+    let key = parent.join("RSAKeyData.bin");
+    if !fs::symlink_metadata(&key).is_ok_and(|m| m.file_type().is_file() && m.len() == 140) {
+        return Err(format!(
+            "Original 140-byte RSAKeyData.bin missing from {}.              The original Stage 2 PAK cannot be re-signed safely without its exact public key.",
+            parent.display()
+        ));
+    }
+    Ok(key)
+}
+
+/// Select either the verified original or the stage's custom key from the
+/// authenticated archive signature, never from its filename or folder.
+/// Original archives and already-custom-signed archives use different keys.
+pub fn verified_archive_key(
+    stage: &Path,
+    source: &Path,
+    signed_basename: &str,
+) -> Result<PathBuf, String> {
+    let original = original_public_key(stage).ok();
+    let custom = public_key(stage).ok();
+    for candidate in [original, custom].into_iter().flatten() {
+        if evolve_core::inspect_signed_pak(source, &candidate, signed_basename).is_ok() {
+            return Ok(candidate);
+        }
+    }
+    Err("Archive cannot be authenticated with the original or configured custom Stage 2 RSA key; source/key/basename mismatch.".into())
+}
+
 pub fn signing_keys(stage: &Path) -> Result<KeyContext, String> {
+    let original_public = original_public_key(stage)?;
     let public = public_key(stage)?;
     let private = stage.join("mykeys").join("private_key.pem");
     if !regular(&private) {
@@ -36,7 +71,7 @@ pub fn signing_keys(stage: &Path) -> Result<KeyContext, String> {
             private.display()
         ));
     }
-    Ok(KeyContext { public, private })
+    Ok(KeyContext { original_public, public, private })
 }
 
 /// Signed CryPAK basename is the actual file name; never a user-entered guess.
