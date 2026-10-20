@@ -49,6 +49,26 @@ def mesh_uv_bounds(mesh):
           "nonfinite original UV0")
     return [(min(axis), max(axis)) for axis in values]
 
+def append_uv_loops(mesh, coordinates):
+    # FBX can reorder faces and split vertices at UV seams. Loop UV values,
+    # unlike vertex order, still describe the authored per-corner coordinates.
+    layer = mesh.data.uv_layers[0]
+    for item in layer.data:
+        coordinates[0].append(float(item.uv[0]))
+        coordinates[1].append(float(item.uv[1]))
+
+def verify_uv_loop_distributions(source, destination):
+    # Compare the entire coordinate distribution on both axes rather than
+    # only the bounding rectangle. This rejects missing/replaced loops and
+    # large UV rearrangements while tolerating FBX's face reordering and
+    # sub-millipixel float32 conversion drift.
+    for axis in range(2):
+        before, after = sorted(source[axis]), sorted(destination[axis])
+        check(len(before) == len(after) and bool(before),
+              "FBX round-trip changed original UV0 loop count")
+        check(all(abs(a - b) <= 0.001 for a, b in zip(before, after)),
+              "FBX round-trip changed original UV0 coordinates")
+
 def verify_mesh(mesh, armature):
     check(bool(mesh.data.vertices) and bool(mesh.data.polygons), "missing original mesh")
     check(bool(mesh.data.uv_layers), "missing original UV0")
@@ -89,6 +109,7 @@ def main():
     master = None
     meshes = []
     source_uv_bounds = []
+    source_uv_loops = [[], []]
     source_weighted_vertices = 0
     for part in parts:
         name, file = part.get("name"), part.get("source")
@@ -107,6 +128,7 @@ def main():
         modifier, weighted, uv_bounds = verify_mesh(mesh, arm)
         source_weighted_vertices += weighted
         source_uv_bounds.append(uv_bounds)
+        append_uv_loops(mesh, source_uv_loops)
         if master is None:
             master = arm
         else:
@@ -164,10 +186,12 @@ def main():
         check(bool(bpy.data.actions), "FBX round-trip lost the verified CAF Action")
     imported_weighted_vertices = 0
     target_bounds = []
+    target_uv_loops = [[], []]
     for mesh in result_meshes:
         _, weighted, bounds = verify_mesh(mesh, result_arms[0])
         imported_weighted_vertices += weighted
         target_bounds.append(bounds)
+        append_uv_loops(mesh, target_uv_loops)
     check(imported_weighted_vertices > 0 and source_weighted_vertices > 0,
           "round-trip lost original bone weights")
     # FBX may split original vertices at UV seams. Validate the global authored
@@ -180,9 +204,11 @@ def main():
         check(abs(original_lo - imported_lo) <= 0.002
               and abs(original_hi - imported_hi) <= 0.002,
               "FBX round-trip changed original UV0 bounds")
+    verify_uv_loop_distributions(source_uv_loops, target_uv_loops)
     print(json.dumps({"parts": len(parts), "bones": bone_count,
                       "meshes": len(result_meshes), "display_shapes_excluded": len(display_shapes),
                       "weighted_vertices": imported_weighted_vertices,
+                      "uv_loops": len(target_uv_loops[0]),
                       "bytes": destination.stat().st_size}))
 
 if __name__ == "__main__":
