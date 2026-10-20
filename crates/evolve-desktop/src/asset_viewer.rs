@@ -48,29 +48,29 @@ fn strip(_state: &State) -> Element<'_, Message> {
 fn dropdown(state: &State) -> Option<Element<'_, Message>> {
     let content: Element<'_, Message> = match state.viewer_menu? {
         "File" => column![
-            design::button("Inspect original PAK").on_press(Message::StartPakInspection),
-            design::button("Export selected DDS → PNG").on_press(Message::StartPngExport),
-            design::button("Save viewer layout").on_press(Message::ViewerSaveLayout),
+            design::button("Inspect original PAK").on_press(Message::MenuCommand(Box::new(Message::StartPakInspection))),
+            design::button("Export selected DDS → PNG").on_press(Message::MenuCommand(Box::new(Message::StartPngExport))),
+            design::button("Save viewer layout").on_press(Message::MenuCommand(Box::new(Message::ViewerSaveLayout))),
         ].spacing(3).into(),
         "Edit" => column![
-            design::button("Preferences…").on_press(Message::OpenViewerPreferences),
+            design::button("Preferences…").on_press(Message::MenuCommand(Box::new(Message::OpenViewerPreferences))),
             text("Read-only library assets. Edit copies in Modding.")
                 .size(11).style(design::muted),
         ].spacing(3).into(),
         "View" => column![
-            design::button("Toggle Explorer").on_press(Message::ViewerToggleExplorer),
-            design::button("Move Explorer").on_press(Message::PreferenceExplorerSide),
-            design::button("Reset Camera").on_press(Message::ViewerResetCamera),
-            design::button("Detach Inspector").on_press(Message::OpenInspectorWindow),
-            design::button("Inspector").on_press(Message::ViewerSidebarSelect(ViewerSidebarTab::Inspector)),
+            design::button("Toggle Explorer").on_press(Message::MenuCommand(Box::new(Message::ViewerToggleExplorer))),
+            design::button("Move Explorer").on_press(Message::MenuCommand(Box::new(Message::PreferenceExplorerSide))),
+            design::button("Reset Camera").on_press(Message::MenuCommand(Box::new(Message::ViewerResetCamera))),
+            design::button("Detach Inspector").on_press(Message::MenuCommand(Box::new(Message::OpenInspectorWindow))),
+            design::button("Inspector").on_press(Message::MenuCommand(Box::new(Message::ViewerSidebarSelect(ViewerSidebarTab::Inspector)))),
         ].spacing(3).into(),
         "Model" => column![
-            design::button("Retry selected preview").on_press(Message::ViewerPreviewSelected),
-            design::button("Inspect CDF").on_press(Message::StartCdfInspection),
-            design::button("Preview CDF assembly (static)").on_press(Message::ViewerPreviewStaticCdf),
-            design::button("Export verified rigged FBX").on_press(Message::StartRigFbx),
-            design::button("Flat CDF parts FBX (experimental)").on_press(Message::ViewerExportFlatCdf),
-            design::button("Unified CDF rigged FBX (experimental)").on_press(Message::ViewerExportUnifiedCdf),
+            design::button("Retry selected preview").on_press(Message::MenuCommand(Box::new(Message::ViewerPreviewSelected))),
+            design::button("Inspect CDF").on_press(Message::MenuCommand(Box::new(Message::StartCdfInspection))),
+            design::button("Preview CDF assembly (static)").on_press(Message::MenuCommand(Box::new(Message::ViewerPreviewStaticCdf))),
+            design::button("Export verified rigged FBX").on_press(Message::MenuCommand(Box::new(Message::StartRigFbx))),
+            design::button("Flat CDF parts FBX (experimental)").on_press(Message::MenuCommand(Box::new(Message::ViewerExportFlatCdf))),
+            design::button("Unified CDF rigged FBX (experimental)").on_press(Message::MenuCommand(Box::new(Message::ViewerExportUnifiedCdf))),
             text("Blender FBX export requires original mesh weights and a verified skeleton.")
                 .size(11).style(design::muted),
             design::text_input("NEW FBX destination (absolute path)", &state.output)
@@ -83,22 +83,22 @@ fn dropdown(state: &State) -> Option<Element<'_, Message>> {
                 "Verified CAF Actions: on"
             } else {
                 "Verified CAF Actions: off"
-            }).on_press(Message::ViewerToggleExportAnimations),
+            }).on_press(Message::MenuCommand(Box::new(Message::ViewerToggleExportAnimations))),
             design::text_input("Exact CAF path (optional)", &state.caf_path)
                 .on_input(Message::CafInputChanged),
         ].spacing(5).into(),
         "Textures" => column![
-            design::button("Resolve .mtl").on_press(Message::StartMaterialResolve),
-            design::button("Load diffuse").on_press(Message::StartDiffuseLoad),
-            design::button("Load normal").on_press(Message::StartNormalLoad),
-            design::button("Load emissive").on_press(Message::StartEmissiveLoad),
+            design::button("Resolve .mtl").on_press(Message::MenuCommand(Box::new(Message::StartMaterialResolve))),
+            design::button("Load diffuse").on_press(Message::MenuCommand(Box::new(Message::StartDiffuseLoad))),
+            design::button("Load normal").on_press(Message::MenuCommand(Box::new(Message::StartNormalLoad))),
+            design::button("Load emissive").on_press(Message::MenuCommand(Box::new(Message::StartEmissiveLoad))),
         ].spacing(3).into(),
         "Animation" => design::button("Open Animation Browser")
-            .on_press(Message::ViewerSidebarAnimations(true)).into(),
+            .on_press(Message::MenuCommand(Box::new(Message::ViewerSidebarAnimations(true)))).into(),
         "Tools" => column![
-            design::button("Index extracted files").on_press(Message::StartScan),
-            design::button("Inspect selected asset").on_press(Message::ViewerPreviewSelected),
-            design::button("Dependency Graph").on_press(Message::StartDependencyInspection),
+            design::button("Index extracted files").on_press(Message::MenuCommand(Box::new(Message::StartScan))),
+            design::button("Inspect selected asset").on_press(Message::MenuCommand(Box::new(Message::ViewerPreviewSelected))),
+            design::button("Dependency Graph").on_press(Message::MenuCommand(Box::new(Message::StartDependencyInspection))),
         ].spacing(3).into(),
         "Help" => text("Read-only preview. Select extracted assets in Files. Original PAK members must be extracted before preview.")
             .size(12).into(),
