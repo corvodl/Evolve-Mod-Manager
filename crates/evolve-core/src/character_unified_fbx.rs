@@ -758,6 +758,10 @@ mod tests {
             .diffuse
             .unwrap();
         assert!(diffuse.ends_with("hunter.dds.0"));
+        assert_eq!(
+            standalone_authored_diffuse(root, &compiled, &inventory).unwrap(),
+            Some(diffuse)
+        );
         assert_eq!(fs::read(original).unwrap(), b"original binding");
     }
 
