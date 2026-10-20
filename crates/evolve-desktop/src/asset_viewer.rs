@@ -271,16 +271,28 @@ fn browser(state: &State) -> Element<'_, Message> {
         tabs = tabs.push(dock_tab("Inspector", ViewerSidebarTab::Inspector, active));
     }
     if state.viewer_sidebar_dependencies {
-        tabs = tabs.push(dock_tab("Dependencies", ViewerSidebarTab::Dependencies, active));
+        tabs = tabs.push(dock_tab(
+            "Dependencies",
+            ViewerSidebarTab::Dependencies,
+            active,
+        ));
     }
     let content = match active {
         ViewerSidebarTab::Files => explorer(state),
         ViewerSidebarTab::Animations if state.viewer_sidebar_animations => animation_browser(state),
-        ViewerSidebarTab::Inspector if state.viewer_show_inspector => viewer_inspector::sidebar_inspector(state),
-        ViewerSidebarTab::Dependencies if state.viewer_sidebar_dependencies => viewer_inspector::sidebar_dependencies(state),
+        ViewerSidebarTab::Inspector if state.viewer_show_inspector => {
+            viewer_inspector::sidebar_inspector(state)
+        }
+        ViewerSidebarTab::Dependencies if state.viewer_sidebar_dependencies => {
+            viewer_inspector::sidebar_dependencies(state)
+        }
         _ => explorer(state),
     };
-    column![tabs, content].spacing(5).height(Fill).width(Fill).into()
+    column![tabs, content]
+        .spacing(5)
+        .height(Fill)
+        .width(Fill)
+        .into()
 }
 
 fn viewport(state: &State) -> Element<'_, Message> {
@@ -796,15 +808,10 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     .spacing(12);
 
     container(
-        column![
-            strip(state),
-            heading,
-            panes,
-            footer
-        ]
-        .spacing(7)
-        .padding(7)
-        .height(Fill),
+        column![strip(state), heading, panes, footer]
+            .spacing(7)
+            .padding(7)
+            .height(Fill),
     )
     .height(Fill)
     .width(Fill)
