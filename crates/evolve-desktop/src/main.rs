@@ -1102,6 +1102,26 @@ fn level_source_hash(source: &Path) -> Result<String, String> {
     Ok(format!("{:x}", hash.finalize()))
 }
 
+/// Authoring baselines are captured once when loading the source layer.
+/// A complete undo leaves zero edited placements, not 200,000 dirty entries.
+fn level_pending_edits(state: &State) -> Vec<(String, evolve_core::Transform)> {
+    let Some(scene) = &state.level_scene else {
+        return Vec::new();
+    };
+    scene
+        .objects
+        .iter()
+        .filter_map(|object| {
+            state
+                .level_original_transforms
+                .get(&object.id)
+                .and_then(|original| {
+                    (object.local != *original).then_some((object.id.clone(), object.local))
+                })
+        })
+        .collect()
+}
+
 fn sync_level_fields(state: &mut State) {
     let transform = state
         .level_selected
@@ -2172,34 +2192,56 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     return Task::none();
                 }
             };
+            // Resolve actual filesystem paths, including symlink aliases,
+            // instead of comparing unchecked strings. The worker repeats all
+            // these checks after serializing and immediately before publish.
             let mut protected = vec![source.parent().unwrap_or(source.as_path()).to_path_buf()];
             if let Some(inventory) = &state.inventory {
                 protected.push(PathBuf::from(&inventory.root));
             }
-            if !state.library_root.trim().is_empty() {
-                protected.push(PathBuf::from(&state.library_root));
+            if let Some(catalog) = &state.library_catalog {
+                protected.push(PathBuf::from(&catalog.root));
             }
-            if protected
-                .iter()
-                .any(|root| std::fs::canonicalize(root).is_ok_and(|root| parent.starts_with(root)))
-            {
-                state.status =
-                    "Export outside the original extracted assets and Asset Library.".into();
-                return Task::none();
+            for candidate in [
+                &state.library_root,
+                &state.preferences.asset_library_root,
+                &state.preferences.projects,
+                &state.preferences.stage,
+                &state.preferences.game_storage,
+            ] {
+                if !candidate.trim().is_empty() {
+                    let path = PathBuf::from(candidate);
+                    // Only existing source/library directories need protection.
+                    // Missing paths cannot contain a valid output parent.
+                    if path.exists() {
+                        protected.push(path);
+                    }
+                }
             }
-            let edits = state
-                .level_original_transforms
-                .iter()
-                .filter_map(|(id, original)| {
-                    scene
-                        .objects
-                        .iter()
-                        .find(|object| &object.id == id)
-                        .and_then(|object| {
-                            (object.local != *original).then_some((id.clone(), object.local))
-                        })
-                })
-                .collect::<Vec<_>>();
+            let mut checked = Vec::new();
+            for directory in protected {
+                match std::fs::canonicalize(&directory) {
+                    Ok(root) if root.is_dir() => {
+                        if parent.starts_with(&root) {
+                            state.status = format!(
+                                "Export blocked inside protected source/library directory: {}",
+                                root.display()
+                            );
+                            return Task::none();
+                        }
+                        if !checked.contains(&root) {
+                            checked.push(root);
+                        }
+                    }
+                    _ => {
+                        state.status =
+                            "A protected asset directory could not be verified; export refused."
+                                .into();
+                        return Task::none();
+                    }
+                }
+            }
+            let edits = level_pending_edits(state);
             if edits.is_empty() || edits.len() > 128 {
                 state.status =
                     "No changed level placements, or more than 128 pending edits.".into();
@@ -2209,7 +2251,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let expected_sha = state.level_source_sha.clone();
             return launch(
                 state,
-                Operation::ExportEditedLevel(source, destination, edits, expected_sha),
+                Operation::ExportEditedLevel(source, destination, edits, checked, expected_sha),
             );
         }
         Message::ViewerSaveLayout => {
@@ -5188,7 +5230,13 @@ mod project_edit_tests {
         </Objects>"#;
         let scene = evolve_core::parse_level_scene(&[("test.lyr", xml)]).unwrap();
         let initial = scene.clone();
+        let originals = scene
+            .objects
+            .iter()
+            .map(|object| (object.id.clone(), object.local))
+            .collect();
         let mut state = State {
+            level_original_transforms: originals,
             level_scene: Some(Arc::new(scene)),
             level_selected: Some(0),
             ..State::default()
