@@ -18,8 +18,8 @@ pub fn overlay<'a>(
     let Some(items) = opened else {
         return base;
     };
-    let backdrop = mouse_area(container(space().width(Fill).height(Fill)))
-        .on_press(Message::DismissMenus);
+    let backdrop =
+        mouse_area(container(space().width(Fill).height(Fill))).on_press(Message::DismissMenus);
     let popup = container(scrollable(items).height(Length::Shrink))
         .padding(8)
         .width(Length::Fixed(menu_width))
