@@ -697,12 +697,11 @@ fn rigged_glb_bytes_internal(
         ));
     }
     let (skeleton, mapped) = if historical {
-        crate::legacy_rig::read_legacy_skin(
-            mesh_source, skeleton_source, mesh.positions.len(),
-        )?
+        crate::legacy_rig::read_legacy_skin(mesh_source, skeleton_source, mesh.positions.len())?
     } else {
         let skeleton = parse_compiled_skeleton(skeleton_source)?;
-        let mapped = remap_verified_weights(mesh_source, mesh.positions.len(), skeleton.names.len())?;
+        let mapped =
+            remap_verified_weights(mesh_source, mesh.positions.len(), skeleton.names.len())?;
         (skeleton, mapped)
     };
     let source = geometry_glb_bytes(mesh)?;
@@ -793,7 +792,9 @@ fn rigged_glb_bytes_internal(
             roots.push(first + i);
         }
     }
-    if roots.is_empty() { return Err(RigError::Limits); }
+    if roots.is_empty() {
+        return Err(RigError::Limits);
+    }
     let mut skin = json!({
         "name":"Original CryEngine bind pose",
         "joints":(0..skeleton.names.len()).map(|i|first+i).collect::<Vec<_>>(),
