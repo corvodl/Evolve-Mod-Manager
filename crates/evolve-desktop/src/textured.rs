@@ -41,6 +41,26 @@ pub struct Scene {
 
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
+struct GroundVertex {
+    position: [f32; 3],
+    rgba: [f32; 4],
+}
+impl GroundVertex {
+    const ATTRS: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![
+        0 => Float32x3,
+        1 => Float32x4,
+    ];
+    fn descriptor<'a>() -> wgpu::VertexBufferLayout<'a> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Self>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &Self::ATTRS,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
 struct Vertex {
     xyz: [f32; 3],
     uv: [f32; 2],
@@ -67,6 +87,7 @@ impl Vertex {
 #[derive(Debug)]
 pub struct Primitive {
     points: Vec<Vertex>,
+    ground: Vec<GroundVertex>,
     indices: Vec<u32>,
     surfaces: Option<Arc<Vec<Surface>>>,
     diffuse: Option<Arc<image::RgbaImage>>,
@@ -135,7 +156,7 @@ impl shader::Program<super::Message> for Scene {
             let projected = [
                 xr * scale / perspective / ratio + self.pan_x,
                 yr * scale / perspective + self.pan_y,
-                ((depth + 2.0) / 5.0).clamp(0., 1.),
+                ((2.5 - depth) / 5.0).clamp(0., 1.),
             ];
             let mut normal = data
                 .normals
@@ -159,8 +180,33 @@ impl shader::Program<super::Message> for Scene {
                 light_strength: self.light_strength.clamp(0.1, 2.0),
             });
         }
+        // Generate a perspective/depth-correct grid beneath the actual
+        // lowest vertex. CPU preview math is identical for 2012 and Stage 2.
+        let scale = self.zoom.clamp(0.2, 4.0) * 1.6;
+        let mut ground = Vec::with_capacity(164);
+        for line in super::viewer_grid::floor_lines(&data.positions) {
+            for raw in [line.start, line.end] {
+                let x = (raw[0] - center[0]) / extent;
+                let y = (raw[1] - center[1]) / extent;
+                let z = (raw[2] - center[2]) / extent;
+                let xr = x * cy - y * sy;
+                let back = x * sy + y * cy;
+                let yr = z * cp - back * sp;
+                let depth = z * sp + back * cp;
+                let perspective = (2.5 - depth).max(0.12);
+                ground.push(GroundVertex {
+                    position: [
+                        xr * scale / perspective / ratio + self.pan_x,
+                        yr * scale / perspective + self.pan_y,
+                        ((2.5 - depth) / 5.0).clamp(0., 1.),
+                    ],
+                    rgba: line.color,
+                });
+            }
+        }
         Primitive {
             points,
+            ground,
             indices: data.indices.clone(),
             surfaces: self.surfaces.clone(),
             diffuse: self.diffuse.clone(),
@@ -196,6 +242,10 @@ struct GpuSurface {
 
 pub struct Pipeline {
     render_pipeline: wgpu::RenderPipeline,
+    ground_pipeline: wgpu::RenderPipeline,
+    ground_vertex: wgpu::Buffer,
+    ground_capacity: usize,
+    ground_count: u32,
     layout: wgpu::BindGroupLayout,
     vertex: wgpu::Buffer,
     index: wgpu::Buffer,
@@ -385,6 +435,52 @@ impl Pipeline {
             multiview: None,
             cache: None,
         });
+        let ground_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Model-floor untextured line layout"),
+            bind_group_layouts: &[],
+            push_constant_ranges: &[],
+        });
+        let ground_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Blender-style source-relative ground grid"),
+            layout: Some(&ground_layout),
+            vertex: wgpu::VertexState {
+                module: &program,
+                entry_point: Some("vs_floor"),
+                buffers: &[GroundVertex::descriptor()],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &program,
+                entry_point: Some("fs_floor"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let ground_vertex = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Viewport model-floor vertices"),
+            size: 32,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("CryEngine filtered diffuse sampler"),
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -492,6 +588,10 @@ impl Pipeline {
         let depth = Self::depth_view(device, (1, 1));
         Self {
             render_pipeline,
+            ground_pipeline,
+            ground_vertex,
+            ground_capacity: 32,
+            ground_count: 0,
             layout,
             vertex,
             index,
@@ -649,6 +749,20 @@ impl Pipeline {
         if self.depth_dimensions != size {
             self.depth = Self::depth_view(device, size);
             self.depth_dimensions = size;
+        }
+        let floor_bytes = bytemuck::cast_slice(&primitive.ground);
+        self.ground_count = primitive.ground.len() as u32;
+        if !floor_bytes.is_empty() {
+            if floor_bytes.len() > self.ground_capacity {
+                self.ground_vertex = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("CryEngine model-foot grid buffer"),
+                    size: floor_bytes.len() as u64,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                self.ground_capacity = floor_bytes.len();
+            }
+            queue.write_buffer(&self.ground_vertex, 0, floor_bytes);
         }
         self.upload_surfaces(
             device,
@@ -828,6 +942,11 @@ impl Pipeline {
             1.,
         );
         pass.set_scissor_rect(clip.x, clip.y, clip.width, clip.height);
+        if self.ground_count > 0 {
+            pass.set_pipeline(&self.ground_pipeline);
+            pass.set_vertex_buffer(0, self.ground_vertex.slice(..));
+            pass.draw(0..self.ground_count, 0..1);
+        }
         pass.set_pipeline(&self.render_pipeline);
         pass.set_vertex_buffer(0, self.vertex.slice(..));
         pass.set_index_buffer(self.index.slice(..), wgpu::IndexFormat::Uint32);
