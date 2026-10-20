@@ -157,7 +157,6 @@ def reconstruct_uv0(faces, loop_vertices, coordinates, *, vertex_keys=None,
     }
 
 
-import bpy
 
 def _repair_original_uv(obj):
     mesh = obj.data
@@ -269,6 +268,7 @@ def _repair_original_uv(obj):
 
 def prepare_original_uv(meshes):
     """Split original material groups, then repair source UV corners per mesh."""
+    import bpy
     original = set(meshes)
     existing = set(bpy.data.objects)
     for obj in tuple(meshes):
