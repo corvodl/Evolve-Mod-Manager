@@ -124,6 +124,18 @@ fn menu<'a>(state: &'a State) -> Element<'a, Message> {
                     .on_press(Message::Navigate(super::Page::AssetLibrary)),
             ]
             .spacing(7),
+            row![
+                design::button("Verify offline launcher + signed PAKs")
+                    .style(design::secondary)
+                    .on_press(Message::StartOfflineLauncherCheck),
+                design::button("Play with mods (existing private helper)")
+                    .style(design::primary)
+                    .on_press(Message::StartOfflineLauncherLaunch),
+            ]
+            .spacing(7),
+            text("Requires your configured private controlled-swap helpers and Python 3.11/Frida. No online launch, no direct game-file writes by this manager.")
+                .size(12)
+                .style(design::muted),
         ]
         .spacing(7)
         .into(),
