@@ -4213,6 +4213,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.motion_time = 0.0;
                     state.playing = false;
                     state.skin_preview = None;
+                    state.cdf_caf_preview = None;
+                    if let Some(rest) = &state.cdf_rest_mesh {
+                        state.model = Some(rest.clone());
+                    }
                     state.native_caf = Some(Arc::new(motion));
                     state.glb_motion = None;
                     state.page = Some(Page::Models);
@@ -4275,6 +4279,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         });
                     if selected && !motion.additive {
                         state.skin_preview = None;
+                        state.cdf_caf_preview = None;
+                        if let Some(rest) = &state.cdf_rest_mesh {
+                            state.model = Some(rest.clone());
+                        }
                         state.native_caf = Some(Arc::new(motion));
                         state.glb_motion = None;
                         state.motion_time = 0.0;
@@ -4288,6 +4296,30 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     } else if selected {
                         state.status =
                             "Additive CAF cannot play alone without a compatible base pose.".into();
+                    }
+                }
+                Ok(Completed::BoundCdfCafPreview(source, assembly)) => {
+                    if state.viewer_queued_preview.is_none()
+                        && Path::new(&state.input) == source
+                        && state.native_caf.is_some()
+                        && state.cdf_report.is_some()
+                    {
+                        let part_count = assembly.part_count();
+                        let bones = assembly.original_bones();
+                        let cyclic = assembly.source_motion().cyclic;
+                        state.skin_preview = None;
+                        state.cdf_caf_preview = Some(Arc::new(*assembly));
+                        state.motion_time = 0.0;
+                        apply_current_skin_frame(state);
+                        if state.auto_play_native_caf {
+                            state.playback_loop = true;
+                        }
+                        state.playing = cyclic || state.auto_play_native_caf;
+                        state.auto_play_native_caf = false;
+                        state.status = format!(
+                            "Native CAF bound to {part_count} original CDF skin/equipment parts and {bones} source bones. Scrubbing deforms the assembled GPU viewport with verified CPU pose evaluation."
+                        );
+                        state.page = Some(Page::Models);
                     }
                 }
                 Ok(Completed::BoundCafPreview(source, skin)) => {
