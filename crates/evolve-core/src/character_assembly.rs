@@ -10,6 +10,7 @@ use crate::library_catalog::{LibraryReferenceStatus, resolve_imported_reference}
 use crate::model::{ModelError, ModelInfo, RenderMesh, read_model};
 use crate::character_equipment::{EquipmentOverrides, validated_equipment_overrides};
 use crate::rig::{CompiledSkeleton, parse_compiled_skeleton, remap_verified_weights};
+use crate::legacy_rig::{parse_legacy_skeleton, read_legacy_skin};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -415,13 +416,15 @@ pub fn read_static_cdf_assembly_with_equipment(
             None
         }
     };
-    let skeleton = skeleton_path
-        .as_ref()
-        .and_then(|path| fs::read(path).ok())
-        .and_then(|bytes| parse_compiled_skeleton(&bytes).ok());
+    let skeleton_bytes = skeleton_path.as_ref().and_then(|path| fs::read(path).ok());
+    let skeleton = skeleton_bytes.as_ref().and_then(|bytes| {
+        parse_compiled_skeleton(bytes)
+            .or_else(|_| parse_legacy_skeleton(bytes))
+            .ok()
+    });
     if skeleton.is_none() {
         notes.push(format!(
-            "Compiled bind-pose skeleton unavailable ({}); static skin geometry remains viewable, but rigid sockets and animation are disabled",
+            "Verified bind-pose skeleton unavailable ({}); static skin geometry remains viewable, but rigid sockets and animation are disabled",
             definition.skeleton
         ));
     }
@@ -504,14 +507,14 @@ pub fn read_static_cdf_assembly_with_equipment(
             attachment.kind,
             AttachmentKind::Skin | AttachmentKind::UniqueSkin
         ) {
-            if let Some(skeleton) = &skeleton {
-                fs::read(&rendered)
-                    .ok()
-                    .and_then(|raw| {
-                        remap_verified_weights(&raw, mesh.positions.len(), skeleton.names.len())
-                            .ok()
-                    })
-                    .is_some()
+            if let (Some(skeleton), Some(master)) = (&skeleton, &skeleton_bytes) {
+                fs::read(&rendered).ok().is_some_and(|raw| {
+                    if raw.starts_with(b"CryTek\0\0") {
+                        read_legacy_skin(&raw, master, mesh.positions.len()).is_ok()
+                    } else {
+                        remap_verified_weights(&raw, mesh.positions.len(), skeleton.names.len()).is_ok()
+                    }
+                })
             } else {
                 false
             }
