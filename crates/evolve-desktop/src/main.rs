@@ -11,8 +11,8 @@ mod design;
 mod developer_auth;
 mod explorer_tree;
 mod launcher_bridge;
-mod menu_popup;
 mod level_workspace;
+mod menu_popup;
 mod modding_keys;
 mod modding_page;
 mod modding_projects;
@@ -6924,5 +6924,4 @@ mod project_edit_tests {
         assert!(state.modding_menu.is_none());
         assert_eq!(state.page, Some(Page::Files));
     }
-
 }
