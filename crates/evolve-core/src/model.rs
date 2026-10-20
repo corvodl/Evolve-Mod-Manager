@@ -584,6 +584,60 @@ pub(crate) mod tests {
         }
         data
     }
+    // The pre-Stage-2 2012 client uses CryTek 0x745 and legacy 16-byte
+    // terminal chunk records, not the CrChF v7 chunk table.
+    fn legacy_2012_fixture() -> Vec<u8> {
+        let positions = [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+            .iter().flatten().flat_map(|f| f.to_le_bytes()).collect::<Vec<_>>();
+        let indices = [0u16, 1, 2].iter()
+            .flat_map(|index| index.to_le_bytes()).collect::<Vec<_>>();
+        let uv = [[0.0f32, 0.0], [1.0, 0.0], [0.0, 1.0]]
+            .iter().flatten().flat_map(|f| f.to_le_bytes()).collect::<Vec<_>>();
+        let streams = [(0u32, 12u32, positions), (5, 2, indices), (2, 8, uv)];
+        let mut data = vec![0u8; 20];
+        data[..8].copy_from_slice(b"CryTek\0\0");
+        data[8..12].copy_from_slice(&0xffff0000u32.to_le_bytes());
+        data[12..16].copy_from_slice(&0x745u32.to_le_bytes());
+        let mut records = Vec::new();
+        for (id, (stream_type, stride, values)) in streams.into_iter().enumerate() {
+            let offset = data.len();
+            let mut chunk = vec![0u8; 40];
+            chunk[0..4].copy_from_slice(&CRYTEK_STREAM.to_le_bytes());
+            chunk[4..8].copy_from_slice(&0x800u32.to_le_bytes());
+            chunk[8..12].copy_from_slice(&(offset as u32).to_le_bytes());
+            chunk[20..24].copy_from_slice(&stream_type.to_le_bytes());
+            chunk[24..28].copy_from_slice(&3u32.to_le_bytes());
+            chunk[28..32].copy_from_slice(&stride.to_le_bytes());
+            data.extend_from_slice(&chunk);
+            data.extend_from_slice(&values);
+            records.push((offset, id));
+        }
+        let table = data.len();
+        data[16..20].copy_from_slice(&(table as u32).to_le_bytes());
+        data.extend_from_slice(&(records.len() as u32).to_le_bytes());
+        for (offset, id) in records {
+            data.extend_from_slice(&CRYTEK_STREAM.to_le_bytes());
+            data.extend_from_slice(&0x800u32.to_le_bytes());
+            data.extend_from_slice(&(offset as u32).to_le_bytes());
+            data.extend_from_slice(&(id as u32).to_le_bytes());
+        }
+        data
+    }
+
+    #[test]
+    fn historical_2012_crytek_geometry_remains_previewable() {
+        let source = legacy_2012_fixture();
+        let mesh = parse_model_bytes(&source).unwrap();
+        assert_eq!(mesh.info.format, "CryTek 0x745");
+        assert_eq!(mesh.info.version, 0x745);
+        assert_eq!(mesh.info.vertex_count, 3);
+        assert_eq!(mesh.indices, [0, 1, 2]);
+        assert_eq!(mesh.uv0.as_ref().unwrap()[2], [0.0, 1.0]);
+        // A 2012 mesh lacking modern material-subset data must not be
+        // rejected by the CDF viewport's per-material draw-range path.
+        assert_eq!(original_mesh_subsets(&source, 3).unwrap(), vec![(0, 3, 0)]);
+    }
+
     #[test]
     fn decodes_original_triangle_uvs() {
         let mesh = parse_model_bytes(&fixture()).unwrap();
