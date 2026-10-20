@@ -7,7 +7,22 @@ use iced::wgpu::util::{DeviceExt, TextureDataOrder};
 use iced::widget::shader::{self, Viewport};
 use iced::{Event, Rectangle, mouse};
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::sync::Arc;
+
+// A large CDF can reuse the same original DDS in dozens of material ranges.
+// Allocate each source/role only once per scene and bound unique GPU copies.
+const MAX_GPU_PREVIEW_TEXTURE_BYTES: usize = 256 * 1024 * 1024;
+
+fn texture_cache_key(image: Option<&Arc<image::RgbaImage>>, role: usize) -> (usize, usize) {
+    (image.map_or(0, |pixels| Arc::as_ptr(pixels) as usize), role)
+}
+
+fn gpu_budget_allows(used: usize, additional: usize) -> bool {
+    used.checked_add(additional)
+        .is_some_and(|total| total <= MAX_GPU_PREVIEW_TEXTURE_BYTES)
+}
+
 
 #[derive(Clone, Debug)]
 pub struct Surface {
@@ -243,8 +258,6 @@ struct GpuSurface {
     transparent: bool,
     opacity_map: bool,
     bind_group: wgpu::BindGroup,
-    // Bind groups must retain the original uploaded texture allocations.
-    _textures: Vec<wgpu::Texture>,
 }
 
 pub struct Pipeline {
@@ -269,6 +282,8 @@ pub struct Pipeline {
     last_gloss_identity: usize,
     last_surfaces_identity: usize,
     gpu_surfaces: Vec<GpuSurface>,
+    // Own every unique GPU source allocation while its bind groups exist.
+    _surface_textures: Vec<wgpu::Texture>,
     surface_table_valid: bool,
     specular_texture: wgpu::Texture,
     specular_view: wgpu::TextureView,
@@ -711,6 +726,7 @@ impl Pipeline {
             last_gloss_identity: usize::MAX,
             last_surfaces_identity: usize::MAX,
             gpu_surfaces: Vec::new(),
+            _surface_textures: Vec::new(),
             surface_table_valid: false,
             specular_texture,
             specular_view,
@@ -743,6 +759,7 @@ impl Pipeline {
         }
         self.last_surfaces_identity = identity;
         self.gpu_surfaces.clear();
+        self._surface_textures.clear();
         self.surface_table_valid = false;
         let Some(surfaces) = surfaces else { return };
         // Validate the complete contiguous index coverage before rendering;
@@ -770,6 +787,8 @@ impl Pipeline {
             return;
         }
         self.surface_table_valid = true;
+        let mut uploaded: HashMap<(usize, usize), wgpu::TextureView> = HashMap::new();
+        let mut used_bytes = 0usize;
         for part in surfaces.iter() {
             if !part.visible {
                 continue;
@@ -812,13 +831,35 @@ impl Pipeline {
                     "CDF authored opacity",
                 ),
             ];
-            let mut textures = Vec::with_capacity(6);
             let mut views = Vec::with_capacity(6);
-            for (image, fallback, format, label) in inputs {
-                let (texture, view) =
-                    Self::upload_map(device, queue, image, &fallback, format, label);
-                textures.push(texture);
-                views.push(view);
+            let mut opacity_uploaded = false;
+            for (role, (image, fallback, format, label)) in inputs.into_iter().enumerate() {
+                // A DDS may be shared by many assembly sections. View/texture
+                // identities are source-arc + GPU role (color-space aware).
+                let size = image.map_or(4, |pixels| pixels.as_raw().len());
+                let key = texture_cache_key(image, role);
+                let allow_source = image.is_none()
+                    || uploaded.contains_key(&key)
+                    || gpu_budget_allows(used_bytes, size);
+                let selected = if allow_source { image } else { None };
+                let selected_key = texture_cache_key(selected, role);
+                if let Some(view) = uploaded.get(&selected_key) {
+                    views.push(view.clone());
+                } else {
+                    let (texture, view) =
+                        Self::upload_map(device, queue, selected, &fallback, format, label);
+                    // The fallback is a four-byte neutral placeholder; large
+                    // unverified maps are omitted instead of risking GPU OOM.
+                    used_bytes = used_bytes.saturating_add(
+                        selected.map_or(4, |pixels| pixels.as_raw().len()),
+                    );
+                    uploaded.insert(selected_key, view.clone());
+                    self._surface_textures.push(texture);
+                    views.push(view);
+                }
+                if role == 5 && selected.is_some() {
+                    opacity_uploaded = true;
+                }
             }
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Exact CDF attachment material"),
@@ -856,10 +897,9 @@ impl Pipeline {
             });
             self.gpu_surfaces.push(GpuSurface {
                 range: part.first_index..part.first_index + part.index_count,
-                transparent: part.transparent,
-                opacity_map: part.opacity.is_some(),
+                transparent: part.transparent && (part.opacity.is_none() || opacity_uploaded),
+                opacity_map: opacity_uploaded,
                 bind_group: group,
-                _textures: textures,
             });
         }
     }
@@ -1133,6 +1173,22 @@ impl shader::Primitive for Primitive {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shared_source_images_share_one_gpu_upload_key_per_role() {
+        let image = Arc::new(image::RgbaImage::new(8, 8));
+        let same = Arc::clone(&image);
+        assert_eq!(super::texture_cache_key(Some(&image), 0), super::texture_cache_key(Some(&same), 0));
+        assert_ne!(super::texture_cache_key(Some(&image), 0), super::texture_cache_key(Some(&image), 1));
+        assert_eq!(super::texture_cache_key(None, 0), super::texture_cache_key(None, 0));
+    }
+
+    #[test]
+    fn preview_upload_budget_rejects_oversized_unique_texture_without_overflow() {
+        assert!(super::gpu_budget_allows(0, 256 * 1024 * 1024));
+        assert!(!super::gpu_budget_allows(256 * 1024 * 1024, 4));
+        assert!(!super::gpu_budget_allows(usize::MAX, 64));
+    }
+
     #[test]
     fn cryengine_gpu_material_shader_parses_and_validates() {
         let module = naga::front::wgsl::parse_str(include_str!("textured.wgsl"))
