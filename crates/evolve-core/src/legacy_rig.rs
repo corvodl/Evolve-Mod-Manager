@@ -207,7 +207,7 @@ pub fn read_legacy_skin(
     }
     let mut local = Vec::with_capacity(vertices);
     let mut weights = Vec::with_capacity(vertices);
-    for bytes in weights_stream.data.chunks_exact(8) {
+    for bytes in weights_stream.data.as_chunks::<8>().0 {
         let w = [bytes[4], bytes[5], bytes[6], bytes[7]];
         if w.iter().map(|v| u16::from(*v)).sum::<u16>() != 255 {
             return Err(invalid("2012 weights do not sum to exactly 255"));
@@ -216,7 +216,7 @@ pub fn read_legacy_skin(
         weights.push([w[0], w[1], w[2], w[3], 0, 0, 0, 0]);
     }
     let mut triangles = Vec::with_capacity(indices.count);
-    for chunk in indices.data.chunks_exact(2) {
+    for chunk in indices.data.as_chunks::<2>().0 {
         let id = u16::from_le_bytes([chunk[0], chunk[1]]) as usize;
         if id >= vertices { return Err(invalid("2012 triangle escapes vertices")); }
         triangles.push(id);
