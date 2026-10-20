@@ -154,6 +154,10 @@ mod tests {
         let (_, reused) = cache.lookup(&original_key).unwrap();
         assert!(Arc::ptr_eq(&image, &reused));
         fs::write(&source, b"modified-changed-size").unwrap();
-        assert!(cache.lookup(&key(&source, DdsLayout::Linear).unwrap()).is_none());
+        assert!(
+            cache
+                .lookup(&key(&source, DdsLayout::Linear).unwrap())
+                .is_none()
+        );
     }
 }
