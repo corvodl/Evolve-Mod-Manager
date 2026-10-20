@@ -336,6 +336,9 @@ enum Operation {
     LoadNormal(PathBuf, SharedCache),
     LoadEmissive(PathBuf, SharedCache),
     ResolveMaterial(PathBuf, PathBuf, Option<PathBuf>, Option<String>),
+    LoadModelSurfaces(
+        PathBuf, PathBuf, Inventory, Option<PathBuf>, Option<String>, SharedCache,
+    ),
     LoadCaf(PathBuf),
     LoadCafLayer(String, Arc<NativeCafMotion>, String, PathBuf),
     BindCafPreview(PathBuf, PathBuf, NativeCafMotion),
@@ -439,6 +442,7 @@ enum Completed {
     Normal(DdsInfo, Arc<::image::RgbaImage>),
     Emissive(DdsInfo, Arc<::image::RgbaImage>),
     MaterialResolved(
+        PathBuf,
         MaterialReport,
         Option<::image::RgbaImage>,
         Option<::image::RgbaImage>,
@@ -447,6 +451,7 @@ enum Completed {
         Option<::image::RgbaImage>,
         Vec<String>,
     ),
+    ModelSurfaces(PathBuf, Vec<textured::Surface>, Vec<String>),
     Caf(NativeCafMotion),
     CafLayer(String, Arc<NativeCafMotion>, String, NativeCafMotion),
     BoundCafPreview(PathBuf, Box<VerifiedCafSkin>),
@@ -785,6 +790,7 @@ impl Operation {
                 let specular = try_map("Specular", &["specular", "specularcolor"]);
                 let gloss = try_map("Gloss", &["gloss", "glossiness", "smoothness"]);
                 Ok(Completed::MaterialResolved(
+                    source,
                     report,
                     diffuse,
                     normal,
@@ -793,6 +799,13 @@ impl Operation {
                     gloss,
                     diagnostics,
                 ))
+            }
+            Self::LoadModelSurfaces(model, material, inventory, imported, build, cache) => {
+                let (surfaces, warnings) = assembly_materials::load_model(
+                    &model, &material, &inventory, imported.as_deref(),
+                    build.as_deref(), &cache,
+                )?;
+                Ok(Completed::ModelSurfaces(model, surfaces, warnings))
             }
             Self::LoadNormal(source, cache) => {
                 decoded_dds(&cache, &source).map(|(info, image)| Completed::Normal(info, image))
@@ -4480,6 +4493,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                 }
                 Ok(Completed::MaterialResolved(
+                    material_source,
                     report,
                     diffuse,
                     normal,
@@ -4488,6 +4502,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     gloss,
                     diagnostics,
                 )) => {
+                    let automatic_model_material = state.auto_material_pending
+                        && state.render_source.is_some()
+                        && state.model.is_some()
+                        && state.viewer_queued_preview.is_none();
                     state.auto_material_pending = false;
                     let found = report
                         .textures
@@ -4527,9 +4545,39 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.gloss_map = gloss.map(Arc::new);
                     state.material_report = Some(report);
                     state.page = Some(Page::Models);
+                    if automatic_model_material {
+                        if let (Some(inventory), Some(model)) =
+                            (state.inventory.clone(), state.render_source.clone())
+                        {
+                            return launch(state, Operation::LoadModelSurfaces(
+                                model, material_source, inventory,
+                                state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
+                                resource_build(state), state.preview_cache.clone(),
+                            ));
+                        }
+                    }
                     if let Some(idle) = state.auto_idle_pending.take() {
                         state.auto_play_native_caf = true;
                         return launch(state, Operation::LoadCaf(idle));
+                    }
+                }
+                Ok(Completed::ModelSurfaces(source, surfaces, warnings)) => {
+                    if state.viewer_queued_preview.is_none()
+                        && state.render_source.as_ref() == Some(&source)
+                        && state.model.is_some()
+                    {
+                        let textured = surfaces.iter().filter(|s| s.diffuse.is_some()).count();
+                        state.cdf_surfaces = Some(Arc::new(surfaces));
+                        state.auto_resource_note = format!(
+                            "Original CryEngine GPU mesh subsets: {textured} textured; {} material warnings. {}",
+                            warnings.len(),
+                            warnings.iter().take(3).cloned().collect::<Vec<_>>().join(" | "),
+                        );
+                        state.status = state.auto_resource_note.clone();
+                        if let Some(idle) = state.auto_idle_pending.take() {
+                            state.auto_play_native_caf = true;
+                            return launch(state, Operation::LoadCaf(idle));
+                        }
                     }
                 }
                 Ok(Completed::Normal(info, pixels)) => {
