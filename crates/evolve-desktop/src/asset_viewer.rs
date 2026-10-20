@@ -833,7 +833,11 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         dropdown(state),
         dropdown_x(state.viewer_menu),
         36.0,
-        if state.viewer_menu == Some("Model") { 460.0 } else { 310.0 },
+        if state.viewer_menu == Some("Model") {
+            460.0
+        } else {
+            310.0
+        },
     )
 }
 
