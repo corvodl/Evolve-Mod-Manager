@@ -167,7 +167,8 @@ pub fn prepare_client_hook(
         destination.file_name().and_then(|n| n.to_str()),
         Some("inject.dll" | "inject-custom.dll")
     );
-    if !accepted || !fs::symlink_metadata(parent)?.file_type().is_dir()
+    if !accepted
+        || !fs::symlink_metadata(parent)?.file_type().is_dir()
         || fs::symlink_metadata(destination).is_ok()
     {
         return Err(ClientHookError::UnsafeOutput);
