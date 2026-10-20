@@ -5,7 +5,7 @@ use super::{MeshViewport, Message, State, TexturedScene, ViewerSidebarTab, viewe
 use crate::design;
 use iced::widget::{
     canvas, column, container, image, mouse_area, row, scrollable, shader, slider, stack, text,
-    tooltip,
+    tooltip, svg,
 };
 use iced::{
     Background, Border, Color, Element, Event, Fill, Length, Point, Rectangle, Renderer, Theme,
@@ -464,6 +464,25 @@ fn viewport(state: &State) -> Element<'_, Message> {
         ),
         camera_icon("−", "Zoom out", Message::ViewerZoomWheel(-2.0)),
         camera_icon("+", "Zoom in", Message::ViewerZoomWheel(2.0)),
+        tooltip(
+            row![
+                svg(svg::Handle::from_memory(include_bytes!("../../../assets/nav/light.svg")))
+                    .style(design::icon)
+                    .width(Length::Fixed(18.0))
+                    .height(Length::Fixed(18.0)),
+                slider(
+                    0.2..=4.0,
+                    state.light_strength.clamp(0.2, 4.0),
+                    Message::LightStrengthChanged
+                )
+                .width(Length::Fixed(136.0)),
+                text(format!("{:.1}×", state.light_strength)).size(11),
+            ]
+            .align_y(iced::Center)
+            .spacing(6),
+            text("Viewport light intensity (preview only)").size(12),
+            tooltip::Position::Bottom,
+        ),
     ]
     .spacing(4)
     .align_y(iced::Center);
@@ -1108,8 +1127,8 @@ pub(super) fn preferences_view(state: &State) -> Element<'_, Message> {
                 row![
                     text("Lighting").size(13),
                     slider(
-                        0.1..=2.0,
-                        state.light_strength,
+                        0.2..=4.0,
+                        state.light_strength.clamp(0.2, 4.0),
                         Message::LightStrengthChanged
                     )
                     .width(Length::Fixed(240.0)),

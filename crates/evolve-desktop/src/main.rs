@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 //! Native wgpu-backed desktop shell. Asset operations use blocking workers, so
 //! file I/O/decompression never runs in the interactive Iced view/update path.
 mod activity_window;
@@ -2677,7 +2679,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::PlaybackSpeedChanged(value) => state.playback_speed = value.clamp(0.1, 3.0),
         Message::PlaybackLoopChanged => state.playback_loop = !state.playback_loop,
         Message::ViewerToggleWireframe => state.viewer_wireframe = !state.viewer_wireframe,
-        Message::LightStrengthChanged(value) => state.light_strength = value.clamp(0.1, 2.0),
+        Message::LightStrengthChanged(value) => state.light_strength = value.clamp(0.2, 4.0),
         Message::LevelSelect(index) => {
             if let Some(scene) = &state.level_scene
                 && index < scene.objects.len()
@@ -6159,7 +6161,7 @@ fn initial_state() -> State {
         export_embed_textures: true,
         viewer_split: 0.67,
         level_zoom: 1.0,
-        light_strength: 1.0,
+        light_strength: 1.6,
         viewer_explorer_visible: true,
         ..State::default()
     };

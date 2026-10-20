@@ -196,7 +196,7 @@ impl shader::Program<super::Message> for Scene {
                     .unwrap_or([0., 0.]),
                 normal,
                 view_position: [xr, yr, depth],
-                light_strength: self.light_strength.clamp(0.1, 2.0),
+                light_strength: self.light_strength.clamp(0.2, 4.0),
             });
         }
         // Generate a perspective/depth-correct grid beneath the actual

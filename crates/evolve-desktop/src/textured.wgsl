@@ -97,7 +97,7 @@ fn shade(input: Output) -> vec4<f32> {
         + vec3<f32>(0.58, 0.52, 0.45) * key_diffuse
         + vec3<f32>(0.15, 0.19, 0.25) * fill_diffuse
         + vec3<f32>(0.13, 0.15, 0.19) * pow(back_diffuse, 2.0);
-    let exposure = clamp(input.light_strength, 0.1, 2.0);
+    let exposure = clamp(input.light_strength, 0.2, 4.0);
     // Original CryEngine-style spec/gloss slots remain authoritative.
     // No missing source specular is invented: an absent map stays black.
     let to_eye = normalize(vec3<f32>(-input.view_position.xy, 3.0 - input.view_position.z));

@@ -33,42 +33,68 @@ fn f32_at(b: &[u8], at: usize) -> Result<f32, RigError> {
 fn chunks(data: &[u8]) -> Result<Vec<Chunk<'_>>, RigError> {
     if data.len() < 24
         || data.len() > MAX_BYTES
-        || data.get(..8) != Some(b"CryTek\0\0")
+        || data.get(..8) != Some(b"CryTek\\0\\0")
         || u32_at(data, 8)? != 0xFFFF0000
         || u32_at(data, 12)? != 0x745
     {
         return Err(invalid("Expected 2012 CryTek 0x745 render geometry"));
     }
     let table = u32_at(data, 16)? as usize;
+    if table < 20 || table > data.len().saturating_sub(4) {
+        return Err(RigError::Limits);
+    }
     let count = u32_at(data, table)? as usize;
-    if table < 20 || count == 0 || count > 10_000 {
+    if count == 0 || count > 10_000 {
         return Err(RigError::Limits);
     }
     let start = table.checked_add(4).ok_or(RigError::Limits)?;
+    // Scorpid-era 2012 CryTek models can use the terminal FOUR-dword chunk
+    // directory. Derive its chunk sizes only from strictly unique offsets;
+    // never interpret a partially written five-dword directory as four.
+    // This mirrors the established private historical mesh parser.
+    let terminal_four = start
+        .checked_add(count.checked_mul(16).ok_or(RigError::Limits)?)
+        == Some(data.len());
+    let entry_size = if terminal_four { 16 } else { 20 };
     let end = start
-        .checked_add(count.checked_mul(20).ok_or(RigError::Limits)?)
+        .checked_add(count.checked_mul(entry_size).ok_or(RigError::Limits)?)
         .ok_or(RigError::Limits)?;
     if end > data.len() {
-        return Err(invalid(
-            "Historical rigging requires the verified 20-byte chunk directory",
-        ));
+        return Err(invalid("Incomplete historical skeletal chunk directory"));
     }
-    let mut out = Vec::with_capacity(count);
+    let mut records = Vec::with_capacity(count);
     let mut ids = HashSet::new();
-    let mut ranges = Vec::with_capacity(count);
+    let mut offsets = HashSet::new();
     for i in 0..count {
-        let at = start + i * 20;
+        let at = start + i * entry_size;
         let kind = u32_at(data, at)?;
         let version = u32_at(data, at + 4)?;
         let offset = u32_at(data, at + 8)? as usize;
         let id = u32_at(data, at + 12)?;
-        let size = u32_at(data, at + 16)? as usize;
-        let upper = offset.checked_add(size).ok_or(RigError::Limits)?;
-        if !ids.insert(id)
-            || size < 16
-            || offset < 20
-            || offset >= table
-            || upper > table
+        if !ids.insert(id) || !offsets.insert(offset)
+            || offset < 20 || offset >= table
+        {
+            return Err(invalid("Historical bone/stream chunk table mismatch"));
+        }
+        let declared_size = if terminal_four {
+            None
+        } else {
+            Some(u32_at(data, at + 16)? as usize)
+        };
+        records.push((kind, version, offset, id, declared_size));
+    }
+    let mut sorted = records.iter().map(|r| r.2).collect::<Vec<_>>();
+    sorted.sort_unstable();
+    let mut out = Vec::with_capacity(count);
+    let mut ranges = Vec::with_capacity(count);
+    for (kind, version, offset, id, declared_size) in records {
+        let upper = if let Some(size) = declared_size {
+            offset.checked_add(size).ok_or(RigError::Limits)?
+        } else {
+            let index = sorted.binary_search(&offset).map_err(|_| RigError::Limits)?;
+            sorted.get(index + 1).copied().unwrap_or(table)
+        };
+        if upper < offset + 16 || upper > table
             || data.get(offset..offset + 4) != Some(&kind.to_le_bytes())
             || u32_at(data, offset + 4)? != version
             || u32_at(data, offset + 8)? as usize != offset
@@ -545,6 +571,53 @@ mod tests {
         assert_eq!(weights.joint_ids[1][0], 1);
         assert_eq!(weights.weight_bytes[1][0], 255);
         assert_eq!(weights.subsets, 1);
+    }
+
+
+    /// The 2012 private parser accepts this terminal four-dword table.
+    /// Its offsets are verified against embedded chunk headers and the
+    /// inferred sizes must form non-overlapping ranges ending at the table.
+    fn terminal_four_directory(mut data: Vec<u8>) -> Vec<u8> {
+        let table = u32_at(&data, 16).unwrap() as usize;
+        let count = u32_at(&data, table).unwrap() as usize;
+        let entries = (0..count)
+            .map(|i| {
+                let at = table + 4 + i * 20;
+                data[at..at + 16].to_vec()
+            })
+            .collect::<Vec<_>>();
+        data.truncate(table + 4);
+        for entry in entries {
+            data.extend_from_slice(&entry);
+        }
+        data
+    }
+
+    #[test]
+    fn terminal_four_dword_2012_chunk_directory_preserves_real_weights() {
+        let body = terminal_four_directory(sample_body());
+        let master = terminal_four_directory(original_container(vec![(BONE, sample_bones())]));
+        let (skeleton, weights) = read_legacy_skin(&body, &master, 3).unwrap();
+        assert_eq!(skeleton.names, ["root", "arm"]);
+        assert_eq!(weights.joint_ids[1][0], 1);
+        assert_eq!(weights.weight_bytes[1][0], 255);
+        assert_eq!(weights.subsets, 1);
+    }
+
+    #[test]
+    fn rejects_forged_or_duplicate_terminal_chunk_offsets() {
+        let mut body = terminal_four_directory(sample_body());
+        let table = u32_at(&body, 16).unwrap() as usize;
+        // Duplicate the first chunk offset: never infer overlapping sizes.
+        let first_offset = u32_at(&body, table + 4 + 8).unwrap();
+        put_u32(&mut body, table + 4 + 16 + 8, first_offset);
+        assert!(parse_legacy_skeleton(&body).is_err());
+
+        let mut original = terminal_four_directory(sample_body());
+        let table = u32_at(&original, 16).unwrap() as usize;
+        let id = u32_at(&original, table + 4 + 12).unwrap();
+        put_u32(&mut original, table + 4 + 12, id + 900);
+        assert!(parse_legacy_skeleton(&original).is_err());
     }
 
     #[test]
