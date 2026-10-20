@@ -243,7 +243,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
         design::button("+")
             .on_press(Message::ViewerZoomWheel(2.0))
             .style(design::secondary),
-        text("Studio light").size(11),
+        text("CryEngine-style light").size(11),
         slider(
             0.1..=2.0,
             state.light_strength.max(0.1),
