@@ -3209,7 +3209,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             crash_diagnostics::set_enabled(state.preferences.crash_logging_enabled);
             persist_preferences(state);
             state.settings_status = if state.preferences.crash_logging_enabled {
-                "Crash logs enabled. New preview events and Rust panics are recorded locally.".into()
+                "Crash logs enabled. New preview events and Rust panics are recorded locally."
+                    .into()
             } else {
                 "Crash logs disabled. Existing log files were left untouched.".into()
             };
@@ -3232,9 +3233,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         }
                         #[cfg(windows)]
                         let result = if opening_folder || target.is_dir() {
-                            std::process::Command::new("explorer.exe").arg(&target).spawn()
+                            std::process::Command::new("explorer.exe")
+                                .arg(&target)
+                                .spawn()
                         } else {
-                            std::process::Command::new("notepad.exe").arg(&target).spawn()
+                            std::process::Command::new("notepad.exe")
+                                .arg(&target)
+                                .spawn()
                         };
                         #[cfg(not(windows))]
                         let result = std::process::Command::new("xdg-open").arg(&target).spawn();
@@ -3244,7 +3249,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         };
                     }
                 }
-                Err(error) => state.settings_status = format!("Crash log path unavailable: {error}"),
+                Err(error) => {
+                    state.settings_status = format!("Crash log path unavailable: {error}")
+                }
             }
         }
         Message::PreferenceExperimental => {
