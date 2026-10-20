@@ -648,6 +648,113 @@ fn signed_comment(
     Ok(changed)
 }
 
+/// Load only caller-provided PKCS#1/PKCS#8 key material. The public key must
+/// match the private exponent's modulus and be valid for the exact Stage 2
+/// 1024-bit CryPAK format; neither key is ever bundled with the application.
+fn signing_key_pair(
+    signing_private: &Path,
+    signing_public: &Path,
+) -> Result<(rsa::RsaPrivateKey, RsaPublicKey), SignedPakError> {
+    use rsa::{RsaPrivateKey, pkcs1::DecodeRsaPrivateKey, pkcs8::DecodePrivateKey};
+    let private_meta = fs::symlink_metadata(signing_private)?;
+    let public_meta = fs::symlink_metadata(signing_public)?;
+    if !private_meta.file_type().is_file()
+        || !public_meta.file_type().is_file()
+        || private_meta.len() > 8192
+        || public_meta.len() > 8192
+    {
+        return Err(SignedPakError::Limits);
+    }
+    let private_bytes = fs::read(signing_private)?;
+    let pem = std::str::from_utf8(&private_bytes)
+        .map_err(|_| SignedPakError::Crypto("private PEM must be UTF-8".into()))?;
+    let private = RsaPrivateKey::from_pkcs1_pem(pem)
+        .ok()
+        .or_else(|| RsaPrivateKey::from_pkcs8_pem(pem).ok())
+        .ok_or_else(|| SignedPakError::Crypto("expected PKCS1/PKCS8 RSA private PEM".into()))?;
+    let public = parse_public_key(&fs::read(signing_public)?)?;
+    if private.size() != RSA_BYTES || private.n() != public.n() || private.e() != public.e() {
+        return Err(SignedPakError::Crypto(
+            "signing private/public keys do not match".into(),
+        ));
+    }
+    Ok((private, public))
+}
+
+/// Re-wrap the existing encrypted payload keys and re-sign the central
+/// directory without requiring even one modified archive member. Only the
+/// fixed-size authenticated comment changes: all original local headers,
+/// encrypted member bytes, CDR ciphertext and ZIP offsets remain byte-for-byte
+/// identical, which avoids expanding or repacking an untouched Stage 2 PAK.
+///
+/// Produces a NEW archive only; it never modifies the original or game client.
+/// The caller must separately match the new public DER key with the client hook
+/// before attempting any offline PAK-swap test.
+pub fn resign_signed_pak(
+    source: &Path,
+    original_public: &Path,
+    signing_private: &Path,
+    signing_public: &Path,
+    basename: &str,
+    destination: &Path,
+) -> Result<SignedPakInfo, SignedPakError> {
+    let parent = destination.parent().ok_or(SignedPakError::UnsafeOutput)?;
+    if destination.file_name().and_then(|v| v.to_str()) != Some(basename)
+        || !fs::symlink_metadata(parent)?.file_type().is_dir()
+        || fs::symlink_metadata(destination).is_ok()
+    {
+        return Err(SignedPakError::UnsafeOutput);
+    }
+    let source_meta = fs::symlink_metadata(source)?;
+    if !source_meta.file_type().is_file() || source_meta.len() > MAX_TOTAL_BYTES {
+        return Err(SignedPakError::Limits);
+    }
+    let original = open_verified_signed_pak(source, original_public, basename)?;
+    let (private, public) = signing_key_pair(signing_private, signing_public)?;
+    let comment = signed_comment(
+        &original.comment, &original.cdr, basename, &private, &public,
+        &original.iv, &original.keys,
+    )?;
+    let mut stage = tempfile::Builder::new()
+        .prefix(".resign-crypak-")
+        .tempfile_in(parent)?;
+    let mut input = File::open(source)?;
+    let old_size = source_meta
+        .len()
+        .checked_sub(TRAILER_BYTES as u64)
+        .ok_or(SignedPakError::Limits)?;
+    if io::copy(&mut input.by_ref().take(old_size), stage.as_file_mut())? != old_size {
+        return Err(SignedPakError::Format("signed PAK truncated during re-sign".into()));
+    }
+    stage.write_all(&comment)?;
+    stage.as_file_mut().sync_all()?;
+    // A concurrent changed source or overwritten trailer must never create an
+    // archive that cannot be independently authenticated with the client key.
+    if fs::metadata(source)?.len() != source_meta.len() {
+        return Err(SignedPakError::Format("source changed during re-sign".into()));
+    }
+    let checked = open_verified_signed_pak(stage.path(), signing_public, basename)?;
+    if checked.info.entries.len() != original.info.entries.len()
+        || checked.cdr != original.cdr
+        || checked.cdr_pos != original.cdr_pos
+    {
+        return Err(SignedPakError::Crypto(
+            "re-signed archive changed an original directory or offset".into(),
+        ));
+    }
+    if fs::symlink_metadata(destination).is_ok() {
+        return Err(SignedPakError::UnsafeOutput);
+    }
+    stage.persist_noclobber(destination).map_err(|error| {
+        if error.error.kind() == io::ErrorKind::AlreadyExists {
+            SignedPakError::UnsafeOutput
+        } else {
+            SignedPakError::Io(error.error)
+        }
+    })?;
+    Ok(checked.info)
+}
+
 fn scan_cdr_entry(data: &[u8], path: &str) -> Result<usize, SignedPakError> {
     let mut at = 0usize;
     let mut match_at = None;
@@ -833,31 +940,11 @@ pub fn rebuild_signed_pak_entries(
             return Err(SignedPakError::Limits);
         }
     }
-    use rsa::{RsaPrivateKey, pkcs1::DecodeRsaPrivateKey, pkcs8::DecodePrivateKey};
     let source_meta = fs::symlink_metadata(source)?;
-    let private_meta = fs::symlink_metadata(signing_private)?;
-    let new_public_meta = fs::symlink_metadata(signing_public)?;
-    if !source_meta.file_type().is_file()
-        || !private_meta.file_type().is_file()
-        || !new_public_meta.file_type().is_file()
-        || private_meta.len() > 8192
-        || new_public_meta.len() > 8192
-    {
+    if !source_meta.file_type().is_file() {
         return Err(SignedPakError::Limits);
     }
-    let private_bytes = fs::read(signing_private)?;
-    let private_str = std::str::from_utf8(&private_bytes)
-        .map_err(|_| SignedPakError::Crypto("private key PEM is not UTF-8".into()))?;
-    let private = RsaPrivateKey::from_pkcs1_pem(private_str)
-        .ok()
-        .or_else(|| RsaPrivateKey::from_pkcs8_pem(private_str).ok())
-        .ok_or_else(|| SignedPakError::Crypto("expected local PKCS1/PKCS8 RSA PEM".into()))?;
-    let public = parse_public_key(&fs::read(signing_public)?)?;
-    if private.size() != RSA_BYTES || *private.n() != *public.n() || *private.e() != *public.e() {
-        return Err(SignedPakError::Crypto(
-            "local signing public/private keys do not match".into(),
-        ));
-    }
+    let (private, public) = signing_key_pair(signing_private, signing_public)?;
     let verified = original;
     let mut cdr = verified.cdr.clone();
     let mut old_file = File::open(source)?;
