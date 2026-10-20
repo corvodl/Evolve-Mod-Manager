@@ -233,7 +233,10 @@ fn authored_maps(
             continue;
         };
         if counts[index] > 1 {
-            if !warnings.iter().any(|w: &String| w.contains(&format!("channel {index}"))) {
+            if !warnings
+                .iter()
+                .any(|w: &String| w.contains(&format!("channel {index}")))
+            {
                 warnings.push(format!(
                     "Ambiguous authored channel {index}: multiple maps for {}; left unassigned",
                     map.role
@@ -353,9 +356,12 @@ pub fn load_model(
                     &mut budget,
                 ) {
                     Ok(([diffuse, normal, emissive, specular, gloss, opacity], map_warnings)) => {
-                        warnings.extend(map_warnings.into_iter().map(|w| format!(
-                            "Original material slot {} ({}): {w}", material_slot, leaf.name
-                        )));
+                        warnings.extend(map_warnings.into_iter().map(|w| {
+                            format!(
+                                "Original material slot {} ({}): {w}",
+                                material_slot, leaf.name
+                            )
+                        }));
                         surface.diffuse = diffuse;
                         surface.normal = normal;
                         surface.emissive = emissive;
@@ -428,18 +434,21 @@ pub fn load(
                 surface.visible = false;
                 return Ok(());
             }
-            let ([diffuse, normal, emissive, specular, gloss, opacity], map_warnings) = authored_maps(
-                &authored,
-                part.material_slot,
-                inventory,
-                imported,
-                build,
-                cache,
-                &mut budget,
-            )?;
-            warnings.extend(map_warnings.into_iter().map(|w| format!(
-                "{} material slot {}: {w}", part.name, part.material_slot
-            )));
+            let ([diffuse, normal, emissive, specular, gloss, opacity], map_warnings) =
+                authored_maps(
+                    &authored,
+                    part.material_slot,
+                    inventory,
+                    imported,
+                    build,
+                    cache,
+                    &mut budget,
+                )?;
+            warnings.extend(
+                map_warnings
+                    .into_iter()
+                    .map(|w| format!("{} material slot {}: {w}", part.name, part.material_slot)),
+            );
             surface.diffuse = diffuse;
             surface.normal = normal;
             surface.emissive = emissive;
@@ -615,19 +624,36 @@ mod tests {
         diffuse[80..84].copy_from_slice(&0x4u32.to_le_bytes());
         diffuse[84..88].copy_from_slice(b"DXT1");
         std::fs::write(&diffuse_file, diffuse).unwrap();
-        let document = evolve_core::parse_material(br#"<Material Name="armor">
+        let document = evolve_core::parse_material(
+            br#"<Material Name="armor">
             <Textures>
                 <Texture Map="Diffuse" File="textures/color.dds"/>
                 <Texture Map="Opacity" File="textures/missing.dds"/>
-            </Textures></Material>"#).unwrap();
+            </Textures></Material>"#,
+        )
+        .unwrap();
         let inventory = evolve_core::scan_directory(dir.path()).unwrap();
         let mut budget = TextureBudget::default();
         let (maps, warnings) = authored_maps(
-            &document, 0, &inventory, None, None, &SharedCache::default(), &mut budget,
-        ).unwrap();
-        assert!(maps[0].is_some(), "diffuse must survive a missing opacity map");
+            &document,
+            0,
+            &inventory,
+            None,
+            None,
+            &SharedCache::default(),
+            &mut budget,
+        )
+        .unwrap();
+        assert!(
+            maps[0].is_some(),
+            "diffuse must survive a missing opacity map"
+        );
         assert!(maps[5].is_none());
-        assert!(warnings.iter().any(|w| w.contains("Missing exact cooked DDS")));
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("Missing exact cooked DDS"))
+        );
     }
 
     #[test]
