@@ -142,6 +142,14 @@ fn handle_element(
         let Some(binding) = attr(element, b"Binding")? else {
             return Ok(());
         };
+        // Historical CDFs (Scorpid 2012, for example) declare CA_BONE
+        // hand-palp sockets with Binding="", meaning the socket is defined
+        // but no model is attached. Do not reject the entire CDF: there is
+        // no renderable part here. A nonempty binding must still pass the
+        // normal safe-path validator.
+        if binding.trim().is_empty() && matches!(kind, AttachmentKind::Bone) {
+            return Ok(());
+        }
         let binding = normalize(&binding)?;
         let ext = binding.rsplit('.').next().unwrap_or_default();
         let supported = match &kind {
@@ -429,6 +437,35 @@ mod tests {
         assert!(
             parse_cdf(br#"<CharacterDefinition><AttachmentList/></CharacterDefinition>"#).is_err()
         );
+    }
+
+    #[test]
+    fn unbound_bone_sockets_do_not_invalidate_2012_scorpid_skin_meshes() {
+        let xml = br#"<CharacterDefinition>
+        <Model File="objects/characters/monsters/scorpid_2/scorpid1_skeleton.chr"/>
+        <AttachmentList>
+          <Attachment AName="torso" Type="CA_SKIN"
+            Binding="objects/characters/monsters/scorpid_2/scorpid1_rig.chr"/>
+          <Attachment AName="head" Type="CA_SKIN"
+            Binding="objects/characters/monsters/scorpid_2/scorpid1_default_head.chr"/>
+          <Attachment AName="lefthandpalp" Type="CA_BONE"
+            BoneName="Bip01 L Handpalp" Binding=""/>
+          <Attachment AName="righthandpalp" Type="CA_BONE"
+            BoneName="Bip01 R Handpalp" Binding=""/>
+        </AttachmentList>
+        </CharacterDefinition>"#;
+        let cdf = parse_cdf(xml).unwrap();
+        assert_eq!(cdf.attachments.len(), 2);
+        assert_eq!(cdf.attachments[0].name, "torso");
+        assert_eq!(cdf.attachments[1].name, "head");
+    }
+
+    #[test]
+    fn unbound_skin_mesh_still_rejects_invalid_path() {
+        let xml = br#"<CharacterDefinition><Model File="characters/skeleton.chr"/>
+        <AttachmentList><Attachment AName="mesh" Type="CA_SKIN" Binding=""/>
+        </AttachmentList></CharacterDefinition>"#;
+        assert!(matches!(parse_cdf(xml), Err(CdfError::UnsafePath(_))));
     }
 
     #[test]
