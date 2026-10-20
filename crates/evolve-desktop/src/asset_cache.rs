@@ -477,6 +477,26 @@ mod tests {
     }
 
     #[test]
+    fn historical_headerless_dds_0a_alpha_is_visible_in_image_viewer() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut header = rgba_header(4, 4, 1, false);
+        header[80..84].copy_from_slice(&1u32.to_le_bytes());
+        header[88..92].copy_from_slice(&8u32.to_le_bytes());
+        header[92..104].fill(0);
+        header[104..108].copy_from_slice(&0xffu32.to_le_bytes());
+        header.extend_from_slice(&[200u8; 16]);
+        let path = temp.path().join("scope_ddn.dds.0a");
+        fs::write(&path, &header[4..]).unwrap();
+        let inventory = evolve_core::scan_directory(temp.path()).unwrap();
+        let cache = Arc::new(Mutex::new(PreviewCache::default()));
+        let (info, pixels) = decoded_dds_indexed(
+            &cache, &path, "scope_ddn.dds.0a", &inventory, None, None,
+        ).unwrap();
+        assert_eq!((info.width, info.height), (4, 4));
+        assert_eq!(pixels.get_pixel(0, 0).0, [200, 200, 200, 255]);
+    }
+
+    #[test]
     fn high_mip_in_another_imported_pak_uses_exact_build_and_low_header() {
         let library = tempfile::tempdir().unwrap();
         let ids = ["11111111111111111111", "22222222222222222222"];
