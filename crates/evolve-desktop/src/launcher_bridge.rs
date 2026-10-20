@@ -123,9 +123,11 @@ fn verify_hook(
 #[cfg(windows)]
 fn games_closed() -> Result<(), String> {
     use std::os::windows::process::CommandExt;
-    let output = Command::new("tasklist").args(["/FO", "CSV", "/NH"])
+    let output = Command::new("tasklist")
+        .args(["/FO", "CSV", "/NH"])
         .creation_flags(0x08000000) // CREATE_NO_WINDOW
-        .output().map_err(|e| format!("Cannot query active game tasks: {e}"))?;
+        .output()
+        .map_err(|e| format!("Cannot query active game tasks: {e}"))?;
     if !output.status.success() {
         return Err("Unable to verify Evolve and private launcher processes are closed".into());
     }
@@ -140,7 +142,9 @@ fn games_closed() -> Result<(), String> {
     Ok(())
 }
 #[cfg(not(windows))]
-fn games_closed() -> Result<(), String> { Ok(()) }
+fn games_closed() -> Result<(), String> {
+    Ok(())
+}
 
 /// Locate the installed client hook using the private signing stage's
 /// recorded original game root. No broad disk search or guessed DLL path.
@@ -368,7 +372,13 @@ mod tests {
 
     #[test]
     fn rejects_unsafe_game_paths_and_partial_or_missing_stage() {
-        for p in ["../evil.pak", "C:/root.pak", "/abs.pak", "assets/../foo.pak", "bad.pak/"] {
+        for p in [
+            "../evil.pak",
+            "C:/root.pak",
+            "/abs.pak",
+            "assets/../foo.pak",
+            "bad.pak/",
+        ] {
             assert!(safe_pak_name(p).is_err(), "{p}");
         }
         assert_eq!(safe_pak_name("Game/libs.pak").unwrap(), "Game/libs.pak");
