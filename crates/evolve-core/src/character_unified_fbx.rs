@@ -213,9 +213,11 @@ fn exact_multi_slot_materials(
     inventory: &Inventory,
 ) -> Result<Option<Vec<OriginalMaterialPng>>, String> {
     let material = mesh_path.with_extension("mtl");
-    let virtual_mtl = material.strip_prefix(root)
+    let virtual_mtl = material
+        .strip_prefix(root)
         .map_err(|_| "Original material escaped indexed asset root")?
-        .to_string_lossy().replace('\\', "/");
+        .to_string_lossy()
+        .replace('\\', "/");
     let file = match resolve_virtual(inventory, &virtual_mtl) {
         AssetResolution::Found(file) => file,
         AssetResolution::Missing => return Ok(None),
@@ -265,7 +267,10 @@ fn exact_multi_slot_materials(
                 _ => unreachable!(),
             };
             if target.is_some() {
-                return Err(format!("Duplicate authored texture role in MTL slot {}", leaf.name));
+                return Err(format!(
+                    "Duplicate authored texture role in MTL slot {}",
+                    leaf.name
+                ));
             }
             *target = Some(if role == 4 {
                 authored_roughness_png(&file)?
@@ -439,51 +444,51 @@ pub fn export_unified_cdf_fbx(
             glb = embed_original_material_slots_glb(&glb, &source_subsets, &slots)
                 .map_err(|e| format!("CDF part {name} original multi-material: {e}"))?;
         } else {
-        let maps = exact_single_slot_maps(&root, original, inventory)?;
-        let diffuse = maps
-            .diffuse
-            .as_deref()
-            .map(|f| authored_png(f, false))
-            .transpose()?;
-        let normal = maps
-            .normal
-            .as_deref()
-            .map(|f| authored_png(f, true))
-            .transpose()?;
-        let emissive = maps
-            .emissive
-            .as_deref()
-            .map(|f| authored_png(f, false))
-            .transpose()?;
-        let specular = maps
-            .specular
-            .as_deref()
-            .map(|f| authored_png(f, false))
-            .transpose()?;
-        let roughness = maps
-            .gloss
-            .as_deref()
-            .map(authored_roughness_png)
-            .transpose()?;
-        if diffuse.is_some()
-            || normal.is_some()
-            || emissive.is_some()
-            || specular.is_some()
-            || roughness.is_some()
-        {
-            glb = embed_verified_material_png_glb(
-                &glb,
-                diffuse.as_deref(),
-                normal.as_deref(),
-                emissive.as_deref(),
-                specular.as_deref(),
-                roughness.as_deref(),
-            )
-            .map_err(|e| format!("CDF part {name} original maps: {e}"))?;
-        }
-        if diffuse.is_some() {
-            diffuse_textured_parts += 1;
-        }
+            let maps = exact_single_slot_maps(&root, original, inventory)?;
+            let diffuse = maps
+                .diffuse
+                .as_deref()
+                .map(|f| authored_png(f, false))
+                .transpose()?;
+            let normal = maps
+                .normal
+                .as_deref()
+                .map(|f| authored_png(f, true))
+                .transpose()?;
+            let emissive = maps
+                .emissive
+                .as_deref()
+                .map(|f| authored_png(f, false))
+                .transpose()?;
+            let specular = maps
+                .specular
+                .as_deref()
+                .map(|f| authored_png(f, false))
+                .transpose()?;
+            let roughness = maps
+                .gloss
+                .as_deref()
+                .map(authored_roughness_png)
+                .transpose()?;
+            if diffuse.is_some()
+                || normal.is_some()
+                || emissive.is_some()
+                || specular.is_some()
+                || roughness.is_some()
+            {
+                glb = embed_verified_material_png_glb(
+                    &glb,
+                    diffuse.as_deref(),
+                    normal.as_deref(),
+                    emissive.as_deref(),
+                    specular.as_deref(),
+                    roughness.as_deref(),
+                )
+                .map_err(|e| format!("CDF part {name} original maps: {e}"))?;
+            }
+            if diffuse.is_some() {
+                diffuse_textured_parts += 1;
+            }
         }
         total_glb_bytes = total_glb_bytes
             .checked_add(glb.len() as u64)
