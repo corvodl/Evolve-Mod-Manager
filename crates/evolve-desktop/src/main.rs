@@ -1294,6 +1294,9 @@ enum Message {
     PreferenceReduceMotion,
     PreferenceSnapshots,
     PreferenceActivity,
+    PreferenceCrashLogging,
+    OpenCrashLogs,
+    OpenCrashLogsFolder,
     PreferenceExperimental,
     PreferenceAutoUpdates,
     PreferenceStage(String),
@@ -3187,6 +3190,49 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::PreferenceActivity => {
             state.preferences.show_activity_on_tasks = !state.preferences.show_activity_on_tasks;
             persist_preferences(state);
+        }
+        Message::PreferenceCrashLogging => {
+            state.preferences.crash_logging_enabled = !state.preferences.crash_logging_enabled;
+            crash_diagnostics::set_enabled(state.preferences.crash_logging_enabled);
+            persist_preferences(state);
+            state.settings_status = if state.preferences.crash_logging_enabled {
+                "Crash logs enabled. New preview events and Rust panics are recorded locally.".into()
+            } else {
+                "Crash logs disabled. Existing log files were left untouched.".into()
+            };
+        }
+        Message::OpenCrashLogs | Message::OpenCrashLogsFolder => {
+            match crash_diagnostics::log_path() {
+                Ok(path) => {
+                    let opening_folder = matches!(&message, Message::OpenCrashLogsFolder);
+                    let log_folder = path.parent().map(Path::to_path_buf);
+                    let target = if opening_folder {
+                        log_folder.clone()
+                    } else if path.exists() {
+                        Some(path)
+                    } else {
+                        log_folder.clone()
+                    };
+                    if let Some(target) = target {
+                        if let Some(folder) = log_folder {
+                            let _ = std::fs::create_dir_all(folder);
+                        }
+                        #[cfg(windows)]
+                        let result = if opening_folder || target.is_dir() {
+                            std::process::Command::new("explorer.exe").arg(&target).spawn()
+                        } else {
+                            std::process::Command::new("notepad.exe").arg(&target).spawn()
+                        };
+                        #[cfg(not(windows))]
+                        let result = std::process::Command::new("xdg-open").arg(&target).spawn();
+                        state.settings_status = match result {
+                            Ok(_) => format!("Opening {}", target.display()),
+                            Err(error) => format!("Could not open crash log: {error}"),
+                        };
+                    }
+                }
+                Err(error) => state.settings_status = format!("Crash log path unavailable: {error}"),
+            }
         }
         Message::PreferenceExperimental => {
             state.preferences.experimental_updates = !state.preferences.experimental_updates;
@@ -6189,7 +6235,11 @@ impl Desktop {
 }
 
 fn main() -> iced::Result {
-    crash_diagnostics::install();
+    let logging_enabled = settings_path()
+        .ok()
+        .and_then(|path| load_from(&path).ok())
+        .is_none_or(|settings| settings.crash_logging_enabled);
+    crash_diagnostics::install(logging_enabled);
     let _supported_backends = wgpu::Backends::PRIMARY;
     iced::daemon(Desktop::new, Desktop::update, Desktop::view)
         .subscription(Desktop::subscription)
@@ -6825,4 +6875,16 @@ mod project_edit_tests {
         assert!(!state.busy);
         assert!(state.status.contains("do not belong"));
     }
+    #[test]
+    fn crash_logging_setting_preserves_other_preferences() {
+        let mut state = State::default();
+        state.preferences.crash_logging_enabled = true;
+        let original = state.preferences.keep_original_snapshots;
+        let _ = update(&mut state, Message::PreferenceCrashLogging);
+        assert!(!state.preferences.crash_logging_enabled);
+        assert_eq!(state.preferences.keep_original_snapshots, original);
+        // Restore global state for the rest of the test suite.
+        crash_diagnostics::set_enabled(true);
+    }
+
 }
