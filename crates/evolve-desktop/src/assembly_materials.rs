@@ -378,8 +378,12 @@ pub fn load(
             )?
             .ok_or("No explicitly associated or same-stem MTL")?;
             let authored = read_material(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            let leaf = authored.slots.get(part.material_slot as usize)
-                .ok_or_else(|| format!("Original material slot {} is missing", part.material_slot))?;
+            let leaf = authored
+                .slots
+                .get(part.material_slot as usize)
+                .ok_or_else(|| {
+                    format!("Original material slot {} is missing", part.material_slot)
+                })?;
             if leaf.shader.eq_ignore_ascii_case("NoDraw") {
                 surface.visible = false;
                 return Ok(());
