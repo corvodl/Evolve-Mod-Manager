@@ -39,13 +39,12 @@ use evolve_core::{
     export_rigged_character_fbx_textured_animated, export_rigged_character_glb,
     export_unified_cdf_fbx, extract_legacy_pak, extract_signed_pak,
     import_signed_library_selection, import_stage_pak, imported_archive_files, imported_library,
-    material_texture_candidates,
     initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_signed_pak,
-    list_mod_profiles, load_level_scene, plan_mod_profile, read_cdf, read_material, read_model,
-    read_native_caf, read_static_cdf_assembly, read_terrain, rebuild_legacy_pak,
-    rebuild_signed_pak_entry, resolve_cdf, resolve_imported_reference, resolve_materials,
-    restore_profile_stage, restore_stage, scan_directory, scan_directory_with_progress,
-    stage_status,
+    list_mod_profiles, load_level_scene, material_texture_candidates, plan_mod_profile, read_cdf,
+    read_material, read_model, read_native_caf, read_static_cdf_assembly, read_terrain,
+    rebuild_legacy_pak, rebuild_signed_pak_entry, resolve_cdf, resolve_imported_reference,
+    resolve_materials, restore_profile_stage, restore_stage, scan_directory,
+    scan_directory_with_progress, stage_status,
 };
 use iced::widget::{
     canvas, column, container, image, row, scrollable, shader, slider, space, svg, text, tooltip,
@@ -3942,7 +3941,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                 }
                 Ok(Completed::MaterialResolved(
-                    report, diffuse, normal, emissive, specular, gloss, diagnostics
+                    report,
+                    diffuse,
+                    normal,
+                    emissive,
+                    specular,
+                    gloss,
+                    diagnostics,
                 )) => {
                     state.auto_material_pending = false;
                     let found = report
