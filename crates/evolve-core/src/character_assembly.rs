@@ -603,6 +603,32 @@ mod tests {
         assert!(!report.skeletal_animation_enabled);
     }
 
+    #[test]
+    fn static_cdf_loads_exact_skinm_without_separate_skin_or_skeleton() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir(root.join("characters")).unwrap();
+        fs::write(
+            root.join("characters/armor.skinm"),
+            crate::model::tests::fixture(),
+        ).unwrap();
+        let cdf = root.join("armor.cdf");
+        fs::write(&cdf, br#"<CharacterDefinition>
+            <Model File="characters/missing_skeleton.chr"/>
+            <AttachmentList><Attachment Type="CA_SKIN" AName="armor"
+                Binding="characters/armor.skin"/></AttachmentList>
+            </CharacterDefinition>"#).unwrap();
+        let inv = crate::scan_directory(root).unwrap();
+        let (mesh, report) = read_static_cdf_assembly(&cdf, &inv).unwrap();
+        assert_eq!(mesh.indices.len(), 3);
+        assert_eq!(report.original_parts, ["armor"]);
+        assert_eq!(report.source_parts[0].material_slot, 0);
+        assert_eq!(report.verified_bones, None);
+        assert!(report.skeleton_source.is_none());
+        assert!(report.warnings.iter().any(|w| w.contains("static skin geometry")));
+        assert!(report.warnings.iter().any(|w| w.contains("binding")));
+    }
+
     fn part(count: usize, uv: bool) -> RenderMesh {
         RenderMesh {
             info: ModelInfo {
