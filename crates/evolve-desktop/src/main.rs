@@ -3305,7 +3305,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Choose an installed Blender executable for FBX export.".into();
                 return Task::none();
             }
-            let cdf = selected.len() == 1 && selected[0].to_ascii_lowercase().ends_with(".cdf");
+            let cdf_source = (selected.len() == 1
+                && selected[0].to_ascii_lowercase().ends_with(".cdf"))
+                .then(|| PathBuf::from(&inventory.root).join(&selected[0]));
+            let equipment = if cdf_source
+                .as_ref()
+                .is_some_and(|source| state.equipment_source.as_ref() == Some(source))
+            {
+                state.equipment_overrides.clone()
+            } else {
+                EquipmentOverrides::new()
+            };
             let original = parent.join(name);
             let options = evolve_core::ExportBundleOptions {
                 destination: original,
@@ -3320,11 +3330,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 rigged: state.export_rigged,
                 embed_textures: state.export_embed_textures,
                 export_dependencies: state.export_dependencies,
-                equipment: if cdf {
-                    state.equipment_overrides.clone()
-                } else {
-                    EquipmentOverrides::new()
-                },
+                equipment,
             };
             state.export_dialog_open = false;
             return launch(state, Operation::ExportBundle(inventory, options));
@@ -6411,9 +6417,16 @@ impl Desktop {
             }
             Message::OpenViewer => self.open_viewer(),
             Message::LibraryExport => {
-                if self.state.inventory.is_none() {
+                // Never offer an old Modding inventory as if it were the
+                // currently selected imported Asset Library content.
+                let within_library = self.state.inventory.as_ref().is_some_and(|inventory| {
+                    let catalog_root = std::fs::canonicalize(&self.state.library_root);
+                    let indexed_root = std::fs::canonicalize(&inventory.root);
+                    matches!((catalog_root, indexed_root), (Ok(lib), Ok(index)) if index.starts_with(lib))
+                });
+                if !within_library {
                     self.state.status =
-                        "Preview an imported Asset Library PAK or index its extracted files before exporting.".into();
+                        "Preview an imported Asset Library PAK to index its original files before exporting.".into();
                     return Task::none();
                 }
                 let command = update(&mut self.state, Message::ExportOpen);
