@@ -35,16 +35,15 @@ use asset_cache::{SharedCache, decoded_dds, decoded_dds_indexed};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph,
-    EquipmentOverrides, EquipmentSlot, HookPairReport, ImportedLibrary,
-    ImportedPak, Inventory, LevelScene, LibraryBatchImportReport, LibraryReferenceStatus,
-    MaterialReport, ModProfile, ModelInfo, NativeCafMotion, PakHookPairReport, PakInventory,
-    ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo,
-    StageTransaction, TerrainInfo, VerifiedCafAssembly, VerifiedCafSkin,
-    add_mod_to_profile, apply_profile_stage, apply_stage_pak, batch_stage_status, compare_assets,
-    convert_glb_to_fbx, convert_original_motion, create_mod_profile, decode_dds_rgba,
-    discover_equipment, export_dds_png, export_level_scene_glb,
-    export_rigged_character_fbx_textured_animated, export_rigged_character_glb,
-    extract_legacy_pak, extract_signed_pak,
+    EquipmentOverrides, EquipmentSlot, HookPairReport, ImportedLibrary, ImportedPak, Inventory,
+    LevelScene, LibraryBatchImportReport, LibraryReferenceStatus, MaterialReport, ModProfile,
+    ModelInfo, NativeCafMotion, PakHookPairReport, PakInventory, ProfileCatalog, ProfileMod,
+    ProfilePlan, RenderMesh, RigReport, SignedPakInfo, StageTransaction, TerrainInfo,
+    VerifiedCafAssembly, VerifiedCafSkin, add_mod_to_profile, apply_profile_stage, apply_stage_pak,
+    batch_stage_status, compare_assets, convert_glb_to_fbx, convert_original_motion,
+    create_mod_profile, decode_dds_rgba, discover_equipment, export_dds_png,
+    export_level_scene_glb, export_rigged_character_fbx_textured_animated,
+    export_rigged_character_glb, extract_legacy_pak, extract_signed_pak,
     import_signed_library_selection, import_stage_pak, imported_archive_files, imported_library,
     initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_pak_hook_pair,
     inspect_signed_pak, list_mod_profiles, load_level_scene, material_texture_candidates,
@@ -3222,7 +3221,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .as_ref()
                 .and_then(|inv| inv.entries.get(index))
                 .is_some_and(|item| exportable_asset(&item.relative_path));
-            if eligible && !state.export_selected.remove(&index) && state.export_selected.len() < 64 {
+            if eligible && !state.export_selected.remove(&index) && state.export_selected.len() < 64
+            {
                 state.export_selected.insert(index);
             }
         }
