@@ -4443,7 +4443,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .cloned()
                         .collect::<Vec<_>>()
                         .join(" | ");
-                    state.skeleton_path = report.skeleton_source.as_ref()
+                    state.skeleton_path = report
+                        .skeleton_source
+                        .as_ref()
                         .map(|path| path.to_string_lossy().into_owned())
                         .unwrap_or_default();
                     state.cdf_surfaces = Some(Arc::new(surfaces));
