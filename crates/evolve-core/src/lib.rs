@@ -47,7 +47,7 @@ pub use cdf::{
     read_cdf, resolve_cdf, resolve_virtual,
 };
 pub use character_assembly::{
-    AssemblyError, AssemblyPart, AssemblyReport, combine_source_meshes, read_static_cdf_assembly,
+    AssemblyError, AssemblyGeometry, AssemblyPart, AssemblyReport, combine_source_meshes, read_static_cdf_assembly,
     read_static_cdf_assembly_with_imported,
 };
 pub use character_folder_fbx::{FlatCdfFbxReport, export_flat_cdf_parts_fbx};
@@ -98,7 +98,7 @@ pub use signed_pak::{
     inspect_signed_pak, open_verified_signed_pak, rebuild_signed_pak_entries,
     rebuild_signed_pak_entry, resign_signed_pak,
 };
-pub use skin_preview::VerifiedCafSkin;
+pub use skin_preview::{VerifiedCafAssembly, VerifiedCafSkin};
 pub use terrain::{
     TerrainError, TerrainInfo, TerrainMesh, decode_terrain_bytes, export_terrain_obj, read_terrain,
 };
