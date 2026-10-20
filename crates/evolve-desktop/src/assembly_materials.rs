@@ -425,6 +425,82 @@ mod tests {
         );
     }
 
+    fn compiled_material_fixture(with_subsets: bool) -> Vec<u8> {
+        let mut data = vec![0u8; 16 + (if with_subsets { 4 } else { 3 }) * 16];
+        data[..8].copy_from_slice(b"CrChF\x07\0\0");
+        data[8..12].copy_from_slice(&(if with_subsets {4u32} else {3u32}).to_le_bytes());
+        data[12..16].copy_from_slice(&16u32.to_le_bytes());
+        let vertices = [
+            [0f32, 0., 0.], [1., 0., 0.], [0., 1., 0.], [1., 1., 0.],
+        ];
+        let uvs = [[0f32, 0.], [1., 0.], [0., 1.], [1., 1.]];
+        let coords = vertices.iter().flat_map(|p| p.iter().flat_map(|c| c.to_le_bytes())).collect::<Vec<_>>();
+        let texcoords = uvs.iter().flat_map(|p| p.iter().flat_map(|c| c.to_le_bytes())).collect::<Vec<_>>();
+        let indices = [0u16, 1, 2, 1, 3, 2].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>();
+        for (i, (kind, count, stride, bytes)) in [
+            (0u32, 4u32, 12u32, coords),
+            (5, 6, 2, indices),
+            (2, 4, 8, texcoords),
+        ].into_iter().enumerate() {
+            let offset = data.len();
+            let mut chunk = vec![0u8; 24];
+            chunk[4..8].copy_from_slice(&kind.to_le_bytes());
+            chunk[8..12].copy_from_slice(&count.to_le_bytes());
+            chunk[12..16].copy_from_slice(&stride.to_le_bytes());
+            chunk.extend_from_slice(&bytes);
+            let table = 16 + 16 * i;
+            data[table..table+4].copy_from_slice(&0x08001016u32.to_le_bytes());
+            data[table+4..table+8].copy_from_slice(&(i as u32).to_le_bytes());
+            data[table+8..table+12].copy_from_slice(&(chunk.len() as u32).to_le_bytes());
+            data[table+12..table+16].copy_from_slice(&(offset as u32).to_le_bytes());
+            data.extend_from_slice(&chunk);
+        }
+        if with_subsets {
+            let offset = data.len();
+            let mut subsets = vec![0u8; 16 + 36 * 2];
+            subsets[4..8].copy_from_slice(&2u32.to_le_bytes());
+            subsets[16..20].copy_from_slice(&0u32.to_le_bytes());
+            subsets[20..24].copy_from_slice(&3u32.to_le_bytes());
+            subsets[32..36].copy_from_slice(&0u32.to_le_bytes());
+            subsets[52..56].copy_from_slice(&3u32.to_le_bytes());
+            subsets[56..60].copy_from_slice(&3u32.to_le_bytes());
+            subsets[68..72].copy_from_slice(&1u32.to_le_bytes());
+            data[64..68].copy_from_slice(&0x08001017u32.to_le_bytes());
+            data[68..72].copy_from_slice(&3u32.to_le_bytes());
+            data[72..76].copy_from_slice(&(subsets.len() as u32).to_le_bytes());
+            data[76..80].copy_from_slice(&(offset as u32).to_le_bytes());
+            data.extend_from_slice(&subsets);
+        }
+        data
+    }
+
+    #[test]
+    fn original_material_ids_drive_nodraw_and_visible_gpu_ranges() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("hunter.skinm");
+        let material = dir.path().join("hunter.mtl");
+        std::fs::write(&source, compiled_material_fixture(true)).unwrap();
+        std::fs::write(&material,
+            br#"<Material Name="hunter"><SubMaterials>
+                <Material Name="hidden" Shader="NoDraw"/>
+                <Material Name="body"/>
+            </SubMaterials></Material>"#).unwrap();
+        let inventory = evolve_core::scan_directory(dir.path()).unwrap();
+        let (surfaces, warnings) = load_model(
+            &source, &material, &inventory, None, None, &SharedCache::default(),
+        ).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(surfaces.len(), 2);
+        assert_eq!((surfaces[0].first_index, surfaces[0].index_count), (0, 3));
+        assert_eq!((surfaces[1].first_index, surfaces[1].index_count), (3, 3));
+        assert!(!surfaces[0].visible);
+        assert!(surfaces[1].visible);
+        std::fs::write(&source, compiled_material_fixture(false)).unwrap();
+        assert!(load_model(
+            &source, &material, &inventory, None, None, &SharedCache::default(),
+        ).unwrap_err().contains("no original mesh-subset table"));
+    }
+
     #[test]
     fn cdf_explicit_material_is_not_replaced_with_neighboring_mtl() {
         let root = tempfile::tempdir().unwrap();
