@@ -332,6 +332,38 @@ evolve-cli hook prepare bin64_SteamRetail/inject.dll RSAKeyData.bin public_key.b
 evolve-cli hook pak-preflight original.pak new-folder/original.pak bin64_SteamRetail/inject.dll staging/inject.dll RSAKeyData.bin public_key.bin original.pak
 ```
 
+## Private-launcher-compatible offline PAK/hook swap bridge (PR #5)
+
+- The original private manager's runtime uses **controlled_swap.py** to
+  prepare custom-key signed PAKs and `inject-custom.dll` as safe same-volume
+  `.customkey-ready` files; **auto_launch_frida.py** intercepts the user's
+  existing private launcher's `CreateProcessW` call immediately before
+  `Evolve.exe` exists, swaps verified staged PAKs and the 4 KiB hook, then
+  starts an independent **auto_restore_watch.py** recovery monitor.
+- The Rust manager's **Modding → Tools → Verify offline launcher + signed PAKs**
+  validates the existing private stage's `rekey_plan.json` and
+  `stage_status.json`, the exact installed game root, every original and
+  custom CryPAK RSA signature and matching member paths, the original and
+  RSA-key-only modified `inject.dll`, the staged hook SHA-256, and the
+  absence of orphaned original backups. It never changes the installed client.
+- **Play with mods (existing private helper)** reuses the user's already
+  installed `controlled_swap.py` and `auto_launch_frida.py` through Windows
+  Python 3.11 / Frida. When no valid prepared journal exists, the private
+  helper prepares the copies and the Rust manager rechecks the signed PAK and
+  hook pairing before invoking the independent launcher controller. The
+  controller, not Rust, owns process-creation interception and auto-restoration.
+  No private signing key, Frida agent, game DLL or game assets are packaged.
+- The separate **Prepare verified client hook copy** action now permits the
+  private launcher's exact `stage/inject-custom.dll` filename (in addition to
+  a new `inject.dll` elsewhere), and derives an unset source hook path from
+  the private stage's recorded original game root. It remains no-clobber.
+- **Not native standalone parity yet.** Without the user's preinstalled
+  original private launcher helper scripts, working Python 3.11/Frida and
+  a fully verified private signed stage, launching refuses to proceed.
+  A successful preflight or detached helper process ID does **not** prove
+  the game mounted the PAKs. Actual Windows Stage 2 launch, restore-watchdog
+  recovery, and an offline game-session test remain required before release.
+
 ## Integrated Asset Viewer preview — PR #5
 
 - PR #5 combines complete development histories from PR #3 and PR #4
