@@ -196,7 +196,9 @@ fn verify_prepared_journal(
             .get(index)
             .ok_or("Prepared journal entry ordering/count changed")?;
         let actual_name = normalized_swap_name(
-            record["name"].as_str().ok_or("Prepared swap record missing its name")?
+            record["name"]
+                .as_str()
+                .ok_or("Prepared swap record missing its name")?,
         )?;
         if !actual_name.eq_ignore_ascii_case(name) {
             return Err(format!(
@@ -569,7 +571,9 @@ fn guarded_restore_state(stage: &Path, swap: &Path) -> Result<String, String> {
     let mut seen = std::collections::HashSet::new();
     for (record, (name, source, target)) in records.iter().zip(expected) {
         let actual_name = normalized_swap_name(
-            record["name"].as_str().ok_or("Recovery journal name missing")?
+            record["name"]
+                .as_str()
+                .ok_or("Recovery journal name missing")?,
         )?;
         if !actual_name.eq_ignore_ascii_case(&name) || !seen.insert(name.to_ascii_lowercase()) {
             return Err(format!("Recovery journal target ordering changed: {name}"));
