@@ -744,7 +744,7 @@ impl Operation {
             Self::PreviewDds(source, cache) => {
                 let (info, pixels) = decoded_dds(&cache, &source)?;
                 Ok(Completed::DdsPreview(source, info, pixels))
-            },
+            }
             Self::DiscoverModelResources(relative, inventory, library_root, build) => {
                 let discovery = auto_resources::discover(
                     &relative,
@@ -4130,11 +4130,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Ok(Completed::DdsPreview(source, info, pixels)) => {
                     // Do not replace the latest model/texture with a stale
                     // thumbnail decoded before the user selected another file.
-                    if state.viewer_queued_preview.is_none()
-                        && Path::new(&state.input) == source
-                    {
+                    if state.viewer_queued_preview.is_none() && Path::new(&state.input) == source {
                         let handle = image::Handle::from_rgba(
-                            pixels.width(), pixels.height(), pixels.as_raw().clone(),
+                            pixels.width(),
+                            pixels.height(),
+                            pixels.as_raw().clone(),
                         );
                         state.texture_preview = Some(handle);
                         state.material_report = None;
@@ -5554,12 +5554,19 @@ mod project_edit_tests {
     #[test]
     fn model_preview_dispatch_includes_compiled_cryengine_variants_without_inspect() {
         for name in [
-            "Hunters/Kala.SKIN", "Monsters/Goliath.skinm",
-            "Hunters/Griffin.CHR", "Hunters/Griffin.chrm",
-            "Objects/tree.CGF", "Objects/tree.cgfm",
-            "Hunters/Jack.cga", "Hunters/Jack.cgam",
+            "Hunters/Kala.SKIN",
+            "Monsters/Goliath.skinm",
+            "Hunters/Griffin.CHR",
+            "Hunters/Griffin.chrm",
+            "Objects/tree.CGF",
+            "Objects/tree.cgfm",
+            "Hunters/Jack.cga",
+            "Hunters/Jack.cgam",
         ] {
-            assert!(is_viewer_model_source(name), "failed to auto-preview {name}");
+            assert!(
+                is_viewer_model_source(name),
+                "failed to auto-preview {name}"
+            );
             assert!(is_viewer_preview_source(name));
         }
         for name in ["Hunters/Kala.cdf", "models/body.mtl", "tex/body.dds.0"] {
