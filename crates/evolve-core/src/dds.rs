@@ -534,7 +534,7 @@ fn untile_xbox360(
         let to = (y * bw + x) * pitch;
         linear[to..to + pitch].copy_from_slice(&tiled[from..from + pitch]);
     }
-    for word in linear.chunks_exact_mut(2) {
+    for word in linear.as_chunks_mut::<2>().0 {
         word.swap(0, 1);
     }
     Ok(linear)
@@ -652,7 +652,7 @@ mod tests {
             let target = i * 8;
             console[target..target + 8].copy_from_slice(&linear[source..source + 8]);
         }
-        for pair in console.chunks_exact_mut(2) {
+        for pair in console.as_chunks_mut::<2>().0 {
             pair.swap(0, 1);
         }
         assert_eq!(untile_xbox360(&console, 128, 128, 8).unwrap(), linear);
