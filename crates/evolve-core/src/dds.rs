@@ -465,19 +465,30 @@ fn decode_block(format: DdsFormat, bytes: &[u8]) -> [[u8; 4]; 16] {
                 c0,
                 c1,
                 [
-                    ((u16::from(c0[0]) * 2 + u16::from(c1[0])) / 3) as u8,
-                    ((u16::from(c0[1]) * 2 + u16::from(c1[1])) / 3) as u8,
+                    ((u16::from(c0[0]) * 2 + u16::from(c1[0]) + 1) / 3) as u8,
+                    ((u16::from(c0[1]) * 2 + u16::from(c1[1]) + 1) / 3) as u8,
                 ],
                 [
-                    ((u16::from(c0[0]) + u16::from(c1[0]) * 2) / 3) as u8,
-                    ((u16::from(c0[1]) + u16::from(c1[1]) * 2) / 3) as u8,
+                    ((u16::from(c0[0]) + u16::from(c1[0]) * 2 + 1) / 3) as u8,
+                    ((u16::from(c0[1]) + u16::from(c1[1]) * 2 + 1) / 3) as u8,
                 ],
             ];
             let indices = u32::from_le_bytes(bytes[4..8].try_into().unwrap_or([0; 4]));
             let mut pixels = [[0u8; 4]; 16];
             for (i, pixel) in pixels.iter_mut().enumerate() {
                 let rg = palette[((indices >> (2 * i)) & 3) as usize];
-                *pixel = [rg[0], rg[1], 0, 255];
+                // CTX1 is a two-channel Xenos normal-map format. Mirror
+                // the private manager's RG-to-XYZ reconstruction so direct
+                // image preview and PNG/FBX texture exports don't have a
+                // black/blue-zero B channel. The GPU still samples exact RG
+                // and independently reconstructs tangent-space Z.
+                let x = f32::from(rg[0]) / 127.5 - 1.0;
+                let y = f32::from(rg[1]) / 127.5 - 1.0;
+                let z = (1.0 - x * x - y * y).max(0.0).sqrt();
+                let length = (x * x + y * y + z * z).sqrt().max(f32::EPSILON);
+                let blue = (((z / length + 1.0) * 127.5).round() as i32)
+                    .clamp(0, 255) as u8;
+                *pixel = [rg[0], rg[1], blue, 255];
             }
             pixels
         }
@@ -762,10 +773,15 @@ mod tests {
     #[test]
     fn ctx1_preserves_interpolated_original_rg_channels() {
         let pixels = decode_block(DdsFormat::Ctx1, &[255, 0, 0, 255, 0xe4, 0, 0, 0]);
-        assert_eq!(pixels[0], [255, 0, 0, 255]);
-        assert_eq!(pixels[1], [0, 255, 0, 255]);
-        assert_eq!(pixels[2], [170, 85, 0, 255]);
-        assert_eq!(pixels[3], [85, 170, 0, 255]);
+        assert_eq!(&pixels[0][..2], &[255, 0]);
+        assert_eq!(&pixels[1][..2], &[0, 255]);
+        assert_eq!(&pixels[2][..2], &[170, 85]);
+        assert_eq!(&pixels[3][..2], &[85, 170]);
+        // Original RG is not modified by the private-format Z reconstruction.
+        assert!(pixels[2][2] > 200);
+        assert!(pixels.iter().all(|pixel| pixel[3] == 255));
+        let neutral = decode_block(DdsFormat::Ctx1, &[128, 128, 128, 128, 0, 0, 0, 0]);
+        assert!(neutral.iter().all(|pixel| pixel[2] >= 254));
     }
 
     use super::*;
