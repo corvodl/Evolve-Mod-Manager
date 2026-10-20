@@ -85,6 +85,226 @@ impl<Message> canvas::Program<Message> for DependencyCanvas {
     }
 }
 
+/// Beginner-facing docked overview. A selected model's metadata, texture
+/// references and animations remain separate so a missing map is never
+/// mistaken for a broken mesh.
+pub(super) fn sidebar_inspector(state: &State) -> Element<'_, Message> {
+    let mut summary = column![
+        text("INSPECTOR").size(16),
+        text("Read-only information for the selected asset. Nothing here edits your game files.")
+            .size(11).style(design::muted),
+        text("1 · Selected asset").size(14),
+    ].spacing(8);
+    let source = state.selected.and_then(|i| state.inventory.as_ref()?.entries.get(i));
+    summary = summary.push(
+        text(source.map_or("No file selected".to_owned(), |e| e.relative_path.clone()))
+            .size(12),
+    );
+
+    summary = summary.push(text("2 · Model geometry").size(14));
+    if let Some(mesh) = &state.model {
+        summary = summary.push(text(format!(
+            "{} vertices · {} triangles",
+            mesh.positions.len(),
+            mesh.indices.len() / 3
+        )).size(12));
+        summary = summary.push(
+            text(if mesh.uv0.is_some() {
+                "UV coordinates: available (needed for textures)"
+            } else {
+                "UV coordinates: unavailable (textures cannot be positioned reliably)"
+            }).size(12).style(design::muted)
+        );
+    } else {
+        summary = summary.push(
+            text("No 3D model loaded. Choose a .skinm, .chrm or CDF in Files.")
+                .size(12).style(design::muted)
+        );
+    }
+
+    summary = summary.push(text("3 · Materials and textures").size(14));
+    if let Some(report) = &state.material_report {
+        summary = summary.push(
+            text(format!(
+                "{} original material slots · {} texture references",
+                report.slots,
+                report.textures.len()
+            )).size(12)
+        );
+        // Consistent, beginner-readable order; never imply a referenced map
+        // was loaded when it exists only as an authored MTL path.
+        for (friendly, roles, explanation) in [
+            ("Color", &["diffuse"][..], "Surface color and patterns"),
+            ("Normal", &["normal", "normals", "bumpmap"][..], "Fine surface detail"),
+            ("Specular", &["specular", "specularcolor"][..], "Reflected-light color"),
+            ("Gloss", &["gloss", "glossiness", "smoothness"][..], "Shininess"),
+            ("Glow", &["glow", "emissive", "emission", "emittance"][..], "Self-lit parts"),
+            ("Transparency", &["opacity"][..], "See-through areas"),
+        ] {
+            let refs: Vec<_> = report.textures.iter()
+                .filter(|r| roles.contains(&r.role.as_str())).collect();
+            if refs.is_empty() {
+                continue;
+            }
+            let found = refs.iter()
+                .filter(|r| matches!(r.resolution, AssetResolution::Found(_))).count();
+            summary = summary.push(
+                text(format!("{friendly}: {found}/{} located — {explanation}", refs.len()))
+                    .size(12)
+                    .color(if found == refs.len() { OK } else { WARN })
+            );
+        }
+        let unresolved = report.textures.iter()
+            .filter(|r| !matches!(r.resolution, AssetResolution::Found(_))).count();
+        if unresolved > 0 {
+            summary = summary.push(
+                text(format!("{unresolved} texture reference(s) still need verification. Some surfaces may look incomplete."))
+                    .size(12).color(WARN)
+            );
+        }
+        if let Some(surfaces) = &state.cdf_surfaces {
+            let textured = surfaces.iter().filter(|s| s.diffuse.is_some()).count();
+            summary = summary.push(
+                text(format!(
+                    "GPU material assignments: {textured}/{} model sections have color maps",
+                    surfaces.len()
+                )).size(12)
+            );
+        } else if report.slots > 1 {
+            summary = summary.push(
+                text("Several material slots exist, but verified mesh-to-material mapping is still needed.")
+                    .size(12).color(WARN)
+            );
+        }
+    } else {
+        summary = summary.push(
+            text("No verified material report. Mesh geometry can load even when its texture files cannot be located.")
+                .size(12).style(design::muted)
+        );
+    }
+
+    summary = summary.push(text("4 · Animation").size(14));
+    summary = summary.push(
+        text(format!("{} animation(s) identified for this character", state.auto_clips.len()))
+            .size(12)
+    );
+    summary = summary.push(
+        text(if state.skin_preview.is_some() || state.cdf_caf_preview.is_some() {
+            "Original skeleton and animation are connected to the model."
+        } else if state.native_caf.is_some() {
+            "Animation file loaded; its bone connection has not been verified."
+        } else {
+            "No animation currently attached to this model."
+        }).size(12).style(design::muted)
+    );
+    summary = summary.push(
+        row![
+            design::button("Animation Browser")
+                .on_press(Message::ViewerSidebarAnimations(true)),
+            design::button("Dependency Graph")
+                .on_press(Message::StartDependencyInspection),
+        ].spacing(6)
+    );
+    if !state.auto_resource_note.is_empty() {
+        summary = summary.push(text("5 · Diagnostic details").size(14));
+        summary = summary.push(
+            text(state.auto_resource_note.as_str()).size(11).style(design::muted)
+        );
+    }
+    scrollable(
+        container(summary).padding(12).width(Fill)
+    ).height(Fill).width(Fill).into()
+}
+
+/// Dock the actual authored-reference graph next to Files, with unresolved
+/// links first. Label order is deterministic, independent of archive order.
+pub(super) fn sidebar_dependencies(state: &State) -> Element<'_, Message> {
+    let mut content = column![
+        text("DEPENDENCY GRAPH").size(16),
+        text("Shows files explicitly referenced by the selected CDF or material. Green means found; amber means multiple matches; red means missing.")
+            .size(11).style(design::muted),
+        design::button("Check selected asset")
+            .on_press(Message::StartDependencyInspection),
+    ].spacing(9);
+    if let Some(graph) = &state.dependency_graph {
+        content = content.push(
+            text(format!(
+                "{} file links · {} missing · {} ambiguous",
+                graph.edges.len(), graph.missing, graph.ambiguous
+            )).size(12).color(if graph.missing + graph.ambiguous == 0 { OK } else { WARN })
+        );
+        content = content.push(canvas_widget(DependencyCanvas {
+            graph: Arc::new(graph.clone())
+        }).height(Length::Fixed(200.0)).width(Fill));
+        content = content.push(text("Referenced files (problems first)").size(14));
+        let mut links: Vec<_> = graph.edges.iter().filter_map(|edge| {
+            graph.nodes.get(edge.to).map(|node| (
+                dependency_order(&node.status),
+                edge.label.clone(),
+                node.label.clone(),
+                friendly_dependency_status(&node.status),
+                mark(&node.status),
+            ))
+        }).collect();
+        links.sort_by(|a,b| (a.0, a.2.to_ascii_lowercase(), a.1.to_ascii_lowercase())
+            .cmp(&(b.0, b.2.to_ascii_lowercase(), b.1.to_ascii_lowercase())));
+        for (_, relation, target, status, color) in links.iter().take(120) {
+            content = content.push(
+                column![
+                    row![
+                        text(*status).size(12).color(*color),
+                        text(relation.as_str()).size(11).style(design::muted)
+                    ].spacing(8),
+                    text(target.as_str()).size(12),
+                ].spacing(3)
+            );
+        }
+        if links.len() > 120 {
+            content = content.push(
+                text(format!("Showing 120 of {} links.", links.len()))
+                    .size(11).style(design::muted)
+            );
+        }
+    } else {
+        content = content.push(
+            text("Choose a CDF or MTL in Files, then use Check selected asset to find linked files.")
+                .size(12).style(design::muted)
+        );
+    }
+    scrollable(container(content).padding(12).width(Fill))
+        .height(Fill).width(Fill).into()
+}
+
+fn friendly_dependency_status(status: &DependencyStatus) -> &'static str {
+    match status {
+        DependencyStatus::Missing => "Missing",
+        DependencyStatus::Ambiguous => "Multiple matches",
+        DependencyStatus::Resolved => "Found",
+        DependencyStatus::Source => "Starting file",
+    }
+}
+fn dependency_order(status: &DependencyStatus) -> u8 {
+    match status {
+        DependencyStatus::Missing => 0,
+        DependencyStatus::Ambiguous => 1,
+        DependencyStatus::Resolved => 2,
+        DependencyStatus::Source => 3,
+    }
+}
+
+#[cfg(test)]
+mod dock_tests {
+    use super::*;
+
+    #[test]
+    fn beginner_dependency_labels_and_problem_order_are_stable() {
+        assert_eq!(dependency_order(&DependencyStatus::Missing), 0);
+        assert!(dependency_order(&DependencyStatus::Ambiguous) < dependency_order(&DependencyStatus::Resolved));
+        assert_eq!(friendly_dependency_status(&DependencyStatus::Ambiguous), "Multiple matches");
+        assert_eq!(friendly_dependency_status(&DependencyStatus::Resolved), "Found");
+    }
+}
+
 fn tab_button(
     label: &'static str,
     tab: ViewerTab,
