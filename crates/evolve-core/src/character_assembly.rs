@@ -80,7 +80,7 @@ pub fn select_attachments(
             .filter(|name| !name.starts_with("hiddenwhen"))
             .collect::<Vec<_>>();
         if actual_variants.len() == 1 {
-            Some(actual_variants[0].clone())
+            Some((*actual_variants[0]).clone())
         } else {
             None
         }
