@@ -31,7 +31,9 @@ pub fn public_key(stage: &Path) -> Result<PathBuf, String> {
 /// CustomSigning stage. Never substitute a custom signing key when an original
 /// game PAK has not been cryptographically verified.
 pub fn original_public_key(stage: &Path) -> Result<PathBuf, String> {
-    let parent = stage.parent().ok_or("Configured signing stage has no parent directory")?;
+    let parent = stage
+        .parent()
+        .ok_or("Configured signing stage has no parent directory")?;
     let key = parent.join("RSAKeyData.bin");
     if !fs::symlink_metadata(&key).is_ok_and(|m| m.file_type().is_file() && m.len() == 140) {
         return Err(format!(
@@ -71,7 +73,11 @@ pub fn signing_keys(stage: &Path) -> Result<KeyContext, String> {
             private.display()
         ));
     }
-    Ok(KeyContext { original_public, public, private })
+    Ok(KeyContext {
+        original_public,
+        public,
+        private,
+    })
 }
 
 /// Signed CryPAK basename is the actual file name; never a user-entered guess.
@@ -132,7 +138,10 @@ mod tests {
         assert!(public_key(&stage).is_ok());
         assert!(signing_keys(&stage).is_err());
         fs::write(keys.join("private_key.pem"), b"test-key").unwrap();
-        assert!(signing_keys(&stage).is_err(), "original RSA key cannot default to custom");
+        assert!(
+            signing_keys(&stage).is_err(),
+            "original RSA key cannot default to custom"
+        );
         fs::write(root.path().join("RSAKeyData.bin"), [0u8; 140]).unwrap();
         assert!(signing_keys(&stage).is_ok());
         fs::create_dir(stage.join("paks")).unwrap();
