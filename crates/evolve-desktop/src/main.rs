@@ -240,6 +240,7 @@ struct State {
     viewer_collapsed: HashSet<String>,
     viewer_menu: Option<&'static str>,
     viewer_explorer_visible: bool,
+    viewer_sidebar_animations: bool,
     viewer_from_library: bool,
     developer_password: String,
     developer_status: String,
@@ -1148,6 +1149,9 @@ enum Message {
     LibraryPreviousPage,
     LibraryNextPage,
     OpenViewer,
+    OpenViewerPreferences,
+    ViewerSidebarAnimations(bool),
+    ViewerSplitDrag(f32),
     OpenInspectorWindow,
     InspectorOpened,
     ViewerOpened,
@@ -2363,6 +2367,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::OpenViewer
         | Message::OpenInspectorWindow
+        | Message::OpenViewerPreferences
         | Message::InspectorOpened
         | Message::ViewerOpened
         | Message::ActivityOpened
@@ -2427,6 +2432,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ViewerToggleExplorer => {
             state.viewer_explorer_visible = !state.viewer_explorer_visible;
+        }
+        Message::ViewerSidebarAnimations(value) => {
+            state.viewer_sidebar_animations = value;
+            state.viewer_explorer_visible = true;
+            state.viewer_menu = None;
+        }
+        Message::ViewerSplitDrag(delta) => {
+            if delta.is_finite() {
+                // Dragging a 12px grip changes the relative file-pane width.
+                state.viewer_split = (state.viewer_split + delta).clamp(0.25, 0.85);
+            }
         }
         Message::ViewerToggleInspector => {
             state.viewer_show_inspector = !state.viewer_show_inspector
@@ -5801,6 +5817,7 @@ struct Desktop {
     main_id: window::Id,
     viewer_id: Option<window::Id>,
     inspector_id: Option<window::Id>,
+    preferences_id: Option<window::Id>,
     activity_id: Option<window::Id>,
 }
 
@@ -5838,6 +5855,7 @@ impl Desktop {
                 main_id,
                 viewer_id: None,
                 inspector_id: None,
+                preferences_id: None,
                 activity_id: None,
             },
             Task::batch([opened.map(|_| Message::ViewerOpened), startup]),
@@ -5855,6 +5873,18 @@ impl Desktop {
         });
         self.viewer_id = Some(id);
         opened.map(|_| Message::ViewerOpened)
+    }
+
+    fn open_viewer_preferences(&mut self) -> Task<Message> {
+        if self.preferences_id.is_some() {
+            return Task::none();
+        }
+        let (id, opened) = window::open(window::Settings {
+            size: iced::Size::new(700.0, 530.0),
+            ..window::Settings::default()
+        });
+        self.preferences_id = Some(id);
+        opened.map(|_| Message::InspectorOpened)
     }
 
     fn open_activity(&mut self) -> Task<Message> {
@@ -5886,6 +5916,7 @@ impl Desktop {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::OpenViewer => self.open_viewer(),
+            Message::OpenViewerPreferences => self.open_viewer_preferences(),
             Message::OpenInspectorWindow => self.open_inspector(),
             Message::ToggleActivity => self.open_activity(),
             Message::ActivityOpened => Task::none(),
@@ -5922,6 +5953,9 @@ impl Desktop {
                     }
                     if self.inspector_id == Some(id) {
                         self.inspector_id = None;
+                    }
+                    if self.preferences_id == Some(id) {
+                        self.preferences_id = None;
                     }
                     if self.activity_id == Some(id) {
                         self.activity_id = None;
@@ -5981,6 +6015,8 @@ impl Desktop {
             activity_window::view(&self.state)
         } else if self.viewer_id == Some(id) {
             asset_viewer::view(&self.state)
+        } else if self.preferences_id == Some(id) {
+            asset_viewer::preferences_view(&self.state)
         } else if self.inspector_id == Some(id) {
             container(viewer_inspector::view(&self.state))
                 .padding(12)
@@ -5997,6 +6033,8 @@ impl Desktop {
     fn title(&self, id: window::Id) -> String {
         if self.activity_id == Some(id) {
             "Activity | Evolve Mod Manager".into()
+        } else if self.preferences_id == Some(id) {
+            "Evolve Mod Manager — Viewer Preferences".into()
         } else if self.inspector_id == Some(id) {
             "Evolve Mod Manager — Detached Asset Inspector".into()
         } else if self.viewer_id == Some(id) {
@@ -6156,6 +6194,28 @@ mod project_edit_tests {
         );
         assert_eq!(state.viewer_queued_preview, None);
         assert_eq!(state.selected, Some(1));
+    }
+
+    #[test]
+    fn viewer_sidebar_tabs_use_one_shared_explorer_location() {
+        let mut state = State::default();
+        let _ = update(&mut state, Message::ViewerSidebarAnimations(true));
+        assert!(state.viewer_sidebar_animations);
+        assert!(state.viewer_explorer_visible);
+        let _ = update(&mut state, Message::ViewerSidebarAnimations(false));
+        assert!(!state.viewer_sidebar_animations);
+    }
+
+    #[test]
+    fn dragging_explorer_grip_bounds_split_without_sliders() {
+        let mut state = State {
+            viewer_split: 0.67,
+            ..State::default()
+        };
+        let _ = update(&mut state, Message::ViewerSplitDrag(0.10));
+        assert!((state.viewer_split - 0.77).abs() < 0.0001);
+        let _ = update(&mut state, Message::ViewerSplitDrag(-2.0));
+        assert_eq!(state.viewer_split, 0.25);
     }
 
     #[test]
