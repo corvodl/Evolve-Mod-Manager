@@ -29,6 +29,7 @@ pub mod native_offline_launch;
 pub mod policy;
 pub mod profiles;
 pub mod rig;
+pub mod legacy_rig;
 pub mod scene;
 pub mod signed_pak;
 pub mod skin_preview;
@@ -104,6 +105,7 @@ pub use native_offline_launch::{
     audit_native_offline_swap, inspect_native_offline_readiness, plan_native_offline_swap,
 };
 pub use policy::{AnimationPolicy, ExportFeature, FeatureStatus, PARITY_MATRIX};
+pub use legacy_rig::{parse_legacy_skeleton, read_legacy_skin};
 pub use rig::{
     CompiledSkeleton, RigError, RigReport, VerifiedWeights, export_rigged_character_fbx,
     export_rigged_character_fbx_textured, export_rigged_character_fbx_textured_animated,
