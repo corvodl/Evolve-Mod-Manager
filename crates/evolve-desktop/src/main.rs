@@ -4569,25 +4569,24 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.gloss_map = gloss.map(Arc::new);
                     state.material_report = Some(report);
                     state.page = Some(Page::Models);
-                    if automatic_model_material {
-                        if let (Some(inventory), Some(model)) =
+                    if automatic_model_material
+                        && let (Some(inventory), Some(model)) =
                             (state.inventory.clone(), state.render_source.clone())
-                        {
-                            return launch(
-                                state,
-                                Operation::LoadModelSurfaces(
-                                    model,
-                                    material_source,
-                                    inventory,
-                                    state
-                                        .library_catalog
-                                        .as_ref()
-                                        .map(|c| PathBuf::from(&c.root)),
-                                    resource_build(state),
-                                    state.preview_cache.clone(),
-                                ),
-                            );
-                        }
+                    {
+                        return launch(
+                            state,
+                            Operation::LoadModelSurfaces(
+                                model,
+                                material_source,
+                                inventory,
+                                state
+                                    .library_catalog
+                                    .as_ref()
+                                    .map(|c| PathBuf::from(&c.root)),
+                                resource_build(state),
+                                state.preview_cache.clone(),
+                            ),
+                        );
                     }
                     if let Some(idle) = state.auto_idle_pending.take() {
                         state.auto_play_native_caf = true;
