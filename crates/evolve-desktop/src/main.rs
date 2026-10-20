@@ -2632,6 +2632,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             }
             let source = PathBuf::from(&inventory.root).join(&entry.relative_path);
+            // The auto-preview route bypasses ViewerPreviewSelected, so it
+            // must update the active source itself. Otherwise later exports,
+            // resource lookup and the viewer title still point at the
+            // previous character even after this CDF finished loading.
+            let root = std::fs::canonicalize(&inventory.root);
+            let checked = std::fs::canonicalize(&source);
+            if !matches!((root, checked), (Ok(root), Ok(file))
+                if file.starts_with(&root)
+                    && std::fs::symlink_metadata(&source)
+                        .is_ok_and(|meta| meta.file_type().is_file()))
+            {
+                state.status = "CDF source changed or escaped the indexed Asset Library.".into();
+                return Task::none();
+            }
+            state.input = source.to_string_lossy().into_owned();
+            state.texture_preview = None;
             state.status =
                 "Validating exact CDF parts for a static preview (not a rigged export)...".into();
             return launch(state, Operation::BuildStaticCdf(source, inventory.clone()));
