@@ -184,15 +184,28 @@ fn verify_prepared_journal(
         {
             return Err(format!("Prepared source/target path mismatch: {name}"));
         }
-        let ready_name = format!("{}.customkey-ready", target.display());
-        let backup_name = format!("{}.customkey-original", target.display());
-        if record["ready"].as_str() != Some(ready_name.as_str())
-            || record["backup"].as_str() != Some(backup_name.as_str())
+        let ready_text = record["ready"].as_str().ok_or("Prepared ready path missing")?;
+        let backup_text = record["backup"].as_str().ok_or("Prepared backup path missing")?;
+        let ready_path = Path::new(ready_text);
+        let backup_path = Path::new(backup_text);
+        let target_name = target.file_name().and_then(|part| part.to_str())
+            .ok_or("Unsafe original target filename")?;
+        let ready_name = format!("{target_name}.customkey-ready");
+        let backup_name = format!("{target_name}.customkey-original");
+        if !ready_path.file_name().and_then(|n| n.to_str())
+                .is_some_and(|n| n.eq_ignore_ascii_case(&ready_name))
+            || !backup_path.file_name().and_then(|n| n.to_str())
+                .is_some_and(|n| n.eq_ignore_ascii_case(&backup_name))
+            || fs::canonicalize(ready_path.parent().ok_or("Ready path has no parent")?)
+                .map_err(|e| e.to_string())? != target.parent().ok_or("Target has no parent")?
+            || fs::canonicalize(backup_path.parent().ok_or("Backup path has no parent")?)
+                .map_err(|e| e.to_string())? != target.parent().ok_or("Target has no parent")?
+            || fs::symlink_metadata(backup_path).is_ok()
         {
-            return Err(format!("Prepared ready/backup suffix mismatch: {name}"));
+            return Err(format!("Prepared ready/backup location differs from the original target: {name}"));
         }
         no_orphaned_backup(target)?;
-        let ready = plain(Path::new(&ready_name), 16 * 1024 * 1024 * 1024)?;
+        let ready = plain(ready_path, 16 * 1024 * 1024 * 1024)?;
         let size = fs::metadata(&ready).map_err(|e| e.to_string())?.len();
         let digest = sha(&ready)?;
         if record["bytes"].as_u64() != Some(size)
