@@ -67,6 +67,9 @@ fn dropdown(state: &State) -> Option<Element<'_, Message>> {
         "Model" => column![
             design::button("Retry selected preview").on_press(Message::MenuCommand(Box::new(Message::ViewerPreviewSelected))),
             design::button("Inspect CDF").on_press(Message::MenuCommand(Box::new(Message::StartCdfInspection))),
+            design::button("Character equipment").on_press(Message::MenuCommand(Box::new(
+                Message::ViewerSidebarSelect(ViewerSidebarTab::Equipment)
+            ))),
             design::button("Preview CDF assembly (static)").on_press(Message::MenuCommand(Box::new(Message::ViewerPreviewStaticCdf))),
             design::button("Export verified rigged FBX").on_press(Message::MenuCommand(Box::new(Message::StartRigFbx))),
             design::button("Flat CDF parts FBX (experimental)").on_press(Message::MenuCommand(Box::new(Message::ViewerExportFlatCdf))),
@@ -238,6 +241,46 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
     .into()
 }
 
+fn equipment_browser(state: &State) -> Element<'_, Message> {
+    let mut entries = column![
+        text("CHARACTER EQUIPMENT").size(15),
+        text("Preview exact CDF equipment alternatives. Each source mesh, material and authored original stays unchanged.")
+            .size(11).style(design::muted),
+    ].spacing(10);
+    if state.equipment_slots.is_empty() {
+        entries = entries.push(
+            text("Open a character .cdf to load available equipment. Verified interchangeable left/right arms appear separately.")
+                .size(12).style(design::muted)
+        );
+    }
+    for slot in &state.equipment_slots {
+        let current = state.equipment_overrides.get(&slot.name)
+            .map(String::as_str).unwrap_or(&slot.original);
+        entries = entries.push(text(&slot.name).size(13));
+        let mut choices = column![].spacing(3);
+        for choice in &slot.choices {
+            let active = choice.binding.eq_ignore_ascii_case(current);
+            choices = choices.push(
+                design::button(
+                    row![
+                        text(if active { "✓" } else { "○" }).size(13),
+                        text(choice.label.as_str()).size(12).width(Fill),
+                    ].spacing(8)
+                )
+                .width(Fill)
+                .style(if active { design::primary } else { design::text_button })
+                .on_press_maybe((!state.busy && !active).then_some(
+                    Message::ViewerEquip(slot.name.clone(), choice.binding.clone())
+                ))
+            );
+        }
+        entries = entries.push(choices);
+    }
+    panel(
+        container(scrollable(entries).height(Fill)).padding(12)
+    ).width(Fill).height(Fill).into()
+}
+
 fn dock_tab<'a>(
     label: &'static str,
     tab: ViewerSidebarTab,
@@ -251,7 +294,7 @@ fn dock_tab<'a>(
             design::secondary
         })
         .on_press(Message::ViewerSidebarSelect(tab));
-    if tab == ViewerSidebarTab::Files {
+    if matches!(tab, ViewerSidebarTab::Files | ViewerSidebarTab::Equipment) {
         return select.into();
     }
     row![
@@ -272,7 +315,10 @@ fn dock_tab<'a>(
 
 fn browser(state: &State) -> Element<'_, Message> {
     let active = state.viewer_sidebar_active;
-    let mut tabs = row![dock_tab("Files", ViewerSidebarTab::Files, active)].spacing(4);
+    let mut tabs = row![
+        dock_tab("Files", ViewerSidebarTab::Files, active),
+        dock_tab("Equipment", ViewerSidebarTab::Equipment, active),
+    ].spacing(4);
     if state.viewer_sidebar_animations {
         tabs = tabs.push(dock_tab("Animations", ViewerSidebarTab::Animations, active));
     }
@@ -288,6 +334,7 @@ fn browser(state: &State) -> Element<'_, Message> {
     }
     let content = match active {
         ViewerSidebarTab::Files => explorer(state),
+        ViewerSidebarTab::Equipment => equipment_browser(state),
         ViewerSidebarTab::Animations if state.viewer_sidebar_animations => animation_browser(state),
         ViewerSidebarTab::Inspector if state.viewer_show_inspector => {
             viewer_inspector::sidebar_inspector(state)
