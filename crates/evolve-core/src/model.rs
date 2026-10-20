@@ -491,24 +491,25 @@ pub fn original_mesh_subsets(
     // Historical CryTek 0x745 sections carry their own kind/version/offset/id
     // header, then flags and count at +16/+20 and 36-byte subset records
     // starting at +32. CrChF v7 has a different 16-byte table layout.
+    let swapped = legacy && u32at(data, *offset + 4)? == 0x80000800;
     let (count, row_offset) = if legacy {
         if *size < 68
             || u32at(data, *offset)? != subset_kind
-            || u32at(data, *offset + 4)? != 0x800
+            || !matches!(u32at(data, *offset + 4)?, 0x800 | 0x80000800)
             || u32at(data, *offset + 8)? as usize != *offset
         {
             return Err(ModelError::Format(
                 "unsupported historical CryTek subset header".into(),
             ));
         }
-        let flags = u32at(data, *offset + 16)?;
+        let flags = endian_u32(data, *offset + 16, swapped)?;
         if !matches!(flags, 0 | 2)
-            || u32at(data, *offset + 24)? != 0
-            || u32at(data, *offset + 28)? != 0
+            || endian_u32(data, *offset + 24, swapped)? != 0
+            || endian_u32(data, *offset + 28, swapped)? != 0
         {
             return Err(ModelError::Format("unknown historical subset flags".into()));
         }
-        (u32at(data, *offset + 20)? as usize, 32usize)
+        (endian_u32(data, *offset + 20, swapped)? as usize, 32usize)
     } else {
         if *size < 16 {
             return Err(ModelError::Format("truncated CrChF subset table".into()));
@@ -527,9 +528,9 @@ pub fn original_mesh_subsets(
     let mut cursor = 0usize;
     for row in 0..count {
         let at = *offset + row_offset + row * 36;
-        let first = u32at(data, at)? as usize;
-        let n = u32at(data, at + 4)? as usize;
-        let material = u32at(data, at + 16)?;
+        let first = endian_u32(data, at, swapped)? as usize;
+        let n = endian_u32(data, at + 4, swapped)? as usize;
+        let material = endian_u32(data, at + 16, swapped)?;
         if first != cursor
             || n == 0
             || !first.is_multiple_of(3)
@@ -542,8 +543,8 @@ pub fn original_mesh_subsets(
             ));
         }
         if legacy {
-            let first_vertex = u32at(data, at + 8)? as usize;
-            let vertex_count = u32at(data, at + 12)? as usize;
+            let first_vertex = endian_u32(data, at + 8, swapped)? as usize;
+            let vertex_count = endian_u32(data, at + 12, swapped)? as usize;
             let nv = legacy_vertex_count.unwrap_or_default();
             if first_vertex
                 .checked_add(vertex_count)
