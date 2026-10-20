@@ -265,20 +265,55 @@ fn decode_preview_image(path: &Path, layout: DdsLayout) -> Result<(DdsInfo, Rgba
         total.checked_add(surface_size(w, h).ok()?)
     }).ok_or("DDS cubemap size overflow")?;
     let source_bytes = bytes.len() - 128;
-    if source_bytes != full_face_size * 6 {
+    let is_staged = path.file_name().is_some_and(|n| n.to_string_lossy() == "preview.dds.0");
+    let mut top_mip = None;
+    if is_staged {
+        let parent = path.parent().ok_or("Missing staging folder")?;
+        let numbered = (1..20usize)
+            .filter_map(|i| {
+                let candidate = parent.join(format!("preview.dds.{i}"));
+                candidate.is_file().then_some((i, candidate))
+            })
+            .collect::<Vec<_>>();
+        if !numbered.is_empty() {
+            let mip_sizes = (0..mips)
+                .map(|level| surface_size((width >> level).max(1), (height >> level).max(1)))
+                .collect::<Result<Vec<_>, _>>()?;
+            let tail_count = (1..mips as usize)
+                .find(|n| mip_sizes[mip_sizes.len() - n..].iter().sum::<usize>() * 6 == source_bytes)
+                .ok_or("Cubemap low-mip DDS.0 has an invalid tail size")?;
+            let required = mips as usize - tail_count;
+            if numbered.len() != required
+                || numbered.iter().enumerate().any(|(i, (n, _))| *n != i + 1)
+            {
+                return Err("Cubemap high/low mip set is incomplete or not contiguous".into());
+            }
+            for (n, file) in &numbered {
+                let size = fs::metadata(file).map_err(|e| e.to_string())?.len();
+                if size != mip_sizes[mips as usize - tail_count - n] as u64 * 6 {
+                    return Err(format!("Cubemap fragment .{n} has an incorrect mip length"));
+                }
+            }
+            let high = fs::read(&numbered.last().ok_or("Missing cubemap top mip")?.1)
+                .map_err(|e| e.to_string())?;
+            if high.len() != top_size * 6 {
+                return Err("Cubemap high mip does not contain exactly six faces".into());
+            }
+            top_mip = Some(high);
+        }
+    }
+    if top_mip.is_none() && source_bytes != full_face_size * 6 {
         return Err("Incomplete six-face cubemap mip set".into());
     }
-    // Complete local .dds.0 is face-major. Split .dds.N files are staged
-    // in descending mip order and each top fragment contains six faces.
-    let split = path.file_name().is_some_and(|n| n.to_string_lossy() == "preview.dds.0");
-    let face_stride = if split { top_size } else { full_face_size };
+    let face_stride = if top_mip.is_some() { top_size } else { full_face_size };
+    let source = top_mip.as_deref().unwrap_or(&bytes[128..]);
     let mut atlas = RgbaImage::new(width * 3, height * 2);
     let folder = tempfile::tempdir().map_err(|e| e.to_string())?;
     let mut info = None;
     for face in 0..6usize {
-        let start = 128 + face * face_stride;
+        let start = face * face_stride;
         let end = start.checked_add(top_size).ok_or("Cubemap face size overflow")?;
-        let pixels = bytes.get(start..end)
+        let pixels = source.get(start..end)
             .ok_or("Cubemap face extends past original texture")?;
         let mut header = bytes[..128].to_vec();
         let flags = value(8) & !0x20000;
