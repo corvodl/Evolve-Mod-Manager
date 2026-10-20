@@ -1349,7 +1349,8 @@ fn bind_current_native_caf(state: &mut State) -> Option<Task<Message>> {
     {
         return None;
     }
-    let compiled = preferred_render_source(&source);
+    let compiled = state.render_source.clone()
+        .unwrap_or_else(|| preferred_render_source(&source));
     let skeleton = PathBuf::from(&state.skeleton_path);
     let clip = (**motion).clone();
     Some(launch(
@@ -4469,7 +4470,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                 }
                 Ok(Completed::BoundCafPreview(source, skin)) => {
-                    let expected = preferred_render_source(Path::new(&state.input));
+                    let expected = state.render_source.clone()
+                        .unwrap_or_else(|| preferred_render_source(Path::new(&state.input)));
                     if state.viewer_queued_preview.is_none()
                         && expected == source
                         && state.native_caf.is_some()
