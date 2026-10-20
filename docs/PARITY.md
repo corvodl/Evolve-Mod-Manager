@@ -364,6 +364,39 @@ evolve-cli hook pak-preflight original.pak new-folder/original.pak bin64_SteamRe
   the game mounted the PAKs. Actual Windows Stage 2 launch, restore-watchdog
   recovery, and an offline game-session test remain required before release.
 
+## Signed Stage 2 PAK / offline launcher handoff parity — PR #5
+
+- Re-signing and 1–64-member authenticated rebuilding already use locally
+  configured original/custom RSA keys, regenerate the encrypted CryPAK
+  trailer/directory as needed, and verify the new signature and all edited
+  payloads *before* publishing a new archive. Synthetic Twofish/RSA golden
+  tests cover a new signature, unchanged original encrypted payload and
+  offset preservation, mismatched hook key rejection and source immutability.
+- Original `inject.dll` is not modified by the manager. The separate
+  `inject-custom.dll` is constrained to the known 140-byte public-key slot;
+  the preflight derives both hook locations from the configured existing
+  signing stage, validates original and custom signatures, and rejects
+  mismatched archive member sets.
+- Compared with the private offline launcher, the bridge now validates the
+  **ordered**, version-1 `prepared` swap ledger (not only name membership),
+  blocks signing/game/helper directories nested inside the live install, and
+  checks that ready copies match staged files by SHA-256 with no orphaned
+  original backup.
+- Before starting the user's existing launcher, the bridge checks for x64
+  Python 3.11 and Frida and waits for a fresh
+  `Automatic CreateProcessW hook ready at ...` acknowledgement. It stops
+  the unready helper on startup errors or timeout rather than reporting a
+  successful swap from `Popen` alone. Only the private helper performs
+  the *paused*, reversible same-volume rename; a separate watchdog restores
+  original PAKs and the original shim after both game processes close.
+- **Not yet complete:** the public Rust application still delegates the
+  actual paused swap/restore to the user's installed, existing private
+  Python/Frida helper scripts, and real Stage 2 runtime mount, crash recovery,
+  helper startup and restore must be verified on an actual Windows game
+  installation before publication. Signed preflight and hook-ready are
+  necessary but not evidence that the game consumed the modified assets.
+  No keys or injection DLLs are bundled in the public source.
+
 ## Integrated Asset Viewer preview — PR #5
 
 - PR #5 combines complete development histories from PR #3 and PR #4
