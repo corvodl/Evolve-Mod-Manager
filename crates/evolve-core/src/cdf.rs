@@ -439,31 +439,51 @@ mod tests {
             kind: crate::inventory::AssetKind::Mesh,
         };
         let mut inventory = Inventory {
-            schema: 1, root: "synthetic".into(), total_bytes: 2, skipped_symlinks: 0,
+            schema: 1,
+            root: "synthetic".into(),
+            total_bytes: 2,
+            skipped_symlinks: 0,
             entries: vec![
                 entry("characters/monsters/Rocky/rocky3_body.chr"),
                 entry("characters/monsters/Rocky/rocky3_larm.chr"),
             ],
         };
         assert_eq!(
-            resolve_virtual(&inventory, "objects/characters/monsters/rocky/rocky3_body.chr"),
+            resolve_virtual(
+                &inventory,
+                "objects/characters/monsters/rocky/rocky3_body.chr"
+            ),
             AssetResolution::Found("characters/monsters/Rocky/rocky3_body.chr".into()),
         );
         // Do not steal a material from another character merely because the
         // filename/stem matches, and never suppress ambiguous exact assets.
         assert_eq!(
-            resolve_virtual(&inventory, "objects/characters/monsters/whipspider/rocky3_body.chr"),
+            resolve_virtual(
+                &inventory,
+                "objects/characters/monsters/whipspider/rocky3_body.chr"
+            ),
             AssetResolution::Missing,
         );
-        inventory.entries.push(entry("build_b/characters/monsters/rocky/rocky3_body.chr"));
+        inventory
+            .entries
+            .push(entry("build_b/characters/monsters/rocky/rocky3_body.chr"));
         assert!(matches!(
-            resolve_virtual(&inventory, "objects/characters/monsters/rocky/rocky3_body.chr"),
+            resolve_virtual(
+                &inventory,
+                "objects/characters/monsters/rocky/rocky3_body.chr"
+            ),
             AssetResolution::Ambiguous(_)
         ));
         // An authoritative Objects/ record takes precedence when present.
-        inventory.entries.insert(0, entry("objects/characters/monsters/rocky/rocky3_body.chr"));
+        inventory.entries.insert(
+            0,
+            entry("objects/characters/monsters/rocky/rocky3_body.chr"),
+        );
         assert_eq!(
-            resolve_virtual(&inventory, "objects/characters/monsters/rocky/rocky3_body.chr"),
+            resolve_virtual(
+                &inventory,
+                "objects/characters/monsters/rocky/rocky3_body.chr"
+            ),
             AssetResolution::Found("objects/characters/monsters/rocky/rocky3_body.chr".into()),
         );
     }
