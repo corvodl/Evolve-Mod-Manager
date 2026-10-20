@@ -51,7 +51,9 @@ fn sha(path: &Path) -> Result<String, String> {
     let mut chunk = [0u8; 128 * 1024];
     loop {
         let n = stream.read(&mut chunk).map_err(|e| e.to_string())?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         hash.update(&chunk[..n]);
     }
     Ok(format!("{:x}", hash.finalize()))
@@ -62,7 +64,9 @@ fn safe_pak_name(raw: &str) -> Result<&str, String> {
         || raw.starts_with('/')
         || raw.starts_with('\\')
         || raw.contains(':')
-        || raw.split(['/', '\\']).any(|part| part.is_empty() || part == "." || part == "..")
+        || raw
+            .split(['/', '\\'])
+            .any(|part| part.is_empty() || part == "." || part == "..")
     {
         return Err(format!("Unsafe signed Stage 2 PAK path: {raw}"));
     }
@@ -93,17 +97,26 @@ fn no_orphaned_backup(target: &Path) -> Result<(), String> {
     }
     Ok(())
 }
-fn verify_hook(original: &Path, patched: &Path, old_key: &[u8], new_key: &[u8]) -> Result<(), String> {
+fn verify_hook(
+    original: &Path,
+    patched: &Path,
+    old_key: &[u8],
+    new_key: &[u8],
+) -> Result<(), String> {
     let a = fs::read(original).map_err(|e| e.to_string())?;
     let b = fs::read(patched).map_err(|e| e.to_string())?;
-    if a.len() != HOOK_BYTES || b.len() != HOOK_BYTES
-        || old_key.len() != KEY_BYTES || new_key.len() != KEY_BYTES
+    if a.len() != HOOK_BYTES
+        || b.len() != HOOK_BYTES
+        || old_key.len() != KEY_BYTES
+        || new_key.len() != KEY_BYTES
         || a[KEY_START..KEY_START + KEY_BYTES] != *old_key
         || b[KEY_START..KEY_START + KEY_BYTES] != *new_key
         || a[..KEY_START] != b[..KEY_START]
         || a[KEY_START + KEY_BYTES..] != b[KEY_START + KEY_BYTES..]
     {
-        return Err("Original/custom client hook mismatch outside the exact RSA public-key region".into());
+        return Err(
+            "Original/custom client hook mismatch outside the exact RSA public-key region".into(),
+        );
     }
     Ok(())
 }
@@ -117,9 +130,12 @@ fn games_closed() -> Result<(), String> {
         return Err("Unable to verify Evolve and private launcher processes are closed".into());
     }
     let value = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
-    if value.lines().any(|row| row.starts_with("\"evolve.exe\",")
-        || row.starts_with("\"moddedevolvelauncher.exe\",")) {
-        return Err("Evolve.exe and ModdedEvolveLauncher.exe must both be closed before preparation".into());
+    if value.lines().any(|row| {
+        row.starts_with("\"evolve.exe\",") || row.starts_with("\"moddedevolvelauncher.exe\",")
+    }) {
+        return Err(
+            "Evolve.exe and ModdedEvolveLauncher.exe must both be closed before preparation".into(),
+        );
     }
     Ok(())
 }
@@ -150,18 +166,30 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
         || plan["blocked"].as_bool() == Some(true)
         || stage.join("REFRESHED-TO.json").exists()
     {
-        return Err("Private signing stage is blocked, superseded or not fully staged offline".into());
+        return Err(
+            "Private signing stage is blocked, superseded or not fully staged offline".into(),
+        );
     }
-    let game_str = plan["source_root"].as_str().ok_or("Missing exact original game root in rekey_plan.json")?;
+    let game_str = plan["source_root"]
+        .as_str()
+        .ok_or("Missing exact original game root in rekey_plan.json")?;
     let game = directory(Path::new(game_str))?;
     let steam = directory(&game.join("bin64_SteamRetail"))?;
     plain(&steam.join("Evolve.exe"), 1024 * 1024 * 1024)?;
     // The private controller, not the public Rust manager, installs the
     // optional temporary DLL and original-key signed PAKs into this root.
-    let old_key = plain(&stage.parent().ok_or("Stage missing signing parent")?.join("RSAKeyData.bin"), 140)?;
+    let old_key = plain(
+        &stage
+            .parent()
+            .ok_or("Stage missing signing parent")?
+            .join("RSAKeyData.bin"),
+        140,
+    )?;
     let new_key = plain(&stage.join("mykeys/public_key.bin"), 140)?;
-    if old_key == new_key || fs::read(&old_key).map_err(|e| e.to_string())? ==
-        fs::read(&new_key).map_err(|e| e.to_string())? {
+    if old_key == new_key
+        || fs::read(&old_key).map_err(|e| e.to_string())?
+            == fs::read(&new_key).map_err(|e| e.to_string())?
+    {
         return Err("Original and custom client public keys must be different".into());
     }
     let custom = within_file(&stage, "inject-custom.dll")?;
@@ -170,18 +198,31 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
     let original_key_bytes = fs::read(&old_key).map_err(|e| e.to_string())?;
     let custom_key_bytes = fs::read(&new_key).map_err(|e| e.to_string())?;
     verify_hook(&original, &custom, &original_key_bytes, &custom_key_bytes)?;
-    let expected_shim = status["shim_sha256"].as_str().ok_or("Missing staged injector digest")?;
+    let expected_shim = status["shim_sha256"]
+        .as_str()
+        .ok_or("Missing staged injector digest")?;
     if sha(&custom)? != expected_shim.to_ascii_lowercase() {
         return Err("Staged custom injector does not match stage_status.json".into());
     }
-    for name in ["controlled_swap.py", "auto_launch_frida.py", "auto_restore_watch.py", "reusable_restore.py"] {
+    for name in [
+        "controlled_swap.py",
+        "auto_launch_frida.py",
+        "auto_restore_watch.py",
+        "reusable_restore.py",
+    ] {
         helper(&swap, name)?;
     }
-    let entries = plan["entries"].as_array().ok_or("No PAK rekey plan entries")?;
-    let signed = entries.iter().filter(|e| e["kind"].as_str() == Some("signed-encrypted"))
+    let entries = plan["entries"]
+        .as_array()
+        .ok_or("No PAK rekey plan entries")?;
+    let signed = entries
+        .iter()
+        .filter(|e| e["kind"].as_str() == Some("signed-encrypted"))
         .collect::<Vec<_>>();
-    if signed.is_empty() || signed.len() > MAX_ARCHIVES
-        || status["count"].as_u64() != Some(signed.len() as u64) {
+    if signed.is_empty()
+        || signed.len() > MAX_ARCHIVES
+        || status["count"].as_u64() != Some(signed.len() as u64)
+    {
         return Err("Staged signed archive count mismatches signed rekey plan".into());
     }
     let mut seen = std::collections::HashSet::new();
@@ -193,12 +234,20 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
         let original_pak = within_file(&game, path)?;
         let custom_pak = within_file(&stage.join("paks"), path)?;
         no_orphaned_backup(&original_pak)?;
-        let basename = Path::new(path).file_name().and_then(|x| x.to_str())
+        let basename = Path::new(path)
+            .file_name()
+            .and_then(|x| x.to_str())
             .ok_or("Invalid PAK basename")?;
         let report = inspect_pak_hook_pair(
-            &original_pak, &custom_pak, &original, &custom,
-            &old_key, &new_key, basename,
-        ).map_err(|e| format!("PAK/hook mismatch for {path}: {e}"))?;
+            &original_pak,
+            &custom_pak,
+            &original,
+            &custom,
+            &old_key,
+            &new_key,
+            basename,
+        )
+        .map_err(|e| format!("PAK/hook mismatch for {path}: {e}"))?;
         if !report.archive_member_paths_match || report.signed_original_entries == 0 {
             return Err(format!("Signed source member mismatch for {path}"));
         }
@@ -214,15 +263,26 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
                     || prior["stage"].as_str() != stage.to_str()
                     || prior["count"].as_u64() != Some((seen.len() + 1) as u64)
                 {
-                    return Err("Prepared swap belongs to another game/stage; restore or reset it".into());
+                    return Err(
+                        "Prepared swap belongs to another game/stage; restore or reset it".into(),
+                    );
                 }
                 prepared = true;
             }
-            _ => return Err("Existing launcher swap is active, interrupted or unsafe: restore originals first".into()),
+            _ => return Err(
+                "Existing launcher swap is active, interrupted or unsafe: restore originals first"
+                    .into(),
+            ),
         }
     }
     games_closed()?;
-    Ok(LaunchReady { stage, swap, game, archive_count: seen.len(), prepared })
+    Ok(LaunchReady {
+        stage,
+        swap,
+        game,
+        archive_count: seen.len(),
+        prepared,
+    })
 }
 
 /// Reuse the private launcher's already-tested control flow. It performs
@@ -241,12 +301,17 @@ pub fn launch_existing_offline_client(plan: &LaunchReady) -> Result<u32, String>
             .args(["-3.11", "-u"])
             .arg(helper_dir.join("controlled_swap.py"))
             .arg("prepare")
-            .arg("--stage-dir").arg(&plan.stage)
-            .arg("--game-root").arg(&plan.game)
+            .arg("--stage-dir")
+            .arg(&plan.stage)
+            .arg("--game-root")
+            .arg(&plan.game)
             .creation_flags(0x08000000)
-            .status().map_err(|e| format!("Python 3.11 launcher preparation unavailable: {e}"))?;
+            .status()
+            .map_err(|e| format!("Python 3.11 launcher preparation unavailable: {e}"))?;
         if !status.success() {
-            return Err(format!("Private controlled_swap.py prepare failed: {status}"));
+            return Err(format!(
+                "Private controlled_swap.py prepare failed: {status}"
+            ));
         }
     }
     // The prepared journal is now mandatory, but the game can only be shown
@@ -255,18 +320,22 @@ pub fn launch_existing_offline_client(plan: &LaunchReady) -> Result<u32, String>
     if !refreshed.prepared {
         return Err("Private swap helper did not publish a verified prepared journal".into());
     }
-    let log = OpenOptions::new().create(true).append(true)
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
         .open(helper_dir.join("rust-launch-bridge.log"))
         .map_err(|e| e.to_string())?;
     let stderr = log.try_clone().map_err(|e| e.to_string())?;
     let child = Command::new("py")
-        .args(["-3.11", "-u"]).arg(helper_dir.join("auto_launch_frida.py"))
+        .args(["-3.11", "-u"])
+        .arg(helper_dir.join("auto_launch_frida.py"))
         .current_dir(helper_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(stderr))
         .creation_flags(0x00000008 | 0x00000200 | 0x08000000) // detached/new process group/no window
-        .spawn().map_err(|e| format!("Could not start private offline launcher helper: {e}"))?;
+        .spawn()
+        .map_err(|e| format!("Could not start private offline launcher helper: {e}"))?;
     Ok(child.id())
 }
 #[cfg(not(windows))]
@@ -314,9 +383,9 @@ mod tests {
         let key_a = vec![0x21u8; 140];
         let key_b = vec![0x32u8; 140];
         let mut source = vec![0x55u8; HOOK_BYTES];
-        source[KEY_START..KEY_START+KEY_BYTES].copy_from_slice(&key_a);
+        source[KEY_START..KEY_START + KEY_BYTES].copy_from_slice(&key_a);
         fs::write(&old, &source).unwrap();
-        source[KEY_START..KEY_START+KEY_BYTES].copy_from_slice(&key_b);
+        source[KEY_START..KEY_START + KEY_BYTES].copy_from_slice(&key_b);
         fs::write(&custom, &source).unwrap();
         assert!(verify_hook(&old, &custom, &key_a, &key_b).is_ok());
         source[3] ^= 0xFF;
