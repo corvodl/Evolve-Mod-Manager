@@ -394,17 +394,27 @@ mod tests {
     fn render_companion_never_falls_back_to_neighboring_character() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("characters")).unwrap();
-        std::fs::write(dir.path().join("characters/hunter.skin"), b"source skeleton").unwrap();
+        std::fs::write(
+            dir.path().join("characters/hunter.skin"),
+            b"source skeleton",
+        )
+        .unwrap();
         std::fs::write(dir.path().join("characters/monster.skinm"), b"wrong mesh").unwrap();
         let inventory = scan_directory(dir.path()).unwrap();
-        assert!(exact_render_companion(
-            "characters/hunter.skin", &inventory, None, None
-        ).unwrap().is_none());
-        std::fs::write(dir.path().join("characters/hunter.skinm"), b"same virtual source").unwrap();
+        assert!(
+            exact_render_companion("characters/hunter.skin", &inventory, None, None)
+                .unwrap()
+                .is_none()
+        );
+        std::fs::write(
+            dir.path().join("characters/hunter.skinm"),
+            b"same virtual source",
+        )
+        .unwrap();
         let inventory = scan_directory(dir.path()).unwrap();
-        let chosen = exact_render_companion(
-            "characters/hunter.skin", &inventory, None, None
-        ).unwrap().unwrap();
+        let chosen = exact_render_companion("characters/hunter.skin", &inventory, None, None)
+            .unwrap()
+            .unwrap();
         assert_eq!(chosen.file_name().unwrap(), "hunter.skinm");
     }
 
