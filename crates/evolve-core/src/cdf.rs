@@ -33,6 +33,7 @@ pub enum CdfError {
 pub enum AttachmentKind {
     Skin,
     UniqueSkin,
+    Bone,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +41,18 @@ pub struct CdfAttachment {
     pub name: String,
     pub binding: String,
     pub kind: AttachmentKind,
+    /// The authored socket for a CA_BONE attachment, never inferred by name.
+    #[serde(default)]
+    pub bone_name: Option<String>,
+    /// An explicit CDF per-attachment material override.
+    #[serde(default)]
+    pub material: Option<String>,
+    /// CryEngine's authored relative attachment position (default origin).
+    #[serde(default)]
+    pub position: Option<[f32; 3]>,
+    /// Source quaternion in CryEngine WXYZ order, if explicitly present.
+    #[serde(default)]
+    pub rotation: Option<[f32; 4]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +95,18 @@ fn normalize(raw: &str) -> Result<String, CdfError> {
     safe_member_name(raw).map_err(|_| CdfError::UnsafePath(raw.into()))
 }
 
+fn numeric_components<const N: usize>(input: &str) -> Result<[f32; N], CdfError> {
+    let values = input
+        .split([',', ';', ' ', '\\t'])
+        .filter(|part| !part.is_empty())
+        .map(|part| part.parse::<f32>().map_err(|_| CdfError::Xml("invalid attachment transform".into())))
+        .collect::<Result<Vec<_>, _>>()?;
+    if values.len() != N || values.iter().any(|v| !v.is_finite() || v.abs() > 1e6) {
+        return Err(CdfError::Xml("invalid attachment transform dimensions".into()));
+    }
+    Ok(std::array::from_fn(|i| values[i]))
+}
+
 fn handle_element(
     element: &BytesStart<'_>,
     parents: &[Vec<u8>],
@@ -106,6 +131,7 @@ fn handle_element(
         let kind = match ty.to_ascii_lowercase().as_str() {
             "ca_skin" => AttachmentKind::Skin,
             "ca_skin_unique" => AttachmentKind::UniqueSkin,
+            "ca_bone" => AttachmentKind::Bone,
             _ => return Ok(()),
         };
         let Some(binding) = attr(element, b"Binding")? else {
@@ -113,7 +139,11 @@ fn handle_element(
         };
         let binding = normalize(&binding)?;
         let ext = binding.rsplit('.').next().unwrap_or_default();
-        if !ext.eq_ignore_ascii_case("skin") && !ext.eq_ignore_ascii_case("chr") {
+        let supported = match kind {
+            AttachmentKind::Bone => ["cgf", "cga", "chr", "skin"].iter().any(|e| ext.eq_ignore_ascii_case(e)),
+            _ => ext.eq_ignore_ascii_case("skin") || ext.eq_ignore_ascii_case("chr"),
+        };
+        if !supported {
             return Ok(());
         }
         if attachments.len() >= MAX_ATTACHMENTS {
@@ -128,10 +158,34 @@ fn handle_element(
         let name = attr(element, b"AName")?
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| fallback.to_string());
+        let bone_name = attr(element, b"BoneName")?.filter(|value| !value.trim().is_empty());
+        let material = attr(element, b"Material")?
+            .or(attr(element, b"MaterialName")?)
+            .or(attr(element, b"MaterialFile")?)
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| {
+                let path = if value.to_ascii_lowercase().ends_with(".mtl") {
+                    value
+                } else {
+                    format!("{value}.mtl")
+                };
+                normalize(&path)
+            })
+            .transpose()?;
+        let position = attr(element, b"Position")?
+            .map(|value| numeric_components::<3>(&value))
+            .transpose()?;
+        let rotation = attr(element, b"Rotation")?
+            .map(|value| numeric_components::<4>(&value))
+            .transpose()?;
         attachments.push(CdfAttachment {
             name,
             binding,
             kind,
+            bone_name,
+            material,
+            position,
+            rotation,
         });
     } else if parents.len() == 2
         && parents
@@ -384,5 +438,24 @@ mod tests {
             resolve_cdf(&inventory, &cdf).skeleton,
             AssetResolution::Ambiguous(_)
         ));
+    }
+}
+
+#[cfg(test)]
+mod attachment_tests {
+    use super::*;
+
+    #[test]
+    fn authored_equipment_socket_and_material_are_preserved() {
+        let doc = parse_cdf(br#"<CharacterDefinition><Model File="characters/rig.chr"/><AttachmentList>
+            <Attachment Type="CA_BONE" AName="Scope" BoneName="weapon_socket" Binding="objects/scope.cgf"
+            Position="1, 2, 3" Rotation="1,0,0,0" Material="materials/scope"/>
+            </AttachmentList></CharacterDefinition>"#).unwrap();
+        assert_eq!(doc.attachments.len(), 1);
+        let item = &doc.attachments[0];
+        assert_eq!(item.kind, AttachmentKind::Bone);
+        assert_eq!(item.bone_name.as_deref(), Some("weapon_socket"));
+        assert_eq!(item.material.as_deref(), Some("materials/scope.mtl"));
+        assert_eq!(item.position, Some([1., 2., 3.]));
     }
 }
