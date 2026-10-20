@@ -137,8 +137,8 @@ fn chunks(data: &[u8]) -> Result<Vec<Chunk<'_>>, RigError> {
             && u32_at(data, offset + 4)? == version
             && (stale_offset_metadata || u32_at(data, offset + 8)? as usize == offset)
             && u32_at(data, offset + 12)? == id;
-        let stale_metadata_valid = !stale_offset_metadata
-            || (upper >= offset && upper - offset <= 1024);
+        let stale_metadata_valid =
+            !stale_offset_metadata || (upper >= offset && upper - offset <= 1024);
         if upper < offset + 16
             || !valid_region
             || !stale_metadata_valid
