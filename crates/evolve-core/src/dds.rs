@@ -22,6 +22,8 @@ pub enum DdsFormat {
     Bc5,
     Ctx1,
     Alpha8,
+    Luminance8,
+    Rgb24,
     Rgba32,
 }
 
@@ -41,7 +43,7 @@ impl DdsFormat {
         match self {
             Self::Bc1 | Self::Bc4 | Self::Ctx1 => Some(8),
             Self::Bc2 | Self::Bc3 | Self::Bc5 => Some(16),
-            Self::Rgba32 | Self::Alpha8 => None,
+            Self::Rgba32 | Self::Rgb24 | Self::Alpha8 | Self::Luminance8 => None,
         }
     }
 }
@@ -183,18 +185,27 @@ fn parse_header(bytes: &[u8]) -> Result<(DdsInfo, usize, Option<[u32; 4]>), DdsE
                 None,
             ));
         }
-        if format_flags & 0x40 == 0 || u32_at(bytes, 88)? != 32 {
+        if format_flags & 0x20000 != 0 && u32_at(bytes, 88)? == 8 {
+            DdsFormat::Luminance8
+        } else if format_flags & 0x40 != 0
+            && matches!(u32_at(bytes, 88)?, 24 | 32)
+        {
+            masks = Some([
+                u32_at(bytes, 92)?,
+                u32_at(bytes, 96)?,
+                u32_at(bytes, 100)?,
+                u32_at(bytes, 104)?,
+            ]);
+            if u32_at(bytes, 88)? == 24 {
+                DdsFormat::Rgb24
+            } else {
+                DdsFormat::Rgba32
+            }
+        } else {
             return Err(DdsError::Unsupported(
-                "only 8-bit alpha and 32-bit RGBA DDS are supported".into(),
+                "Unsupported uncompressed DDS depth or channel flags".into(),
             ));
         }
-        masks = Some([
-            u32_at(bytes, 92)?,
-            u32_at(bytes, 96)?,
-            u32_at(bytes, 100)?,
-            u32_at(bytes, 104)?,
-        ]);
-        DdsFormat::Rgba32
     };
     Ok((
         DdsInfo {
@@ -220,10 +231,14 @@ fn mip_sizes(info: &DdsInfo) -> Result<Vec<usize>, DdsError> {
                 w.div_ceil(4)
                     .checked_mul(h.div_ceil(4))
                     .and_then(|n| n.checked_mul(block_bytes as u64))
-            } else if info.format == DdsFormat::Alpha8 {
-                w.checked_mul(h)
             } else {
-                w.checked_mul(h).and_then(|n| n.checked_mul(4))
+                w.checked_mul(h).and_then(|n| {
+                    n.checked_mul(match info.format {
+                        DdsFormat::Alpha8 | DdsFormat::Luminance8 => 1,
+                        DdsFormat::Rgb24 => 3,
+                        _ => 4,
+                    })
+                })
             }
             .ok_or(DdsError::LimitsExceeded)?;
             usize::try_from(size).map_err(|_| DdsError::LimitsExceeded)
@@ -468,7 +483,10 @@ fn decode_block(format: DdsFormat, bytes: &[u8]) -> [[u8; 4]; 16] {
             }
             pixels
         }
-        DdsFormat::Rgba32 | DdsFormat::Alpha8 => [[0u8; 4]; 16],
+        DdsFormat::Rgba32
+        | DdsFormat::Rgb24
+        | DdsFormat::Alpha8
+        | DdsFormat::Luminance8 => [[0u8; 4]; 16],
     }
 }
 
@@ -583,23 +601,23 @@ pub fn decode_dds_rgba_with_layout(
         None
     };
     let payload = converted.as_deref().unwrap_or(original);
-    if info.format == DdsFormat::Alpha8 {
+    if matches!(info.format, DdsFormat::Alpha8 | DdsFormat::Luminance8) {
         for (sample, pixel) in payload.iter().zip(rgba.as_chunks_mut::<4>().0.iter_mut()) {
             // The extracted .dds.0a alpha/normal auxiliaries are best
             // inspected as grayscale images rather than invisible RGBA alpha.
             pixel.copy_from_slice(&[*sample, *sample, *sample, 255]);
         }
-    } else if info.format == DdsFormat::Rgba32 {
+    } else if matches!(info.format, DdsFormat::Rgba32 | DdsFormat::Rgb24) {
         let masks = masks.ok_or_else(|| DdsError::Unsupported("missing channel masks".into()))?;
         validate_masks(masks)?;
         let (destination_pixels, _) = rgba.as_chunks_mut::<4>();
-        for (src, dest) in payload
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .zip(destination_pixels.iter_mut())
-        {
-            let pixel = u32::from_le_bytes(*src);
+        let pixel_stride = if info.format == DdsFormat::Rgb24 { 3 } else { 4 };
+        for (src, dest) in payload.chunks_exact(pixel_stride).zip(destination_pixels.iter_mut()) {
+            let pixel = if pixel_stride == 3 {
+                u32::from_le_bytes([src[0], src[1], src[2], 0])
+            } else {
+                u32::from_le_bytes([src[0], src[1], src[2], src[3]])
+            };
             dest.copy_from_slice(&[
                 channel(pixel, masks[0], 0),
                 channel(pixel, masks[1], 0),
