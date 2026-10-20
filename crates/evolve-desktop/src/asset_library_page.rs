@@ -97,26 +97,26 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let menu_details: Option<Element<'_, Message>> = match state.library_menu {
         Some("File") => Some(
             column![
-                design::button("Refresh catalog").on_press(Message::LibraryRefresh),
-                design::button("Import signed PAK…").on_press(Message::LibraryToggleConfiguration),
-                design::button("Storage settings").on_press(Message::Navigate(Page::Settings)),
+                design::button("Refresh catalog").on_press(Message::MenuCommand(Box::new(Message::LibraryRefresh))),
+                design::button("Import signed PAK…").on_press(Message::MenuCommand(Box::new(Message::LibraryToggleConfiguration))),
+                design::button("Storage settings").on_press(Message::MenuCommand(Box::new(Message::Navigate(Page::Settings)))),
             ]
             .spacing(3)
             .into(),
         ),
         Some("View") => Some(
             column![
-                design::button("All Assets").on_press(Message::LibrarySetByBuild(false)),
-                design::button("By Build").on_press(Message::LibrarySetByBuild(true)),
+                design::button("All Assets").on_press(Message::MenuCommand(Box::new(Message::LibrarySetByBuild(false)))),
+                design::button("By Build").on_press(Message::MenuCommand(Box::new(Message::LibrarySetByBuild(true)))),
             ]
             .spacing(3)
             .into(),
         ),
         Some("Tools") => Some(
             column![
-                design::button("Preview selected PAK").on_press(Message::LibraryPreview),
-                design::button("Create editable project").on_press(Message::LibraryMakeModProject),
-                design::button("Open Modding").on_press(Message::Navigate(Page::Files)),
+                design::button("Preview selected PAK").on_press(Message::MenuCommand(Box::new(Message::LibraryPreview))),
+                design::button("Create editable project").on_press(Message::MenuCommand(Box::new(Message::LibraryMakeModProject))),
+                design::button("Open Modding").on_press(Message::MenuCommand(Box::new(Message::Navigate(Page::Files)))),
             ]
             .spacing(3)
             .into(),
