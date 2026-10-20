@@ -46,7 +46,10 @@ fn family(binding: &str) -> Option<(&str, &str, &str)> {
 pub fn discover_equipment(cdf: &CdfDefinition, inventory: &Inventory) -> Vec<EquipmentSlot> {
     let mut result = Vec::new();
     for attachment in &cdf.attachments {
-        if !matches!(attachment.kind, AttachmentKind::Skin | AttachmentKind::UniqueSkin) {
+        if !matches!(
+            attachment.kind,
+            AttachmentKind::Skin | AttachmentKind::UniqueSkin
+        ) {
             continue;
         }
         let Some((folder, prefix, extension)) = family(&attachment.binding) else {
@@ -61,8 +64,12 @@ pub fn discover_equipment(cdf: &CdfDefinition, inventory: &Inventory) -> Vec<Equ
             let Some(file) = candidate.relative_path.rsplit('/').next() else {
                 continue;
             };
-            if !file.to_ascii_lowercase().starts_with(&prefix.to_ascii_lowercase())
-                || !file.to_ascii_lowercase().ends_with(&format!(".{}", extension.to_ascii_lowercase()))
+            if !file
+                .to_ascii_lowercase()
+                .starts_with(&prefix.to_ascii_lowercase())
+                || !file
+                    .to_ascii_lowercase()
+                    .ends_with(&format!(".{}", extension.to_ascii_lowercase()))
             {
                 continue;
             }
@@ -74,8 +81,10 @@ pub fn discover_equipment(cdf: &CdfDefinition, inventory: &Inventory) -> Vec<Equ
                 continue;
             }
             let virtual_path = format!("{folder}/{file}");
-            if !matches!(resolve_virtual(inventory, &virtual_path), AssetResolution::Found(_))
-                || !seen.insert(virtual_path.to_ascii_lowercase())
+            if !matches!(
+                resolve_virtual(inventory, &virtual_path),
+                AssetResolution::Found(_)
+            ) || !seen.insert(virtual_path.to_ascii_lowercase())
             {
                 continue;
             }
@@ -86,8 +95,13 @@ pub fn discover_equipment(cdf: &CdfDefinition, inventory: &Inventory) -> Vec<Equ
         }
         // Always include the exact CDF binding, even if indexed paths use
         // another case; the original cannot be dropped by the UI.
-        if !found.iter().any(|v| v.binding.eq_ignore_ascii_case(&attachment.binding))
-            && matches!(resolve_virtual(inventory, &attachment.binding), AssetResolution::Found(_))
+        if !found
+            .iter()
+            .any(|v| v.binding.eq_ignore_ascii_case(&attachment.binding))
+            && matches!(
+                resolve_virtual(inventory, &attachment.binding),
+                AssetResolution::Found(_)
+            )
         {
             found.push(EquipmentChoice {
                 label: original_file
@@ -120,15 +134,22 @@ pub fn validated_equipment_overrides(
     let slots = discover_equipment(cdf, inventory);
     let mut result = BTreeMap::new();
     for (slot, binding) in requested {
-        let matches = slots.iter().filter(|candidate| candidate.name == *slot).collect::<Vec<_>>();
+        let matches = slots
+            .iter()
+            .filter(|candidate| candidate.name == *slot)
+            .collect::<Vec<_>>();
         if matches.len() != 1 {
             return Err(format!("Missing or ambiguous equipment attachment: {slot}"));
         }
-        let choices = matches[0].choices.iter().filter(|choice| {
-            choice.binding.eq_ignore_ascii_case(binding)
-        }).collect::<Vec<_>>();
+        let choices = matches[0]
+            .choices
+            .iter()
+            .filter(|choice| choice.binding.eq_ignore_ascii_case(binding))
+            .collect::<Vec<_>>();
         if choices.len() != 1 {
-            return Err(format!("Unverified equipment binding for {slot}: {binding}"));
+            return Err(format!(
+                "Unverified equipment binding for {slot}: {binding}"
+            ));
         }
         result.insert(slot.clone(), choices[0].binding.clone());
     }
@@ -151,19 +172,26 @@ mod tests {
             </AttachmentList></CharacterDefinition>"#;
         let cdf = parse_cdf(xml).unwrap();
         let files = [
-            "Scorpid3_L_Basher.chr", "Scorpid3_L_Shield.chr",
-            "Scorpid3_L_Poison.chr", "Scorpid3_R_Basher.chr",
-            "Scorpid3_R_Shield.chr", "Scorpid3_R_Poison.chr",
-            "Scorpid2_L_Shield.chr", "Scorpid3_L_Shield_Collision.cgf",
+            "Scorpid3_L_Basher.chr",
+            "Scorpid3_L_Shield.chr",
+            "Scorpid3_L_Poison.chr",
+            "Scorpid3_R_Basher.chr",
+            "Scorpid3_R_Shield.chr",
+            "Scorpid3_R_Poison.chr",
+            "Scorpid2_L_Shield.chr",
+            "Scorpid3_L_Shield_Collision.cgf",
         ];
         let inventory = Inventory {
             schema: 1,
             root: "C:/extracted/characters".into(),
-            entries: files.iter().map(|file| AssetEntry {
-                relative_path: format!("monsters/Scorpid_2/{file}"),
-                byte_size: 20,
-                kind: AssetKind::Mesh,
-            }).collect(),
+            entries: files
+                .iter()
+                .map(|file| AssetEntry {
+                    relative_path: format!("monsters/Scorpid_2/{file}"),
+                    byte_size: 20,
+                    kind: AssetKind::Mesh,
+                })
+                .collect(),
             total_bytes: 160,
             skipped_symlinks: 0,
         };
@@ -171,13 +199,36 @@ mod tests {
         assert_eq!(slots.len(), 2);
         assert!(slots.iter().all(|s| s.choices.len() == 3));
         let mut overrides = EquipmentOverrides::new();
-        overrides.insert("basher_l".into(), slots[0].choices.iter()
-            .find(|x| x.label.eq_ignore_ascii_case("shield")).unwrap().binding.clone());
-        overrides.insert("basher_r".into(), slots[1].choices.iter()
-            .find(|x| x.label.eq_ignore_ascii_case("poison")).unwrap().binding.clone());
-        assert_eq!(validated_equipment_overrides(&cdf, &inventory, &overrides).unwrap().len(), 2);
-        overrides.insert("basher_l".into(),
-            "objects/characters/monsters/scorpid_2/scorpid2_l_shield.chr".into());
+        overrides.insert(
+            "basher_l".into(),
+            slots[0]
+                .choices
+                .iter()
+                .find(|x| x.label.eq_ignore_ascii_case("shield"))
+                .unwrap()
+                .binding
+                .clone(),
+        );
+        overrides.insert(
+            "basher_r".into(),
+            slots[1]
+                .choices
+                .iter()
+                .find(|x| x.label.eq_ignore_ascii_case("poison"))
+                .unwrap()
+                .binding
+                .clone(),
+        );
+        assert_eq!(
+            validated_equipment_overrides(&cdf, &inventory, &overrides)
+                .unwrap()
+                .len(),
+            2
+        );
+        overrides.insert(
+            "basher_l".into(),
+            "objects/characters/monsters/scorpid_2/scorpid2_l_shield.chr".into(),
+        );
         assert!(validated_equipment_overrides(&cdf, &inventory, &overrides).is_err());
     }
 }
