@@ -443,6 +443,14 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
     })
 }
 
+/// Whether a verified original CryEngine SUBSETS table was provided.
+/// A standalone mesh with multiple MTL leaves but no source table must not
+/// paint every triangle with slot zero or guess equipment material IDs.
+pub fn has_original_mesh_subset_table(data: &[u8]) -> Result<bool, ModelError> {
+    let (_format, _version, chunks) = validate_chunks(data)?;
+    Ok(chunks.iter().any(|(kind, _, _, _)| *kind == 0x08001017))
+}
+
 /// Verified CryEngine CrChF v7 triangle ranges and the source MTL leaf ID.
 /// Each range retains original index ordering, including sparse IDs such as
 /// Kala's 11th equipment/emission slot. The sentinel 255 is untextured.
