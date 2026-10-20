@@ -58,11 +58,9 @@ impl PreviewCache {
         if bytes > LIMIT_BYTES {
             return;
         }
-        if let Some(index) = self
-            .entries
-            .iter()
-            .position(|entry| entry.key.canonical == key.canonical && entry.key.layout == key.layout)
-            && let Some(old) = self.entries.remove(index)
+        if let Some(index) = self.entries.iter().position(|entry| {
+            entry.key.canonical == key.canonical && entry.key.layout == key.layout
+        }) && let Some(old) = self.entries.remove(index)
         {
             self.bytes = self.bytes.saturating_sub(old.bytes);
         }
@@ -94,7 +92,10 @@ fn detect_source_layout(path: &Path) -> Result<DdsLayout, String> {
     if file.read_exact(&mut header).is_ok()
         && &header[..4] == b"DDS "
         && &header[124..128] == b"CRYF"
-        && matches!(u32::from_le_bytes(header[36..40].try_into().unwrap()), 0x1800 | 0x1040 | 0x1840)
+        && matches!(
+            u32::from_le_bytes(header[36..40].try_into().unwrap()),
+            0x1800 | 0x1040 | 0x1840
+        )
         && u32::from_le_bytes(header[108..112].try_into().unwrap()) == 0x401008
     {
         return Ok(DdsLayout::Xbox360Tiled);
@@ -107,7 +108,11 @@ pub fn decoded_dds(cache: &SharedCache, path: &Path) -> Result<(DdsInfo, Arc<Rgb
     decoded_dds_with_layout(cache, path, layout)
 }
 
-pub fn decoded_dds_with_layout(cache: &SharedCache, path: &Path, layout: DdsLayout) -> Result<(DdsInfo, Arc<RgbaImage>), String> {
+pub fn decoded_dds_with_layout(
+    cache: &SharedCache,
+    path: &Path,
+    layout: DdsLayout,
+) -> Result<(DdsInfo, Arc<RgbaImage>), String> {
     let before = key(path, layout)?;
     if let Ok(mut cache) = cache.lock()
         && let Some(found) = cache.lookup(&before)
@@ -149,6 +154,6 @@ mod tests {
         let (_, reused) = cache.lookup(&original_key).unwrap();
         assert!(Arc::ptr_eq(&image, &reused));
         fs::write(&source, b"modified-changed-size").unwrap();
-        assert!(cache.lookup(&key(&source).unwrap()).is_none());
+        assert!(cache.lookup(&key(&source, DdsLayout::Linear).unwrap()).is_none());
     }
 }
