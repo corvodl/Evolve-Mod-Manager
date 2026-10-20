@@ -658,9 +658,37 @@ pub fn decode_dds_rgba_with_layout(
     Ok((info, image))
 }
 
+/// Platform selection for lossless source-faithful PNG export, using the
+/// historical Xbox DDS header marker and flags, never filename guesses.
+fn source_layout_for_png(source: &Path) -> Result<DdsLayout, DdsError> {
+    use std::io::Read;
+    let mut bytes = [0u8; 128];
+    let mut input = fs::File::open(source)?;
+    if input.read_exact(&mut bytes).is_ok()
+        && &bytes[..4] == b"DDS "
+        && &bytes[124..128] == b"FYRC"
+        && u32::from_le_bytes(bytes[80..84].try_into().unwrap()) & 4 != 0
+        && matches!(
+            u32::from_le_bytes(bytes[36..40].try_into().unwrap()),
+            0x1800 | 0x1040 | 0x1840 | 0x1000 | 0x1440 | 0x1010
+        )
+        && matches!(
+            u32::from_le_bytes(bytes[108..112].try_into().unwrap()),
+            0x1000 | 0x401008
+        )
+    {
+        Ok(DdsLayout::Xbox360Tiled)
+    } else {
+        Ok(DdsLayout::Linear)
+    }
+}
+
 /// Explicit opt-in PNG export. Never overwrites an existing PNG.
 pub fn export_dds_png(source: &Path, destination: &Path) -> Result<DdsInfo, DdsError> {
-    let (info, rgba) = decode_dds_rgba(source)?;
+    if !destination.extension().is_some_and(|e| e.eq_ignore_ascii_case("png")) {
+        return Err(DdsError::Unsupported("Output texture must be a PNG".into()));
+    }
+    let (info, rgba) = decode_dds_rgba_with_layout(source, source_layout_for_png(source)?)?;
     let mut file = match fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -683,7 +711,24 @@ pub fn export_dds_png(source: &Path, destination: &Path) -> Result<DdsInfo, DdsE
 
 #[cfg(test)]
 mod tests {
-    use super::{DdsFormat, decode_block, untile_xbox360, xbox360_tiled_xy};
+    use super::{DdsFormat, DdsLayout, decode_block, source_layout_for_png, untile_xbox360, xbox360_tiled_xy};
+
+    #[test]
+    fn png_export_layout_is_strictly_header_selected() {
+        let dir = tempfile::tempdir().unwrap();
+        let texture = dir.path().join("sample.dds.0");
+        let mut header = [0u8; 128];
+        header[..4].copy_from_slice(b"DDS ");
+        header[124..128].copy_from_slice(b"FYRC");
+        header[80..84].copy_from_slice(&4u32.to_le_bytes());
+        header[36..40].copy_from_slice(&0x1800u32.to_le_bytes());
+        header[108..112].copy_from_slice(&0x1000u32.to_le_bytes());
+        std::fs::write(&texture, header).unwrap();
+        assert_eq!(source_layout_for_png(&texture).unwrap(), DdsLayout::Xbox360Tiled);
+        header[124..128].copy_from_slice(b"GAME");
+        std::fs::write(&texture, header).unwrap();
+        assert_eq!(source_layout_for_png(&texture).unwrap(), DdsLayout::Linear);
+    }
 
     #[test]
     fn xbox360_untile_reverses_block_order_and_16_bit_endian() {

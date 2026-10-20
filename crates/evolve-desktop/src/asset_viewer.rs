@@ -72,24 +72,9 @@ fn dropdown(state: &State) -> Option<Element<'_, Message>> {
                 Message::ViewerSidebarSelect(ViewerSidebarTab::Equipment)
             ))),
             design::button("Preview CDF assembly (static)").on_press(Message::MenuCommand(Box::new(Message::ViewerPreviewStaticCdf))),
-            design::button("Export verified rigged FBX").on_press(Message::MenuCommand(Box::new(Message::StartRigFbx))),
-            design::button("Flat CDF parts FBX (experimental)").on_press(Message::MenuCommand(Box::new(Message::ViewerExportFlatCdf))),
-            design::button("Unified CDF rigged FBX (experimental)").on_press(Message::MenuCommand(Box::new(Message::ViewerExportUnifiedCdf))),
-            text("Blender FBX export requires original mesh weights and a verified skeleton.")
+            design::button("Export models / CDF…").on_press(Message::ExportOpen),
+            text("Rigged FBX, embedded textures, original UV0 repair, and PNG dependencies are configured in File → Export.")
                 .size(11).style(design::muted),
-            design::text_input("NEW FBX destination (absolute path)", &state.output)
-                .on_input(Message::OutputChanged),
-            design::text_input("Blender executable", &state.blender_path)
-                .on_input(Message::BlenderChanged),
-            design::text_input("Matching verified skeleton", &state.skeleton_path)
-                .on_input(Message::SkeletonChanged),
-            design::button(if state.export_include_animation {
-                "Verified CAF Actions: on"
-            } else {
-                "Verified CAF Actions: off"
-            }).on_press(Message::MenuCommand(Box::new(Message::ViewerToggleExportAnimations))),
-            design::text_input("Exact CAF path (optional)", &state.caf_path)
-                .on_input(Message::CafInputChanged),
         ].spacing(5).into(),
         "Textures" => column![
             design::button("Resolve .mtl").on_press(Message::MenuCommand(Box::new(Message::StartMaterialResolve))),
@@ -734,7 +719,7 @@ fn explorer(state: &State) -> Element<'_, Message> {
                                     design::button("Export DDS → PNG")
                                         .on_press_maybe(is_dds.then_some(Message::StartPngExport)),
                                     design::button("Rigged FBX").on_press_maybe(
-                                        (is_model && !state.busy).then_some(Message::StartRigFbx)
+                                        (is_model && !state.busy).then_some(Message::ExportOpen)
                                     ),
                                     design::button("Restore original").on_press_maybe(
                                         (!state.viewer_from_library && !state.busy)
