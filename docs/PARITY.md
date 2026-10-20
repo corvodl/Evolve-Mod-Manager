@@ -288,6 +288,22 @@ changing these labels or authorizing v1.0.
   source-asset validation. Do not claim full automatic texture correctness
   or release v1.0 on this development milestone.
 
+## Integrated Asset Viewer preview — PR #5
+
+- PR #5 combines complete development histories from PR #3 and PR #4
+  without replacing the Level Editor's protected export or dropping the
+  model/texture/animation renderer changes. It remains a draft preview.
+- The extracted-file explorer automatically previews selected original DDS
+  pixels at the highest decoded resolution inside the Asset Viewer, not only
+  their metadata. A selection made while another decode runs supersedes the
+  earlier preview. Switching to a model or CDF clears stale DDS imagery.
+- An explicit retry action is available, but a separate Inspect click is not
+  required for supported single-clicked assets. The original DDS, imported
+  Asset Library and game files remain read-only.
+- **Still blocked:** Accurate multi-submaterial CDF material bindings,
+  animated multi-part character rendering, some rig/CAF/DBA variants,
+  and real Windows Stage 2 performance and Blender export acceptance.
+
 ## Native CAF weighted viewport preview (release-gated)
 
 - Selecting a compatible indexed .skin/.skinm or .chr/.chrm previews original geometry
