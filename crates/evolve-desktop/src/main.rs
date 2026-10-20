@@ -3688,12 +3688,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
             return launch(
                 state,
-                Operation::PrepareClientHook(
-                    original,
-                    keys.original_public,
-                    keys.public,
-                    output,
-                ),
+                Operation::PrepareClientHook(original, keys.original_public, keys.public, output),
             );
         }
         Message::StartHookPreflight => {
