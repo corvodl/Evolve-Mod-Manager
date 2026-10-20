@@ -51,4 +51,4 @@ Updated: **2026-10-20** · Repository: `corvodl/Evolve-Mod-Manager` · Working P
 
 ## Operating constraints
 
-Keep the public repository independent of the private manager's proprietary assets, credentials and personal install paths. Do not create `AGENTS.md` or files discussing automated-assistant internals. Keep release assets limited to the requested portable application and installer; development artifacts are not a release. No merge/tag until required checks and real-game acceptance are complete.
+Keep the public repository independent of the private manager's proprietary assets, credentials and personal install paths. Keep documentation focused on implementation status, evidence, and reproducible verification. Keep release assets limited to the requested portable application and installer; development artifacts are not a release. No merge/tag until required checks and real-game acceptance are complete.
