@@ -5568,7 +5568,11 @@ mod project_edit_tests {
             ..State::default()
         };
         let _ = update(&mut state, Message::ViewerPreviewStaticCdf);
-        assert_eq!(Path::new(&state.input), file.as_path());
+        assert_eq!(
+            std::fs::canonicalize(&state.input).unwrap(),
+            std::fs::canonicalize(&file).unwrap(),
+            "Windows short 8.3 and extended-path spellings must resolve to the same CDF",
+        );
         assert!(state.busy, "CDF assembly must be dispatched on a worker");
     }
 
