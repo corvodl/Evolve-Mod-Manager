@@ -107,7 +107,9 @@ fn append_texture(
             | "glow"
             | "decal"
             | "specular"
+            | "specularcolor"
             | "gloss"
+            | "glossiness"
             | "smoothness"
             | "opacity"
             | "detail"
@@ -232,6 +234,21 @@ pub fn read_material(path: &Path) -> Result<MaterialDocument, MaterialError> {
     parse_material(&fs::read(path)?)
 }
 
+/// Exact cooked texture search order for original CryEngine authored paths.
+/// The imported Asset Library must use the same .dds.0 preference as local
+/// assets; never request uncooked .tif or silently choose a different basename.
+pub fn material_texture_candidates(source: &str) -> Vec<String> {
+    let lower = source.to_ascii_lowercase();
+    if lower.ends_with(".dds.0") {
+        return vec![source.to_owned()];
+    }
+    if lower.ends_with(".tif") || lower.ends_with(".dds") {
+        let base = &source[..source.len() - 4];
+        return vec![format!("{base}.dds.0"), format!("{base}.dds")];
+    }
+    vec![source.to_owned()]
+}
+
 /// Prefer highest-resolution cooked .dds.0 over .dds for author-provided .tif
 /// references. A true ambiguity is returned, never silently resolved.
 pub fn resolve_materials(inventory: &Inventory, document: &MaterialDocument) -> MaterialReport {
@@ -239,16 +256,7 @@ pub fn resolve_materials(inventory: &Inventory, document: &MaterialDocument) -> 
     for slot in &document.slots {
         for reference in &slot.maps {
             let source = &reference.path;
-            let lower = source.to_ascii_lowercase();
-            let candidates = if lower.ends_with(".dds.0") {
-                vec![source.clone()]
-            } else if lower.ends_with(".tif") || lower.ends_with(".dds") {
-                let suffix_len = 4;
-                let base = &source[..source.len() - suffix_len];
-                vec![format!("{base}.dds.0"), format!("{base}.dds")]
-            } else {
-                vec![source.clone()]
-            };
+            let candidates = material_texture_candidates(source);
             let mut found = AssetResolution::Missing;
             for candidate in candidates {
                 found = resolve_virtual(inventory, &candidate);
@@ -285,6 +293,31 @@ mod tests {
         assert!(normalize_texture("textures//../secret.tif").is_err());
         assert!(normalize_texture("C:\\secret.tif").is_err());
     }
+    #[test]
+    fn imported_texture_candidates_prefer_highest_authored_mip_and_keep_spec_roles() {
+        assert_eq!(
+            material_texture_candidates("Characters/Kala/armor_ddn.tif"),
+            vec![
+                "Characters/Kala/armor_ddn.dds.0",
+                "Characters/Kala/armor_ddn.dds"
+            ]
+        );
+        assert_eq!(
+            material_texture_candidates("Characters/Kala/spec.dds.0"),
+            vec!["Characters/Kala/spec.dds.0"]
+        );
+        let authored = parse_material(
+            br#"<Material Name="armor"><Textures>
+                <Texture Map="SpecularColor" File="Characters/Kala/spec.tif"/>
+                <Texture Map="Glossiness" File="Characters/Kala/gloss.tif"/>
+                <Texture Map="Emittance" File="Characters/Kala/glow.tif"/>
+            </Textures></Material>"#
+        ).unwrap();
+        assert_eq!(authored.slots[0].maps.len(), 3);
+        assert_eq!(authored.slots[0].maps[0].role, "specularcolor");
+        assert_eq!(authored.slots[0].maps[1].role, "glossiness");
+    }
+
     #[test]
     fn mtl_parser_preserves_authored_maps_and_rejects_unsafe() {
         let data = br#"<Material Name="Kala" Shader="Illum"><Textures>
