@@ -263,8 +263,20 @@ pub fn audit_native_offline_swap(
             }
         }
         let backup = PathBuf::from(format!("{}.customkey-original", target.display()));
-        let original_exists = fs::symlink_metadata(&target).is_ok();
-        let backup_exists = fs::symlink_metadata(&backup).is_ok();
+        let ordinary_exists = |path: &Path| -> Result<bool, String> {
+            match fs::symlink_metadata(path) {
+                Ok(meta) => {
+                    if !meta.file_type().is_file() {
+                        return Err("Unexpected linked/non-file game or recovery target".into());
+                    }
+                    Ok(true)
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                Err(error) => Err(error.to_string()),
+            }
+        };
+        let original_exists = ordinary_exists(&target)?;
+        let backup_exists = ordinary_exists(&backup)?;
         let original_hash = if original_exists {
             let path = regular(&target)?;
             Some(crate::staging::digest(&path).map_err(|e| e.to_string())?)
@@ -319,6 +331,51 @@ mod tests {
         assert_eq!(fs::read(bin.join("Evolve.exe")).unwrap(), before);
         assert!(inspect_native_offline_readiness(&stage, &root, &profile.id, &old, &new).is_err());
         assert!(!root.join("Game").exists());
+    }
+
+    #[test]
+    fn recovery_audit_classifies_exact_hashes_without_mutating_game() {
+        let tmp = tempfile::tempdir().unwrap();
+        let game = tmp.path().join("game");
+        let stage = tmp.path().join("stage");
+        fs::create_dir_all(game.join("Game")).unwrap();
+        fs::create_dir(&stage).unwrap();
+        let installed = game.join("Game/libs.pak");
+        let backup = game.join("Game/libs.pak.customkey-original");
+        fs::write(&installed, b"original signed content").unwrap();
+        let original_hash = crate::staging::digest(&installed).unwrap();
+        let replacement = tmp.path().join("replacement.pak");
+        fs::write(&replacement, b"replaced offline content").unwrap();
+        let replacement_hash = crate::staging::digest(&replacement).unwrap();
+        let plan = NativeOfflineSwapPlan {
+            schema:1, game_root:game.clone(), stage_root:stage,
+            profile_id:"local-test".into(), native_launch_armed:false,
+            targets:vec![NativeOfflineTarget {
+                relative_path:"Game/libs.pak".into(),
+                original_sha256:original_hash,
+                replacement_sha256:replacement_hash,
+            }],
+        };
+        let snapshot = fs::read(&installed).unwrap();
+        assert_eq!(audit_native_offline_swap(&plan).unwrap()[0].1,
+            NativeRecoveryState::OriginalReady);
+        assert_eq!(fs::read(&installed).unwrap(), snapshot);
+        fs::rename(&installed, &backup).unwrap();
+        assert_eq!(audit_native_offline_swap(&plan).unwrap()[0].1,
+            NativeRecoveryState::InterruptedBeforeMount);
+        fs::copy(&replacement, &installed).unwrap();
+        assert_eq!(audit_native_offline_swap(&plan).unwrap()[0].1,
+            NativeRecoveryState::OfflineReplacementMounted);
+        fs::write(&installed, b"third party changes").unwrap();
+        assert!(audit_native_offline_swap(&plan).is_err());
+        fs::remove_file(&installed).unwrap();
+        fs::copy(&backup, &installed).unwrap();
+        assert_eq!(audit_native_offline_swap(&plan).unwrap()[0].1,
+            NativeRecoveryState::StrandedOriginalBackup);
+        assert_eq!(fs::read(&backup).unwrap(), snapshot);
+        fs::remove_file(&backup).unwrap();
+        assert_eq!(audit_native_offline_swap(&plan).unwrap()[0].1,
+            NativeRecoveryState::OriginalReady);
     }
 
     #[test]
