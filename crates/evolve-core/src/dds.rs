@@ -21,6 +21,7 @@ pub enum DdsFormat {
     Bc4,
     Bc5,
     Ctx1,
+    Alpha8,
     Rgba32,
 }
 
@@ -40,7 +41,7 @@ impl DdsFormat {
         match self {
             Self::Bc1 | Self::Bc4 | Self::Ctx1 => Some(8),
             Self::Bc2 | Self::Bc3 | Self::Bc5 => Some(16),
-            Self::Rgba32 => None,
+            Self::Rgba32 | Self::Alpha8 => None,
         }
     }
 }
@@ -152,6 +153,7 @@ fn parse_header(bytes: &[u8]) -> Result<(DdsInfo, usize, Option<[u32; 4]>), DdsE
                     77 | 78 => DdsFormat::Bc3,
                     80 | 81 => DdsFormat::Bc4,
                     83 | 84 => DdsFormat::Bc5,
+                    65 => DdsFormat::Alpha8,
                     28 | 29 | 87 | 91 => {
                         masks = Some(if matches!(u32_at(bytes, 128)?, 87 | 91) {
                             [0x00ff0000, 0x0000ff00, 0x000000ff, 0xff000000]
@@ -166,9 +168,22 @@ fn parse_header(bytes: &[u8]) -> Result<(DdsInfo, usize, Option<[u32; 4]>), DdsE
             _ => return Err(DdsError::Unsupported(format!("FourCC {:?}", fourcc))),
         }
     } else {
+        if format_flags & 1 != 0
+            && u32_at(bytes, 88)? == 8
+            && u32_at(bytes, 104)? == 0xff
+        {
+            return Ok((
+                DdsInfo {
+                    schema: 1, width, height, mipmaps, format: DdsFormat::Alpha8,
+                    streaming_parts: 1, top_mip_bytes: 0,
+                },
+                payload_offset,
+                None,
+            ));
+        }
         if format_flags & 0x40 == 0 || u32_at(bytes, 88)? != 32 {
             return Err(DdsError::Unsupported(
-                "only 32-bit RGB DDS is supported".into(),
+                "only 8-bit alpha and 32-bit RGBA DDS are supported".into(),
             ));
         }
         masks = Some([
@@ -203,6 +218,8 @@ fn mip_sizes(info: &DdsInfo) -> Result<Vec<usize>, DdsError> {
                 w.div_ceil(4)
                     .checked_mul(h.div_ceil(4))
                     .and_then(|n| n.checked_mul(block_bytes as u64))
+            } else if info.format == DdsFormat::Alpha8 {
+                w.checked_mul(h)
             } else {
                 w.checked_mul(h).and_then(|n| n.checked_mul(4))
             }
@@ -449,7 +466,7 @@ fn decode_block(format: DdsFormat, bytes: &[u8]) -> [[u8; 4]; 16] {
             }
             pixels
         }
-        DdsFormat::Rgba32 => [[0u8; 4]; 16],
+        DdsFormat::Rgba32 | DdsFormat::Alpha8 => [[0u8; 4]; 16],
     }
 }
 
@@ -564,7 +581,13 @@ pub fn decode_dds_rgba_with_layout(
         None
     };
     let payload = converted.as_deref().unwrap_or(original);
-    if info.format == DdsFormat::Rgba32 {
+    if info.format == DdsFormat::Alpha8 {
+        for (sample, pixel) in payload.iter().zip(rgba.chunks_exact_mut(4)) {
+            // The extracted .dds.0a alpha/normal auxiliaries are best
+            // inspected as grayscale images rather than invisible RGBA alpha.
+            pixel.copy_from_slice(&[*sample, *sample, *sample, 255]);
+        }
+    } else if info.format == DdsFormat::Rgba32 {
         let masks = masks.ok_or_else(|| DdsError::Unsupported("missing channel masks".into()))?;
         validate_masks(masks)?;
         let (destination_pixels, _) = rgba.as_chunks_mut::<4>();
