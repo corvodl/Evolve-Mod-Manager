@@ -9,11 +9,12 @@ from pathlib import Path
 def run():
     # blender.exe --background --factory-startup --python <script> -- input.glb output.fbx 0|1
     argv = sys.argv[sys.argv.index("--") + 1:]
-    if len(argv) != 3:
-        raise RuntimeError("Expected exact GLB, FBX, and animation flag")
+    if len(argv) != 4 or argv[2] not in ("0", "1") or argv[3] not in ("0", "1"):
+        raise RuntimeError("Expected GLB, FBX, animation and texture embedding flags")
     source = Path(argv[0]).resolve(strict=True)
     destination = Path(argv[1]).absolute()
     include_animation = argv[2] == "1"
+    embed_textures = argv[3] == "1"
     if source.suffix.casefold() != ".glb" or destination.suffix.casefold() != ".fbx":
         raise RuntimeError("GLB input and FBX output required")
     if destination.exists() or source == destination:
@@ -58,7 +59,7 @@ def run():
         bake_anim_step=1.0,
         bake_anim_simplify_factor=0.0,
         path_mode='COPY',
-        embed_textures=True
+        embed_textures=embed_textures
     )
     if not destination.is_file() or destination.stat().st_size < 256:
         raise RuntimeError("Blender did not create a valid FBX")

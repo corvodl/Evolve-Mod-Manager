@@ -102,6 +102,8 @@ def main():
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     parts = manifest.get("parts")
     animate = manifest.get("include_animation")
+    embed_textures = manifest.get("embed_textures", True)
+    check(type(embed_textures) is bool, "invalid embedded-texture option")
     check(isinstance(parts, list) and 1 <= len(parts) <= 128 and type(animate) is bool,
           "invalid or excessive verified parts")
 
@@ -172,7 +174,7 @@ def main():
         use_armature_deform_only=False, axis_forward="-Z", axis_up="Y",
         bake_anim=animate, bake_anim_use_all_actions=animate,
         bake_anim_use_nla_strips=animate, bake_anim_simplify_factor=0,
-        path_mode="COPY", embed_textures=True)
+        path_mode="COPY", embed_textures=embed_textures)
     check(destination.is_file() and destination.stat().st_size >= 256,
           "FBX export failed")
     bpy.ops.wm.read_factory_settings(use_empty=True)

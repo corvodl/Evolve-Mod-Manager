@@ -16,6 +16,7 @@ pub mod cryxml;
 pub mod dds;
 pub mod dependency_graph;
 pub mod fbx;
+pub mod export_bundle;
 pub mod glb;
 pub mod inventory;
 pub mod legacy_rig;
@@ -62,6 +63,7 @@ pub use character_equipment::{
 pub use character_folder_fbx::{FlatCdfFbxReport, export_flat_cdf_parts_fbx};
 pub use character_unified_fbx::{
     UnifiedCdfFbxReport, export_unified_cdf_fbx, export_unified_cdf_fbx_with_equipment,
+    export_unified_cdf_fbx_options,
 };
 pub use client_hook::{
     ClientHookError, HookPairReport, PakHookPairReport, inspect_client_hook_pair,
@@ -76,7 +78,8 @@ pub use dependency_graph::{
     DependencyEdge, DependencyError, DependencyGraph, DependencyNode, DependencyStatus,
     inspect_dependencies,
 };
-pub use fbx::{FbxError, FbxReport, convert_glb_to_fbx, validate_glb_source};
+pub use fbx::{FbxError, FbxReport, convert_glb_to_fbx, convert_glb_to_fbx_with_options, validate_glb_source};
+pub use export_bundle::{ExportBundleOptions, ExportBundleReport, export_bundle};
 pub use glb::{GlbError, export_model_glb, geometry_glb_bytes};
 pub use inventory::{
     AssetEntry, AssetKind, Inventory, InventoryError, MAX_ENTRIES, scan_directory,
@@ -109,7 +112,7 @@ pub use native_offline_launch::{
 };
 pub use policy::{AnimationPolicy, ExportFeature, FeatureStatus, PARITY_MATRIX};
 pub use rig::{
-    CompiledSkeleton, RigError, RigReport, VerifiedWeights, export_rigged_character_fbx,
+    CompiledSkeleton, RigError, RigReport, VerifiedWeights, export_rigged_character_fbx_options, export_rigged_character_fbx,
     export_rigged_character_fbx_textured, export_rigged_character_fbx_textured_animated,
     export_rigged_character_glb, parse_compiled_skeleton, remap_verified_weights, rigged_glb_bytes,
 };

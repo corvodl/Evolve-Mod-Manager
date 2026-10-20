@@ -371,6 +371,22 @@ pub fn export_unified_cdf_fbx_with_equipment(
     caf: Option<&Path>,
     equipment: &EquipmentOverrides,
 ) -> Result<UnifiedCdfFbxReport, String> {
+    export_unified_cdf_fbx_options(
+        source, inventory, blender, destination, caf, equipment, true,
+    )
+}
+
+/// Preserve authored source geometry, material slots, bone weights and UV0.
+/// Toggle embedding independently of separate PNG dependency export.
+pub fn export_unified_cdf_fbx_options(
+    source: &Path,
+    inventory: &Inventory,
+    blender: &Path,
+    destination: &Path,
+    caf: Option<&Path>,
+    equipment: &EquipmentOverrides,
+    embed_textures: bool,
+) -> Result<UnifiedCdfFbxReport, String> {
     let root = fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
     if !destination.is_absolute()
         || !destination
@@ -538,7 +554,8 @@ pub fn export_unified_cdf_fbx_with_equipment(
     fs::write(
         &manifest,
         serde_json::to_vec(&json!({
-            "parts":entries, "include_animation":motion.is_some()
+            "parts":entries, "include_animation":motion.is_some(),
+            "embed_textures":embed_textures
         }))
         .map_err(|e| e.to_string())?,
     )

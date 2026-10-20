@@ -146,6 +146,17 @@ pub fn convert_glb_to_fbx(
     destination: &Path,
     animation: AnimationPolicy,
 ) -> Result<FbxReport, FbxError> {
+    convert_glb_to_fbx_with_options(blender, source, destination, animation, true)
+}
+
+/// Keep geometry and UVs unchanged while controlling FBX-embedded textures.
+pub fn convert_glb_to_fbx_with_options(
+    blender: &Path,
+    source: &Path,
+    destination: &Path,
+    animation: AnimationPolicy,
+    embed_textures: bool,
+) -> Result<FbxReport, FbxError> {
     validate_glb_source(source, animation)?;
     let blender_meta = fs::symlink_metadata(blender)?;
     if !blender_meta.file_type().is_file()
@@ -193,6 +204,7 @@ pub fn convert_glb_to_fbx(
         } else {
             "0"
         })
+        .arg(if embed_textures { "1" } else { "0" })
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()

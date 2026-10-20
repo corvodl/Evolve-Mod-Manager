@@ -1287,6 +1287,20 @@ pub fn export_rigged_character_fbx_textured_animated(
     native_caf: Option<&Path>,
     destination: &Path,
 ) -> Result<(RigReport, FbxReport), RigError> {
+    export_rigged_character_fbx_options(
+        mesh_source, skeleton_source, blender, diffuse, native_caf, destination, true,
+    )
+}
+
+pub fn export_rigged_character_fbx_options(
+    mesh_source: &Path,
+    skeleton_source: &Path,
+    blender: &Path,
+    diffuse: Option<&Path>,
+    native_caf: Option<&Path>,
+    destination: &Path,
+    embed_textures: bool,
+) -> Result<(RigReport, FbxReport), RigError> {
     for file in [mesh_source, skeleton_source] {
         let stat = fs::symlink_metadata(file)?;
         if !stat.file_type().is_file() || stat.len() > MAX_BYTES as u64 {
@@ -1324,13 +1338,10 @@ pub fn export_rigged_character_fbx_textured_animated(
     let temp = tempfile::tempdir()?;
     let glb = temp.path().join("verified-textured-rig.glb");
     fs::write(&glb, &output)?;
-    let exported = convert_glb_to_fbx(
-        blender,
-        &glb,
-        destination,
-        AnimationPolicy {
-            embed_verified_animations: motion.is_some(),
-        },
+    let exported = crate::fbx::convert_glb_to_fbx_with_options(
+        blender, &glb, destination,
+        AnimationPolicy { embed_verified_animations: motion.is_some() },
+        embed_textures,
     )?;
     Ok((report, exported))
 }
