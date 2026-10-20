@@ -53,6 +53,9 @@ pub struct AssemblyPart {
     pub binding: String,
     pub first_index: u32,
     pub index_count: u32,
+    /// Original CryEngine subset material index; 255 means no authored leaf.
+    #[serde(default)]
+    pub material_slot: u32,
     pub material_hint: Option<String>,
     pub verified_skin_weights: bool,
 }
@@ -365,14 +368,20 @@ pub fn read_static_cdf_assembly_with_imported(
         }
         let count = u32::try_from(mesh.indices.len())
             .map_err(|_| AssemblyError::Incomplete("CDF part exceeds index limits".into()))?;
-        source_parts.push(AssemblyPart {
-            name: attachment.name.clone(),
-            binding: attachment.binding.clone(),
-            first_index: index_cursor,
-            index_count: count,
-            material_hint: attachment.material.clone(),
-            verified_skin_weights,
-        });
+        let ranges = crate::model::original_mesh_subsets(
+            &fs::read(&rendered)?, mesh.indices.len())?;
+        for (first, indices, material_slot) in ranges {
+            source_parts.push(AssemblyPart {
+                name: attachment.name.clone(),
+                binding: attachment.binding.clone(),
+                first_index: index_cursor.checked_add(first)
+                    .ok_or_else(|| AssemblyError::Incomplete("Material index offset overflow".into()))?,
+                index_count: indices,
+                material_slot,
+                material_hint: attachment.material.clone(),
+                verified_skin_weights,
+            });
+        }
         index_cursor = index_cursor.checked_add(count)
             .ok_or_else(|| AssemblyError::Incomplete("Assembly index ranges overflow".into()))?;
         meshes.push((attachment.name.clone(), mesh));
