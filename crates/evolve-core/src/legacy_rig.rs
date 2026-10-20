@@ -33,7 +33,7 @@ fn f32_at(b: &[u8], at: usize) -> Result<f32, RigError> {
 fn chunks(data: &[u8]) -> Result<Vec<Chunk<'_>>, RigError> {
     if data.len() < 24
         || data.len() > MAX_BYTES
-        || data.get(..8) != Some(b"CryTek\\0\\0")
+        || data.get(..8) != Some(b"CryTek\0\0")
         || u32_at(data, 8)? != 0xFFFF0000
         || u32_at(data, 12)? != 0x745
     {
