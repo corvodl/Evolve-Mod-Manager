@@ -99,10 +99,15 @@ fn numeric_components<const N: usize>(input: &str) -> Result<[f32; N], CdfError>
     let values = input
         .split([',', ';', ' ', '\t'])
         .filter(|part| !part.is_empty())
-        .map(|part| part.parse::<f32>().map_err(|_| CdfError::Xml("invalid attachment transform".into())))
+        .map(|part| {
+            part.parse::<f32>()
+                .map_err(|_| CdfError::Xml("invalid attachment transform".into()))
+        })
         .collect::<Result<Vec<_>, _>>()?;
     if values.len() != N || values.iter().any(|v| !v.is_finite() || v.abs() > 1e6) {
-        return Err(CdfError::Xml("invalid attachment transform dimensions".into()));
+        return Err(CdfError::Xml(
+            "invalid attachment transform dimensions".into(),
+        ));
     }
     Ok(std::array::from_fn(|i| values[i]))
 }
@@ -140,7 +145,9 @@ fn handle_element(
         let binding = normalize(&binding)?;
         let ext = binding.rsplit('.').next().unwrap_or_default();
         let supported = match &kind {
-            AttachmentKind::Bone => ["cgf", "cga", "chr", "skin"].iter().any(|e| ext.eq_ignore_ascii_case(e)),
+            AttachmentKind::Bone => ["cgf", "cga", "chr", "skin"]
+                .iter()
+                .any(|e| ext.eq_ignore_ascii_case(e)),
             _ => ext.eq_ignore_ascii_case("skin") || ext.eq_ignore_ascii_case("chr"),
         };
         if !supported {
