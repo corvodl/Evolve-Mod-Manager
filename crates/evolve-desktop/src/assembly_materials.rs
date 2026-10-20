@@ -447,7 +447,7 @@ pub fn load(
             surface.gloss = gloss;
             surface.opacity = opacity;
             surface.transparent = needs_alpha_blending(leaf)
-                            && (is_translucent_shader(leaf) || surface.opacity.is_some());
+                && (is_translucent_shader(leaf) || surface.opacity.is_some());
             Ok(())
         })();
         if let Err(error) = result {
@@ -641,7 +641,11 @@ mod tests {
         .unwrap();
         let slot = &document.slots[0];
         assert!(needs_alpha_blending(slot));
-        assert!(slot.maps.iter().any(|reference| reference.role == "opacity"));
+        assert!(
+            slot.maps
+                .iter()
+                .any(|reference| reference.role == "opacity")
+        );
         assert!(!is_translucent_shader(slot));
     }
 
