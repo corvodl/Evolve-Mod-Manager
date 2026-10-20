@@ -1818,7 +1818,9 @@ fn check_updates_task(channel: UpdateChannel) -> Task<Message> {
 /// library (and never create a directory on a mere File menu action).
 fn verified_library_directory(configured: &str) -> Result<PathBuf, String> {
     if configured.trim().is_empty() {
-        return Err("Asset Library location is not configured. Select it under Settings → Storage.".into());
+        return Err(
+            "Asset Library location is not configured. Select it under Settings → Storage.".into(),
+        );
     }
     let path = Path::new(configured);
     if !path.is_absolute() {
@@ -2296,13 +2298,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             .spawn()
                         {
                             Ok(_) => "Opened the Asset Library folder in Windows Explorer.".into(),
-                            Err(error) => format!("Could not open Asset Library in Explorer: {error}"),
+                            Err(error) => {
+                                format!("Could not open Asset Library in Explorer: {error}")
+                            }
                         };
                     }
                     #[cfg(not(target_os = "windows"))]
                     {
                         let _ = directory;
-                        state.status = "Open Asset Library Folder is available in Windows builds.".into();
+                        state.status =
+                            "Open Asset Library Folder is available in Windows builds.".into();
                     }
                 }
                 Err(error) => state.status = error,
