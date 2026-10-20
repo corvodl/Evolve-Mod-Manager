@@ -1517,9 +1517,13 @@ fn is_viewer_model_source(path: &str) -> bool {
 fn is_viewer_preview_source(path: &str) -> bool {
     let name = path.to_ascii_lowercase();
     is_viewer_model_source(&name)
-        || [".cdf", ".dds", ".dds.0", ".caf", ".mtl"]
+        || [".cdf", ".dds", ".caf", ".mtl"]
             .iter()
             .any(|suffix| name.ends_with(suffix))
+        || name.rsplit_once(".dds.").is_some_and(|(_, suffix)| {
+            let mip = suffix.strip_suffix('a').unwrap_or(suffix);
+            mip.parse::<u8>().is_ok_and(|n| n < 20)
+        })
 }
 
 fn sync_level_fields(state: &mut State) {
@@ -7047,7 +7051,14 @@ mod project_edit_tests {
             );
             assert!(is_viewer_preview_source(name));
         }
-        for name in ["Hunters/Kala.cdf", "models/body.mtl", "tex/body.dds.0"] {
+        for name in [
+            "Hunters/Kala.cdf",
+            "models/body.mtl",
+            "tex/body.dds.0",
+            "tex/body.dds.5",
+            "tex/body_ddn.dds.0a",
+            "tex/body_ddn.dds.3a",
+        ] {
             assert!(is_viewer_preview_source(name));
             assert!(!is_viewer_model_source(name));
         }
