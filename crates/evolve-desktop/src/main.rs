@@ -608,36 +608,40 @@ impl Operation {
                 let authored = read_material(&source).map_err(|e| e.to_string())?;
                 let library = scan_directory(&root).map_err(|e| e.to_string())?;
                 let mut report = resolve_materials(&library, &authored);
-                if report.textures.len() <= 4096
-                    && let Some(imported_root) = &imported_root
-                {
-                    for texture in &mut report.textures {
-                        if !matches!(texture.resolution, AssetResolution::Missing) {
-                            continue;
+                // Honor the source's cooked mip priority across BOTH roots.
+                // A local lower-res .dds must never mask a higher-res .dds.0
+                // in an exact, build-compatible imported Asset Library.
+                for texture in &mut report.textures {
+                    for candidate in material_texture_candidates(&texture.authored_path) {
+                        let local = evolve_core::resolve_virtual(&library, &candidate);
+                        if !matches!(local, AssetResolution::Missing) {
+                            texture.resolution = local;
+                            break;
                         }
-                        for candidate in material_texture_candidates(&texture.authored_path) {
-                            texture.resolution = match resolve_imported_reference(
-                                imported_root,
-                                &candidate,
-                                build_label.as_deref(),
-                            )
-                            .map_err(|e| e.to_string())? {
-                                LibraryReferenceStatus::Missing => AssetResolution::Missing,
-                                LibraryReferenceStatus::Found(hit) => {
-                                    AssetResolution::Found(hit.absolute_path)
-                                }
-                                LibraryReferenceStatus::Ambiguous(hits) => AssetResolution::Ambiguous(
-                                    hits.into_iter()
-                                        .map(|hit| format!(
-                                            "{} [{}] / {}",
-                                            hit.archive_name, hit.archive_id, hit.relative_path
-                                        ))
-                                        .collect(),
-                                ),
-                            };
-                            if !matches!(texture.resolution, AssetResolution::Missing) {
-                                break;
+                        let Some(imported_root) = &imported_root else {
+                            continue;
+                        };
+                        texture.resolution = match resolve_imported_reference(
+                            imported_root,
+                            &candidate,
+                            build_label.as_deref(),
+                        )
+                        .map_err(|e| e.to_string())? {
+                            LibraryReferenceStatus::Missing => AssetResolution::Missing,
+                            LibraryReferenceStatus::Found(hit) => {
+                                AssetResolution::Found(hit.absolute_path)
                             }
+                            LibraryReferenceStatus::Ambiguous(hits) => AssetResolution::Ambiguous(
+                                hits.into_iter()
+                                    .map(|hit| format!(
+                                        "{} [{}] / {}",
+                                        hit.archive_name, hit.archive_id, hit.relative_path
+                                    ))
+                                    .collect(),
+                            ),
+                        };
+                        if !matches!(texture.resolution, AssetResolution::Missing) {
+                            break;
                         }
                     }
                 }
@@ -683,6 +687,12 @@ impl Operation {
                 // Missing/corrupt optional streams must not discard every
                 // successfully decoded map. Keep accurate source diagnostics.
                 let mut diagnostics = Vec::new();
+                if authored.slots.len() != 1 {
+                    diagnostics.push(format!(
+                        "{} material slots require verified CryEngine mesh-subset assignments; no cross-slot textures were applied",
+                        authored.slots.len()
+                    ));
+                }
                 let mut try_map = |role: &str, names: &[&str]| match get_pixels(names) {
                     Ok(image) => image,
                     Err(error) => {
