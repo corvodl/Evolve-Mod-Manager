@@ -174,6 +174,11 @@ fn verify_prepared_journal(
     }
     let mut seen = std::collections::HashSet::new();
     for (name, target, staged) in files {
+        // Canonicalize both ledger expectations as well: Windows can attach
+        // the extended-path prefix when resolving an already-open file, while
+        // the private controller stores a normal absolute path.
+        let target = fs::canonicalize(target).map_err(|e| e.to_string())?;
+        let staged = fs::canonicalize(staged).map_err(|e| e.to_string())?;
         let record = records
             .iter()
             .find(|record| record["name"].as_str() == Some(name.as_str()))
@@ -185,8 +190,8 @@ fn verify_prepared_journal(
             Path::new(record["source"].as_str().ok_or("Prepared source missing")?);
         let recorded_target =
             Path::new(record["target"].as_str().ok_or("Prepared target missing")?);
-        if fs::canonicalize(recorded_source).map_err(|e| e.to_string())? != *staged
-            || fs::canonicalize(recorded_target).map_err(|e| e.to_string())? != *target
+        if fs::canonicalize(recorded_source).map_err(|e| e.to_string())? != staged
+            || fs::canonicalize(recorded_target).map_err(|e| e.to_string())? != target
         {
             return Err(format!("Prepared source/target path mismatch: {name}"));
         }
@@ -224,13 +229,13 @@ fn verify_prepared_journal(
                 "Prepared ready/backup location differs from the original target: {name}"
             ));
         }
-        no_orphaned_backup(target)?;
+        no_orphaned_backup(&target)?;
         let ready = plain(ready_path, 16 * 1024 * 1024 * 1024)?;
         let size = fs::metadata(&ready).map_err(|e| e.to_string())?.len();
         let digest = sha(&ready)?;
         if record["bytes"].as_u64() != Some(size)
             || record["sha256"].as_str() != Some(digest.as_str())
-            || sha(staged)? != digest
+            || sha(&staged)? != digest
         {
             return Err(format!(
                 "Prepared file changed since signature verification: {name}"
