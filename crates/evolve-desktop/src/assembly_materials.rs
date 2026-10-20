@@ -197,7 +197,7 @@ fn authored_maps(
     build: Option<&str>,
     cache: &SharedCache,
     budget: &mut TextureBudget,
-) -> Result<[Option<Arc<image::RgbaImage>>; 5], String> {
+) -> Result<[Option<Arc<image::RgbaImage>>; 6], String> {
     let slot = document.slots.get(material_slot as usize).ok_or_else(|| {
         format!(
             "Source material slot {} exceeds {} authored leaves",
@@ -205,7 +205,7 @@ fn authored_maps(
             document.slots.len()
         )
     })?;
-    let mut result: [Option<Arc<image::RgbaImage>>; 5] = std::array::from_fn(|_| None);
+    let mut result: [Option<Arc<image::RgbaImage>>; 6] = std::array::from_fn(|_| None);
     for map in &slot.maps {
         let index = match map.role.as_str() {
             "diffuse" => 0,
@@ -213,6 +213,7 @@ fn authored_maps(
             "emittance" | "emissive" | "emission" | "glow" => 2,
             "specular" | "specularcolor" => 3,
             "gloss" | "glossiness" | "smoothness" => 4,
+            "opacity" => 5,
             _ => continue,
         };
         if result[index].is_some() {
@@ -252,9 +253,12 @@ fn authored_maps(
 /// The RGB source DDS alpha is *not* automatically an opacity channel:
 /// CryEngine materials can store gloss or mask data there. Blend only for
 /// explicit transparency; a non-opacity body slot stays depth-opaque.
+fn is_translucent_shader(slot: &evolve_core::MaterialSlot) -> bool {
+    matches!(slot.shader.to_ascii_lowercase().as_str(), "glass" | "water")
+}
+
 fn needs_alpha_blending(slot: &evolve_core::MaterialSlot) -> bool {
-    slot.maps.iter().any(|map| map.role == "opacity")
-        || matches!(slot.shader.to_ascii_lowercase().as_str(), "glass" | "water")
+    is_translucent_shader(slot) || slot.maps.iter().any(|map| map.role == "opacity")
 }
 
 /// Load exact source subset/material IDs for a standalone .skinm/.chrm.
@@ -294,6 +298,7 @@ pub fn load_model(
             emissive: None,
             specular: None,
             gloss: None,
+            opacity: None,
         };
         if material_slot == 255 {
             warnings.push(format!(
@@ -312,7 +317,6 @@ pub fn load_model(
             if leaf.shader.eq_ignore_ascii_case("NoDraw") {
                 surface.visible = false;
             } else {
-                surface.transparent = needs_alpha_blending(leaf);
                 match authored_maps(
                     &document,
                     material_slot,
@@ -322,12 +326,18 @@ pub fn load_model(
                     cache,
                     &mut budget,
                 ) {
-                    Ok([diffuse, normal, emissive, specular, gloss]) => {
+                    Ok([diffuse, normal, emissive, specular, gloss, opacity]) => {
                         surface.diffuse = diffuse;
                         surface.normal = normal;
                         surface.emissive = emissive;
                         surface.specular = specular;
                         surface.gloss = gloss;
+                        surface.opacity = opacity;
+                        // Only an actual verified opacity map may activate its
+                        // transparency path; a missing mask must not expose a
+                        // completely unrelated diffuse alpha channel.
+                        surface.transparent = needs_alpha_blending(leaf)
+                            && (is_translucent_shader(leaf) || surface.opacity.is_some());
                     }
                     Err(error) => warnings.push(format!(
                         "Original material slot {} ({}): {}",
@@ -362,6 +372,7 @@ pub fn load(
             emissive: None,
             specular: None,
             gloss: None,
+            opacity: None,
         };
         let result = (|| -> Result<(), String> {
             if part.material_slot == 255 {
@@ -388,8 +399,7 @@ pub fn load(
                 surface.visible = false;
                 return Ok(());
             }
-            surface.transparent = needs_alpha_blending(leaf);
-            let [diffuse, normal, emissive, specular, gloss] = authored_maps(
+            let [diffuse, normal, emissive, specular, gloss, opacity] = authored_maps(
                 &authored,
                 part.material_slot,
                 inventory,
@@ -403,6 +413,9 @@ pub fn load(
             surface.emissive = emissive;
             surface.specular = specular;
             surface.gloss = gloss;
+            surface.opacity = opacity;
+            surface.transparent = needs_alpha_blending(leaf)
+                            && (is_translucent_shader(leaf) || surface.opacity.is_some());
             Ok(())
         })();
         if let Err(error) = result {
@@ -541,6 +554,21 @@ mod tests {
             .unwrap_err()
             .contains("no original mesh-subset table")
         );
+    }
+
+    #[test]
+    fn authored_opacity_is_a_separate_map_role() {
+        let document = evolve_core::parse_material(
+            br#"<Material Name="sample" Shader="Illum"><Textures>
+                <Texture Map="Diffuse" File="objects/diffuse.dds"/>
+                <Texture Map="Opacity" File="objects/opacity.dds"/>
+            </Textures></Material>"#,
+        )
+        .unwrap();
+        let slot = &document.slots[0];
+        assert!(needs_alpha_blending(slot));
+        assert!(slot.maps.iter().any(|reference| reference.role == "opacity"));
+        assert!(!is_translucent_shader(slot));
     }
 
     #[test]
