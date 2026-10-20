@@ -1621,7 +1621,7 @@ fn restore_level_history(state: &mut State, undo: bool) {
 
 fn exportable_asset(relative: &str) -> bool {
     let lower = relative.to_ascii_lowercase();
-    lower.ends_with(".cdf")
+    lower.ends_with(".dds") || lower.ends_with(".dds.0") || lower.ends_with(".cdf")
         || [
             ".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cgfm", ".cga", ".cgam",
         ]
@@ -3282,10 +3282,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Choose an existing absolute parent folder for exports.".into();
                 return Task::none();
             }
-            if state.blender_path.trim().is_empty() {
-                state.status = "Select an installed Blender executable before FBX export.".into();
-                return Task::none();
-            }
             let mut indices = state.export_selected.iter().copied().collect::<Vec<_>>();
             indices.sort_unstable();
             let selected = indices
@@ -3294,7 +3290,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .filter(|p| exportable_asset(p))
                 .collect::<Vec<_>>();
             if selected.is_empty() || selected.len() > 64 {
-                state.status = "Select 1 to 64 source models or CDF assemblies.".into();
+                state.status = "Select 1 to 64 source models, CDFs, or DDS textures.".into();
+                return Task::none();
+            }
+            if selected.iter().any(|p| !p.to_ascii_lowercase().ends_with(".dds")
+                && !p.to_ascii_lowercase().ends_with(".dds.0"))
+                && state.blender_path.trim().is_empty()
+            {
+                state.status = "Choose an installed Blender executable for FBX export.".into();
                 return Task::none();
             }
             let cdf = selected.len() == 1 && selected[0].to_ascii_lowercase().ends_with(".cdf");

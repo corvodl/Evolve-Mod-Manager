@@ -168,7 +168,42 @@ fn dependencies(
             return Err("Dependency graph exceeds safe limit".into());
         }
         let lower = relative.to_ascii_lowercase();
-        if !(lower.ends_with(".cdf") || lower.ends_with(".mtl")) {
+        if !(lower.ends_with(".dds") || lower.ends_with(".dds.0") || lower.ends_with(".cdf") || lower.ends_with(".mtl")) {
+            // Original metadata may have a separately cooked render mesh.
+            // Export the *exact* indexed sidecar rather than guessing a model
+            // with a similar name elsewhere in the Asset Library.
+            let compiled = if lower.ends_with(".skin") { Some("skinm") }
+                else if lower.ends_with(".chr") { Some("chrm") }
+                else if lower.ends_with(".cgf") { Some("cgfm") }
+                else if lower.ends_with(".cga") { Some("cgam") }
+                else { None };
+            if let Some(extension) = compiled {
+                let candidate = Path::new(&relative).with_extension(extension)
+                    .to_string_lossy().replace('\\', "/");
+                match crate::resolve_virtual(inventory, &candidate) {
+                    crate::AssetResolution::Found(found) => {
+                        queue.push_back(found.clone());
+                        if files.insert(found.to_ascii_lowercase()) {
+                            let mesh = indexed_file(root, inventory, &found)?;
+                            let size = fs::metadata(&mesh).map_err(|e| e.to_string())?.len();
+                            copied = copied.checked_add(size).ok_or("Dependency size overflow")?;
+                            if copied > MAX_COPY_BYTES {
+                                return Err("Dependencies exceed 1 GiB budget".into());
+                            }
+                            let output = bundle.join("dependencies").join(relative_path(&found)?);
+                            if let Some(parent) = output.parent() {
+                                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                            }
+                            fs::copy(mesh, output).map_err(|e| e.to_string())?;
+                            others += 1;
+                        }
+                    }
+                    crate::AssetResolution::Missing => (),
+                    crate::AssetResolution::Ambiguous(_) => {
+                        return Err(format!("Ambiguous compiled mesh for {relative}"));
+                    }
+                }
+            }
             // Standalone export also discovers exactly indexed sidecar MTL.
             if [
                 ".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cgfm", ".cga", ".cgam",
@@ -259,39 +294,10 @@ fn dependencies(
                 queue.push_back(dep.clone());
             } else if [
                 ".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cgfm", ".cga", ".cgam",
-            ]
-            .iter()
-            .any(|suffix| key.ends_with(suffix))
-            {
-                // A mesh's material isn't a CDF edge. Include the one exact
-                // indexed same-stem original MTL when it exists.
-                let candidate = Path::new(dep)
-                    .with_extension("mtl")
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                match crate::resolve_virtual(inventory, &candidate) {
-                    crate::AssetResolution::Found(found) => {
-                        if files.insert(found.to_ascii_lowercase()) {
-                            let material = indexed_file(root, inventory, &found)?;
-                            let size = fs::metadata(&material).map_err(|e| e.to_string())?.len();
-                            copied = copied.checked_add(size).ok_or("Dependency size overflow")?;
-                            if copied > MAX_COPY_BYTES {
-                                return Err("Dependencies exceed 1 GiB budget".into());
-                            }
-                            let output = bundle.join("dependencies").join(relative_path(&found)?);
-                            if let Some(parent) = output.parent() {
-                                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-                            }
-                            fs::copy(material, output).map_err(|e| e.to_string())?;
-                            others += 1;
-                            queue.push_back(found);
-                        }
-                    }
-                    crate::AssetResolution::Missing => (),
-                    crate::AssetResolution::Ambiguous(_) => {
-                        return Err(format!("Ambiguous exact material for {dep}"));
-                    }
-                }
+            ].iter().any(|suffix| key.ends_with(suffix)) {
+                // Queue all exact authored source mesh companions for secondary
+                // material and compiled-geometry resolution.
+                queue.push_back(dep.clone());
             }
         }
     }
@@ -329,7 +335,12 @@ pub fn export_bundle(
         {
             return Err(format!("Not a supported model or assembly: {relative}"));
         }
-        let filename = format!("{}.fbx", output_stem(relative)?);
+        let filename = if lower.ends_with(".dds") || lower.ends_with(".dds.0") {
+            let as_png = png_relative_path(relative)?;
+            format!("{}.png", output_stem(&as_png.to_string_lossy())?)
+        } else {
+            format!("{}.fbx", output_stem(relative)?)
+        };
         if !filenames.insert(filename.to_ascii_lowercase()) {
             return Err(format!("Several assets would overwrite {filename}"));
         }
@@ -342,9 +353,16 @@ pub fn export_bundle(
     let bundle = stage.path().join("bundle");
     fs::create_dir(&bundle).map_err(|e| e.to_string())?;
     let mut exported = Vec::new();
+    let mut direct_pngs = 0usize;
     let mut warnings = Vec::new();
     for (relative, source, filename) in selected {
         let target = bundle.join(&filename);
+        if filename.to_ascii_lowercase().ends_with(".png") {
+            export_dds_png(&source, &target).map_err(|e| format!("{relative}: {e}"))?;
+            direct_pngs += 1;
+            exported.push(filename);
+            continue;
+        }
         if options.rigged && relative.to_ascii_lowercase().ends_with(".cdf") {
             export_unified_cdf_fbx_options(
                 &source,
@@ -424,7 +442,7 @@ pub fn export_bundle(
     Ok(ExportBundleReport {
         destination: options.destination.clone(),
         exported,
-        png_textures,
+        png_textures: png_textures + direct_pngs,
         other_dependencies,
         warnings,
     })

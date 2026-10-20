@@ -50,7 +50,7 @@ fn dropdown(state: &State) -> Option<Element<'_, Message>> {
         "File" => column![
             design::button("Inspect original PAK").on_press(Message::MenuCommand(Box::new(Message::StartPakInspection))),
             design::button("Export…").on_press(Message::ExportOpen),
-            design::button("Export selected DDS → PNG").on_press(Message::MenuCommand(Box::new(Message::StartPngExport))),
+            design::button("Export selected textures / models…").on_press(Message::ExportOpen),
             design::button("Save viewer layout").on_press(Message::MenuCommand(Box::new(Message::ViewerSaveLayout))),
         ].spacing(3).into(),
         "Edit" => column![
@@ -717,7 +717,7 @@ fn explorer(state: &State) -> Element<'_, Message> {
                                         is_cdf.then_some(Message::ViewerPreviewStaticCdf)
                                     ),
                                     design::button("Export DDS → PNG")
-                                        .on_press_maybe(is_dds.then_some(Message::StartPngExport)),
+                                        .on_press_maybe(is_dds.then_some(Message::ExportOpen)),
                                     design::button("Rigged FBX").on_press_maybe(
                                         (is_model && !state.busy).then_some(Message::ExportOpen)
                                     ),
@@ -849,13 +849,13 @@ fn export_dialog(state: &State) -> Element<'_, Message> {
     .spacing(5);
     column![
         row![
-            text("Export models and assemblies").size(17),
+            text("Export files and assemblies").size(17),
             iced::widget::space().width(Fill),
             design::button("✕").on_press(Message::ExportClose),
         ].spacing(8),
         text(format!("{} selected — Ctrl/Shift selections from Files are included when opened.",
             state.export_selected.len())).size(11).style(design::muted),
-        design::text_input("Filter indexed meshes and CDF assemblies…", &state.export_filter)
+        design::text_input("Filter indexed models, CDFs, and DDS textures…", &state.export_filter)
             .on_input(Message::ExportFilterChanged),
         scrollable(picker).height(Length::Fixed(132.0)),
         flags,
