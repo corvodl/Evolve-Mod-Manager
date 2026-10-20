@@ -36,6 +36,10 @@ pub struct MaterialSlot {
     pub name: String,
     pub shader: String,
     pub maps: Vec<TextureReference>,
+    /// Source MTL scalar Opacity attribute. Separate from diffuse DDS alpha
+    /// (CryEngine may use that alpha for gloss, masking or emission).
+    #[serde(default)]
+    pub opacity: Option<f32>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MaterialDocument {
@@ -67,6 +71,24 @@ fn attr(node: &BytesStart<'_>, wanted: &[u8]) -> Result<Option<String>, Material
         }
     }
     Ok(None)
+}
+
+/// Parse the authored scalar as a normalized material factor. It is never
+/// inferred from diffuse DDS alpha or a shader name.
+fn material_opacity(node: &BytesStart<'_>) -> Result<Option<f32>, MaterialError> {
+    let Some(text) = attr(node, b"Opacity")? else {
+        return Ok(None);
+    };
+    let value = text
+        .trim()
+        .parse::<f32>()
+        .map_err(|_| MaterialError::Xml("Invalid material Opacity scalar".into()))?;
+    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        return Err(MaterialError::Xml(
+            "Material Opacity must be a finite value from 0 to 1".into(),
+        ));
+    }
+    Ok(Some(value))
 }
 
 fn normalize_texture(raw: &str) -> Result<String, MaterialError> {
@@ -176,6 +198,7 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                     let name =
                         attr(&node, b"Name")?.unwrap_or_else(|| format!("Material{}", slots.len()));
                     let shader = attr(&node, b"Shader")?.unwrap_or_default();
+                    let opacity = material_opacity(&node)?;
                     if let Some((_, parent)) = material_indices.last() {
                         nonleaf[*parent] = true;
                     }
@@ -183,6 +206,7 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         name,
                         shader,
                         maps: Vec::new(),
+                        opacity,
                     });
                     nonleaf.push(false);
                     material_indices.push((parents.len() + 1, slots.len() - 1));
@@ -222,6 +246,7 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                             .unwrap_or_else(|| format!("Material{}", slots.len())),
                         shader: attr(&node, b"Shader")?.unwrap_or_default(),
                         maps: Vec::new(),
+                        opacity: material_opacity(&node)?,
                     });
                     nonleaf.push(false);
                 } else if tag.eq_ignore_ascii_case(b"Texture")
@@ -357,6 +382,22 @@ mod tests {
         assert_eq!(authored.slots[0].maps.len(), 3);
         assert_eq!(authored.slots[0].maps[0].role, "specularcolor");
         assert_eq!(authored.slots[0].maps[1].role, "glossiness");
+    }
+
+    #[test]
+    fn historical_mtl_scalar_opacity_is_not_a_diffuse_dds_alpha_channel() {
+        let doc = parse_material(br#"<Material Name="Goliath"><SubMaterials>
+            <Material Name="body" Shader="Illum" Opacity="1"><Textures>
+                <Texture Map="Diffuse" File="characters/goliath.dds"/>
+            </Textures></Material>
+            <Material Name="saliva" Shader="Illum" Opacity="0.11"/>
+        </SubMaterials></Material>"#).unwrap();
+        assert_eq!(doc.slots.len(), 2);
+        assert_eq!(doc.slots[0].opacity, Some(1.0));
+        assert_eq!(doc.slots[1].opacity, Some(0.11));
+        assert!(parse_material(br#"<Material Opacity="NaN"/>"#).is_err());
+        assert!(parse_material(br#"<Material Opacity="-1"/>"#).is_err());
+        assert!(parse_material(br#"<Material Opacity="99"/>"#).is_err());
     }
 
     #[test]

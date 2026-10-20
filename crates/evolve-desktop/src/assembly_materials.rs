@@ -368,7 +368,42 @@ fn is_translucent_shader(slot: &evolve_core::MaterialSlot) -> bool {
 }
 
 fn needs_alpha_blending(slot: &evolve_core::MaterialSlot) -> bool {
-    is_translucent_shader(slot) || slot.maps.iter().any(|map| map.role == "opacity")
+    is_translucent_shader(slot)
+        || slot.opacity.is_some_and(|value| value < 0.999)
+        || slot.maps.iter().any(|map| map.role == "opacity")
+}
+
+/// The authoring model, not the diffuse bitmap's fourth channel, decides
+/// whether this surface transmits light. A Glass shader with Opacity≈1 uses
+/// a documented, neutral preview approximation of refraction, not the
+/// frequently unrelated CryEngine gloss/mask stored in diffuse alpha.
+fn verified_opacity(
+    slot: &evolve_core::MaterialSlot,
+    mask: Option<Arc<image::RgbaImage>>,
+) -> Option<Arc<image::RgbaImage>> {
+    let scalar = slot.opacity.unwrap_or(1.0);
+    let factor = if is_translucent_shader(slot) && scalar >= 0.98 {
+        0.40
+    } else {
+        scalar
+    };
+    if let Some(source) = mask {
+        if factor >= 0.999 {
+            return Some(source);
+        }
+        let mut pixels = source.as_ref().clone();
+        for pixel in pixels.pixels_mut() {
+            pixel.0[0] = (f32::from(pixel.0[0]) * factor).round() as u8;
+        }
+        return Some(Arc::new(pixels));
+    }
+    if factor >= 0.999 {
+        return None;
+    }
+    Some(Arc::new(image::RgbaImage::from_pixel(
+        1, 1,
+        image::Rgba([(factor * 255.0).round() as u8, 255, 255, 255]),
+    )))
 }
 
 /// Load exact source subset/material IDs for a standalone .skinm/.chrm.
@@ -448,12 +483,11 @@ pub fn load_model(
                         surface.emissive = emissive;
                         surface.specular = specular;
                         surface.gloss = gloss;
-                        surface.opacity = opacity;
-                        // Only an actual verified opacity map may activate its
-                        // transparency path; a missing mask must not expose a
-                        // completely unrelated diffuse alpha channel.
-                        surface.transparent = needs_alpha_blending(leaf)
-                            && (is_translucent_shader(leaf) || surface.opacity.is_some());
+                        // Original scalar opacity, when present, is independent
+                        // of packed diffuse DDS alpha. Never blend an Illum
+                        // body unless there is explicit authored evidence.
+                        surface.opacity = verified_opacity(leaf, opacity);
+                        surface.transparent = surface.opacity.is_some();
                     }
                     Err(error) => warnings.push(format!(
                         "Original material slot {} ({}): {}",
@@ -571,9 +605,8 @@ pub fn load(
             surface.emissive = emissive;
             surface.specular = specular;
             surface.gloss = gloss;
-            surface.opacity = opacity;
-            surface.transparent = needs_alpha_blending(leaf)
-                && (is_translucent_shader(leaf) || surface.opacity.is_some());
+            surface.opacity = verified_opacity(leaf, opacity);
+            surface.transparent = surface.opacity.is_some();
             Ok(())
         })();
         if let Err(error) = result {
@@ -881,6 +914,34 @@ mod tests {
     }
 
     #[test]
+    fn authored_opacity_scalars_and_glass_do_not_consume_diffuse_alpha() {
+        let solid = evolve_core::parse_material(
+            br#"<Material Shader="Illum" Opacity="1"/>"#,
+        ).unwrap();
+        assert!(verified_opacity(&solid.slots[0], None).is_none());
+        assert!(!needs_alpha_blending(&solid.slots[0]));
+        let fading = evolve_core::parse_material(
+            br#"<Material Shader="Illum" Opacity="0.11"/>"#,
+        ).unwrap();
+        let alpha = verified_opacity(&fading.slots[0], None).unwrap();
+        assert_eq!(alpha.get_pixel(0, 0).0[0], 28);
+        assert!(needs_alpha_blending(&fading.slots[0]));
+        let glass = evolve_core::parse_material(
+            br#"<Material Shader="Glass" Opacity="1"/>"#,
+        ).unwrap();
+        assert!(needs_alpha_blending(&glass.slots[0]));
+        let neutral = verified_opacity(&glass.slots[0], None).unwrap();
+        assert_eq!(neutral.get_pixel(0, 0).0[0], 102);
+
+        let source = Arc::new(image::RgbaImage::from_pixel(
+            2, 2, image::Rgba([128, 64, 16, 0]),
+        ));
+        let scaled = verified_opacity(&fading.slots[0], Some(source.clone())).unwrap();
+        assert_eq!(scaled.get_pixel(1, 1).0[0], 14);
+        assert_eq!(source.get_pixel(1, 1).0[0], 128);
+    }
+
+    #[test]
     fn ordinary_character_diffuse_alpha_does_not_make_armor_translucent() {
         let ordinary = evolve_core::MaterialSlot {
             name: "armor".into(),
@@ -889,6 +950,7 @@ mod tests {
                 role: "diffuse".into(),
                 path: "characters/armor.dds".into(),
             }],
+            opacity: None,
         };
         assert!(!needs_alpha_blending(&ordinary));
         let mut transparent = ordinary;
