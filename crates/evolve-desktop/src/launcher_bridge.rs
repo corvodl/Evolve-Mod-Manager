@@ -430,7 +430,8 @@ fn inspect_hook_startup_log(path: &Path, offset: u64) -> Result<bool, String> {
     if file.metadata().map_err(|e| e.to_string())?.len() < offset {
         return Err("Offline helper startup log was truncated during handoff".into());
     }
-    file.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
     file.take(64 * 1024)
         .read_to_end(&mut bytes)
@@ -442,12 +443,15 @@ fn inspect_hook_startup_log(path: &Path, offset: u64) -> Result<bool, String> {
             || line.contains("Could not install CreateProcessW hook:")
             || line.contains("Frida agent error:")
         {
-            return Err(format!("Private launcher reported a failed offline hook: {}", line.trim()));
+            return Err(format!(
+                "Private launcher reported a failed offline hook: {}",
+                line.trim()
+            ));
         }
     }
-    Ok(output.lines().any(|line| {
-        line.contains("Automatic CreateProcessW hook ready at ")
-    }))
+    Ok(output
+        .lines()
+        .any(|line| line.contains("Automatic CreateProcessW hook ready at ")))
 }
 
 #[cfg(windows)]
