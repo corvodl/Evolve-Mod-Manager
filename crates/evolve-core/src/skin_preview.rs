@@ -434,6 +434,21 @@ mod tests {
         );
     }
     #[test]
+    fn mounted_equipment_follows_bone_delta_without_changing_uv_or_mesh_indices() {
+        let original = mesh();
+        let mut next = original.clone();
+        let delta = trs([3.0, -2.0, 1.0], [0.0, 0.0, 0.0, 1.0]).unwrap();
+        move_equipment(&mut next, &original, 1, 2, &delta).unwrap();
+        assert_eq!(next.positions[0], original.positions[0]);
+        assert_eq!(next.positions[1], [3.0, -1.0, 1.0]);
+        assert_eq!(next.positions[2], [3.0, -2.0, 2.0]);
+        assert_eq!(next.indices, original.indices);
+        assert_eq!(next.uv0, original.uv0);
+        assert_eq!(next.normals, original.normals);
+        assert!(move_equipment(&mut next, &original, 2, 2, &delta).is_err());
+    }
+
+    #[test]
     fn quaternion_rotation_matches_source_geometry_axes() {
         let q = [
             0.0,
