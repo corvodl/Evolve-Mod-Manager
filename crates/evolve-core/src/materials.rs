@@ -199,16 +199,40 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
             Event::Empty(node) => {
                 let tag = node.name();
                 let tag = tag.as_ref();
-                if parents.is_empty() {
-                    return Err(MaterialError::Xml("Empty XML root".into()));
-                }
-                if tag.eq_ignore_ascii_case(b"Texture")
+                if tag.eq_ignore_ascii_case(b"Material")
+                    && (parents.is_empty()
+                        || parents
+                            .last()
+                            .is_some_and(|p| p.eq_ignore_ascii_case(b"SubMaterials")))
+                {
+                    // CryEngine character MTLs contain self-closing NoDraw
+                    // and otherwise empty leaves. They still occupy an
+                    // original material-subset ID. Dropping them shifts all
+                    // subsequent equipment and emissive material slots.
+                    if slots.len() >= MAX_SLOTS || (parents.is_empty() && root_seen) {
+                        return Err(MaterialError::Unsafe);
+                    }
+                    if parents.is_empty() {
+                        root_seen = true;
+                    } else if let Some((_, parent)) = material_indices.last() {
+                        nonleaf[*parent] = true;
+                    }
+                    slots.push(MaterialSlot {
+                        name: attr(&node, b"Name")?
+                            .unwrap_or_else(|| format!("Material{}", slots.len())),
+                        shader: attr(&node, b"Shader")?.unwrap_or_default(),
+                        maps: Vec::new(),
+                    });
+                    nonleaf.push(false);
+                } else if tag.eq_ignore_ascii_case(b"Texture")
                     && parents
                         .last()
                         .is_some_and(|p| p.eq_ignore_ascii_case(b"Textures"))
                     && let Some((_, index)) = material_indices.last()
                 {
                     append_texture(&node, &mut slots, *index)?;
+                } else if parents.is_empty() {
+                    return Err(MaterialError::Xml("Empty XML root".into()));
                 }
             }
             Event::End(node) => {
@@ -386,6 +410,28 @@ mod tests {
 #[cfg(test)]
 mod leaf_slot_tests {
     use super::*;
+    #[test]
+    fn empty_nodraw_leaves_retain_original_subset_positions() {
+        let parsed = parse_material(
+            br#"<Material Name="root"><SubMaterials>
+                <Material Name="hidden" Shader="NoDraw"/>
+                <Material Name="body"><Textures><Texture Map="Diffuse" File="characters/body.dds"/></Textures></Material>
+                <Material Name="unused"/>
+                <Material Name="equipment"><Textures><Texture Map="Emittance" File="characters/equipment_glow.dds"/></Textures></Material>
+            </SubMaterials></Material>"#,
+        ).unwrap();
+        assert_eq!(parsed.slots.len(), 4);
+        assert_eq!(parsed.slots[0].name, "hidden");
+        assert_eq!(parsed.slots[0].shader, "NoDraw");
+        assert!(parsed.slots[0].maps.is_empty());
+        assert_eq!(parsed.slots[1].name, "body");
+        assert_eq!(parsed.slots[2].name, "unused");
+        assert_eq!(parsed.slots[3].name, "equipment");
+        assert_eq!(parsed.slots[3].maps[0].role, "emittance");
+        assert_eq!(parse_material(br#"<Material Name="empty"/>"#)
+            .unwrap().slots.len(), 1);
+    }
+
     #[test]
     fn original_multi_material_leaf_order_matches_subset_indices() {
         let xml = br#"<Material Name="root"><SubMaterials>
