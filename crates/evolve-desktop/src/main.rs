@@ -1245,6 +1245,8 @@ enum Message {
     ExportToggleEmbedded,
     ExportToggleDependencies,
     ExportBegin,
+    ExportBrowse(&'static str),
+    ExportPicked(&'static str, Option<PathBuf>),
     ViewerPreviewStaticCdf,
     ViewerOpenStaticCdf(usize),
     StartDependencyInspection,
@@ -1596,6 +1598,39 @@ fn resolved_blender(state: &mut State) -> Result<PathBuf, String> {
     let path = blender_install::resolve_blender(&state.blender_path)?;
     state.blender_path = path.to_string_lossy().into_owned();
     Ok(path)
+}
+
+/// Native OS picker. Never use a freeform source-path field for export choices.
+/// Executed off the UI thread. A canceled dialog is intentionally a no-op.
+fn native_export_picker(kind: &str) -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        let script = if kind == "folder" {
+            r#"Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description='Choose export parent folder'; if($d.ShowDialog() -eq 'OK') { [Console]::Write($d.SelectedPath) }"#
+        } else {
+            r#"Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.OpenFileDialog; $d.Title='Select existing source file'; if($d.ShowDialog() -eq 'OK') { [Console]::Write($d.FileName) }"#
+        };
+        let output = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-STA", "-Command", script])
+            .output().ok()?;
+        if !output.status.success() { return None; }
+        let path = PathBuf::from(String::from_utf8(output.stdout).ok()?.trim());
+        return if (kind == "folder" && path.is_dir()) || (kind != "folder" && path.is_file()) { Some(path) } else { None };
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let script = if kind == "folder" { "POSIX path of (choose folder)" } else { "POSIX path of (choose file)" };
+        let output = std::process::Command::new("osascript").args(["-e", script]).output().ok()?;
+        if !output.status.success() { return None; }
+        return Some(PathBuf::from(String::from_utf8(output.stdout).ok()?.trim()));
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let arg = if kind == "folder" { "--directory" } else { "--file-selection" };
+        let output = std::process::Command::new("zenity").args(["--file-selection", arg]).output().ok()?;
+        if !output.status.success() { return None; }
+        Some(PathBuf::from(String::from_utf8(output.stdout).ok()?.trim()))
+    }
 }
 
 fn exportable_asset(relative: &str) -> bool {
@@ -3219,6 +3254,24 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.export_dialog_open = false;
         }
         Message::ExportFilterChanged(value) => state.export_filter = value,
+        Message::ExportBrowse(kind) => {
+            return Task::perform(async move {
+                tokio::task::spawn_blocking(move || native_export_picker(kind)).await.ok().flatten()
+            }, move |path| Message::ExportPicked(kind, path));
+        }
+        Message::ExportPicked(kind, Some(path)) => {
+            let value = path.to_string_lossy().into_owned();
+            match kind {
+                "folder" => state.export_parent = value,
+                "blender" => state.blender_path = value,
+                "skeleton" => state.skeleton_path = value,
+                "caf" => state.caf_path = value,
+                "diffuse" => state.diffuse_input = value,
+                _ => {}
+            }
+        }
+        Message::ExportPicked(_, None) => {}
+
         Message::ExportParentChanged(value) => state.export_parent = value,
         Message::ExportFolderChanged(value) => state.export_folder_name = value,
         Message::ExportToggleFile(index) => {
@@ -6234,7 +6287,7 @@ fn initial_state() -> State {
     }
     result
 }
-/// One native main window and one native model/asset editor window. All costly
+/// One native main window, model/asset editor, and separate export settings window. All costly
 /// asset operations stay in the existing worker queue, independent of either
 /// window's render loop.
 struct Desktop {
@@ -6244,6 +6297,7 @@ struct Desktop {
     inspector_id: Option<window::Id>,
     preferences_id: Option<window::Id>,
     activity_id: Option<window::Id>,
+    export_id: Option<window::Id>,
 }
 
 impl Desktop {
@@ -6282,6 +6336,7 @@ impl Desktop {
                 inspector_id: None,
                 preferences_id: None,
                 activity_id: None,
+                export_id: None,
             },
             Task::batch([opened.map(|_| Message::ViewerOpened), startup]),
         )
@@ -6310,6 +6365,17 @@ impl Desktop {
         });
         self.preferences_id = Some(id);
         opened.map(|_| Message::InspectorOpened)
+    }
+
+    fn open_export(&mut self) -> Task<Message> {
+        if self.export_id.is_some() { return Task::none(); }
+        let (id, opened) = window::open(window::Settings {
+            size: iced::Size::new(960.0, 740.0),
+            min_size: Some(iced::Size::new(720.0, 520.0)),
+            ..window::Settings::default()
+        });
+        self.export_id = Some(id);
+        opened.map(|_| Message::ViewerOpened)
     }
 
     fn open_activity(&mut self) -> Task<Message> {
@@ -6347,6 +6413,21 @@ impl Desktop {
                 self.update(*inner)
             }
             Message::OpenViewer => self.open_viewer(),
+            Message::ExportOpen => {
+                let prepare = update(&mut self.state, Message::ExportOpen);
+                Task::batch([prepare, self.open_export()])
+            }
+            Message::ExportClose => {
+                self.state.export_dialog_open = false;
+                self.export_id.take().map_or_else(Task::none, window::close)
+            }
+            Message::ExportBegin => {
+                let command = update(&mut self.state, Message::ExportBegin);
+                if !self.state.export_dialog_open {
+                    if let Some(id) = self.export_id.take() { return Task::batch([command, window::close(id)]); }
+                }
+                command
+            },
             Message::LibraryExport => {
                 // Never offer an old Modding inventory as if it were the
                 // currently selected imported Asset Library content.
@@ -6360,9 +6441,7 @@ impl Desktop {
                         "Preview an imported Asset Library PAK to index its original files before exporting.".into();
                     return Task::none();
                 }
-                let command = update(&mut self.state, Message::ExportOpen);
-                let viewer = self.open_viewer();
-                Task::batch([command, viewer])
+                self.update(Message::ExportOpen)
             }
             Message::OpenViewerPreferences => self.open_viewer_preferences(),
             Message::OpenInspectorWindow => self.open_inspector(),
@@ -6384,6 +6463,10 @@ impl Desktop {
                 if id == self.main_id {
                     iced::exit()
                 } else {
+                    if self.export_id == Some(id) {
+                        self.export_id = None;
+                        self.state.export_dialog_open = false;
+                    }
                     if self.viewer_id == Some(id) {
                         self.viewer_id = None;
                         self.state.viewer_menu = None;
@@ -6459,7 +6542,9 @@ impl Desktop {
     }
 
     fn view(&self, id: window::Id) -> Element<'_, Message> {
-        if self.activity_id == Some(id) {
+        if self.export_id == Some(id) {
+            asset_viewer::export_dialog(&self.state)
+        } else if self.activity_id == Some(id) {
             activity_window::view(&self.state)
         } else if self.viewer_id == Some(id) {
             asset_viewer::view(&self.state)
@@ -6479,7 +6564,9 @@ impl Desktop {
     }
 
     fn title(&self, id: window::Id) -> String {
-        if self.activity_id == Some(id) {
+        if self.export_id == Some(id) {
+            "Export Settings | Evolve Mod Manager".into()
+        } else if self.activity_id == Some(id) {
             "Activity | Evolve Mod Manager".into()
         } else if self.preferences_id == Some(id) {
             "Evolve Mod Manager — Viewer Preferences".into()
