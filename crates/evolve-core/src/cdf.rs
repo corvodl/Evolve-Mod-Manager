@@ -343,17 +343,31 @@ pub fn resolve_virtual(inventory: &Inventory, virtual_path: &str) -> AssetResolu
         return AssetResolution::Missing;
     };
     let key = valid.to_ascii_lowercase();
-    let mut matches = inventory
-        .entries
-        .iter()
-        .filter(|e| {
-            let value = e.relative_path.to_ascii_lowercase();
-            value == key || value.ends_with(&format!("/{key}"))
-        })
-        .map(|e| e.relative_path.clone())
-        .collect::<Vec<_>>();
-    matches.sort();
-    matches.dedup();
+    // Evolve 2012 CDFs author paths as "objects/characters/...", but
+    // Characters.pak and standalone extracted "characters/" folders omit
+    // the top-level Objects/ prefix. Prefer an exact source path. Only
+    // after it is absent, try the well-defined stripped virtual prefix.
+    // Never use a basename or borrow a different character/build.
+    let matches_for = |candidate: &str| {
+        let mut hits = inventory
+            .entries
+            .iter()
+            .filter(|e| {
+                let value = e.relative_path.to_ascii_lowercase();
+                value == candidate || value.ends_with(&format!("/{candidate}"))
+            })
+            .map(|e| e.relative_path.clone())
+            .collect::<Vec<_>>();
+        hits.sort();
+        hits.dedup();
+        hits
+    };
+    let mut matches = matches_for(&key);
+    if matches.is_empty()
+        && let Some(stripped) = key.strip_prefix("objects/characters/")
+    {
+        matches = matches_for(&format!("characters/{stripped}"));
+    }
     match matches.len() {
         0 => AssetResolution::Missing,
         1 => AssetResolution::Found(matches.remove(0)),
@@ -414,6 +428,43 @@ mod tests {
         );
         assert!(
             parse_cdf(br#"<CharacterDefinition><AttachmentList/></CharacterDefinition>"#).is_err()
+        );
+    }
+
+    #[test]
+    fn legacy_objects_characters_virtual_prefix_maps_to_extracted_characters() {
+        let entry = |name: &str| crate::inventory::AssetEntry {
+            relative_path: name.to_owned(),
+            byte_size: 1,
+            kind: crate::inventory::AssetKind::Mesh,
+        };
+        let mut inventory = Inventory {
+            schema: 1, root: "synthetic".into(), total_bytes: 2, skipped_symlinks: 0,
+            entries: vec![
+                entry("characters/monsters/Rocky/rocky3_body.chr"),
+                entry("characters/monsters/Rocky/rocky3_larm.chr"),
+            ],
+        };
+        assert_eq!(
+            resolve_virtual(&inventory, "objects/characters/monsters/rocky/rocky3_body.chr"),
+            AssetResolution::Found("characters/monsters/Rocky/rocky3_body.chr".into()),
+        );
+        // Do not steal a material from another character merely because the
+        // filename/stem matches, and never suppress ambiguous exact assets.
+        assert_eq!(
+            resolve_virtual(&inventory, "objects/characters/monsters/whipspider/rocky3_body.chr"),
+            AssetResolution::Missing,
+        );
+        inventory.entries.push(entry("build_b/characters/monsters/rocky/rocky3_body.chr"));
+        assert!(matches!(
+            resolve_virtual(&inventory, "objects/characters/monsters/rocky/rocky3_body.chr"),
+            AssetResolution::Ambiguous(_)
+        ));
+        // An authoritative Objects/ record takes precedence when present.
+        inventory.entries.insert(0, entry("objects/characters/monsters/rocky/rocky3_body.chr"));
+        assert_eq!(
+            resolve_virtual(&inventory, "objects/characters/monsters/rocky/rocky3_body.chr"),
+            AssetResolution::Found("objects/characters/monsters/rocky/rocky3_body.chr".into()),
         );
     }
 
