@@ -4,7 +4,8 @@
 use super::{MeshViewport, Message, State, TexturedScene, viewer_inspector};
 use crate::design;
 use iced::widget::{
-    canvas, column, container, mouse_area, row, scrollable, shader, slider, stack, text, tooltip,
+    canvas, column, container, image, mouse_area, row, scrollable, shader, slider, stack, text,
+    tooltip,
 };
 use iced::{Background, Border, Element, Fill, Length};
 
@@ -150,6 +151,8 @@ fn viewport(state: &State) -> Element<'_, Message> {
         text(" • ").size(12),
         text(if state.model.is_some() {
             "GPU Model Preview"
+        } else if state.texture_preview.is_some() {
+            "Original DDS Texture Preview"
         } else {
             "No model loaded"
         })
@@ -193,6 +196,19 @@ fn viewport(state: &State) -> Element<'_, Message> {
             .height(Fill)
             .into()
         }
+    } else if let Some(handle) = &state.texture_preview {
+        container(
+            image(handle.clone())
+                .content_fit(iced::ContentFit::Contain)
+                .width(Fill)
+                .height(Fill),
+        )
+        .center(Fill)
+        .style(|theme| container::Style {
+            background: Some(Background::Color(design::field(theme))),
+            ..container::Style::default()
+        })
+        .into()
     } else {
         container(
             column![
@@ -200,7 +216,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
             text("Choose a model, CDF, or DDS from extracted files.").size(14).style(design::muted),
             text("This workspace does not invent missing character pieces, textures or animations.")
                 .size(12).style(design::muted),
-            design::button("Inspect selected file").on_press(Message::ViewerPreviewSelected)
+            design::button("Retry selected preview").on_press(Message::ViewerPreviewSelected)
         ]
             .spacing(13)
             .align_x(iced::Center),
