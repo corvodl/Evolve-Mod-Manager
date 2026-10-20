@@ -1636,12 +1636,51 @@ fn selected_stage_target(state: &State) -> Result<String, String> {
     modding_keys::staged_target(&stage, PathBuf::from(&state.input).as_path())
 }
 
+/// A file or window transition must never retain the previous character's
+/// surfaces, textures, animation or CDF report in a new preview.
+fn clear_viewer_asset(state: &mut State) {
+    state.model = None;
+    state.render_source = None;
+    state.cdf_surfaces = None;
+    state.cdf_rest_mesh = None;
+    state.cdf_caf_preview = None;
+    state.cdf_report = None;
+    state.texture_preview = None;
+    state.texture = None;
+    state.material_report = None;
+    state.character = None;
+    state.cdf_dependencies = None;
+    state.diffuse = None;
+    state.normal_map = None;
+    state.emissive_map = None;
+    state.specular_map = None;
+    state.gloss_map = None;
+    state.native_caf = None;
+    state.skin_preview = None;
+    state.caf_layer = None;
+    state.caf_layer_label.clear();
+    state.glb_motion = None;
+    state.converted_glbs.clear();
+    state.converted_dba_cache = None;
+    state.auto_clips.clear();
+    state.auto_idle_pending = None;
+    state.auto_play_native_caf = false;
+    state.auto_material_pending = false;
+    state.auto_resource_note.clear();
+    state.diffuse_status.clear();
+    state.playing = false;
+    state.motion_time = 0.0;
+    state.viewer_context_index = None;
+    state.viewer_queued_preview = None;
+}
+
 fn begin_scan(state: &mut State, source: PathBuf) -> Task<Message> {
     if state.busy {
         return Task::none();
     }
-    state.viewer_queued_preview = None;
-    state.viewer_context_index = None;
+    clear_viewer_asset(state);
+    state.selected = None;
+    state.file_selection.clear();
     let cancelled = Arc::new(AtomicBool::new(false));
     let indexed = Arc::new(AtomicUsize::new(0));
     let task = launch(
@@ -4188,6 +4227,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         "Read-only preview: {} manifest-listed files checked for size and location.",
                         inventory.entries.len()
                     );
+                    clear_viewer_asset(state);
                     state.input = inventory.root.clone();
                     state.viewer_search.clear();
                     state.inventory = Some(inventory);
@@ -4199,7 +4239,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::AssetLibrary);
                 }
                 Ok(Completed::Inventory(inventory)) => {
-                    state.viewer_queued_preview = None;
+                    clear_viewer_asset(state);
                     state.viewer_page = 0;
                     state.file_selection.clear();
                     state.status = format!(
@@ -5868,6 +5908,17 @@ impl Desktop {
                     if self.viewer_id == Some(id) {
                         self.viewer_id = None;
                         self.state.viewer_menu = None;
+                        clear_viewer_asset(&mut self.state);
+                        // The model editor is a separate window; closing it
+                        // must return to the originating workspace rather
+                        // than exposing the old inline Models tools tab.
+                        if self.state.page == Some(Page::Models) {
+                            self.state.page = Some(if self.state.viewer_from_library {
+                                Page::AssetLibrary
+                            } else {
+                                Page::Files
+                            });
+                        }
                     }
                     if self.inspector_id == Some(id) {
                         self.inspector_id = None;
@@ -6105,6 +6156,24 @@ mod project_edit_tests {
         );
         assert_eq!(state.viewer_queued_preview, None);
         assert_eq!(state.selected, Some(1));
+    }
+
+    #[test]
+    fn switching_source_folder_clears_all_previous_character_rendering() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = State {
+            inventory: Some(scan_directory(dir.path()).unwrap()),
+            model: Some(Arc::new(evolve_core::parse_model_bytes(&evolve_core::model::tests::fixture()).unwrap())),
+            auto_resource_note: "Previous character".into(),
+            viewer_queued_preview: Some(0),
+            ..State::default()
+        };
+        let _ = begin_scan(&mut state, dir.path().to_path_buf());
+        assert!(state.model.is_none());
+        assert!(state.cdf_surfaces.is_none());
+        assert!(state.texture_preview.is_none());
+        assert!(state.auto_resource_note.is_empty());
+        assert!(state.viewer_queued_preview.is_none());
     }
 
     #[test]
