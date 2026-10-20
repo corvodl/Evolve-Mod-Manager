@@ -249,6 +249,14 @@ fn authored_maps(
     Ok(result)
 }
 
+/// The RGB source DDS alpha is *not* automatically an opacity channel:
+/// CryEngine materials can store gloss or mask data there. Blend only for
+/// explicit transparency; a non-opacity body slot stays depth-opaque.
+fn needs_alpha_blending(slot: &evolve_core::MaterialSlot) -> bool {
+    slot.maps.iter().any(|map| map.role == "opacity")
+        || matches!(slot.shader.to_ascii_lowercase().as_str(), "glass" | "water")
+}
+
 /// Load exact source subset/material IDs for a standalone .skinm/.chrm.
 /// The ordinary model viewer previously resolved an MTL's textures but never
 /// built the per-subset GPU surfaces, so 11-slot models appeared untextured.
@@ -280,6 +288,7 @@ pub fn load_model(
             first_index,
             index_count,
             visible: true,
+            transparent: false,
             diffuse: None,
             normal: None,
             emissive: None,
@@ -303,6 +312,7 @@ pub fn load_model(
             if leaf.shader.eq_ignore_ascii_case("NoDraw") {
                 surface.visible = false;
             } else {
+                surface.transparent = needs_alpha_blending(leaf);
                 match authored_maps(
                     &document,
                     material_slot,
@@ -346,6 +356,7 @@ pub fn load(
             first_index: part.first_index,
             index_count: part.index_count,
             visible: true,
+            transparent: false,
             diffuse: None,
             normal: None,
             emissive: None,
@@ -367,14 +378,13 @@ pub fn load(
             )?
             .ok_or("No explicitly associated or same-stem MTL")?;
             let authored = read_material(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            if authored
-                .slots
-                .get(part.material_slot as usize)
-                .is_some_and(|slot| slot.shader.eq_ignore_ascii_case("NoDraw"))
-            {
+            let leaf = authored.slots.get(part.material_slot as usize)
+                .ok_or_else(|| format!("Original material slot {} is missing", part.material_slot))?;
+            if leaf.shader.eq_ignore_ascii_case("NoDraw") {
                 surface.visible = false;
                 return Ok(());
             }
+            surface.transparent = needs_alpha_blending(leaf);
             let [diffuse, normal, emissive, specular, gloss] = authored_maps(
                 &authored,
                 part.material_slot,
@@ -527,6 +537,25 @@ mod tests {
             .unwrap_err()
             .contains("no original mesh-subset table")
         );
+    }
+
+    #[test]
+    fn ordinary_character_diffuse_alpha_does_not_make_armor_translucent() {
+        let ordinary = evolve_core::MaterialSlot {
+            name: "armor".into(),
+            shader: "Illum".into(),
+            maps: vec![evolve_core::TextureReference {
+                role: "diffuse".into(),
+                path: "characters/armor.dds".into(),
+            }],
+        };
+        assert!(!needs_alpha_blending(&ordinary));
+        let mut transparent = ordinary;
+        transparent.maps.push(evolve_core::TextureReference {
+            role: "opacity".into(),
+            path: "characters/glass_mask.dds".into(),
+        });
+        assert!(needs_alpha_blending(&transparent));
     }
 
     #[test]
