@@ -1612,23 +1612,48 @@ fn native_export_picker(kind: &str) -> Option<PathBuf> {
         };
         let output = std::process::Command::new("powershell.exe")
             .args(["-NoProfile", "-STA", "-Command", script])
-            .output().ok()?;
-        if !output.status.success() { return None; }
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
         let path = PathBuf::from(String::from_utf8(output.stdout).ok()?.trim());
-        return if (kind == "folder" && path.is_dir()) || (kind != "folder" && path.is_file()) { Some(path) } else { None };
+        return if (kind == "folder" && path.is_dir()) || (kind != "folder" && path.is_file()) {
+            Some(path)
+        } else {
+            None
+        };
     }
     #[cfg(target_os = "macos")]
     {
-        let script = if kind == "folder" { "POSIX path of (choose folder)" } else { "POSIX path of (choose file)" };
-        let output = std::process::Command::new("osascript").args(["-e", script]).output().ok()?;
-        if !output.status.success() { return None; }
+        let script = if kind == "folder" {
+            "POSIX path of (choose folder)"
+        } else {
+            "POSIX path of (choose file)"
+        };
+        let output = std::process::Command::new("osascript")
+            .args(["-e", script])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
         return Some(PathBuf::from(String::from_utf8(output.stdout).ok()?.trim()));
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        let arg = if kind == "folder" { "--directory" } else { "--file-selection" };
-        let output = std::process::Command::new("zenity").args(["--file-selection", arg]).output().ok()?;
-        if !output.status.success() { return None; }
+        let arg = if kind == "folder" {
+            "--directory"
+        } else {
+            "--file-selection"
+        };
+        let output = std::process::Command::new("zenity")
+            .args(["--file-selection", arg])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
         Some(PathBuf::from(String::from_utf8(output.stdout).ok()?.trim()))
     }
 }
@@ -3255,9 +3280,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ExportFilterChanged(value) => state.export_filter = value,
         Message::ExportBrowse(kind) => {
-            return Task::perform(async move {
-                tokio::task::spawn_blocking(move || native_export_picker(kind)).await.ok().flatten()
-            }, move |path| Message::ExportPicked(kind, path));
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || native_export_picker(kind))
+                        .await
+                        .ok()
+                        .flatten()
+                },
+                move |path| Message::ExportPicked(kind, path),
+            );
         }
         Message::ExportPicked(kind, Some(path)) => {
             let value = path.to_string_lossy().into_owned();
@@ -6368,7 +6399,9 @@ impl Desktop {
     }
 
     fn open_export(&mut self) -> Task<Message> {
-        if self.export_id.is_some() { return Task::none(); }
+        if self.export_id.is_some() {
+            return Task::none();
+        }
         let (id, opened) = window::open(window::Settings {
             size: iced::Size::new(960.0, 740.0),
             min_size: Some(iced::Size::new(720.0, 520.0)),
@@ -6424,10 +6457,12 @@ impl Desktop {
             Message::ExportBegin => {
                 let command = update(&mut self.state, Message::ExportBegin);
                 if !self.state.export_dialog_open {
-                    if let Some(id) = self.export_id.take() { return Task::batch([command, window::close(id)]); }
+                    if let Some(id) = self.export_id.take() {
+                        return Task::batch([command, window::close(id)]);
+                    }
                 }
                 command
-            },
+            }
             Message::LibraryExport => {
                 // Never offer an old Modding inventory as if it were the
                 // currently selected imported Asset Library content.
