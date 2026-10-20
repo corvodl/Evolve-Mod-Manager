@@ -372,7 +372,13 @@ pub fn export_unified_cdf_fbx_with_equipment(
     equipment: &EquipmentOverrides,
 ) -> Result<UnifiedCdfFbxReport, String> {
     export_unified_cdf_fbx_options(
-        source, inventory, blender, destination, caf, equipment, true,
+        source,
+        inventory,
+        blender,
+        destination,
+        caf,
+        equipment,
+        true,
     )
 }
 

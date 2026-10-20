@@ -1621,9 +1621,12 @@ fn restore_level_history(state: &mut State, undo: bool) {
 
 fn exportable_asset(relative: &str) -> bool {
     let lower = relative.to_ascii_lowercase();
-    lower.ends_with(".cdf") ||
-        [".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cgfm", ".cga", ".cgam"]
-            .iter().any(|ext| lower.ends_with(ext))
+    lower.ends_with(".cdf")
+        || [
+            ".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cgfm", ".cga", ".cgam",
+        ]
+        .iter()
+        .any(|ext| lower.ends_with(ext))
 }
 
 fn launch(state: &mut State, operation: Operation) -> Task<Message> {
@@ -3201,20 +3204,33 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ExportOpen => {
             state.viewer_menu = None;
             state.export_dialog_open = true;
-            state.export_selected = state.file_selection.indices.iter().copied()
+            state.export_selected = state
+                .file_selection
+                .indices
+                .iter()
+                .copied()
                 .filter(|index| {
-                    state.inventory.as_ref().and_then(|inv| inv.entries.get(*index))
+                    state
+                        .inventory
+                        .as_ref()
+                        .and_then(|inv| inv.entries.get(*index))
                         .is_some_and(|item| exportable_asset(&item.relative_path))
-                }).collect();
+                })
+                .collect();
             if state.export_selected.is_empty() {
                 if let Some(index) = state.selected {
-                    if state.inventory.as_ref().and_then(|inv| inv.entries.get(index))
-                        .is_some_and(|item| exportable_asset(&item.relative_path)) {
+                    if state
+                        .inventory
+                        .as_ref()
+                        .and_then(|inv| inv.entries.get(index))
+                        .is_some_and(|item| exportable_asset(&item.relative_path))
+                    {
                         state.export_selected.insert(index);
                     }
                 }
             }
-            state.status = "Select models/assemblies and export settings. Originals remain read-only.".into();
+            state.status =
+                "Select models/assemblies and export settings. Originals remain read-only.".into();
         }
         Message::ExportClose => {
             state.export_dialog_open = false;
@@ -3223,7 +3239,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ExportParentChanged(value) => state.export_parent = value,
         Message::ExportFolderChanged(value) => state.export_folder_name = value,
         Message::ExportToggleFile(index) => {
-            let eligible = state.inventory.as_ref().and_then(|inv| inv.entries.get(index))
+            let eligible = state
+                .inventory
+                .as_ref()
+                .and_then(|inv| inv.entries.get(index))
                 .is_some_and(|item| exportable_asset(&item.relative_path));
             if eligible {
                 if !state.export_selected.remove(&index) && state.export_selected.len() < 64 {
@@ -3246,9 +3265,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             };
             let name = state.export_folder_name.trim();
-            if name.is_empty() || name == "." || name == ".."
-                || name.chars().any(|ch| ch.is_control() || r#"<>:"/\\|?*"#.contains(ch))
-                || name.ends_with('.') || name.ends_with(' ')
+            if name.is_empty()
+                || name == "."
+                || name == ".."
+                || name
+                    .chars()
+                    .any(|ch| ch.is_control() || r#"<>:"/\\|?*"#.contains(ch))
+                || name.ends_with('.')
+                || name.ends_with(' ')
             {
                 state.status = "Use a single valid Windows export-folder name.".into();
                 return Task::none();
@@ -3264,9 +3288,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             let mut indices = state.export_selected.iter().copied().collect::<Vec<_>>();
             indices.sort_unstable();
-            let selected = indices.into_iter()
+            let selected = indices
+                .into_iter()
                 .filter_map(|i| inventory.entries.get(i).map(|e| e.relative_path.clone()))
-                .filter(|p| exportable_asset(p)).collect::<Vec<_>>();
+                .filter(|p| exportable_asset(p))
+                .collect::<Vec<_>>();
             if selected.is_empty() || selected.len() > 64 {
                 state.status = "Select 1 to 64 source models or CDF assemblies.".into();
                 return Task::none();
@@ -3286,8 +3312,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 rigged: state.export_rigged,
                 embed_textures: state.export_embed_textures,
                 export_dependencies: state.export_dependencies,
-                equipment: if cdf { state.equipment_overrides.clone() }
-                    else { EquipmentOverrides::new() },
+                equipment: if cdf {
+                    state.equipment_overrides.clone()
+                } else {
+                    EquipmentOverrides::new()
+                },
             };
             state.export_dialog_open = false;
             return launch(state, Operation::ExportBundle(inventory, options));
@@ -4740,8 +4769,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Ok(Completed::BundleExported(result)) => {
                     state.status = format!(
                         "Exported {} FBX files, {} PNG textures and {} other dependencies into {}. {}",
-                        result.exported.len(), result.png_textures, result.other_dependencies,
-                        result.destination.display(), result.warnings.join(" | ")
+                        result.exported.len(),
+                        result.png_textures,
+                        result.other_dependencies,
+                        result.destination.display(),
+                        result.warnings.join(" | ")
                     );
                 }
                 Ok(Completed::RiggedExport(info, target)) => {

@@ -815,29 +815,53 @@ fn export_dialog(state: &State) -> Element<'_, Message> {
     let mut picker = column![].spacing(3);
     let filter = state.export_filter.to_ascii_lowercase();
     if let Some(inventory) = &state.inventory {
-        for (index, item) in inventory.entries.iter().enumerate()
+        for (index, item) in inventory
+            .entries
+            .iter()
+            .enumerate()
             .filter(|(_, e)| super::exportable_asset(&e.relative_path))
-            .filter(|(_, e)| filter.is_empty() || e.relative_path.to_ascii_lowercase().contains(&filter))
+            .filter(|(_, e)| {
+                filter.is_empty() || e.relative_path.to_ascii_lowercase().contains(&filter)
+            })
             .take(80)
         {
             let selected = state.export_selected.contains(&index);
             picker = picker.push(
-                design::button(text(format!("{} {}", if selected { "☑" } else { "☐" },
-                    item.relative_path)).size(11))
-                    .on_press(Message::ExportToggleFile(index))
-                    .style(design::text_button)
-                    .width(Fill)
+                design::button(
+                    text(format!(
+                        "{} {}",
+                        if selected { "☑" } else { "☐" },
+                        item.relative_path
+                    ))
+                    .size(11),
+                )
+                .on_press(Message::ExportToggleFile(index))
+                .style(design::text_button)
+                .width(Fill),
             );
         }
     }
     let flags = row![
-        design::button(if state.export_rigged { "☑ Rigged" } else { "☐ Rigged" })
-            .on_press(Message::ExportToggleRigged),
-        design::button(if state.export_embed_textures { "☑ Embedded textures" } else { "☐ Embedded textures" })
-            .on_press(Message::ExportToggleEmbedded),
-        design::button(if state.export_dependencies { "☑ Export dependencies" } else { "☐ Export dependencies" })
-            .on_press(Message::ExportToggleDependencies),
-    ].spacing(5);
+        design::button(if state.export_rigged {
+            "☑ Rigged"
+        } else {
+            "☐ Rigged"
+        })
+        .on_press(Message::ExportToggleRigged),
+        design::button(if state.export_embed_textures {
+            "☑ Embedded textures"
+        } else {
+            "☐ Embedded textures"
+        })
+        .on_press(Message::ExportToggleEmbedded),
+        design::button(if state.export_dependencies {
+            "☑ Export dependencies"
+        } else {
+            "☐ Export dependencies"
+        })
+        .on_press(Message::ExportToggleDependencies),
+    ]
+    .spacing(5);
     column![
         row![
             text("Export models and assemblies").size(17),
@@ -964,7 +988,11 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             dropdown(state),
             dropdown_x(state.viewer_menu),
             36.0,
-            if state.viewer_menu == Some("Model") { 460.0 } else { 310.0 },
+            if state.viewer_menu == Some("Model") {
+                460.0
+            } else {
+                310.0
+            },
         )
     }
 }

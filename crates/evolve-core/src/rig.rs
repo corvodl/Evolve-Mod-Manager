@@ -1288,7 +1288,13 @@ pub fn export_rigged_character_fbx_textured_animated(
     destination: &Path,
 ) -> Result<(RigReport, FbxReport), RigError> {
     export_rigged_character_fbx_options(
-        mesh_source, skeleton_source, blender, diffuse, native_caf, destination, true,
+        mesh_source,
+        skeleton_source,
+        blender,
+        diffuse,
+        native_caf,
+        destination,
+        true,
     )
 }
 
@@ -1339,8 +1345,12 @@ pub fn export_rigged_character_fbx_options(
     let glb = temp.path().join("verified-textured-rig.glb");
     fs::write(&glb, &output)?;
     let exported = crate::fbx::convert_glb_to_fbx_with_options(
-        blender, &glb, destination,
-        AnimationPolicy { embed_verified_animations: motion.is_some() },
+        blender,
+        &glb,
+        destination,
+        AnimationPolicy {
+            embed_verified_animations: motion.is_some(),
+        },
         embed_textures,
     )?;
     Ok((report, exported))
