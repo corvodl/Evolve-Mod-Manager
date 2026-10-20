@@ -11,6 +11,63 @@ use std::sync::Arc;
 
 const MAX_DECODED_ASSEMBLY_BYTES: usize = 768 * 1024 * 1024;
 
+/// MtlName 0x802 is an explicit author-authored CryEngine reference.
+/// This is more reliable than guessing an equipment texture from its filename.
+fn embedded_material_hints(
+    binding: &str,
+    inventory: &Inventory,
+    imported: Option<&Path>,
+    build: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let rendering = match binding.rsplit_once('.') {
+        Some((stem,ext)) if ext.eq_ignore_ascii_case("skin") => format!("{stem}.skinm"),
+        Some((stem,ext)) if ext.eq_ignore_ascii_case("chr") => format!("{stem}.chrm"),
+        _ => binding.to_owned(),
+    };
+    let path = auto_resources::exact(inventory, &rendering, imported, build)?
+        .or(auto_resources::exact(inventory, binding, imported, build)?);
+    let Some(path) = path else { return Ok(Vec::new()) };
+    let meta = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+    if !meta.file_type().is_file() || meta.len() > 16*1024*1024 {
+        return Ok(Vec::new());
+    }
+    let data = std::fs::read(&path).map_err(|e| e.to_string())?;
+    if data.len() < 32 || data.get(..5) != Some(b"CrChF") {
+        return Ok(Vec::new());
+    }
+    let u32_at = |at: usize| -> Option<u32> {
+        Some(u32::from_le_bytes(data.get(at..at+4)?.try_into().ok()?))
+    };
+    let Some(count) = u32_at(8).map(|v|v as usize) else { return Ok(Vec::new()) };
+    let Some(start) = u32_at(12).map(|v|v as usize) else { return Ok(Vec::new()) };
+    if count == 0 || count > 10000 || start < 16
+        || start.checked_add(count*16).is_none_or(|end|end>data.len())
+    {
+        return Ok(Vec::new());
+    }
+    let mut hints = Vec::new();
+    for i in 0..count {
+        let at = start+i*16;
+        if u32_at(at) != Some(0x08021014) { continue; }
+        let (Some(len),Some(offset)) = (u32_at(at+8),u32_at(at+12)) else { continue };
+        let (len,offset)=(len as usize,offset as usize);
+        if len < 132 || offset < start+count*16
+            || offset.checked_add(len).is_none_or(|end|end>data.len()) { continue }
+        let Some(field) = data.get(offset..offset+128) else { continue };
+        let Some(zero) = field.iter().position(|b| *b == 0) else { continue };
+        let Ok(name) = std::str::from_utf8(&field[..zero]) else { continue };
+        let hint = name.trim().replace('\\',"/");
+        if hint.is_empty() { continue }
+        let hint = if hint.to_ascii_lowercase().ends_with(".mtl") {
+            hint
+        } else { format!("{hint}.mtl") };
+        if !hints.iter().any(|value: &String| value.eq_ignore_ascii_case(&hint)) {
+            hints.push(hint);
+        }
+    }
+    Ok(hints)
+}
+
 fn material_for_part(
     binding: &str,
     explicit: Option<&str>,
@@ -25,9 +82,33 @@ fn material_for_part(
             .ok_or_else(|| format!("Source CDF material not found: {explicit}"))
             .map(Some);
     }
+    // Compiled MtlName data is authoritative before a fallback same-stem
+    // material; multiple contradictory authored hints remain ambiguous.
+    let parent = binding.rsplit_once('/').map_or("", |(folder,_)| folder);
+    let embedded = embedded_material_hints(binding, inventory, imported, build)?;
+    let mut unique = Vec::new();
+    for hint in embedded {
+        let mut paths = vec![hint.clone()];
+        if !hint.starts_with("characters/") && !hint.starts_with("objects/")
+            && !hint.starts_with("materials/") && !parent.is_empty()
+        {
+            paths.insert(0, format!("{parent}/{hint}"));
+        }
+        for path in paths {
+            if let Some(found) = auto_resources::exact(inventory, &path, imported, build)?
+                && !unique.contains(&found) {
+                    unique.push(found);
+            }
+        }
+    }
+    if unique.len() > 1 {
+        return Err(format!("Conflicting compiled material references: {binding}"));
+    }
+    if let Some(found) = unique.pop() {
+        return Ok(Some(found));
+    }
     // Only a same-stem material is considered, never a random DDS or a
     // different character's material from another shared archive.
-    let parent = binding.rsplit_once('/').map_or("", |(folder,_)| folder);
     let stem = binding.rsplit('/').next().unwrap_or(binding)
         .rsplit_once('.').map_or(binding, |(name,_)| name);
     let mut bases = vec![stem.to_owned()];
