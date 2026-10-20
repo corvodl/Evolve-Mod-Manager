@@ -3307,7 +3307,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             let cdf_source = (selected.len() == 1
                 && selected[0].to_ascii_lowercase().ends_with(".cdf"))
-                .then(|| PathBuf::from(&inventory.root).join(&selected[0]));
+            .then(|| PathBuf::from(&inventory.root).join(&selected[0]));
             let equipment = if cdf_source
                 .as_ref()
                 .is_some_and(|source| state.equipment_source.as_ref() == Some(source))
