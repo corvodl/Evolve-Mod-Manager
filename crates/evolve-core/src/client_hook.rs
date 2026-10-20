@@ -73,7 +73,9 @@ fn fingerprint(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 fn compare(original: &[u8], custom: &[u8], old: &[u8], new: &[u8]) -> Result<HookPairReport, ClientHookError> {
-    if original.len() != HOOK_SIZE || custom.len() != HOOK_SIZE {
+    if original.len() != HOOK_SIZE || custom.len() != HOOK_SIZE
+        || old.len() != PUBLIC_BYTES || new.len() != PUBLIC_BYTES || old == new
+    {
         return Err(ClientHookError::Format);
     }
     if original[KEY_OFFSET..KEY_OFFSET+PUBLIC_BYTES] != *old {
@@ -246,5 +248,7 @@ mod tests {
             Err(ClientHookError::OtherChanges)
         ));
         assert!(prepare_client_hook(&original, &old, &new, &original).is_err());
+        assert!(inspect_client_hook_pair(&original, &original, &old, &old).is_err(),
+            "an unmodified hook with the original key cannot masquerade as a custom-key swap");
     }
 }
