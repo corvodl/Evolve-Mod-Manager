@@ -256,6 +256,7 @@ struct State {
     level_source: Option<PathBuf>,
     level_source_sha: String,
     level_original_transforms: HashMap<String, evolve_core::Transform>,
+    level_dirty_count: usize,
     level_undo: VecDeque<LevelTransformDiff>,
     level_redo: VecDeque<LevelTransformDiff>,
     level_edit_position: String,
@@ -1122,6 +1123,21 @@ fn level_pending_edits(state: &State) -> Vec<(String, evolve_core::Transform)> {
         .collect()
 }
 
+fn track_level_dirty(
+    state: &mut State,
+    id: &str,
+    previous: evolve_core::Transform,
+    next: evolve_core::Transform,
+) {
+    if let Some(original) = state.level_original_transforms.get(id) {
+        match (previous != *original, next != *original) {
+            (false, true) => state.level_dirty_count += 1,
+            (true, false) => state.level_dirty_count = state.level_dirty_count.saturating_sub(1),
+            _ => (),
+        }
+    }
+}
+
 fn sync_level_fields(state: &mut State) {
     let transform = state
         .level_selected
@@ -1150,6 +1166,7 @@ fn restore_level_history(state: &mut State, undo: bool) {
         return;
     };
     let target = if undo { diff.old_local } else { diff.new_local };
+    let previous = if undo { diff.new_local } else { diff.old_local };
     let result = state.level_scene.as_ref().and_then(|scene| {
         let current = scene.objects.iter().find(|object| object.id == diff.guid)?.local;
         let expected = if undo { diff.new_local } else { diff.old_local };
@@ -1158,6 +1175,7 @@ fn restore_level_history(state: &mut State, undo: bool) {
     });
     match result {
         Some(Ok(scene)) => {
+            track_level_dirty(state, &diff.guid, previous, target);
             state.level_scene = Some(Arc::new(scene));
             let other = if undo {
                 &mut state.level_redo
@@ -2144,6 +2162,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         if state.level_undo.len() >= 64 {
                             state.level_undo.pop_front();
                         }
+                        track_level_dirty(state, &id, previous, applied);
                         state.level_undo.push_back(LevelTransformDiff {
                             guid: id,
                             old_local: previous,
@@ -2207,7 +2226,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 &state.preferences.asset_library_root,
                 &state.preferences.projects,
                 &state.preferences.stage,
-                &state.preferences.game_storage,
+                &state.preferences.game_storage_root,
             ] {
                 if !candidate.trim().is_empty() {
                     let path = PathBuf::from(candidate);
@@ -4050,6 +4069,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .iter()
                         .map(|object| (object.id.clone(), object.local))
                         .collect();
+                    state.level_dirty_count = 0;
                     state.level_scene = Some(Arc::new(scene));
                     state.level_selected = None;
                     state.level_selection.clear();
@@ -5267,7 +5287,8 @@ mod project_edit_tests {
             [15.0, 17.0, 19.0]
         );
         assert_eq!(initial.objects[1].world.position, [5.0, 7.0, 9.0]);
-        assert_eq!(state.level_original_transforms.len(), 1);
+        assert_eq!(state.level_original_transforms.len(), 2);
+        assert_eq!(state.level_dirty_count, 1);
     }
 
     #[test]
