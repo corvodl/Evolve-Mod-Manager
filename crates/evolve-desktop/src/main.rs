@@ -39,6 +39,7 @@ use evolve_core::{
     export_rigged_character_fbx_textured_animated, export_rigged_character_glb,
     export_unified_cdf_fbx, extract_legacy_pak, extract_signed_pak,
     import_signed_library_selection, import_stage_pak, imported_archive_files, imported_library,
+    material_texture_candidates,
     initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_signed_pak,
     list_mod_profiles, load_level_scene, plan_mod_profile, read_cdf, read_material, read_model,
     read_native_caf, read_static_cdf_assembly, read_terrain, rebuild_legacy_pak,
@@ -143,6 +144,8 @@ struct State {
     normal_map: Option<Arc<::image::RgbaImage>>,
     emissive_input: String,
     emissive_map: Option<Arc<::image::RgbaImage>>,
+    specular_map: Option<Arc<::image::RgbaImage>>,
+    gloss_map: Option<Arc<::image::RgbaImage>>,
     material_input: String,
     material_report: Option<MaterialReport>,
     auto_clips: Vec<auto_resources::AutoClip>,
@@ -389,6 +392,8 @@ enum Completed {
         Option<::image::RgbaImage>,
         Option<::image::RgbaImage>,
         Option<::image::RgbaImage>,
+        Option<::image::RgbaImage>,
+        Option<::image::RgbaImage>,
         Vec<String>,
     ),
     Caf(NativeCafMotion),
@@ -603,36 +608,37 @@ impl Operation {
                 let authored = read_material(&source).map_err(|e| e.to_string())?;
                 let library = scan_directory(&root).map_err(|e| e.to_string())?;
                 let mut report = resolve_materials(&library, &authored);
-                if authored.slots.len() == 1
-                    && report.textures.len() <= 8
+                if report.textures.len() <= 4096
                     && let Some(imported_root) = &imported_root
                 {
                     for texture in &mut report.textures {
                         if !matches!(texture.resolution, AssetResolution::Missing) {
                             continue;
                         }
-                        texture.resolution = match resolve_imported_reference(
-                            imported_root,
-                            &texture.authored_path,
-                            build_label.as_deref(),
-                        )
-                        .map_err(|e| e.to_string())?
-                        {
-                            LibraryReferenceStatus::Missing => AssetResolution::Missing,
-                            LibraryReferenceStatus::Found(hit) => {
-                                AssetResolution::Found(hit.absolute_path)
-                            }
-                            LibraryReferenceStatus::Ambiguous(hits) => AssetResolution::Ambiguous(
-                                hits.into_iter()
-                                    .map(|hit| {
-                                        format!(
+                        for candidate in material_texture_candidates(&texture.authored_path) {
+                            texture.resolution = match resolve_imported_reference(
+                                imported_root,
+                                &candidate,
+                                build_label.as_deref(),
+                            )
+                            .map_err(|e| e.to_string())? {
+                                LibraryReferenceStatus::Missing => AssetResolution::Missing,
+                                LibraryReferenceStatus::Found(hit) => {
+                                    AssetResolution::Found(hit.absolute_path)
+                                }
+                                LibraryReferenceStatus::Ambiguous(hits) => AssetResolution::Ambiguous(
+                                    hits.into_iter()
+                                        .map(|hit| format!(
                                             "{} [{}] / {}",
                                             hit.archive_name, hit.archive_id, hit.relative_path
-                                        )
-                                    })
-                                    .collect(),
-                            ),
-                        };
+                                        ))
+                                        .collect(),
+                                ),
+                            };
+                            if !matches!(texture.resolution, AssetResolution::Missing) {
+                                break;
+                            }
+                        }
                     }
                 }
                 let get_pixels = |roles: &[&str]| -> Result<Option<::image::RgbaImage>, String> {
@@ -687,11 +693,15 @@ impl Operation {
                 let diffuse = try_map("Diffuse", &["diffuse"]);
                 let normal = try_map("Normal", &["normals", "normal", "bumpmap"]);
                 let emissive = try_map("Emissive", &["emittance", "emissive", "emission", "glow"]);
+                let specular = try_map("Specular", &["specular", "specularcolor"]);
+                let gloss = try_map("Gloss", &["gloss", "glossiness", "smoothness"]);
                 Ok(Completed::MaterialResolved(
                     report,
                     diffuse,
                     normal,
                     emissive,
+                    specular,
+                    gloss,
                     diagnostics,
                 ))
             }
@@ -3921,7 +3931,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.page = Some(Page::Models);
                     }
                 }
-                Ok(Completed::MaterialResolved(report, diffuse, normal, emissive, diagnostics)) => {
+                Ok(Completed::MaterialResolved(
+                    report, diffuse, normal, emissive, specular, gloss, diagnostics
+                )) => {
                     state.auto_material_pending = false;
                     let found = report
                         .textures
@@ -3957,6 +3969,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.diffuse = diffuse.map(Arc::new);
                     state.normal_map = normal.map(Arc::new);
                     state.emissive_map = emissive.map(Arc::new);
+                    state.specular_map = specular.map(Arc::new);
+                    state.gloss_map = gloss.map(Arc::new);
                     state.material_report = Some(report);
                     state.page = Some(Page::Models);
                     if let Some(idle) = state.auto_idle_pending.take() {
@@ -4032,6 +4046,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.diffuse = None;
                     state.normal_map = None;
                     state.emissive_map = None;
+                    state.specular_map = None;
+                    state.gloss_map = None;
                     state.native_caf = None;
                     state.skin_preview = None;
                     state.glb_motion = None;
@@ -4628,6 +4644,7 @@ fn view(state: &State) -> Element<'_, Message> {
                         shader(TexturedScene{
                             mesh:mesh.clone(),diffuse:state.diffuse.clone(),
                             normal_map:state.normal_map.clone(),emissive:state.emissive_map.clone(),
+                            specular:state.specular_map.clone(),gloss:state.gloss_map.clone(),
                             yaw:state.yaw,pitch:state.pitch,zoom:state.zoom,
                             light_strength:state.light_strength,
                             pan_x:state.pan_x,pan_y:state.pan_y,shift:state.keyboard_modifiers.shift(),
