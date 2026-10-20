@@ -71,6 +71,31 @@ pub(crate) fn exact(
     }
 }
 
+/// CryEngine .skin/.chr are authored skeleton bindings. Their render
+/// companions may be in another imported shared PAK; resolve only the exact
+/// virtual companion path, never a similarly named mesh from another actor.
+pub fn exact_render_companion(
+    relative: &str,
+    inventory: &Inventory,
+    imported: Option<&Path>,
+    build: Option<&str>,
+) -> Result<Option<PathBuf>, String> {
+    let lower = relative.to_ascii_lowercase();
+    let target = if lower.ends_with(".skin") {
+        Some(format!("{}m", relative))
+    } else if lower.ends_with(".chr") {
+        Some(format!("{}m", relative))
+    } else if lower.ends_with(".cgf") || lower.ends_with(".cga") {
+        Some(format!("{}m", relative))
+    } else {
+        None
+    };
+    match target {
+        Some(name) => exact(inventory, &name, imported, build),
+        None => Ok(None),
+    }
+}
+
 fn stems(name: &str) -> Vec<String> {
     let name = name.rsplit('/').next().unwrap_or(name);
     let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
@@ -364,6 +389,24 @@ pub fn resolve_declared_dba(
 mod tests {
     use super::*;
     use evolve_core::scan_directory;
+
+    #[test]
+    fn render_companion_never_falls_back_to_neighboring_character() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("characters")).unwrap();
+        std::fs::write(dir.path().join("characters/hunter.skin"), b"source skeleton").unwrap();
+        std::fs::write(dir.path().join("characters/monster.skinm"), b"wrong mesh").unwrap();
+        let inventory = scan_directory(dir.path()).unwrap();
+        assert!(exact_render_companion(
+            "characters/hunter.skin", &inventory, None, None
+        ).unwrap().is_none());
+        std::fs::write(dir.path().join("characters/hunter.skinm"), b"same virtual source").unwrap();
+        let inventory = scan_directory(dir.path()).unwrap();
+        let chosen = exact_render_companion(
+            "characters/hunter.skin", &inventory, None, None
+        ).unwrap().unwrap();
+        assert_eq!(chosen.file_name().unwrap(), "hunter.skinm");
+    }
 
     #[test]
     fn dba_resolution_never_opens_a_non_database_or_neighboring_file() {
