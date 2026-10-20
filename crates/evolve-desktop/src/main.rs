@@ -467,7 +467,6 @@ enum Completed {
     DbaConverted(ConvertedMotion, PathBuf, Arc<tempfile::TempDir>),
     MotionGlb(AnimatedGlb),
     Character(CdfDefinition),
-    CharacterResolved(CdfDefinition, CdfDependencyReport),
     StaticCharacter(
         RenderMesh,
         AssemblyReport,
@@ -4775,27 +4774,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             return launch(state, operation);
                         }
                     }
-                }
-                Ok(Completed::CharacterResolved(character, report)) => {
-                    let mut found = 0usize;
-                    let mut missing = 0usize;
-                    let mut ambiguous = 0usize;
-                    for dependency in std::iter::once(&report.skeleton)
-                        .chain(report.attachments.iter().map(|(_, status)| status))
-                    {
-                        match dependency {
-                            AssetResolution::Found(_) => found += 1,
-                            AssetResolution::Missing => missing += 1,
-                            AssetResolution::Ambiguous(_) => ambiguous += 1,
-                        }
-                    }
-                    state.status = format!(
-                        "Character definition: {found} exact dependencies, {missing} missing, {ambiguous} ambiguous. Assembly rendering still requires verified skeleton/weights."
-                    );
-                    state.character = Some(character);
-                    state.cdf_dependencies = Some(report);
-                    state.viewer_tab = ViewerTab::Dependencies;
-                    state.page = Some(Page::Models);
                 }
                 Ok(Completed::Character(character)) => {
                     state.status = format!(
