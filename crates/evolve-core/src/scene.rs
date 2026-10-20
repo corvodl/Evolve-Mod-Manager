@@ -382,53 +382,58 @@ pub fn parse_level_scene(layers: &[(&str, &[u8])]) -> Result<LevelScene, SceneEr
     })
 }
 
-/// Modify exactly one existing local transform in memory and recalculate
-/// world transforms for its entire parent hierarchy. Source XML is untouched.
+/// Apply one authored local TRS edit. Treat the selected node and its
+/// descendants as dirty; cached world transforms outside that subtree are
+/// left untouched. The UI applies on explicit confirmation, not each keypress.
+///
+/// Constructing the child adjacency list and the returned scene clone is
+/// O(scene size), but world-matrix composition is O(affected subtree size),
+/// so a small edit does not repeatedly recompute a huge sibling hierarchy.
 pub fn edit_level_transform(
     scene: &LevelScene,
     guid: &str,
     transform: Transform,
 ) -> Result<LevelScene, SceneError> {
+    use std::collections::VecDeque;
+
+    let normalized = transform.normalize()?;
+    if guid.trim().is_empty() || scene.objects.len() > MAX_OBJECTS {
+        return Err(SceneError::NoMatchingGuid);
+    }
     let mut edited = scene.clone();
-    let index = edited
-        .objects
-        .iter()
-        .enumerate()
-        .map(|(i, object)| (object.id.clone(), i))
-        .collect::<HashMap<_, _>>();
+    let mut index = HashMap::with_capacity(edited.objects.len());
+    for (i, object) in edited.objects.iter().enumerate() {
+        if index.insert(object.id.to_ascii_lowercase(), i).is_some() {
+            return Err(SceneError::DuplicateGuid(object.id.clone()));
+        }
+    }
     let selected = index
         .get(&guid.to_ascii_lowercase())
         .copied()
         .ok_or(SceneError::NoMatchingGuid)?;
-    edited.objects[selected].local = transform.normalize()?;
-    let mut world: Vec<Option<Transform>> = vec![None; edited.objects.len()];
-    for start in 0..edited.objects.len() {
-        if world[start].is_some() {
-            continue;
-        }
-        let mut order = Vec::new();
-        let mut visiting = HashSet::new();
-        let mut current = Some(start);
-        while let Some(idx) = current {
-            if world[idx].is_some() {
-                break;
-            }
-            if !visiting.insert(idx) {
-                return Err(SceneError::Cycle(edited.objects[idx].id.clone()));
-            }
-            order.push(idx);
-            current = index.get(&edited.objects[idx].parent).copied();
-        }
-        while let Some(idx) = order.pop() {
-            let base = index
-                .get(&edited.objects[idx].parent)
-                .and_then(|parent| world[*parent])
-                .unwrap_or_default();
-            world[idx] = Some(base.combine(edited.objects[idx].local)?);
+    let mut children = vec![Vec::new(); edited.objects.len()];
+    for (i, object) in edited.objects.iter().enumerate() {
+        if let Some(&parent) = index.get(&object.parent.to_ascii_lowercase()) {
+            children[parent].push(i);
         }
     }
-    for (object, world) in edited.objects.iter_mut().zip(world) {
-        object.world = world.ok_or(SceneError::Limits)?;
+    edited.objects[selected].local = normalized;
+    // A validated scene already has cached, correct ancestor world matrices.
+    let mut dirty = VecDeque::from([selected]);
+    let mut visited = HashSet::new();
+    while let Some(i) = dirty.pop_front() {
+        if !visited.insert(i) {
+            return Err(SceneError::Cycle(edited.objects[i].id.clone()));
+        }
+        let parent_world = index
+            .get(&edited.objects[i].parent.to_ascii_lowercase())
+            .map(|&parent| edited.objects[parent].world)
+            .unwrap_or_default();
+        edited.objects[i].world = parent_world.combine(edited.objects[i].local)?;
+        dirty.extend(children[i].iter().copied());
+        if dirty.len() > MAX_OBJECTS {
+            return Err(SceneError::Limits);
+        }
     }
     Ok(edited)
 }
@@ -642,6 +647,50 @@ mod tests {
             restored.objects[1].world.position,
             original.objects[1].world.position
         );
+    }
+
+    #[test]
+    fn editing_a_leaf_preserves_other_world_transforms_and_authoring_order() {
+        let data = br#"<Objects>
+            <Object Id="left" Parent="root" Pos="1,0,0"/>
+            <Object Id="leaf" Parent="left" Pos="2,0,0"/>
+            <Object Id="right" Parent="root" Pos="0,10,0"/>
+            <Object Id="root" Pos="4,5,6"/>
+            <Object Id="unrelated" Pos="9,9,9"/>
+        </Objects>"#;
+        let original = parse_level_scene(&[("test.lyr", data)]).unwrap();
+        let changed = edit_level_transform(
+            &original,
+            "left",
+            Transform { position: [7., 0., 0.], ..Transform::default() },
+        ).unwrap();
+        assert_eq!(changed.objects[0].world.position, [11., 5., 6.]);
+        assert_eq!(changed.objects[1].world.position, [13., 5., 6.]);
+        for i in [2, 3, 4] {
+            assert_eq!(changed.objects[i].world, original.objects[i].world);
+            assert_eq!(changed.objects[i].local, original.objects[i].local);
+        }
+        assert_eq!(original.objects[0].local.position, [1., 0., 0.]);
+        let restored = edit_level_transform(&changed, "left", original.objects[0].local).unwrap();
+        assert_eq!(restored.objects[1].world, original.objects[1].world);
+    }
+
+    #[test]
+    fn large_sibling_hierarchy_recomputes_only_the_affected_branch() {
+        let mut xml = String::from("<Objects><Object Id=\"root\"/>");
+        for i in 0..5000 {
+            xml.push_str(&format!("<Object Id=\"sibling{i}\" Parent=\"root\" Pos=\"1,0,0\"/>"));
+        }
+        xml.push_str("<Object Id=\"leaf\" Parent=\"sibling1\" Pos=\"2,0,0\"/></Objects>");
+        let initial = parse_level_scene(&[("large.lyr", xml.as_bytes())]).unwrap();
+        let leaf = initial.objects.iter().position(|o| o.id == "leaf").unwrap();
+        let changed = edit_level_transform(
+            &initial,
+            "sibling1",
+            Transform { position: [5., 0., 0.], ..Transform::default() },
+        ).unwrap();
+        assert_eq!(changed.objects[leaf].world.position, [7., 0., 0.]);
+        assert_eq!(changed.objects[2500].world, initial.objects[2500].world);
     }
 
     #[test]
