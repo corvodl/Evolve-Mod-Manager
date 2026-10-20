@@ -119,14 +119,19 @@ fn legacy_owner_material(
         .unwrap_or(binding)
         .rsplit_once('.')
         .map_or(binding, |(stem, _)| stem);
-    if folder.len() < 4
+    // 2012 source folders often have a build suffix (Goliath_2,
+    // Scorpid_2), while authored render parts use a character/skin suffix
+    // (Goliath3_Rig.chr). Compare the original character-family prefix,
+    // not the build folder's entire basename.
+    let folder_family = folder.split('_').next().unwrap_or(folder);
+    if folder_family.len() < 4
         || !stem
             .to_ascii_lowercase()
-            .starts_with(&folder.to_ascii_lowercase())
+            .starts_with(&folder_family.to_ascii_lowercase())
     {
         return Ok(None);
     }
-    let suffix = &stem[folder.len()..];
+    let suffix = &stem[folder_family.len()..];
     if !suffix.is_empty() && !suffix.starts_with('_') && !suffix.as_bytes()[0].is_ascii_digit() {
         return Ok(None);
     }
@@ -142,12 +147,23 @@ fn legacy_owner_material(
     {
         return Ok(None);
     }
-    auto_resources::exact(
-        inventory,
-        &format!("{parent}/{folder}.mtl"),
-        imported,
-        build,
-    )
+    // First consider the exact original variant stem in the same folder.
+    // Goliath3_Rig / Goliath3_Default_Head may have a common Goliath3.mtl,
+    // not a Goliath_2_Rig.mtl. Do not glob for similarly named characters.
+    if let Some((variant, _)) = stem.split_once('_')
+        && variant.len() >= folder_family.len()
+    {
+        let candidate = format!("{parent}/{variant}.mtl");
+        if let Some(file) = auto_resources::exact(inventory, &candidate, imported, build)? {
+            return Ok(Some(file));
+        }
+    }
+    for candidate in [format!("{parent}/{folder}.mtl"), format!("{parent}/{folder_family}.mtl")] {
+        if let Some(file) = auto_resources::exact(inventory, &candidate, imported, build)? {
+            return Ok(Some(file));
+        }
+    }
+    Ok(None)
 }
 
 pub(crate) fn material_for_part(
@@ -158,20 +174,31 @@ pub(crate) fn material_for_part(
     build: Option<&str>,
 ) -> Result<Option<PathBuf>, String> {
     if let Some(explicit) = explicit {
-        // Some CDFs use a relative material basename. Try the owning
-        // attachment folder first; then the complete virtual path.
+        // Historical CDF <Model Material="..."> and CA_SKIN materials often
+        // reference an exact MTL path *without* the .mtl extension.
+        // Normalizing the extension is not filename-guessing.
+        let explicit = explicit.trim().replace('\\', "/");
+        let lower = explicit.to_ascii_lowercase();
+        let virtual_mtl = if lower.ends_with(".mtl") {
+            explicit
+        } else if Path::new(&explicit).extension().is_none() {
+            format!("{explicit}.mtl")
+        } else {
+            return Err(format!("CDF material has unsupported extension: {explicit}"));
+        };
         let parent = binding.rsplit_once('/').map_or("", |(folder, _)| folder);
-        let root_path = explicit.starts_with("characters/")
-            || explicit.starts_with("objects/")
-            || explicit.starts_with("materials/");
+        let normalized = virtual_mtl.to_ascii_lowercase();
+        let root_path = normalized.starts_with("characters/")
+            || normalized.starts_with("objects/")
+            || normalized.starts_with("materials/");
         if !root_path && !parent.is_empty() {
-            let scoped = format!("{parent}/{explicit}");
+            let scoped = format!("{parent}/{virtual_mtl}");
             if let Some(found) = auto_resources::exact(inventory, &scoped, imported, build)? {
                 return Ok(Some(found));
             }
         }
-        return auto_resources::exact(inventory, explicit, imported, build)?
-            .ok_or_else(|| format!("Source CDF material not found: {explicit}"))
+        return auto_resources::exact(inventory, &virtual_mtl, imported, build)?
+            .ok_or_else(|| format!("Source CDF material not found: {virtual_mtl}"))
             .map(Some);
     }
     // Compiled MtlName data is authoritative before a fallback same-stem
@@ -618,6 +645,34 @@ mod tests {
             .unwrap()
             .is_none()
         );
+    }
+
+    #[test]
+    fn historical_goliath_variant_material_can_be_resolved_without_other_character_fallbacks() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("Objects/characters/monsters/Goliath_2");
+        std::fs::create_dir_all(&folder).unwrap();
+        let mut source = vec![0; 20];
+        source[..8].copy_from_slice(b"CryTek\0\0");
+        source[8..12].copy_from_slice(&0xffff0000u32.to_le_bytes());
+        source[12..16].copy_from_slice(&0x745u32.to_le_bytes());
+        std::fs::write(folder.join("goliath3_default_head.chr"), &source).unwrap();
+        std::fs::write(folder.join("goliath3.mtl"), br#"<Material Name="Goliath"/>"#).unwrap();
+        std::fs::write(folder.join("goliath2.mtl"), br#"<Material Name="Wrong"/>"#).unwrap();
+        let inventory = evolve_core::scan_directory(dir.path()).unwrap();
+        let binding = "Objects/characters/monsters/Goliath_2/goliath3_default_head.chr";
+        let found = material_for_part(binding, None, &inventory, None, None).unwrap().unwrap();
+        assert_eq!(found.file_name().and_then(|n| n.to_str()), Some("goliath3.mtl"));
+        let explicit = material_for_part(
+            binding, Some("Objects/characters/monsters/Goliath_2/goliath3"),
+            &inventory, None, None,
+        ).unwrap().unwrap();
+        assert_eq!(explicit, found);
+        let scoped = material_for_part(
+            binding, Some("goliath3"), &inventory, None, None,
+        ).unwrap().unwrap();
+        assert_eq!(scoped, found);
+        assert!(material_for_part(binding, Some("goliath2.exr"), &inventory, None, None).is_err());
     }
 
     #[test]
