@@ -403,7 +403,10 @@ pub fn read_static_cdf_assembly_with_imported(
         let bound = match preview_source(library, &attachment.binding, imported, build) {
             Ok(Some(path)) => path,
             Ok(None) => {
-                notes.push(format!("{}: missing authored CDF binding {}", attachment.name, attachment.binding));
+                notes.push(format!(
+                    "{}: missing authored CDF binding {}",
+                    attachment.name, attachment.binding
+                ));
                 continue;
             }
             Err(error) => {
@@ -425,19 +428,28 @@ pub fn read_static_cdf_assembly_with_imported(
             None => bound,
         };
         if !names_seen.insert(attachment.binding.to_ascii_lowercase()) {
-            notes.push(format!("{}: repeated binding lacks distinct placement", attachment.name));
+            notes.push(format!(
+                "{}: repeated binding lacks distinct placement",
+                attachment.name
+            ));
             continue;
         }
         let mut mesh = match read_model(&rendered) {
             Ok(mesh) => mesh,
             Err(error) => {
-                notes.push(format!("{}: unsupported geometry ({error})", attachment.name));
+                notes.push(format!(
+                    "{}: unsupported geometry ({error})",
+                    attachment.name
+                ));
                 continue;
             }
         };
         if matches!(attachment.kind, AttachmentKind::Bone) {
             let Some(verified) = skeleton.as_ref() else {
-                notes.push(format!("{}: no verified skeleton for bone socket", attachment.name));
+                notes.push(format!(
+                    "{}: no verified skeleton for bone socket",
+                    attachment.name
+                ));
                 continue;
             };
             if let Err(error) = transform_equipment(&mut mesh, attachment, verified) {
