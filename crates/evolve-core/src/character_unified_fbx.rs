@@ -5,10 +5,13 @@ use crate::cdf::{AssetResolution, read_cdf, resolve_cdf, resolve_virtual};
 use crate::character_assembly::select_attachments;
 use crate::fbx::publish_verified_binary_fbx;
 use crate::inventory::Inventory;
-use crate::materials::{read_material, resolve_materials};
-use crate::model::read_model;
+use crate::materials::{material_texture_candidates, read_material, resolve_materials};
+use crate::model::{original_mesh_subsets, read_model};
 use crate::native_caf::read_native_caf;
-use crate::rig::{embed_verified_material_png_glb, rigged_glb_bytes, rigged_glb_bytes_with_caf};
+use crate::rig::{
+    OriginalMaterialPng, embed_original_material_slots_glb, embed_verified_material_png_glb,
+    rigged_glb_bytes, rigged_glb_bytes_with_caf,
+};
 use image::ImageEncoder;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -201,6 +204,80 @@ fn exact_single_slot_maps(
     Ok(maps)
 }
 
+/// Resolve authored CryEngine leaf maps for every original subset, including
+/// empty NoDraw leaves, without shifting indexes or borrowing a neighbor DDS.
+/// Distinct PNGs stay bound to the original material ID in Blender.
+fn exact_multi_slot_materials(
+    root: &Path,
+    mesh_path: &Path,
+    inventory: &Inventory,
+) -> Result<Option<Vec<OriginalMaterialPng>>, String> {
+    let material = mesh_path.with_extension("mtl");
+    let virtual_mtl = material.strip_prefix(root)
+        .map_err(|_| "Original material escaped indexed asset root")?
+        .to_string_lossy().replace('\\', "/");
+    let file = match resolve_virtual(inventory, &virtual_mtl) {
+        AssetResolution::Found(file) => file,
+        AssetResolution::Missing => return Ok(None),
+        AssetResolution::Ambiguous(_) => return Err("Ambiguous original character MTL".into()),
+    };
+    let doc = read_material(&input_file(root, &file)?)
+        .map_err(|e| format!("Invalid CryEngine MTL {virtual_mtl}: {e}"))?;
+    if doc.slots.len() > 128 {
+        return Err("CryEngine MTL exceeds 128 original slots".into());
+    }
+    let mut slots = Vec::with_capacity(doc.slots.len());
+    for leaf in &doc.slots {
+        let mut slot = OriginalMaterialPng {
+            name: leaf.name.clone(),
+            no_draw: leaf.shader.eq_ignore_ascii_case("NoDraw"),
+            ..Default::default()
+        };
+        for map in &leaf.maps {
+            let role = match map.role.as_str() {
+                "diffuse" => 0,
+                "normal" | "normals" | "bumpmap" => 1,
+                "emittance" | "emissive" | "emission" | "glow" => 2,
+                "specular" | "specularcolor" => 3,
+                "gloss" | "glossiness" | "smoothness" => 4,
+                _ => continue,
+            };
+            let mut found = None;
+            for candidate in material_texture_candidates(&map.path) {
+                match resolve_virtual(inventory, &candidate) {
+                    AssetResolution::Found(path) => {
+                        found = Some(input_file(root, &path)?);
+                        break;
+                    }
+                    AssetResolution::Ambiguous(_) => {
+                        return Err(format!("Ambiguous original MTL map {}", map.path));
+                    }
+                    AssetResolution::Missing => {}
+                }
+            }
+            let Some(file) = found else { continue };
+            let target = match role {
+                0 => &mut slot.diffuse,
+                1 => &mut slot.normal,
+                2 => &mut slot.emissive,
+                3 => &mut slot.specular,
+                4 => &mut slot.roughness,
+                _ => unreachable!(),
+            };
+            if target.is_some() {
+                return Err(format!("Duplicate authored texture role in MTL slot {}", leaf.name));
+            }
+            *target = Some(if role == 4 {
+                authored_roughness_png(&file)?
+            } else {
+                authored_png(&file, role == 1)?
+            });
+        }
+        slots.push(slot);
+    }
+    Ok(Some(slots))
+}
+
 /// glTF metallicRoughnessTexture uses roughness in green and metallic in
 /// blue. An explicitly authored gloss map is *inverse* roughness; never
 /// derive it from arbitrary normal, specular or diffuse alpha.
@@ -338,6 +415,26 @@ pub fn export_unified_cdf_fbx(
         vertices = vertices
             .checked_add(verified.weighted_vertices)
             .ok_or("Vertex count overflow")?;
+        let source_subsets = original_mesh_subsets(&raw, mesh.indices.len())
+            .map_err(|e| format!("CDF part {name} source subset mapping: {e}"))?;
+        let original_materials = exact_multi_slot_materials(&root, original, inventory)?;
+        // More than one source submaterial requires explicit source MTL and
+        // original subset IDs; never paint every face with the first leaf.
+        if source_subsets.len() > 1
+            || original_materials.as_ref().is_some_and(|slots| slots.len() > 1)
+        {
+            let slots = original_materials.ok_or_else(|| {
+                format!("CDF part {name} has several subsets but no original source MTL")
+            })?;
+            if source_subsets.iter().any(|(_, _, index)| *index == 255) {
+                return Err(format!("CDF part {name} has an unresolved material subset"));
+            }
+            if slots.iter().any(|slot| slot.diffuse.is_some()) {
+                diffuse_textured_parts += 1;
+            }
+            glb = embed_original_material_slots_glb(&glb, &source_subsets, &slots)
+                .map_err(|e| format!("CDF part {name} original multi-material: {e}"))?;
+        } else {
         let maps = exact_single_slot_maps(&root, original, inventory)?;
         let diffuse = maps
             .diffuse
@@ -382,6 +479,7 @@ pub fn export_unified_cdf_fbx(
         }
         if diffuse.is_some() {
             diffuse_textured_parts += 1;
+        }
         }
         total_glb_bytes = total_glb_bytes
             .checked_add(glb.len() as u64)
