@@ -817,6 +817,17 @@ fn explorer(state: &State) -> Element<'_, Message> {
     .into()
 }
 
+fn compact_export_source(path: &str, empty: &str) -> String {
+    if path.is_empty() {
+        return empty.to_owned();
+    }
+    let filename = std::path::Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_owned());
+    format!("Selected: {filename}")
+}
+
 pub(super) fn export_dialog(state: &State) -> Element<'_, Message> {
     let mut picker = column![].spacing(3);
     let filter = state.export_filter.to_ascii_lowercase();
@@ -868,7 +879,7 @@ pub(super) fn export_dialog(state: &State) -> Element<'_, Message> {
         .on_press(Message::ExportToggleDependencies),
     ]
     .spacing(5);
-    column![
+    let controls = column![
         row![
             text("Export files and assemblies").size(17),
             iced::widget::space().width(Fill),
@@ -898,14 +909,18 @@ pub(super) fn export_dialog(state: &State) -> Element<'_, Message> {
         if state.export_rigged {
             Element::from(column![
                 row![
-                    text(if state.skeleton_path.is_empty() { "Skeleton: autodetect from CDF" } else { &state.skeleton_path }).width(Fill),
+                    text(compact_export_source(&state.skeleton_path, "Skeleton: auto from CDF")).width(Fill),
                     design::button("Select skeleton…").on_press(Message::ExportBrowse("skeleton")),
+                ].spacing(8),
+                row![
+                    text(compact_export_source(&state.diffuse_input, "Standalone diffuse: auto from original MTL")).width(Fill),
+                    design::button("Select diffuse DDS…").on_press(Message::ExportBrowse("diffuse")),
                 ].spacing(8),
                 design::button(if state.export_include_animation {
                     "☑ Include verified CAF" } else { "☐ Include verified CAF" })
                     .on_press(Message::ViewerToggleExportAnimations),
                 row![
-                    text(if state.caf_path.is_empty() { "CAF: none selected" } else { &state.caf_path }).width(Fill),
+                    text(compact_export_source(&state.caf_path, "CAF: none selected")).width(Fill),
                     design::button("Select CAF…").on_press(Message::ExportBrowse("caf")),
                 ].spacing(8),
             ].spacing(4))
@@ -914,13 +929,18 @@ pub(super) fn export_dialog(state: &State) -> Element<'_, Message> {
         },
         text("Files: <name>/<model>.fbx · dependencies: <name>/textures/*.png and <name>/dependencies/…")
             .size(11).style(design::muted),
+    ].spacing(12);
+    // The bottom actions stay visible even when a long source path or narrow
+    // display requires the settings above to scroll. File list scrolls inside.
+    column![
+        scrollable(controls).height(Fill),
         row![
             design::button("Export").on_press_maybe(
                 (!state.busy && !state.export_selected.is_empty())
                     .then_some(Message::ExportBegin)),
             design::button("Cancel").on_press(Message::ExportClose),
         ].spacing(10),
-    ].spacing(12).padding(20).into()
+    ].height(Fill).spacing(12).padding(20).into()
 }
 
 pub(super) fn view(state: &State) -> Element<'_, Message> {
