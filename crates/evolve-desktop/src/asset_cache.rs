@@ -1,7 +1,7 @@
 //! Per-process, bounded decoded DDS cache for all native preview windows.
 //! Entries are keyed by canonical location + size + file modification time.
 //! Work happens on existing background workers; no decoded game data is saved.
-use evolve_core::{DdsInfo, decode_dds_rgba};
+use evolve_core::{DdsInfo, DdsLayout, decode_dds_rgba_with_layout};
 use image::RgbaImage;
 use std::collections::VecDeque;
 use std::fs;
@@ -17,6 +17,7 @@ struct SourceKey {
     canonical: PathBuf,
     size: u64,
     modified: SystemTime,
+    layout: DdsLayout,
 }
 #[derive(Debug)]
 struct CachedImage {
@@ -32,7 +33,7 @@ pub struct PreviewCache {
 }
 pub type SharedCache = Arc<Mutex<PreviewCache>>;
 
-fn key(path: &Path) -> Result<SourceKey, String> {
+fn key(path: &Path, layout: DdsLayout) -> Result<SourceKey, String> {
     let meta = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     if !meta.file_type().is_file() || meta.len() > 16 * 1024 * 1024 * 1024 {
         return Err("Source DDS is not a bounded regular file".into());
@@ -41,6 +42,7 @@ fn key(path: &Path) -> Result<SourceKey, String> {
         canonical: fs::canonicalize(path).map_err(|e| e.to_string())?,
         size: meta.len(),
         modified: meta.modified().map_err(|e| e.to_string())?,
+        layout,
     })
 }
 impl PreviewCache {
@@ -83,14 +85,18 @@ impl PreviewCache {
 /// Reuse verified decoded pixels without blocking the UI. A changed source
 /// invalidates a cached entry; only current decoded pixels remain in memory.
 pub fn decoded_dds(cache: &SharedCache, path: &Path) -> Result<(DdsInfo, Arc<RgbaImage>), String> {
-    let before = key(path)?;
+    decoded_dds_with_layout(cache, path, DdsLayout::Linear)
+}
+
+pub fn decoded_dds_with_layout(cache: &SharedCache, path: &Path, layout: DdsLayout) -> Result<(DdsInfo, Arc<RgbaImage>), String> {
+    let before = key(path, layout)?;
     if let Ok(mut cache) = cache.lock()
         && let Some(found) = cache.lookup(&before)
     {
         return Ok(found);
     }
-    let (info, pixels) = decode_dds_rgba(path).map_err(|e| e.to_string())?;
-    if key(path)? != before {
+    let (info, pixels) = decode_dds_rgba_with_layout(path, layout).map_err(|e| e.to_string())?;
+    if key(path, layout)? != before {
         return Err("Source DDS changed while being decoded; try again.".into());
     }
     let pixels = Arc::new(pixels);
@@ -108,7 +114,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("fake.dds");
         fs::write(&source, b"original").unwrap();
-        let original_key = key(&source).unwrap();
+        let original_key = key(&source, DdsLayout::Linear).unwrap();
         let info = DdsInfo {
             schema: 1,
             width: 2,
