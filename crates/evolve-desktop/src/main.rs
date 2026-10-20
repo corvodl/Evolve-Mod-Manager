@@ -5279,6 +5279,8 @@ mod project_edit_tests {
             [5.0, 7.0, 9.0]
         );
         assert_eq!(state.level_redo.len(), 1);
+        assert_eq!(state.level_dirty_count, 0);
+        assert!(level_pending_edits(&state).is_empty());
         let _ = update(&mut state, Message::LevelRedoTransform);
         assert_eq!(
             state.level_scene.as_ref().unwrap().objects[1]
@@ -5289,6 +5291,41 @@ mod project_edit_tests {
         assert_eq!(initial.objects[1].world.position, [5.0, 7.0, 9.0]);
         assert_eq!(state.level_original_transforms.len(), 2);
         assert_eq!(state.level_dirty_count, 1);
+    }
+
+    #[test]
+    fn authored_undo_history_keeps_exact_64_latest_diffs() {
+        let xml = br#"<Objects><Object Id="parent" Pos="1,0,0"/></Objects>"#;
+        let scene = evolve_core::parse_level_scene(&[("test.lyr", xml)]).unwrap();
+        let baseline = scene.objects[0].local;
+        let mut state = State {
+            level_scene: Some(Arc::new(scene)),
+            level_selected: Some(0),
+            level_original_transforms: HashMap::from([("parent".into(), baseline)]),
+            ..State::default()
+        };
+        sync_level_fields(&mut state);
+        for i in 2..=70 {
+            let _ = update(
+                &mut state,
+                Message::LevelEditPositionChanged(format!("{i},0,0")),
+            );
+            let _ = update(&mut state, Message::LevelApplyTransform);
+        }
+        assert_eq!(state.level_undo.len(), 64);
+        assert_eq!(state.level_dirty_count, 1);
+        for _ in 0..64 {
+            let _ = update(&mut state, Message::LevelUndoTransform);
+        }
+        // The five oldest edits aged out; no fabricated full-history undo.
+        assert_eq!(state.level_scene.as_ref().unwrap().objects[0].local.position, [6., 0., 0.]);
+        assert_eq!(state.level_redo.len(), 64);
+        assert_eq!(state.level_dirty_count, 1);
+        for _ in 0..64 {
+            let _ = update(&mut state, Message::LevelRedoTransform);
+        }
+        assert_eq!(state.level_scene.as_ref().unwrap().objects[0].local.position, [70., 0., 0.]);
+        assert_eq!(state.level_original_transforms["parent"], baseline);
     }
 
     #[test]
