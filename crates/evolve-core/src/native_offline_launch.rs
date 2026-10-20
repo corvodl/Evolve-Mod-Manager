@@ -174,11 +174,19 @@ pub fn plan_native_offline_swap(
     mod_public_key: &Path,
 ) -> Result<NativeOfflineSwapPlan, String> {
     let ready = inspect_native_offline_readiness(
-        game_root, isolated_stage, profile_id, original_public_key, mod_public_key,
+        game_root,
+        isolated_stage,
+        profile_id,
+        original_public_key,
+        mod_public_key,
     )?;
     let profile = plan_mod_profile(
-        &ready.stage_root, profile_id, original_public_key, mod_public_key,
-    ).map_err(|e| e.to_string())?;
+        &ready.stage_root,
+        profile_id,
+        original_public_key,
+        mod_public_key,
+    )
+    .map_err(|e| e.to_string())?;
     let mut targets = Vec::with_capacity(profile.mods.len());
     for item in &profile.mods {
         let original = unlinked_game_member(&ready.game_root, &item.target)?;
@@ -227,7 +235,9 @@ pub fn plan_native_offline_swap(
 pub fn audit_native_offline_swap(
     plan: &NativeOfflineSwapPlan,
 ) -> Result<Vec<(String, NativeRecoveryState)>, String> {
-    if plan.schema != 1 || plan.native_launch_armed || plan.targets.is_empty()
+    if plan.schema != 1
+        || plan.native_launch_armed
+        || plan.targets.is_empty()
         || plan.targets.len() > 512
     {
         return Err("Untrusted or unsupported native swap manifest".into());
@@ -240,25 +250,43 @@ pub fn audit_native_offline_swap(
     let mut seen = HashSet::new();
     let mut result = Vec::new();
     for item in &plan.targets {
-        if item.relative_path.is_empty() || !seen.insert(item.relative_path.to_ascii_lowercase())
+        if item.relative_path.is_empty()
+            || !seen.insert(item.relative_path.to_ascii_lowercase())
             || item.relative_path.starts_with('/')
             || item.relative_path.split('/').any(|part| {
-                part.is_empty() || part == "." || part == ".." || part.contains('\\') || part.contains(':')
+                part.is_empty()
+                    || part == "."
+                    || part == ".."
+                    || part.contains('\\')
+                    || part.contains(':')
             })
             || !item.relative_path.to_ascii_lowercase().ends_with(".pak")
             || item.original_sha256.len() != 64
             || item.replacement_sha256.len() != 64
             || !item.original_sha256.bytes().all(|b| b.is_ascii_hexdigit())
-            || !item.replacement_sha256.bytes().all(|b| b.is_ascii_hexdigit())
-            || item.original_sha256.eq_ignore_ascii_case(&item.replacement_sha256)
+            || !item
+                .replacement_sha256
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit())
+            || item
+                .original_sha256
+                .eq_ignore_ascii_case(&item.replacement_sha256)
         {
             return Err("Invalid or colliding native offline target".into());
         }
         let target = root.join(&item.relative_path);
         let mut parent = root.clone();
-        for component in item.relative_path.split('/').take(item.relative_path.split('/').count() - 1) {
+        for component in item
+            .relative_path
+            .split('/')
+            .take(item.relative_path.split('/').count() - 1)
+        {
             parent.push(component);
-            if !fs::symlink_metadata(&parent).map_err(|e| e.to_string())?.file_type().is_dir() {
+            if !fs::symlink_metadata(&parent)
+                .map_err(|e| e.to_string())?
+                .file_type()
+                .is_dir()
+            {
                 return Err("Symlink or invalid installed game subfolder".into());
             }
         }
@@ -280,22 +308,38 @@ pub fn audit_native_offline_swap(
         let original_hash = if original_exists {
             let path = regular(&target)?;
             Some(crate::staging::digest(&path).map_err(|e| e.to_string())?)
-        } else { None };
+        } else {
+            None
+        };
         let backup_hash = if backup_exists {
             let path = regular(&backup)?;
             Some(crate::staging::digest(&path).map_err(|e| e.to_string())?)
-        } else { None };
-        if backup_hash.as_deref().is_some_and(|value| value != item.original_sha256) {
+        } else {
+            None
+        };
+        if backup_hash
+            .as_deref()
+            .is_some_and(|value| value != item.original_sha256)
+        {
             return Err(format!("Recovery backup changed: {}", item.relative_path));
         }
         let state = match (original_hash.as_deref(), backup_hash.as_deref()) {
-            (Some(value), None) if value == item.original_sha256 => NativeRecoveryState::OriginalReady,
+            (Some(value), None) if value == item.original_sha256 => {
+                NativeRecoveryState::OriginalReady
+            }
             (None, Some(_)) => NativeRecoveryState::InterruptedBeforeMount,
-            (Some(value), Some(_)) if value == item.replacement_sha256 =>
-                NativeRecoveryState::OfflineReplacementMounted,
-            (Some(value), Some(_)) if value == item.original_sha256 =>
-                NativeRecoveryState::StrandedOriginalBackup,
-            _ => return Err(format!("Unrecognized or changed game PAK state: {}", item.relative_path)),
+            (Some(value), Some(_)) if value == item.replacement_sha256 => {
+                NativeRecoveryState::OfflineReplacementMounted
+            }
+            (Some(value), Some(_)) if value == item.original_sha256 => {
+                NativeRecoveryState::StrandedOriginalBackup
+            }
+            _ => {
+                return Err(format!(
+                    "Unrecognized or changed game PAK state: {}",
+                    item.relative_path
+                ));
+            }
         };
         result.push((item.relative_path.clone(), state));
     }
