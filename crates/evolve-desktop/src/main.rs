@@ -1168,10 +1168,13 @@ fn restore_level_history(state: &mut State, undo: bool) {
     let target = if undo { diff.old_local } else { diff.new_local };
     let previous = if undo { diff.new_local } else { diff.old_local };
     let result = state.level_scene.as_ref().and_then(|scene| {
-        let current = scene.objects.iter().find(|object| object.id == diff.guid)?.local;
+        let current = scene
+            .objects
+            .iter()
+            .find(|object| object.id == diff.guid)?
+            .local;
         let expected = if undo { diff.new_local } else { diff.old_local };
-        (current == expected)
-            .then(|| evolve_core::edit_level_transform(scene, &diff.guid, target))
+        (current == expected).then(|| evolve_core::edit_level_transform(scene, &diff.guid, target))
     });
     match result {
         Some(Ok(scene)) => {
