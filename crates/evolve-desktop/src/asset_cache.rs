@@ -136,7 +136,11 @@ pub fn decoded_dds_indexed(
         } else {
             suffix
         };
-        Some(digits.parse::<usize>().map_err(|_| "Invalid numbered DDS fragment")?)
+        Some(
+            digits
+                .parse::<usize>()
+                .map_err(|_| "Invalid numbered DDS fragment")?,
+        )
     } else {
         None
     };
