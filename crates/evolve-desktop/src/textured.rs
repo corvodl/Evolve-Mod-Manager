@@ -15,6 +15,7 @@ pub struct Surface {
     pub index_count: u32,
     /// Explicit CryEngine NoDraw subset. Preserve its index span, but do not render it.
     pub visible: bool,
+    pub transparent: bool,
     pub diffuse: Option<Arc<image::RgbaImage>>,
     pub normal: Option<Arc<image::RgbaImage>>,
     pub emissive: Option<Arc<image::RgbaImage>>,
@@ -237,6 +238,7 @@ impl shader::Program<super::Message> for Scene {
 
 struct GpuSurface {
     range: std::ops::Range<u32>,
+    transparent: bool,
     bind_group: wgpu::BindGroup,
     // Bind groups must retain the original uploaded texture allocations.
     _textures: Vec<wgpu::Texture>,
@@ -244,6 +246,7 @@ struct GpuSurface {
 
 pub struct Pipeline {
     render_pipeline: wgpu::RenderPipeline,
+    translucent_pipeline: wgpu::RenderPipeline,
     ground_pipeline: wgpu::RenderPipeline,
     ground_vertex: wgpu::Buffer,
     ground_capacity: usize,
@@ -418,7 +421,7 @@ impl Pipeline {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -430,6 +433,40 @@ impl Pipeline {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let translucent_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Evolve authored transparent material"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &program,
+                entry_point: Some("vs_main"),
+                buffers: &[Vertex::descriptor()],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &program,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
                 depth_compare: wgpu::CompareFunction::Less,
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
@@ -591,6 +628,7 @@ impl Pipeline {
         let depth = Self::depth_view(device, (1, 1));
         Self {
             render_pipeline,
+            translucent_pipeline,
             ground_pipeline,
             ground_vertex,
             ground_capacity: 32,
@@ -742,6 +780,7 @@ impl Pipeline {
             });
             self.gpu_surfaces.push(GpuSurface {
                 range: part.first_index..part.first_index + part.index_count,
+                transparent: part.transparent,
                 bind_group: group,
                 _textures: textures,
             });
@@ -965,6 +1004,11 @@ impl Pipeline {
             // NoDraw-only characters intentionally have zero visible parts.
             // Do not silently fall back to rendering the whole mesh.
             for surface in &self.gpu_surfaces {
+                pass.set_pipeline(if surface.transparent {
+                    &self.translucent_pipeline
+                } else {
+                    &self.render_pipeline
+                });
                 pass.set_bind_group(0, &surface.bind_group, &[]);
                 pass.draw_indexed(surface.range.clone(), 0, 0..1);
             }
