@@ -7,7 +7,7 @@ use evolve_core::inspect_pak_hook_pair;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -416,6 +416,54 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
     })
 }
 
+/// The detached private helper is only READY after the Frida agent has
+/// reported that its CreateProcessW hook was installed. Spawning py.exe alone
+/// is not proof that the hook exists, and must not be reported as success.
+/// Inspect only output written after this specific launch (bounded to 64 KiB).
+#[cfg(windows)]
+fn inspect_hook_startup_log(path: &Path, offset: u64) -> Result<bool, String> {
+    let mut file = File::open(path).map_err(|e| e.to_string())?;
+    if file.metadata().map_err(|e| e.to_string())?.len() < offset {
+        return Err("Offline helper startup log was truncated during handoff".into());
+    }
+    file.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
+    let mut bytes = Vec::new();
+    file.take(64 * 1024)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    let output = String::from_utf8_lossy(&bytes);
+    for line in output.lines() {
+        if line.contains("AUTOMATIC LAUNCH FAILED:")
+            || line.contains("AUTO-RESTORE MONITOR FAILED:")
+            || line.contains("Could not install CreateProcessW hook:")
+            || line.contains("Frida agent error:")
+        {
+            return Err(format!("Private launcher reported a failed offline hook: {}", line.trim()));
+        }
+    }
+    Ok(output.lines().any(|line| {
+        line.contains("Automatic CreateProcessW hook ready at ")
+    }))
+}
+
+#[cfg(windows)]
+fn check_private_helper_runtime() -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    let result = Command::new("py")
+        .args([
+            "-3.11",
+            "-c",
+            "import sys,frida; assert sys.maxsize > 2**32; assert sys.version_info[:2] == (3,11)",
+        ])
+        .creation_flags(0x08000000)
+        .status()
+        .map_err(|e| format!("Private launcher requires Python 3.11 x64 + Frida: {e}"))?;
+    if !result.success() {
+        return Err("The existing private launcher requires Python 3.11 x64 with the Frida module available to that interpreter. No client swap was started.".into());
+    }
+    Ok(())
+}
+
 /// Reuse the private launcher's already-tested control flow. It performs
 /// same-volume .customkey-ready renames only during its Frida CreateProcessW
 /// pause and starts an independent restore watchdog. Nothing here injects,
@@ -427,6 +475,7 @@ pub fn launch_existing_offline_client(plan: &LaunchReady) -> Result<u32, String>
     // Python 3.11 + Frida used by the private helpers.
     let helper_dir = &plan.swap;
     games_closed()?;
+    check_private_helper_runtime()?;
     if !plan.prepared {
         let status = Command::new("py")
             .args(["-3.11", "-u"])
@@ -456,8 +505,10 @@ pub fn launch_existing_offline_client(plan: &LaunchReady) -> Result<u32, String>
         .append(true)
         .open(helper_dir.join("rust-launch-bridge.log"))
         .map_err(|e| e.to_string())?;
+    let initial_log_len = log.metadata().map_err(|e| e.to_string())?.len();
+    let log_path = helper_dir.join("rust-launch-bridge.log");
     let stderr = log.try_clone().map_err(|e| e.to_string())?;
-    let child = Command::new("py")
+    let mut child = Command::new("py")
         .args(["-3.11", "-u"])
         .arg(helper_dir.join("auto_launch_frida.py"))
         .current_dir(helper_dir)
@@ -467,7 +518,35 @@ pub fn launch_existing_offline_client(plan: &LaunchReady) -> Result<u32, String>
         .creation_flags(0x00000008 | 0x00000200 | 0x08000000) // detached/new process group/no window
         .spawn()
         .map_err(|e| format!("Could not start private offline launcher helper: {e}"))?;
-    Ok(child.id())
+    let pid = child.id();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        match inspect_hook_startup_log(&log_path, initial_log_len) {
+            Ok(true) => return Ok(pid),
+            Ok(false) => (),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        }
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            return Err(format!(
+                "The private launcher helper exited ({status}) without confirming a ready CreateProcessW hook. Check rust-launch-bridge.log; no successful PAK swap can be assumed."
+            ));
+        }
+        if std::time::Instant::now() >= deadline {
+            // No swaps are allowed until the Frida controller confirms the
+            // exact game-process creation pause. Stop an unready controller.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(
+                "Private launch helper did not confirm a ready CreateProcessW hook within 30 seconds; helper stopped. Close the launcher before retrying."
+                    .into(),
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
 }
 #[cfg(not(windows))]
 pub fn launch_existing_offline_client(_: &LaunchReady) -> Result<u32, String> {
@@ -616,6 +695,28 @@ mod tests {
         let err = inspect_existing_launcher(&stage, &swap).unwrap_err();
         assert!(err.contains("separate directory trees"), "{err}");
         assert!(!swap.join("controlled_swap_state.json").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn helper_handoff_requires_actual_hook_ready_marker_after_new_log_offset() {
+        let temp = tempfile::tempdir().unwrap();
+        let log = temp.path().join("rust-launch-bridge.log");
+        fs::write(&log, b"Automatic CreateProcessW hook ready at old run\n").unwrap();
+        let beginning = fs::metadata(&log).unwrap().len();
+        assert!(!inspect_hook_startup_log(&log, beginning).unwrap());
+        fs::write(
+            &log,
+            b"Automatic CreateProcessW hook ready at old run\nPRECHECK PASS: staged\nAutomatic CreateProcessW hook ready at 0x1234\n",
+        )
+        .unwrap();
+        assert!(inspect_hook_startup_log(&log, beginning).unwrap());
+        fs::write(
+            &log,
+            b"Automatic CreateProcessW hook ready at old run\nAUTOMATIC LAUNCH FAILED: Frida unavailable\n",
+        )
+        .unwrap();
+        assert!(inspect_hook_startup_log(&log, beginning).is_err());
     }
 
     #[test]
