@@ -6163,7 +6163,21 @@ mod project_edit_tests {
         let dir = tempfile::tempdir().unwrap();
         let mut state = State {
             inventory: Some(scan_directory(dir.path()).unwrap()),
-            model: Some(Arc::new(evolve_core::parse_model_bytes(&evolve_core::model::tests::fixture()).unwrap())),
+            model: Some(Arc::new(RenderMesh {
+                info: evolve_core::ModelInfo {
+                    format: "test".into(),
+                    version: 7,
+                    chunk_count: 1,
+                    vertex_count: 3,
+                    triangle_count: 1,
+                    original_uv0: false,
+                    original_normals: false,
+                },
+                positions: vec![[0.0, 0.0, 0.0]; 3],
+                indices: vec![0, 1, 2],
+                uv0: None,
+                normals: None,
+            })),
             auto_resource_note: "Previous character".into(),
             viewer_queued_preview: Some(0),
             ..State::default()
