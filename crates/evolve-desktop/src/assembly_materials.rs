@@ -608,6 +608,7 @@ mod tests {
         let mut diffuse = vec![0u8; 128 + 8];
         diffuse[0..4].copy_from_slice(b"DDS ");
         diffuse[4..8].copy_from_slice(&124u32.to_le_bytes());
+        diffuse[8..12].copy_from_slice(&0x1007u32.to_le_bytes());
         diffuse[12..16].copy_from_slice(&4u32.to_le_bytes());
         diffuse[16..20].copy_from_slice(&4u32.to_le_bytes());
         diffuse[76..80].copy_from_slice(&32u32.to_le_bytes());
