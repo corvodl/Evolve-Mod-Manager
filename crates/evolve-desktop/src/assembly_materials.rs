@@ -113,16 +113,21 @@ fn legacy_owner_material(
 ) -> Result<Option<PathBuf>, String> {
     let parent = binding.rsplit_once('/').map_or("", |(parent, _)| parent);
     let folder = parent.rsplit('/').next().unwrap_or("");
-    let stem = binding.rsplit('/').next().unwrap_or(binding)
-        .rsplit_once('.').map_or(binding, |(stem, _)| stem);
-    if folder.len() < 4 || !stem.to_ascii_lowercase().starts_with(&folder.to_ascii_lowercase()) {
+    let stem = binding
+        .rsplit('/')
+        .next()
+        .unwrap_or(binding)
+        .rsplit_once('.')
+        .map_or(binding, |(stem, _)| stem);
+    if folder.len() < 4
+        || !stem
+            .to_ascii_lowercase()
+            .starts_with(&folder.to_ascii_lowercase())
+    {
         return Ok(None);
     }
     let suffix = &stem[folder.len()..];
-    if !suffix.is_empty()
-        && !suffix.starts_with('_')
-        && !suffix.as_bytes()[0].is_ascii_digit()
-    {
+    if !suffix.is_empty() && !suffix.starts_with('_') && !suffix.as_bytes()[0].is_ascii_digit() {
         return Ok(None);
     }
     let Some(source) = auto_resources::exact(inventory, binding, imported, build)? else {
@@ -137,7 +142,12 @@ fn legacy_owner_material(
     {
         return Ok(None);
     }
-    auto_resources::exact(inventory, &format!("{parent}/{folder}.mtl"), imported, build)
+    auto_resources::exact(
+        inventory,
+        &format!("{parent}/{folder}.mtl"),
+        imported,
+        build,
+    )
 }
 
 pub(crate) fn material_for_part(
@@ -583,12 +593,29 @@ mod tests {
         std::fs::write(parent.join("unrelated.mtl"), b"<Material/>").unwrap();
         let inv = evolve_core::scan_directory(dir.path()).unwrap();
         let found = material_for_part(
-            "objects/characters/monsters/rocky/rocky3_body.chr", None, &inv, None, None
-        ).unwrap().unwrap();
-        assert_eq!(found.file_name().and_then(|n| n.to_str()), Some("rocky.mtl"));
-        assert!(material_for_part(
-            "objects/characters/monsters/unrelated/rocky3_body.chr", None, &inv, None, None
-        ).unwrap().is_none());
+            "objects/characters/monsters/rocky/rocky3_body.chr",
+            None,
+            &inv,
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            found.file_name().and_then(|n| n.to_str()),
+            Some("rocky.mtl")
+        );
+        assert!(
+            material_for_part(
+                "objects/characters/monsters/unrelated/rocky3_body.chr",
+                None,
+                &inv,
+                None,
+                None
+            )
+            .unwrap()
+            .is_none()
+        );
     }
 
     #[test]
