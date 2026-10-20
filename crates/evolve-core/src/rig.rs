@@ -1048,47 +1048,68 @@ pub(crate) fn embed_original_material_slots_glb(
     subsets: &[(u32, u32, u32)],
     slots: &[OriginalMaterialPng],
 ) -> Result<Vec<u8>, RigError> {
-    if source.len() < 28 || source.get(..4) != Some(b"glTF")
-        || slots.is_empty() || slots.len() > 128 || subsets.is_empty() || subsets.len() > 128
+    if source.len() < 28
+        || source.get(..4) != Some(b"glTF")
+        || slots.is_empty()
+        || slots.len() > 128
+        || subsets.is_empty()
+        || subsets.len() > 128
     {
-        return Err(RigError::Invalid("Invalid verified multi-slot FBX source".into()));
+        return Err(RigError::Invalid(
+            "Invalid verified multi-slot FBX source".into(),
+        ));
     }
-    let json_size = u32::from_le_bytes(source[12..16].try_into().map_err(|_| RigError::Limits)?) as usize;
+    let json_size =
+        u32::from_le_bytes(source[12..16].try_into().map_err(|_| RigError::Limits)?) as usize;
     let json_end = 20usize.checked_add(json_size).ok_or(RigError::Limits)?;
-    let mut doc: Value = serde_json::from_slice(
-        source.get(20..json_end).ok_or(RigError::Limits)?
-    )?;
+    let mut doc: Value = serde_json::from_slice(source.get(20..json_end).ok_or(RigError::Limits)?)?;
     if source.get(json_end + 4..json_end + 8) != Some(b"BIN\0") {
-        return Err(RigError::Invalid("Rigged GLB has no valid BIN chunk".into()));
+        return Err(RigError::Invalid(
+            "Rigged GLB has no valid BIN chunk".into(),
+        ));
     }
-    let primitives = doc["meshes"][0]["primitives"].as_array()
+    let primitives = doc["meshes"][0]["primitives"]
+        .as_array()
         .ok_or_else(|| RigError::Invalid("Rigged geometry has no primitives".into()))?;
     if primitives.len() != 1 || doc["skins"].as_array().is_none_or(|v| v.len() != 1) {
-        return Err(RigError::Invalid("Expected one verified source skinned mesh".into()));
+        return Err(RigError::Invalid(
+            "Expected one verified source skinned mesh".into(),
+        ));
     }
     let base = primitives[0].clone();
     for attr in ["POSITION", "TEXCOORD_0", "JOINTS_0", "WEIGHTS_0"] {
         if base["attributes"][attr].as_u64().is_none() {
-            return Err(RigError::Invalid("Rigged GLB has incomplete source attributes".into()));
+            return Err(RigError::Invalid(
+                "Rigged GLB has incomplete source attributes".into(),
+            ));
         }
     }
     let accessor_id = base["indices"].as_u64().ok_or(RigError::Limits)? as usize;
     let index_acc = doc["accessors"].get(accessor_id).ok_or(RigError::Limits)?;
     let total = index_acc["count"].as_u64().ok_or(RigError::Limits)? as u32;
     let view = index_acc["bufferView"].as_u64().ok_or(RigError::Limits)?;
-    if index_acc["componentType"] != 5125 || index_acc["type"] != "SCALAR"
+    if index_acc["componentType"] != 5125
+        || index_acc["type"] != "SCALAR"
         || index_acc["byteOffset"].as_u64().unwrap_or(0) != 0
     {
-        return Err(RigError::Invalid("Source index buffer is not UINT32 triangle data".into()));
+        return Err(RigError::Invalid(
+            "Source index buffer is not UINT32 triangle data".into(),
+        ));
     }
     let mut offset = 0u32;
     let mut rewritten = Vec::with_capacity(subsets.len());
     for &(first, count, material) in subsets {
         let last = first.checked_add(count).ok_or(RigError::Limits)?;
-        if first != offset || count == 0 || !count.is_multiple_of(3)
-            || last > total || material == 255 || material as usize >= slots.len()
+        if first != offset
+            || count == 0
+            || !count.is_multiple_of(3)
+            || last > total
+            || material == 255
+            || material as usize >= slots.len()
         {
-            return Err(RigError::Invalid("Unverified CryEngine subset material index".into()));
+            return Err(RigError::Invalid(
+                "Unverified CryEngine subset material index".into(),
+            ));
         }
         let mut primitive = base.clone();
         let accessors = doc["accessors"].as_array_mut().ok_or(RigError::Limits)?;
@@ -1103,7 +1124,9 @@ pub(crate) fn embed_original_material_slots_glb(
         offset = last;
     }
     if offset != total {
-        return Err(RigError::Invalid("CDF multi-material subsets do not cover mesh".into()));
+        return Err(RigError::Invalid(
+            "CDF multi-material subsets do not cover mesh".into(),
+        ));
     }
 
     let mut binary = source.get(json_end + 8..).ok_or(RigError::Limits)?.to_vec();
@@ -1112,8 +1135,7 @@ pub(crate) fn embed_original_material_slots_glb(
     let mut materials = Vec::with_capacity(slots.len());
     let mut any_specular = false;
     for (slot_index, slot) in slots.iter().enumerate() {
-        if slot.name.is_empty() || slot.name.len() > 256
-            || slot.name.chars().any(char::is_control)
+        if slot.name.is_empty() || slot.name.len() > 256 || slot.name.chars().any(char::is_control)
         {
             return Err(RigError::Invalid("Unsafe source MTL leaf name".into()));
         }
@@ -1124,8 +1146,7 @@ pub(crate) fn embed_original_material_slots_glb(
         });
         if slot.no_draw {
             material["alphaMode"] = json!("BLEND");
-            material["pbrMetallicRoughness"]["baseColorFactor"] =
-                json!([1.0, 1.0, 1.0, 0.0]);
+            material["pbrMetallicRoughness"]["baseColorFactor"] = json!([1.0, 1.0, 1.0, 0.0]);
         }
         for (role, png) in [
             ("diffuse", slot.diffuse.as_deref()),
@@ -1136,7 +1157,9 @@ pub(crate) fn embed_original_material_slots_glb(
         ] {
             let Some(bytes) = png else { continue };
             if bytes.len() < 8 || bytes.get(..8) != Some(b"\x89PNG\r\n\x1a\n") {
-                return Err(RigError::Invalid("Authored multi-slot map is not PNG".into()));
+                return Err(RigError::Invalid(
+                    "Authored multi-slot map is not PNG".into(),
+                ));
             }
             let image_view = add_view(&mut binary, &mut doc, bytes, None)?;
             let image_index = images.len();
@@ -1147,8 +1170,10 @@ pub(crate) fn embed_original_material_slots_glb(
             let texture_index = textures.len();
             textures.push(json!({"source":image_index}));
             match role {
-                "diffuse" => material["pbrMetallicRoughness"]["baseColorTexture"] =
-                    json!({"index":texture_index}),
+                "diffuse" => {
+                    material["pbrMetallicRoughness"]["baseColorTexture"] =
+                        json!({"index":texture_index})
+                }
                 "normal" => material["normalTexture"] = json!({"index":texture_index}),
                 "emissive" => {
                     material["emissiveTexture"] = json!({"index":texture_index});
@@ -1161,8 +1186,10 @@ pub(crate) fn embed_original_material_slots_glb(
                     material["extensions"]["KHR_materials_specular"]["specularColorFactor"] =
                         json!([1., 1., 1.]);
                 }
-                "roughness" => material["pbrMetallicRoughness"]["metallicRoughnessTexture"] =
-                    json!({"index":texture_index}),
+                "roughness" => {
+                    material["pbrMetallicRoughness"]["metallicRoughnessTexture"] =
+                        json!({"index":texture_index})
+                }
                 _ => unreachable!(),
             }
         }
@@ -1175,12 +1202,18 @@ pub(crate) fn embed_original_material_slots_glb(
     doc["materials"] = json!(materials);
     doc["images"] = json!(images);
     doc["textures"] = json!(textures);
-    while !binary.len().is_multiple_of(4) { binary.push(0); }
+    while !binary.len().is_multiple_of(4) {
+        binary.push(0);
+    }
     doc["buffers"][0]["byteLength"] = json!(binary.len());
     let mut json_blob = serde_json::to_vec(&doc)?;
-    while !json_blob.len().is_multiple_of(4) { json_blob.push(b' '); }
-    let total = 28usize.checked_add(json_blob.len())
-        .and_then(|n| n.checked_add(binary.len())).ok_or(RigError::Limits)?;
+    while !json_blob.len().is_multiple_of(4) {
+        json_blob.push(b' ');
+    }
+    let total = 28usize
+        .checked_add(json_blob.len())
+        .and_then(|n| n.checked_add(binary.len()))
+        .ok_or(RigError::Limits)?;
     if total > MAX_BYTES * 4 || total > u32::MAX as usize {
         return Err(RigError::Limits);
     }
@@ -1478,9 +1511,13 @@ mod tests {
     fn original_submaterial_primitives_keep_exact_ids_and_skin_accessors() {
         let mesh = RenderMesh {
             info: crate::model::ModelInfo {
-                format: "synthetic".into(), version: 7, chunk_count: 0,
-                vertex_count: 3, triangle_count: 2,
-                original_uv0: true, original_normals: false,
+                format: "synthetic".into(),
+                version: 7,
+                chunk_count: 0,
+                vertex_count: 3,
+                triangle_count: 2,
+                original_uv0: true,
+                original_normals: false,
             },
             positions: vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]],
             indices: vec![0, 1, 2, 0, 2, 1],
@@ -1497,7 +1534,9 @@ mod tests {
         doc["meshes"][0]["primitives"][0]["attributes"]["WEIGHTS_0"] = json!(0);
         let binary = &geometry[20 + json_len + 8..];
         let mut json_bytes = serde_json::to_vec(&doc).unwrap();
-        while !json_bytes.len().is_multiple_of(4) { json_bytes.push(b' '); }
+        while !json_bytes.len().is_multiple_of(4) {
+            json_bytes.push(b' ');
+        }
         let mut source = Vec::new();
         source.extend_from_slice(b"glTF");
         source.extend_from_slice(&2u32.to_le_bytes());
@@ -1509,14 +1548,19 @@ mod tests {
         source.extend_from_slice(b"BIN\0");
         source.extend_from_slice(binary);
         let slots = vec![
-            OriginalMaterialPng {name:"hidden".into(),no_draw:true,..Default::default()},
-            OriginalMaterialPng {name:"armor".into(),
+            OriginalMaterialPng {
+                name: "hidden".into(),
+                no_draw: true,
+                ..Default::default()
+            },
+            OriginalMaterialPng {
+                name: "armor".into(),
                 diffuse: Some(b"\x89PNG\r\n\x1a\n".to_vec()),
-                ..Default::default()},
+                ..Default::default()
+            },
         ];
-        let out = embed_original_material_slots_glb(
-            &source, &[(0, 3, 0), (3, 3, 1)], &slots
-        ).unwrap();
+        let out =
+            embed_original_material_slots_glb(&source, &[(0, 3, 0), (3, 3, 1)], &slots).unwrap();
         let len = u32::from_le_bytes(out[12..16].try_into().unwrap()) as usize;
         let result: Value = serde_json::from_slice(&out[20..20 + len]).unwrap();
         let primitives = result["meshes"][0]["primitives"].as_array().unwrap();
@@ -1526,10 +1570,20 @@ mod tests {
         assert_eq!(primitives[0]["attributes"]["JOINTS_0"], 0);
         assert_eq!(primitives[1]["attributes"]["TEXCOORD_0"], 1);
         assert_eq!(result["materials"][0]["alphaMode"], "BLEND");
-        assert_eq!(result["materials"][1]["pbrMetallicRoughness"]["baseColorTexture"]["index"], 0);
-        assert_eq!(result["accessors"][primitives[1]["indices"].as_u64().unwrap() as usize]["byteOffset"], 12);
-        assert!(embed_original_material_slots_glb(&source, &[(0, 3, 0), (6, 3, 1)], &slots).is_err());
-        assert!(embed_original_material_slots_glb(&source, &[(0, 3, 0), (3, 3, 255)], &slots).is_err());
+        assert_eq!(
+            result["materials"][1]["pbrMetallicRoughness"]["baseColorTexture"]["index"],
+            0
+        );
+        assert_eq!(
+            result["accessors"][primitives[1]["indices"].as_u64().unwrap() as usize]["byteOffset"],
+            12
+        );
+        assert!(
+            embed_original_material_slots_glb(&source, &[(0, 3, 0), (6, 3, 1)], &slots).is_err()
+        );
+        assert!(
+            embed_original_material_slots_glb(&source, &[(0, 3, 0), (3, 3, 255)], &slots).is_err()
+        );
     }
 
     #[test]
