@@ -15,6 +15,8 @@ pub struct Scene {
     pub diffuse: Option<Arc<image::RgbaImage>>,
     pub normal_map: Option<Arc<image::RgbaImage>>,
     pub emissive: Option<Arc<image::RgbaImage>>,
+    pub specular: Option<Arc<image::RgbaImage>>,
+    pub gloss: Option<Arc<image::RgbaImage>>,
     pub yaw: f32,
     pub pitch: f32,
     pub zoom: f32,
@@ -56,10 +58,14 @@ pub struct Primitive {
     diffuse: Option<Arc<image::RgbaImage>>,
     normal_map: Option<Arc<image::RgbaImage>>,
     emissive: Option<Arc<image::RgbaImage>>,
+    specular: Option<Arc<image::RgbaImage>>,
+    gloss: Option<Arc<image::RgbaImage>>,
     mesh_identity: usize,
     texture_identity: usize,
     normal_identity: usize,
     emissive_identity: usize,
+    specular_identity: usize,
+    gloss_identity: usize,
 }
 impl shader::Program<super::Message> for Scene {
     type State = super::view_navigation::Navigation;
@@ -145,6 +151,8 @@ impl shader::Program<super::Message> for Scene {
             diffuse: self.diffuse.clone(),
             normal_map: self.normal_map.clone(),
             emissive: self.emissive.clone(),
+            specular: self.specular.clone(),
+            gloss: self.gloss.clone(),
             mesh_identity: Arc::as_ptr(&self.mesh) as usize,
             texture_identity: self.diffuse.as_ref().map_or(0, |t| Arc::as_ptr(t) as usize),
             normal_identity: self
@@ -155,6 +163,8 @@ impl shader::Program<super::Message> for Scene {
                 .emissive
                 .as_ref()
                 .map_or(0, |t| Arc::as_ptr(t) as usize),
+            specular_identity: self.specular.as_ref().map_or(0, |t| Arc::as_ptr(t) as usize),
+            gloss_identity: self.gloss.as_ref().map_or(0, |t| Arc::as_ptr(t) as usize),
         }
     }
 }
@@ -171,6 +181,12 @@ pub struct Pipeline {
     last_texture_identity: usize,
     last_normal_identity: usize,
     last_emissive_identity: usize,
+    last_specular_identity: usize,
+    last_gloss_identity: usize,
+    specular_texture: wgpu::Texture,
+    specular_view: wgpu::TextureView,
+    gloss_texture: wgpu::Texture,
+    gloss_view: wgpu::TextureView,
     normal_texture: wgpu::Texture,
     normal_view: wgpu::TextureView,
     emissive_texture: wgpu::Texture,
@@ -277,6 +293,26 @@ impl Pipeline {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let program = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -368,6 +404,22 @@ impl Pipeline {
             wgpu::TextureFormat::Rgba8UnormSrgb,
             "No source emission",
         );
+        let (specular_texture, specular_view) = Self::upload_map(
+            device,
+            queue,
+            None,
+            &[0, 0, 0, 255],
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            "No authored specular reflectance",
+        );
+        let (gloss_texture, gloss_view) = Self::upload_map(
+            device,
+            queue,
+            None,
+            &[128, 128, 128, 255],
+            wgpu::TextureFormat::Rgba8Unorm,
+            "Neutral unverified gloss",
+        );
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Evolve actual texture sampler group"),
             layout: &layout,
@@ -387,6 +439,14 @@ impl Pipeline {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: wgpu::BindingResource::TextureView(&emissive_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&specular_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&gloss_view),
                 },
             ],
         });
@@ -415,6 +475,12 @@ impl Pipeline {
             last_texture_identity: usize::MAX,
             last_normal_identity: usize::MAX,
             last_emissive_identity: usize::MAX,
+            last_specular_identity: usize::MAX,
+            last_gloss_identity: usize::MAX,
+            specular_texture,
+            specular_view,
+            gloss_texture,
+            gloss_view,
             normal_texture,
             normal_view,
             emissive_texture,
@@ -471,6 +537,8 @@ impl Pipeline {
         if primitive.texture_identity != self.last_texture_identity
             || primitive.normal_identity != self.last_normal_identity
             || primitive.emissive_identity != self.last_emissive_identity
+            || primitive.specular_identity != self.last_specular_identity
+            || primitive.gloss_identity != self.last_gloss_identity
         {
             let (w, h, bytes) = if let Some(image) = primitive.diffuse.as_ref() {
                 (image.width(), image.height(), image.as_raw().as_slice())
@@ -515,6 +583,22 @@ impl Pipeline {
                 wgpu::TextureFormat::Rgba8UnormSrgb,
                 "Source emission mask",
             );
+            (self.specular_texture, self.specular_view) = Self::upload_map(
+                device,
+                queue,
+                primitive.specular.as_ref(),
+                &[0, 0, 0, 255],
+                wgpu::TextureFormat::Rgba8UnormSrgb,
+                "Verified authored specular color",
+            );
+            (self.gloss_texture, self.gloss_view) = Self::upload_map(
+                device,
+                queue,
+                primitive.gloss.as_ref(),
+                &[128, 128, 128, 255],
+                wgpu::TextureFormat::Rgba8Unorm,
+                "Verified authored separate gloss",
+            );
             self.group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Exact CryEngine DDS texture sampler group"),
                 layout: &self.layout,
@@ -535,11 +619,21 @@ impl Pipeline {
                         binding: 3,
                         resource: wgpu::BindingResource::TextureView(&self.emissive_view),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&self.specular_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::TextureView(&self.gloss_view),
+                    },
                 ],
             });
             self.last_texture_identity = primitive.texture_identity;
             self.last_normal_identity = primitive.normal_identity;
             self.last_emissive_identity = primitive.emissive_identity;
+            self.last_specular_identity = primitive.specular_identity;
+            self.last_gloss_identity = primitive.gloss_identity;
         }
     }
     fn render_scene(
