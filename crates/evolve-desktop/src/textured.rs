@@ -540,13 +540,19 @@ impl Pipeline {
         // an incomplete table must never paint unknown faces with a random map.
         let mut cursor = 0u32;
         for surface in surfaces.iter() {
-            if surface.first_index != cursor || surface.index_count == 0
+            if surface.first_index != cursor
+                || surface.index_count == 0
                 || surface.index_count % 3 != 0
             {
                 return;
             }
-            let Some(end) = cursor.checked_add(surface.index_count) else { return };
-            if usize::try_from(end).ok().is_none_or(|end| end > index_count) {
+            let Some(end) = cursor.checked_add(surface.index_count) else {
+                return;
+            };
+            if usize::try_from(end)
+                .ok()
+                .is_none_or(|end| end > index_count)
+            {
                 return;
             }
             cursor = end;
@@ -556,16 +562,42 @@ impl Pipeline {
         }
         for part in surfaces.iter() {
             let inputs = [
-                (part.diffuse.as_ref(), [210,205,205,255], wgpu::TextureFormat::Rgba8UnormSrgb, "CDF part diffuse"),
-                (part.normal.as_ref(), [128,128,255,255], wgpu::TextureFormat::Rgba8Unorm, "CDF part normal"),
-                (part.emissive.as_ref(), [0,0,0,255], wgpu::TextureFormat::Rgba8UnormSrgb, "CDF part emission"),
-                (part.specular.as_ref(), [0,0,0,255], wgpu::TextureFormat::Rgba8UnormSrgb, "CDF part specular"),
-                (part.gloss.as_ref(), [128,128,128,255], wgpu::TextureFormat::Rgba8Unorm, "CDF part gloss"),
+                (
+                    part.diffuse.as_ref(),
+                    [210, 205, 205, 255],
+                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                    "CDF part diffuse",
+                ),
+                (
+                    part.normal.as_ref(),
+                    [128, 128, 255, 255],
+                    wgpu::TextureFormat::Rgba8Unorm,
+                    "CDF part normal",
+                ),
+                (
+                    part.emissive.as_ref(),
+                    [0, 0, 0, 255],
+                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                    "CDF part emission",
+                ),
+                (
+                    part.specular.as_ref(),
+                    [0, 0, 0, 255],
+                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                    "CDF part specular",
+                ),
+                (
+                    part.gloss.as_ref(),
+                    [128, 128, 128, 255],
+                    wgpu::TextureFormat::Rgba8Unorm,
+                    "CDF part gloss",
+                ),
             ];
             let mut textures = Vec::with_capacity(5);
             let mut views = Vec::with_capacity(5);
             for (image, fallback, format, label) in inputs {
-                let (texture, view) = Self::upload_map(device, queue, image, &fallback, format, label);
+                let (texture, view) =
+                    Self::upload_map(device, queue, image, &fallback, format, label);
                 textures.push(texture);
                 views.push(view);
             }
@@ -573,12 +605,30 @@ impl Pipeline {
                 label: Some("Exact CDF attachment material"),
                 layout: &self.layout,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&views[0]) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&views[1]) },
-                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&views[2]) },
-                    wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&views[3]) },
-                    wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&views[4]) },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&views[0]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&views[1]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&views[2]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&views[3]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::TextureView(&views[4]),
+                    },
                 ],
             });
             self.gpu_surfaces.push(GpuSurface {
@@ -600,7 +650,12 @@ impl Pipeline {
             self.depth = Self::depth_view(device, size);
             self.depth_dimensions = size;
         }
-        self.upload_surfaces(device, queue, primitive.surfaces.as_ref(), primitive.indices.len());
+        self.upload_surfaces(
+            device,
+            queue,
+            primitive.surfaces.as_ref(),
+            primitive.indices.len(),
+        );
         if !primitive.points.is_empty() && !primitive.indices.is_empty() {
             let vertex_bytes = bytemuck::cast_slice(&primitive.points);
             if vertex_bytes.len() > self.vertex_capacity {
