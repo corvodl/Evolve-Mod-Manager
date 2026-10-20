@@ -376,6 +376,33 @@ pub fn resolve_virtual(inventory: &Inventory, virtual_path: &str) -> AssetResolu
     {
         matches = matches_for(&format!("characters/{stripped}"));
     }
+    if matches.is_empty() {
+        // A user may import the extracted "characters" folder itself, or
+        // even a single "characters/monsters/Scorpid_2" subfolder. Its
+        // inventory paths then omit that known directory prefix. Reconstitute
+        // the source virtual path using the selected root's trailing
+        // components; require an exact relative filename match, not a global
+        // basename search (which could silently mix characters/builds).
+        let authored = key.strip_prefix("objects/").unwrap_or(&key);
+        let parts = authored.split('/').collect::<Vec<_>>();
+        let root = inventory.root.replace('\\', "/").to_ascii_lowercase();
+        let root_parts = root.split('/').filter(|p| !p.is_empty()).collect::<Vec<_>>();
+        let mut overlap = 0usize;
+        for n in 1..parts.len().min(root_parts.len() + 1) {
+            if root_parts.ends_with(&parts[..n]) {
+                overlap = n;
+            }
+        }
+        if overlap != 0 {
+            let relative = parts[overlap..].join("/");
+            matches = inventory.entries.iter()
+                .filter(|e| e.relative_path.eq_ignore_ascii_case(&relative))
+                .map(|e| e.relative_path.clone())
+                .collect();
+            matches.sort();
+            matches.dedup();
+        }
+    }
     match matches.len() {
         0 => AssetResolution::Missing,
         1 => AssetResolution::Found(matches.remove(0)),
@@ -522,6 +549,48 @@ mod tests {
                 "objects/characters/monsters/rocky/rocky3_body.chr"
             ),
             AssetResolution::Found("objects/characters/monsters/rocky/rocky3_body.chr".into()),
+        );
+    }
+
+    #[test]
+    fn archived_2012_cdf_resolves_exactly_from_folder_scoped_roots() {
+        let entry = |name: &str| AssetEntry {
+            relative_path: name.into(),
+            byte_size: 42,
+            kind: AssetKind::Mesh,
+        };
+        let virtual_file =
+            "objects/characters/monsters/parasitehost/parasitehost3.chr";
+        let mut inv = Inventory {
+            schema: 1,
+            root: "C:/game/characters".into(),
+            entries: vec![entry("monsters/ParasiteHost/ParasiteHost3.chr")],
+            total_bytes: 42,
+            skipped_symlinks: 0,
+        };
+        assert_eq!(
+            resolve_virtual(&inv, virtual_file),
+            AssetResolution::Found("monsters/ParasiteHost/ParasiteHost3.chr".into())
+        );
+        inv.root = "C:/game/characters/monsters/ParasiteHost".into();
+        inv.entries = vec![entry("ParasiteHost3.chr")];
+        assert_eq!(
+            resolve_virtual(&inv, virtual_file),
+            AssetResolution::Found("ParasiteHost3.chr".into())
+        );
+        assert_eq!(
+            resolve_virtual(
+                &inv, "objects/characters/monsters/scorpid_2/parasitehost3.chr"
+            ),
+            AssetResolution::Missing
+        );
+        inv.root = "C:/game/characters/monsters/Scorpid_2".into();
+        inv.entries = vec![entry("Scorpid1_Rig.chr"), entry("Scorpid1_Default_Head.chr")];
+        assert_eq!(
+            resolve_virtual(
+                &inv, "objects/characters/monsters/scorpid_2/scorpid1_rig.chr"
+            ),
+            AssetResolution::Found("Scorpid1_Rig.chr".into())
         );
     }
 
