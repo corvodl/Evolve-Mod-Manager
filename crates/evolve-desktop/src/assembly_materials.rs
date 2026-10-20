@@ -165,10 +165,10 @@ fn material_for_part(
         .map_or(binding, |(name, _)| name);
     let mut bases = vec![stem.to_owned()];
     let lower = stem.to_ascii_lowercase();
-    if let Some(at) = lower.rfind("_lod") {
-        if lower[at + 4..].bytes().all(|c| c.is_ascii_digit()) {
-            bases.push(stem[..at].to_owned());
-        }
+    if let Some(at) = lower.rfind("_lod")
+        && lower[at + 4..].bytes().all(|c| c.is_ascii_digit())
+    {
+        bases.push(stem[..at].to_owned());
     }
     for base in bases {
         let path = if parent.is_empty() {
@@ -183,6 +183,12 @@ fn material_for_part(
     Ok(None)
 }
 
+#[derive(Default)]
+struct TextureBudget {
+    bytes_loaded: usize,
+    decoded: HashSet<PathBuf>,
+}
+
 fn authored_maps(
     document: &MaterialDocument,
     material_slot: u32,
@@ -190,8 +196,7 @@ fn authored_maps(
     imported: Option<&Path>,
     build: Option<&str>,
     cache: &SharedCache,
-    bytes_loaded: &mut usize,
-    decoded: &mut HashSet<PathBuf>,
+    budget: &mut TextureBudget,
 ) -> Result<[Option<Arc<image::RgbaImage>>; 5], String> {
     let slot = document.slots.get(material_slot as usize).ok_or_else(|| {
         format!(
@@ -229,14 +234,14 @@ fn authored_maps(
         let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
         let (_info, image) = decoded_dds(cache, &canonical)?;
         let required = image.as_raw().len();
-        if !decoded.contains(&canonical) {
-            *bytes_loaded = bytes_loaded
+        if !budget.decoded.contains(&canonical) {
+            budget.bytes_loaded = budget.bytes_loaded
                 .checked_add(required)
                 .ok_or("Decoded CDF texture budget overflow")?;
-            if *bytes_loaded > MAX_DECODED_ASSEMBLY_BYTES {
+            if budget.bytes_loaded > MAX_DECODED_ASSEMBLY_BYTES {
                 return Err("CDF texture budget exceeded (768 MiB)".into());
             }
-            decoded.insert(canonical);
+            budget.decoded.insert(canonical);
         }
         result[index] = Some(image);
     }
@@ -252,8 +257,7 @@ pub fn load(
 ) -> (Vec<Surface>, Vec<String>) {
     let mut warnings = Vec::new();
     let mut surfaces = Vec::with_capacity(report.source_parts.len());
-    let mut bytes_loaded = 0usize;
-    let mut decoded = HashSet::new();
+    let mut budget = TextureBudget::default();
     for part in &report.source_parts {
         let mut surface = Surface {
             first_index: part.first_index,
@@ -286,8 +290,7 @@ pub fn load(
                 imported,
                 build,
                 cache,
-                &mut bytes_loaded,
-                &mut decoded,
+                &mut budget,
             )?;
             surface.diffuse = diffuse;
             surface.normal = normal;
