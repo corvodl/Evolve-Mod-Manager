@@ -86,7 +86,6 @@ pub fn validate_glb_source(source: &Path, animations: AnimationPolicy) -> Result
     Ok(())
 }
 
-
 /// Atomically publish a complete, verified binary FBX without overwriting an
 /// existing target. Reading the 23-byte signature advances the file cursor:
 /// rewind before copying or the published export is corrupt.
@@ -105,7 +104,9 @@ pub(crate) fn publish_verified_binary_fbx(
     }
     let meta = fs::symlink_metadata(staged)?;
     if !meta.file_type().is_file() || meta.len() < 256 {
-        return Err(FbxError::Converter("Blender produced no complete FBX".into()));
+        return Err(FbxError::Converter(
+            "Blender produced no complete FBX".into(),
+        ));
     }
     let mut source = File::open(staged)?;
     let mut signature = [0u8; 23];
