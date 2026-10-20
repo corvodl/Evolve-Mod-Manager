@@ -1219,6 +1219,7 @@ enum Message {
     LibraryToggleConfiguration,
     LibraryRefresh,
     LibraryOpenFolder,
+    LibraryExport,
     StartupLibraryIndexed(PathBuf, Result<ImportedLibrary, String>),
     LibrarySetByBuild(bool),
     LibraryNextBuild,
@@ -2537,7 +2538,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 };
             }
         }
-        Message::OpenViewer
+        Message::LibraryExport
+        | Message::OpenViewer
         | Message::OpenInspectorWindow
         | Message::OpenViewerPreferences
         | Message::InspectorOpened
@@ -6408,6 +6410,16 @@ impl Desktop {
                 self.update(*inner)
             }
             Message::OpenViewer => self.open_viewer(),
+            Message::LibraryExport => {
+                if self.state.inventory.is_none() {
+                    self.state.status =
+                        "Preview an imported Asset Library PAK or index its extracted files before exporting.".into();
+                    return Task::none();
+                }
+                let command = update(&mut self.state, Message::ExportOpen);
+                let viewer = self.open_viewer();
+                Task::batch([command, viewer])
+            },
             Message::OpenViewerPreferences => self.open_viewer_preferences(),
             Message::OpenInspectorWindow => self.open_inspector(),
             Message::ToggleActivity => self.open_activity(),

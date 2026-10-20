@@ -99,6 +99,8 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             column![
                 design::button("Refresh catalog")
                     .on_press(Message::MenuCommand(Box::new(Message::LibraryRefresh))),
+                design::button("Export files and assemblies…")
+                    .on_press(Message::MenuCommand(Box::new(Message::LibraryExport))),
                 design::button("Open Asset Library Folder in Explorer")
                     .on_press(Message::MenuCommand(Box::new(Message::LibraryOpenFolder)),),
                 design::button("Import signed PAK…").on_press(Message::MenuCommand(Box::new(

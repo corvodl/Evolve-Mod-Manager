@@ -7,6 +7,7 @@ import math
 import sys
 import traceback
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from blender_uv0 import prepare_original_uv
 
 def check(condition, reason):
