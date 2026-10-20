@@ -52,7 +52,7 @@ impl Default for Preferences {
     fn default() -> Self {
         Self {
             ui_density: "Comfortable".into(),
-            file_explorer_side: "Right".into(),
+            file_explorer_side: "Left".into(),
             viewer_explorer_visible: true,
             viewer_split: 0.67,
             light_strength: 1.0,
@@ -166,7 +166,7 @@ impl Preferences {
             self.ui_density = "Comfortable".into();
         }
         if !["Right", "Left"].contains(&self.file_explorer_side.as_str()) {
-            self.file_explorer_side = "Right".into();
+            self.file_explorer_side = "Left".into();
         }
         if !self.viewer_split.is_finite() || !(0.25..=0.8).contains(&self.viewer_split) {
             self.viewer_split = 0.67;
