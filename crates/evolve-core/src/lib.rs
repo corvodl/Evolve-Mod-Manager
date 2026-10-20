@@ -89,7 +89,10 @@ pub use native_dba::{
     DbaAnimationRecord, NativeDbaError, NativeDbaInspection, index_native_dba_bytes,
     inspect_native_dba_bytes, inspect_native_dba_file,
 };
-pub use native_offline_launch::{NativeOfflineReadiness, inspect_native_offline_readiness};
+pub use native_offline_launch::{
+    NativeOfflineReadiness, NativeOfflineSwapPlan, NativeOfflineTarget, NativeRecoveryState,
+    audit_native_offline_swap, inspect_native_offline_readiness, plan_native_offline_swap,
+};
 pub use policy::{AnimationPolicy, ExportFeature, FeatureStatus, PARITY_MATRIX};
 pub use rig::{
     CompiledSkeleton, RigError, RigReport, VerifiedWeights, export_rigged_character_fbx,
