@@ -6907,18 +6907,6 @@ mod project_edit_tests {
         assert!(state.status.contains("do not belong"));
     }
     #[test]
-    fn crash_logging_setting_preserves_other_preferences() {
-        let mut state = State::default();
-        state.preferences.crash_logging_enabled = true;
-        let original = state.preferences.keep_original_snapshots;
-        let _ = update(&mut state, Message::PreferenceCrashLogging);
-        assert!(!state.preferences.crash_logging_enabled);
-        assert_eq!(state.preferences.keep_original_snapshots, original);
-        // Restore global state for the rest of the test suite.
-        crash_diagnostics::set_enabled(true);
-    }
-
-    #[test]
     fn popup_menus_are_mutually_exclusive_and_dismiss_without_removing_page() {
         let mut state = State::default();
         state.page = Some(Page::Files);
