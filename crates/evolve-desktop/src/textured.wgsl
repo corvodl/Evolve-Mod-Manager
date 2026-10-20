@@ -77,25 +77,55 @@ fn fs_main(input: Output) -> @location(0) vec4<f32> {
             surface = normalize(t * tangent_normal.x + b * tangent_normal.y + surface * tangent_normal.z);
         }
     }
-    // Neutral studio lights keep source surface detail visible without
-    // inventing missing diffuse artwork. Two-sided light accommodates
-    // CryEngine meshes with reversed source winding in isolated previews.
-    let key = normalize(vec3<f32>(0.45, -0.4, 0.8));
-    let fill = normalize(vec3<f32>(-0.7, 0.25, 0.5));
-    let key_amount = abs(dot(surface, key));
-    let fill_amount = abs(dot(surface, fill));
-    let brightness = (0.30 + 0.54 * key_amount + 0.16 * fill_amount)
-        * clamp(input.light_strength, 0.1, 2.0);
-    // Studio-light preview: highlight direction uses original view-space
-    // normal and authored specular/gloss data, without assuming metallic PBR.
+    // CryEngine-inspired preview lighting: warm directional key/sun,
+    // cool sky fill, lower hemisphere bounce, and a subtle rear rim light.
+    // It is a material-inspection rig, not a claim to reproduce the game's
+    // actual deferred lighting, time-of-day, GI, SSAO or shadow cascades.
+    // Two-sided contribution keeps historical 2012 CryTek winding visible.
+    let key = normalize(vec3<f32>(0.48, -0.46, 0.75));
+    let fill = normalize(vec3<f32>(-0.62, 0.26, 0.54));
+    let back = normalize(vec3<f32>(-0.2, 0.78, 0.55));
+    let key_diffuse = abs(dot(surface, key));
+    let fill_diffuse = abs(dot(surface, fill));
+    let back_diffuse = max(dot(surface, back), 0.0);
+    let sky = clamp(surface.z * 0.5 + 0.5, 0.0, 1.0);
+    let ambient = mix(vec3<f32>(0.20, 0.18, 0.17),
+                      vec3<f32>(0.30, 0.33, 0.37), sky);
+    let irradiance = ambient
+        + vec3<f32>(0.58, 0.52, 0.45) * key_diffuse
+        + vec3<f32>(0.15, 0.19, 0.25) * fill_diffuse
+        + vec3<f32>(0.13, 0.15, 0.19) * pow(back_diffuse, 2.0);
+    let exposure = clamp(input.light_strength, 0.1, 2.0);
+    // Original CryEngine-style spec/gloss slots remain authoritative.
+    // No missing source specular is invented: an absent map stays black.
     let to_eye = normalize(vec3<f32>(-input.view_position.xy, 3.0 - input.view_position.z));
     let half_key = normalize(key + to_eye);
     let half_fill = normalize(fill + to_eye);
-    let exponent = mix(6.0, 112.0, clamp(gloss, 0.0, 1.0));
-    let highlight = pow(abs(dot(surface, half_key)), exponent) * 0.8
-                  + pow(abs(dot(surface, half_fill)), exponent) * 0.2;
-    let specular_light = specular_color * highlight * clamp(input.light_strength, 0.1, 2.0);
-    // Emissive remains unlit. Do not multiply specular color into the
-    // diffuse texture or use its alpha as inferred gloss.
-    return vec4<f32>(base.rgb * brightness + glow + specular_light, base.a);
+    let exponent = mix(8.0, 120.0, clamp(gloss, 0.0, 1.0));
+    let highlight = 0.84 * pow(abs(dot(surface, half_key)), exponent)
+                  + 0.16 * pow(abs(dot(surface, half_fill)), exponent);
+    let specular_light = specular_color * highlight * exposure;
+    // Emissive is independent of incident light, as in the game material.
+    return vec4<f32>(base.rgb * irradiance * exposure + glow + specular_light, base.a);
+}
+
+// The floor uses a separate untextured line pipeline but the *same*
+// source-space camera projection/depth as the mesh. It cannot alter assets.
+struct FloorOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+}
+@vertex
+fn vs_floor(
+    @location(0) position: vec3<f32>,
+    @location(1) color: vec4<f32>,
+) -> FloorOutput {
+    var out: FloorOutput;
+    out.position = vec4<f32>(position, 1.0);
+    out.color = color;
+    return out;
+}
+@fragment
+fn fs_floor(input: FloorOutput) -> @location(0) vec4<f32> {
+    return input.color;
 }
