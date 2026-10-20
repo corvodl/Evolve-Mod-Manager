@@ -7,7 +7,7 @@ use evolve_core::inspect_pak_hook_pair;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -109,6 +109,7 @@ fn verify_hook(original: &Path, patched: &Path, old_key: &[u8], new_key: &[u8]) 
 }
 #[cfg(windows)]
 fn games_closed() -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
     let output = Command::new("tasklist").args(["/FO", "CSV", "/NH"])
         .creation_flags(0x08000000) // CREATE_NO_WINDOW
         .output().map_err(|e| format!("Cannot query active game tasks: {e}"))?;
@@ -124,6 +125,17 @@ fn games_closed() -> Result<(), String> {
 }
 #[cfg(not(windows))]
 fn games_closed() -> Result<(), String> { Ok(()) }
+
+/// Locate the installed client hook using the private signing stage's
+/// recorded original game root. No broad disk search or guessed DLL path.
+pub fn original_hook_for_stage(stage: &Path) -> Result<PathBuf, String> {
+    let stage = directory(stage)?;
+    let plan = json(&stage.join("rekey_plan.json"))?;
+    let game = directory(Path::new(
+        plan["source_root"].as_str().ok_or("Signing stage has no original game root")?,
+    ))?;
+    within_file(&game, "bin64_SteamRetail/inject.dll")
+}
 
 /// Exactly mirror the private manager's launcher preflight before permitting
 /// its existing controlled_swap.py + auto_launch_frida.py lifecycle. This
@@ -265,6 +277,26 @@ pub fn launch_existing_offline_client(_: &LaunchReady) -> Result<u32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn original_hook_lookup_is_bound_to_exact_signed_stage_game_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let game = temp.path().join("game");
+        let stage = temp.path().join("stage");
+        fs::create_dir(&game).unwrap();
+        fs::create_dir(&stage).unwrap();
+        fs::create_dir(game.join("bin64_SteamRetail")).unwrap();
+        fs::write(game.join("bin64_SteamRetail/inject.dll"), [0x55u8; HOOK_BYTES]).unwrap();
+        fs::write(stage.join("rekey_plan.json"), serde_json::to_vec(&serde_json::json!({
+            "source_root": game
+        })).unwrap()).unwrap();
+        assert_eq!(
+            original_hook_for_stage(&stage).unwrap(),
+            fs::canonicalize(game.join("bin64_SteamRetail/inject.dll")).unwrap()
+        );
+        fs::write(stage.join("rekey_plan.json"), br#"{"source_root":"../escape"}"#).unwrap();
+        assert!(original_hook_for_stage(&stage).is_err());
+    }
+
     #[test]
     fn rejects_unsafe_game_paths_and_partial_or_missing_stage() {
         for p in ["../evil.pak", "C:/root.pak", "/abs.pak", "assets/../foo.pak", "bad.pak/"] {
