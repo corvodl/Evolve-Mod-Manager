@@ -59,7 +59,7 @@ pub use client_hook::{
     inspect_pak_hook_pair, prepare_client_hook,
 };
 pub use converter::{ConvertedMotion, ConverterError, convert_original_motion};
-pub use dds::{DdsError, DdsFormat, DdsInfo, decode_dds_rgba, export_dds_png, inspect_dds};
+pub use dds::{DdsError, DdsFormat, DdsInfo, DdsLayout, decode_dds_rgba, decode_dds_rgba_with_layout, export_dds_png, inspect_dds};
 pub use dependency_graph::{
     DependencyEdge, DependencyError, DependencyGraph, DependencyNode, DependencyStatus,
     inspect_dependencies,
