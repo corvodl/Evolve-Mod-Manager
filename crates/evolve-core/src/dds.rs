@@ -582,7 +582,7 @@ pub fn decode_dds_rgba_with_layout(
     };
     let payload = converted.as_deref().unwrap_or(original);
     if info.format == DdsFormat::Alpha8 {
-        for (sample, pixel) in payload.iter().zip(rgba.chunks_exact_mut(4)) {
+        for (sample, pixel) in payload.iter().zip(rgba.as_chunks_mut::<4>().0.iter_mut()) {
             // The extracted .dds.0a alpha/normal auxiliaries are best
             // inspected as grayscale images rather than invisible RGBA alpha.
             pixel.copy_from_slice(&[*sample, *sample, *sample, 255]);
