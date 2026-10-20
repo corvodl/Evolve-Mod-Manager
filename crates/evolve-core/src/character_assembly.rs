@@ -503,11 +503,15 @@ pub fn read_static_cdf_assembly_with_imported(
             vertex_first: vertex_cursor,
             vertex_count: mesh.positions.len(),
             bone_socket: (attachment.kind == AttachmentKind::Bone)
-                .then(|| attachment.bone_name.clone()).flatten(),
+                .then(|| attachment.bone_name.clone())
+                .flatten(),
             verified_skin_weights,
         });
-        vertex_cursor = vertex_cursor.checked_add(mesh.positions.len())
-            .ok_or_else(|| AssemblyError::Incomplete("CDF assembly vertex offset overflow".into()))?;
+        vertex_cursor = vertex_cursor
+            .checked_add(mesh.positions.len())
+            .ok_or_else(|| {
+                AssemblyError::Incomplete("CDF assembly vertex offset overflow".into())
+            })?;
         let count = u32::try_from(mesh.indices.len())
             .map_err(|_| AssemblyError::Incomplete("CDF part exceeds index limits".into()))?;
         let ranges =
