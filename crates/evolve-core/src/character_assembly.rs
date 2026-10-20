@@ -643,8 +643,10 @@ mod tests {
     #[test]
     fn rigid_equipment_uses_authored_socket_transform_not_world_origin() {
         let identity = [
-            [1., 0., 0., 0.], [0., 1., 0., 0.],
-            [0., 0., 1., 0.], [0., 0., 0., 1.],
+            [1., 0., 0., 0.],
+            [0., 1., 0., 0.],
+            [0., 0., 1., 0.],
+            [0., 0., 0., 1.],
         ];
         let mut socket = identity;
         socket[0][3] = 10.;
