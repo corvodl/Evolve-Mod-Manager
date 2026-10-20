@@ -386,12 +386,15 @@ mod tests {
 
     #[test]
     fn historical_mtl_scalar_opacity_is_not_a_diffuse_dds_alpha_channel() {
-        let doc = parse_material(br#"<Material Name="Goliath"><SubMaterials>
+        let doc = parse_material(
+            br#"<Material Name="Goliath"><SubMaterials>
             <Material Name="body" Shader="Illum" Opacity="1"><Textures>
                 <Texture Map="Diffuse" File="characters/goliath.dds"/>
             </Textures></Material>
             <Material Name="saliva" Shader="Illum" Opacity="0.11"/>
-        </SubMaterials></Material>"#).unwrap();
+        </SubMaterials></Material>"#,
+        )
+        .unwrap();
         assert_eq!(doc.slots.len(), 2);
         assert_eq!(doc.slots[0].opacity, Some(1.0));
         assert_eq!(doc.slots[1].opacity, Some(0.11));

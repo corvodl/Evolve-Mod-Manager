@@ -158,7 +158,10 @@ fn legacy_owner_material(
             return Ok(Some(file));
         }
     }
-    for candidate in [format!("{parent}/{folder}.mtl"), format!("{parent}/{folder_family}.mtl")] {
+    for candidate in [
+        format!("{parent}/{folder}.mtl"),
+        format!("{parent}/{folder_family}.mtl"),
+    ] {
         if let Some(file) = auto_resources::exact(inventory, &candidate, imported, build)? {
             return Ok(Some(file));
         }
@@ -184,7 +187,9 @@ pub(crate) fn material_for_part(
         } else if Path::new(&explicit).extension().is_none() {
             format!("{explicit}.mtl")
         } else {
-            return Err(format!("CDF material has unsupported extension: {explicit}"));
+            return Err(format!(
+                "CDF material has unsupported extension: {explicit}"
+            ));
         };
         let parent = binding.rsplit_once('/').map_or("", |(folder, _)| folder);
         let normalized = virtual_mtl.to_ascii_lowercase();
@@ -401,7 +406,8 @@ fn verified_opacity(
         return None;
     }
     Some(Arc::new(image::RgbaImage::from_pixel(
-        1, 1,
+        1,
+        1,
         image::Rgba([(factor * 255.0).round() as u8, 255, 255, 255]),
     )))
 }
@@ -487,7 +493,8 @@ pub fn load_model(
                         // of packed diffuse DDS alpha. Never blend an Illum
                         // body unless there is explicit authored evidence.
                         surface.opacity = verified_opacity(leaf, opacity);
-                        surface.transparent = needs_alpha_blending(leaf) && surface.opacity.is_some();
+                        surface.transparent =
+                            needs_alpha_blending(leaf) && surface.opacity.is_some();
                     }
                     Err(error) => warnings.push(format!(
                         "Original material slot {} ({}): {}",
@@ -690,20 +697,34 @@ mod tests {
         source[8..12].copy_from_slice(&0xffff0000u32.to_le_bytes());
         source[12..16].copy_from_slice(&0x745u32.to_le_bytes());
         std::fs::write(folder.join("goliath3_default_head.chr"), &source).unwrap();
-        std::fs::write(folder.join("goliath3.mtl"), br#"<Material Name="Goliath"/>"#).unwrap();
+        std::fs::write(
+            folder.join("goliath3.mtl"),
+            br#"<Material Name="Goliath"/>"#,
+        )
+        .unwrap();
         std::fs::write(folder.join("goliath2.mtl"), br#"<Material Name="Wrong"/>"#).unwrap();
         let inventory = evolve_core::scan_directory(dir.path()).unwrap();
         let binding = "Objects/characters/monsters/Goliath_2/goliath3_default_head.chr";
-        let found = material_for_part(binding, None, &inventory, None, None).unwrap().unwrap();
-        assert_eq!(found.file_name().and_then(|n| n.to_str()), Some("goliath3.mtl"));
+        let found = material_for_part(binding, None, &inventory, None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            found.file_name().and_then(|n| n.to_str()),
+            Some("goliath3.mtl")
+        );
         let explicit = material_for_part(
-            binding, Some("Objects/characters/monsters/Goliath_2/goliath3"),
-            &inventory, None, None,
-        ).unwrap().unwrap();
+            binding,
+            Some("Objects/characters/monsters/Goliath_2/goliath3"),
+            &inventory,
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(explicit, found);
-        let scoped = material_for_part(
-            binding, Some("goliath3"), &inventory, None, None,
-        ).unwrap().unwrap();
+        let scoped = material_for_part(binding, Some("goliath3"), &inventory, None, None)
+            .unwrap()
+            .unwrap();
         assert_eq!(scoped, found);
         assert!(material_for_part(binding, Some("goliath2.exr"), &inventory, None, None).is_err());
     }
@@ -915,26 +936,25 @@ mod tests {
 
     #[test]
     fn authored_opacity_scalars_and_glass_do_not_consume_diffuse_alpha() {
-        let solid = evolve_core::parse_material(
-            br#"<Material Shader="Illum" Opacity="1"/>"#,
-        ).unwrap();
+        let solid =
+            evolve_core::parse_material(br#"<Material Shader="Illum" Opacity="1"/>"#).unwrap();
         assert!(verified_opacity(&solid.slots[0], None).is_none());
         assert!(!needs_alpha_blending(&solid.slots[0]));
-        let fading = evolve_core::parse_material(
-            br#"<Material Shader="Illum" Opacity="0.11"/>"#,
-        ).unwrap();
+        let fading =
+            evolve_core::parse_material(br#"<Material Shader="Illum" Opacity="0.11"/>"#).unwrap();
         let alpha = verified_opacity(&fading.slots[0], None).unwrap();
         assert_eq!(alpha.get_pixel(0, 0).0[0], 28);
         assert!(needs_alpha_blending(&fading.slots[0]));
-        let glass = evolve_core::parse_material(
-            br#"<Material Shader="Glass" Opacity="1"/>"#,
-        ).unwrap();
+        let glass =
+            evolve_core::parse_material(br#"<Material Shader="Glass" Opacity="1"/>"#).unwrap();
         assert!(needs_alpha_blending(&glass.slots[0]));
         let neutral = verified_opacity(&glass.slots[0], None).unwrap();
         assert_eq!(neutral.get_pixel(0, 0).0[0], 102);
 
         let source = Arc::new(image::RgbaImage::from_pixel(
-            2, 2, image::Rgba([128, 64, 16, 0]),
+            2,
+            2,
+            image::Rgba([128, 64, 16, 0]),
         ));
         let scaled = verified_opacity(&fading.slots[0], Some(source.clone())).unwrap();
         assert_eq!(scaled.get_pixel(1, 1).0[0], 14);
