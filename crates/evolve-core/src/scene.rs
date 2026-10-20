@@ -6,6 +6,8 @@ use quick_xml::{Reader, Writer};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
+use std::path::PathBuf;
+use sha2::{Digest, Sha256};
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -27,6 +29,10 @@ pub enum SceneError {
     Cycle(String),
     #[error("Output already exists")]
     Exists,
+    #[error("Export destination is inside a protected original asset or library directory")]
+    UnsafeDestination,
+    #[error("Original level source changed; reload it before exporting")]
+    SourceChanged,
     #[error("File access error: {0}")]
     Io(#[from] io::Error),
 }
@@ -613,6 +619,111 @@ pub fn export_edited_layers(
     Ok(())
 }
 
+/// Reject aliases and symlinked paths into original assets, including
+/// symlinked parent directories and a destination that is already occupied.
+/// Re-resolve on both sides of serialization; never use an output-relative
+/// path or infer safety from the spelling of a directory name.
+fn verified_output_path(
+    source: &Path,
+    target: &Path,
+    protected_roots: &[PathBuf],
+) -> Result<PathBuf, SceneError> {
+    if !target.is_absolute()
+        || !target.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| {
+            ext.eq_ignore_ascii_case("lyr") || ext.eq_ignore_ascii_case("xml")
+        })
+    {
+        return Err(SceneError::UnsafeDestination);
+    }
+    let file = target.file_name().ok_or(SceneError::UnsafeDestination)?;
+    let canonical_parent = fs::canonicalize(target.parent().ok_or(SceneError::UnsafeDestination)?)?;
+    if !fs::metadata(&canonical_parent)?.is_dir() {
+        return Err(SceneError::UnsafeDestination);
+    }
+    let full = canonical_parent.join(file);
+    // symlink_metadata catches dangling symbolic links that Path::exists skips.
+    match fs::symlink_metadata(&full) {
+        Ok(_) => return Err(SceneError::Exists),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => (),
+        Err(err) => return Err(SceneError::Io(err)),
+    }
+    let source = fs::canonicalize(source)?;
+    let source_parent = source.parent().ok_or(SceneError::UnsafeDestination)?;
+    if canonical_parent.starts_with(source_parent) {
+        return Err(SceneError::UnsafeDestination);
+    }
+    for root in protected_roots {
+        let canonical = fs::canonicalize(root)?;
+        if !fs::metadata(&canonical)?.is_dir() || canonical_parent.starts_with(&canonical) {
+            return Err(SceneError::UnsafeDestination);
+        }
+    }
+    Ok(full)
+}
+
+fn original_layer_digest(path: &Path) -> Result<String, SceneError> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file() || metadata.len() > MAX_LAYER_BYTES as u64 {
+        return Err(SceneError::Limits);
+    }
+    let bytes = fs::read(path)?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+/// Stage an edited layer outside every protected original directory and only
+/// publish a complete, validated new file after source SHA-256 verification.
+/// A duplicate GUID, source modification, or target collision never causes
+/// an existing file to be deleted or replaced.
+pub fn export_edited_layers_guarded(
+    source: &Path,
+    target: &Path,
+    edits: &[(String, Transform)],
+    protected_roots: &[PathBuf],
+    expected_source_sha256: &str,
+) -> Result<(), SceneError> {
+    if expected_source_sha256.len() != 64
+        || !expected_source_sha256.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return Err(SceneError::SourceChanged);
+    }
+    let output = verified_output_path(source, target, protected_roots)?;
+    if original_layer_digest(source)? != expected_source_sha256 {
+        return Err(SceneError::SourceChanged);
+    }
+    let parent = output.parent().ok_or(SceneError::UnsafeDestination)?;
+    // Create staging only in a directory that has already passed the guarded
+    // canonical destination check. The temporary workspace is removed on error.
+    let workspace = tempfile::Builder::new()
+        .prefix(".evolve-level-edit-")
+        .tempdir_in(parent)?;
+    let staged = workspace.path().join("edited.lyr");
+    export_edited_layers(source, &staged, edits)?;
+    if original_layer_digest(source)? != expected_source_sha256 {
+        return Err(SceneError::SourceChanged);
+    }
+    // Validate paths again before the no-clobber publish, in case any user
+    // preferences or symlink targets changed while the XML was serialized.
+    let output = verified_output_path(source, target, protected_roots)?;
+    let mut staged_file = fs::File::open(&staged)?;
+    let mut publishing = tempfile::Builder::new()
+        .prefix(".evolve-level-final-")
+        .tempfile_in(output.parent().ok_or(SceneError::UnsafeDestination)?)?;
+    io::copy(&mut staged_file, publishing.as_file_mut())?;
+    publishing.as_file_mut().sync_all()?;
+    if original_layer_digest(source)? != expected_source_sha256 {
+        return Err(SceneError::SourceChanged);
+    }
+    let output = verified_output_path(source, target, protected_roots)?;
+    publishing.persist_noclobber(&output).map_err(|error| {
+        if error.error.kind() == io::ErrorKind::AlreadyExists {
+            SceneError::Exists
+        } else {
+            SceneError::Io(error.error)
+        }
+    })?;
+    Ok(())
+}
+
 /// Compatibility convenience API for a single verified GUID edit.
 pub fn export_edited_layer(
     source: &Path,
@@ -724,6 +835,96 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn guarded_export_refuses_source_folder_library_alias_and_occupied_destination() {
+        let home = tempfile::tempdir().unwrap();
+        let extracted = home.path().join("original-assets");
+        let library = home.path().join("asset-library");
+        let output = home.path().join("exports");
+        fs::create_dir_all(&extracted).unwrap();
+        fs::create_dir_all(&library).unwrap();
+        fs::create_dir_all(&output).unwrap();
+        let source = extracted.join("source.lyr");
+        let bytes = br#"<Objects><Object Id="a" Pos="1,0,0"/></Objects>"#;
+        fs::write(&source, bytes).unwrap();
+        let expected = original_layer_digest(&source).unwrap();
+        let edit = vec![("a".into(), Transform {
+            position: [4., 0., 0.], ..Transform::default()
+        })];
+        let roots = vec![extracted.clone(), library.clone()];
+        assert!(matches!(
+            export_edited_layers_guarded(
+                &source, &library.join("inside.lyr"), &edit, &roots, &expected,
+            ),
+            Err(SceneError::UnsafeDestination)
+        ));
+        assert!(matches!(
+            export_edited_layers_guarded(
+                &source, &extracted.join("inside.lyr"), &edit, &roots, &expected,
+            ),
+            Err(SceneError::UnsafeDestination)
+        ));
+        let target = output.join("modified.lyr");
+        fs::write(&target, b"already here").unwrap();
+        assert!(matches!(
+            export_edited_layers_guarded(&source, &target, &edit, &roots, &expected),
+            Err(SceneError::Exists)
+        ));
+        assert_eq!(fs::read(&target).unwrap(), b"already here");
+        fs::remove_file(&target).unwrap();
+        export_edited_layers_guarded(&source, &target, &edit, &roots, &expected).unwrap();
+        assert_eq!(load_level_scene(&target).unwrap().objects[0].local.position, [4., 0., 0.]);
+        assert_eq!(fs::read(source).unwrap(), bytes);
+    }
+
+    #[test]
+    fn guarded_export_detects_changed_input_and_duplicate_guid_without_output() {
+        let home = tempfile::tempdir().unwrap();
+        let source_dir = home.path().join("original");
+        let output_dir = home.path().join("output");
+        fs::create_dir(&source_dir).unwrap();
+        fs::create_dir(&output_dir).unwrap();
+        let source = source_dir.join("layer.lyr");
+        fs::write(&source, br#"<Objects><Object Id="a"/></Objects>"#).unwrap();
+        let sha = original_layer_digest(&source).unwrap();
+        let dest = output_dir.join("edited.lyr");
+        let edit = vec![("a".into(), Transform::default())];
+        fs::write(&source, br#"<Objects><Object Id="a" Pos="8,9,10"/></Objects>"#).unwrap();
+        assert!(matches!(
+            export_edited_layers_guarded(&source, &dest, &edit, &[], &sha),
+            Err(SceneError::SourceChanged)
+        ));
+        assert!(!dest.exists());
+        fs::write(&source, br#"<Objects><Object Id="a"/><Object Id="A"/></Objects>"#).unwrap();
+        let duplicate_sha = original_layer_digest(&source).unwrap();
+        assert!(matches!(
+            export_edited_layers_guarded(&source, &dest, &edit, &[], &duplicate_sha),
+            Err(SceneError::DuplicateGuid(_))
+        ));
+        assert!(!dest.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guarded_export_rejects_symlink_into_asset_library() {
+        use std::os::unix::fs::symlink;
+        let home = tempfile::tempdir().unwrap();
+        let source_dir = home.path().join("src");
+        let library = home.path().join("library");
+        let alias = home.path().join("alias");
+        fs::create_dir(&source_dir).unwrap();
+        fs::create_dir(&library).unwrap();
+        symlink(&library, &alias).unwrap();
+        let src = source_dir.join("original.lyr");
+        fs::write(&src, br#"<Objects><Object Id="a"/></Objects>"#).unwrap();
+        let sha = original_layer_digest(&src).unwrap();
+        let edited = vec![("a".into(), Transform::default())];
+        assert!(matches!(
+            export_edited_layers_guarded(&src, &alias.join("edited.lyr"), &edited, &[library], &sha),
+            Err(SceneError::UnsafeDestination)
+        ));
     }
 
     #[test]
