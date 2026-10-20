@@ -254,8 +254,11 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
         );
     }
     for slot in &state.equipment_slots {
-        let current = state.equipment_overrides.get(&slot.name)
-            .map(String::as_str).unwrap_or(&slot.original);
+        let current = state
+            .equipment_overrides
+            .get(&slot.name)
+            .map(String::as_str)
+            .unwrap_or(&slot.original);
         entries = entries.push(text(&slot.name).size(13));
         let mut choices = column![].spacing(3);
         for choice in &slot.choices {
@@ -265,20 +268,27 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
                     row![
                         text(if active { "✓" } else { "○" }).size(13),
                         text(choice.label.as_str()).size(12).width(Fill),
-                    ].spacing(8)
+                    ]
+                    .spacing(8),
                 )
                 .width(Fill)
-                .style(if active { design::primary } else { design::text_button })
-                .on_press_maybe((!state.busy && !active).then_some(
-                    Message::ViewerEquip(slot.name.clone(), choice.binding.clone())
-                ))
+                .style(if active {
+                    design::primary
+                } else {
+                    design::text_button
+                })
+                .on_press_maybe((!state.busy && !active).then_some(Message::ViewerEquip(
+                    slot.name.clone(),
+                    choice.binding.clone(),
+                ))),
             );
         }
         entries = entries.push(choices);
     }
-    panel(
-        container(scrollable(entries).height(Fill)).padding(12)
-    ).width(Fill).height(Fill).into()
+    panel(container(scrollable(entries).height(Fill)).padding(12))
+        .width(Fill)
+        .height(Fill)
+        .into()
 }
 
 fn dock_tab<'a>(
@@ -318,7 +328,8 @@ fn browser(state: &State) -> Element<'_, Message> {
     let mut tabs = row![
         dock_tab("Files", ViewerSidebarTab::Files, active),
         dock_tab("Equipment", ViewerSidebarTab::Equipment, active),
-    ].spacing(4);
+    ]
+    .spacing(4);
     if state.viewer_sidebar_animations {
         tabs = tabs.push(dock_tab("Animations", ViewerSidebarTab::Animations, active));
     }
