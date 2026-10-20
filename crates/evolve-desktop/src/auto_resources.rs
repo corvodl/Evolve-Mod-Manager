@@ -288,9 +288,7 @@ pub fn discover(
         .iter()
         .any(|ext| canonical.to_ascii_lowercase().ends_with(ext))
     {
-        match crate::assembly_materials::material_for_part(
-            &canonical, None, inv, imported, build,
-        ) {
+        match crate::assembly_materials::material_for_part(&canonical, None, inv, imported, build) {
             Ok(Some(path)) => {
                 found.material_note = "Verified original compiled MtlName or exact material".into();
                 found.material = Some(path);
