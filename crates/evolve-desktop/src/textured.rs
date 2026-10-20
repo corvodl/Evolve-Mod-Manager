@@ -761,6 +761,10 @@ impl Pipeline {
         self._surface_textures.clear();
         self.surface_table_valid = false;
         let Some(surfaces) = surfaces else { return };
+        super::crash_diagnostics::record(
+            "gpu_material_upload_begin",
+            &format!("{} sections, {} indices", surfaces.len(), index_count),
+        );
         // Validate the complete contiguous index coverage before rendering;
         // an incomplete table must never paint unknown faces with a random map.
         let mut cursor = 0u32;
@@ -783,11 +787,16 @@ impl Pipeline {
             cursor = end;
         }
         if usize::try_from(cursor).ok() != Some(index_count) {
+            super::crash_diagnostics::record(
+                "gpu_material_coverage_invalid",
+                &format!("{} source indices, {} covered", index_count, cursor),
+            );
             return;
         }
         self.surface_table_valid = true;
         let mut uploaded: HashMap<(usize, usize), wgpu::TextureView> = HashMap::new();
         let mut used_bytes = 0usize;
+        let mut omitted_count = 0usize;
         for part in surfaces.iter() {
             if !part.visible {
                 continue;
@@ -841,6 +850,9 @@ impl Pipeline {
                     || uploaded.contains_key(&key)
                     || gpu_budget_allows(used_bytes, size);
                 let selected = if allow_source { image } else { None };
+                if !allow_source {
+                    omitted_count += 1;
+                }
                 let selected_key = texture_cache_key(selected, role);
                 if let Some(view) = uploaded.get(&selected_key) {
                     views.push(view.clone());
@@ -900,6 +912,16 @@ impl Pipeline {
                 bind_group: group,
             });
         }
+        super::crash_diagnostics::record(
+            "gpu_material_upload_complete",
+            &format!(
+                "{} visible sections, {} unique GPU maps, {} bytes, {} budget omissions",
+                self.gpu_surfaces.len(),
+                self._surface_textures.len(),
+                used_bytes,
+                omitted_count
+            ),
+        );
     }
 
     fn prepare_scene(
