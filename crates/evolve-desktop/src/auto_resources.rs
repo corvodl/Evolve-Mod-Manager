@@ -81,15 +81,10 @@ pub fn exact_render_companion(
     build: Option<&str>,
 ) -> Result<Option<PathBuf>, String> {
     let lower = relative.to_ascii_lowercase();
-    let target = if lower.ends_with(".skin") {
-        Some(format!("{}m", relative))
-    } else if lower.ends_with(".chr") {
-        Some(format!("{}m", relative))
-    } else if lower.ends_with(".cgf") || lower.ends_with(".cga") {
-        Some(format!("{}m", relative))
-    } else {
-        None
-    };
+    let target = [".skin", ".chr", ".cgf", ".cga"]
+        .iter()
+        .any(|extension| lower.ends_with(extension))
+        .then(|| format!("{relative}m"));
     match target {
         Some(name) => exact(inventory, &name, imported, build),
         None => Ok(None),
