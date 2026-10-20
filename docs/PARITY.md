@@ -1,3 +1,26 @@
+## October 20 — whole-CDF verified native CAF preview (experimental)
+
+- The CDF worker retains each successfully resolved attachment's canonical render source,
+  original contiguous vertex span, verified skin-weight status and authored rigid-bone socket.
+  Per-submaterial GPU draw ranges remain separate from these original geometry spans.
+- A native non-additive CAF selected or auto-discovered for the current CDF can now bind
+  all its **verified skinned attachments** against the exact compiled skeleton, rather
+  than only supporting individual .skin/.chr models. A single CAF time controls all
+  attached skinned parts; source UV0, triangle order and per-part materials remain unchanged.
+- Rigid CA_BONE equipment follows its original compiled socket's pose delta
+  (animated bone world transform multiplied by inverse bind). Invalid/missing sockets,
+  unequal source rest meshes, missing verified weights and unbound CAF controllers
+  fail explicitly instead of animating invented geometry.
+- Bind preparation runs in the background; scrubbing uses the existing bounded CPU
+  skeletal evaluator, and wgpu renders the assembled deformed mesh. Switching to
+  another model or converted DBA/GLB clears the previous assembly skin state.
+
+**Still blocking release:** Actual Stage 2 character assembly/CAF screenshot and bone
+deformation validation; performance on large CDFs; multi-CAF layering, additive clips,
+native DBA database bitstreams and character-wide multi-Action FBX; UV/material export
+subset equivalence; online/offline launch recovery and game mount verification. This
+change is not a claim of GPU compute skinning or full private-manager parity.
+
 # Evolve Mod Manager — Rust 1.0 feature-parity gate
 
 This table tracks **actual Rust implementation state**, not feature mockups. The existing production manager's behavior is the acceptance baseline. Real proprietary test assets must stay outside this public repository.
