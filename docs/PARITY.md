@@ -389,6 +389,18 @@ evolve-cli hook pak-preflight original.pak new-folder/original.pak bin64_SteamRe
   successful swap from `Popen` alone. Only the private helper performs
   the *paused*, reversible same-volume rename; a separate watchdog restores
   original PAKs and the original shim after both game processes close.
+- The Modding page also exposes **Restore original PAKs + hook** for an
+  interrupted session after both game processes are closed. This validates
+  the exact signed-PAK-and-shim ledger, checks canonical game/stage roots,
+  rejects symlink path escapes and foreign/duplicate destinations, then
+  calls the private `reusable_restore.py` helper. The original signed
+  archive and shim signatures are checked again afterward. Restored
+  sessions legitimately finish as `prepared` if all verified custom files
+  were recycled, or `restored` if a fresh preparation is required.
+  Manual recovery never requires Frida to be installed.
+- Path comparisons accept the private Windows `pathlib.Path` convention
+  (`Game\\libs.pak`) and the signing plan's slash-delimited virtual
+  names (`Game/libs.pak`) without allowing traversal or duplicate names.
 - **Not yet complete:** the public Rust application still delegates the
   actual paused swap/restore to the user's installed, existing private
   Python/Frida helper scripts, and real Stage 2 runtime mount, crash recovery,
