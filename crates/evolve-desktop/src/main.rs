@@ -625,17 +625,20 @@ impl Operation {
                             &candidate,
                             build_label.as_deref(),
                         )
-                        .map_err(|e| e.to_string())? {
+                        .map_err(|e| e.to_string())?
+                        {
                             LibraryReferenceStatus::Missing => AssetResolution::Missing,
                             LibraryReferenceStatus::Found(hit) => {
                                 AssetResolution::Found(hit.absolute_path)
                             }
                             LibraryReferenceStatus::Ambiguous(hits) => AssetResolution::Ambiguous(
                                 hits.into_iter()
-                                    .map(|hit| format!(
-                                        "{} [{}] / {}",
-                                        hit.archive_name, hit.archive_id, hit.relative_path
-                                    ))
+                                    .map(|hit| {
+                                        format!(
+                                            "{} [{}] / {}",
+                                            hit.archive_name, hit.archive_id, hit.relative_path
+                                        )
+                                    })
                                     .collect(),
                             ),
                         };
