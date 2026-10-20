@@ -97,7 +97,12 @@ fn safe_part_name(raw: &str) -> Result<String, String> {
     Ok(filtered)
 }
 
-type ResolvedCdfParts = (PathBuf, String, Option<String>, Vec<(String, PathBuf, Option<String>)>);
+type ResolvedCdfParts = (
+    PathBuf,
+    String,
+    Option<String>,
+    Vec<(String, PathBuf, Option<String>)>,
+);
 
 fn plan_parts(
     source: &Path,
@@ -169,7 +174,9 @@ fn exact_original_texture(
             AssetResolution::Found(path) => return input_file(root, &path).map(Some),
             AssetResolution::Missing => {}
             AssetResolution::Ambiguous(_) => {
-                return Err(format!("Ambiguous source texture {candidate} in {material_virtual}"));
+                return Err(format!(
+                    "Ambiguous source texture {candidate} in {material_virtual}"
+                ));
             }
         }
     }
@@ -190,7 +197,9 @@ fn original_model_material(
         .strip_prefix(root)
         .map_err(|_| "Model material lookup escaped original asset root")?;
     let virtual_mesh = relative.to_string_lossy().replace('\\', "/");
-    let parent = virtual_mesh.rsplit_once('/').map_or("", |(parent, _)| parent);
+    let parent = virtual_mesh
+        .rsplit_once('/')
+        .map_or("", |(parent, _)| parent);
     let stem = mesh
         .file_stem()
         .and_then(|name| name.to_str())
@@ -222,7 +231,9 @@ fn original_model_material(
             let folder = parent.rsplit('/').next().unwrap_or("");
             let family = folder.split('_').next().unwrap_or("");
             let looks_owned = family.len() >= 4
-                && stem.to_ascii_lowercase().starts_with(&family.to_ascii_lowercase());
+                && stem
+                    .to_ascii_lowercase()
+                    .starts_with(&family.to_ascii_lowercase());
             if looks_owned {
                 if let Some((variant, _)) = stem.split_once('_') {
                     if variant.len() >= family.len() {
@@ -246,7 +257,9 @@ fn original_model_material(
             }
             AssetResolution::Missing => {}
             AssetResolution::Ambiguous(_) => {
-                return Err(format!("Conflicting original MTL for {virtual_mesh}: {candidate}"));
+                return Err(format!(
+                    "Conflicting original MTL for {virtual_mesh}: {candidate}"
+                ));
             }
         }
     }
@@ -335,8 +348,7 @@ fn exact_multi_slot_materials(
                 "gloss" | "glossiness" | "smoothness" => 4,
                 _ => continue,
             };
-            let Some(file) =
-                exact_original_texture(root, inventory, &virtual_mtl, &map.path)?
+            let Some(file) = exact_original_texture(root, inventory, &virtual_mtl, &map.path)?
             else {
                 continue;
             };
@@ -546,7 +558,8 @@ pub fn export_unified_cdf_fbx_options(
             .ok_or("Vertex count overflow")?;
         let source_subsets = original_mesh_subsets(&raw, mesh.indices.len())
             .map_err(|e| format!("CDF part {name} source subset mapping: {e}"))?;
-        let original_materials = exact_multi_slot_materials(&root, original, inventory, material_hint.as_deref())?;
+        let original_materials =
+            exact_multi_slot_materials(&root, original, inventory, material_hint.as_deref())?;
         // More than one source submaterial requires explicit source MTL and
         // original subset IDs; never paint every face with the first leaf.
         if source_subsets.iter().any(|(_, _, id)| *id == 255) {
@@ -572,7 +585,8 @@ pub fn export_unified_cdf_fbx_options(
             glb = embed_original_material_slots_glb(&glb, &source_subsets, &slots)
                 .map_err(|e| format!("CDF part {name} original multi-material: {e}"))?;
         } else {
-            let maps = exact_single_slot_maps(&root, original, inventory, material_hint.as_deref())?;
+            let maps =
+                exact_single_slot_maps(&root, original, inventory, material_hint.as_deref())?;
             let diffuse = maps
                 .diffuse
                 .as_deref()
@@ -749,17 +763,21 @@ mod tests {
         fs::write(model.join("textures/body.dds.0"), &dds).unwrap();
         fs::write(model.join("textures/body.dds"), b"lower-priority").unwrap();
         let inventory = crate::scan_directory(root.path()).unwrap();
-        let single = exact_single_slot_maps(
-            root.path(), &model.join("scorpid3.chr"), &inventory, None,
-        )
-        .unwrap();
+        let single =
+            exact_single_slot_maps(root.path(), &model.join("scorpid3.chr"), &inventory, None)
+                .unwrap();
         assert_eq!(single.diffuse.unwrap(), model.join("textures/body.dds.0"));
         let multiple =
             exact_multi_slot_materials(root.path(), &model.join("scorpid3.chr"), &inventory, None)
                 .unwrap()
                 .unwrap();
         assert_eq!(multiple.len(), 1);
-        assert!(multiple[0].diffuse.as_ref().is_some_and(|png| png.starts_with(&[137, 80, 78, 71])));
+        assert!(
+            multiple[0]
+                .diffuse
+                .as_ref()
+                .is_some_and(|png| png.starts_with(&[137, 80, 78, 71]))
+        );
     }
 
     #[test]
@@ -774,23 +792,37 @@ mod tests {
         body[12..16].copy_from_slice(&0x745u32.to_le_bytes());
         let part = parent.join("scorpid3_rig.chr");
         fs::write(&part, &body).unwrap();
-        fs::write(parent.join("scorpid3.mtl"), br#"<Material Name="Correct"/>"#).unwrap();
+        fs::write(
+            parent.join("scorpid3.mtl"),
+            br#"<Material Name="Correct"/>"#,
+        )
+        .unwrap();
         fs::write(parent.join("scorpid2.mtl"), br#"<Material Name="Other"/>"#).unwrap();
         let inventory = crate::scan_directory(root).unwrap();
         let (relative, _) = original_model_material(root, &part, &inventory, None)
             .unwrap()
             .unwrap();
-        assert!(relative.eq_ignore_ascii_case("objects/characters/monsters/scorpid_2/scorpid3.mtl"));
+        assert!(
+            relative.eq_ignore_ascii_case("objects/characters/monsters/scorpid_2/scorpid3.mtl")
+        );
         let (explicit, _) = original_model_material(
-            root, &part, &inventory,
+            root,
+            &part,
+            &inventory,
             Some("objects/characters/monsters/scorpid_2/scorpid2.mtl"),
         )
         .unwrap()
         .unwrap();
         assert!(explicit.ends_with("scorpid2.mtl"));
-        assert!(original_model_material(
-            root, &part, &inventory, Some("objects/characters/monsters/scorpid_2/missing.mtl"),
-        ).is_err());
+        assert!(
+            original_model_material(
+                root,
+                &part,
+                &inventory,
+                Some("objects/characters/monsters/scorpid_2/missing.mtl"),
+            )
+            .is_err()
+        );
     }
 
     #[test]
