@@ -27,7 +27,7 @@ pub struct AutoDiscovery {
 
 /// Local entries have precedence only when the exact virtual path is unique.
 /// A saved library hit must still be manifest-verified by the core resolver.
-fn exact(
+pub(crate) fn exact(
     inv: &Inventory,
     virtual_name: &str,
     imported: Option<&Path>,
