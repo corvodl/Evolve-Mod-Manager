@@ -53,10 +53,10 @@ pub fn classify_path(path: &Path) -> AssetKind {
         .to_string_lossy()
         .to_ascii_lowercase();
     if name.ends_with(".dds")
-        || name.ends_with(".dds.0a")
-        || name
-            .rsplit_once(".dds.")
-            .is_some_and(|(_, part)| part.parse::<usize>().is_ok_and(|n| n < 20))
+        || name.rsplit_once(".dds.").is_some_and(|(_, suffix)| {
+            let part = suffix.strip_suffix('a').unwrap_or(suffix);
+            part.parse::<usize>().is_ok_and(|n| n < 20)
+        })
     {
         return AssetKind::Dds;
     }
