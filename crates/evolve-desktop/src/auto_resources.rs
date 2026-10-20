@@ -530,7 +530,7 @@ mod tests {
         let folder = dir.path().join("characters/hunter");
         std::fs::create_dir_all(&folder).unwrap();
         let mut compiled = vec![0u8; 16 + 16 + 132];
-        compiled[..8].copy_from_slice(b"CrChF\\x07\\0\\0");
+        compiled[..8].copy_from_slice(b"CrChF\x07\0\0");
         compiled[8..12].copy_from_slice(&1u32.to_le_bytes());
         compiled[12..16].copy_from_slice(&16u32.to_le_bytes());
         compiled[16..20].copy_from_slice(&0x08021014u32.to_le_bytes());
