@@ -1830,7 +1830,9 @@ fn verified_library_directory(configured: &str) -> Result<PathBuf, String> {
     if !canonical.is_dir() {
         return Err("Configured Asset Library location is not a directory.".into());
     }
-    Ok(canonical)
+    // Explorer handles the ordinary configured Windows path more reliably
+    // than the \\?\\ long-path prefix returned by canonicalize on Windows.
+    Ok(path.to_path_buf())
 }
 
 fn refresh_library_matches(state: &mut State) {
