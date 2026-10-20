@@ -455,7 +455,9 @@ mod tests {
             for base in [216, 264] {
                 for dimension in 0..3 {
                     raw[at + base + (dimension * 4 + dimension) * 4..]
-                        .get_mut(..4).unwrap().copy_from_slice(&1f32.to_le_bytes());
+                        .get_mut(..4)
+                        .unwrap()
+                        .copy_from_slice(&1f32.to_le_bytes());
                 }
             }
             put_u32(&mut raw, at + 572, if index == 0 { 0 } else { u32::MAX });
@@ -503,13 +505,18 @@ mod tests {
             .into_iter()
             .flat_map(|pos| pos.into_iter().flat_map(f32::to_le_bytes))
             .collect::<Vec<_>>();
-        let indices = [0u16, 1, 2].into_iter()
-            .flat_map(u16::to_le_bytes).collect::<Vec<_>>();
+        let indices = [0u16, 1, 2]
+            .into_iter()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
         let weights = [
             [0u8, 0, 0, 0, 255, 0, 0, 0],
             [1u8, 0, 0, 0, 255, 0, 0, 0],
             [1u8, 0, 0, 0, 255, 0, 0, 0],
-        ].into_iter().flatten().collect::<Vec<_>>();
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
         let mut palette = vec![0u8; 32 + 36 + 260];
         put_u32(&mut palette, 20, 1);
         put_u32(&mut palette, 32 + 4, 3);
