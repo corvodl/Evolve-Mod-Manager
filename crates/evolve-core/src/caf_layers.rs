@@ -88,8 +88,56 @@ pub fn sample_verified_caf_layers(
     if layers.len() > MAX_LAYERS || base.additive {
         return Err(bad("Unsupported number of layers or additive base clip"));
     }
-    let mut pose = base.sample_seconds(seconds)?;
+    let pose = base.sample_seconds(seconds)?;
     validate(&pose, original_bone_crcs)?;
+    blend_pose(pose, layers, original_bone_crcs)
+}
+
+/// Fill sparse CAF channels from verified compiled local bind transforms
+/// before blending. This allows a secondary clip to animate a bone omitted
+/// by the base clip without inventing an identity transform.
+pub fn sample_caf_layers_with_bind(
+    base: &NativeCafMotion,
+    seconds: f32,
+    layers: &[CafLayer<'_>],
+    bind: &[CafBonePose],
+) -> Result<Vec<CafBonePose>, NativeCafError> {
+    if base.additive || layers.len() > MAX_LAYERS {
+        return Err(bad("Unsupported additive base or layer count"));
+    }
+    let allowed = bind.iter().map(|p| p.bone_crc32).collect::<HashSet<_>>();
+    validate(bind, &allowed)?;
+    if bind
+        .iter()
+        .any(|p| p.translation.is_none() || p.rotation.is_none())
+    {
+        return Err(bad("Incomplete original local bind transforms"));
+    }
+    let sampled = base.sample_seconds(seconds)?;
+    validate(&sampled, &allowed)?;
+    let lookup = sampled
+        .into_iter()
+        .map(|p| (p.bone_crc32, p))
+        .collect::<HashMap<_, _>>();
+    let pose = bind
+        .iter()
+        .cloned()
+        .map(|mut pose| {
+            if let Some(value) = lookup.get(&pose.bone_crc32) {
+                pose.translation = value.translation.or(pose.translation);
+                pose.rotation = value.rotation.or(pose.rotation);
+            }
+            pose
+        })
+        .collect();
+    blend_pose(pose, layers, &allowed)
+}
+
+fn blend_pose(
+    mut pose: Vec<CafBonePose>,
+    layers: &[CafLayer<'_>],
+    original_bone_crcs: &HashSet<u32>,
+) -> Result<Vec<CafBonePose>, NativeCafError> {
     let lookup: HashMap<u32, usize> = pose
         .iter()
         .enumerate()

@@ -531,3 +531,36 @@ converter and verified extracted source. Skeleton retargeting, live wgpu
 skinning, full layered GPU animation, Action export for complete characters,
 and the private manager's native/on-demand archive handling are not at
 parity. They remain required before public 1.0.
+
+## Authored controller IDs and live CAF layer playback
+
+The compiled skeleton's stored controller IDs now drive native CAF binding in
+both the CPU viewport and the rigged GLB/FBX export path. Recomputing IDs from
+lowercased display names rejected valid assets (including every controller in
+the tested Wraith idle). Duplicate stored IDs and unmatched CAF tracks still
+fail rather than being assigned guessed bones.
+
+The Animation panel offers a non-additive **Blend layer** action, weight slider,
+and removal control for a bound native CAF character. Sparse base channels use
+the original local bind transforms. All skinned CDF parts and authored rigid
+bone sockets share a single sampled pose per frame. Selecting another base or
+asset clears the layer; late worker results cannot attach to a newer base.
+This is viewport blending; exported Actions do not yet bake the overlay.
+
+Read-only acceptance on the user's extracted Stage 2 Wraith CDFs validated all
+three evolution stages with idle plus stage-loop CAFs at five timeline samples.
+All base controllers matched (153, 153, 152); all vertices moved (20,313,
+20,987, 23,783 respectively); triangle indices and UV0 remained unchanged and
+positions remained finite. This is structural validation, not visual/game
+acceptance. Synthetic coverage also exercises two skinned parts plus equipment,
+zero-weight and removed layers, and rejection of foreign tracks.
+
+`cargo run -p evolve-core --example validate_character -- <extracted-root>
+<cdf> <base.caf> <layer.caf> <AssetLibrary> [build-label]` provides the repeatable
+read-only probe. No proprietary assets are included in this repository.
+
+Remaining release requirements still include native DBA and additive decoding,
+unified textured multi-stage/equipment FBX with Actions, complete level editing,
+mod/launcher recovery acceptance, library import/dependency workflows, GUI
+parity, media tools, and installer/updater rollback validation. This change does
+not mark the broader parity checklist complete.

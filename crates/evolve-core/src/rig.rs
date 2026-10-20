@@ -51,6 +51,8 @@ pub struct RigReport {
 }
 #[derive(Clone, Debug)]
 pub struct CompiledSkeleton {
+    /// Authored controller IDs from the compiled bone records.
+    pub controller_ids: Vec<u32>,
     pub names: Vec<String>,
     pub parents: Vec<Option<usize>>,
     pub world: Vec<[[f32; 4]; 4]>,
@@ -150,6 +152,8 @@ pub fn parse_compiled_skeleton(data: &[u8]) -> Result<CompiledSkeleton, RigError
         return Err(RigError::Limits);
     }
     let mut names = Vec::with_capacity(count);
+    let mut controller_ids = Vec::with_capacity(count);
+    let mut unique_ids = HashSet::new();
     let mut parents = Vec::with_capacity(count);
     let mut world = Vec::with_capacity(count);
     let mut inverse = Vec::with_capacity(count);
@@ -157,6 +161,11 @@ pub fn parse_compiled_skeleton(data: &[u8]) -> Result<CompiledSkeleton, RigError
     let mut roots = 0usize;
     for i in 0..count {
         let at = 32 + i * RECORD;
+        let controller_id = read_u32(raw, at)?;
+        if !unique_ids.insert(controller_id) {
+            return Err(RigError::Invalid("Duplicate compiled controller ID".into()));
+        }
+        controller_ids.push(controller_id);
         let raw_name = raw.get(at + 312..at + 568).ok_or(RigError::Limits)?;
         let end = raw_name
             .iter()
@@ -203,6 +212,7 @@ pub fn parse_compiled_skeleton(data: &[u8]) -> Result<CompiledSkeleton, RigError
         ));
     }
     Ok(CompiledSkeleton {
+        controller_ids,
         names,
         parents,
         world,
@@ -568,8 +578,7 @@ fn attach_native_caf(
         ));
     }
     let mut matching = HashMap::new();
-    for (i, name) in skeleton.names.iter().enumerate() {
-        let crc = crc32fast::hash(name.to_ascii_lowercase().as_bytes());
+    for (i, &crc) in skeleton.controller_ids.iter().enumerate() {
         if matching.insert(crc, i).is_some() {
             return Err(RigError::Invalid(
                 "Ambiguous original skeleton bone CRC".into(),
@@ -1112,6 +1121,7 @@ mod tests {
     use super::*;
     fn identity_record(name: &str) -> Vec<u8> {
         let mut data = vec![0u8; RECORD];
+        data[..4].copy_from_slice(&crc32fast::hash(name.as_bytes()).to_le_bytes());
         for base in [216, 264] {
             for r in 0..3 {
                 data[base + (r * 4 + r) * 4..base + (r * 4 + r) * 4 + 4]
@@ -1136,6 +1146,23 @@ mod tests {
     }
 
     #[test]
+    fn compiled_controller_ids_are_preserved_and_duplicates_rejected() {
+        let mut raw = sample_skeleton();
+        raw[64..68].copy_from_slice(&0x12345678u32.to_le_bytes());
+        let skeleton = parse_compiled_skeleton(&raw).unwrap();
+        assert_eq!(skeleton.controller_ids, vec![0x12345678]);
+        assert_eq!(skeleton.names, vec!["Root"]);
+        let mut child = identity_record("Child");
+        child[..4].copy_from_slice(&0x12345678u32.to_le_bytes());
+        child[572..576].copy_from_slice(&(-1i32).to_le_bytes());
+        raw.extend(child);
+        raw[24..28].copy_from_slice(&(32 + 2 * RECORD as u32).to_le_bytes());
+        assert!(
+            matches!(parse_compiled_skeleton(&raw), Err(RigError::Invalid(message)) if message.contains("Duplicate compiled controller"))
+        );
+    }
+
+    #[test]
     fn verified_native_caf_becomes_original_skeleton_animation_channels() {
         use crate::native_caf::{CafController, NativeCafMotion};
         let skeleton = parse_compiled_skeleton(&sample_skeleton()).unwrap();
@@ -1149,7 +1176,7 @@ mod tests {
             "bufferViews":[], "accessors":[], "extras":{"animations_embedded":false}
         });
         let controller = CafController {
-            bone_crc32: crc32fast::hash(b"root"),
+            bone_crc32: crc32fast::hash(b"Root"),
             rotations: vec![[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0]],
             rotation_times: vec![0.0, 30.0],
             positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],

@@ -183,6 +183,9 @@ struct State {
     glb_motion: Option<Arc<AnimatedGlb>>,
     selected_motion_clip: usize,
     native_caf: Option<Arc<NativeCafMotion>>,
+    caf_layer: Option<Arc<NativeCafMotion>>,
+    caf_layer_label: String,
+    caf_layer_weight: f32,
     skin_preview: Option<Arc<VerifiedCafSkin>>,
     cdf_caf_preview: Option<Arc<VerifiedCafAssembly>>,
     cdf_report: Option<Arc<AssemblyReport>>,
@@ -331,6 +334,7 @@ enum Operation {
     LoadEmissive(PathBuf, SharedCache),
     ResolveMaterial(PathBuf, PathBuf, Option<PathBuf>, Option<String>),
     LoadCaf(PathBuf),
+    LoadCafLayer(String, Arc<NativeCafMotion>, String, PathBuf),
     BindCafPreview(PathBuf, PathBuf, NativeCafMotion),
     BindCdfCafPreview(
         PathBuf,
@@ -440,6 +444,7 @@ enum Completed {
         Vec<String>,
     ),
     Caf(NativeCafMotion),
+    CafLayer(String, Arc<NativeCafMotion>, String, NativeCafMotion),
     BoundCafPreview(PathBuf, Box<VerifiedCafSkin>),
     BoundCdfCafPreview(PathBuf, Box<VerifiedCafAssembly>),
     RiggedExport(RigReport, PathBuf),
@@ -621,6 +626,13 @@ impl Operation {
             Self::LoadGlbMotion(path) => AnimatedGlb::read(&path)
                 .map(Completed::MotionGlb)
                 .map_err(|e| e.to_string()),
+            Self::LoadCafLayer(source, base, label, path) => {
+                let layer = read_native_caf(&path).map_err(|e| e.to_string())?;
+                if layer.additive {
+                    return Err("Additive CAF layers require a verified additive convention; select a non-additive clip.".into());
+                }
+                Ok(Completed::CafLayer(source, base, label, layer))
+            }
             Self::LoadCaf(source) => read_native_caf(&source)
                 .map(Completed::Caf)
                 .map_err(|e| e.to_string()),
@@ -1240,6 +1252,9 @@ enum Message {
     StartNormalLoad,
     StartEmissiveLoad,
     StartCafLoad,
+    ViewerLayerClip(usize),
+    ViewerLayerWeight(f32),
+    ViewerClearLayer,
     StartRigGlb,
     StartRigFbx,
     ViewerExportFlatCdf,
@@ -1319,8 +1334,18 @@ fn bind_current_native_caf(state: &mut State) -> Option<Task<Message>> {
 /// viewport continues rendering textured geometry. Source geometry, UVs and
 /// on-disk assets are never modified by the animation preview.
 fn apply_current_skin_frame(state: &mut State) {
+    let layers = state
+        .caf_layer
+        .as_ref()
+        .map(|motion| evolve_core::CafLayer {
+            motion,
+            seconds: state.motion_time,
+            weight: state.caf_layer_weight,
+        })
+        .into_iter()
+        .collect::<Vec<_>>();
     if let Some(assembly) = &state.cdf_caf_preview {
-        match assembly.mesh_at(state.motion_time) {
+        match assembly.mesh_at_layers(state.motion_time, &layers) {
             Ok(mesh) => state.model = Some(Arc::new(mesh)),
             Err(error) => {
                 state.playing = false;
@@ -1328,7 +1353,7 @@ fn apply_current_skin_frame(state: &mut State) {
             }
         }
     } else if let Some(skin) = &state.skin_preview {
-        match skin.mesh_at(state.motion_time) {
+        match skin.mesh_at_layers(state.motion_time, &layers) {
             Ok(mesh) => state.model = Some(Arc::new(mesh)),
             Err(error) => {
                 state.playing = false;
@@ -3580,6 +3605,40 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 ),
             );
         }
+        Message::ViewerLayerClip(index) => {
+            if state.busy || (state.skin_preview.is_none() && state.cdf_caf_preview.is_none()) {
+                return Task::none();
+            }
+            let Some(base) = state.native_caf.clone() else {
+                return Task::none();
+            };
+            let Some(clip) = state.auto_clips.get(index) else {
+                return Task::none();
+            };
+            let Some(path) = clip
+                .source
+                .clone()
+                .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("caf")))
+            else {
+                state.status = "Layer playback requires an extracted native CAF.".into();
+                return Task::none();
+            };
+            return launch(
+                state,
+                Operation::LoadCafLayer(state.input.clone(), base, clip.label.clone(), path),
+            );
+        }
+        Message::ViewerLayerWeight(weight) => {
+            if weight.is_finite() && (0.0..=1.0).contains(&weight) {
+                state.caf_layer_weight = weight;
+                apply_current_skin_frame(state);
+            }
+        }
+        Message::ViewerClearLayer => {
+            state.caf_layer = None;
+            state.caf_layer_label.clear();
+            apply_current_skin_frame(state);
+        }
         Message::StartCafLoad => {
             state.auto_play_native_caf = false;
             if state.caf_path.trim().is_empty() {
@@ -4162,6 +4221,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .iter()
                         .map(|relative| dir.join(relative))
                         .collect();
+                    state.caf_layer = None;
+                    state.caf_layer_label.clear();
                     state.native_caf = None;
                     state.glb_motion = None;
                     state.playing = false;
@@ -4187,6 +4248,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                     state.converted_glbs =
                         result.glb_files.iter().map(|rel| dir.join(rel)).collect();
+                    state.caf_layer = None;
+                    state.caf_layer_label.clear();
                     state.native_caf = None;
                     state.skin_preview = None;
                     state.glb_motion = None;
@@ -4210,10 +4273,45 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.motion_time = 0.0;
                     state.playing = false;
                     state.selected_motion_clip = 0;
+                    state.caf_layer = None;
+                    state.caf_layer_label.clear();
                     state.native_caf = None;
                     state.skin_preview = None;
                     state.glb_motion = Some(Arc::new(motion));
                     state.page = Some(Page::Models);
+                }
+                Ok(Completed::CafLayer(source, base, label, motion)) => {
+                    if source != state.input
+                        || !state
+                            .native_caf
+                            .as_ref()
+                            .is_some_and(|current| Arc::ptr_eq(current, &base))
+                    {
+                        return Task::none();
+                    }
+                    let layers = [evolve_core::CafLayer {
+                        motion: &motion,
+                        seconds: state.motion_time,
+                        weight: 0.5,
+                    }];
+                    let verified = if let Some(assembly) = &state.cdf_caf_preview {
+                        assembly.mesh_at_layers(state.motion_time, &layers)
+                    } else if let Some(skin) = &state.skin_preview {
+                        skin.mesh_at_layers(state.motion_time, &layers)
+                    } else {
+                        return Task::none();
+                    };
+                    match verified {
+                        Ok(mesh) => {
+                            state.model = Some(Arc::new(mesh));
+                            state.caf_layer = Some(Arc::new(motion));
+                            state.caf_layer_label = label;
+                            state.caf_layer_weight = 0.5;
+                            state.status =
+                                "Native CAF layer bound to the original skeleton.".into();
+                        }
+                        Err(error) => state.status = format!("Cannot bind CAF layer: {error}"),
+                    }
                 }
                 Ok(Completed::Caf(motion)) => {
                     state.status = format!(
@@ -4229,6 +4327,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     if let Some(rest) = &state.cdf_rest_mesh {
                         state.model = Some(rest.clone());
                     }
+                    state.caf_layer = None;
+                    state.caf_layer_label.clear();
                     state.native_caf = Some(Arc::new(motion));
                     state.glb_motion = None;
                     state.page = Some(Page::Models);
@@ -4295,6 +4395,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         if let Some(rest) = &state.cdf_rest_mesh {
                             state.model = Some(rest.clone());
                         }
+                        state.caf_layer = None;
+                        state.caf_layer_label.clear();
                         state.native_caf = Some(Arc::new(motion));
                         state.glb_motion = None;
                         state.motion_time = 0.0;
@@ -4453,6 +4555,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.cdf_rest_mesh = None;
                         state.cdf_caf_preview = None;
                         state.skin_preview = None;
+                        state.caf_layer = None;
+                        state.caf_layer_label.clear();
                         state.native_caf = None;
                         state.glb_motion = None;
                         state.playing = false;
@@ -4534,6 +4638,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.emissive_map = None;
                     state.specular_map = None;
                     state.gloss_map = None;
+                    state.caf_layer = None;
+                    state.caf_layer_label.clear();
                     state.native_caf = None;
                     state.skin_preview = None;
                     state.glb_motion = None;
@@ -4630,6 +4736,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.emissive_map = None;
                     state.specular_map = None;
                     state.gloss_map = None;
+                    state.caf_layer = None;
+                    state.caf_layer_label.clear();
                     state.native_caf = None;
                     state.glb_motion = None;
                     state.playing = false;
@@ -5824,6 +5932,54 @@ fn main() -> iced::Result {
 #[cfg(test)]
 mod project_edit_tests {
     use super::*;
+
+    #[test]
+    fn layer_controls_ignore_invalid_weights_and_unbound_assets() {
+        let mut state = State {
+            caf_layer_weight: 0.4,
+            ..State::default()
+        };
+        for weight in [f32::NAN, f32::INFINITY, -0.1, 1.1] {
+            let _ = update(&mut state, Message::ViewerLayerWeight(weight));
+            assert_eq!(state.caf_layer_weight, 0.4);
+        }
+        let _ = update(&mut state, Message::ViewerLayerClip(0));
+        assert!(!state.busy);
+        assert!(state.caf_layer.is_none());
+    }
+
+    #[test]
+    fn late_layer_completion_cannot_replace_a_new_base_clip() {
+        let motion = NativeCafMotion {
+            schema: 1,
+            controllers: vec![],
+            start_frame: 0.0,
+            end_frame: 30.0,
+            fps: 30.0,
+            additive: false,
+            cyclic: false,
+        };
+        let old = Arc::new(motion.clone());
+        let current = Arc::new(motion.clone());
+        let mut state = State {
+            input: "new.cdf".into(),
+            native_caf: Some(current.clone()),
+            caf_layer: Some(current.clone()),
+            caf_layer_label: "keep".into(),
+            ..State::default()
+        };
+        let _ = update(
+            &mut state,
+            Message::Finished(Ok(Completed::CafLayer(
+                "new.cdf".into(),
+                old,
+                "stale".into(),
+                motion,
+            ))),
+        );
+        assert_eq!(state.caf_layer_label, "keep");
+        assert!(Arc::ptr_eq(state.caf_layer.as_ref().unwrap(), &current));
+    }
 
     #[test]
     fn plain_click_previews_model_without_second_button_press() {

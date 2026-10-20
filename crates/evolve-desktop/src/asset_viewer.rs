@@ -98,6 +98,14 @@ fn strip(state: &State) -> Element<'_, Message> {
                     text(format!("{} character-declared animations", state.auto_clips.len())).size(12),
                 ].spacing(8),
             ].spacing(5);
+            if state.caf_layer.is_some() {
+                clips = clips.push(row![
+                    text(format!("Layer: {}", state.caf_layer_label)).size(12),
+                    slider(0.0..=1.0, state.caf_layer_weight, Message::ViewerLayerWeight).width(160),
+                    text(format!("{:.0}%", state.caf_layer_weight * 100.0)).size(12),
+                    design::button("Remove layer").on_press(Message::ViewerClearLayer),
+                ].spacing(8));
+            }
             clips = clips.push(
                 design::text_input("Filter character animations…", &state.auto_clip_filter)
                     .on_input(Message::ViewerAutoClipFilter)
@@ -111,9 +119,11 @@ fn strip(state: &State) -> Element<'_, Message> {
             {
                 let label = format!("{} · {}{}", clip.label, clip.kind.to_ascii_uppercase(), if clip.source.is_none() { " (not extracted)" } else { "" });
                 clips = clips.push(
-                    design::button(text(label).size(12))
+                    row![design::button(text(label).size(12))
                         .on_press(Message::ViewerAutoClip(index))
-                        .style(design::text_button)
+                        .style(design::text_button).width(Fill),
+                        design::button("Blend layer").on_press_maybe((!state.busy && (state.skin_preview.is_some() || state.cdf_caf_preview.is_some()) && clip.kind.eq_ignore_ascii_case("caf") && clip.source.is_some()).then_some(Message::ViewerLayerClip(index))),
+                    ].spacing(8)
                 );
             }
             if !state.converted_glbs.is_empty() {
