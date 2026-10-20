@@ -280,22 +280,46 @@ pub fn discover(
     }
     let parent = source.rsplit_once('/').map_or("", |(p, _)| p);
     let bases = stems(&source);
-    // Same-folder material names are an explicit fallback, not a general
-    // basename search across characters or a random library texture.
-    for base in &bases {
-        let candidate = join(parent, base, "mtl");
-        match exact(inv, &candidate, imported, build) {
+    // Original CrChF MtlName references take precedence over guessed same-stem
+    // MTLs. Reuse the CDF loader's exact source/build-checked resolver so a
+    // separately named material never silently becomes the wrong character.
+    let mut fallback_material = true;
+    if [".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cga"]
+        .iter()
+        .any(|ext| canonical.to_ascii_lowercase().ends_with(ext))
+    {
+        match crate::assembly_materials::material_for_part(
+            &canonical, None, inv, imported, build,
+        ) {
             Ok(Some(path)) => {
+                found.material_note = "Verified original compiled MtlName or exact material".into();
                 found.material = Some(path);
-                found.material_note = format!("Exact material: {candidate}");
-                break;
-            }
-            Err(e) => {
-                found.warnings.push(e);
-                // A conflicted higher-priority reference cannot be bypassed.
-                break;
             }
             Ok(None) => {}
+            Err(error) => {
+                found.warnings.push(error);
+                fallback_material = false;
+            }
+        }
+    }
+    // Same-folder material names are an explicit fallback, not a general
+    // basename search across characters or a random library texture.
+    if found.material.is_none() && fallback_material {
+        for base in &bases {
+            let candidate = join(parent, base, "mtl");
+            match exact(inv, &candidate, imported, build) {
+                Ok(Some(path)) => {
+                    found.material = Some(path);
+                    found.material_note = format!("Exact material: {candidate}");
+                    break;
+                }
+                Err(e) => {
+                    found.warnings.push(e);
+                    // A conflicted higher-priority reference cannot be bypassed.
+                    break;
+                }
+                Ok(None) => {}
+            }
         }
     }
     if found.material.is_none() && found.warnings.is_empty() {
@@ -498,6 +522,29 @@ mod tests {
         let inv = scan_directory(root.path()).unwrap();
         let found = discover("characters/kala/kala_lod0.skin", &inv, None, None);
         assert!(found.material.unwrap().ends_with("kala.mtl"));
+    }
+
+    #[test]
+    fn compiled_mtl_name_outweighs_neighboring_same_stem_material() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("characters/hunter");
+        std::fs::create_dir_all(&folder).unwrap();
+        let mut compiled = vec![0u8; 16 + 16 + 132];
+        compiled[..8].copy_from_slice(b"CrChF\\x07\\0\\0");
+        compiled[8..12].copy_from_slice(&1u32.to_le_bytes());
+        compiled[12..16].copy_from_slice(&16u32.to_le_bytes());
+        compiled[16..20].copy_from_slice(&0x08021014u32.to_le_bytes());
+        compiled[24..28].copy_from_slice(&132u32.to_le_bytes());
+        compiled[28..32].copy_from_slice(&32u32.to_le_bytes());
+        let authored = b"characters/hunter/true_material";
+        compiled[32..32 + authored.len()].copy_from_slice(authored);
+        std::fs::write(folder.join("torso.skinm"), compiled).unwrap();
+        std::fs::write(folder.join("torso.mtl"), b"<Material/>").unwrap();
+        std::fs::write(folder.join("true_material.mtl"), b"<Material/>").unwrap();
+        let inventory = scan_directory(dir.path()).unwrap();
+        let found = discover("characters/hunter/torso.skinm", &inventory, None, None);
+        assert!(found.material.unwrap().ends_with("true_material.mtl"));
+        assert!(found.warnings.is_empty(), "{:?}", found.warnings);
     }
 
     #[test]
