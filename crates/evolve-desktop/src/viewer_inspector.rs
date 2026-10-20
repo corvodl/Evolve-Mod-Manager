@@ -253,9 +253,9 @@ pub(super) fn sidebar_dependencies(state: &State) -> Element<'_, Message> {
                 column![
                     row![
                         text(*status).size(12).color(*color),
-                        text(relation.as_str()).size(11).style(design::muted)
+                        text(relation.clone()).size(11).style(design::muted)
                     ].spacing(8),
-                    text(target.as_str()).size(12),
+                    text(target.clone()).size(12),
                 ].spacing(3)
             );
         }
