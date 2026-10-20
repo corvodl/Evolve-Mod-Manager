@@ -324,9 +324,11 @@ pub(super) fn sidebar_dependencies(state: &State) -> Element<'_, Message> {
                     row![
                         text(*status).size(12).color(*color),
                         text(relation.clone()).size(11).style(design::muted)
-                    ].spacing(8),
+                    ]
+                    .spacing(8),
                     text(target.clone()).size(12),
-                ].spacing(3)
+                ]
+                .spacing(3),
             );
         }
         if links.len() > 120 {
