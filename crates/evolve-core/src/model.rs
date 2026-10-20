@@ -502,6 +502,11 @@ pub fn original_mesh_subsets(
     {
         return Err(ModelError::Limits);
     }
+    let legacy_vertex_count = if legacy {
+        Some(parse_model_bytes(data)?.positions.len())
+    } else {
+        None
+    };
     let mut result = Vec::with_capacity(count + 1);
     let mut cursor = 0usize;
     for row in 0..count {
@@ -523,7 +528,7 @@ pub fn original_mesh_subsets(
         if legacy {
             let first_vertex = u32at(data, at + 8)? as usize;
             let vertex_count = u32at(data, at + 12)? as usize;
-            let nv = parse_model_bytes(data)?.positions.len();
+            let nv = legacy_vertex_count.unwrap_or_default();
             if first_vertex.checked_add(vertex_count).is_none_or(|end| end > nv) {
                 return Err(ModelError::Format(
                     "historical material subset has invalid vertex range".into(),
