@@ -11,6 +11,7 @@ mod design;
 mod developer_auth;
 mod explorer_tree;
 mod launcher_bridge;
+mod menu_popup;
 mod level_workspace;
 mod modding_keys;
 mod modding_page;
@@ -1154,6 +1155,7 @@ enum Message {
     LibrarySearchChanged(String),
     LibraryMenu(&'static str),
     ModdingMenu(&'static str),
+    DismissMenus,
     ModdingFilterChanged(String),
     ModdingPage(bool),
     ModdingChangesPage(bool),
@@ -1871,7 +1873,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Asset Library is ready at the detected manager data location. Import a local signed PAK to populate it.".into();
             }
         }
+        Message::DismissMenus => {
+            state.viewer_menu = None;
+            state.modding_menu = None;
+            state.library_menu = None;
+        }
         Message::ModdingMenu(menu) => {
+            state.library_menu = None;
+            state.viewer_menu = None;
             state.modding_menu = if state.modding_menu == Some(menu) {
                 None
             } else {
@@ -2173,6 +2182,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             refresh_library_matches(state);
         }
         Message::LibraryMenu(menu) => {
+            state.modding_menu = None;
+            state.viewer_menu = None;
             state.library_menu = if state.library_menu == Some(menu) {
                 None
             } else {
@@ -2463,6 +2474,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 "Source path selected. Choose the relevant safe inspector in Modding.".into();
         }
         Message::ViewerMenu(section) => {
+            state.modding_menu = None;
+            state.library_menu = None;
             state.viewer_menu = if section.is_empty() || state.viewer_menu == Some(section) {
                 None
             } else {
@@ -6885,6 +6898,25 @@ mod project_edit_tests {
         assert_eq!(state.preferences.keep_original_snapshots, original);
         // Restore global state for the rest of the test suite.
         crash_diagnostics::set_enabled(true);
+    }
+
+    #[test]
+    fn popup_menus_are_mutually_exclusive_and_dismiss_without_removing_page() {
+        let mut state = State::default();
+        state.page = Some(Page::Files);
+        let _ = update(&mut state, Message::ModdingMenu("File"));
+        assert_eq!(state.modding_menu, Some("File"));
+        let _ = update(&mut state, Message::LibraryMenu("View"));
+        assert_eq!(state.library_menu, Some("View"));
+        assert!(state.modding_menu.is_none());
+        let _ = update(&mut state, Message::ViewerMenu("Edit"));
+        assert_eq!(state.viewer_menu, Some("Edit"));
+        assert!(state.library_menu.is_none());
+        let _ = update(&mut state, Message::DismissMenus);
+        assert!(state.viewer_menu.is_none());
+        assert!(state.library_menu.is_none());
+        assert!(state.modding_menu.is_none());
+        assert_eq!(state.page, Some(Page::Files));
     }
 
 }
