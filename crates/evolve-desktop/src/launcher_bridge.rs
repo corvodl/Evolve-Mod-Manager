@@ -166,6 +166,9 @@ fn verify_prepared_journal(
     journal: &Value,
     files: &[(String, PathBuf, PathBuf)],
 ) -> Result<(), String> {
+    if journal["version"].as_u64() != Some(1) || journal["phase"].as_str() != Some("prepared") {
+        return Err("Private swap journal must be version 1 in the prepared phase".into());
+    }
     let records = journal["files"]
         .as_array()
         .ok_or("Prepared swap has no file ledger")?;
@@ -173,16 +176,21 @@ fn verify_prepared_journal(
         return Err("Prepared swap file count differs from the authenticated PAK/hook plan".into());
     }
     let mut seen = std::collections::HashSet::new();
-    for (name, target, staged) in files {
+    for (index, (name, target, staged)) in files.iter().enumerate() {
+        // The private auto_launch_frida.py compares this exact file ordering
+        // before arming CreateProcessW. Name-only search would let Rust report
+        // a false PASS for a journal the real launcher will always refuse.
+        let record = records
+            .get(index)
+            .ok_or("Prepared journal entry ordering/count changed")?;
+        if record["name"].as_str() != Some(name.as_str()) {
+            return Err(format!("Prepared swap entry ordering differs from private launcher: {name}"));
+        }
         // Canonicalize both ledger expectations as well: Windows can attach
         // the extended-path prefix when resolving an already-open file, while
         // the private controller stores a normal absolute path.
         let target = fs::canonicalize(target).map_err(|e| e.to_string())?;
         let staged = fs::canonicalize(staged).map_err(|e| e.to_string())?;
-        let record = records
-            .iter()
-            .find(|record| record["name"].as_str() == Some(name.as_str()))
-            .ok_or_else(|| format!("Prepared swap lacks expected {name}"))?;
         if !seen.insert(name.to_ascii_lowercase()) {
             return Err("Duplicate prepared target".into());
         }
@@ -266,6 +274,14 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
         .as_str()
         .ok_or("Missing exact original game root in rekey_plan.json")?;
     let game = directory(Path::new(game_str))?;
+    // The private controlled_swap.fresh() forbids game/stage nesting.
+    // Without this check, a future helper could stage into the live game and
+    // make the supposed offline-only rollback no longer independent.
+    if game.starts_with(&stage) || stage.starts_with(&game)
+        || game.starts_with(&swap) || swap.starts_with(&game)
+    {
+        return Err("The original game, signing stage and private swap helper must be in separate directory trees".into());
+    }
     let steam = directory(&game.join("bin64_SteamRetail"))?;
     plain(&steam.join("Evolve.exe"), 1024 * 1024 * 1024)?;
     // The private controller, not the public Rust manager, installs the
@@ -523,6 +539,8 @@ mod tests {
         let ready_label = ready.to_string_lossy().into_owned();
         let backup_label = format!("{}.customkey-original", original.display());
         let saved = serde_json::json!({
+            "version": 1,
+            "phase": "prepared",
             "files": [{
                 "name": name,
                 "target": original,
@@ -538,6 +556,66 @@ mod tests {
         fs::write(&ready, b"tampered signed bytes").unwrap();
         assert!(verify_prepared_journal(&saved, &plan).is_err());
         assert_eq!(fs::read(&original).unwrap(), b"original signed archive");
+    }
+
+    #[test]
+    fn prepared_ledger_must_match_private_launcher_exact_order_and_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        let mut expected = Vec::new();
+        let mut rows = Vec::new();
+        for name in ["Game/first.pak", "Game/second.pak"] {
+            let n = name.split('/').next_back().unwrap();
+            let target = base.join(n);
+            let staged = base.join(format!("staged-{n}"));
+            let ready = base.join(format!("{n}.customkey-ready"));
+            fs::write(&target, b"unchanged original").unwrap();
+            fs::write(&staged, b"custom payload").unwrap();
+            fs::write(&ready, b"custom payload").unwrap();
+            rows.push(serde_json::json!({
+                "name": name,
+                "source": staged,
+                "target": target,
+                "ready": ready,
+                "backup": format!("{}.customkey-original", target.display()),
+                "sha256": sha(&ready).unwrap(),
+                "bytes": fs::metadata(&ready).unwrap().len()
+            }));
+            expected.push((name.to_owned(), target, staged));
+        }
+        let mut state = serde_json::json!({"version":1,"phase":"prepared","files":rows});
+        assert!(verify_prepared_journal(&state, &expected).is_ok());
+        state["files"].as_array_mut().unwrap().reverse();
+        assert!(verify_prepared_journal(&state, &expected).unwrap_err().contains("ordering"));
+        state["files"].as_array_mut().unwrap().reverse();
+        state["version"] = serde_json::json!(2);
+        assert!(verify_prepared_journal(&state, &expected).is_err());
+        state["version"] = serde_json::json!(1);
+        state["phase"] = serde_json::json!("swapped");
+        assert!(verify_prepared_journal(&state, &expected).is_err());
+    }
+
+    #[test]
+    fn rejects_overlapping_private_stage_and_game_roots_without_writing() {
+        let root = tempfile::tempdir().unwrap();
+        let stage = root.path().join("game/stage");
+        let swap = root.path().join("swap");
+        fs::create_dir_all(&stage).unwrap();
+        fs::create_dir(&swap).unwrap();
+        fs::write(
+            stage.join("stage_status.json"),
+            br#"{"status":"fully-staged-offline","count":1}"#,
+        ).unwrap();
+        fs::write(
+            stage.join("rekey_plan.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "source_root": root.path().join("game"),
+                "entries":[{"kind":"signed-encrypted","path":"Game/libs.pak"}]
+            })).unwrap(),
+        ).unwrap();
+        let err = inspect_existing_launcher(&stage, &swap).unwrap_err();
+        assert!(err.contains("separate directory trees"), "{err}");
+        assert!(!swap.join("controlled_swap_state.json").exists());
     }
 
     #[test]
