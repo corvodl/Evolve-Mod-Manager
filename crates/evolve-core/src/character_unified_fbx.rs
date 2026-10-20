@@ -2,6 +2,7 @@
 //! Fail closed on any missing part, UV, mismatched rig or invalid Blender output.
 //! This is geometry/rig unification; full multi-slot materials remain a separate gate.
 use crate::cdf::{AssetResolution, read_cdf, resolve_cdf, resolve_virtual};
+use crate::fbx::publish_verified_binary_fbx;
 use crate::character_assembly::select_attachments;
 use crate::inventory::Inventory;
 use crate::materials::{read_material, resolve_materials};
@@ -12,15 +13,13 @@ use image::ImageEncoder;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashSet;
-use std::fs::{self, File};
-use std::io::Read;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 const MAX_SOURCE: u64 = 256 * 1024 * 1024;
 const MAX_PARTS: usize = 128;
-const FBX_HEADER: &[u8] = b"Kaydara FBX Binary  \x00\x1a\x00";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnifiedCdfFbxReport {
@@ -410,6 +409,8 @@ pub fn export_unified_cdf_fbx(
     let mut child = Command::new(blender)
         .arg("--background")
         .arg("--factory-startup")
+        .arg("--python-exit-code")
+        .arg("1")
         .arg("--python")
         .arg(&script)
         .arg("--")
@@ -432,24 +433,10 @@ pub fn export_unified_cdf_fbx(
             None => std::thread::sleep(Duration::from_millis(150)),
         }
     }
-    let mut file = File::open(&temp_fbx).map_err(|e| e.to_string())?;
-    let mut header = [0u8; 23];
-    file.read_exact(&mut header).map_err(|e| e.to_string())?;
-    if header != FBX_HEADER || file.metadata().map_err(|e| e.to_string())?.len() < 256 {
-        return Err("Blender did not produce a verified binary FBX".into());
-    }
-    let mut publish = tempfile::Builder::new()
-        .prefix(".fbx-validated-")
-        .tempfile_in(&parent)
-        .map_err(|e| e.to_string())?;
-    std::io::copy(&mut file, &mut publish).map_err(|e| e.to_string())?;
-    publish
-        .as_file_mut()
-        .sync_all()
-        .map_err(|e| e.to_string())?;
-    publish
-        .persist_noclobber(destination)
-        .map_err(|e| e.error.to_string())?;
+    // Shares the same byte-for-byte, non-overwriting FBX publish path as
+    // single-model exports. The old flow consumed the first 23 bytes while
+    // verifying the signature and accidentally discarded them on copy.
+    publish_verified_binary_fbx(&temp_fbx, destination).map_err(|e| e.to_string())?;
     Ok(UnifiedCdfFbxReport {
         original_skeleton: skeleton_ref,
         selected_skin_set: skin_set,
