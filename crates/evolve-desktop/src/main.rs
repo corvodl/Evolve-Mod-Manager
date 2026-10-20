@@ -6913,8 +6913,10 @@ mod project_edit_tests {
     }
     #[test]
     fn popup_menus_are_mutually_exclusive_and_dismiss_without_removing_page() {
-        let mut state = State::default();
-        state.page = Some(Page::Files);
+        let mut state = State {
+            page: Some(Page::Files),
+            ..State::default()
+        };
         let _ = update(&mut state, Message::ModdingMenu("File"));
         assert_eq!(state.modding_menu, Some("File"));
         let _ = update(&mut state, Message::LibraryMenu("View"));
