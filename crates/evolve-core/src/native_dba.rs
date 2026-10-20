@@ -79,12 +79,13 @@ pub fn inspect_native_dba_bytes(data: &[u8]) -> Result<NativeDbaInspection, Nati
             return Err(NativeDbaError::Invalid("Invalid DBA chunk bounds".into()));
         }
         seen.push((offset, finish));
-        if kind & 0xffff == 0x100d && kind >> 16 == 0x905 {
-            if controller.replace((offset, size)).is_some() {
-                return Err(NativeDbaError::Invalid(
-                    "Multiple DBA Controller_905 chunks".into(),
-                ));
-            }
+        if kind & 0xffff == 0x100d
+            && kind >> 16 == 0x905
+            && controller.replace((offset, size)).is_some()
+        {
+            return Err(NativeDbaError::Invalid(
+                "Multiple DBA Controller_905 chunks".into(),
+            ));
         }
     }
     seen.sort_unstable();
