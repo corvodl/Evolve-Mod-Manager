@@ -139,7 +139,7 @@ fn handle_element(
         };
         let binding = normalize(&binding)?;
         let ext = binding.rsplit('.').next().unwrap_or_default();
-        let supported = match kind {
+        let supported = match &kind {
             AttachmentKind::Bone => ["cgf", "cga", "chr", "skin"].iter().any(|e| ext.eq_ignore_ascii_case(e)),
             _ => ext.eq_ignore_ascii_case("skin") || ext.eq_ignore_ascii_case("chr"),
         };
