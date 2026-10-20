@@ -124,39 +124,29 @@ pub fn decoded_dds_indexed(
     build: Option<&str>,
 ) -> Result<(DdsInfo, Arc<RgbaImage>), String> {
     let lower = virtual_path.replace('\\', "/").to_ascii_lowercase();
-    // The 2012 high archive also contains two .dds.0a files whose payload
-    // starts at the 124-byte DDS_HEADER rather than the usual DDS magic.
-    // Accept them only if the documented 124-byte structure is present.
-    if lower.ends_with(".dds.0a") {
-        let meta = fs::symlink_metadata(source).map_err(|e| e.to_string())?;
-        if !meta.file_type().is_file() || meta.len() > 256 * 1024 * 1024 {
-            return Err("Invalid or oversized 2012 DDS alpha auxiliary".into());
-        }
-        let mut headerless = fs::read(source).map_err(|e| e.to_string())?;
-        if headerless.len() < 124 || headerless[..4] != 124u32.to_le_bytes() {
-            return Err("The .dds.0a file does not contain a verified DDS header".into());
-        }
-        let staging = tempfile::tempdir().map_err(|e| e.to_string())?;
-        let mut wrapped = b"DDS ".to_vec();
-        wrapped.append(&mut headerless);
-        let path = staging.path().join("alpha.dds");
-        fs::write(&path, wrapped).map_err(|e| e.to_string())?;
-        let (info, pixels) = decode_preview_image(&path, DdsLayout::Linear)?;
-        return Ok((info, Arc::new(pixels)));
-    }
-    let base = if let Some((name, suffix)) = lower.rsplit_once(".dds.") {
-        if suffix.parse::<usize>().is_err() {
-            return Err("Invalid numbered DDS fragment".into());
-        }
+    // Historical 8-bit alpha auxiliary streams have suffixes .dds.0a,
+    // .dds.1a ... They use the same high/low mip ordering but omit the four
+    // magic bytes from the 124-byte DDS_HEADER in part 0a. Do not infer the
+    // alpha format from the headerless numbered fragments.
+    let numbered = lower.rsplit_once(".dds.");
+    let alpha = numbered.is_some_and(|(_, part)| part.ends_with('a'));
+    let source_index = if let Some((_, suffix)) = numbered {
+        let digits = if alpha {
+            suffix.strip_suffix('a').unwrap_or(suffix)
+        } else {
+            suffix
+        };
+        Some(digits.parse::<usize>().map_err(|_| "Invalid numbered DDS fragment")?)
+    } else {
+        None
+    };
+    let base = if let Some((name, _)) = numbered {
         format!("{name}.dds")
     } else if lower.ends_with(".dds") {
         lower.clone()
     } else {
         return Err("Not a DDS texture path".into());
     };
-    let source_index = lower
-        .rsplit_once(".dds.")
-        .and_then(|(_, n)| n.parse::<usize>().ok());
     if source_index.is_some_and(|n| n > 19) {
         return Err("DDS part index exceeds 20-mip safety limit".into());
     }
@@ -167,7 +157,7 @@ pub fn decoded_dds_indexed(
         if source_index == Some(part) {
             return Ok(Some(source.to_path_buf()));
         }
-        let virtual_part = format!("{base}.{part}");
+        let virtual_part = format!("{base}.{part}{}", if alpha { "a" } else { "" });
         let local = resolve_virtual(inventory, &virtual_part);
         match local {
             AssetResolution::Found(relative) => {
@@ -224,7 +214,17 @@ pub fn decoded_dds_indexed(
             return Err("DDS fragment aggregate exceeds 256 MiB".into());
         }
         let dest = staging.path().join(format!("preview.dds.{i}"));
-        fs::copy(&original, &dest).map_err(|e| e.to_string())?;
+        if alpha && i == 0 {
+            let mut headerless = fs::read(&original).map_err(|e| e.to_string())?;
+            if headerless.len() < 124 || headerless[..4] != 124u32.to_le_bytes() {
+                return Err("The .dds.0a file does not contain a verified DDS header".into());
+            }
+            let mut wrapped = b"DDS ".to_vec();
+            wrapped.append(&mut headerless);
+            fs::write(&dest, wrapped).map_err(|e| e.to_string())?;
+        } else {
+            fs::copy(&original, &dest).map_err(|e| e.to_string())?;
+        }
         count += 1;
     }
     if source_index.is_some_and(|index| count <= 1 && index != 0) {
