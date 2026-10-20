@@ -187,9 +187,7 @@ fn parse_header(bytes: &[u8]) -> Result<(DdsInfo, usize, Option<[u32; 4]>), DdsE
         }
         if format_flags & 0x20000 != 0 && u32_at(bytes, 88)? == 8 {
             DdsFormat::Luminance8
-        } else if format_flags & 0x40 != 0
-            && matches!(u32_at(bytes, 88)?, 24 | 32)
-        {
+        } else if format_flags & 0x40 != 0 && matches!(u32_at(bytes, 88)?, 24 | 32) {
             masks = Some([
                 u32_at(bytes, 92)?,
                 u32_at(bytes, 96)?,
@@ -483,10 +481,9 @@ fn decode_block(format: DdsFormat, bytes: &[u8]) -> [[u8; 4]; 16] {
             }
             pixels
         }
-        DdsFormat::Rgba32
-        | DdsFormat::Rgb24
-        | DdsFormat::Alpha8
-        | DdsFormat::Luminance8 => [[0u8; 4]; 16],
+        DdsFormat::Rgba32 | DdsFormat::Rgb24 | DdsFormat::Alpha8 | DdsFormat::Luminance8 => {
+            [[0u8; 4]; 16]
+        }
     }
 }
 
@@ -611,8 +608,15 @@ pub fn decode_dds_rgba_with_layout(
         let masks = masks.ok_or_else(|| DdsError::Unsupported("missing channel masks".into()))?;
         validate_masks(masks)?;
         let (destination_pixels, _) = rgba.as_chunks_mut::<4>();
-        let pixel_stride = if info.format == DdsFormat::Rgb24 { 3 } else { 4 };
-        for (src, dest) in payload.chunks_exact(pixel_stride).zip(destination_pixels.iter_mut()) {
+        let pixel_stride = if info.format == DdsFormat::Rgb24 {
+            3
+        } else {
+            4
+        };
+        for (src, dest) in payload
+            .chunks_exact(pixel_stride)
+            .zip(destination_pixels.iter_mut())
+        {
             let pixel = if pixel_stride == 3 {
                 u32::from_le_bytes([src[0], src[1], src[2], 0])
             } else {
