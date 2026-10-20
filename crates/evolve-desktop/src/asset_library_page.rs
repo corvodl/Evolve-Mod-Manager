@@ -94,28 +94,22 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             .style(design::text_button),
     ]
     .spacing(8);
-    let menu_details: Element<'_, Message> = match state.library_menu {
-        Some("File") => row![
+    let menu_details: Option<Element<'_, Message>> = match state.library_menu {
+        Some("File") => Some(column![
             design::button("Refresh catalog").on_press(Message::LibraryRefresh),
             design::button("Import signed PAK…").on_press(Message::LibraryToggleConfiguration),
             design::button("Storage settings").on_press(Message::Navigate(Page::Settings)),
-        ]
-        .spacing(8)
-        .into(),
-        Some("View") => row![
+        ].spacing(3).into()),
+        Some("View") => Some(column![
             design::button("All Assets").on_press(Message::LibrarySetByBuild(false)),
             design::button("By Build").on_press(Message::LibrarySetByBuild(true)),
-        ]
-        .spacing(8)
-        .into(),
-        Some("Tools") => row![
+        ].spacing(3).into()),
+        Some("Tools") => Some(column![
             design::button("Preview selected PAK").on_press(Message::LibraryPreview),
             design::button("Create editable project").on_press(Message::LibraryMakeModProject),
             design::button("Open Modding").on_press(Message::Navigate(Page::Files)),
-        ]
-        .spacing(8)
-        .into(),
-        _ => text("").into(),
+        ].spacing(3).into()),
+        _ => None,
     };
 
     let mut layout = column![
@@ -126,7 +120,6 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             background: Some(Background::Color(design::field(theme))),
             ..container::Style::default()
         }),
-        menu_details,
         row![
             design::button("Import PAKs").style(design::primary)
                 .on_press(Message::LibraryToggleConfiguration),
@@ -294,5 +287,11 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             "Select an imported archive to preview its extracted files."
         }).size(12).style(design::muted),
     ].spacing(9).align_y(iced::Center));
-    layout.width(Fill).height(Fill).into()
+    let x = match state.library_menu {
+        Some("File") => 16.0,
+        Some("View") => 80.0,
+        Some("Tools") => 142.0,
+        _ => 16.0,
+    };
+    crate::menu_popup::overlay(layout.width(Fill).height(Fill), menu_details, x, 127.0, 280.0)
 }
