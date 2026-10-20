@@ -188,7 +188,10 @@ pub fn convert_glb_to_fbx_with_options(
         .tempdir_in(parent)?;
     let script = stage.path().join("convert_fbx.py");
     fs::write(&script, include_str!("blender_glb_fbx.py"))?;
-    fs::write(stage.path().join("blender_uv0.py"), include_str!("blender_uv0.py"))?;
+    fs::write(
+        stage.path().join("blender_uv0.py"),
+        include_str!("blender_uv0.py"),
+    )?;
     let staged_fbx = stage.path().join("converted.fbx");
     let mut child = Command::new(blender)
         .arg("--background")

@@ -568,8 +568,11 @@ pub fn export_unified_cdf_fbx_options(
     .map_err(|e| e.to_string())?;
     let script = work.path().join("unify.py");
     fs::write(&script, include_str!("blender_character_fbx.py")).map_err(|e| e.to_string())?;
-    fs::write(work.path().join("blender_uv0.py"), include_str!("blender_uv0.py"))
-        .map_err(|e| e.to_string())?;
+    fs::write(
+        work.path().join("blender_uv0.py"),
+        include_str!("blender_uv0.py"),
+    )
+    .map_err(|e| e.to_string())?;
     let temp_fbx = work.path().join("character.fbx");
     let mut child = Command::new(blender)
         .arg("--background")

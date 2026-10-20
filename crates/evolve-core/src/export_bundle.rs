@@ -170,10 +170,16 @@ fn dependencies(
         let lower = relative.to_ascii_lowercase();
         if !(lower.ends_with(".cdf") || lower.ends_with(".mtl")) {
             // Standalone export also discovers exactly indexed sidecar MTL.
-            if [".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cgfm", ".cga", ".cgam"]
-                .iter().any(|suffix| lower.ends_with(suffix)) {
-                let candidate = Path::new(&relative).with_extension("mtl")
-                    .to_string_lossy().replace('\\', "/");
+            if [
+                ".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cgfm", ".cga", ".cgam",
+            ]
+            .iter()
+            .any(|suffix| lower.ends_with(suffix))
+            {
+                let candidate = Path::new(&relative)
+                    .with_extension("mtl")
+                    .to_string_lossy()
+                    .replace('\\', "/");
                 match crate::resolve_virtual(inventory, &candidate) {
                     crate::AssetResolution::Found(found) => {
                         queue.push_back(found.clone());
@@ -211,7 +217,9 @@ fn dependencies(
             }
             let dep = &node.candidates[0];
             let key = dep.to_ascii_lowercase();
-            if !files.insert(key.clone()) { continue; }
+            if !files.insert(key.clone()) {
+                continue;
+            }
             if files.len() > MAX_REFERENCES {
                 return Err("Too many dependency files".into());
             }
@@ -249,12 +257,18 @@ fn dependencies(
             }
             if key.ends_with(".mtl") {
                 queue.push_back(dep.clone());
-            } else if [".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cgfm",
-                ".cga", ".cgam"].iter().any(|suffix| key.ends_with(suffix)) {
+            } else if [
+                ".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cgfm", ".cga", ".cgam",
+            ]
+            .iter()
+            .any(|suffix| key.ends_with(suffix))
+            {
                 // A mesh's material isn't a CDF edge. Include the one exact
                 // indexed same-stem original MTL when it exists.
-                let candidate = Path::new(dep).with_extension("mtl")
-                    .to_string_lossy().replace('\\', "/");
+                let candidate = Path::new(dep)
+                    .with_extension("mtl")
+                    .to_string_lossy()
+                    .replace('\\', "/");
                 match crate::resolve_virtual(inventory, &candidate) {
                     crate::AssetResolution::Found(found) => {
                         if files.insert(found.to_ascii_lowercase()) {
