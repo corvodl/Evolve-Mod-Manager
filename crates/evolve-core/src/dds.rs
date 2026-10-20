@@ -685,7 +685,10 @@ fn source_layout_for_png(source: &Path) -> Result<DdsLayout, DdsError> {
 
 /// Explicit opt-in PNG export. Never overwrites an existing PNG.
 pub fn export_dds_png(source: &Path, destination: &Path) -> Result<DdsInfo, DdsError> {
-    if !destination.extension().is_some_and(|e| e.eq_ignore_ascii_case("png")) {
+    if !destination
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+    {
         return Err(DdsError::Unsupported("Output texture must be a PNG".into()));
     }
     let (info, rgba) = decode_dds_rgba_with_layout(source, source_layout_for_png(source)?)?;
@@ -711,7 +714,9 @@ pub fn export_dds_png(source: &Path, destination: &Path) -> Result<DdsInfo, DdsE
 
 #[cfg(test)]
 mod tests {
-    use super::{DdsFormat, DdsLayout, decode_block, source_layout_for_png, untile_xbox360, xbox360_tiled_xy};
+    use super::{
+        DdsFormat, DdsLayout, decode_block, source_layout_for_png, untile_xbox360, xbox360_tiled_xy,
+    };
 
     #[test]
     fn png_export_layout_is_strictly_header_selected() {
@@ -724,7 +729,10 @@ mod tests {
         header[36..40].copy_from_slice(&0x1800u32.to_le_bytes());
         header[108..112].copy_from_slice(&0x1000u32.to_le_bytes());
         std::fs::write(&texture, header).unwrap();
-        assert_eq!(source_layout_for_png(&texture).unwrap(), DdsLayout::Xbox360Tiled);
+        assert_eq!(
+            source_layout_for_png(&texture).unwrap(),
+            DdsLayout::Xbox360Tiled
+        );
         header[124..128].copy_from_slice(b"GAME");
         std::fs::write(&texture, header).unwrap();
         assert_eq!(source_layout_for_png(&texture).unwrap(), DdsLayout::Linear);
