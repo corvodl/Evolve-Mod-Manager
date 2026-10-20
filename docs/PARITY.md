@@ -239,6 +239,30 @@ changing these labels or authorizing v1.0.
   broader scene-history operations remain unported. Synthetic regression tests
   and Windows real-map acceptance remain required.
 
+## Automatic authored material channels (release-gated)
+
+- Selecting an indexed model automatically discovers its exact authored MTL
+  dependency and loads available source **diffuse**, **BC5/normal**,
+  **emissive/glow**, **specular-color**, and explicitly authored
+  **gloss/glossiness/smoothness** DDS references into the GPU viewport.
+  Specular color is not treated as gloss. Neutral fallback textures prevent
+  a missing specular map from producing artificial highlights.
+- Cooked .dds.0 is preferred before .dds across both the extracted source
+  and verified same-build Asset Library, with ambiguity treated as a
+  diagnostic, not an arbitrary filename match. All original paths remain
+  read-only and the previous character's maps are cleared on selection.
+- Experimental single-slot rigged FBX staging now also preserves explicit
+  specular color through KHR_materials_specular and inverse gloss in the
+  standard glTF metallic-roughness roughness channel. Blender support for
+  those extension semantics still requires actual import/export testing.
+- **Not production parity yet:** meshes with multiple CryEngine submaterial
+  IDs are recognized but their index-subset-to-slot mapping is not yet
+  applied to GPU draws, so maps from different authored slots are deliberately
+  withheld rather than mixed. Shader-specific alpha, environment/reflection,
+  CryEngine DDNA alpha gloss and game-exact physical lighting still need
+  source-asset validation. Do not claim full automatic texture correctness
+  or release v1.0 on this development milestone.
+
 ## Native CAF weighted viewport preview (release-gated)
 
 - Selecting a compatible indexed .skin/.skinm or .chr/.chrm previews original geometry
