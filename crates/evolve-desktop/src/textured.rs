@@ -163,7 +163,10 @@ impl shader::Program<super::Message> for Scene {
                 .emissive
                 .as_ref()
                 .map_or(0, |t| Arc::as_ptr(t) as usize),
-            specular_identity: self.specular.as_ref().map_or(0, |t| Arc::as_ptr(t) as usize),
+            specular_identity: self
+                .specular
+                .as_ref()
+                .map_or(0, |t| Arc::as_ptr(t) as usize),
             gloss_identity: self.gloss.as_ref().map_or(0, |t| Arc::as_ptr(t) as usize),
         }
     }
