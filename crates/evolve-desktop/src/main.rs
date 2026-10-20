@@ -1156,6 +1156,7 @@ enum Message {
     LibraryMenu(&'static str),
     ModdingMenu(&'static str),
     DismissMenus,
+    MenuCommand(Box<Message>),
     ModdingFilterChanged(String),
     ModdingPage(bool),
     ModdingChangesPage(bool),
@@ -1873,7 +1874,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Asset Library is ready at the detected manager data location. Import a local signed PAK to populate it.".into();
             }
         }
-        Message::DismissMenus => {
+        Message::DismissMenus | Message::MenuCommand(_) => {
             state.viewer_menu = None;
             state.modding_menu = None;
             state.library_menu = None;
@@ -6077,6 +6078,12 @@ impl Desktop {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::MenuCommand(inner) => {
+                self.state.viewer_menu = None;
+                self.state.modding_menu = None;
+                self.state.library_menu = None;
+                self.update(*inner)
+            }
             Message::OpenViewer => self.open_viewer(),
             Message::OpenViewerPreferences => self.open_viewer_preferences(),
             Message::OpenInspectorWindow => self.open_inspector(),
@@ -6242,6 +6249,10 @@ impl Desktop {
             scan_progress,
             window::close_events().map(Message::WindowClosed),
             iced::event::listen_with(|event, _status, id| match event {
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                    ..
+                }) => Some(Message::DismissMenus),
                 iced::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers)) => {
                     Some(Message::ModifiersChanged(modifiers))
                 }
