@@ -131,9 +131,12 @@ fn menu<'a>(state: &'a State) -> Element<'a, Message> {
                 design::button("Play with mods (existing private helper)")
                     .style(design::primary)
                     .on_press(Message::StartOfflineLauncherLaunch),
+                design::button("Restore original PAKs + hook")
+                    .style(design::secondary)
+                    .on_press(Message::StartOfflineLauncherRestore),
             ]
             .spacing(7),
-            text("Requires your configured private controlled-swap helpers and Python 3.11/Frida. No online launch, no direct game-file writes by this manager.")
+            text("Requires the existing private controlled-swap helpers and Python 3.11/Frida for launch. Restore uses the verified private journal after both game processes close. Offline only.")
                 .size(12)
                 .style(design::muted),
         ]
