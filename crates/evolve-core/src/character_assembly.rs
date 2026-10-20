@@ -570,6 +570,84 @@ mod tests {
     use super::*;
 
     #[test]
+    fn historical_scorpid_cdf_renders_five_authored_chr_parts_with_unbound_sockets() {
+        let temp = tempfile::tempdir().unwrap();
+        // Test the common case where the user selects just this character
+        // directory, rather than its grandparent containing "characters".
+        let folder = temp.path().join("characters/monsters/Scorpid_2");
+        fs::create_dir_all(&folder).unwrap();
+        let parts = [
+            "Scorpid1_Rig.chr",
+            "Scorpid1_Default_Head.chr",
+            "Scorpid1_Default_Petapalps.chr",
+            "Scorpid1_L_Basher.chr",
+            "Scorpid1_R_Basher.chr",
+        ];
+        for part in parts {
+            fs::write(folder.join(part), crate::model::tests::fixture()).unwrap();
+        }
+        let cdf = folder.join("scorpid1.cdf");
+        fs::write(
+            &cdf,
+            br#"<CharacterDefinition>
+            <Model File="objects/characters/monsters/scorpid_2/scorpid1_skeleton.chr"/>
+            <AttachmentList>
+                <Attachment AName="torso" Type="CA_SKIN"
+                    Binding="objects/characters/monsters/scorpid_2/scorpid1_rig.chr"/>
+                <Attachment AName="head" Type="CA_SKIN"
+                    Binding="objects/characters/monsters/scorpid_2/scorpid1_default_head.chr"/>
+                <Attachment AName="palps" Type="CA_SKIN"
+                    Binding="objects/characters/monsters/scorpid_2/scorpid1_default_petapalps.chr"/>
+                <Attachment AName="basher_l" Type="CA_SKIN"
+                    Binding="objects/characters/monsters/scorpid_2/scorpid1_l_basher.chr"/>
+                <Attachment AName="basher_r" Type="CA_SKIN"
+                    Binding="objects/characters/monsters/scorpid_2/scorpid1_r_basher.chr"/>
+                <Attachment AName="lefthandpalp" Type="CA_BONE" BoneName="Bip01 L Handpalp"
+                    Binding=""/>
+                <Attachment AName="righthandpalp" Type="CA_BONE" BoneName="Bip01 R Handpalp"
+                    Binding=""/>
+            </AttachmentList>
+            </CharacterDefinition>"#,
+        )
+        .unwrap();
+        let inventory = crate::scan_directory(&folder).unwrap();
+        let (mesh, report) = read_static_cdf_assembly(&cdf, &inventory).unwrap();
+        assert_eq!(report.original_parts, ["torso", "head", "palps", "basher_l", "basher_r"]);
+        assert_eq!(report.source_parts.len(), 5);
+        assert_eq!(report.geometry_parts.len(), 5);
+        assert_eq!(mesh.indices.len(), 15);
+        assert!(mesh.uv0.is_some());
+        assert!(report.warnings.iter().any(|w| w.contains("Compiled bind-pose")));
+    }
+
+    #[test]
+    fn historical_parasitehost_cdf_loads_render_chr_from_characters_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("characters");
+        let folder = root.join("monsters/ParasiteHost");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("ParasiteHost3.chr"), crate::model::tests::fixture()).unwrap();
+        let cdf = folder.join("ParasiteHost3.cdf");
+        fs::write(
+            &cdf,
+            br#"<CharacterDefinition>
+            <Model File="objects/characters/monsters/parasitehost/parasitehost3_skeleton.chr"/>
+            <AttachmentList>
+                <Attachment AName="Mesh" Type="CA_SKIN"
+                    Binding="objects/characters/monsters/parasitehost/parasitehost3.chr"/>
+            </AttachmentList>
+            </CharacterDefinition>"#,
+        )
+        .unwrap();
+        let inventory = crate::scan_directory(&root).unwrap();
+        let (mesh, report) = read_static_cdf_assembly(&cdf, &inventory).unwrap();
+        assert_eq!(report.original_parts, ["Mesh"]);
+        assert_eq!(mesh.indices.len(), 3);
+        assert_eq!(report.geometry_parts.len(), 1);
+        assert!(report.geometry_parts[0].source.ends_with("ParasiteHost3.chr"));
+    }
+
+    #[test]
     fn assembly_matches_skin_set_names_to_attachment_bindings() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
