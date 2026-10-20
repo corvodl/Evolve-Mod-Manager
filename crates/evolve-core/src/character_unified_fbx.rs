@@ -212,7 +212,7 @@ fn original_model_material(
         let historical = fs::File::open(mesh)
             .and_then(|mut file| file.read_exact(&mut header))
             .is_ok()
-            && &header[..8] == b"CryTek\\0\\0"
+            && &header[..8] == b"CryTek\0\0"
             && u32::from_le_bytes(header[12..16].try_into().unwrap_or_default()) == 0x745;
         if historical {
             let folder = parent.rsplit('/').next().unwrap_or("");
@@ -765,7 +765,7 @@ mod tests {
         let parent = root.join("objects/characters/monsters/scorpid_2");
         fs::create_dir_all(&parent).unwrap();
         let mut body = vec![0u8; 20];
-        body[..8].copy_from_slice(b"CryTek\\0\\0");
+        body[..8].copy_from_slice(b"CryTek\0\0");
         body[8..12].copy_from_slice(&0xFFFF0000u32.to_le_bytes());
         body[12..16].copy_from_slice(&0x745u32.to_le_bytes());
         let part = parent.join("scorpid3_rig.chr");
