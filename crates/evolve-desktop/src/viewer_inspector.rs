@@ -167,27 +167,33 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     .size(12),
                 ]
                 .spacing(3);
-                for (label, roles, loaded) in [
-                    ("Diffuse", &["diffuse"][..], state.diffuse.is_some()),
+                let verified_surfaces = state.cdf_surfaces.as_ref();
+                for (label, roles, loaded, subset_count) in [
+                    ("Diffuse", &["diffuse"][..], state.diffuse.is_some(),
+                        verified_surfaces.map_or(0, |parts| parts.iter().filter(|p| p.diffuse.is_some()).count())),
                     (
                         "Normal",
                         &["normals", "normal", "bumpmap"][..],
                         state.normal_map.is_some(),
+                        verified_surfaces.map_or(0, |parts| parts.iter().filter(|p| p.normal.is_some()).count()),
                     ),
                     (
                         "Emissive",
                         &["emittance", "emissive", "emission", "glow"][..],
                         state.emissive_map.is_some(),
+                        verified_surfaces.map_or(0, |parts| parts.iter().filter(|p| p.emissive.is_some()).count()),
                     ),
                     (
                         "Specular",
                         &["specular", "specularcolor"][..],
                         state.specular_map.is_some(),
+                        verified_surfaces.map_or(0, |parts| parts.iter().filter(|p| p.specular.is_some()).count()),
                     ),
                     (
                         "Gloss",
                         &["gloss", "glossiness", "smoothness"][..],
                         state.gloss_map.is_some(),
+                        verified_surfaces.map_or(0, |parts| parts.iter().filter(|p| p.gloss.is_some()).count()),
                     ),
                 ] {
                     let authored: Vec<_> = report
@@ -203,11 +209,17 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     rows = rows.push(
                         text(format!(
                             "{label}: {} GPU • {exact}/{} authored exact • {unresolved} unresolved",
-                            if loaded { "loaded" } else { "not loaded" },
+                            if subset_count > 0 {
+                                format!("{subset_count} original subset(s)")
+                            } else if loaded {
+                                "loaded single-map preview".into()
+                            } else {
+                                "not loaded".into()
+                            },
                             authored.len()
                         ))
                         .size(12)
-                        .style(if loaded {
+                        .style(if loaded || subset_count > 0 {
                             design::accent
                         } else {
                             design::muted
@@ -215,9 +227,14 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     );
                 }
                 if report.slots > 1 {
-                    rows = rows.push(text(
-                        "Multiple authored submaterials are tracked separately; full per-triangle GPU slot mapping is not yet validated."
-                    ).size(12).style(design::muted));
+                    let note = match verified_surfaces {
+                        Some(parts) => format!(
+                            "{} original index range(s) mapped to authored GPU materials; any unresolved parts stay untextured.",
+                            parts.len()
+                        ),
+                        None => "Waiting for original CryEngine mesh-subset assignments; never reuse another slot's texture.".into(),
+                    };
+                    rows = rows.push(text(note).size(12).style(design::muted));
                 }
                 scrollable(rows).height(Length::Fixed(165.0)).into()
             } else {
