@@ -307,9 +307,8 @@ fn authored_maps(
             let (path, virtual_path) =
                 found.ok_or_else(|| format!("Missing exact cooked DDS for {}", map.path))?;
             let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
-            let (_info, image) = decoded_dds_indexed(
-                cache, &canonical, &virtual_path, inventory, imported, build,
-            )?;
+            let (_info, image) =
+                decoded_dds_indexed(cache, &canonical, &virtual_path, inventory, imported, build)?;
             Ok((canonical, image))
         })();
         let (canonical, image) = match decoded {
