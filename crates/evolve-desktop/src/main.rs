@@ -35,7 +35,7 @@ use evolve_core::{
     LibraryBatchImportReport, LibraryReferenceStatus, MaterialReport, ModProfile, ModelInfo,
     NativeCafMotion, PakHookPairReport, PakInventory, ProfileCatalog, ProfileMod, ProfilePlan,
     RenderMesh, RigReport, SignedPakInfo, StageTransaction, TerrainInfo, UnifiedCdfFbxReport,
-    VerifiedCafSkin, add_mod_to_profile, apply_profile_stage, apply_stage_pak, batch_stage_status,
+    VerifiedCafAssembly, VerifiedCafSkin, add_mod_to_profile, apply_profile_stage, apply_stage_pak, batch_stage_status,
     compare_assets, convert_glb_to_fbx, convert_original_motion, create_mod_profile,
     decode_dds_rgba, export_dds_png, export_flat_cdf_parts_fbx, export_level_scene_glb,
     export_rigged_character_fbx_textured_animated, export_rigged_character_glb,
@@ -183,6 +183,9 @@ struct State {
     selected_motion_clip: usize,
     native_caf: Option<Arc<NativeCafMotion>>,
     skin_preview: Option<Arc<VerifiedCafSkin>>,
+    cdf_caf_preview: Option<Arc<VerifiedCafAssembly>>,
+    cdf_report: Option<Arc<AssemblyReport>>,
+    cdf_rest_mesh: Option<Arc<RenderMesh>>,
     motion_time: f32,
     playing: bool,
     assets_root: String,
@@ -328,6 +331,7 @@ enum Operation {
     ResolveMaterial(PathBuf, PathBuf, Option<PathBuf>, Option<String>),
     LoadCaf(PathBuf),
     BindCafPreview(PathBuf, PathBuf, NativeCafMotion),
+    BindCdfCafPreview(PathBuf, Arc<RenderMesh>, Arc<AssemblyReport>, NativeCafMotion),
     RiggedGlb(PathBuf, PathBuf, PathBuf),
     FlatCdfFbx(PathBuf, Inventory, PathBuf, PathBuf, Option<PathBuf>),
     UnifiedCdfFbx(PathBuf, Inventory, PathBuf, PathBuf, Option<PathBuf>),
@@ -431,6 +435,7 @@ enum Completed {
     ),
     Caf(NativeCafMotion),
     BoundCafPreview(PathBuf, Box<VerifiedCafSkin>),
+    BoundCdfCafPreview(PathBuf, Box<VerifiedCafAssembly>),
     RiggedExport(RigReport, PathBuf),
     FlatCdfFbxExport(FlatCdfFbxReport, PathBuf),
     UnifiedCdfFbxExport(UnifiedCdfFbxReport, PathBuf),
@@ -555,6 +560,11 @@ impl Operation {
             Self::InspectPak(source) => inspect_legacy_pak(&source)
                 .map(Completed::Pak)
                 .map_err(|e| e.to_string()),
+            Self::BindCdfCafPreview(source, mesh, report, motion) => {
+                let preview = VerifiedCafAssembly::from_parts((*mesh).clone(), &report, motion)
+                    .map_err(|e| format!("Original multi-part CDF/CAF skin binding: {e}"))?;
+                Ok(Completed::BoundCdfCafPreview(source, Box::new(preview)))
+            }
             Self::BindCafPreview(mesh, skeleton, motion) => {
                 let skin = VerifiedCafSkin::from_originals(&mesh, &skeleton, motion)
                     .map_err(|e| format!("Original CAF skeleton binding: {e}"))?;
@@ -1275,6 +1285,12 @@ fn bind_current_native_caf(state: &mut State) -> Option<Task<Message>> {
     }
     let source = PathBuf::from(&state.input);
     let extension = source.extension().and_then(|ext| ext.to_str())?;
+    if extension.eq_ignore_ascii_case("cdf") {
+        let report = state.cdf_report.as_ref()?.clone();
+        let rest = state.cdf_rest_mesh.as_ref()?.clone();
+        let clip = (**motion).clone();
+        return Some(launch(state, Operation::BindCdfCafPreview(source, rest, report, clip)));
+    }
     if !["skin", "skinm", "chr", "chrm"]
         .iter()
         .any(|candidate| extension.eq_ignore_ascii_case(candidate))
@@ -1294,7 +1310,15 @@ fn bind_current_native_caf(state: &mut State) -> Option<Task<Message>> {
 /// viewport continues rendering textured geometry. Source geometry, UVs and
 /// on-disk assets are never modified by the animation preview.
 fn apply_current_skin_frame(state: &mut State) {
-    if let Some(skin) = &state.skin_preview {
+    if let Some(assembly) = &state.cdf_caf_preview {
+        match assembly.mesh_at(state.motion_time) {
+            Ok(mesh) => state.model = Some(Arc::new(mesh)),
+            Err(error) => {
+                state.playing = false;
+                state.status = format!("Whole-character CAF playback stopped: {error}");
+            }
+        }
+    } else if let Some(skin) = &state.skin_preview {
         match skin.mesh_at(state.motion_time) {
             Ok(mesh) => state.model = Some(Arc::new(mesh)),
             Err(error) => {
@@ -3373,13 +3397,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             apply_current_skin_frame(state);
         }
         Message::ToggleMotion => {
-            if state.native_caf.is_some() && state.skin_preview.is_none() {
+            if state.native_caf.is_some()
+                && state.skin_preview.is_none()
+                && state.cdf_caf_preview.is_none()
+            {
                 state.playing = false;
                 state.status =
                     "CAF controller keys decoded, but selected mesh has no verified matching skin; cannot animate an unbound model.".into();
             } else {
                 state.playing = !state.playing
                     && (state.skin_preview.is_some()
+                        || state.cdf_caf_preview.is_some()
                         || state.glb_motion.as_ref().is_some_and(|m| {
                             m.list_clips().get(state.selected_motion_clip).is_some()
                         }));
@@ -4376,6 +4404,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.material_report = None;
                         state.model = None;
                         state.cdf_surfaces = None;
+                        state.cdf_report = None;
+                        state.cdf_rest_mesh = None;
+                        state.cdf_caf_preview = None;
                         state.skin_preview = None;
                         state.native_caf = None;
                         state.glb_motion = None;
@@ -4421,6 +4452,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::StaticCharacter(mesh, report, surfaces, material_warnings)) => {
+                    state.cdf_rest_mesh = Some(Arc::new(mesh.clone()));
+                    state.cdf_report = Some(Arc::new(report.clone()));
+                    state.cdf_caf_preview = None;
                     state.texture_preview = None;
                     state.material_report = None;
                     state.status = format!(
@@ -4519,6 +4553,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::Model(mesh)) => {
+                    state.cdf_report = None;
+                    state.cdf_rest_mesh = None;
+                    state.cdf_caf_preview = None;
                     state.texture_preview = None;
                     state.cdf_surfaces = None;
                     state.material_report = None;
@@ -4575,6 +4612,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::Terrain(mesh, info)) => {
                     state.cdf_surfaces = None;
+                    state.cdf_report = None;
+                    state.cdf_rest_mesh = None;
+                    state.cdf_caf_preview = None;
                     state.status = format!(
                         "Decoded source terrain {}×{} (stride {}).",
                         info.width, info.height, info.stride
