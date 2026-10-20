@@ -1,10 +1,10 @@
 //! Native wgpu-backed desktop shell. Asset operations use blocking workers, so
 //! file I/O/decompression never runs in the interactive Iced view/update path.
 mod activity_window;
+mod assembly_materials;
 mod asset_cache;
 mod asset_library_page;
 mod asset_viewer;
-mod assembly_materials;
 mod auto_resources;
 mod design;
 mod developer_auth;
@@ -44,10 +44,10 @@ use evolve_core::{
     initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_pak_hook_pair,
     inspect_signed_pak, list_mod_profiles, load_level_scene, material_texture_candidates,
     plan_mod_profile, prepare_client_hook, read_cdf, read_material, read_model, read_native_caf,
-    read_static_cdf_assembly_with_imported, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry,
-    resign_signed_pak, resolve_cdf, resolve_imported_reference, resolve_materials,
-    restore_profile_stage, restore_stage, scan_directory, scan_directory_with_progress,
-    stage_status,
+    read_static_cdf_assembly_with_imported, read_terrain, rebuild_legacy_pak,
+    rebuild_signed_pak_entry, resign_signed_pak, resolve_cdf, resolve_imported_reference,
+    resolve_materials, restore_profile_stage, restore_stage, scan_directory,
+    scan_directory_with_progress, stage_status,
 };
 use iced::widget::{
     canvas, column, container, image, row, scrollable, shader, slider, space, svg, text, tooltip,
@@ -343,7 +343,13 @@ enum Operation {
     LoadGlbMotion(PathBuf),
     InspectCdf(PathBuf),
     InspectCdfResolved(PathBuf, Inventory),
-    BuildStaticCdf(PathBuf, Inventory, Option<PathBuf>, Option<String>, SharedCache),
+    BuildStaticCdf(
+        PathBuf,
+        Inventory,
+        Option<PathBuf>,
+        Option<String>,
+        SharedCache,
+    ),
     ResolveCdf(PathBuf, PathBuf),
     InspectModel(PathBuf),
     DiscoverModelResources(String, Inventory, Option<PathBuf>, Option<String>),
@@ -433,7 +439,12 @@ enum Completed {
     MotionGlb(AnimatedGlb),
     Character(CdfDefinition),
     CharacterResolved(CdfDefinition, CdfDependencyReport),
-    StaticCharacter(RenderMesh, AssemblyReport, Vec<textured::Surface>, Vec<String>),
+    StaticCharacter(
+        RenderMesh,
+        AssemblyReport,
+        Vec<textured::Surface>,
+        Vec<String>,
+    ),
     CharacterDependencies(CdfDependencyReport),
     Model(RenderMesh),
     ModelResources(String, auto_resources::AutoDiscovery),
@@ -901,10 +912,18 @@ impl Operation {
             }
             Self::BuildStaticCdf(source, inventory, imported, build, cache) => {
                 let (mesh, report) = read_static_cdf_assembly_with_imported(
-                    &source, &inventory, imported.as_deref(), build.as_deref(),
-                ).map_err(|e| e.to_string())?;
+                    &source,
+                    &inventory,
+                    imported.as_deref(),
+                    build.as_deref(),
+                )
+                .map_err(|e| e.to_string())?;
                 let (surfaces, warnings) = assembly_materials::load(
-                    &report, &inventory, imported.as_deref(), build.as_deref(), &cache,
+                    &report,
+                    &inventory,
+                    imported.as_deref(),
+                    build.as_deref(),
+                    &cache,
                 );
                 Ok(Completed::StaticCharacter(mesh, report, surfaces, warnings))
             }
@@ -2755,7 +2774,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let operation = Operation::BuildStaticCdf(
                 source,
                 inventory.clone(),
-                state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
+                state
+                    .library_catalog
+                    .as_ref()
+                    .map(|c| PathBuf::from(&c.root)),
                 resource_build(state),
                 state.preview_cache.clone(),
             );
@@ -4406,12 +4428,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         report.original_parts.len(),
                         report.triangles,
                         report.verified_bones.unwrap_or(0),
-                        report.source_parts.iter().filter(|p| p.verified_skin_weights).count(),
+                        report
+                            .source_parts
+                            .iter()
+                            .filter(|p| p.verified_skin_weights)
+                            .count(),
                         material_warnings.len(),
                     );
-                    state.auto_resource_note = report.warnings.iter()
-                        .chain(&material_warnings).take(3).cloned()
-                        .collect::<Vec<_>>().join(" | ");
+                    state.auto_resource_note = report
+                        .warnings
+                        .iter()
+                        .chain(&material_warnings)
+                        .take(3)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" | ");
                     state.cdf_surfaces = Some(Arc::new(surfaces));
                     state.model = Some(Arc::new(mesh));
                     state.diffuse = None;
@@ -4441,7 +4472,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             let operation = Operation::DiscoverModelResources(
                                 relative.to_string_lossy().replace('\\', "/"),
                                 inv.clone(),
-                                state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
+                                state
+                                    .library_catalog
+                                    .as_ref()
+                                    .map(|c| PathBuf::from(&c.root)),
                                 resource_build(state),
                             );
                             return launch(state, operation);
