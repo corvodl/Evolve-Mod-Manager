@@ -789,7 +789,9 @@ impl Pipeline {
                     self.index = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                         label: Some("Unchanged CryEngine triangle index stream"),
                         contents: bytes,
-                        usage: wgpu::BufferUsages::INDEX,
+                        // Switching between a 2012 mesh and Stage 2 mesh
+                        // may reuse this buffer. Keep COPY_DST for uploads.
+                        usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
                     });
                     self.index_capacity = bytes.len();
                 } else {
