@@ -4419,15 +4419,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         let root = PathBuf::from(&inv.root);
                         let source = PathBuf::from(&state.input);
                         if let Ok(relative) = source.strip_prefix(&root) {
-                            return launch(
-                                state,
-                                Operation::DiscoverModelResources(
-                                    relative.to_string_lossy().replace('\\', "/"),
-                                    inv.clone(),
-                                    state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
-                                    resource_build(state),
-                                ),
+                            let operation = Operation::DiscoverModelResources(
+                                relative.to_string_lossy().replace('\\', "/"),
+                                inv.clone(),
+                                state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
+                                resource_build(state),
                             );
+                            return launch(state, operation);
                         }
                     }
                 }
