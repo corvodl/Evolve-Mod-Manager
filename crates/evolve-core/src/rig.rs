@@ -891,9 +891,23 @@ pub(crate) fn embed_verified_maps_png_glb(
     normal: Option<&[u8]>,
     emissive: Option<&[u8]>,
 ) -> Result<Vec<u8>, RigError> {
+    embed_verified_material_png_glb(source, diffuse, normal, emissive, None, None)
+}
+
+/// Keep authored specular color distinct from explicit gloss/roughness.
+pub(crate) fn embed_verified_material_png_glb(
+    source: &[u8],
+    diffuse: Option<&[u8]>,
+    normal: Option<&[u8]>,
+    emissive: Option<&[u8]>,
+    specular: Option<&[u8]>,
+    roughness: Option<&[u8]>,
+) -> Result<Vec<u8>, RigError> {
     if source.len() < 28
         || &source[..4] != b"glTF"
-        || [diffuse, normal, emissive].iter().all(|map| map.is_none())
+        || [diffuse, normal, emissive, specular, roughness]
+            .iter()
+            .all(|map| map.is_none())
     {
         return Err(RigError::Invalid(
             "Expected a rigged GLB and source PNG map".into(),
@@ -932,6 +946,8 @@ pub(crate) fn embed_verified_maps_png_glb(
         ("diffuse", diffuse),
         ("normal", normal),
         ("emissive", emissive),
+        ("specular", specular),
+        ("roughness", roughness),
     ] {
         let Some(png) = data else { continue };
         if png.is_empty() {
@@ -953,6 +969,17 @@ pub(crate) fn embed_verified_maps_png_glb(
             "emissive" => {
                 material["emissiveTexture"] = json!({"index":index});
                 material["emissiveFactor"] = json!([1.0, 1.0, 1.0]);
+            }
+            "specular" => {
+                material["extensions"]["KHR_materials_specular"]["specularColorTexture"] =
+                    json!({"index":index});
+                material["extensions"]["KHR_materials_specular"]["specularColorFactor"] =
+                    json!([1.0, 1.0, 1.0]);
+                document["extensionsUsed"] = json!(["KHR_materials_specular"]);
+            }
+            "roughness" => {
+                material["pbrMetallicRoughness"]["metallicRoughnessTexture"] =
+                    json!({"index":index});
             }
             _ => unreachable!(),
         }
