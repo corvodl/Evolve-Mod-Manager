@@ -101,6 +101,45 @@ fn embedded_material_hints(
     Ok(hints)
 }
 
+/// A 2012 CryTek 0x745 character part can be "rocky3_body.chr" while
+/// the source material is the one authored for its containing Rocky folder.
+/// Only that exact owning-directory MTL is considered, only when the source
+/// file is verified historical geometry, and never for Stage 2 skins.
+fn legacy_owner_material(
+    binding: &str,
+    inventory: &Inventory,
+    imported: Option<&Path>,
+    build: Option<&str>,
+) -> Result<Option<PathBuf>, String> {
+    let parent = binding.rsplit_once('/').map_or("", |(parent, _)| parent);
+    let folder = parent.rsplit('/').next().unwrap_or("");
+    let stem = binding.rsplit('/').next().unwrap_or(binding)
+        .rsplit_once('.').map_or(binding, |(stem, _)| stem);
+    if folder.len() < 4 || !stem.to_ascii_lowercase().starts_with(&folder.to_ascii_lowercase()) {
+        return Ok(None);
+    }
+    let suffix = &stem[folder.len()..];
+    if !suffix.is_empty()
+        && !suffix.starts_with('_')
+        && !suffix.as_bytes()[0].is_ascii_digit()
+    {
+        return Ok(None);
+    }
+    let Some(source) = auto_resources::exact(inventory, binding, imported, build)? else {
+        return Ok(None);
+    };
+    use std::io::Read;
+    let mut header = [0u8; 16];
+    let mut file = std::fs::File::open(source).map_err(|error| error.to_string())?;
+    if file.read_exact(&mut header).is_err()
+        || &header[..8] != b"CryTek\0\0"
+        || u32::from_le_bytes(header[12..16].try_into().unwrap_or_default()) != 0x745
+    {
+        return Ok(None);
+    }
+    auto_resources::exact(inventory, &format!("{parent}/{folder}.mtl"), imported, build)
+}
+
 pub(crate) fn material_for_part(
     binding: &str,
     explicit: Option<&str>,
@@ -180,7 +219,7 @@ pub(crate) fn material_for_part(
             return Ok(Some(found));
         }
     }
-    Ok(None)
+    legacy_owner_material(binding, inventory, imported, build)
 }
 
 #[derive(Default)]
@@ -528,6 +567,28 @@ mod tests {
         let mut same = surface.clone();
         same.first_index = 3;
         assert_eq!(unique_gpu_material_bytes(&[surface, same]), 64);
+    }
+
+    #[test]
+    fn historical_character_part_uses_only_its_verified_owner_material() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("characters/monsters/Rocky");
+        std::fs::create_dir_all(&parent).unwrap();
+        let mut old = vec![0u8; 20];
+        old[..8].copy_from_slice(b"CryTek\0\0");
+        old[8..12].copy_from_slice(&0xffff0000u32.to_le_bytes());
+        old[12..16].copy_from_slice(&0x745u32.to_le_bytes());
+        std::fs::write(parent.join("rocky3_body.chr"), &old).unwrap();
+        std::fs::write(parent.join("rocky.mtl"), b"<Material/>").unwrap();
+        std::fs::write(parent.join("unrelated.mtl"), b"<Material/>").unwrap();
+        let inv = evolve_core::scan_directory(dir.path()).unwrap();
+        let found = material_for_part(
+            "objects/characters/monsters/rocky/rocky3_body.chr", None, &inv, None, None
+        ).unwrap().unwrap();
+        assert_eq!(found.file_name().and_then(|n| n.to_str()), Some("rocky.mtl"));
+        assert!(material_for_part(
+            "objects/characters/monsters/unrelated/rocky3_body.chr", None, &inv, None, None
+        ).unwrap().is_none());
     }
 
     #[test]
