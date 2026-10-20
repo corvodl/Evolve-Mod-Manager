@@ -474,7 +474,7 @@ mod tests {
 
     fn original_container(chunks: Vec<(u32, Vec<u8>)>) -> Vec<u8> {
         let mut bytes = vec![0u8; 20];
-        bytes[..8].copy_from_slice(b"CryTek\\0\\0");
+        bytes[..8].copy_from_slice(b"CryTek\0\0");
         put_u32(&mut bytes, 8, 0xFFFF0000);
         put_u32(&mut bytes, 12, 0x745);
         let mut records = Vec::new();
