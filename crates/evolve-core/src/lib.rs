@@ -152,5 +152,5 @@ pub use batch::{
 pub use materials::{
     MaterialDocument, MaterialError, MaterialReport, MaterialSlot, ResolvedTexture,
     TextureReference, material_texture_candidates, parse_material, read_material,
-    resolve_materials,
+    resolve_materials, scoped_texture_candidates,
 };
