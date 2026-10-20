@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 // A large CDF can reuse the same original DDS in dozens of material ranges.
 // Allocate each source/role only once per scene and bound unique GPU copies.
-const MAX_GPU_PREVIEW_TEXTURE_BYTES: usize = 256 * 1024 * 1024;
+pub(crate) const MAX_GPU_PREVIEW_TEXTURE_BYTES: usize = 256 * 1024 * 1024;
 
 fn texture_cache_key(image: Option<&Arc<image::RgbaImage>>, role: usize) -> (usize, usize) {
     (image.map_or(0, |pixels| Arc::as_ptr(pixels) as usize), role)
