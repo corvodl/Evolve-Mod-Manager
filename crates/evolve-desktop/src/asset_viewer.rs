@@ -7,7 +7,10 @@ use iced::widget::{
     canvas, column, container, image, mouse_area, row, scrollable, shader, slider, stack, text,
     tooltip,
 };
-use iced::{Background, Border, Color, Element, Event, Fill, Length, Point, Rectangle, Renderer, Theme, mouse};
+use iced::{
+    Background, Border, Color, Element, Event, Fill, Length, Point, Rectangle, Renderer, Theme,
+    mouse,
+};
 
 fn panel<'a>(child: impl Into<Element<'a, Message>>) -> iced::widget::Container<'a, Message> {
     container(child).style(|theme| container::Style {
@@ -110,76 +113,149 @@ fn strip(state: &State) -> Element<'_, Message> {
 
 fn animation_browser(state: &State) -> Element<'_, Message> {
     let content: Element<'_, Message> = {
-            let mut clips = column![
+        let mut clips = column![
+            row![
+                design::button("Open CAF").on_press(Message::StartCafLoad),
+                design::button(if state.playing { "Pause" } else { "Play" })
+                    .on_press(Message::ToggleMotion),
+                text(format!(
+                    "{} character-declared animations",
+                    state.auto_clips.len()
+                ))
+                .size(12),
+            ]
+            .spacing(8),
+        ]
+        .spacing(5);
+        if state.caf_layer.is_some() {
+            clips = clips.push(
                 row![
-                    design::button("Open CAF").on_press(Message::StartCafLoad),
-                    design::button(if state.playing { "Pause" } else { "Play" }).on_press(Message::ToggleMotion),
-                    text(format!("{} character-declared animations", state.auto_clips.len())).size(12),
-                ].spacing(8),
-            ].spacing(5);
-            if state.caf_layer.is_some() {
-                clips = clips.push(row![
                     text(format!("Layer: {}", state.caf_layer_label)).size(12),
-                    slider(0.0..=1.0, state.caf_layer_weight, Message::ViewerLayerWeight).width(160),
+                    slider(
+                        0.0..=1.0,
+                        state.caf_layer_weight,
+                        Message::ViewerLayerWeight
+                    )
+                    .width(160),
                     text(format!("{:.0}%", state.caf_layer_weight * 100.0)).size(12),
                     design::button("Remove layer").on_press(Message::ViewerClearLayer),
-                ].spacing(8));
-            }
-            clips = clips.push(
-                design::text_input("Filter character animations…", &state.auto_clip_filter)
-                    .on_input(Message::ViewerAutoClipFilter)
+                ]
+                .spacing(8),
             );
-            let needle = state.auto_clip_filter.to_ascii_lowercase();
-            for (index, clip) in state.auto_clips.iter().enumerate()
-                .filter(|(_, clip)| needle.is_empty()
+        }
+        clips = clips.push(
+            design::text_input("Filter character animations…", &state.auto_clip_filter)
+                .on_input(Message::ViewerAutoClipFilter),
+        );
+        let needle = state.auto_clip_filter.to_ascii_lowercase();
+        for (index, clip) in state
+            .auto_clips
+            .iter()
+            .enumerate()
+            .filter(|(_, clip)| {
+                needle.is_empty()
                     || clip.label.to_ascii_lowercase().contains(&needle)
-                    || clip.kind.to_ascii_lowercase().contains(&needle))
-                .take(80)
-            {
-                let label = format!("{} · {}{}", clip.label, clip.kind.to_ascii_uppercase(), if clip.source.is_none() { " (not extracted)" } else { "" });
-                clips = clips.push(
-                    row![design::button(text(label).size(12))
-                        .on_press(Message::ViewerAutoClip(index))
-                        .style(design::text_button).width(Fill),
-                        design::button("Blend layer").on_press_maybe((!state.busy && (state.skin_preview.is_some() || state.cdf_caf_preview.is_some()) && clip.kind.eq_ignore_ascii_case("caf") && clip.source.is_some()).then_some(Message::ViewerLayerClip(index))),
-                    ].spacing(8)
-                );
-            }
-            if !state.converted_glbs.is_empty() {
-                clips = clips.push(
-                    text(if state.converted_dba_cache.is_some() {
-                        "VERIFIED TEMPORARY DBA TRACKS"
-                    } else {
-                        "VERIFIED CONVERTED MOTION FILES"
-                    })
-                    .size(12)
-                    .style(design::muted),
-                );
-                for (index, source) in state.converted_glbs.iter().enumerate().take(64) {
-                    let name = source.file_name().map(|s| s.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| format!("Track {}", index + 1));
-                    clips = clips.push(design::button(text(name).size(12))
-                        .on_press(Message::OpenConvertedGlb(index)).style(design::text_button));
+                    || clip.kind.to_ascii_lowercase().contains(&needle)
+            })
+            .take(80)
+        {
+            let label = format!(
+                "{} · {}{}",
+                clip.label,
+                clip.kind.to_ascii_uppercase(),
+                if clip.source.is_none() {
+                    " (not extracted)"
+                } else {
+                    ""
                 }
+            );
+            clips = clips.push(
+                row![
+                    design::button(text(label).size(12))
+                        .on_press(Message::ViewerAutoClip(index))
+                        .style(design::text_button)
+                        .width(Fill),
+                    design::button("Blend layer").on_press_maybe(
+                        (!state.busy
+                            && (state.skin_preview.is_some() || state.cdf_caf_preview.is_some())
+                            && clip.kind.eq_ignore_ascii_case("caf")
+                            && clip.source.is_some())
+                        .then_some(Message::ViewerLayerClip(index))
+                    ),
+                ]
+                .spacing(8),
+            );
+        }
+        if !state.converted_glbs.is_empty() {
+            clips = clips.push(
+                text(if state.converted_dba_cache.is_some() {
+                    "VERIFIED TEMPORARY DBA TRACKS"
+                } else {
+                    "VERIFIED CONVERTED MOTION FILES"
+                })
+                .size(12)
+                .style(design::muted),
+            );
+            for (index, source) in state.converted_glbs.iter().enumerate().take(64) {
+                let name = source
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| format!("Track {}", index + 1));
+                clips = clips.push(
+                    design::button(text(name).size(12))
+                        .on_press(Message::OpenConvertedGlb(index))
+                        .style(design::text_button),
+                );
             }
-            scrollable(clips).height(Fill).into()
+        }
+        scrollable(clips).height(Fill).into()
     };
-    panel(container(column![
-        text("ANIMATION BROWSER").size(15),
-        text("Only verified clips declared for the selected character are playable.").size(11).style(design::muted),
-        content,
-    ].spacing(9)).padding(12)).width(Fill).height(Fill).into()
+    panel(
+        container(
+            column![
+                text("ANIMATION BROWSER").size(15),
+                text("Only verified clips declared for the selected character are playable.")
+                    .size(11)
+                    .style(design::muted),
+                content,
+            ]
+            .spacing(9),
+        )
+        .padding(12),
+    )
+    .width(Fill)
+    .height(Fill)
+    .into()
 }
 
 fn browser(state: &State) -> Element<'_, Message> {
     let tabs = row![
-        design::button("Files").on_press(Message::ViewerSidebarAnimations(false))
-            .style(if state.viewer_sidebar_animations { design::secondary } else { design::primary }),
-        design::button("Animations").on_press(Message::ViewerSidebarAnimations(true))
-            .style(if state.viewer_sidebar_animations { design::primary } else { design::secondary }),
-    ].spacing(5);
-    let content = if state.viewer_sidebar_animations { animation_browser(state) } else { explorer(state) };
-    column![tabs, content].spacing(5).height(Fill).width(Fill).into()
+        design::button("Files")
+            .on_press(Message::ViewerSidebarAnimations(false))
+            .style(if state.viewer_sidebar_animations {
+                design::secondary
+            } else {
+                design::primary
+            }),
+        design::button("Animations")
+            .on_press(Message::ViewerSidebarAnimations(true))
+            .style(if state.viewer_sidebar_animations {
+                design::primary
+            } else {
+                design::secondary
+            }),
+    ]
+    .spacing(5);
+    let content = if state.viewer_sidebar_animations {
+        animation_browser(state)
+    } else {
+        explorer(state)
+    };
+    column![tabs, content]
+        .spacing(5)
+        .height(Fill)
+        .width(Fill)
+        .into()
 }
 
 fn viewport(state: &State) -> Element<'_, Message> {
@@ -269,7 +345,10 @@ fn viewport(state: &State) -> Element<'_, Message> {
 
     let camera_icon = |glyph: &'static str, hint: &'static str, action| {
         tooltip(
-            design::button(text(glyph).size(18)).width(39).height(36).on_press(action),
+            design::button(text(glyph).size(18))
+                .width(39)
+                .height(36)
+                .on_press(action),
             text(hint).size(12),
             tooltip::Position::Bottom,
         )
@@ -279,10 +358,20 @@ fn viewport(state: &State) -> Element<'_, Message> {
         camera_icon("↑", "Front view", Message::ViewerCameraPreset("Front")),
         camera_icon("→", "Right view", Message::ViewerCameraPreset("Right")),
         camera_icon("⊤", "Top view", Message::ViewerCameraPreset("Top")),
-        camera_icon("◇", "Isometric view", Message::ViewerCameraPreset("Isometric")),
-        camera_icon(if state.viewer_wireframe { "◉" } else { "▧" },
-            if state.viewer_wireframe { "Shaded display" } else { "Wireframe display" },
-            Message::ViewerToggleWireframe),
+        camera_icon(
+            "◇",
+            "Isometric view",
+            Message::ViewerCameraPreset("Isometric")
+        ),
+        camera_icon(
+            if state.viewer_wireframe { "◉" } else { "▧" },
+            if state.viewer_wireframe {
+                "Shaded display"
+            } else {
+                "Wireframe display"
+            },
+            Message::ViewerToggleWireframe
+        ),
         camera_icon("−", "Zoom out", Message::ViewerZoomWheel(-2.0)),
         camera_icon("+", "Zoom in", Message::ViewerZoomWheel(2.0)),
     ]
@@ -626,10 +715,18 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let heading = row![
         text("Asset / Model Viewer").size(16),
         text(readonly).size(12).style(design::muted),
-        text(format!(" • {} selected", state.file_selection.indices.len())).size(12),
+        text(format!(
+            " • {} selected",
+            state.file_selection.indices.len()
+        ))
+        .size(12),
         iced::widget::space().width(Fill),
-        text("Orbit: drag  •  Pan: Shift/right drag  •  Zoom: wheel").size(11).style(design::muted),
-    ].spacing(10).align_y(iced::Center);
+        text("Orbit: drag  •  Pan: Shift/right drag  •  Zoom: wheel")
+            .size(11)
+            .style(design::muted),
+    ]
+    .spacing(10)
+    .align_y(iced::Center);
     let ratio = state.viewer_split.clamp(0.25, 0.85);
     let view_weight = (ratio * 100.0).round() as u16;
     let list_weight = (100.0 - ratio * 100.0).round() as u16;
@@ -637,8 +734,14 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         let preview = container(viewport(state)).width(Length::FillPortion(view_weight.max(1)));
         let files = container(browser(state)).width(Length::FillPortion(list_weight.max(1)));
         let grip = canvas(ExplorerGrip {
-            direction: if explorer_on_left(&state.preferences.file_explorer_side) { -1.0 } else { 1.0 },
-        }).width(Length::Fixed(12.0)).height(Fill);
+            direction: if explorer_on_left(&state.preferences.file_explorer_side) {
+                -1.0
+            } else {
+                1.0
+            },
+        })
+        .width(Length::Fixed(12.0))
+        .height(Fill);
         let panes = if explorer_on_left(&state.preferences.file_explorer_side) {
             row![files, grip, preview]
         } else {
@@ -713,7 +816,8 @@ impl canvas::Program<Message> for ExplorerGrip {
     ) -> Option<canvas::Action<Message>> {
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-                if cursor.position_in(bounds).is_some() => {
+                if cursor.position_in(bounds).is_some() =>
+            {
                 state.dragging = true;
                 state.previous_x = cursor.position()?.x;
                 None
@@ -726,9 +830,12 @@ impl canvas::Program<Message> for ExplorerGrip {
                 let delta = position.x - state.previous_x;
                 state.previous_x = position.x;
                 if delta.is_finite() && delta != 0.0 {
-                    Some(canvas::Action::publish(Message::ViewerSplitDrag(
-                        self.direction * delta / 1000.0,
-                    )).and_capture())
+                    Some(
+                        canvas::Action::publish(Message::ViewerSplitDrag(
+                            self.direction * delta / 1000.0,
+                        ))
+                        .and_capture(),
+                    )
                 } else {
                     None
                 }
@@ -757,35 +864,74 @@ impl canvas::Program<Message> for ExplorerGrip {
 
 pub(super) fn preferences_view(state: &State) -> Element<'_, Message> {
     let mode = state.preferences.appearance_mode.as_str();
-    let pane = panel(container(column![
-        text("Viewer Preferences").size(22),
-        text("Appearance").size(17),
-        row![
-            design::button(format!("Theme: {mode}")).on_press(Message::PreferenceAppearance),
-            design::button(format!("Density: {}", state.preferences.ui_density)).on_press(Message::PreferenceDensity),
-        ].spacing(10),
-        text("Accent color").size(14),
-        row![
-            design::button("Default").on_press(Message::PreferenceAccentPreset("Default")),
-            design::button("Classic Red").on_press(Message::PreferenceAccentPreset("Classic Red")),
-            design::button("Evolve Red").on_press(Message::PreferenceAccentPreset("Evolve Red")),
-            design::button("Deep Red").on_press(Message::PreferenceAccentPreset("Deep Red")),
-        ].spacing(8),
-        text("Viewport").size(17),
-        row![
-            design::button(if state.viewer_wireframe { "Display: Wireframe" } else { "Display: Shaded" })
-                .on_press(Message::ViewerToggleWireframe),
-            design::button(if state.preferences.file_explorer_side.eq_ignore_ascii_case("left") { "Sidebar: Left" } else { "Sidebar: Right" })
-                .on_press(Message::PreferenceExplorerSide),
-        ].spacing(8),
-        row![
-            text("Lighting").size(13),
-            slider(0.1..=2.0, state.light_strength, Message::LightStrengthChanged)
-                .width(Length::Fixed(240.0)),
-        ].spacing(8).align_y(iced::Center),
-        design::button("Save preferences").on_press(Message::ViewerSaveLayout),
-    ].spacing(15)).padding(20));
-    container(pane).width(Fill).height(Fill).center(Fill).padding(18).into()
+    let pane = panel(
+        container(
+            column![
+                text("Viewer Preferences").size(22),
+                text("Appearance").size(17),
+                row![
+                    design::button(format!("Theme: {mode}"))
+                        .on_press(Message::PreferenceAppearance),
+                    design::button(format!("Density: {}", state.preferences.ui_density))
+                        .on_press(Message::PreferenceDensity),
+                ]
+                .spacing(10),
+                text("Accent color").size(14),
+                row![
+                    design::button("Default").on_press(Message::PreferenceAccentPreset("Default")),
+                    design::button("Classic Red")
+                        .on_press(Message::PreferenceAccentPreset("Classic Red")),
+                    design::button("Evolve Red")
+                        .on_press(Message::PreferenceAccentPreset("Evolve Red")),
+                    design::button("Deep Red")
+                        .on_press(Message::PreferenceAccentPreset("Deep Red")),
+                ]
+                .spacing(8),
+                text("Viewport").size(17),
+                row![
+                    design::button(if state.viewer_wireframe {
+                        "Display: Wireframe"
+                    } else {
+                        "Display: Shaded"
+                    })
+                    .on_press(Message::ViewerToggleWireframe),
+                    design::button(
+                        if state
+                            .preferences
+                            .file_explorer_side
+                            .eq_ignore_ascii_case("left")
+                        {
+                            "Sidebar: Left"
+                        } else {
+                            "Sidebar: Right"
+                        }
+                    )
+                    .on_press(Message::PreferenceExplorerSide),
+                ]
+                .spacing(8),
+                row![
+                    text("Lighting").size(13),
+                    slider(
+                        0.1..=2.0,
+                        state.light_strength,
+                        Message::LightStrengthChanged
+                    )
+                    .width(Length::Fixed(240.0)),
+                ]
+                .spacing(8)
+                .align_y(iced::Center),
+                design::button("Save preferences").on_press(Message::ViewerSaveLayout),
+            ]
+            .spacing(15),
+        )
+        .padding(20),
+    );
+    container(pane)
+        .width(Fill)
+        .height(Fill)
+        .center(Fill)
+        .padding(18)
+        .into()
 }
 
 #[cfg(test)]
