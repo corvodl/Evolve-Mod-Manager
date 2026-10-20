@@ -285,7 +285,9 @@ pub fn load(
             )?
             .ok_or("No explicitly associated or same-stem MTL")?;
             let authored = read_material(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            if authored.slots.get(part.material_slot as usize)
+            if authored
+                .slots
+                .get(part.material_slot as usize)
                 .is_some_and(|slot| slot.shader.eq_ignore_ascii_case("NoDraw"))
             {
                 surface.visible = false;
