@@ -445,7 +445,7 @@ enum Completed {
     SignedHookPreflight(PakHookPairReport),
     OfflineLauncherReady(LaunchReady),
     OfflineLauncherStarted(usize, u32),
-    OfflineLauncherRestored(usize),
+    OfflineLauncherRestored(usize, bool),
     ExtractedSigned(usize, PathBuf),
     RebuiltSigned(String, PathBuf),
     LevelExported(usize, usize, PathBuf),
@@ -964,8 +964,8 @@ impl Operation {
                 Ok(Completed::OfflineLauncherStarted(count, id))
             }
             Self::RestoreExistingOfflineLauncher(stage, swap) => {
-                let count = restore_existing_offline_client(&stage, &swap)?;
-                Ok(Completed::OfflineLauncherRestored(count))
+                let (count, reusable) = restore_existing_offline_client(&stage, &swap)?;
+                Ok(Completed::OfflineLauncherRestored(count, reusable))
             }
             Self::StageInit(root) => {
                 initialize_stage(&root).map_err(|e| e.to_string())?;
@@ -4571,9 +4571,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                     state.page = Some(Page::Files);
                 }
-                Ok(Completed::OfflineLauncherRestored(count)) => {
+                Ok(Completed::OfflineLauncherRestored(count, reusable)) => {
                     state.status = format!(
-                        "Private offline recovery PASS: originals verified for {count} signed PAKs + the original client hook. No stranded custom-key backups. See rust-restore-bridge.log in your swap folder."
+                        "Private offline recovery PASS: originals verified for {count} signed PAKs + the original client hook. No stranded custom-key backups. {}",
+                        if reusable {
+                            "Verified custom files were recycled to prepared slots for the next offline launch."
+                        } else {
+                            "Custom files need fresh preparation before the next offline launch."
+                        }
                     );
                     state.page = Some(Page::Files);
                 }
