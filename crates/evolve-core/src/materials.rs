@@ -311,8 +311,9 @@ mod tests {
                 <Texture Map="SpecularColor" File="Characters/Kala/spec.tif"/>
                 <Texture Map="Glossiness" File="Characters/Kala/gloss.tif"/>
                 <Texture Map="Emittance" File="Characters/Kala/glow.tif"/>
-            </Textures></Material>"#
-        ).unwrap();
+            </Textures></Material>"#,
+        )
+        .unwrap();
         assert_eq!(authored.slots[0].maps.len(), 3);
         assert_eq!(authored.slots[0].maps[0].role, "specularcolor");
         assert_eq!(authored.slots[0].maps[1].role, "glossiness");
