@@ -499,8 +499,12 @@ mod tests {
             destination: output.clone(),
             selected: vec!["textures/diffuse.dds.0".into()],
             blender: PathBuf::new(),
-            skeleton: None, diffuse: None, caf: None, rigged: false,
-            embed_textures: false, export_dependencies: false,
+            skeleton: None,
+            diffuse: None,
+            caf: None,
+            rigged: false,
+            embed_textures: false,
+            export_dependencies: false,
             equipment: EquipmentOverrides::new(),
         };
         let report = export_bundle(&inventory, &options).unwrap();
@@ -534,8 +538,13 @@ mod tests {
         fs::write(source.path().join("characters/body.mtl"),
             br#"<Material Name="body"><Textures><Texture Map="Diffuse" File="textures/body.dds"/></Textures></Material>"#).unwrap();
         let inventory = crate::scan_directory(source.path()).unwrap();
-        let (pngs, other) = dependencies(&fs::canonicalize(source.path()).unwrap(),
-            &inventory, &["characters/body.mtl".to_string()], staging.path()).unwrap();
+        let (pngs, other) = dependencies(
+            &fs::canonicalize(source.path()).unwrap(),
+            &inventory,
+            &["characters/body.mtl".to_string()],
+            staging.path(),
+        )
+        .unwrap();
         assert_eq!((pngs, other), (1, 0));
         let png = staging.path().join("textures/textures/body.png");
         assert!(fs::read(png).unwrap().starts_with(b"\x89PNG\r\n\x1a\n"));
