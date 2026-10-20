@@ -141,8 +141,30 @@ pub fn discover(
 ) -> AutoDiscovery {
     let mut found = AutoDiscovery::default();
     let canonical = relative.replace('\\', "/");
-    let parent = canonical.rsplit_once('/').map_or("", |(p, _)| p);
-    let bases = stems(&canonical);
+    // A CDF is a character, not a renderable mesh. Follow its explicit Model
+    // File skeleton to discover the correct chrparams/idle instead of trying
+    // to find animation files named after the CDF itself.
+    let mut source = canonical.clone();
+    if canonical.to_ascii_lowercase().ends_with(".cdf") {
+        match exact(inv, &canonical, imported, build) {
+            Ok(Some(cdf_path)) => match evolve_core::read_cdf(&cdf_path) {
+                Ok(cdf) => {
+                    source = cdf.skeleton.clone();
+                    match exact(inv, &cdf.skeleton, imported, build) {
+                        Ok(Some(skeleton)) => found.skeleton = Some(skeleton),
+                        Ok(None) => found.warnings.push(format!(
+                            "CDF compiled skeleton not found: {}",cdf.skeleton)),
+                        Err(error) => found.warnings.push(error),
+                    }
+                }
+                Err(error) => found.warnings.push(format!("Cannot read selected CDF: {error}")),
+            },
+            Ok(None) => found.warnings.push("CDF missing from indexed assets".into()),
+            Err(error) => found.warnings.push(error),
+        }
+    }
+    let parent = source.rsplit_once('/').map_or("", |(p, _)| p);
+    let bases = stems(&source);
     // Same-folder material names are an explicit fallback, not a general
     // basename search across characters or a random library texture.
     for base in &bases {
