@@ -168,11 +168,7 @@ fn dependencies(
             return Err("Dependency graph exceeds safe limit".into());
         }
         let lower = relative.to_ascii_lowercase();
-        if !(lower.ends_with(".dds")
-            || lower.ends_with(".dds.0")
-            || lower.ends_with(".cdf")
-            || lower.ends_with(".mtl"))
-        {
+        if !(lower.ends_with(".cdf") || lower.ends_with(".mtl")) {
             // Original metadata may have a separately cooked render mesh.
             // Export the *exact* indexed sidecar rather than guessing a model
             // with a similar name elsewhere in the Asset Library.
@@ -341,7 +337,9 @@ pub fn export_bundle(
             return Err("The same asset was selected twice".into());
         }
         let lower = relative.to_ascii_lowercase();
-        if !(lower.ends_with(".cdf")
+        if !(lower.ends_with(".dds")
+            || lower.ends_with(".dds.0")
+            || lower.ends_with(".cdf")
             || [
                 ".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cgfm", ".cga", ".cgam",
             ]
