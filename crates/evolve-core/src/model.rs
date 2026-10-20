@@ -481,7 +481,9 @@ pub fn original_mesh_subsets(
             || u32at(data, *offset + 4)? != 0x800
             || u32at(data, *offset + 8)? as usize != *offset
         {
-            return Err(ModelError::Format("unsupported historical CryTek subset header".into()));
+            return Err(ModelError::Format(
+                "unsupported historical CryTek subset header".into(),
+            ));
         }
         let flags = u32at(data, *offset + 16)?;
         if !matches!(flags, 0 | 2)
@@ -497,9 +499,7 @@ pub fn original_mesh_subsets(
         }
         (u32at(data, *offset + 4)? as usize, 16usize)
     };
-    if !(1..=128).contains(&count)
-        || row_offset.checked_add(count * 36).is_none_or(|n| n > *size)
-    {
+    if !(1..=128).contains(&count) || row_offset.checked_add(count * 36).is_none_or(|n| n > *size) {
         return Err(ModelError::Limits);
     }
     let legacy_vertex_count = if legacy {
@@ -529,7 +529,10 @@ pub fn original_mesh_subsets(
             let first_vertex = u32at(data, at + 8)? as usize;
             let vertex_count = u32at(data, at + 12)? as usize;
             let nv = legacy_vertex_count.unwrap_or_default();
-            if first_vertex.checked_add(vertex_count).is_none_or(|end| end > nv) {
+            if first_vertex
+                .checked_add(vertex_count)
+                .is_none_or(|end| end > nv)
+            {
                 return Err(ModelError::Format(
                     "historical material subset has invalid vertex range".into(),
                 ));
