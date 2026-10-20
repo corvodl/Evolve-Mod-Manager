@@ -6,11 +6,23 @@ use std::backtrace::Backtrace;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{
+    Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_LOG_BYTES: u64 = 1024 * 1024;
 static LOG_LOCK: Mutex<()> = Mutex::new(());
+static LOG_ENABLED: AtomicBool = AtomicBool::new(true);
+
+pub fn enabled() -> bool {
+    LOG_ENABLED.load(Ordering::Relaxed)
+}
+
+pub fn set_enabled(value: bool) {
+    LOG_ENABLED.store(value, Ordering::Relaxed);
+}
 
 pub fn log_path() -> io::Result<PathBuf> {
     #[cfg(windows)]
@@ -46,6 +58,9 @@ fn safe_detail(detail: &str) -> String {
 }
 
 pub fn record(event: &str, detail: &str) {
+    if !enabled() {
+        return;
+    }
     // A failing or poisoned log must never become another reason to crash.
     let Ok(_guard) = LOG_LOCK.try_lock() else {
         return;
@@ -79,7 +94,8 @@ fn write_event(event: &str, detail: &str) -> io::Result<()> {
     file.flush()
 }
 
-pub fn install() {
+pub fn install(start_enabled: bool) {
+    set_enabled(start_enabled);
     let original = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let payload = info
@@ -92,6 +108,10 @@ pub fn install() {
             || "unknown".to_owned(),
             |l| format!("{}:{}", l.file(), l.line()),
         );
+        if !enabled() {
+            original(info);
+            return;
+        }
         record("rust_panic", &format!("{place}: {payload}"));
         let trace = Backtrace::force_capture();
         // Write a bounded number of trace characters; avoid allocating an
@@ -126,4 +146,17 @@ mod tests {
         );
         assert_eq!(safe_detail(&"a".repeat(9_000)).chars().count(), 8_192);
     }
+    #[test]
+    fn disabling_logging_suppresses_events_and_can_be_reenabled() {
+        let old = enabled();
+        set_enabled(false);
+        assert!(!enabled());
+        // This should not touch the filesystem, even if the log path
+        // is missing or the user's profile is read-only.
+        record("suppressed", "test");
+        set_enabled(true);
+        assert!(enabled());
+        set_enabled(old);
+    }
+
 }
