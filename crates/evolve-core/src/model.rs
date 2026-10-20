@@ -125,10 +125,19 @@ fn validate_chunks(data: &[u8]) -> Result<ModelChunks, ModelError> {
         let end20 = start
             .checked_add(count.checked_mul(20).ok_or(ModelError::Limits)?)
             .ok_or(ModelError::Limits)?;
-        if count == 0 || count > MAX_CHUNKS || table < 20 || end20 > data.len() {
+        // 2012 CryTek releases commonly store a 16-byte chunk directory
+        // after the payloads. Checking its bounds as a 20-byte table first
+        // rejected valid historical meshes before the legacy branch ran.
+        let legacy_terminal = start
+            .checked_add(count.checked_mul(16).ok_or(ModelError::Limits)?)
+            == Some(data.len());
+        if count == 0
+            || count > MAX_CHUNKS
+            || table < 20
+            || (!legacy_terminal && end20 > data.len())
+        {
             return Err(ModelError::Limits);
         }
-        let legacy_terminal = start.checked_add(count * 16) == Some(data.len());
         end = if legacy_terminal {
             start + count * 16
         } else {
