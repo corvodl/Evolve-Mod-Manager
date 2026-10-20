@@ -649,7 +649,7 @@ fn lock_restore_watchdog(swap: &Path) -> Result<Option<File>, String> {
         .write(true)
         .open(&path)
         .map_err(|e| format!("Cannot inspect offline restore watchdog lock: {e}"))?;
-    file.try_lock().map_err(|_| {
+    fs2::FileExt::try_lock_exclusive(&file).map_err(|_| {
         "The independent private restore watchdog is active. Allow it to finish before attempting manual recovery."
             .to_owned()
     })?;
