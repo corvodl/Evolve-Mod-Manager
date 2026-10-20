@@ -5552,6 +5552,43 @@ mod project_edit_tests {
     }
 
     #[test]
+    fn cdf_single_click_sets_active_character_source_before_background_assembly() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("hunter.cdf");
+        std::fs::write(&file, b"<CharacterDefinition/>").unwrap();
+        let inventory = scan_directory(dir.path()).unwrap();
+        let index = inventory.entries.iter().position(|e| e.relative_path.ends_with("hunter.cdf")).unwrap();
+        let mut state = State {
+            inventory: Some(inventory),
+            selected: Some(index),
+            ..State::default()
+        };
+        let _ = update(&mut state, Message::ViewerPreviewStaticCdf);
+        assert_eq!(Path::new(&state.input), file.as_path());
+        assert!(state.busy, "CDF assembly must be dispatched on a worker");
+    }
+
+    #[test]
+    fn selecting_new_dds_during_preview_queues_only_latest_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("first.dds"), b"stand-in DDS").unwrap();
+        std::fs::write(dir.path().join("second.dds"), b"stand-in DDS").unwrap();
+        let inventory = scan_directory(dir.path()).unwrap();
+        let first = inventory.entries.iter().position(|e| e.relative_path == "first.dds").unwrap();
+        let second = inventory.entries.iter().position(|e| e.relative_path == "second.dds").unwrap();
+        let mut state = State {
+            inventory: Some(inventory),
+            ..State::default()
+        };
+        refresh_viewer_rows(&mut state);
+        let _ = update(&mut state, Message::ViewerSelectFile(first));
+        assert!(state.busy);
+        assert!(state.input.ends_with("first.dds"));
+        let _ = update(&mut state, Message::ViewerSelectFile(second));
+        assert_eq!(state.viewer_queued_preview, Some(second));
+    }
+
+    #[test]
     fn model_preview_dispatch_includes_compiled_cryengine_variants_without_inspect() {
         for name in [
             "Hunters/Kala.SKIN",
