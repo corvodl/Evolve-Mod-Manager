@@ -6,10 +6,10 @@ use evolve_core::{
     export_dds_png, export_edited_layer, export_level_scene_glb, export_model_glb,
     export_model_obj, export_rigged_character_fbx, export_rigged_character_glb, export_terrain_obj,
     extract_legacy_pak, extract_signed_pak, import_stage_pak, initialize_stage, inspect_caf_file,
-    inspect_dds, inspect_legacy_pak, inspect_signed_pak, list_mod_profiles, load_level_scene,
-    plan_mod_profile, read_cdf, read_material, read_model, read_terrain, rebuild_legacy_pak,
-    rebuild_signed_pak_entry, resign_signed_pak, prepare_client_hook,
-    inspect_client_hook_pair, inspect_pak_hook_pair, resolve_cdf, resolve_materials,
+    inspect_client_hook_pair, inspect_dds, inspect_legacy_pak, inspect_pak_hook_pair,
+    inspect_signed_pak, list_mod_profiles, load_level_scene, plan_mod_profile, prepare_client_hook,
+    read_cdf, read_material, read_model, read_terrain, rebuild_legacy_pak,
+    rebuild_signed_pak_entry, resign_signed_pak, resolve_cdf, resolve_materials,
     restore_profile_stage, restore_stage, scan_directory, stage_status, write_inventory_json,
 };
 use serde::Serialize;
@@ -192,17 +192,22 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
             no_extra(&mut args)?;
             let report = prepare_client_hook(&original_hook, &original_key, &custom_key, &output)
                 .map_err(|e| e.to_string())?;
-            println!("Prepared new hook (only the RSA public-key bytes changed): {}", output.display());
-            println!("Original SHA256: {}; custom SHA256: {}",
-                report.source_sha256, report.custom_sha256);
+            println!(
+                "Prepared new hook (only the RSA public-key bytes changed): {}",
+                output.display()
+            );
+            println!(
+                "Original SHA256: {}; custom SHA256: {}",
+                report.source_sha256, report.custom_sha256
+            );
         } else if action == OsStr::new("verify") {
             let custom_hook: PathBuf = pop(&mut args)?.into();
             let original_key: PathBuf = pop(&mut args)?.into();
             let custom_key: PathBuf = pop(&mut args)?.into();
             no_extra(&mut args)?;
-            let report = inspect_client_hook_pair(
-                &original_hook, &custom_hook, &original_key, &custom_key,
-            ).map_err(|e| e.to_string())?;
+            let report =
+                inspect_client_hook_pair(&original_hook, &custom_hook, &original_key, &custom_key)
+                    .map_err(|e| e.to_string())?;
             println!("PASS: original and custom hook differ only in the exact RSA key region.");
             println!("Hook SHA256: {}", report.custom_sha256);
         } else if action == OsStr::new("pak-preflight") {
@@ -214,11 +219,19 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
             let basename = pop(&mut args)?.into_string().map_err(|_| usage())?;
             no_extra(&mut args)?;
             let report = inspect_pak_hook_pair(
-                &original_hook, &custom_pak, &original_shim, &custom_shim,
-                &original_key, &custom_key, &basename,
-            ).map_err(|e| e.to_string())?;
-            println!("PASS: {} signed entries authenticate and both hooks match their respective public keys.",
-                report.signed_replacement_entries);
+                &original_hook,
+                &custom_pak,
+                &original_shim,
+                &custom_shim,
+                &original_key,
+                &custom_key,
+                &basename,
+            )
+            .map_err(|e| e.to_string())?;
+            println!(
+                "PASS: {} signed entries authenticate and both hooks match their respective public keys.",
+                report.signed_replacement_entries
+            );
             println!("Runtime PAK mount still UNVERIFIED. No installed game file was changed.");
         } else {
             return Err(usage());
@@ -469,8 +482,14 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
         let destination: PathBuf = pop(&mut args)?.into();
         no_extra(&mut args)?;
         let report = resign_signed_pak(
-            &source, &old_public, &new_private, &new_public, &basename, &destination,
-        ).map_err(|e| e.to_string())?;
+            &source,
+            &old_public,
+            &new_private,
+            &new_public,
+            &basename,
+            &destination,
+        )
+        .map_err(|e| e.to_string())?;
         println!(
             "Re-signed {} original entries without modifying any PAK payloads or ZIP offsets.",
             report.entries.len()
