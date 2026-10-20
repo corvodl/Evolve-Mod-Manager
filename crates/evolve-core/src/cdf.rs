@@ -36,7 +36,7 @@ pub enum AttachmentKind {
     Bone,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CdfAttachment {
     pub name: String,
     pub binding: String,
@@ -55,7 +55,7 @@ pub struct CdfAttachment {
     pub rotation: Option<[f32; 4]>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CdfDefinition {
     pub schema: u32,
     pub skeleton: String,
