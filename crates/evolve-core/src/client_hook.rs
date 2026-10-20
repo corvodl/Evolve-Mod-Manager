@@ -2,7 +2,11 @@
 //! Does NOT inject, start or modify the installed client. No DLLs or RSA keys
 //! are embedded; all sources must be supplied by the user and validated.
 use crate::signed_pak::{SignedPakError, inspect_signed_pak};
-use rsa::{RsaPublicKey, pkcs1::{DecodeRsaPublicKey, EncodeRsaPublicKey}, traits::PublicKeyParts};
+use rsa::{
+    RsaPublicKey,
+    pkcs1::{DecodeRsaPublicKey, EncodeRsaPublicKey},
+    traits::PublicKeyParts,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -57,8 +61,13 @@ fn canonical_public(path: &Path) -> Result<Vec<u8>, ClientHookError> {
     }
     let bytes = fs::read(path)?;
     let key = RsaPublicKey::from_pkcs1_der(&bytes).map_err(|_| ClientHookError::Format)?;
-    if key.size() != 128 || key.e() != &rsa::BigUint::from(65537u32)
-        || key.to_pkcs1_der().map_err(|_| ClientHookError::Format)?.as_bytes() != bytes
+    if key.size() != 128
+        || key.e() != &rsa::BigUint::from(65537u32)
+        || key
+            .to_pkcs1_der()
+            .map_err(|_| ClientHookError::Format)?
+            .as_bytes()
+            != bytes
     {
         return Err(ClientHookError::Format);
     }
@@ -82,9 +91,13 @@ fn archive_fingerprint(path: &Path) -> Result<String, ClientHookError> {
     let mut total = 0u64;
     loop {
         let n = file.read(&mut chunk)?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         total = total.checked_add(n as u64).ok_or(ClientHookError::Format)?;
-        if total > meta.len() { return Err(ClientHookError::Format); }
+        if total > meta.len() {
+            return Err(ClientHookError::Format);
+        }
         hasher.update(&chunk[..n]);
     }
     if total != meta.len() {
@@ -95,18 +108,26 @@ fn archive_fingerprint(path: &Path) -> Result<String, ClientHookError> {
 fn fingerprint(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
-fn compare(original: &[u8], custom: &[u8], old: &[u8], new: &[u8]) -> Result<HookPairReport, ClientHookError> {
-    if original.len() != HOOK_SIZE || custom.len() != HOOK_SIZE
-        || old.len() != PUBLIC_BYTES || new.len() != PUBLIC_BYTES || old == new
+fn compare(
+    original: &[u8],
+    custom: &[u8],
+    old: &[u8],
+    new: &[u8],
+) -> Result<HookPairReport, ClientHookError> {
+    if original.len() != HOOK_SIZE
+        || custom.len() != HOOK_SIZE
+        || old.len() != PUBLIC_BYTES
+        || new.len() != PUBLIC_BYTES
+        || old == new
     {
         return Err(ClientHookError::Format);
     }
-    if original[KEY_OFFSET..KEY_OFFSET+PUBLIC_BYTES] != *old {
+    if original[KEY_OFFSET..KEY_OFFSET + PUBLIC_BYTES] != *old {
         return Err(ClientHookError::OriginalMismatch);
     }
-    if custom[KEY_OFFSET..KEY_OFFSET+PUBLIC_BYTES] != *new
+    if custom[KEY_OFFSET..KEY_OFFSET + PUBLIC_BYTES] != *new
         || original[..KEY_OFFSET] != custom[..KEY_OFFSET]
-        || original[KEY_OFFSET+PUBLIC_BYTES..] != custom[KEY_OFFSET+PUBLIC_BYTES..]
+        || original[KEY_OFFSET + PUBLIC_BYTES..] != custom[KEY_OFFSET + PUBLIC_BYTES..]
     {
         return Err(ClientHookError::OtherChanges);
     }
@@ -135,7 +156,7 @@ pub fn prepare_client_hook(
         return Err(ClientHookError::Format);
     }
     let original = hook_bytes(original_hook)?;
-    if original[KEY_OFFSET..KEY_OFFSET+PUBLIC_BYTES] != *old {
+    if original[KEY_OFFSET..KEY_OFFSET + PUBLIC_BYTES] != *old {
         return Err(ClientHookError::OriginalMismatch);
     }
     let parent = destination.parent().ok_or(ClientHookError::UnsafeOutput)?;
@@ -146,7 +167,7 @@ pub fn prepare_client_hook(
         return Err(ClientHookError::UnsafeOutput);
     }
     let mut patched = original.clone();
-    patched[KEY_OFFSET..KEY_OFFSET+PUBLIC_BYTES].copy_from_slice(&new);
+    patched[KEY_OFFSET..KEY_OFFSET + PUBLIC_BYTES].copy_from_slice(&new);
     let report = compare(&original, &patched, &old, &new)?;
     let mut staged = tempfile::Builder::new()
         .prefix(".evolve-hook-")
@@ -178,7 +199,12 @@ pub fn inspect_client_hook_pair(
 ) -> Result<HookPairReport, ClientHookError> {
     let old = canonical_public(original_public)?;
     let new = canonical_public(custom_public)?;
-    compare(&hook_bytes(original_hook)?, &hook_bytes(custom_hook)?, &old, &new)
+    compare(
+        &hook_bytes(original_hook)?,
+        &hook_bytes(custom_hook)?,
+        &old,
+        &new,
+    )
 }
 
 /// A required *preflight* before any future controlled game PAK swapping.
@@ -194,13 +220,20 @@ pub fn inspect_pak_hook_pair(
     custom_public: &Path,
     basename: &str,
 ) -> Result<PakHookPairReport, ClientHookError> {
-    let hook = inspect_client_hook_pair(original_hook, custom_hook, original_public, custom_public)?;
+    let hook =
+        inspect_client_hook_pair(original_hook, custom_hook, original_public, custom_public)?;
     let old = inspect_signed_pak(original_pak, original_public, basename)?;
     let new = inspect_signed_pak(custom_pak, custom_public, basename)?;
-    let original_paths: std::collections::HashSet<_> =
-        old.entries.iter().map(|e| e.path.to_ascii_lowercase()).collect();
-    let replacement_paths: std::collections::HashSet<_> =
-        new.entries.iter().map(|e| e.path.to_ascii_lowercase()).collect();
+    let original_paths: std::collections::HashSet<_> = old
+        .entries
+        .iter()
+        .map(|e| e.path.to_ascii_lowercase())
+        .collect();
+    let replacement_paths: std::collections::HashSet<_> = new
+        .entries
+        .iter()
+        .map(|e| e.path.to_ascii_lowercase())
+        .collect();
     if original_paths != replacement_paths || old.entries.len() != new.entries.len() {
         return Err(ClientHookError::OtherChanges);
     }
@@ -220,19 +253,32 @@ pub fn inspect_pak_hook_pair(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rsa::{pkcs1::EncodeRsaPublicKey, RsaPrivateKey};
-    fn setup() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    use rsa::{RsaPrivateKey, pkcs1::EncodeRsaPublicKey};
+    fn setup() -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let mut rng = rand::rngs::OsRng;
         let a = RsaPrivateKey::new(&mut rng, 1024).unwrap();
         let b = RsaPrivateKey::new(&mut rng, 1024).unwrap();
         let old = dir.path().join("old.der");
         let new = dir.path().join("new.der");
-        fs::write(&old, RsaPublicKey::from(&a).to_pkcs1_der().unwrap().as_bytes()).unwrap();
-        fs::write(&new, RsaPublicKey::from(&b).to_pkcs1_der().unwrap().as_bytes()).unwrap();
+        fs::write(
+            &old,
+            RsaPublicKey::from(&a).to_pkcs1_der().unwrap().as_bytes(),
+        )
+        .unwrap();
+        fs::write(
+            &new,
+            RsaPublicKey::from(&b).to_pkcs1_der().unwrap().as_bytes(),
+        )
+        .unwrap();
         let shim = dir.path().join("original.dll");
         let mut bytes = vec![0x47u8; HOOK_SIZE];
-        bytes[KEY_OFFSET..KEY_OFFSET+PUBLIC_BYTES].copy_from_slice(&fs::read(&old).unwrap());
+        bytes[KEY_OFFSET..KEY_OFFSET + PUBLIC_BYTES].copy_from_slice(&fs::read(&old).unwrap());
         fs::write(&shim, bytes).unwrap();
         (dir, shim, old, new)
     }
@@ -273,7 +319,9 @@ mod tests {
             Err(ClientHookError::OtherChanges)
         ));
         assert!(prepare_client_hook(&original, &old, &new, &original).is_err());
-        assert!(inspect_client_hook_pair(&original, &original, &old, &old).is_err(),
-            "an unmodified hook with the original key cannot masquerade as a custom-key swap");
+        assert!(
+            inspect_client_hook_pair(&original, &original, &old, &old).is_err(),
+            "an unmodified hook with the original key cannot masquerade as a custom-key swap"
+        );
     }
 }
