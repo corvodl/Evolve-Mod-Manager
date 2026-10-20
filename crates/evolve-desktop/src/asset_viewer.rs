@@ -30,8 +30,8 @@ fn menu_action<'a>(label: &'static str) -> iced::widget::Button<'a, Message> {
         .padding([6, 11])
 }
 
-fn strip(state: &State) -> Element<'_, Message> {
-    let menu = row![
+fn strip(_state: &State) -> Element<'_, Message> {
+    row![
         menu_action("File").on_press(Message::ViewerMenu("File")),
         menu_action("Edit").on_press(Message::ViewerMenu("Edit")),
         menu_action("View").on_press(Message::ViewerMenu("View")),
@@ -41,75 +41,84 @@ fn strip(state: &State) -> Element<'_, Message> {
         menu_action("Tools").on_press(Message::ViewerMenu("Tools")),
         menu_action("Help").on_press(Message::ViewerMenu("Help")),
     ]
-    .spacing(3);
+    .spacing(3)
+    .into()
+}
 
-    let options: Element<'_, Message> = match state.viewer_menu {
-        Some("File") => row![
+fn dropdown(state: &State) -> Option<Element<'_, Message>> {
+    let content: Element<'_, Message> = match state.viewer_menu? {
+        "File" => column![
             design::button("Inspect original PAK").on_press(Message::StartPakInspection),
             design::button("Export selected DDS → PNG").on_press(Message::StartPngExport),
             design::button("Save viewer layout").on_press(Message::ViewerSaveLayout),
-        ].spacing(8).into(),
-        Some("Edit") => row![
+        ].spacing(3).into(),
+        "Edit" => column![
             design::button("Preferences…").on_press(Message::OpenViewerPreferences),
-            text("Library assets are read-only; edit separate workspace copies.").size(12).style(design::muted),
-        ].spacing(8).into(),
-        Some("View") => row![
+            text("Read-only library assets. Edit copies in Modding.")
+                .size(11).style(design::muted),
+        ].spacing(3).into(),
+        "View" => column![
             design::button("Toggle Explorer").on_press(Message::ViewerToggleExplorer),
             design::button("Move Explorer").on_press(Message::PreferenceExplorerSide),
             design::button("Reset Camera").on_press(Message::ViewerResetCamera),
             design::button("Detach Inspector").on_press(Message::OpenInspectorWindow),
-            design::button("Inspector")
-                .on_press(Message::ViewerSidebarSelect(ViewerSidebarTab::Inspector)),
-        ].spacing(8).into(),
-        Some("Model") => column![
-            row![
-                design::button("Retry selected preview").on_press(Message::ViewerPreviewSelected),
-                design::button("Inspect CDF").on_press(Message::StartCdfInspection),
-                design::button("Preview CDF assembly (static)").on_press(Message::ViewerPreviewStaticCdf),
-                design::button("Export verified rigged FBX").on_press(Message::StartRigFbx),
-                design::button("Flat CDF parts FBX (experimental)")
-                    .on_press(Message::ViewerExportFlatCdf),
-                design::button("Unified CDF rigged FBX (experimental)")
-                    .on_press(Message::ViewerExportUnifiedCdf),
-            ].spacing(8),
-            text("Single-click an indexed source asset to preview it automatically. The Retry action is optional; no second Inspect click is required.").size(12).style(design::muted),
-            text("Blender FBX export requires a verified compiled skeleton and original mesh weights. Source files are never overwritten.").size(12).style(design::muted),
-            text("Flat CDF export requires a NEW DIRECTORY. Unified CDF export requires a NEW .fbx file. Both verify original UVs and weights; unified output uses one shared armature, but complete per-part materials and skin animation remain unverified.")
-                .size(12).style(design::muted),
-            row![
-                design::text_input("NEW FBX destination (absolute path)", &state.output)
-                    .on_input(Message::OutputChanged).width(Fill),
-                design::text_input("Blender executable", &state.blender_path)
-                    .on_input(Message::BlenderChanged).width(Fill),
-                design::text_input("Matching skeleton (CDF auto-detected where verified)", &state.skeleton_path)
-                    .on_input(Message::SkeletonChanged).width(Fill),
-            ].spacing(8),
-            row![
-                design::button(if state.export_include_animation {
-                    "Verified CAF Actions: on"
-                } else {
-                    "Verified CAF Actions: off"
-                }).on_press(Message::ViewerToggleExportAnimations),
-                design::text_input("Exact CAF path (optional; export opt-in)", &state.caf_path)
-                    .on_input(Message::CafInputChanged).width(Fill),
-            ].spacing(8),
-        ].spacing(7).into(),
-        Some("Textures") => row![
+            design::button("Inspector").on_press(Message::ViewerSidebarSelect(ViewerSidebarTab::Inspector)),
+        ].spacing(3).into(),
+        "Model" => column![
+            design::button("Retry selected preview").on_press(Message::ViewerPreviewSelected),
+            design::button("Inspect CDF").on_press(Message::StartCdfInspection),
+            design::button("Preview CDF assembly (static)").on_press(Message::ViewerPreviewStaticCdf),
+            design::button("Export verified rigged FBX").on_press(Message::StartRigFbx),
+            design::button("Flat CDF parts FBX (experimental)").on_press(Message::ViewerExportFlatCdf),
+            design::button("Unified CDF rigged FBX (experimental)").on_press(Message::ViewerExportUnifiedCdf),
+            text("Blender FBX export requires original mesh weights and a verified skeleton.")
+                .size(11).style(design::muted),
+            design::text_input("NEW FBX destination (absolute path)", &state.output)
+                .on_input(Message::OutputChanged),
+            design::text_input("Blender executable", &state.blender_path)
+                .on_input(Message::BlenderChanged),
+            design::text_input("Matching verified skeleton", &state.skeleton_path)
+                .on_input(Message::SkeletonChanged),
+            design::button(if state.export_include_animation {
+                "Verified CAF Actions: on"
+            } else {
+                "Verified CAF Actions: off"
+            }).on_press(Message::ViewerToggleExportAnimations),
+            design::text_input("Exact CAF path (optional)", &state.caf_path)
+                .on_input(Message::CafInputChanged),
+        ].spacing(5).into(),
+        "Textures" => column![
             design::button("Resolve .mtl").on_press(Message::StartMaterialResolve),
             design::button("Load diffuse").on_press(Message::StartDiffuseLoad),
             design::button("Load normal").on_press(Message::StartNormalLoad),
             design::button("Load emissive").on_press(Message::StartEmissiveLoad),
-        ].spacing(8).into(),
-        Some("Animation") => design::button("Open Animation Browser").on_press(Message::ViewerSidebarAnimations(true)).into(),
-        Some("Tools") => row![
+        ].spacing(3).into(),
+        "Animation" => design::button("Open Animation Browser")
+            .on_press(Message::ViewerSidebarAnimations(true)).into(),
+        "Tools" => column![
             design::button("Index extracted files").on_press(Message::StartScan),
             design::button("Inspect selected asset").on_press(Message::ViewerPreviewSelected),
             design::button("Dependency Graph").on_press(Message::StartDependencyInspection),
-        ].spacing(8).into(),
-        Some("Help") => text("Read-only preview. Use the file explorer to select extracted assets; original PAK members must be extracted before preview.").size(13).into(),
-        _ => column![].into(),
+        ].spacing(3).into(),
+        "Help" => text("Read-only preview. Select extracted assets in Files. Original PAK members must be extracted before preview.")
+            .size(12).into(),
+        _ => return None,
     };
-    column![menu, options].spacing(5).into()
+    Some(content)
+}
+
+fn dropdown_x(name: Option<&str>) -> f32 {
+    match name {
+        Some("File") => 9.0,
+        Some("Edit") => 64.0,
+        Some("View") => 121.0,
+        Some("Model") => 179.0,
+        Some("Textures") => 247.0,
+        Some("Animation") => 334.0,
+        Some("Tools") => 429.0,
+        Some("Help") => 484.0,
+        _ => 9.0,
+    }
 }
 
 fn animation_browser(state: &State) -> Element<'_, Message> {
@@ -807,7 +816,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     ]
     .spacing(12);
 
-    container(
+    let base = container(
         column![strip(state), heading, panes, footer]
             .spacing(7)
             .padding(7)
@@ -818,8 +827,14 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     .style(|theme| container::Style {
         background: Some(Background::Color(theme.palette().background)),
         ..container::Style::default()
-    })
-    .into()
+    });
+    crate::menu_popup::overlay(
+        base,
+        dropdown(state),
+        dropdown_x(state.viewer_menu),
+        36.0,
+        if state.viewer_menu == Some("Model") { 460.0 } else { 310.0 },
+    )
 }
 
 /// The narrow vertical separator is the only splitter control: drag it
