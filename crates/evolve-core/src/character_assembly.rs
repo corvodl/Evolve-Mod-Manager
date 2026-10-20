@@ -76,7 +76,9 @@ pub fn select_attachments(
         // Stage 2 CDFs often use SkinSets named HiddenWhen*Selected as
         // equipment exclusion metadata, not actual renderable variants.
         // Those sets must not make the entire character unviewable.
-        let actual_variants = cdf.skin_sets.keys()
+        let actual_variants = cdf
+            .skin_sets
+            .keys()
             .filter(|name| !name.starts_with("hiddenwhen"))
             .collect::<Vec<_>>();
         if actual_variants.len() == 1 {
