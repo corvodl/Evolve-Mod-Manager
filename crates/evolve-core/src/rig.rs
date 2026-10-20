@@ -690,8 +690,21 @@ fn rigged_glb_bytes_internal(
     skeleton_source: &[u8],
     animation: Option<&NativeCafMotion>,
 ) -> Result<(Vec<u8>, RigReport), RigError> {
-    let skeleton = parse_compiled_skeleton(skeleton_source)?;
-    let mapped = remap_verified_weights(mesh_source, mesh.positions.len(), skeleton.names.len())?;
+    let historical = mesh_source.starts_with(b"CryTek\0\0");
+    if historical && animation.is_some() {
+        return Err(RigError::Invalid(
+            "2012 DBA/CAF requires verified historical controller conversion before animation export".into(),
+        ));
+    }
+    let (skeleton, mapped) = if historical {
+        crate::legacy_rig::read_legacy_skin(
+            mesh_source, skeleton_source, mesh.positions.len(),
+        )?
+    } else {
+        let skeleton = parse_compiled_skeleton(skeleton_source)?;
+        let mapped = remap_verified_weights(mesh_source, mesh.positions.len(), skeleton.names.len())?;
+        (skeleton, mapped)
+    };
     let source = geometry_glb_bytes(mesh)?;
     let len = u32::from_le_bytes(source[12..16].try_into().map_err(|_| RigError::Limits)?) as usize;
     let mut document: Value =
@@ -765,7 +778,7 @@ fn rigged_glb_bytes_internal(
             .ok_or(RigError::Limits)?
             .push(node);
     }
-    let mut root = None;
+    let mut roots = Vec::new();
     for (i, p) in skeleton.parents.iter().enumerate() {
         if let Some(parent) = p {
             let index = first + parent;
@@ -777,15 +790,19 @@ fn rigged_glb_bytes_internal(
                 .ok_or(RigError::Limits)?
                 .push(json!(first + i));
         } else {
-            root = Some(first + i);
+            roots.push(first + i);
         }
     }
-    let root = root.ok_or(RigError::Limits)?;
-    document["skins"] = json!([{
+    if roots.is_empty() { return Err(RigError::Limits); }
+    let mut skin = json!({
         "name":"Original CryEngine bind pose",
         "joints":(0..skeleton.names.len()).map(|i|first+i).collect::<Vec<_>>(),
-        "inverseBindMatrices":bind_acc,"skeleton":root
-    }]);
+        "inverseBindMatrices":bind_acc
+    });
+    if roots.len() == 1 {
+        skin["skeleton"] = json!(roots[0]);
+    }
+    document["skins"] = json!([skin]);
     document["nodes"][0]["skin"] = json!(0);
     // Rotate BOTH skin source skeleton and mesh together, preserving
     // original CryEngine Z-up transforms rather than rotating only bones.
@@ -796,11 +813,15 @@ fn rigged_glb_bytes_internal(
         .push(json!({
             "name":"Source CryEngine Z-up to Blender Y-up",
             "rotation":[-std::f32::consts::FRAC_1_SQRT_2,0,0,std::f32::consts::FRAC_1_SQRT_2],
-            "children":[0,root]
+            "children":std::iter::once(0).chain(roots.iter().copied()).collect::<Vec<_>>()
         }));
     document["scenes"][0]["nodes"] = json!([basis_index]);
     document["extras"] = json!({
-        "rigging":"Original verified compiled bones, inverse bind matrices and subset-local bone palettes",
+        "rigging":if historical {
+            "Original verified 2012 CryTek bones, four influences, and per-subset palettes"
+        } else {
+            "Original verified compiled bones, inverse bind matrices and subset-local bone palettes"
+        },
         "animations_embedded":false
     });
     if let Some(motion) = animation {
