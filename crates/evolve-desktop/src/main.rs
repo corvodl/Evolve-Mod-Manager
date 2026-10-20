@@ -3728,6 +3728,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.diffuse = None;
                     state.normal_map = None;
                     state.emissive_map = None;
+                    state.specular_map = None;
+                    state.gloss_map = None;
                     state.selected = None;
                     refresh_viewer_rows(state);
                     state.page = Some(Page::Files);
@@ -4131,6 +4133,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.diffuse = None;
                     state.normal_map = None;
                     state.emissive_map = None;
+                    state.specular_map = None;
+                    state.gloss_map = None;
                     state.native_caf = None;
                     state.glb_motion = None;
                     state.playing = false;
