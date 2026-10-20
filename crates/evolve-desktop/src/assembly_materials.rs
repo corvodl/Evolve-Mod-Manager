@@ -3,7 +3,7 @@
 //! shared through the bounded decoded preview cache.
 use crate::asset_cache::{SharedCache, decoded_dds};
 use crate::auto_resources;
-use crate::textured::Surface;
+use crate::textured::{MAX_GPU_PREVIEW_TEXTURE_BYTES, Surface};
 use evolve_core::{
     AssemblyReport, Inventory, MaterialDocument, material_texture_candidates, read_material,
 };
@@ -386,7 +386,39 @@ pub fn load_model(
         }
         result.push(surface);
     }
+    warn_gpu_material_limit(&result, &mut warnings);
     Ok((result, warnings))
+}
+
+/// Estimate the same unique GPU role/source uploads used by the renderer.
+/// A CDF with repeated sections must not count one cached DDS repeatedly.
+fn unique_gpu_material_bytes(surfaces: &[Surface]) -> usize {
+    let mut seen = HashSet::new();
+    let mut bytes = 0usize;
+    for surface in surfaces.iter().filter(|surface| surface.visible) {
+        for (role, image) in [
+            &surface.diffuse,
+            &surface.normal,
+            &surface.emissive,
+            &surface.specular,
+            &surface.gloss,
+            &surface.opacity,
+        ].into_iter().enumerate() {
+            if let Some(image) = image
+                && seen.insert((Arc::as_ptr(image) as usize, role)) {
+                bytes = bytes.saturating_add(image.as_raw().len());
+            }
+        }
+    }
+    bytes
+}
+
+fn warn_gpu_material_limit(surfaces: &[Surface], warnings: &mut Vec<String>) {
+    if unique_gpu_material_bytes(surfaces) > MAX_GPU_PREVIEW_TEXTURE_BYTES {
+        warnings.push(
+            "GPU texture preview exceeds the 256 MiB upload limit. Some maps use neutral previews to avoid a renderer crash; the original source files are untouched.".into(),
+        );
+    }
 }
 
 pub fn load(
@@ -467,12 +499,26 @@ pub fn load(
         }
         surfaces.push(surface);
     }
+    warn_gpu_material_limit(&surfaces, &mut warnings);
     (surfaces, warnings)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shared_dds_counts_once_per_gpu_role_not_per_cdf_attachment() {
+        let image = Arc::new(image::RgbaImage::new(4, 4));
+        let surface = Surface {
+            first_index: 0, index_count: 3, visible: true, transparent: false,
+            diffuse: Some(Arc::clone(&image)), normal: None, emissive: None,
+            specular: None, gloss: None, opacity: None,
+        };
+        let mut same = surface.clone();
+        same.first_index = 3;
+        assert_eq!(unique_gpu_material_bytes(&[surface, same]), 64);
+    }
+
     #[test]
     fn multi_slot_mesh_without_original_subsets_must_not_use_slot_zero() {
         let dir = tempfile::tempdir().unwrap();
