@@ -574,7 +574,8 @@ pub fn restore_existing_offline_client(stage: &Path, swap: &Path) -> Result<usiz
         let checked = inspect_existing_launcher(&stage, &swap)?;
         return Ok(checked.archive_count);
     }
-    check_private_helper_runtime()?;
+    // Recovery must remain available even when Frida is missing or broken.
+    // reusable_restore.py needs Python 3.11, but does not import Frida.
     let script = helper(&swap, "reusable_restore.py")?;
     let log = OpenOptions::new()
         .create(true)
