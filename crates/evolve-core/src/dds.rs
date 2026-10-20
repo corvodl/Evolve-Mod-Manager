@@ -432,10 +432,14 @@ fn decode_block(format: DdsFormat, bytes: &[u8]) -> [[u8; 4]; 16] {
             let palette = [
                 c0,
                 c1,
-                [((u16::from(c0[0]) * 2 + u16::from(c1[0])) / 3) as u8,
-                 ((u16::from(c0[1]) * 2 + u16::from(c1[1])) / 3) as u8],
-                [((u16::from(c0[0]) + u16::from(c1[0]) * 2) / 3) as u8,
-                 ((u16::from(c0[1]) + u16::from(c1[1]) * 2) / 3) as u8],
+                [
+                    ((u16::from(c0[0]) * 2 + u16::from(c1[0])) / 3) as u8,
+                    ((u16::from(c0[1]) * 2 + u16::from(c1[1])) / 3) as u8,
+                ],
+                [
+                    ((u16::from(c0[0]) + u16::from(c1[0]) * 2) / 3) as u8,
+                    ((u16::from(c0[1]) + u16::from(c1[1]) * 2) / 3) as u8,
+                ],
             ];
             let indices = u32::from_le_bytes(bytes[4..8].try_into().unwrap_or([0; 4]));
             let mut pixels = [[0u8; 4]; 16];
@@ -492,8 +496,8 @@ fn xbox360_tiled_xy(offset: usize, width: usize, pitch: usize) -> (usize, usize)
     let x = ((macro_x + tile_x) << 3) + micro_x;
     let macro_y = (offset_m / (aligned_width >> 5)) << 2;
     let tile_y = ((offset_t >> (6 + log_bpp)) & 1) + ((offset_b & 2048) >> 10);
-    let micro_y = (((offset_t & (((pitch << 6) - 1) & !31))
-        + ((offset_t & 15) << 1)) >> (3 + log_bpp)) & !1;
+    let micro_y =
+        (((offset_t & (((pitch << 6) - 1) & !31)) + ((offset_t & 15) << 1)) >> (3 + log_bpp)) & !1;
     let y = ((macro_y + tile_y) << 3) + micro_y + ((offset_t & 16) >> 4);
     (x, y)
 }
@@ -501,11 +505,17 @@ fn xbox360_tiled_xy(offset: usize, width: usize, pitch: usize) -> (usize, usize)
 /// Convert a console top mip into the ordinary linear, little-endian block
 /// order expected by our BC1/2/3/4/5/CTX1 CPU decoders.
 fn untile_xbox360(
-    tiled: &[u8], width: u32, height: u32, pitch: usize,
+    tiled: &[u8],
+    width: u32,
+    height: u32,
+    pitch: usize,
 ) -> Result<Vec<u8>, DdsError> {
     let bw = width.div_ceil(4) as usize;
     let bh = height.div_ceil(4) as usize;
-    if bw == 0 || bh == 0 || !bw.is_multiple_of(32) || !bh.is_multiple_of(32)
+    if bw == 0
+        || bh == 0
+        || !bw.is_multiple_of(32)
+        || !bh.is_multiple_of(32)
         || bw.checked_mul(bh).and_then(|v| v.checked_mul(pitch)) != Some(tiled.len())
     {
         return Err(DdsError::Unsupported(
@@ -516,7 +526,9 @@ fn untile_xbox360(
     for offset in 0..bw * bh {
         let (x, y) = xbox360_tiled_xy(offset, bw, pitch);
         if x >= bw || y >= bh {
-            return Err(DdsError::Unsupported("Xbox 360 block address out of bounds".into()));
+            return Err(DdsError::Unsupported(
+                "Xbox 360 block address out of bounds".into(),
+            ));
         }
         let from = offset * pitch;
         let to = (y * bw + x) * pitch;
@@ -535,7 +547,8 @@ pub fn decode_dds_rgba(source: &Path) -> Result<(DdsInfo, RgbaImage), DdsError> 
 
 /// Decode using the verified source platform, without modifying the game DDS.
 pub fn decode_dds_rgba_with_layout(
-    source: &Path, layout: DdsLayout,
+    source: &Path,
+    layout: DdsLayout,
 ) -> Result<(DdsInfo, RgbaImage), DdsError> {
     let (info, bytes, offset, masks) = load_dds(source)?;
     let pixels_len = u64::from(info.width) * u64::from(info.height) * 4;
@@ -623,7 +636,7 @@ pub fn export_dds_png(source: &Path, destination: &Path) -> Result<DdsInfo, DdsE
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_block, xbox360_tiled_xy, untile_xbox360, DdsFormat};
+    use super::{DdsFormat, decode_block, untile_xbox360, xbox360_tiled_xy};
 
     #[test]
     fn xbox360_untile_reverses_block_order_and_16_bit_endian() {
