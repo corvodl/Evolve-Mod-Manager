@@ -607,6 +607,11 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         ))
         .size(12),
         design::button("Toggle Explorer").on_press(Message::ViewerToggleExplorer),
+        design::button(if explorer_on_left(&state.preferences.file_explorer_side) {
+            "Files: left"
+        } else {
+            "Files: right"
+        }).on_press(Message::PreferenceExplorerSide),
         design::button("Save layout").on_press(Message::ViewerSaveLayout),
         design::button("Detach Inspector")
             .on_press(Message::OpenInspectorWindow)
