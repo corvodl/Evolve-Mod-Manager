@@ -439,40 +439,50 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
 /// Each range retains original index ordering, including sparse IDs such as
 /// Kala's 11th equipment/emission slot. The sentinel 255 is untextured.
 /// Legacy meshes without an original subset table keep slot zero.
-pub fn original_mesh_subsets(data: &[u8], index_count: usize) -> Result<Vec<(u32,u32,u32)>, ModelError> {
+pub fn original_mesh_subsets(
+    data: &[u8],
+    index_count: usize,
+) -> Result<Vec<(u32, u32, u32)>, ModelError> {
     if index_count == 0 || index_count > MAX_INDICES || index_count % 3 != 0 {
         return Err(ModelError::Limits);
     }
     let (format, _, chunks) = validate_chunks(data)?;
-    let mut sources = chunks.iter().filter(|(kind,_,_,_)| *kind == 0x08001017);
+    let mut sources = chunks.iter().filter(|(kind, _, _, _)| *kind == 0x08001017);
     let Some((_, offset, size, _)) = sources.next() else {
         return Ok(vec![(0, index_count as u32, 0)]);
     };
     if sources.next().is_some() || !format.starts_with("CrChF") || *size < 16 {
-        return Err(ModelError::Format("ambiguous or unsupported subset table".into()));
+        return Err(ModelError::Format(
+            "ambiguous or unsupported subset table".into(),
+        ));
     }
-    let count = u32at(data,*offset + 4)? as usize;
+    let count = u32at(data, *offset + 4)? as usize;
     if !(1..=128).contains(&count) || 16usize.checked_add(count * 36).is_none_or(|n| n > *size) {
         return Err(ModelError::Limits);
     }
-    let mut result = Vec::with_capacity(count+1);
+    let mut result = Vec::with_capacity(count + 1);
     let mut cursor = 0usize;
     for row in 0..count {
         let at = *offset + 16 + row * 36;
-        let first = u32at(data,at)? as usize;
-        let n = u32at(data,at+4)? as usize;
-        let material = u32at(data,at+16)?;
-        if first != cursor || n == 0 || first % 3 != 0 || n % 3 != 0
+        let first = u32at(data, at)? as usize;
+        let n = u32at(data, at + 4)? as usize;
+        let material = u32at(data, at + 16)?;
+        if first != cursor
+            || n == 0
+            || first % 3 != 0
+            || n % 3 != 0
             || first.checked_add(n).is_none_or(|end| end > index_count)
             || material >= 128
         {
-            return Err(ModelError::Format("source mesh subset geometry/material ranges are invalid".into()));
+            return Err(ModelError::Format(
+                "source mesh subset geometry/material ranges are invalid".into(),
+            ));
         }
-        result.push((first as u32,n as u32,material));
+        result.push((first as u32, n as u32, material));
         cursor += n;
     }
     if cursor < index_count {
-        result.push((cursor as u32,(index_count-cursor) as u32,255));
+        result.push((cursor as u32, (index_count - cursor) as u32, 255));
     }
     Ok(result)
 }
