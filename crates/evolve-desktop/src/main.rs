@@ -4790,6 +4790,16 @@ fn view(state: &State) -> Element<'_, Message> {
         ]
         .spacing(8),
         row![
+            design::text_input("Exact existing CryPAK member path (e.g. Libs/UI/file.xml)", &state.signed_entry)
+                .on_input(Message::SignedMemberChanged).width(Fill),
+            design::text_input("Replacement local file...", &state.signed_replacement)
+                .on_input(Message::SignedReplacementChanged).width(Fill),
+            design::button("Rebuild + re-sign member")
+                .style(design::secondary)
+                .on_press(Message::StartSignedRebuild),
+        ]
+        .spacing(8),
+        row![
             text("Stage RSA keys: original RSAKeyData.bin + custom mykeys/ (automatically checked).").size(12),
             design::button("Verify signed PAK")
                 .style(design::secondary)
