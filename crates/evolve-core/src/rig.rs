@@ -1249,13 +1249,20 @@ mod tests {
         );
         assert!(embed_verified_maps_png_glb(&input, None, None, None).is_err());
         let extended = embed_verified_material_png_glb(
-            &input, None, None, None, Some(b"specular"), Some(b"roughness"),
-        ).unwrap();
+            &input,
+            None,
+            None,
+            None,
+            Some(b"specular"),
+            Some(b"roughness"),
+        )
+        .unwrap();
         let length = u32::from_le_bytes(extended[12..16].try_into().unwrap()) as usize;
         let rendered: Value = serde_json::from_slice(&extended[20..20 + length]).unwrap();
         assert_eq!(rendered["extensionsUsed"][0], "KHR_materials_specular");
         assert_eq!(
-            rendered["materials"][0]["extensions"]["KHR_materials_specular"]["specularColorTexture"]["index"],
+            rendered["materials"][0]["extensions"]["KHR_materials_specular"]["specularColorTexture"]
+                ["index"],
             0
         );
         assert_eq!(
@@ -1264,7 +1271,8 @@ mod tests {
         );
         assert!(rendered["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"].is_null());
         assert_eq!(
-            rendered["meshes"][0]["primitives"][0]["attributes"]["TEXCOORD_0"], 3
+            rendered["meshes"][0]["primitives"][0]["attributes"]["TEXCOORD_0"],
+            3
         );
     }
     #[test]
