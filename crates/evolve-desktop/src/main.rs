@@ -4552,7 +4552,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::OfflineLauncherStarted(count, id)) => {
                     state.status = format!(
-                        "Started existing offline private launcher helper (PID {id}) for {count} signed PAKs + custom hook. Watch rust-launch-bridge.log and auto-restore.log in Swap folder; game mount and restoration NOT yet confirmed."
+                        "Private launcher CreateProcessW hook READY (helper PID {id}) for {count} signed PAKs + matching custom RSA hook. The actual swap occurs only when the exact game launch is intercepted; watch rust-launch-bridge.log and auto-restore.log for swap/restoration. CryEngine mount is NOT yet verified."
                     );
                     state.page = Some(Page::Files);
                 }
