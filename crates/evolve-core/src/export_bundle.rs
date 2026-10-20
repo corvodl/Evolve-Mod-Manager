@@ -85,14 +85,12 @@ fn png_relative_path(relative: &str) -> Result<PathBuf, String> {
         else if lower.ends_with(".dds") { 4 }
         else { return Err(format!("Unsupported texture conversion: {relative}")); };
     let base = &relative[..relative.len() - suffix];
-    let mut result = PathBuf::from(format!("{base}.png"));
+    let result = PathBuf::from(format!("{base}.png"));
     // All path components are still validated as indexed relative paths.
     relative_path(&result.to_string_lossy())?;
     if result.extension().is_none_or(|e| !e.eq_ignore_ascii_case("png")) {
         return Err("External texture must be a PNG".into());
     }
-    // Avoid a warning about mutable path; conversion never changes source.
-    result.shrink_to_fit();
     let _ = path;
     Ok(result)
 }

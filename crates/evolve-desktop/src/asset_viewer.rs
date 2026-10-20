@@ -49,6 +49,7 @@ fn dropdown(state: &State) -> Option<Element<'_, Message>> {
     let content: Element<'_, Message> = match state.viewer_menu? {
         "File" => column![
             design::button("Inspect original PAK").on_press(Message::MenuCommand(Box::new(Message::StartPakInspection))),
+            design::button("Export…").on_press(Message::ExportOpen),
             design::button("Export selected DDS → PNG").on_press(Message::MenuCommand(Box::new(Message::StartPngExport))),
             design::button("Save viewer layout").on_press(Message::MenuCommand(Box::new(Message::ViewerSaveLayout))),
         ].spacing(3).into(),
@@ -810,6 +811,75 @@ fn explorer(state: &State) -> Element<'_, Message> {
     .into()
 }
 
+fn export_dialog(state: &State) -> Element<'_, Message> {
+    let mut picker = column![].spacing(3);
+    let filter = state.export_filter.to_ascii_lowercase();
+    if let Some(inventory) = &state.inventory {
+        for (index, item) in inventory.entries.iter().enumerate()
+            .filter(|(_, e)| super::exportable_asset(&e.relative_path))
+            .filter(|(_, e)| filter.is_empty() || e.relative_path.to_ascii_lowercase().contains(&filter))
+            .take(80)
+        {
+            let selected = state.export_selected.contains(&index);
+            picker = picker.push(
+                design::button(text(format!("{} {}", if selected { "☑" } else { "☐" },
+                    item.relative_path)).size(11))
+                    .on_press(Message::ExportToggleFile(index))
+                    .style(design::text_button)
+                    .width(Fill)
+            );
+        }
+    }
+    let flags = row![
+        design::button(if state.export_rigged { "☑ Rigged" } else { "☐ Rigged" })
+            .on_press(Message::ExportToggleRigged),
+        design::button(if state.export_embed_textures { "☑ Embedded textures" } else { "☐ Embedded textures" })
+            .on_press(Message::ExportToggleEmbedded),
+        design::button(if state.export_dependencies { "☑ Export dependencies" } else { "☐ Export dependencies" })
+            .on_press(Message::ExportToggleDependencies),
+    ].spacing(5);
+    column![
+        row![
+            text("Export models and assemblies").size(17),
+            iced::widget::space().width(Fill),
+            design::button("✕").on_press(Message::ExportClose),
+        ].spacing(8),
+        text(format!("{} selected — Ctrl/Shift selections from Files are included when opened.",
+            state.export_selected.len())).size(11).style(design::muted),
+        design::text_input("Filter indexed meshes and CDF assemblies…", &state.export_filter)
+            .on_input(Message::ExportFilterChanged),
+        scrollable(picker).height(Length::Fixed(132.0)),
+        flags,
+        design::text_input("Existing absolute parent folder (e.g. C:\\Exports)", &state.export_parent)
+            .on_input(Message::ExportParentChanged),
+        design::text_input("New export folder name (e.g. Scorpid)", &state.export_folder_name)
+            .on_input(Message::ExportFolderChanged),
+        design::text_input("Blender executable (.exe)", &state.blender_path)
+            .on_input(Message::BlenderChanged),
+        if state.export_rigged {
+            Element::from(column![
+                design::text_input("Standalone skeleton path (CDF finds its own)", &state.skeleton_path)
+                    .on_input(Message::SkeletonChanged),
+                design::button(if state.export_include_animation {
+                    "☑ Include verified CAF" } else { "☐ Include verified CAF" })
+                    .on_press(Message::ViewerToggleExportAnimations),
+                design::text_input("Exact CAF path (optional)", &state.caf_path)
+                    .on_input(Message::CafInputChanged),
+            ].spacing(4))
+        } else {
+            Element::from(text("Static FBX preserves source mesh geometry and UV0.").size(11))
+        },
+        text("Files: <name>/<model>.fbx · dependencies: <name>/textures/*.png and <name>/dependencies/…")
+            .size(11).style(design::muted),
+        row![
+            design::button("Export").on_press_maybe(
+                (!state.busy && !state.export_selected.is_empty())
+                    .then_some(Message::ExportBegin)),
+            design::button("Cancel").on_press(Message::ExportClose),
+        ].spacing(10),
+    ].spacing(7).into()
+}
+
 pub(super) fn view(state: &State) -> Element<'_, Message> {
     let readonly = if state.viewer_from_library {
         "Read-only"
@@ -886,17 +956,17 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         background: Some(Background::Color(theme.palette().background)),
         ..container::Style::default()
     });
-    crate::menu_popup::overlay(
-        base,
-        dropdown(state),
-        dropdown_x(state.viewer_menu),
-        36.0,
-        if state.viewer_menu == Some("Model") {
-            460.0
-        } else {
-            310.0
-        },
-    )
+    if state.export_dialog_open {
+        crate::menu_popup::overlay(base, Some(export_dialog(state)), 70.0, 55.0, 580.0)
+    } else {
+        crate::menu_popup::overlay(
+            base,
+            dropdown(state),
+            dropdown_x(state.viewer_menu),
+            36.0,
+            if state.viewer_menu == Some("Model") { 460.0 } else { 310.0 },
+        )
+    }
 }
 
 /// The narrow vertical separator is the only splitter control: drag it

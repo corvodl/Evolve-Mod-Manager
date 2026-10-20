@@ -173,6 +173,14 @@ struct State {
     auto_resource_note: String,
     auto_clip_filter: String,
     export_include_animation: bool,
+    export_dialog_open: bool,
+    export_selected: HashSet<usize>,
+    export_filter: String,
+    export_parent: String,
+    export_folder_name: String,
+    export_rigged: bool,
+    export_embed_textures: bool,
+    export_dependencies: bool,
     auto_idle_pending: Option<PathBuf>,
     auto_play_native_caf: bool,
     auto_material_pending: bool,
@@ -383,6 +391,7 @@ enum Operation {
     ),
     RiggedGlb(PathBuf, PathBuf, PathBuf),
     FlatCdfFbx(PathBuf, Inventory, PathBuf, PathBuf, Option<PathBuf>),
+    ExportBundle(Inventory, evolve_core::ExportBundleOptions),
     UnifiedCdfFbx(
         PathBuf,
         Inventory,
@@ -498,6 +507,7 @@ enum Completed {
     BoundCdfCafPreview(PathBuf, Box<VerifiedCafAssembly>),
     RiggedExport(RigReport, PathBuf),
     FlatCdfFbxExport(FlatCdfFbxReport, PathBuf),
+    BundleExported(evolve_core::ExportBundleReport),
     UnifiedCdfFbxExport(UnifiedCdfFbxReport, PathBuf),
     MotionConverted(ConvertedMotion, PathBuf),
     DbaConverted(ConvertedMotion, PathBuf, Arc<tempfile::TempDir>),
@@ -633,6 +643,9 @@ impl Operation {
                 export_rigged_character_glb(&mesh, &skeleton, &dest)
                     .map(|r| Completed::RiggedExport(r, dest))
                     .map_err(|e| e.to_string())
+            }
+            Self::ExportBundle(inventory, options) => {
+                evolve_core::export_bundle(&inventory, &options).map(Completed::BundleExported)
             }
             Self::FlatCdfFbx(source, inventory, blender, destination, caf) => {
                 let report = export_flat_cdf_parts_fbx(
@@ -1251,6 +1264,16 @@ enum Message {
     ViewerAutoClip(usize),
     ViewerAutoClipFilter(String),
     ViewerToggleExportAnimations,
+    ExportOpen,
+    ExportClose,
+    ExportFilterChanged(String),
+    ExportParentChanged(String),
+    ExportFolderChanged(String),
+    ExportToggleFile(usize),
+    ExportToggleRigged,
+    ExportToggleEmbedded,
+    ExportToggleDependencies,
+    ExportBegin,
     ViewerPreviewStaticCdf,
     ViewerOpenStaticCdf(usize),
     StartDependencyInspection,
@@ -1594,6 +1617,13 @@ fn restore_level_history(state: &mut State, undo: bool) {
             state.status = "Cannot restore level history; reload the level source.".into();
         }
     }
+}
+
+fn exportable_asset(relative: &str) -> bool {
+    let lower = relative.to_ascii_lowercase();
+    lower.ends_with(".cdf") ||
+        [".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cgfm", ".cga", ".cgam"]
+            .iter().any(|ext| lower.ends_with(ext))
 }
 
 fn launch(state: &mut State, operation: Operation) -> Task<Message> {
@@ -3168,6 +3198,100 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ViewerToggleExportAnimations => {
             state.export_include_animation = !state.export_include_animation;
         }
+        Message::ExportOpen => {
+            state.viewer_menu = None;
+            state.export_dialog_open = true;
+            state.export_selected = state.file_selection.indices.iter().copied()
+                .filter(|index| {
+                    state.inventory.as_ref().and_then(|inv| inv.entries.get(*index))
+                        .is_some_and(|item| exportable_asset(&item.relative_path))
+                }).collect();
+            if state.export_selected.is_empty() {
+                if let Some(index) = state.selected {
+                    if state.inventory.as_ref().and_then(|inv| inv.entries.get(index))
+                        .is_some_and(|item| exportable_asset(&item.relative_path)) {
+                        state.export_selected.insert(index);
+                    }
+                }
+            }
+            state.status = "Select models/assemblies and export settings. Originals remain read-only.".into();
+        }
+        Message::ExportClose => {
+            state.export_dialog_open = false;
+        }
+        Message::ExportFilterChanged(value) => state.export_filter = value,
+        Message::ExportParentChanged(value) => state.export_parent = value,
+        Message::ExportFolderChanged(value) => state.export_folder_name = value,
+        Message::ExportToggleFile(index) => {
+            let eligible = state.inventory.as_ref().and_then(|inv| inv.entries.get(index))
+                .is_some_and(|item| exportable_asset(&item.relative_path));
+            if eligible {
+                if !state.export_selected.remove(&index) && state.export_selected.len() < 64 {
+                    state.export_selected.insert(index);
+                }
+            }
+        }
+        Message::ExportToggleRigged => state.export_rigged = !state.export_rigged,
+        Message::ExportToggleEmbedded => state.export_embed_textures = !state.export_embed_textures,
+        Message::ExportToggleDependencies => {
+            state.export_dependencies = !state.export_dependencies;
+        }
+        Message::ExportBegin => {
+            if state.busy {
+                state.status = "Finish the current operation before exporting.".into();
+                return Task::none();
+            }
+            let Some(inventory) = state.inventory.clone() else {
+                state.status = "Index a character/asset folder before exporting.".into();
+                return Task::none();
+            };
+            let name = state.export_folder_name.trim();
+            if name.is_empty() || name == "." || name == ".."
+                || name.chars().any(|ch| ch.is_control() || r#"<>:"/\\|?*"#.contains(ch))
+                || name.ends_with('.') || name.ends_with(' ')
+            {
+                state.status = "Use a single valid Windows export-folder name.".into();
+                return Task::none();
+            }
+            let parent = PathBuf::from(state.export_parent.trim());
+            if !parent.is_absolute() || !parent.is_dir() {
+                state.status = "Choose an existing absolute parent folder for exports.".into();
+                return Task::none();
+            }
+            if state.blender_path.trim().is_empty() {
+                state.status = "Select an installed Blender executable before FBX export.".into();
+                return Task::none();
+            }
+            let mut indices = state.export_selected.iter().copied().collect::<Vec<_>>();
+            indices.sort_unstable();
+            let selected = indices.into_iter()
+                .filter_map(|i| inventory.entries.get(i).map(|e| e.relative_path.clone()))
+                .filter(|p| exportable_asset(p)).collect::<Vec<_>>();
+            if selected.is_empty() || selected.len() > 64 {
+                state.status = "Select 1 to 64 source models or CDF assemblies.".into();
+                return Task::none();
+            }
+            let cdf = selected.len() == 1 && selected[0].to_ascii_lowercase().ends_with(".cdf");
+            let original = parent.join(name);
+            let options = evolve_core::ExportBundleOptions {
+                destination: original,
+                selected,
+                blender: PathBuf::from(&state.blender_path),
+                skeleton: (!state.skeleton_path.trim().is_empty())
+                    .then(|| PathBuf::from(&state.skeleton_path)),
+                diffuse: (!state.diffuse_input.trim().is_empty())
+                    .then(|| PathBuf::from(&state.diffuse_input)),
+                caf: (state.export_include_animation && !state.caf_path.trim().is_empty())
+                    .then(|| PathBuf::from(&state.caf_path)),
+                rigged: state.export_rigged,
+                embed_textures: state.export_embed_textures,
+                export_dependencies: state.export_dependencies,
+                equipment: if cdf { state.equipment_overrides.clone() }
+                    else { EquipmentOverrides::new() },
+            };
+            state.export_dialog_open = false;
+            return launch(state, Operation::ExportBundle(inventory, options));
+        }
         Message::ViewerAutoClip(index) => {
             let Some(clip) = state.auto_clips.get(index) else {
                 return Task::none();
@@ -4612,6 +4736,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         destination.display()
                     );
                     state.page = Some(Page::Models);
+                }
+                Ok(Completed::BundleExported(result)) => {
+                    state.status = format!(
+                        "Exported {} FBX files, {} PNG textures and {} other dependencies into {}. {}",
+                        result.exported.len(), result.png_textures, result.other_dependencies,
+                        result.destination.display(), result.warnings.join(" | ")
+                    );
                 }
                 Ok(Completed::RiggedExport(info, target)) => {
                     state.status = format!(
@@ -6058,6 +6189,8 @@ fn initial_state() -> State {
     let mut result = State {
         zoom: 1.0,
         playback_speed: 1.0,
+        export_rigged: true,
+        export_embed_textures: true,
         viewer_split: 0.67,
         level_zoom: 1.0,
         light_strength: 1.0,
