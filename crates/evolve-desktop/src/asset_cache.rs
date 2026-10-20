@@ -387,6 +387,83 @@ mod tests {
         assert_eq!(detect_source_layout(&file).unwrap(), DdsLayout::Linear);
     }
 
+    fn rgba_header(width: u32, height: u32, mips: u32, cube: bool) -> Vec<u8> {
+        let mut bytes = vec![0u8; 128];
+        bytes[..4].copy_from_slice(b"DDS ");
+        bytes[4..8].copy_from_slice(&124u32.to_le_bytes());
+        bytes[8..12].copy_from_slice(&(0x1007u32 | if mips > 1 {0x20000} else {0}).to_le_bytes());
+        bytes[12..16].copy_from_slice(&height.to_le_bytes());
+        bytes[16..20].copy_from_slice(&width.to_le_bytes());
+        bytes[28..32].copy_from_slice(&mips.to_le_bytes());
+        bytes[76..80].copy_from_slice(&32u32.to_le_bytes());
+        bytes[80..84].copy_from_slice(&0x41u32.to_le_bytes());
+        bytes[88..92].copy_from_slice(&32u32.to_le_bytes());
+        for (at, mask) in [(92, 0x00ff0000u32), (96, 0x0000ff00), (100, 0x000000ff), (104, 0xff000000)] {
+            bytes[at..at + 4].copy_from_slice(&mask.to_le_bytes());
+        }
+        bytes[108..112].copy_from_slice(&0x1000u32.to_le_bytes());
+        if cube { bytes[112..116].copy_from_slice(&0xfe00u32.to_le_bytes()); }
+        bytes
+    }
+
+    #[test]
+    fn six_face_cubemap_is_displayed_as_color_preserving_image_atlas() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut texture = rgba_header(4, 4, 1, true);
+        for face in 0u8..6 {
+            for _ in 0..16 { texture.extend_from_slice(&[0, 0, 40 + face * 25, 255]); }
+        }
+        let file = temp.path().join("environment.dds.0");
+        fs::write(&file, texture).unwrap();
+        let (info, atlas) = decode_preview_image(&file, DdsLayout::Linear).unwrap();
+        assert_eq!((info.width, info.height), (12, 8));
+        assert_eq!(atlas.get_pixel(0, 0).0, [40, 0, 0, 255]);
+        assert_eq!(atlas.get_pixel(8, 4).0, [165, 0, 0, 255]);
+    }
+
+    #[test]
+    fn high_mip_in_another_imported_pak_uses_exact_build_and_low_header() {
+        let library = tempfile::tempdir().unwrap();
+        let ids = ["11111111111111111111", "22222222222222222222"];
+        let names = ["dds_low.pak", "dds_high.pak"];
+        let virtual_path = "objects/characters/monsters/scorpid_2/scorpid_body.dds";
+        let mut hdr = rgba_header(8, 8, 2, false);
+        for _ in 0..16 { hdr.extend_from_slice(&[0, 255, 0, 255]); }
+        let high = [255u8, 0, 0, 255].repeat(64);
+        let mut low_path = None;
+        for i in 0..2 {
+            let base = library.path().join(format!("{}__{}", names[i], ids[i]));
+            let member = format!("{virtual_path}.{}", i);
+            let dest = base.join("files").join(&member);
+            fs::create_dir_all(dest.parent().unwrap()).unwrap();
+            fs::write(&dest, if i == 0 {&hdr} else {&high}).unwrap();
+            fs::write(
+                base.join("asset-library.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version":1, "name":names[i], "source":"/original",
+                    "entries":[{"path":member,"bytes":if i == 0 {hdr.len()} else {high.len()}}]
+                })).unwrap(),
+            ).unwrap();
+            if i == 0 {low_path = Some(dest);}
+        }
+        fs::write(library.path().join("build-collections.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version":1,"builds":{"legacy":{"label":"Legacy 2012",
+                "members":{ids[0]:{},ids[1]:{}}}}
+            })).unwrap(),
+        ).unwrap();
+        let source = low_path.unwrap();
+        let inventory = evolve_core::scan_directory(source.parent().unwrap().parent().unwrap().parent().unwrap().parent().unwrap()).unwrap();
+        let cache = Arc::new(Mutex::new(PreviewCache::default()));
+        let (info, image) = decoded_dds_indexed(
+            &cache, &source, &format!("{virtual_path}.0"),
+            &inventory, Some(library.path()), Some("Legacy 2012")
+        ).unwrap();
+        assert_eq!((info.width, info.height), (8, 8));
+        assert_eq!(image.get_pixel(0, 0).0, [0, 0, 255, 255]);
+        assert_eq!(info.streaming_parts, 2);
+    }
+
     #[test]
     fn cache_reuses_arc_and_expires_when_source_changes() {
         let temp = tempfile::tempdir().unwrap();
