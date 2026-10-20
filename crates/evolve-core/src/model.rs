@@ -448,7 +448,7 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
 /// paint every triangle with slot zero or guess equipment material IDs.
 pub fn has_original_mesh_subset_table(data: &[u8]) -> Result<bool, ModelError> {
     let (_format, _version, chunks) = validate_chunks(data)?;
-    Ok(chunks.iter().any(|(kind, _, _, _)| *kind == 0x08001017))
+    Ok(chunks.iter().any(|(kind, _, _, _)| matches!(kind, 0x08001017 | 0xCCCC0017)))
 }
 
 /// Verified CryEngine CrChF v7 triangle ranges and the source MTL leaf ID.
@@ -463,23 +463,49 @@ pub fn original_mesh_subsets(
         return Err(ModelError::Limits);
     }
     let (format, _, chunks) = validate_chunks(data)?;
-    let mut sources = chunks.iter().filter(|(kind, _, _, _)| *kind == 0x08001017);
+    let legacy = format.starts_with("CryTek");
+    let subset_kind = if legacy { 0xCCCC0017 } else { 0x08001017 };
+    let mut sources = chunks.iter().filter(|(kind, _, _, _)| *kind == subset_kind);
     let Some((_, offset, size, _)) = sources.next() else {
         return Ok(vec![(0, index_count as u32, 0)]);
     };
-    if sources.next().is_some() || !format.starts_with("CrChF") || *size < 16 {
-        return Err(ModelError::Format(
-            "ambiguous or unsupported subset table".into(),
-        ));
+    if sources.next().is_some() {
+        return Err(ModelError::Format("ambiguous original subset table".into()));
     }
-    let count = u32at(data, *offset + 4)? as usize;
-    if !(1..=128).contains(&count) || 16usize.checked_add(count * 36).is_none_or(|n| n > *size) {
+    // Historical CryTek 0x745 sections carry their own kind/version/offset/id
+    // header, then flags and count at +16/+20 and 36-byte subset records
+    // starting at +32. CrChF v7 has a different 16-byte table layout.
+    let (count, row_offset) = if legacy {
+        if *size < 68
+            || u32at(data, *offset)? != subset_kind
+            || u32at(data, *offset + 4)? != 0x800
+            || u32at(data, *offset + 8)? as usize != *offset
+        {
+            return Err(ModelError::Format("unsupported historical CryTek subset header".into()));
+        }
+        let flags = u32at(data, *offset + 16)?;
+        if !matches!(flags, 0 | 2)
+            || u32at(data, *offset + 24)? != 0
+            || u32at(data, *offset + 28)? != 0
+        {
+            return Err(ModelError::Format("unknown historical subset flags".into()));
+        }
+        (u32at(data, *offset + 20)? as usize, 32usize)
+    } else {
+        if *size < 16 {
+            return Err(ModelError::Format("truncated CrChF subset table".into()));
+        }
+        (u32at(data, *offset + 4)? as usize, 16usize)
+    };
+    if !(1..=128).contains(&count)
+        || row_offset.checked_add(count * 36).is_none_or(|n| n > *size)
+    {
         return Err(ModelError::Limits);
     }
     let mut result = Vec::with_capacity(count + 1);
     let mut cursor = 0usize;
     for row in 0..count {
-        let at = *offset + 16 + row * 36;
+        let at = *offset + row_offset + row * 36;
         let first = u32at(data, at)? as usize;
         let n = u32at(data, at + 4)? as usize;
         let material = u32at(data, at + 16)?;
@@ -494,8 +520,23 @@ pub fn original_mesh_subsets(
                 "source mesh subset geometry/material ranges are invalid".into(),
             ));
         }
+        if legacy {
+            let first_vertex = u32at(data, at + 8)? as usize;
+            let vertex_count = u32at(data, at + 12)? as usize;
+            let nv = parse_model_bytes(data)?.positions.len();
+            if first_vertex.checked_add(vertex_count).is_none_or(|end| end > nv) {
+                return Err(ModelError::Format(
+                    "historical material subset has invalid vertex range".into(),
+                ));
+            }
+        }
         result.push((first as u32, n as u32, material));
         cursor += n;
+    }
+    if legacy && cursor != index_count {
+        return Err(ModelError::Format(
+            "historical subset index coverage is incomplete".into(),
+        ));
     }
     if cursor < index_count {
         result.push((cursor as u32, (index_count - cursor) as u32, 255));
@@ -646,6 +687,41 @@ pub(crate) mod tests {
             data.extend_from_slice(&(id as u32).to_le_bytes());
         }
         data
+    }
+
+    #[test]
+    fn historical_crytek_subsets_preserve_nonzero_material_slots() {
+        // Synthetic 0x745 geometry with authored legacy material index 10,
+        // mirroring old NoDraw skeleton leaves before a visible body.
+        let mut bytes = legacy_2012_fixture();
+        let old_table = u32::from_le_bytes(bytes[16..20].try_into().unwrap()) as usize;
+        bytes.truncate(old_table);
+        let offset = bytes.len();
+        let mut subset = vec![0u8; 68];
+        subset[..4].copy_from_slice(&0xCCCC0017u32.to_le_bytes());
+        subset[4..8].copy_from_slice(&0x800u32.to_le_bytes());
+        subset[8..12].copy_from_slice(&(offset as u32).to_le_bytes());
+        subset[12..16].copy_from_slice(&99u32.to_le_bytes());
+        subset[16..20].copy_from_slice(&2u32.to_le_bytes());
+        subset[20..24].copy_from_slice(&1u32.to_le_bytes());
+        subset[36..40].copy_from_slice(&3u32.to_le_bytes());
+        subset[44..48].copy_from_slice(&3u32.to_le_bytes());
+        subset[48..52].copy_from_slice(&10u32.to_le_bytes());
+        bytes.extend_from_slice(&subset);
+        let table = bytes.len();
+        bytes[16..20].copy_from_slice(&(table as u32).to_le_bytes());
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        let mut old = legacy_2012_fixture();
+        old.drain(..old_table + 4);
+        bytes.extend_from_slice(&old[..3 * 16]);
+        bytes.extend_from_slice(&0xCCCC0017u32.to_le_bytes());
+        bytes.extend_from_slice(&0x800u32.to_le_bytes());
+        bytes.extend_from_slice(&(offset as u32).to_le_bytes());
+        bytes.extend_from_slice(&99u32.to_le_bytes());
+        assert!(has_original_mesh_subset_table(&bytes).unwrap());
+        assert_eq!(original_mesh_subsets(&bytes, 3).unwrap(), vec![(0, 3, 10)]);
+        bytes[offset + 48] = 200;
+        assert!(original_mesh_subsets(&bytes, 3).is_err());
     }
 
     #[test]
