@@ -218,6 +218,10 @@ pub fn decoded_dds_indexed(
 /// This is a preview, not a reinterpretation of the game's original bytes.
 /// Face-major complete DDS and mip-major split DDS sets are both supported.
 fn decode_preview_image(path: &Path, layout: DdsLayout) -> Result<(DdsInfo, RgbaImage), String> {
+    let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if !metadata.file_type().is_file() || metadata.len() > 256 * 1024 * 1024 {
+        return Err("DDS is not a bounded regular source file".into());
+    }
     let bytes = fs::read(path).map_err(|e| e.to_string())?;
     if bytes.len() < 128 || &bytes[..4] != b"DDS " {
         return Err("DDS header missing; import the matching low-mip archive".into());
@@ -449,7 +453,7 @@ mod tests {
         fs::write(library.path().join("build-collections.json"),
             serde_json::to_vec(&serde_json::json!({
                 "version":1,"builds":{"legacy":{"label":"Legacy 2012",
-                "members":{ids[0]:{},ids[1]:{}}}}
+                "members":{"11111111111111111111":{},"22222222222222222222":{}}}}
             })).unwrap(),
         ).unwrap();
         let source = low_path.unwrap();
