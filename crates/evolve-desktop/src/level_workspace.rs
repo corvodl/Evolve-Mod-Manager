@@ -313,9 +313,8 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 &state.level_edit_output
             )
             .on_input(Message::LevelEditOutputChanged),
-            button("Export edited level copy").on_press_maybe(
-                (state.level_dirty_count > 0).then_some(Message::LevelExportEdits)
-            ),
+            button("Export edited level copy")
+                .on_press_maybe((state.level_dirty_count > 0).then_some(Message::LevelExportEdits)),
             text("Original level is read-only. Child world positions update in the preview.")
                 .size(12)
                 .color(MUTED),
