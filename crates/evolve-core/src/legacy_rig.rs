@@ -9,6 +9,9 @@ const MAX_BONES: usize = 1024;
 const BONE: u32 = 0xACDC0000;
 const STREAM: u32 = 0xCCCC0016;
 const SUBSETS: u32 = 0xCCCC0017;
+// A historical source-control path chunk holds raw NUL-terminated text,
+// not the usual embedded 16-byte binary chunk header.
+const SOURCE_PATH: u32 = 0xCCCC0013;
 const RECORD: usize = 584;
 
 #[derive(Clone, Copy)]
@@ -113,12 +116,27 @@ fn chunks(data: &[u8]) -> Result<Vec<Chunk<'_>>, RigError> {
         } else {
             offset < table && upper <= table
         };
+        // In the original 2012 assets, SOURCE_PATH/version 0 is literal
+        // NUL-terminated build path text (e.g. D:\\TRS_Perforce\\...),
+        // not an embedded CryTek chunk. The private reader validates
+        // embedded identities only for BONE, STREAM and SUBSETS. Keep
+        // the header check for every OTHER chunk while bounding this
+        // known metadata record and requiring its text terminator.
+        let source_path_metadata = kind == SOURCE_PATH && version == 0;
+        let metadata_valid = source_path_metadata
+            && upper - offset <= 4096
+            && data[offset..upper].contains(&0);
+        let embedded_header_valid = data.get(offset..offset + 4) == Some(&kind.to_le_bytes())
+            && u32_at(data, offset + 4)? == version
+            && u32_at(data, offset + 8)? as usize == offset
+            && u32_at(data, offset + 12)? == id;
         if upper < offset + 16
             || !valid_region
-            || data.get(offset..offset + 4) != Some(&kind.to_le_bytes())
-            || u32_at(data, offset + 4)? != version
-            || u32_at(data, offset + 8)? as usize != offset
-            || u32_at(data, offset + 12)? != id
+            || !(if source_path_metadata {
+                metadata_valid
+            } else {
+                embedded_header_valid
+            })
         {
             return Err(invalid("Historical bone/stream chunk table mismatch"));
         }
@@ -699,6 +717,45 @@ mod tests {
         let id = u32_at(&original, table + 4 + 12).unwrap();
         put_u32(&mut original, table + 4 + 12, id + 900);
         assert!(parse_legacy_skeleton(&original).is_err());
+    }
+
+    /// Original Scorpid3.chr has a header-first five-dword directory whose
+    /// first 0xCCCC0013 / version 0 record is plain source-control path text.
+    /// The genuine original skeleton, weight and subset chunks follow it.
+    #[test]
+    fn original_2012_source_path_metadata_does_not_break_rig_export() {
+        let body = sample_body();
+        let table = u32_at(&body, 16).unwrap() as usize;
+        let count = u32_at(&body, table).unwrap() as usize;
+        let mut sections = vec![(SOURCE_PATH, vec![0u8; 160])];
+        for index in 0..count {
+            let at = table + 4 + 20 * index;
+            let kind = u32_at(&body, at).unwrap();
+            let offset = u32_at(&body, at + 8).unwrap() as usize;
+            let size = u32_at(&body, at + 16).unwrap() as usize;
+            sections.push((kind, body[offset..offset + size].to_vec()));
+        }
+        let mut with_path = initial_five_directory(original_container(sections));
+        let path_at = u32_at(&with_path, 24 + 8).unwrap() as usize;
+        let path = b"D:\\TRS_Perforce\\TRS\\Production\\Objects\\Scorpid3.chr\0";
+        with_path[path_at..path_at + path.len()].copy_from_slice(path);
+        // Source path chunk is raw text, not the kind/version/offset/id header.
+        assert_ne!(u32_at(&with_path, path_at).unwrap(), SOURCE_PATH);
+        let master = initial_five_directory(original_container(vec![(BONE, sample_bones())]));
+        let (skeleton, weights) = read_legacy_skin(&with_path, &master, 3).unwrap();
+        assert_eq!(skeleton.names, ["root", "arm"]);
+        assert_eq!(weights.joint_ids[1][0], 1);
+        assert_eq!(weights.weight_bytes[1][0], 255);
+
+        // A forged embedded identity in an actual rig chunk still fails.
+        let mut forged = with_path.clone();
+        let bone_at = u32_at(&forged, 24 + 20 + 8).unwrap() as usize;
+        put_u32(&mut forged, bone_at + 12, 999);
+        assert!(read_legacy_skin(&forged, &master, 3).is_err());
+
+        // An unterminated raw source path is not an acceptable exception.
+        with_path[path_at..path_at + 160].fill(b'X');
+        assert!(read_legacy_skin(&with_path, &master, 3).is_err());
     }
 
     #[test]
