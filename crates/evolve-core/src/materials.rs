@@ -147,6 +147,7 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
     reader.config_mut().trim_text(true);
     let mut parents: Vec<Vec<u8>> = Vec::new();
     let mut slots: Vec<MaterialSlot> = Vec::new();
+    let mut nonleaf: Vec<bool> = Vec::new();
     let mut material_indices: Vec<(usize, usize)> = Vec::new();
     let mut root_seen = false;
     loop {
@@ -175,11 +176,15 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                     let name =
                         attr(&node, b"Name")?.unwrap_or_else(|| format!("Material{}", slots.len()));
                     let shader = attr(&node, b"Shader")?.unwrap_or_default();
+                    if let Some((_, parent)) = material_indices.last() {
+                        nonleaf[*parent] = true;
+                    }
                     slots.push(MaterialSlot {
                         name,
                         shader,
                         maps: Vec::new(),
                     });
+                    nonleaf.push(false);
                     material_indices.push((parents.len() + 1, slots.len() - 1));
                 } else if tag.eq_ignore_ascii_case(b"Texture")
                     && parents
@@ -222,6 +227,15 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
     }
     if !root_seen || !parents.is_empty() || slots.is_empty() {
         return Err(MaterialError::Xml("No complete CryEngine materials".into()));
+    }
+    // Source subset IDs address the flattened material leaves, not their
+    // parent multi-material container. Keeping the container in slot zero
+    // previously shifted every character equipment/emission map by one.
+    let slots = slots.into_iter().enumerate()
+        .filter_map(|(index, slot)| (!nonleaf[index]).then_some(slot))
+        .collect::<Vec<_>>();
+    if slots.is_empty() {
+        return Err(MaterialError::Xml("Material has no leaf slots".into()));
     }
     Ok(MaterialDocument { schema: 1, slots })
 }
@@ -364,5 +378,22 @@ mod tests {
             report.textures[0].resolution,
             AssetResolution::Ambiguous(_)
         ));
+    }
+}
+
+#[cfg(test)]
+mod leaf_slot_tests {
+    use super::*;
+    #[test]
+    fn original_multi_material_leaf_order_matches_subset_indices() {
+        let xml = br#"<Material Name="root"><SubMaterials>
+            <Material Name="body"><Textures><Texture Map="Diffuse" File="characters/body.dds"/></Textures></Material>
+            <Material Name="equipment"><Textures><Texture Map="Emittance" File="characters/glow.dds"/></Textures></Material>
+            </SubMaterials></Material>"#;
+        let parsed = parse_material(xml).unwrap();
+        assert_eq!(parsed.slots.len(),2);
+        assert_eq!(parsed.slots[0].name,"body");
+        assert_eq!(parsed.slots[1].name,"equipment");
+        assert_eq!(parsed.slots[1].maps[0].role,"emittance");
     }
 }
