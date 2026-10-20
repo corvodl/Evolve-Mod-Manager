@@ -9,6 +9,7 @@ mod design;
 mod developer_auth;
 mod explorer_tree;
 mod level_workspace;
+mod launcher_bridge;
 mod modding_keys;
 mod modding_page;
 mod modding_projects;
@@ -26,6 +27,7 @@ mod view_navigation;
 mod viewer_inspector;
 mod viewport;
 use asset_cache::{SharedCache, decoded_dds};
+use launcher_bridge::{LaunchReady, inspect_existing_launcher, launch_existing_offline_client};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph,
@@ -356,6 +358,8 @@ enum Operation {
     ResignSignedPak(PathBuf, PathBuf, PathBuf, PathBuf, String, PathBuf),
     PrepareClientHook(PathBuf, PathBuf, PathBuf, PathBuf),
     VerifySignedHookPair(PathBuf, PathBuf, PathBuf, PathBuf, PathBuf, PathBuf, String),
+    CheckExistingOfflineLauncher(PathBuf, PathBuf),
+    StartExistingOfflineLauncher(PathBuf, PathBuf),
     RebuildSignedPak(
         PathBuf,
         PathBuf,
@@ -435,6 +439,8 @@ enum Completed {
     ResignedSignedPak(SignedPakInfo, PathBuf),
     HookPrepared(HookPairReport, PathBuf),
     SignedHookPreflight(PakHookPairReport),
+    OfflineLauncherReady(LaunchReady),
+    OfflineLauncherStarted(usize, u32),
     ExtractedSigned(usize, PathBuf),
     RebuiltSigned(String, PathBuf),
     LevelExported(usize, usize, PathBuf),
@@ -942,6 +948,16 @@ impl Operation {
                     .map(Completed::ProfilePlanned)
                     .map_err(|e| e.to_string())
             }
+            Self::CheckExistingOfflineLauncher(stage, swap) => {
+                let report = inspect_existing_launcher(&stage, &swap)?;
+                Ok(Completed::OfflineLauncherReady(report))
+            }
+            Self::StartExistingOfflineLauncher(stage, swap) => {
+                let report = inspect_existing_launcher(&stage, &swap)?;
+                let count = report.archive_count;
+                let id = launch_existing_offline_client(&report)?;
+                Ok(Completed::OfflineLauncherStarted(count, id))
+            }
             Self::StageInit(root) => {
                 initialize_stage(&root).map_err(|e| e.to_string())?;
                 Ok(Completed::StageInitialized(root))
@@ -1111,6 +1127,8 @@ enum Message {
     StartStageImport,
     StartStageApply,
     StartStageRestore,
+    StartOfflineLauncherCheck,
+    StartOfflineLauncherLaunch,
     ProfileNameChanged(String),
     SelectProfile(String),
     StartProfileList,
@@ -3236,6 +3254,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 ),
             );
         }
+        Message::StartOfflineLauncherCheck | Message::StartOfflineLauncherLaunch => {
+            if state.preferences.stage.trim().is_empty()
+                || state.preferences.swap.trim().is_empty()
+            {
+                state.status =
+                    "Configure the private CustomSigning/staged and controlled-swap helper folders in Settings first.".into();
+                return Task::none();
+            }
+            let stage = PathBuf::from(&state.preferences.stage);
+            let swap = PathBuf::from(&state.preferences.swap);
+            if matches!(message, Message::StartOfflineLauncherCheck) {
+                return launch(state, Operation::CheckExistingOfflineLauncher(stage, swap));
+            }
+            return launch(state, Operation::StartExistingOfflineLauncher(stage, swap));
+        }
         Message::StartStageRestore => {
             if state.preferences.stage.trim().is_empty() {
                 state.status = "Specify the isolated staging workspace path.".into();
@@ -4479,6 +4512,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         destination.display(),
                         report.source_sha256,
                         report.custom_sha256,
+                    );
+                    state.page = Some(Page::Files);
+                }
+                Ok(Completed::OfflineLauncherReady(report)) => {
+                    state.status = format!(
+                        "Offline launcher preflight PASS: {} original/custom signed PAKs and matching inject.dll verified. Private swap state: {}. This does not establish a successful Evolve mount.",
+                        report.archive_count,
+                        if report.prepared { "prepared" } else { "needs preparation" }
+                    );
+                    state.page = Some(Page::Files);
+                }
+                Ok(Completed::OfflineLauncherStarted(count, id)) => {
+                    state.status = format!(
+                        "Started existing offline private launcher helper (PID {id}) for {count} signed PAKs + custom hook. Watch rust-launch-bridge.log and auto-restore.log in Swap folder; game mount and restoration NOT yet confirmed."
                     );
                     state.page = Some(Page::Files);
                 }
