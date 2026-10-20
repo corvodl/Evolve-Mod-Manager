@@ -123,26 +123,33 @@ def main():
         added = set(bpy.data.objects) - before
         arms = [o for o in added if o.type == "ARMATURE"]
         imported = actual_meshes(added, arms)
-        check(len(arms) == 1 and len(imported) == 1, "part must have one mesh and skeleton")
-        arm, mesh = arms[0], imported[0]
-        modifier, weighted, uv_bounds = verify_mesh(mesh, arm)
-        source_weighted_vertices += weighted
-        source_uv_bounds.append(uv_bounds)
-        append_uv_loops(mesh, source_uv_loops)
+        check(len(arms) == 1 and 1 <= len(imported) <= 128,
+              "part has no original rig or too many material fragments")
+        arm = arms[0]
         if master is None:
             master = arm
         else:
             same_skeleton(master, arm)
-            matrix = mesh.matrix_world.copy()
-            modifier.object = master
-            if mesh.parent == arm:
-                mesh.parent = master
-                mesh.matrix_world = matrix
+        for sub, mesh in enumerate(sorted(imported, key=lambda item: item.name)):
+            modifier, weighted, uv_bounds = verify_mesh(mesh, arm)
+            source_weighted_vertices += weighted
+            source_uv_bounds.append(uv_bounds)
+            append_uv_loops(mesh, source_uv_loops)
+            if master != arm:
+                matrix = mesh.matrix_world.copy()
+                modifier.object = master
+                if mesh.parent == arm:
+                    mesh.parent = master
+                    mesh.matrix_world = matrix
+            # Multi-material glTF import may create multiple source fragments.
+            # Keep all of them bound to the verified common original armature.
+            mesh.name = name if len(imported) == 1 else f"{name}_material_{sub:03}"
+            meshes.append(mesh)
+        if master != arm:
             bpy.data.objects.remove(arm, do_unlink=True)
-        mesh.name = name
-        meshes.append(mesh)
 
-    check(master is not None and len(meshes) == len(parts), "incomplete assembly")
+    check(master is not None and len(meshes) >= len(parts), "incomplete assembly")
+    check(len(meshes) <= 1024, "unbounded material fragment count")
     bone_count = len(master.data.bones)
     source_hierarchy = {
         bone.name: (bone.parent.name if bone.parent else None)
@@ -182,6 +189,7 @@ def main():
     check(source_hierarchy == target_hierarchy,
           "FBX round-trip changed the original bone hierarchy")
     check(len(result_meshes) >= len(parts), "round-trip lost character parts")
+    check(len(result_meshes) <= 2048, "round-trip produced unbounded material fragments")
     if animate:
         check(bool(bpy.data.actions), "FBX round-trip lost the verified CAF Action")
     imported_weighted_vertices = 0
