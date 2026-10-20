@@ -317,6 +317,17 @@ fn exact_single_slot_maps(
     Ok(maps)
 }
 
+/// Resolve a standalone rig's diffuse through its exact indexed author MTL.
+/// A missing or ambiguous source is not replaced with a same-named texture
+/// from a different character or archive.
+pub(crate) fn standalone_authored_diffuse(
+    root: &Path,
+    mesh_path: &Path,
+    inventory: &Inventory,
+) -> Result<Option<PathBuf>, String> {
+    exact_single_slot_maps(root, mesh_path, inventory, None).map(|maps| maps.diffuse)
+}
+
 /// Resolve authored CryEngine leaf maps for every original subset, including
 /// empty NoDraw leaves, without shifting indexes or borrowing a neighbor DDS.
 /// Distinct PNGs stay bound to the original material ID in Blender.
@@ -647,6 +658,11 @@ pub fn export_unified_cdf_fbx_options(
         fs::write(&staged, &glb).map_err(|e| e.to_string())?;
         entries.push(json!({"name":name,"source":staged}));
         labels.push(name.clone());
+    }
+    if embed_textures && diffuse_textured_parts == 0 {
+        return Err(
+            "Embedded textures requested, but no original character diffuse DDS was resolved. Import the matching source MTL and highest-resolution DDS into the indexed character assets; the FBX cannot be honestly labelled textured.".into(),
+        );
     }
     let manifest = work.path().join("parts.json");
     fs::write(
