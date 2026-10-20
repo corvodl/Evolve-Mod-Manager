@@ -235,10 +235,10 @@ fn original_model_material(
                     .to_ascii_lowercase()
                     .starts_with(&family.to_ascii_lowercase());
             if looks_owned {
-                if let Some((variant, _)) = stem.split_once('_') {
-                    if variant.len() >= family.len() {
-                        paths.push(format!("{parent}/{variant}.mtl"));
-                    }
+                if let Some((variant, _)) = stem.split_once('_')
+                    && variant.len() >= family.len()
+                {
+                    paths.push(format!("{parent}/{variant}.mtl"));
                 }
                 paths.push(format!("{parent}/{folder}.mtl"));
                 paths.push(format!("{parent}/{family}.mtl"));
