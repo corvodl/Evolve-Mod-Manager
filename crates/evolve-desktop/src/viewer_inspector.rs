@@ -169,31 +169,45 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 .spacing(3);
                 let verified_surfaces = state.cdf_surfaces.as_ref();
                 for (label, roles, loaded, subset_count) in [
-                    ("Diffuse", &["diffuse"][..], state.diffuse.is_some(),
-                        verified_surfaces.map_or(0, |parts| parts.iter().filter(|p| p.diffuse.is_some()).count())),
+                    (
+                        "Diffuse",
+                        &["diffuse"][..],
+                        state.diffuse.is_some(),
+                        verified_surfaces.map_or(0, |parts| {
+                            parts.iter().filter(|p| p.diffuse.is_some()).count()
+                        }),
+                    ),
                     (
                         "Normal",
                         &["normals", "normal", "bumpmap"][..],
                         state.normal_map.is_some(),
-                        verified_surfaces.map_or(0, |parts| parts.iter().filter(|p| p.normal.is_some()).count()),
+                        verified_surfaces.map_or(0, |parts| {
+                            parts.iter().filter(|p| p.normal.is_some()).count()
+                        }),
                     ),
                     (
                         "Emissive",
                         &["emittance", "emissive", "emission", "glow"][..],
                         state.emissive_map.is_some(),
-                        verified_surfaces.map_or(0, |parts| parts.iter().filter(|p| p.emissive.is_some()).count()),
+                        verified_surfaces.map_or(0, |parts| {
+                            parts.iter().filter(|p| p.emissive.is_some()).count()
+                        }),
                     ),
                     (
                         "Specular",
                         &["specular", "specularcolor"][..],
                         state.specular_map.is_some(),
-                        verified_surfaces.map_or(0, |parts| parts.iter().filter(|p| p.specular.is_some()).count()),
+                        verified_surfaces.map_or(0, |parts| {
+                            parts.iter().filter(|p| p.specular.is_some()).count()
+                        }),
                     ),
                     (
                         "Gloss",
                         &["gloss", "glossiness", "smoothness"][..],
                         state.gloss_map.is_some(),
-                        verified_surfaces.map_or(0, |parts| parts.iter().filter(|p| p.gloss.is_some()).count()),
+                        verified_surfaces.map_or(0, |parts| {
+                            parts.iter().filter(|p| p.gloss.is_some()).count()
+                        }),
                     ),
                 ] {
                     let authored: Vec<_> = report
