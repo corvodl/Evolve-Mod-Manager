@@ -4409,6 +4409,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.pan_x = 0.0;
                     state.pan_y = 0.0;
                     state.page = Some(Page::Models);
+                    // A CDF selection does not visit the regular single-model
+                    // completion path. Discover its explicitly associated
+                    // material and animation references here as well, so the
+                    // assembly does not remain permanently untextured after
+                    // its geometry has been assembled. The existing resolver
+                    // refuses ambiguous, unsafe or unrelated resources.
+                    if let Some(inv) = &state.inventory {
+                        let root = PathBuf::from(&inv.root);
+                        let source = PathBuf::from(&state.input);
+                        if let Ok(relative) = source.strip_prefix(&root) {
+                            return launch(
+                                state,
+                                Operation::DiscoverModelResources(
+                                    relative.to_string_lossy().replace('\\', "/"),
+                                    inv.clone(),
+                                    state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
+                                    resource_build(state),
+                                ),
+                            );
+                        }
+                    }
                 }
                 Ok(Completed::CharacterResolved(character, report)) => {
                     let mut found = 0usize;
