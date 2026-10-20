@@ -7,7 +7,7 @@ use crate::inventory::Inventory;
 use crate::materials::{read_material, resolve_materials};
 use crate::model::read_model;
 use crate::native_caf::read_native_caf;
-use crate::rig::{embed_verified_maps_png_glb, rigged_glb_bytes, rigged_glb_bytes_with_caf};
+use crate::rig::{embed_verified_material_png_glb, rigged_glb_bytes, rigged_glb_bytes_with_caf};
 use image::ImageEncoder;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -141,6 +141,8 @@ struct AuthoredMaps {
     diffuse: Option<PathBuf>,
     normal: Option<PathBuf>,
     emissive: Option<PathBuf>,
+    specular: Option<PathBuf>,
+    gloss: Option<PathBuf>,
 }
 
 /// Resolve actual MTL texture roles, never the first same-named DDS found
@@ -176,6 +178,8 @@ fn exact_single_slot_maps(
             "diffuse" => &mut maps.diffuse,
             "normal" | "normals" | "bumpmap" => &mut maps.normal,
             "emissive" | "emittance" | "emission" | "glow" => &mut maps.emissive,
+            "specular" | "specularcolor" => &mut maps.specular,
+            "gloss" | "glossiness" | "smoothness" => &mut maps.gloss,
             _ => continue,
         };
         if target.is_some() {
@@ -196,6 +200,28 @@ fn exact_single_slot_maps(
         }
     }
     Ok(maps)
+}
+
+/// glTF metallicRoughnessTexture uses roughness in green and metallic in
+/// blue. An explicitly authored gloss map is *inverse* roughness; never
+/// derive it from arbitrary normal, specular or diffuse alpha.
+fn authored_roughness_png(path: &Path) -> Result<Vec<u8>, String> {
+    let (_info, mut rgba) = crate::dds::decode_dds_rgba(path)
+        .map_err(|e| format!("Cannot decode authored gloss DDS {}: {e}", path.display()))?;
+    for pixel in rgba.pixels_mut() {
+        let roughness = 255 - pixel[0];
+        pixel.0 = [0, roughness, 0, 255];
+    }
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(
+            rgba.as_raw(),
+            rgba.width(),
+            rgba.height(),
+            image::ExtendedColorType::Rgba8,
+        )
+        .map_err(|e| format!("Cannot encode authored gloss: {e}"))?;
+    Ok(png)
 }
 
 fn authored_png(path: &Path, normal_map: bool) -> Result<Vec<u8>, String> {
@@ -329,12 +355,29 @@ pub fn export_unified_cdf_fbx(
             .as_deref()
             .map(|f| authored_png(f, false))
             .transpose()?;
-        if diffuse.is_some() || normal.is_some() || emissive.is_some() {
-            glb = embed_verified_maps_png_glb(
+        let specular = maps
+            .specular
+            .as_deref()
+            .map(|f| authored_png(f, false))
+            .transpose()?;
+        let roughness = maps
+            .gloss
+            .as_deref()
+            .map(authored_roughness_png)
+            .transpose()?;
+        if diffuse.is_some()
+            || normal.is_some()
+            || emissive.is_some()
+            || specular.is_some()
+            || roughness.is_some()
+        {
+            glb = embed_verified_material_png_glb(
                 &glb,
                 diffuse.as_deref(),
                 normal.as_deref(),
                 emissive.as_deref(),
+                specular.as_deref(),
+                roughness.as_deref(),
             )
             .map_err(|e| format!("CDF part {name} original maps: {e}"))?;
         }
