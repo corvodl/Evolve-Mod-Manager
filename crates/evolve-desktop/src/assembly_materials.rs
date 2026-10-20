@@ -369,7 +369,11 @@ fn authored_maps(
     cache: &SharedCache,
     budget: &mut TextureBudget,
 ) -> Result<ResolvedMaterialMaps, String> {
-    let MaterialLookup { inventory, imported, build } = lookup;
+    let MaterialLookup {
+        inventory,
+        imported,
+        build,
+    } = lookup;
     let slot = document.slots.get(material_slot as usize).ok_or_else(|| {
         format!(
             "Source material slot {} exceeds {} authored leaves",
@@ -548,7 +552,11 @@ pub fn load_model(
                     material,
                     &source.to_string_lossy(),
                     material_slot,
-                    MaterialLookup { inventory, imported, build },
+                    MaterialLookup {
+                        inventory,
+                        imported,
+                        build,
+                    },
                     cache,
                     &mut budget,
                 ) {
@@ -673,7 +681,11 @@ pub fn load(
                     &path,
                     &part.binding,
                     part.material_slot,
-                    MaterialLookup { inventory, imported, build },
+                    MaterialLookup {
+                        inventory,
+                        imported,
+                        build,
+                    },
                     cache,
                     &mut budget,
                 )?;
@@ -734,7 +746,11 @@ mod tests {
             &material,
             "characters/monsters/teleporter/body.skinm",
             0,
-            MaterialLookup { inventory: &inventory, imported: None, build: None },
+            MaterialLookup {
+                inventory: &inventory,
+                imported: None,
+                build: None,
+            },
             &SharedCache::default(),
             &mut budget,
         )
@@ -1029,7 +1045,11 @@ mod tests {
             &dir.path().join("armor.mtl"),
             "armor.mtl",
             0,
-            MaterialLookup { inventory: &inventory, imported: None, build: None },
+            MaterialLookup {
+                inventory: &inventory,
+                imported: None,
+                build: None,
+            },
             &SharedCache::default(),
             &mut budget,
         )
