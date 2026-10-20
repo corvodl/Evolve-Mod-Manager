@@ -386,7 +386,10 @@ pub fn resolve_virtual(inventory: &Inventory, virtual_path: &str) -> AssetResolu
         let authored = key.strip_prefix("objects/").unwrap_or(&key);
         let parts = authored.split('/').collect::<Vec<_>>();
         let root = inventory.root.replace('\\', "/").to_ascii_lowercase();
-        let root_parts = root.split('/').filter(|p| !p.is_empty()).collect::<Vec<_>>();
+        let root_parts = root
+            .split('/')
+            .filter(|p| !p.is_empty())
+            .collect::<Vec<_>>();
         let mut overlap = 0usize;
         for n in 1..parts.len().min(root_parts.len() + 1) {
             if root_parts.ends_with(&parts[..n]) {
@@ -395,7 +398,9 @@ pub fn resolve_virtual(inventory: &Inventory, virtual_path: &str) -> AssetResolu
         }
         if overlap != 0 {
             let relative = parts[overlap..].join("/");
-            matches = inventory.entries.iter()
+            matches = inventory
+                .entries
+                .iter()
                 .filter(|e| e.relative_path.eq_ignore_ascii_case(&relative))
                 .map(|e| e.relative_path.clone())
                 .collect();
@@ -559,8 +564,7 @@ mod tests {
             byte_size: 42,
             kind: AssetKind::Mesh,
         };
-        let virtual_file =
-            "objects/characters/monsters/parasitehost/parasitehost3.chr";
+        let virtual_file = "objects/characters/monsters/parasitehost/parasitehost3.chr";
         let mut inv = Inventory {
             schema: 1,
             root: "C:/game/characters".into(),
@@ -580,15 +584,20 @@ mod tests {
         );
         assert_eq!(
             resolve_virtual(
-                &inv, "objects/characters/monsters/scorpid_2/parasitehost3.chr"
+                &inv,
+                "objects/characters/monsters/scorpid_2/parasitehost3.chr"
             ),
             AssetResolution::Missing
         );
         inv.root = "C:/game/characters/monsters/Scorpid_2".into();
-        inv.entries = vec![entry("Scorpid1_Rig.chr"), entry("Scorpid1_Default_Head.chr")];
+        inv.entries = vec![
+            entry("Scorpid1_Rig.chr"),
+            entry("Scorpid1_Default_Head.chr"),
+        ];
         assert_eq!(
             resolve_virtual(
-                &inv, "objects/characters/monsters/scorpid_2/scorpid1_rig.chr"
+                &inv,
+                "objects/characters/monsters/scorpid_2/scorpid1_rig.chr"
             ),
             AssetResolution::Found("Scorpid1_Rig.chr".into())
         );
