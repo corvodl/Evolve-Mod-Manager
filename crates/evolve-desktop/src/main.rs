@@ -1205,6 +1205,7 @@ enum Message {
     OpenLibrarySettings,
     LibraryToggleConfiguration,
     LibraryRefresh,
+    LibraryOpenFolder,
     StartupLibraryIndexed(PathBuf, Result<ImportedLibrary, String>),
     LibrarySetByBuild(bool),
     LibraryNextBuild,
@@ -1812,6 +1813,26 @@ fn check_updates_task(channel: UpdateChannel) -> Task<Message> {
 }
 
 /// Rebuild filtering only when the catalog, query or selected snapshot changes.
+/// Validates the currently configured Asset Library directory before shell
+/// navigation. Never treat a non-directory, missing or relative path as the
+/// library (and never create a directory on a mere File menu action).
+fn verified_library_directory(configured: &str) -> Result<PathBuf, String> {
+    if configured.trim().is_empty() {
+        return Err("Asset Library location is not configured. Select it under Settings → Storage.".into());
+    }
+    let path = Path::new(configured);
+    if !path.is_absolute() {
+        return Err("Configured Asset Library location is not an absolute path.".into());
+    }
+    let canonical = std::fs::canonicalize(path).map_err(|error| {
+        format!("Asset Library folder does not exist or cannot be opened: {error}")
+    })?;
+    if !canonical.is_dir() {
+        return Err("Configured Asset Library location is not a directory.".into());
+    }
+    Ok(canonical)
+}
+
 fn refresh_library_matches(state: &mut State) {
     let Some(catalog) = &state.library_catalog else {
         state.library_matches.clear();
@@ -2258,6 +2279,31 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Err(error) => {
                     state.status = format!("Could not index saved Asset Library: {error}")
                 }
+            }
+        }
+        Message::LibraryOpenFolder => {
+            // Open the configured Asset Library root, not an arbitrarily
+            // selected imported archive, stale inventory or game directory.
+            // File is a shell navigation action: never edit a source PAK.
+            match verified_library_directory(&state.library_root) {
+                Ok(directory) => {
+                    #[cfg(target_os = "windows")]
+                    {
+                        state.status = match std::process::Command::new("explorer.exe")
+                            .arg(directory)
+                            .spawn()
+                        {
+                            Ok(_) => "Opened the Asset Library folder in Windows Explorer.".into(),
+                            Err(error) => format!("Could not open Asset Library in Explorer: {error}"),
+                        };
+                    }
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        let _ = directory;
+                        state.status = "Open Asset Library Folder is available in Windows builds.".into();
+                    }
+                }
+                Err(error) => state.status = error,
             }
         }
         Message::LibraryRefresh => {
@@ -6381,6 +6427,22 @@ fn main() -> iced::Result {
 #[cfg(test)]
 mod project_edit_tests {
     use super::*;
+
+    #[test]
+    fn open_library_folder_validates_configured_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            verified_library_directory(temp.path().to_str().unwrap()).unwrap(),
+            temp.path().canonicalize().unwrap()
+        );
+        assert!(verified_library_directory("").is_err());
+        assert!(verified_library_directory("relative/folder").is_err());
+        let file = temp.path().join("not-a-folder");
+        std::fs::write(&file, b"test").unwrap();
+        assert!(verified_library_directory(file.to_str().unwrap()).is_err());
+        let missing = temp.path().join("missing");
+        assert!(verified_library_directory(missing.to_str().unwrap()).is_err());
+    }
 
     #[test]
     fn layer_controls_ignore_invalid_weights_and_unbound_assets() {
