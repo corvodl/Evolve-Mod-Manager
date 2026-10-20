@@ -1303,6 +1303,58 @@ mod tests {
             other_public.to_pkcs1_der().unwrap().as_bytes(),
         )
         .unwrap();
+        // Re-signing without a modified member keeps every original encrypted
+        // payload, local ZIP header, CDR and offset exactly unchanged. The
+        // newly prepared hook must authenticate the SAME local public key.
+        let resign_folder = root.path().join("resigned");
+        fs::create_dir(&resign_folder).unwrap();
+        let resigned = resign_folder.join("sample.pak");
+        let old_bytes = fs::read(&archive).unwrap();
+        let resigned_info = resign_signed_pak(
+            &archive, &key, &new_private_file, &new_public_file,
+            "sample.pak", &resigned,
+        ).unwrap();
+        assert!(resigned_info.signature_verified);
+        assert_eq!(resigned_info.entries.len(), 1);
+        let resigned_bytes = fs::read(&resigned).unwrap();
+        assert_eq!(resigned_bytes.len(), old_bytes.len());
+        assert_eq!(
+            &resigned_bytes[..resigned_bytes.len() - TRAILER_BYTES],
+            &old_bytes[..old_bytes.len() - TRAILER_BYTES],
+            "unchanged archive ciphertext, local headers and offsets must be identical"
+        );
+        assert_eq!(fs::read(&archive).unwrap(), old_bytes);
+        assert!(inspect_signed_pak(&resigned, &key, "sample.pak").is_err());
+        assert!(resign_signed_pak(
+            &archive, &key, &new_private_file, &new_public_file,
+            "sample.pak", &resigned,
+        ).is_err(), "never overwrite the preexisting custom-signed output");
+        let old_hook = root.path().join("original-hook.dll");
+        let hook_root = root.path().join("custom-hook");
+        fs::create_dir(&hook_root).unwrap();
+        let custom_hook = hook_root.join("inject.dll");
+        let mut hook = vec![0x6bu8; 4096];
+        hook[0x870..0x870 + 140].copy_from_slice(&fs::read(&key).unwrap());
+        fs::write(&old_hook, hook.clone()).unwrap();
+        let hook_report = crate::prepare_client_hook(
+            &old_hook, &key, &new_public_file, &custom_hook,
+        ).unwrap();
+        assert!(hook_report.only_public_key_bytes_changed);
+        assert_eq!(fs::read(&old_hook).unwrap(), hook);
+        let swap = crate::inspect_pak_hook_pair(
+            &archive, &resigned, &old_hook, &custom_hook,
+            &key, &new_public_file, "sample.pak",
+        ).unwrap();
+        assert_eq!(swap.signed_replacement_entries, 1);
+        assert!(swap.archive_member_paths_match);
+        assert!(!swap.runtime_mount_verified);
+        let mut tampered = fs::read(&custom_hook).unwrap();
+        tampered[10] ^= 0x80;
+        fs::write(&custom_hook, tampered).unwrap();
+        assert!(crate::inspect_pak_hook_pair(
+            &archive, &resigned, &old_hook, &custom_hook,
+            &key, &new_public_file, "sample.pak",
+        ).is_err(), "a modified client hook outside its known RSA slot must fail");
         let replacement = root.path().join("replacement.bin");
         fs::write(
             &replacement,
