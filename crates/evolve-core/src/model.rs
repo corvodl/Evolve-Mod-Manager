@@ -769,8 +769,13 @@ pub(crate) mod tests {
     fn convert_2012_streams_to_console(data: &mut [u8]) {
         let table = u32at(data, 16).unwrap() as usize;
         let count = u32at(data, table).unwrap() as usize;
+        let record_size = if table + 4 + count * 16 == data.len() {
+            16
+        } else {
+            20
+        };
         for row in 0..count {
-            let at = table + 4 + row * 20;
+            let at = table + 4 + row * record_size;
             if u32at(data, at).unwrap() != CRYTEK_STREAM {
                 continue;
             }
