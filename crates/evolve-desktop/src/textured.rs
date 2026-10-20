@@ -1193,6 +1193,8 @@ impl shader::Primitive for Primitive {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     #[test]
     fn shared_source_images_share_one_gpu_upload_key_per_role() {
         let image = Arc::new(image::RgbaImage::new(8, 8));
