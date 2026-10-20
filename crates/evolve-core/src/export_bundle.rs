@@ -168,18 +168,30 @@ fn dependencies(
             return Err("Dependency graph exceeds safe limit".into());
         }
         let lower = relative.to_ascii_lowercase();
-        if !(lower.ends_with(".dds") || lower.ends_with(".dds.0") || lower.ends_with(".cdf") || lower.ends_with(".mtl")) {
+        if !(lower.ends_with(".dds")
+            || lower.ends_with(".dds.0")
+            || lower.ends_with(".cdf")
+            || lower.ends_with(".mtl"))
+        {
             // Original metadata may have a separately cooked render mesh.
             // Export the *exact* indexed sidecar rather than guessing a model
             // with a similar name elsewhere in the Asset Library.
-            let compiled = if lower.ends_with(".skin") { Some("skinm") }
-                else if lower.ends_with(".chr") { Some("chrm") }
-                else if lower.ends_with(".cgf") { Some("cgfm") }
-                else if lower.ends_with(".cga") { Some("cgam") }
-                else { None };
+            let compiled = if lower.ends_with(".skin") {
+                Some("skinm")
+            } else if lower.ends_with(".chr") {
+                Some("chrm")
+            } else if lower.ends_with(".cgf") {
+                Some("cgfm")
+            } else if lower.ends_with(".cga") {
+                Some("cgam")
+            } else {
+                None
+            };
             if let Some(extension) = compiled {
-                let candidate = Path::new(&relative).with_extension(extension)
-                    .to_string_lossy().replace('\\', "/");
+                let candidate = Path::new(&relative)
+                    .with_extension(extension)
+                    .to_string_lossy()
+                    .replace('\\', "/");
                 match crate::resolve_virtual(inventory, &candidate) {
                     crate::AssetResolution::Found(found) => {
                         queue.push_back(found.clone());
@@ -294,7 +306,10 @@ fn dependencies(
                 queue.push_back(dep.clone());
             } else if [
                 ".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cgfm", ".cga", ".cgam",
-            ].iter().any(|suffix| key.ends_with(suffix)) {
+            ]
+            .iter()
+            .any(|suffix| key.ends_with(suffix))
+            {
                 // Queue all exact authored source mesh companions for secondary
                 // material and compiled-geometry resolution.
                 queue.push_back(dep.clone());

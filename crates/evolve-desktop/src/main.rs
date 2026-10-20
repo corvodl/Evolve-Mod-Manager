@@ -1621,7 +1621,9 @@ fn restore_level_history(state: &mut State, undo: bool) {
 
 fn exportable_asset(relative: &str) -> bool {
     let lower = relative.to_ascii_lowercase();
-    lower.ends_with(".dds") || lower.ends_with(".dds.0") || lower.ends_with(".cdf")
+    lower.ends_with(".dds")
+        || lower.ends_with(".dds.0")
+        || lower.ends_with(".cdf")
         || [
             ".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cgfm", ".cga", ".cgam",
         ]
@@ -3293,9 +3295,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Select 1 to 64 source models, CDFs, or DDS textures.".into();
                 return Task::none();
             }
-            if selected.iter().any(|p| !p.to_ascii_lowercase().ends_with(".dds")
-                && !p.to_ascii_lowercase().ends_with(".dds.0"))
-                && state.blender_path.trim().is_empty()
+            if selected.iter().any(|p| {
+                !p.to_ascii_lowercase().ends_with(".dds")
+                    && !p.to_ascii_lowercase().ends_with(".dds.0")
+            }) && state.blender_path.trim().is_empty()
             {
                 state.status = "Choose an installed Blender executable for FBX export.".into();
                 return Task::none();
