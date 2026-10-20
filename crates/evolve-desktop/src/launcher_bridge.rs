@@ -1006,7 +1006,11 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let lock = temp.path().join("auto_restore_watch.lock");
         fs::write(&lock, b"0").unwrap();
-        let guard = OpenOptions::new().read(true).write(true).open(&lock).unwrap();
+        let guard = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock)
+            .unwrap();
         guard.try_lock().unwrap();
         assert!(lock_restore_watchdog(temp.path()).is_err());
         guard.unlock().unwrap();
