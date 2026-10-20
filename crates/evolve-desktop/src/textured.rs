@@ -13,6 +13,8 @@ use std::sync::Arc;
 pub struct Surface {
     pub first_index: u32,
     pub index_count: u32,
+    /// Explicit CryEngine NoDraw subset. Preserve its index span, but do not render it.
+    pub visible: bool,
     pub diffuse: Option<Arc<image::RgbaImage>>,
     pub normal: Option<Arc<image::RgbaImage>>,
     pub emissive: Option<Arc<image::RgbaImage>>,
@@ -260,6 +262,7 @@ pub struct Pipeline {
     last_gloss_identity: usize,
     last_surfaces_identity: usize,
     gpu_surfaces: Vec<GpuSurface>,
+    surface_table_valid: bool,
     specular_texture: wgpu::Texture,
     specular_view: wgpu::TextureView,
     gloss_texture: wgpu::Texture,
@@ -606,6 +609,7 @@ impl Pipeline {
             last_gloss_identity: usize::MAX,
             last_surfaces_identity: usize::MAX,
             gpu_surfaces: Vec::new(),
+            surface_table_valid: false,
             specular_texture,
             specular_view,
             gloss_texture,
@@ -635,6 +639,7 @@ impl Pipeline {
         }
         self.last_surfaces_identity = identity;
         self.gpu_surfaces.clear();
+        self.surface_table_valid = false;
         let Some(surfaces) = surfaces else { return };
         // Validate the complete contiguous index coverage before rendering;
         // an incomplete table must never paint unknown faces with a random map.
@@ -660,7 +665,11 @@ impl Pipeline {
         if usize::try_from(cursor).ok() != Some(index_count) {
             return;
         }
+        self.surface_table_valid = true;
         for part in surfaces.iter() {
+            if !part.visible {
+                continue;
+            }
             let inputs = [
                 (
                     part.diffuse.as_ref(),
@@ -952,14 +961,16 @@ impl Pipeline {
         pass.set_pipeline(&self.render_pipeline);
         pass.set_vertex_buffer(0, self.vertex.slice(..));
         pass.set_index_buffer(self.index.slice(..), wgpu::IndexFormat::Uint32);
-        if self.gpu_surfaces.is_empty() {
-            pass.set_bind_group(0, &self.group, &[]);
-            pass.draw_indexed(0..self.index_count, 0, 0..1);
-        } else {
+        if self.surface_table_valid {
+            // NoDraw-only characters intentionally have zero visible parts.
+            // Do not silently fall back to rendering the whole mesh.
             for surface in &self.gpu_surfaces {
                 pass.set_bind_group(0, &surface.bind_group, &[]);
                 pass.draw_indexed(surface.range.clone(), 0, 0..1);
             }
+        } else {
+            pass.set_bind_group(0, &self.group, &[]);
+            pass.draw_indexed(0..self.index_count, 0, 0..1);
         }
     }
 }
