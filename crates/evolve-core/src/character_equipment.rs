@@ -101,7 +101,7 @@ pub fn discover_equipment(cdf: &CdfDefinition, inventory: &Inventory) -> Vec<Equ
         if found.len() < 2 {
             continue;
         }
-        found.sort_by(|a, b| a.label.to_ascii_lowercase().cmp(&b.label.to_ascii_lowercase()));
+        found.sort_by_key(|a| a.label.to_ascii_lowercase());
         result.push(EquipmentSlot {
             name: attachment.name.clone(),
             original: attachment.binding.clone(),
