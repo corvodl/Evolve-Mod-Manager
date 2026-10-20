@@ -23,6 +23,7 @@ pub mod library_import;
 pub mod materials;
 pub mod model;
 pub mod native_caf;
+pub mod native_offline_launch;
 pub mod policy;
 pub mod profiles;
 pub mod rig;
@@ -80,6 +81,7 @@ pub use library_import::{
 pub use model::{
     ModelError, ModelInfo, RenderMesh, export_model_obj, parse_model_bytes, read_model,
 };
+pub use native_offline_launch::{NativeOfflineReadiness, inspect_native_offline_readiness};
 pub use native_caf::{
     CafBonePose, CafController, NativeCafError, NativeCafMotion, decode_native_caf, read_native_caf,
 };
