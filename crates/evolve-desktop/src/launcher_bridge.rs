@@ -184,7 +184,9 @@ fn verify_prepared_journal(
             .get(index)
             .ok_or("Prepared journal entry ordering/count changed")?;
         if record["name"].as_str() != Some(name.as_str()) {
-            return Err(format!("Prepared swap entry ordering differs from private launcher: {name}"));
+            return Err(format!(
+                "Prepared swap entry ordering differs from private launcher: {name}"
+            ));
         }
         // Canonicalize both ledger expectations as well: Windows can attach
         // the extended-path prefix when resolving an already-open file, while
@@ -277,8 +279,10 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
     // The private controlled_swap.fresh() forbids game/stage nesting.
     // Without this check, a future helper could stage into the live game and
     // make the supposed offline-only rollback no longer independent.
-    if game.starts_with(&stage) || stage.starts_with(&game)
-        || game.starts_with(&swap) || swap.starts_with(&game)
+    if game.starts_with(&stage)
+        || stage.starts_with(&game)
+        || game.starts_with(&swap)
+        || swap.starts_with(&game)
     {
         return Err("The original game, signing stage and private swap helper must be in separate directory trees".into());
     }
@@ -665,7 +669,11 @@ mod tests {
         let mut state = serde_json::json!({"version":1,"phase":"prepared","files":rows});
         assert!(verify_prepared_journal(&state, &expected).is_ok());
         state["files"].as_array_mut().unwrap().reverse();
-        assert!(verify_prepared_journal(&state, &expected).unwrap_err().contains("ordering"));
+        assert!(
+            verify_prepared_journal(&state, &expected)
+                .unwrap_err()
+                .contains("ordering")
+        );
         state["files"].as_array_mut().unwrap().reverse();
         state["version"] = serde_json::json!(2);
         assert!(verify_prepared_journal(&state, &expected).is_err());
@@ -684,14 +692,17 @@ mod tests {
         fs::write(
             stage.join("stage_status.json"),
             br#"{"status":"fully-staged-offline","count":1}"#,
-        ).unwrap();
+        )
+        .unwrap();
         fs::write(
             stage.join("rekey_plan.json"),
             serde_json::to_vec(&serde_json::json!({
                 "source_root": root.path().join("game"),
                 "entries":[{"kind":"signed-encrypted","path":"Game/libs.pak"}]
-            })).unwrap(),
-        ).unwrap();
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let err = inspect_existing_launcher(&stage, &swap).unwrap_err();
         assert!(err.contains("separate directory trees"), "{err}");
         assert!(!swap.join("controlled_swap_state.json").exists());
