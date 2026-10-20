@@ -29,6 +29,8 @@ pub struct Preferences {
     pub reduce_motion: bool,
     pub keep_original_snapshots: bool,
     pub show_activity_on_tasks: bool,
+    /// On by default for both portable and installed builds. Can be disabled in Advanced.
+    pub crash_logging_enabled: bool,
     pub stage: String,
     pub swap: String,
     pub projects: String,
@@ -70,6 +72,7 @@ impl Default for Preferences {
             reduce_motion: false,
             keep_original_snapshots: true,
             show_activity_on_tasks: true,
+            crash_logging_enabled: true,
             stage: String::new(),
             swap: String::new(),
             projects: String::new(),
@@ -434,5 +437,16 @@ mod tests {
             .insert("primary".into(), "invalid".into());
         assert!(save_to(&path, &invalid).is_err());
         assert_eq!(fs::read(&path).unwrap(), original);
+    }
+    #[test]
+    fn crash_diagnostics_default_enabled_even_with_old_preferences() {
+        let json = r#"{"show_activity_on_tasks":false}"#;
+        let prefs: Preferences = serde_json::from_str(json).unwrap();
+        assert!(prefs.crash_logging_enabled);
+        let mut off = prefs;
+        off.crash_logging_enabled = false;
+        let saved = serde_json::to_string(&off).unwrap();
+        let restored: Preferences = serde_json::from_str(&saved).unwrap();
+        assert!(!restored.crash_logging_enabled);
     }
 }
