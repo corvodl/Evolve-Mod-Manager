@@ -4390,6 +4390,29 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                     state.page = Some(Page::Levels);
                 }
+                Ok(Completed::ResignedSignedPak(report, destination)) => {
+                    state.status = format!(
+                        "Re-signed {} original CryPAK members to {} using the configured custom RSA key. Payloads and original PAK unchanged; hook preflight and offline runtime test still required.",
+                        report.entries.len(), destination.display(),
+                    );
+                    state.signed_pak = Some(report);
+                    state.page = Some(Page::Files);
+                }
+                Ok(Completed::HookPrepared(report, destination)) => {
+                    state.hook_prepared = destination.to_string_lossy().into_owned();
+                    state.status = format!(
+                        "Prepared verified hook copy at {}. Original SHA256 {} → staged SHA256 {}. Only the public-key region changed; installed DLL untouched.",
+                        destination.display(), report.source_sha256, report.custom_sha256,
+                    );
+                    state.page = Some(Page::Files);
+                }
+                Ok(Completed::SignedHookPreflight(report)) => {
+                    state.status = format!(
+                        "PAK/hook preflight PASS: {} signed original members, {} custom-signed members, exact matching RSA slot. Actual Evolve process mount UNVERIFIED; do not assume online compatibility.",
+                        report.signed_original_entries, report.signed_replacement_entries,
+                    );
+                    state.page = Some(Page::Files);
+                }
                 Ok(Completed::SignedPak(info)) => {
                     state.status = format!(
                         "Verified signed CryPAK: {} records, {} expanded bytes.",
@@ -4767,13 +4790,31 @@ fn view(state: &State) -> Element<'_, Message> {
         ]
         .spacing(8),
         row![
-            text("PAK signing: use the selected stage's local mykeys/ resources.").size(12),
+            text("Stage RSA keys: original RSAKeyData.bin + custom mykeys/ (automatically checked).").size(12),
             design::button("Verify signed PAK")
                 .style(design::secondary)
                 .on_press(Message::StartSignedInspection),
             design::button("Extract signed PAK")
                 .style(design::secondary)
                 .on_press(Message::StartSignedExtraction),
+            design::button("Re-sign entire PAK")
+                .style(design::secondary)
+                .on_press(Message::StartSignedResign),
+        ]
+        .spacing(8),
+        row![
+            design::text_input("Original client bin64_SteamRetail/inject.dll", &state.hook_original)
+                .on_input(Message::HookOriginalChanged).width(Fill),
+            design::text_input("NEW custom hook directory/inject.dll", &state.hook_prepared)
+                .on_input(Message::HookPreparedChanged).width(Fill),
+        ]
+        .spacing(8),
+        row![
+            design::button("Prepare verified client hook copy")
+                .style(design::secondary).on_press(Message::StartHookPrepare),
+            design::button("Verify PAK + hook for offline swap")
+                .style(design::secondary).on_press(Message::StartHookPreflight),
+            text("Never modifies installed client or starts Evolve.").size(12),
         ]
         .spacing(8),
     ]
