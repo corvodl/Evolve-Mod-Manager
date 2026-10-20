@@ -3279,7 +3279,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return launch(state, Operation::CheckExistingOfflineLauncher(stage, swap));
             }
             if matches!(message, Message::StartOfflineLauncherRestore) {
-                return launch(state, Operation::RestoreExistingOfflineLauncher(stage, swap));
+                return launch(
+                    state,
+                    Operation::RestoreExistingOfflineLauncher(stage, swap),
+                );
             }
             return launch(state, Operation::StartExistingOfflineLauncher(stage, swap));
         }
