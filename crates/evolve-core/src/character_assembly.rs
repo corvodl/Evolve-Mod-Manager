@@ -652,7 +652,7 @@ mod tests {
             report
                 .warnings
                 .iter()
-                .any(|w| w.contains("Compiled bind-pose"))
+                .any(|w| w.contains("Verified bind-pose"))
         );
     }
 
