@@ -206,7 +206,11 @@ fn original_model_material(
         }
         paths.push(authored);
     } else {
-        paths.push(format!("{parent}/{stem}.mtl"));
+        paths.push(if parent.is_empty() {
+            format!("{stem}.mtl")
+        } else {
+            format!("{parent}/{stem}.mtl")
+        });
         use std::io::Read;
         let mut header = [0u8; 16];
         let historical = fs::File::open(mesh)
