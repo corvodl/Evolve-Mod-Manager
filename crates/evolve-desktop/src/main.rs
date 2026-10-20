@@ -35,16 +35,16 @@ use asset_cache::{SharedCache, decoded_dds, decoded_dds_indexed};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph,
-    EquipmentOverrides, EquipmentSlot, FlatCdfFbxReport, HookPairReport, ImportedLibrary,
+    EquipmentOverrides, EquipmentSlot, HookPairReport, ImportedLibrary,
     ImportedPak, Inventory, LevelScene, LibraryBatchImportReport, LibraryReferenceStatus,
     MaterialReport, ModProfile, ModelInfo, NativeCafMotion, PakHookPairReport, PakInventory,
     ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo,
-    StageTransaction, TerrainInfo, UnifiedCdfFbxReport, VerifiedCafAssembly, VerifiedCafSkin,
+    StageTransaction, TerrainInfo, VerifiedCafAssembly, VerifiedCafSkin,
     add_mod_to_profile, apply_profile_stage, apply_stage_pak, batch_stage_status, compare_assets,
     convert_glb_to_fbx, convert_original_motion, create_mod_profile, decode_dds_rgba,
-    discover_equipment, export_dds_png, export_flat_cdf_parts_fbx, export_level_scene_glb,
+    discover_equipment, export_dds_png, export_level_scene_glb,
     export_rigged_character_fbx_textured_animated, export_rigged_character_glb,
-    export_unified_cdf_fbx_with_equipment, extract_legacy_pak, extract_signed_pak,
+    extract_legacy_pak, extract_signed_pak,
     import_signed_library_selection, import_stage_pak, imported_archive_files, imported_library,
     initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_pak_hook_pair,
     inspect_signed_pak, list_mod_profiles, load_level_scene, material_texture_candidates,
@@ -391,16 +391,7 @@ enum Operation {
         NativeCafMotion,
     ),
     RiggedGlb(PathBuf, PathBuf, PathBuf),
-    FlatCdfFbx(PathBuf, Inventory, PathBuf, PathBuf, Option<PathBuf>),
     ExportBundle(Inventory, evolve_core::ExportBundleOptions),
-    UnifiedCdfFbx(
-        PathBuf,
-        Inventory,
-        PathBuf,
-        PathBuf,
-        Option<PathBuf>,
-        EquipmentOverrides,
-    ),
     RiggedFbx(
         PathBuf,
         PathBuf,
@@ -507,9 +498,7 @@ enum Completed {
     BoundCafPreview(PathBuf, Box<VerifiedCafSkin>),
     BoundCdfCafPreview(PathBuf, Box<VerifiedCafAssembly>),
     RiggedExport(RigReport, PathBuf),
-    FlatCdfFbxExport(FlatCdfFbxReport, PathBuf),
     BundleExported(evolve_core::ExportBundleReport),
-    UnifiedCdfFbxExport(UnifiedCdfFbxReport, PathBuf),
     MotionConverted(ConvertedMotion, PathBuf),
     DbaConverted(ConvertedMotion, PathBuf, Arc<tempfile::TempDir>),
     MotionGlb(AnimatedGlb),
@@ -647,27 +636,6 @@ impl Operation {
             }
             Self::ExportBundle(inventory, options) => {
                 evolve_core::export_bundle(&inventory, &options).map(Completed::BundleExported)
-            }
-            Self::FlatCdfFbx(source, inventory, blender, destination, caf) => {
-                let report = export_flat_cdf_parts_fbx(
-                    &source,
-                    &inventory,
-                    &blender,
-                    &destination,
-                    caf.as_deref(),
-                )?;
-                Ok(Completed::FlatCdfFbxExport(report, destination))
-            }
-            Self::UnifiedCdfFbx(source, inventory, blender, destination, caf, equipment) => {
-                let report = export_unified_cdf_fbx_with_equipment(
-                    &source,
-                    &inventory,
-                    &blender,
-                    &destination,
-                    caf.as_deref(),
-                    &equipment,
-                )?;
-                Ok(Completed::UnifiedCdfFbxExport(report, destination))
             }
             Self::RiggedFbx(mesh, skeleton, blender, diffuse, caf, dest) => {
                 export_rigged_character_fbx_textured_animated(
@@ -1391,8 +1359,6 @@ enum Message {
     ViewerClearLayer,
     StartRigGlb,
     StartRigFbx,
-    ViewerExportFlatCdf,
-    ViewerExportUnifiedCdf,
     StartMotionConversion,
     StartCdfInspection,
     StartCdfResolve,
@@ -3231,17 +3197,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .is_some_and(|item| exportable_asset(&item.relative_path))
                 })
                 .collect();
-            if state.export_selected.is_empty() {
-                if let Some(index) = state.selected {
-                    if state
-                        .inventory
-                        .as_ref()
-                        .and_then(|inv| inv.entries.get(index))
-                        .is_some_and(|item| exportable_asset(&item.relative_path))
-                    {
-                        state.export_selected.insert(index);
-                    }
-                }
+            if state.export_selected.is_empty()
+                && let Some(index) = state.selected
+                && state
+                    .inventory
+                    .as_ref()
+                    .and_then(|inv| inv.entries.get(index))
+                    .is_some_and(|item| exportable_asset(&item.relative_path))
+            {
+                state.export_selected.insert(index);
             }
             state.status =
                 "Select models/assemblies and export settings. Originals remain read-only.".into();
@@ -3258,10 +3222,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .as_ref()
                 .and_then(|inv| inv.entries.get(index))
                 .is_some_and(|item| exportable_asset(&item.relative_path));
-            if eligible {
-                if !state.export_selected.remove(&index) && state.export_selected.len() < 64 {
-                    state.export_selected.insert(index);
-                }
+            if eligible && !state.export_selected.remove(&index) && state.export_selected.len() < 64 {
+                state.export_selected.insert(index);
             }
         }
         Message::ExportToggleRigged => state.export_rigged = !state.export_rigged,
@@ -4101,78 +4063,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 ),
             );
         }
-        Message::ViewerExportFlatCdf => {
-            let blender = match resolved_blender(state) {
-                Ok(path) => path,
-                Err(message) => {
-                    state.status = message;
-                    return Task::none();
-                }
-            };
-            let Some(inventory) = state.inventory.clone() else {
-                state.status = "Index an extracted CDF character folder before exporting.".into();
-                return Task::none();
-            };
-            let Some(entry) = state.selected.and_then(|i| inventory.entries.get(i)) else {
-                state.status = "Select a CDF character definition in the file explorer.".into();
-                return Task::none();
-            };
-            if !entry.relative_path.to_ascii_lowercase().ends_with(".cdf")
-                || state.output.trim().is_empty()
-            {
-                state.status =
-                    "Choose a CDF, installed Blender executable and NEW flat export folder.".into();
-                return Task::none();
-            }
-            return launch(
-                state,
-                Operation::FlatCdfFbx(
-                    PathBuf::from(&inventory.root).join(&entry.relative_path),
-                    inventory.clone(),
-                    blender,
-                    PathBuf::from(&state.output),
-                    (state.export_include_animation && !state.caf_path.trim().is_empty())
-                        .then(|| PathBuf::from(&state.caf_path)),
-                ),
-            );
-        }
-        Message::ViewerExportUnifiedCdf => {
-            let blender = match resolved_blender(state) {
-                Ok(path) => path,
-                Err(message) => {
-                    state.status = message;
-                    return Task::none();
-                }
-            };
-            let Some(inventory) = state.inventory.clone() else {
-                state.status = "Index an extracted CDF character folder first.".into();
-                return Task::none();
-            };
-            let Some(entry) = state.selected.and_then(|i| inventory.entries.get(i)) else {
-                state.status = "Select a CDF character definition for unified FBX.".into();
-                return Task::none();
-            };
-            if !entry.relative_path.to_ascii_lowercase().ends_with(".cdf")
-                || !state.output.to_ascii_lowercase().ends_with(".fbx")
-            {
-                state.status =
-                    "Select a CDF, installed Blender, and NEW absolute .fbx destination.".into();
-                return Task::none();
-            }
-            let source = PathBuf::from(&inventory.root).join(&entry.relative_path);
-            let destination = PathBuf::from(&state.output);
-            let caf = (state.export_include_animation && !state.caf_path.trim().is_empty())
-                .then(|| PathBuf::from(&state.caf_path));
-            let equipment = if state.equipment_source.as_ref() == Some(&source) {
-                state.equipment_overrides.clone()
-            } else {
-                EquipmentOverrides::new()
-            };
-            return launch(
-                state,
-                Operation::UnifiedCdfFbx(source, inventory, blender, destination, caf, equipment),
-            );
-        }
         Message::StartRigFbx => {
             let blender = match resolved_blender(state) {
                 Ok(path) => path,
@@ -4801,24 +4691,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.selected = None;
                     refresh_viewer_rows(state);
                     state.page = Some(Page::Files);
-                }
-                Ok(Completed::FlatCdfFbxExport(report, destination)) => {
-                    state.status = format!(
-                        "Exported {} verified CDF part FBXs into one flat folder: {}. Separate FBXs remain experimental, not a unified character rig.",
-                        report.files.len(),
-                        destination.display()
-                    );
-                    state.page = Some(Page::Models);
-                }
-                Ok(Completed::UnifiedCdfFbxExport(report, destination)) => {
-                    state.status = format!(
-                        "Exported {} source-rigged CDF parts under one {}-bone armature; {} part(s) have a verified authored diffuse. Normal/emissive maps are included only when exact; full multi-slot shading remains incomplete. {}",
-                        report.parts.len(),
-                        report.bones,
-                        report.diffuse_textured_parts,
-                        destination.display()
-                    );
-                    state.page = Some(Page::Models);
                 }
                 Ok(Completed::BundleExported(result)) => {
                     state.status = format!(
