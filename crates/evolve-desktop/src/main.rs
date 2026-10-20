@@ -208,6 +208,9 @@ struct State {
     character: Option<CdfDefinition>,
     cdf_dependencies: Option<CdfDependencyReport>,
     model: Option<Arc<RenderMesh>>,
+    /// Exact render file (possibly .skinm from an imported PAK), not the
+    /// selected authored .skin metadata path.
+    render_source: Option<PathBuf>,
     level_scene: Option<Arc<LevelScene>>,
     terrain: Option<TerrainInfo>,
     selected: Option<usize>,
@@ -366,6 +369,7 @@ enum Operation {
     ),
     ResolveCdf(PathBuf, PathBuf),
     InspectModel(PathBuf),
+    InspectIndexedModel(PathBuf, String, Inventory, Option<PathBuf>, Option<String>),
     DiscoverModelResources(String, Inventory, Option<PathBuf>, Option<String>),
     LoadDeclaredClip(usize, String, Inventory, Option<PathBuf>, Option<String>),
     LoadDeclaredDba(String, Inventory, Option<PathBuf>, Option<String>, PathBuf),
@@ -462,7 +466,7 @@ enum Completed {
         Vec<String>,
     ),
     CharacterDependencies(CdfDependencyReport),
-    Model(RenderMesh),
+    Model(RenderMesh, PathBuf),
     ModelResources(String, auto_resources::AutoDiscovery),
     DeclaredClip(usize, String, NativeCafMotion),
     Level(LevelScene, PathBuf, String),
@@ -829,8 +833,19 @@ impl Operation {
             Self::InspectModel(source) => {
                 let render_source = preferred_render_source(&source);
                 read_model(&render_source)
-                    .map(Completed::Model)
+                    .map(|mesh| Completed::Model(mesh, render_source.clone()))
                     .map_err(|e| format!("{}: {e}", render_source.display()))
+            }
+            Self::InspectIndexedModel(source, virtual_path, inventory, imported, build) => {
+                let render_source = auto_resources::exact_render_companion(
+                    &virtual_path, &inventory, imported.as_deref(), build.as_deref(),
+                )?.unwrap_or(source);
+                read_model(&render_source)
+                    .map(|mesh| Completed::Model(mesh, render_source.clone()))
+                    .map_err(|e| format!(
+                        "Unable to preview original model {}: {e}. For a .skin, index its exact .skinm compiled render companion in the same build.",
+                        render_source.display(),
+                    ))
             }
             Self::InspectLevel(source) => {
                 let checksum = level_source_hash(&source)?;
@@ -2929,7 +2944,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.texture_preview = None;
             let filename = relative.relative_path.to_ascii_lowercase();
             let operation = if is_viewer_model_source(&filename) {
-                Operation::InspectModel(source)
+                Operation::InspectIndexedModel(
+                    source, relative.relative_path.clone(), inventory.clone(),
+                    state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
+                    resource_build(state),
+                )
             } else if filename.ends_with(".cdf") {
                 Operation::InspectCdfResolved(source, inventory.clone())
             } else if filename.ends_with(".dds") || filename.ends_with(".dds.0") {
@@ -4550,6 +4569,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.texture_preview = Some(handle);
                         state.material_report = None;
                         state.model = None;
+                        state.render_source = None;
                         state.cdf_surfaces = None;
                         state.cdf_report = None;
                         state.cdf_rest_mesh = None;
@@ -4601,6 +4621,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::StaticCharacter(mesh, report, surfaces, material_warnings)) => {
+                    state.render_source = None;
                     state.cdf_rest_mesh = Some(Arc::new(mesh.clone()));
                     state.cdf_report = Some(Arc::new(report.clone()));
                     state.cdf_caf_preview = None;
@@ -4703,7 +4724,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.cdf_dependencies = None;
                     state.page = Some(Page::Models);
                 }
-                Ok(Completed::Model(mesh)) => {
+                Ok(Completed::Model(mesh, render_source)) => {
+                    state.render_source = Some(render_source);
                     state.cdf_report = None;
                     state.cdf_rest_mesh = None;
                     state.cdf_caf_preview = None;
@@ -5801,7 +5823,7 @@ impl Desktop {
                 let finished = matches!(&message, Message::Finished(_));
                 let opens_model = matches!(
                     &message,
-                    Message::Finished(Ok(Completed::Model(_)
+                    Message::Finished(Ok(Completed::Model(_, _)
                         | Completed::StaticCharacter(_, _, _, _)
                         | Completed::ImportedPakFiles(_)))
                 ) || project_scan_done;
