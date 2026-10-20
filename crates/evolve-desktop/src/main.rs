@@ -3008,6 +3008,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ReplacementsChanged(replacements) => state.replacements = replacements,
         Message::SignedMemberChanged(value) => state.signed_entry = value,
         Message::SignedReplacementChanged(value) => state.signed_replacement = value,
+        Message::HookOriginalChanged(value) => state.hook_original = value,
+        Message::HookPreparedChanged(value) => state.hook_prepared = value,
         Message::ProfileNameChanged(value) => state.profile_name = value,
         Message::SelectProfile(value) => state.profile_id = value,
         Message::StartProfileRecover => {
@@ -3524,85 +3526,96 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::StartSignedInspection => {
             let source = PathBuf::from(&state.input);
             let stage = PathBuf::from(&state.preferences.stage);
-            let key = match modding_keys::public_key(&stage) {
-                Ok(path) => path,
-                Err(error) => {
-                    state.status = error;
-                    return Task::none();
-                }
-            };
             let basename = match modding_keys::signed_basename(&source) {
                 Ok(name) => name,
-                Err(error) => {
-                    state.status = error;
-                    return Task::none();
-                }
+                Err(error) => { state.status = error; return Task::none(); }
             };
-            return launch(state, Operation::InspectSignedPak(source, key, basename));
+            return launch(state, Operation::InspectSignedPak(source, stage, basename));
         }
         Message::StartSignedExtraction => {
             let source = PathBuf::from(&state.input);
             let stage = PathBuf::from(&state.preferences.stage);
-            let key = match modding_keys::public_key(&stage) {
-                Ok(path) => path,
-                Err(error) => {
-                    state.status = error;
-                    return Task::none();
-                }
-            };
             let basename = match modding_keys::signed_basename(&source) {
                 Ok(name) => name,
-                Err(error) => {
-                    state.status = error;
-                    return Task::none();
-                }
+                Err(error) => { state.status = error; return Task::none(); }
             };
             if state.output.trim().is_empty() {
-                state.status = "Choose a new extraction folder, or use Unpack PAK in Modding to generate one automatically.".into();
+                state.status = "Choose a new extraction folder.".into();
                 return Task::none();
             }
-            return launch(
-                state,
-                Operation::ExtractSignedPak(source, key, basename, PathBuf::from(&state.output)),
-            );
+            return launch(state,
+                Operation::ExtractSignedPak(source, stage, basename, PathBuf::from(&state.output)));
         }
-        Message::StartSignedRebuild => {
+        Message::StartSignedRebuild | Message::StartSignedResign => {
             let source = PathBuf::from(&state.input);
             let stage = PathBuf::from(&state.preferences.stage);
             let keys = match modding_keys::signing_keys(&stage) {
                 Ok(keys) => keys,
-                Err(error) => {
-                    state.status = error;
-                    return Task::none();
-                }
+                Err(error) => { state.status = error; return Task::none(); }
             };
             let basename = match modding_keys::signed_basename(&source) {
                 Ok(name) => name,
-                Err(error) => {
-                    state.status = error;
-                    return Task::none();
-                }
+                Err(error) => { state.status = error; return Task::none(); }
             };
-            if state.signed_entry.trim().is_empty()
-                || state.signed_replacement.trim().is_empty()
-                || state.output.trim().is_empty()
-            {
-                state.status = "Select an exact virtual member, a replacement file and a NEW output PAK. Signing keys are resolved automatically.".into();
+            if state.output.trim().is_empty() {
+                state.status = "Select a NEW .pak output; the original game PAK is never overwritten.".into();
                 return Task::none();
             }
-            return launch(
-                state,
-                Operation::RebuildSignedPak(
-                    source,
-                    keys.public.clone(),
-                    keys.private,
-                    keys.public,
-                    basename,
-                    state.signed_entry.clone(),
-                    PathBuf::from(&state.signed_replacement),
-                    PathBuf::from(&state.output),
-                ),
-            );
+            let output = PathBuf::from(&state.output);
+            if matches!(message, Message::StartSignedResign) {
+                return launch(state,
+                    Operation::ResignSignedPak(
+                        source, stage, keys.private, keys.public, basename, output,
+                    ));
+            }
+            if state.signed_entry.trim().is_empty() || state.signed_replacement.trim().is_empty() {
+                state.status = "Select an exact existing virtual member and its replacement source file before rebuilding.".into();
+                return Task::none();
+            }
+            return launch(state, Operation::RebuildSignedPak(
+                source, stage, keys.private, keys.public, basename,
+                state.signed_entry.clone(),
+                PathBuf::from(&state.signed_replacement),
+                output,
+            ));
+        }
+        Message::StartHookPrepare => {
+            let stage = PathBuf::from(&state.preferences.stage);
+            let keys = match modding_keys::signing_keys(&stage) {
+                Ok(keys) => keys,
+                Err(error) => { state.status = error; return Task::none(); }
+            };
+            if state.hook_original.trim().is_empty() || state.hook_prepared.trim().is_empty() {
+                state.status = "Choose the original client inject.dll and a NEW staged inject.dll destination.".into();
+                return Task::none();
+            }
+            return launch(state, Operation::PrepareClientHook(
+                PathBuf::from(&state.hook_original), keys.original_public, keys.public,
+                PathBuf::from(&state.hook_prepared),
+            ));
+        }
+        Message::StartHookPreflight => {
+            let stage = PathBuf::from(&state.preferences.stage);
+            let keys = match modding_keys::signing_keys(&stage) {
+                Ok(keys) => keys,
+                Err(error) => { state.status = error; return Task::none(); }
+            };
+            if [&state.input, &state.output, &state.hook_original, &state.hook_prepared]
+                .iter().any(|s| s.trim().is_empty())
+            {
+                state.status = "Select original PAK, custom signed output PAK, original hook, and custom staged hook before preflight.".into();
+                return Task::none();
+            }
+            let source = PathBuf::from(&state.input);
+            let basename = match modding_keys::signed_basename(&source) {
+                Ok(name) => name,
+                Err(error) => { state.status = error; return Task::none(); }
+            };
+            return launch(state, Operation::VerifySignedHookPair(
+                source, PathBuf::from(&state.output),
+                PathBuf::from(&state.hook_original), PathBuf::from(&state.hook_prepared),
+                keys.original_public, keys.public, basename,
+            ));
         }
         Message::StartLevelFbxExport => {
             if [
