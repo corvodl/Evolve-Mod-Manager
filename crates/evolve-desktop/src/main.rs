@@ -367,7 +367,6 @@ enum Operation {
     ConvertMotion(PathBuf, PathBuf, PathBuf, PathBuf),
     LoadGlbMotion(PathBuf),
     InspectCdf(PathBuf),
-    InspectCdfResolved(PathBuf, Inventory),
     BuildStaticCdf(
         PathBuf,
         Inventory,
@@ -974,11 +973,6 @@ impl Operation {
             Self::InspectCdf(source) => read_cdf(&source)
                 .map(Completed::Character)
                 .map_err(|e| e.to_string()),
-            Self::InspectCdfResolved(source, inventory) => {
-                let cdf = read_cdf(&source).map_err(|e| e.to_string())?;
-                let resolved = resolve_cdf(&inventory, &cdf);
-                Ok(Completed::CharacterResolved(cdf, resolved))
-            }
             Self::BuildStaticCdf(source, inventory, imported, build, cache) => {
                 let (mesh, report) = read_static_cdf_assembly_with_imported(
                     &source,
@@ -2989,7 +2983,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .map(|c| PathBuf::from(&c.root)),
                     resource_build(state),
                 )
-
             } else if filename.ends_with(".dds") || filename.ends_with(".dds.0") {
                 Operation::PreviewDds(source, state.preview_cache.clone())
             } else if filename.ends_with(".caf") {
