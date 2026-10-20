@@ -352,17 +352,24 @@ fn authored_texture(
 /// Per-channel resolved source textures and independent missing-map diagnostics.
 type ResolvedMaterialMaps = ([Option<Arc<image::RgbaImage>>; 6], Vec<String>);
 
+/// Keep source/build provenance together; the lookup is unchanged for each map.
+#[derive(Clone, Copy)]
+struct MaterialLookup<'a> {
+    inventory: &'a Inventory,
+    imported: Option<&'a Path>,
+    build: Option<&'a str>,
+}
+
 fn authored_maps(
     document: &MaterialDocument,
     material_source: &Path,
     material_binding: &str,
     material_slot: u32,
-    inventory: &Inventory,
-    imported: Option<&Path>,
-    build: Option<&str>,
+    lookup: MaterialLookup<'_>,
     cache: &SharedCache,
     budget: &mut TextureBudget,
 ) -> Result<ResolvedMaterialMaps, String> {
+    let MaterialLookup { inventory, imported, build } = lookup;
     let slot = document.slots.get(material_slot as usize).ok_or_else(|| {
         format!(
             "Source material slot {} exceeds {} authored leaves",
@@ -541,9 +548,7 @@ pub fn load_model(
                     material,
                     &source.to_string_lossy(),
                     material_slot,
-                    inventory,
-                    imported,
-                    build,
+                    MaterialLookup { inventory, imported, build },
                     cache,
                     &mut budget,
                 ) {
@@ -668,9 +673,7 @@ pub fn load(
                     &path,
                     &part.binding,
                     part.material_slot,
-                    inventory,
-                    imported,
-                    build,
+                    MaterialLookup { inventory, imported, build },
                     cache,
                     &mut budget,
                 )?;
@@ -731,9 +734,7 @@ mod tests {
             &material,
             "characters/monsters/teleporter/body.skinm",
             0,
-            &inventory,
-            None,
-            None,
+            MaterialLookup { inventory: &inventory, imported: None, build: None },
             &SharedCache::default(),
             &mut budget,
         )
@@ -1028,9 +1029,7 @@ mod tests {
             &dir.path().join("armor.mtl"),
             "armor.mtl",
             0,
-            &inventory,
-            None,
-            None,
+            MaterialLookup { inventory: &inventory, imported: None, build: None },
             &SharedCache::default(),
             &mut budget,
         )
