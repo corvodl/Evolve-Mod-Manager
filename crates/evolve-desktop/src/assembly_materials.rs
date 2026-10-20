@@ -487,7 +487,7 @@ pub fn load_model(
                         // of packed diffuse DDS alpha. Never blend an Illum
                         // body unless there is explicit authored evidence.
                         surface.opacity = verified_opacity(leaf, opacity);
-                        surface.transparent = surface.opacity.is_some();
+                        surface.transparent = needs_alpha_blending(leaf) && surface.opacity.is_some();
                     }
                     Err(error) => warnings.push(format!(
                         "Original material slot {} ({}): {}",
@@ -606,7 +606,7 @@ pub fn load(
             surface.specular = specular;
             surface.gloss = gloss;
             surface.opacity = verified_opacity(leaf, opacity);
-            surface.transparent = surface.opacity.is_some();
+            surface.transparent = needs_alpha_blending(leaf) && surface.opacity.is_some();
             Ok(())
         })();
         if let Err(error) = result {
