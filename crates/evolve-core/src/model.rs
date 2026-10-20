@@ -789,7 +789,7 @@ pub(crate) mod tests {
                 data[pos..pos + 4].copy_from_slice(&original.to_be_bytes());
             }
             match kind {
-                0 | 1 | 2 => {
+                0..=2 => {
                     for pos in (offset + 40..offset + 40 + n * stride).step_by(4) {
                         let original = u32at(data, pos).unwrap();
                         data[pos..pos + 4].copy_from_slice(&original.to_be_bytes());
