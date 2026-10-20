@@ -254,6 +254,7 @@ pub fn discover(
         }
     }
     let mut animation_source = source.clone();
+    let mut animation_binding_ambiguous = false;
     // Body, equipment, and compiled skin filenames often differ from the
     // owning CDF. Use its exact Binding references for skeleton/CAF lookup.
     // The selected mesh retains its own material discovery path.
@@ -275,7 +276,10 @@ pub fn discover(
                 }
             }
             Ok(None) => {}
-            Err(error) => found.warnings.push(error),
+            Err(error) => {
+                found.warnings.push(error);
+                animation_binding_ambiguous = true;
+            }
         }
     }
     let parent = source.rsplit_once('/').map_or("", |(p, _)| p);
@@ -322,6 +326,12 @@ pub fn discover(
     }
     if found.material.is_none() && found.warnings.is_empty() {
         found.material_note = "No verified material for this mesh".into();
+    }
+    // A shared skin claimed by multiple CDFs has no unique verified rig.
+    // Preserve independent mesh/MTL preview but never attach an arbitrary
+    // similarly named animation catalog to that ambiguous character.
+    if animation_binding_ambiguous {
+        return found;
     }
     // Only this character's matching skeleton animation configuration.
     let animation_parent = animation_source
@@ -622,9 +632,15 @@ mod tests {
             )
             .unwrap();
         }
+        std::fs::write(
+            folder.join("torso.chrparams"),
+            br#"<Params><AnimationList></AnimationList></Params>"#,
+        )
+        .unwrap();
         let inventory = scan_directory(dir.path()).unwrap();
         let found = discover("characters/hunter/torso.skinm", &inventory, None, None);
         assert!(found.skeleton.is_none());
+        assert!(found.config.is_none());
         assert!(
             found
                 .warnings
