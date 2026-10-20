@@ -53,9 +53,6 @@ fn u32at(data: &[u8], at: usize) -> Result<u32, ModelError> {
         .ok_or_else(|| ModelError::Format("truncated chunk data".into()))?;
     Ok(u32::from_le_bytes([row[0], row[1], row[2], row[3]]))
 }
-fn read_f32(data: &[u8], at: usize) -> Result<f32, ModelError> {
-    Ok(f32::from_bits(u32at(data, at)?))
-}
 fn endian_u32(data: &[u8], at: usize, big: bool) -> Result<u32, ModelError> {
     let v = u32at(data, at)?;
     Ok(if big { v.swap_bytes() } else { v })
