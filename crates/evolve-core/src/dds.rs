@@ -736,6 +736,34 @@ mod tests {
     }
 
     #[test]
+    fn decodes_historical_luminance_and_24bit_rgb_without_fake_color_channels() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("uncompressed.dds");
+        let mut lum = header(4, 4, 1, b"\0\0\0\0");
+        lum[8..12].copy_from_slice(&0x1007u32.to_le_bytes());
+        lum[80..84].copy_from_slice(&0x20000u32.to_le_bytes());
+        lum[88..92].copy_from_slice(&8u32.to_le_bytes());
+        lum.extend_from_slice(&[90u8; 16]);
+        fs::write(&source, lum).unwrap();
+        let (info, image) = decode_dds_rgba(&source).unwrap();
+        assert_eq!(info.format, DdsFormat::Luminance8);
+        assert_eq!(image.get_pixel(2, 2).0, [90, 90, 90, 255]);
+
+        let mut rgb = header(4, 4, 1, b"\0\0\0\0");
+        rgb[8..12].copy_from_slice(&0x1007u32.to_le_bytes());
+        rgb[80..84].copy_from_slice(&0x40u32.to_le_bytes());
+        rgb[88..92].copy_from_slice(&24u32.to_le_bytes());
+        rgb[92..96].copy_from_slice(&0xff0000u32.to_le_bytes());
+        rgb[96..100].copy_from_slice(&0x00ff00u32.to_le_bytes());
+        rgb[100..104].copy_from_slice(&0x0000ffu32.to_le_bytes());
+        rgb.extend_from_slice(&[17, 33, 240].repeat(16));
+        fs::write(&source, rgb).unwrap();
+        let (info, image) = decode_dds_rgba(&source).unwrap();
+        assert_eq!(info.format, DdsFormat::Rgb24);
+        assert_eq!(image.get_pixel(1, 3).0, [240, 33, 17, 255]);
+    }
+
+    #[test]
     fn decodes_bc1_to_rgba_and_exports_png() {
         let temp = tempfile::tempdir().unwrap();
         let src = temp.path().join("diffuse.dds");
