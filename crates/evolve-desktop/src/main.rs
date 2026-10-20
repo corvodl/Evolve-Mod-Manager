@@ -4791,6 +4791,7 @@ fn view(state: &State) -> Element<'_, Message> {
                     shader(TexturedScene{
                         mesh:mesh.clone(),diffuse:state.diffuse.clone(),
                             normal_map:state.normal_map.clone(),emissive:state.emissive_map.clone(),
+                            specular:state.specular_map.clone(),gloss:state.gloss_map.clone(),
                         yaw:state.yaw,pitch:state.pitch,zoom:state.zoom.max(0.2),
                             light_strength:state.light_strength,
                             pan_x:state.pan_x,pan_y:state.pan_y,shift:state.keyboard_modifiers.shift(),
