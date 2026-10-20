@@ -5181,7 +5181,7 @@ fn view(state: &State) -> Element<'_, Message> {
                 if let Some(mesh)=&state.model {
                     let display:Element<'_,Message> = if mesh.uv0.is_some(){
                         shader(TexturedScene{
-                            mesh:mesh.clone(),diffuse:state.diffuse.clone(),
+                            mesh:mesh.clone(),surfaces:state.cdf_surfaces.clone(),diffuse:state.diffuse.clone(),
                             normal_map:state.normal_map.clone(),emissive:state.emissive_map.clone(),
                             specular:state.specular_map.clone(),gloss:state.gloss_map.clone(),
                             yaw:state.yaw,pitch:state.pitch,zoom:state.zoom,
@@ -5313,7 +5313,7 @@ fn view(state: &State) -> Element<'_, Message> {
             if let Some(mesh)=&state.model {
                 let display:Element<'_,Message> = if mesh.uv0.is_some(){
                     shader(TexturedScene{
-                        mesh:mesh.clone(),diffuse:state.diffuse.clone(),
+                        mesh:mesh.clone(),surfaces:None,diffuse:state.diffuse.clone(),
                             normal_map:state.normal_map.clone(),emissive:state.emissive_map.clone(),
                             specular:state.specular_map.clone(),gloss:state.gloss_map.clone(),
                         yaw:state.yaw,pitch:state.pitch,zoom:state.zoom.max(0.2),
@@ -5609,7 +5609,7 @@ impl Desktop {
                 let opens_model = matches!(
                     &message,
                     Message::Finished(Ok(Completed::Model(_)
-                        | Completed::StaticCharacter(_, _)
+                        | Completed::StaticCharacter(_, _, _, _)
                         | Completed::ImportedPakFiles(_)))
                 ) || project_scan_done;
                 let launched_from_library = self.state.page == Some(Page::AssetLibrary);
