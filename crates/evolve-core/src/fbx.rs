@@ -86,6 +86,56 @@ pub fn validate_glb_source(source: &Path, animations: AnimationPolicy) -> Result
     Ok(())
 }
 
+
+/// Atomically publish a complete, verified binary FBX without overwriting an
+/// existing target. Reading the 23-byte signature advances the file cursor:
+/// rewind before copying or the published export is corrupt.
+pub(crate) fn publish_verified_binary_fbx(
+    staged: &Path,
+    destination: &Path,
+) -> Result<u64, FbxError> {
+    if destination.exists() {
+        return Err(FbxError::Exists);
+    }
+    let parent = destination
+        .parent()
+        .ok_or_else(|| FbxError::Invalid("FBX output folder missing".into()))?;
+    if !parent.is_dir() || fs::symlink_metadata(parent)?.file_type().is_symlink() {
+        return Err(FbxError::Invalid("Invalid FBX output directory".into()));
+    }
+    let meta = fs::symlink_metadata(staged)?;
+    if !meta.file_type().is_file() || meta.len() < 256 {
+        return Err(FbxError::Converter("Blender produced no complete FBX".into()));
+    }
+    let mut source = File::open(staged)?;
+    let mut signature = [0u8; 23];
+    source.read_exact(&mut signature)?;
+    if signature != FBX_HEADER {
+        return Err(FbxError::Converter(
+            "Blender output is not a binary FBX".into(),
+        ));
+    }
+    source.seek(SeekFrom::Start(0))?;
+    let mut published = tempfile::Builder::new()
+        .prefix(".fbx-verified-")
+        .tempfile_in(parent)?;
+    let copied = std::io::copy(&mut source, &mut published)?;
+    if copied != meta.len() {
+        return Err(FbxError::Converter(
+            "Blender FBX changed or was truncated while publishing".into(),
+        ));
+    }
+    published.as_file_mut().sync_all()?;
+    published.persist_noclobber(destination).map_err(|e| {
+        if e.error.kind() == std::io::ErrorKind::AlreadyExists {
+            FbxError::Exists
+        } else {
+            FbxError::Io(e.error)
+        }
+    })?;
+    Ok(copied)
+}
+
 /// Execute only an explicitly supplied installed Blender executable, with a
 /// fixed bundled script. No shell, PATH lookup or downloads. Stage alongside
 /// destination, validate actual FBX signature, then publish without overwrite.
@@ -130,6 +180,8 @@ pub fn convert_glb_to_fbx(
     let mut child = Command::new(blender)
         .arg("--background")
         .arg("--factory-startup")
+        .arg("--python-exit-code")
+        .arg("1")
         .arg("--python")
         .arg(&script)
         .arg("--")
@@ -161,32 +213,7 @@ pub fn convert_glb_to_fbx(
             "Blender exit status: {status}"
         )));
     }
-    let mut file = File::open(&staged_fbx)
-        .map_err(|_| FbxError::Converter("Blender produced no FBX".into()))?;
-    let mut signature = [0u8; 23];
-    file.read_exact(&mut signature)?;
-    if signature != FBX_HEADER {
-        return Err(FbxError::Converter(
-            "Blender output is not a binary FBX".into(),
-        ));
-    }
-    let size = file.metadata()?.len();
-    if size < 256 {
-        return Err(FbxError::Converter("FBX unexpectedly small".into()));
-    }
-    file.seek(SeekFrom::Start(0))?;
-    let mut temp = tempfile::Builder::new()
-        .prefix(".fbx-copy-")
-        .tempfile_in(parent)?;
-    std::io::copy(&mut file, &mut temp)?;
-    temp.as_file_mut().sync_all()?;
-    temp.persist_noclobber(destination).map_err(|e| {
-        if e.error.kind() == std::io::ErrorKind::AlreadyExists {
-            FbxError::Exists
-        } else {
-            FbxError::Io(e.error)
-        }
-    })?;
+    let size = publish_verified_binary_fbx(&staged_fbx, destination)?;
     Ok(FbxReport {
         output_size: size,
         animations_included: animation.embed_verified_animations,
@@ -202,6 +229,37 @@ pub fn convert_glb_to_fbx(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn verified_fbx_publisher_preserves_binary_header_and_every_byte() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.fbx");
+        let destination = directory.path().join("result.fbx");
+        let mut original = FBX_HEADER.to_vec();
+        original.extend((0..777).map(|i| (i % 251) as u8));
+        fs::write(&source, &original).unwrap();
+        assert_eq!(
+            publish_verified_binary_fbx(&source, &destination).unwrap(),
+            original.len() as u64
+        );
+        assert_eq!(fs::read(&destination).unwrap(), original);
+        assert!(matches!(
+            publish_verified_binary_fbx(&source, &destination),
+            Err(FbxError::Exists)
+        ));
+    }
+
+    #[test]
+    fn verified_fbx_publisher_refuses_truncated_header() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("invalid.fbx");
+        let destination = directory.path().join("not-created.fbx");
+        fs::write(&source, vec![0u8; 512]).unwrap();
+        assert!(matches!(
+            publish_verified_binary_fbx(&source, &destination),
+            Err(FbxError::Converter(_))
+        ));
+        assert!(!destination.exists());
+    }
     #[test]
     fn animation_is_opt_in_and_validator_rejects_missing_skins() {
         let dir = tempfile::tempdir().unwrap();
