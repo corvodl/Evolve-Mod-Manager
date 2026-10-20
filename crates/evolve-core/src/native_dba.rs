@@ -236,7 +236,7 @@ pub fn index_native_dba_bytes(data: &[u8]) -> Result<Vec<DbaAnimationRecord>, Na
         for i in 0..num {
             let offset = word(data, at + 4 * i)? as i32;
             let valid = if summary.inplace_streaming {
-                offset <= 0 && offset >= -(extent as i64) as i32
+                offset <= 0 && i64::from(offset) >= -(extent as i64)
             } else {
                 offset >= 0 && (offset as usize) <= extent
             };
@@ -419,6 +419,105 @@ mod tests {
         // Offset first-time-track is at 16+2+28+2+36+2+36 = 122
         data[32 + 122..32 + 126].copy_from_slice(&(-12i32).to_le_bytes());
         assert!(inspect_native_dba_bytes(&data).unwrap().inplace_streaming);
+    }
+
+    fn controller905_named_sample(streaming: bool) -> Vec<u8> {
+        // Synthetic directory fixture only; its track payload is deliberately
+        // not decoded into animation curves.
+        let nt = 1usize;
+        let np = 1usize;
+        let nr = 1usize;
+        let base = 32usize;
+        let mut chunk = vec![0u8; 138];
+        let mut put = |at: usize, value: u32| {
+            chunk[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        };
+        put(0, np as u32);
+        put(4, nr as u32);
+        put(8, nt as u32);
+        put(12, 1); // one original named animation
+        put(16 + 2, 1); // key-time format eF32
+        put(16 + 2 + 28 + 2, 1); // position format 0
+        put(16 + 2 + 28 + 2 + 36 + 2, 1); // rotation format 0
+        let offsets = 16 + 2 + 28 + 2 + 36 + 2 + 36;
+        if streaming {
+            put(offsets, (-24i32) as u32);
+            put(offsets + 4, (-16i32) as u32);
+            put(offsets + 8, (-8i32) as u32);
+            put(offsets + 12, (-24i32) as u32);
+            chunk.extend_from_slice(&0u32.to_le_bytes()); // streaming pad
+        } else {
+            put(offsets, 0);
+            put(offsets + 4, 8);
+            put(offsets + 8, 16);
+            put(offsets + 12, 24);
+        }
+        while !(base + chunk.len()).is_multiple_of(4) {
+            chunk.push(0);
+        }
+        let mut clip = Vec::new();
+        clip.extend_from_slice(&4u16.to_le_bytes());
+        clip.extend_from_slice(b"Idle");
+        clip.extend_from_slice(&vec![0u8; 132]); // motion parameters
+        clip.extend_from_slice(&0u16.to_le_bytes()); // footplant count
+        clip.extend_from_slice(&1u16.to_le_bytes()); // controller count
+        if streaming {
+            clip.extend_from_slice(&0i32.to_le_bytes()); // streaming header pointer
+        }
+        let mut controller = Vec::new();
+        controller.extend_from_slice(&12345u32.to_le_bytes());
+        controller.extend_from_slice(&0i32.to_le_bytes()); // pos time track
+        controller.extend_from_slice(&0i32.to_le_bytes()); // position track
+        controller.extend_from_slice(&0i32.to_le_bytes()); // rot time track
+        controller.extend_from_slice(&0i32.to_le_bytes()); // rotation track
+        if streaming {
+            chunk.extend_from_slice(&clip);
+            chunk.extend_from_slice(&controller);
+            while !(base + chunk.len()).is_multiple_of(4) {
+                chunk.push(0);
+            }
+            chunk.extend_from_slice(&[0u8; 24]);
+        } else {
+            chunk.extend_from_slice(&[0u8; 24]);
+            chunk.extend_from_slice(&clip);
+            chunk.extend_from_slice(&controller);
+        }
+        let mut bytes = vec![0u8; 32];
+        bytes[..8].copy_from_slice(b"CrChF\x07\0\0");
+        bytes[8..12].copy_from_slice(&1u32.to_le_bytes());
+        bytes[12..16].copy_from_slice(&16u32.to_le_bytes());
+        bytes[16..20].copy_from_slice(&0x0905100du32.to_le_bytes());
+        bytes[24..28].copy_from_slice(&(chunk.len() as u32).to_le_bytes());
+        bytes[28..32].copy_from_slice(&(base as u32).to_le_bytes());
+        bytes.extend_from_slice(&chunk);
+        bytes
+    }
+
+    #[test]
+    fn indexes_standard_and_inplace_dba_directories_without_fake_playback() {
+        for streaming in [false, true] {
+            let original = controller905_named_sample(streaming);
+            let inspection = inspect_native_dba_bytes(&original).unwrap();
+            assert_eq!(inspection.inplace_streaming, streaming);
+            assert_eq!(inspection.playable_animation_count, 0);
+            let entries = index_native_dba_bytes(&original).unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].name, "Idle");
+            assert_eq!(entries[0].controller_count, 1);
+            assert!(!entries[0].additive);
+            assert!(!entries[0].cyclic);
+            let mut corrupted = original.clone();
+            let wrong = (55u32).to_le_bytes();
+            let controller_at = if streaming {
+                // Inplace controller table immediately after named record.
+                let track = corrupted.len() - 24;
+                track - 20
+            } else {
+                corrupted.len() - 20
+            };
+            corrupted[controller_at + 8..controller_at + 12].copy_from_slice(&wrong);
+            assert!(index_native_dba_bytes(&corrupted).is_err());
+        }
     }
 
     #[test]
