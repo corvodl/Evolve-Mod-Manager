@@ -638,6 +638,24 @@ fn guarded_restore_state(stage: &Path, swap: &Path) -> Result<String, String> {
     Ok(phase.to_owned())
 }
 
+#[cfg(windows)]
+fn lock_restore_watchdog(swap: &Path) -> Result<Option<File>, String> {
+    let path = swap.join("auto_restore_watch.lock");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .map_err(|e| format!("Cannot inspect offline restore watchdog lock: {e}"))?;
+    file.try_lock().map_err(|_| {
+        "The independent private restore watchdog is active. Allow it to finish before attempting manual recovery."
+            .to_owned()
+    })?;
+    Ok(Some(file))
+}
+
 /// Explicit recovery shortcut for an interrupted offline-only private swap.
 /// The Rust manager NEVER hand-rolls reverse renames: it invokes the existing
 /// helper which owns the original journal, then re-verifies the restored
@@ -648,6 +666,9 @@ pub fn restore_existing_offline_client(stage: &Path, swap: &Path) -> Result<(usi
     games_closed()?;
     let stage = directory(stage)?;
     let swap = directory(swap)?;
+    // Avoid racing the private launcher watchdog's independent restoration.
+    // Hold this handle until the manual helper finishes verifying originals.
+    let _watchdog_guard = lock_restore_watchdog(&swap)?;
     let phase = guarded_restore_state(&stage, &swap)?;
     if matches!(phase.as_str(), "prepared" | "restored") {
         let checked = inspect_existing_launcher(&stage, &swap)?;
@@ -977,6 +998,20 @@ mod tests {
         )
         .unwrap();
         assert!(inspect_hook_startup_log(&log, beginning).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn manual_restore_does_not_race_running_private_watchdog_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let lock = temp.path().join("auto_restore_watch.lock");
+        fs::write(&lock, b"0").unwrap();
+        let guard = OpenOptions::new().read(true).write(true).open(&lock).unwrap();
+        guard.try_lock().unwrap();
+        assert!(lock_restore_watchdog(temp.path()).is_err());
+        guard.unlock().unwrap();
+        let recovered = lock_restore_watchdog(temp.path()).unwrap();
+        assert!(recovered.is_some());
     }
 
     #[test]
