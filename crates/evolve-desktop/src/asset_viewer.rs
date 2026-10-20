@@ -246,6 +246,8 @@ fn viewport(state: &State) -> Element<'_, Message> {
         design::button("Right").on_press(Message::ViewerCameraPreset("Right")),
         design::button("Top").on_press(Message::ViewerCameraPreset("Top")),
         design::button("Iso").on_press(Message::ViewerCameraPreset("Isometric")),
+        design::button(if state.viewer_wireframe { "Shaded" } else { "Wireframe" })
+            .on_press(Message::ViewerToggleWireframe),
         text("Drag: orbit • Shift+drag/right-drag: pan • Wheel: zoom").size(11),
         design::button("−")
             .on_press(Message::ViewerZoomWheel(-2.0))
