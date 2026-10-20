@@ -870,9 +870,9 @@ pub(super) fn preferences_view(state: &State) -> Element<'_, Message> {
                 text("Viewer Preferences").size(22),
                 text("Appearance").size(17),
                 row![
-                    design::button(format!("Theme: {mode}"))
+                    design::button(text(format!("Theme: {mode}")))
                         .on_press(Message::PreferenceAppearance),
-                    design::button(format!("Density: {}", state.preferences.ui_density))
+                    design::button(text(format!("Density: {}", state.preferences.ui_density)))
                         .on_press(Message::PreferenceDensity),
                 ]
                 .spacing(10),
