@@ -71,16 +71,24 @@ fn menu(state: &State) -> Element<'_, Message> {
 fn dropdown(state: &State) -> Option<Element<'_, Message>> {
     let commands: Element<'_, Message> = match state.modding_menu? {
         "File" => column![
-            design::button("Refresh Projects").on_press(Message::MenuCommand(Box::new(Message::ModdingRefresh))),
-            design::button("Browse staged PAKs").on_press(Message::MenuCommand(Box::new(Message::ModdingBrowsePaks))),
-            design::button("Installed Mods / Profiles").on_press(Message::MenuCommand(Box::new(Message::ModdingToggleProfiles))),
+            design::button("Refresh Projects")
+                .on_press(Message::MenuCommand(Box::new(Message::ModdingRefresh))),
+            design::button("Browse staged PAKs")
+                .on_press(Message::MenuCommand(Box::new(Message::ModdingBrowsePaks))),
+            design::button("Installed Mods / Profiles").on_press(Message::MenuCommand(Box::new(
+                Message::ModdingToggleProfiles
+            ))),
         ]
         .spacing(3)
         .into(),
         "Edit" => column![
-            design::button("Continue Editing").on_press(Message::MenuCommand(Box::new(Message::ModdingOpenProject))),
-            design::button("Review Changes").on_press(Message::MenuCommand(Box::new(Message::ModdingReviewChanges))),
-            design::button("Build Mod").on_press(Message::MenuCommand(Box::new(Message::ModdingBuild))),
+            design::button("Continue Editing")
+                .on_press(Message::MenuCommand(Box::new(Message::ModdingOpenProject))),
+            design::button("Review Changes").on_press(Message::MenuCommand(Box::new(
+                Message::ModdingReviewChanges
+            ))),
+            design::button("Build Mod")
+                .on_press(Message::MenuCommand(Box::new(Message::ModdingBuild))),
         ]
         .spacing(3)
         .into(),
@@ -90,26 +98,43 @@ fn dropdown(state: &State) -> Option<Element<'_, Message>> {
             } else {
                 "Show archive browser"
             })
-            .on_press(Message::MenuCommand(Box::new(Message::ModdingToggleAdvanced))),
-            design::button("Open Asset Viewer").on_press(Message::MenuCommand(Box::new(Message::OpenViewer))),
+            .on_press(Message::MenuCommand(Box::new(
+                Message::ModdingToggleAdvanced
+            ))),
+            design::button("Open Asset Viewer")
+                .on_press(Message::MenuCommand(Box::new(Message::OpenViewer))),
         ]
         .spacing(3)
         .into(),
         "Tools" => column![
-            design::button("Verify selected signed PAK").on_press(Message::MenuCommand(Box::new(Message::StartSignedInspection))),
-            design::button("Initialize isolated stage").on_press(Message::MenuCommand(Box::new(Message::StartStageInit))),
-            design::button("Check stage").on_press(Message::MenuCommand(Box::new(Message::StartStageStatus))),
-            design::button("Restore backup").on_press(Message::MenuCommand(Box::new(Message::StartStageRestore))),
-            design::button("Import signed original").on_press(Message::MenuCommand(Box::new(Message::StartStageImport))),
-            design::button("Apply signed replacement").on_press(Message::MenuCommand(Box::new(Message::StartStageApply))),
-            design::button("Installed Mods / Profiles").on_press(Message::MenuCommand(Box::new(Message::ModdingToggleProfiles))),
-            design::button("Asset Library").on_press(Message::MenuCommand(Box::new(Message::Navigate(super::Page::AssetLibrary)))),
-            design::button("Verify offline launcher + signed PAKs")
-                .on_press(Message::MenuCommand(Box::new(Message::StartOfflineLauncherCheck))),
-            design::button("Play with mods (existing private helper)")
-                .on_press(Message::MenuCommand(Box::new(Message::StartOfflineLauncherLaunch))),
-            design::button("Restore original PAKs + hook")
-                .on_press(Message::MenuCommand(Box::new(Message::StartOfflineLauncherRestore))),
+            design::button("Verify selected signed PAK").on_press(Message::MenuCommand(Box::new(
+                Message::StartSignedInspection
+            ))),
+            design::button("Initialize isolated stage")
+                .on_press(Message::MenuCommand(Box::new(Message::StartStageInit))),
+            design::button("Check stage")
+                .on_press(Message::MenuCommand(Box::new(Message::StartStageStatus))),
+            design::button("Restore backup")
+                .on_press(Message::MenuCommand(Box::new(Message::StartStageRestore))),
+            design::button("Import signed original")
+                .on_press(Message::MenuCommand(Box::new(Message::StartStageImport))),
+            design::button("Apply signed replacement")
+                .on_press(Message::MenuCommand(Box::new(Message::StartStageApply))),
+            design::button("Installed Mods / Profiles").on_press(Message::MenuCommand(Box::new(
+                Message::ModdingToggleProfiles
+            ))),
+            design::button("Asset Library").on_press(Message::MenuCommand(Box::new(
+                Message::Navigate(super::Page::AssetLibrary)
+            ))),
+            design::button("Verify offline launcher + signed PAKs").on_press(Message::MenuCommand(
+                Box::new(Message::StartOfflineLauncherCheck)
+            )),
+            design::button("Play with mods (existing private helper)").on_press(
+                Message::MenuCommand(Box::new(Message::StartOfflineLauncherLaunch))
+            ),
+            design::button("Restore original PAKs + hook").on_press(Message::MenuCommand(
+                Box::new(Message::StartOfflineLauncherRestore)
+            )),
             text("Offline only. Launcher and backup checks are verified before use.")
                 .size(11)
                 .style(design::muted),
