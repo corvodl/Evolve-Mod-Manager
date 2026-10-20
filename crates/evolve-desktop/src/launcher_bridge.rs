@@ -159,6 +159,52 @@ pub fn original_hook_for_stage(stage: &Path) -> Result<PathBuf, String> {
     within_file(&game, "bin64_SteamRetail/inject.dll")
 }
 
+/// Do not trust a stale `prepared` journal or size-only launch check.
+/// Every ready file must match its exact original/staged target mapping,
+/// SHA-256 and byte count, with no original backup present.
+fn verify_prepared_journal(
+    journal: &Value,
+    files: &[(String, PathBuf, PathBuf)],
+) -> Result<(), String> {
+    let records = journal["files"].as_array().ok_or("Prepared swap has no file ledger")?;
+    if records.len() != files.len() {
+        return Err("Prepared swap file count differs from the authenticated PAK/hook plan".into());
+    }
+    let mut seen = std::collections::HashSet::new();
+    for (name, target, staged) in files {
+        let record = records.iter().find(|record| record["name"].as_str() == Some(name.as_str()))
+            .ok_or_else(|| format!("Prepared swap lacks expected {name}"))?;
+        if !seen.insert(name.to_ascii_lowercase()) {
+            return Err("Duplicate prepared target".into());
+        }
+        let recorded_source = Path::new(record["source"].as_str().ok_or("Prepared source missing")?);
+        let recorded_target = Path::new(record["target"].as_str().ok_or("Prepared target missing")?);
+        if fs::canonicalize(recorded_source).map_err(|e| e.to_string())? != *staged
+            || fs::canonicalize(recorded_target).map_err(|e| e.to_string())? != *target
+        {
+            return Err(format!("Prepared source/target path mismatch: {name}"));
+        }
+        let ready_name = format!("{}.customkey-ready", target.display());
+        let backup_name = format!("{}.customkey-original", target.display());
+        if record["ready"].as_str() != Some(ready_name.as_str())
+            || record["backup"].as_str() != Some(backup_name.as_str())
+        {
+            return Err(format!("Prepared ready/backup suffix mismatch: {name}"));
+        }
+        no_orphaned_backup(target)?;
+        let ready = plain(Path::new(&ready_name), 16 * 1024 * 1024 * 1024)?;
+        let size = fs::metadata(&ready).map_err(|e| e.to_string())?.len();
+        let digest = sha(&ready)?;
+        if record["bytes"].as_u64() != Some(size)
+            || record["sha256"].as_str() != Some(digest.as_str())
+            || sha(staged)? != digest
+        {
+            return Err(format!("Prepared file changed since signature verification: {name}"));
+        }
+    }
+    Ok(())
+}
+
 /// Exactly mirror the private manager's launcher preflight before permitting
 /// its existing controlled_swap.py + auto_launch_frida.py lifecycle. This
 /// remains a *prelaunch* verification: only a real game session can show that
@@ -247,6 +293,7 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
         return Err("Staged signed archive count mismatches signed rekey plan".into());
     }
     let mut seen = std::collections::HashSet::new();
+    let mut planned = Vec::with_capacity(signed.len() + 1);
     for entry in signed {
         let path = safe_pak_name(entry["path"].as_str().ok_or("Missing PAK path")?)?;
         if !seen.insert(path.to_ascii_lowercase()) {
@@ -272,7 +319,13 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
         if !report.archive_member_paths_match || report.signed_original_entries == 0 {
             return Err(format!("Signed source member mismatch for {path}"));
         }
+        planned.push((path.to_owned(), original_pak, custom_pak));
     }
+    planned.push((
+        "bin64_SteamRetail/inject.dll".into(),
+        original.clone(),
+        custom.clone(),
+    ));
     let journal = swap.join("controlled_swap_state.json");
     let mut prepared = false;
     if fs::symlink_metadata(&journal).is_ok() {
@@ -288,6 +341,7 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
                         "Prepared swap belongs to another game/stage; restore or reset it".into(),
                     );
                 }
+                verify_prepared_journal(&prior, &planned)?;
                 prepared = true;
             }
             _ => return Err(
@@ -415,6 +469,37 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         assert!(inspect_existing_launcher(temp.path(), temp.path()).is_err());
     }
+    #[test]
+    fn prepared_swap_requires_hash_exact_sources_and_never_overwrites_originals() {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path();
+        let original = root.join("original.pak");
+        let staged = root.join("staged.pak");
+        fs::write(&original, b"original signed archive").unwrap();
+        fs::write(&staged, b"custom signed archive").unwrap();
+        let ready = root.join("original.pak.customkey-ready");
+        fs::write(&ready, b"custom signed archive").unwrap();
+        let name = "Game/original.pak";
+        let ready_label = ready.to_string_lossy().into_owned();
+        let backup_label = format!("{}.customkey-original", original.display());
+        let saved = serde_json::json!({
+            "files": [{
+                "name": name,
+                "target": original,
+                "source": staged,
+                "ready": ready_label,
+                "backup": backup_label,
+                "sha256": sha(&ready).unwrap(),
+                "bytes": fs::metadata(&ready).unwrap().len()
+            }]
+        });
+        let plan = vec![(name.to_owned(), original.clone(), staged.clone())];
+        assert!(verify_prepared_journal(&saved, &plan).is_ok());
+        fs::write(&ready, b"tampered signed bytes").unwrap();
+        assert!(verify_prepared_journal(&saved, &plan).is_err());
+        assert_eq!(fs::read(&original).unwrap(), b"original signed archive");
+    }
+
     #[test]
     fn refuses_unverified_custom_injector_bytes_and_stranded_backup() {
         let dir = tempfile::tempdir().unwrap();
