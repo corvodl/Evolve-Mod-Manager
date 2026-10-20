@@ -496,7 +496,7 @@ mod tests {
         let mut clip = Vec::new();
         clip.extend_from_slice(&4u16.to_le_bytes());
         clip.extend_from_slice(b"Idle");
-        clip.extend_from_slice(&vec![0u8; 132]); // motion parameters
+        clip.extend_from_slice(&[0u8; 132]); // motion parameters
         clip.extend_from_slice(&0u16.to_le_bytes()); // footplant count
         clip.extend_from_slice(&1u16.to_le_bytes()); // controller count
         if streaming {
