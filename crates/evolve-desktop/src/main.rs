@@ -3700,18 +3700,31 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     return Task::none();
                 }
             };
-            if [
-                &state.input,
-                &state.output,
-                &state.hook_original,
-                &state.hook_prepared,
-            ]
-            .iter()
-            .any(|s| s.trim().is_empty())
-            {
-                state.status = "Select original PAK, custom signed output PAK, original hook, and custom staged hook before preflight.".into();
+            if state.input.trim().is_empty() || state.output.trim().is_empty() {
+                state.status =
+                    "Select the original Stage 2 PAK and its custom signed output before verifying the hook."
+                        .into();
                 return Task::none();
             }
+            // The private manager always stages its shim as inject-custom.dll.
+            // Resolve those exact paths automatically; only override them if
+            // the user explicitly selected a different compatible source.
+            let original_hook = if state.hook_original.trim().is_empty() {
+                match launcher_bridge::original_hook_for_stage(&stage) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        state.status = format!("Original hook lookup failed: {error}");
+                        return Task::none();
+                    }
+                }
+            } else {
+                PathBuf::from(&state.hook_original)
+            };
+            let custom_hook = if state.hook_prepared.trim().is_empty() {
+                stage.join("inject-custom.dll")
+            } else {
+                PathBuf::from(&state.hook_prepared)
+            };
             let source = PathBuf::from(&state.input);
             let basename = match modding_keys::signed_basename(&source) {
                 Ok(name) => name,
@@ -3725,8 +3738,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Operation::VerifySignedHookPair(
                     source,
                     PathBuf::from(&state.output),
-                    PathBuf::from(&state.hook_original),
-                    PathBuf::from(&state.hook_prepared),
+                    original_hook,
+                    custom_hook,
                     keys.original_public,
                     keys.public,
                     basename,
@@ -4976,7 +4989,7 @@ fn view(state: &State) -> Element<'_, Message> {
             design::button("Verify PAK + hook for offline swap")
                 .style(design::secondary)
                 .on_press(Message::StartHookPreflight),
-            text("Never modifies installed client or starts Evolve.").size(12),
+            text("Hook source and inject-custom.dll are detected from the configured private signing stage; no game files change during verification.").size(12),
         ]
         .spacing(8),
     ]
