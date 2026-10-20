@@ -155,32 +155,63 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 text("Open a native CAF or compatible converted GLB to inspect source animation tracks.")
                     .size(12).style(design::muted).into()
             };
-            let material_details: Element<'_, Message> = if let Some(report) = &state.material_report {
+            let material_details: Element<'_, Message> = if let Some(report) =
+                &state.material_report
+            {
                 let mut rows = column![
                     text(format!(
                         "Authored CryEngine material • {} slot(s), {} texture reference(s)",
-                        report.slots, report.textures.len()
-                    )).size(12),
-                ].spacing(3);
+                        report.slots,
+                        report.textures.len()
+                    ))
+                    .size(12),
+                ]
+                .spacing(3);
                 for (label, roles, loaded) in [
                     ("Diffuse", &["diffuse"][..], state.diffuse.is_some()),
-                    ("Normal", &["normals", "normal", "bumpmap"][..], state.normal_map.is_some()),
-                    ("Emissive", &["emittance", "emissive", "emission", "glow"][..], state.emissive_map.is_some()),
-                    ("Specular", &["specular", "specularcolor"][..], state.specular_map.is_some()),
-                    ("Gloss", &["gloss", "glossiness", "smoothness"][..], state.gloss_map.is_some()),
+                    (
+                        "Normal",
+                        &["normals", "normal", "bumpmap"][..],
+                        state.normal_map.is_some(),
+                    ),
+                    (
+                        "Emissive",
+                        &["emittance", "emissive", "emission", "glow"][..],
+                        state.emissive_map.is_some(),
+                    ),
+                    (
+                        "Specular",
+                        &["specular", "specularcolor"][..],
+                        state.specular_map.is_some(),
+                    ),
+                    (
+                        "Gloss",
+                        &["gloss", "glossiness", "smoothness"][..],
+                        state.gloss_map.is_some(),
+                    ),
                 ] {
-                    let authored: Vec<_> = report.textures.iter()
+                    let authored: Vec<_> = report
+                        .textures
+                        .iter()
                         .filter(|entry| roles.contains(&entry.role.as_str()))
                         .collect();
-                    let exact = authored.iter().filter(|entry| matches!(
-                        entry.resolution, AssetResolution::Found(_)
-                    )).count();
+                    let exact = authored
+                        .iter()
+                        .filter(|entry| matches!(entry.resolution, AssetResolution::Found(_)))
+                        .count();
                     let unresolved = authored.len() - exact;
                     rows = rows.push(
                         text(format!(
                             "{label}: {} GPU • {exact}/{} authored exact • {unresolved} unresolved",
-                            if loaded { "loaded" } else { "not loaded" }, authored.len()
-                        )).size(12).style(if loaded { design::accent } else { design::muted })
+                            if loaded { "loaded" } else { "not loaded" },
+                            authored.len()
+                        ))
+                        .size(12)
+                        .style(if loaded {
+                            design::accent
+                        } else {
+                            design::muted
+                        }),
                     );
                 }
                 if report.slots > 1 {
