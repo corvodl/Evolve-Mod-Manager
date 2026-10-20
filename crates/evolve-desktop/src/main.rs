@@ -53,7 +53,7 @@ use modding_projects::{ProjectRow, discover_projects};
 use selection::MultiSelection;
 use settings::{Preferences, load_from, save_to, settings_path};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
@@ -121,6 +121,13 @@ impl Page {
             Self::Settings => "Settings",
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct LevelTransformDiff {
+    guid: String,
+    old_local: evolve_core::Transform,
+    new_local: evolve_core::Transform,
 }
 
 #[derive(Default)]
@@ -249,8 +256,8 @@ struct State {
     level_source: Option<PathBuf>,
     level_source_sha: String,
     level_original_transforms: HashMap<String, evolve_core::Transform>,
-    level_undo: Vec<(String, evolve_core::Transform)>,
-    level_redo: Vec<(String, evolve_core::Transform)>,
+    level_undo: VecDeque<LevelTransformDiff>,
+    level_redo: VecDeque<LevelTransformDiff>,
     level_edit_position: String,
     level_edit_rotation: String,
     level_edit_scale: String,
@@ -327,6 +334,7 @@ enum Operation {
         PathBuf,
         PathBuf,
         Vec<(String, evolve_core::Transform)>,
+        Vec<PathBuf>,
         String,
     ),
     InspectTerrain(PathBuf),
@@ -719,20 +727,15 @@ impl Operation {
                 }
                 Ok(Completed::Level(scene, source, checksum))
             }
-            Self::ExportEditedLevel(source, destination, edits, expected_sha) => {
-                if level_source_hash(&source)? != expected_sha {
-                    return Err(
-                        "Level source changed since inspection; reload before exporting".into(),
-                    );
-                }
-                evolve_core::export_edited_layers(&source, &destination, &edits)
-                    .map_err(|e| e.to_string())?;
-                if level_source_hash(&source)? != expected_sha {
-                    let _ = std::fs::remove_file(&destination);
-                    return Err(
-                        "Level source changed during export; incomplete output removed".into(),
-                    );
-                }
+            Self::ExportEditedLevel(source, destination, edits, protected, expected_sha) => {
+                evolve_core::export_edited_layers_guarded(
+                    &source,
+                    &destination,
+                    &edits,
+                    &protected,
+                    &expected_sha,
+                )
+                .map_err(|e| e.to_string())?;
                 Ok(Completed::EditedLevelExported(destination, edits.len()))
             }
             Self::InspectTerrain(source) => {
@@ -1119,29 +1122,29 @@ fn sync_level_fields(state: &mut State) {
 
 fn restore_level_history(state: &mut State, undo: bool) {
     let entry = if undo {
-        state.level_undo.pop()
+        state.level_undo.pop_back()
     } else {
-        state.level_redo.pop()
+        state.level_redo.pop_back()
     };
-    let Some((id, previous)) = entry else {
+    let Some(diff) = entry else {
         return;
     };
+    let target = if undo { diff.old_local } else { diff.new_local };
     let result = state.level_scene.as_ref().and_then(|scene| {
-        let current = scene.objects.iter().find(|object| object.id == id)?.local;
-        Some((
-            current,
-            evolve_core::edit_level_transform(scene, &id, previous),
-        ))
+        let current = scene.objects.iter().find(|object| object.id == diff.guid)?.local;
+        let expected = if undo { diff.new_local } else { diff.old_local };
+        (current == expected)
+            .then(|| evolve_core::edit_level_transform(scene, &diff.guid, target))
     });
     match result {
-        Some((current, Ok(scene))) => {
+        Some(Ok(scene)) => {
             state.level_scene = Some(Arc::new(scene));
             let other = if undo {
                 &mut state.level_redo
             } else {
                 &mut state.level_undo
             };
-            other.push((id, current));
+            other.push_back(diff);
             sync_level_fields(state);
             state.status = if undo {
                 "Reverted the last level transform (original layer unchanged).".into()
@@ -1151,9 +1154,9 @@ fn restore_level_history(state: &mut State, undo: bool) {
         }
         _ => {
             if undo {
-                state.level_undo.push((id, previous));
+                state.level_undo.push_back(diff);
             } else {
-                state.level_redo.push((id, previous));
+                state.level_redo.push_back(diff);
             }
             state.status = "Cannot restore level history; reload the level source.".into();
         }
@@ -2112,14 +2115,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Ok(edited) => {
                     let applied = edited.objects[index].local;
                     if applied != previous {
-                        state
-                            .level_original_transforms
-                            .entry(id.clone())
-                            .or_insert(previous);
-                        if state.level_undo.len() >= 64 {
-                            state.level_undo.remove(0);
+                        // The authored transform map was frozen at load; never
+                        // replace its originals with an edited/undone value.
+                        if !state.level_original_transforms.contains_key(&id) {
+                            state.status = "Original placement missing; reload source.".into();
+                            return Task::none();
                         }
-                        state.level_undo.push((id, previous));
+                        if state.level_undo.len() >= 64 {
+                            state.level_undo.pop_front();
+                        }
+                        state.level_undo.push_back(LevelTransformDiff {
+                            guid: id,
+                            old_local: previous,
+                            new_local: applied,
+                        });
                         state.level_redo.clear();
                         state.level_scene = Some(Arc::new(edited));
                         sync_level_fields(state);
@@ -3994,10 +4003,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                     state.level_source = Some(source);
                     state.level_source_sha = hash;
+                    state.level_original_transforms = scene
+                        .objects
+                        .iter()
+                        .map(|object| (object.id.clone(), object.local))
+                        .collect();
                     state.level_scene = Some(Arc::new(scene));
                     state.level_selected = None;
                     state.level_selection.clear();
-                    state.level_original_transforms.clear();
                     state.level_undo.clear();
                     state.level_redo.clear();
                     sync_level_fields(state);
