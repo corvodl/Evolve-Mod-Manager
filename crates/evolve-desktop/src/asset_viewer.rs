@@ -230,7 +230,11 @@ fn viewport(state: &State) -> Element<'_, Message> {
     };
 
     let toolbar = row![
-        design::button("Reset View").on_press(Message::ViewerResetCamera),
+        design::button("Frame All").on_press(Message::ViewerResetCamera),
+        design::button("Front").on_press(Message::ViewerCameraPreset("Front")),
+        design::button("Right").on_press(Message::ViewerCameraPreset("Right")),
+        design::button("Top").on_press(Message::ViewerCameraPreset("Top")),
+        design::button("Iso").on_press(Message::ViewerCameraPreset("Isometric")),
         text("Drag: orbit • Shift+drag/right-drag: pan • Wheel: zoom").size(11),
         design::button("−")
             .on_press(Message::ViewerZoomWheel(-2.0))
