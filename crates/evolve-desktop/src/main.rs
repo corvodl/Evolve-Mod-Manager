@@ -819,13 +819,39 @@ impl Operation {
                 };
                 Ok(Completed::Terrain(preview, info))
             }
-            Self::InspectSignedPak(source, key, name) => inspect_signed_pak(&source, &key, &name)
-                .map(Completed::SignedPak)
-                .map_err(|e| e.to_string()),
-            Self::ExtractSignedPak(source, key, name, dest) => {
+            Self::InspectSignedPak(source, stage, name) => {
+                let key = modding_keys::verified_archive_key(&stage, &source, &name)?;
+                inspect_signed_pak(&source, &key, &name)
+                    .map(Completed::SignedPak)
+                    .map_err(|e| e.to_string())
+            }
+            Self::ExtractSignedPak(source, stage, name, dest) => {
+                let key = modding_keys::verified_archive_key(&stage, &source, &name)?;
                 extract_signed_pak(&source, &key, &name, &dest)
                     .map(|i| Completed::ExtractedSigned(i.entries.len(), dest))
                     .map_err(|e| e.to_string())
+            }
+            Self::ResignSignedPak(source, stage, new_private, new_public, basename, dest) => {
+                let original_key = modding_keys::verified_archive_key(&stage, &source, &basename)?;
+                let report = resign_signed_pak(
+                    &source, &original_key, &new_private, &new_public, &basename, &dest,
+                ).map_err(|e| e.to_string())?;
+                Ok(Completed::ResignedSignedPak(report, dest))
+            }
+            Self::PrepareClientHook(original, old_key, new_key, dest) => {
+                let report = prepare_client_hook(&original, &old_key, &new_key, &dest)
+                    .map_err(|e| e.to_string())?;
+                Ok(Completed::HookPrepared(report, dest))
+            }
+            Self::VerifySignedHookPair(
+                original_pak, custom_pak, original_hook, custom_hook,
+                original_key, custom_key, basename,
+            ) => {
+                let report = inspect_pak_hook_pair(
+                    &original_pak, &custom_pak, &original_hook, &custom_hook,
+                    &original_key, &custom_key, &basename,
+                ).map_err(|e| e.to_string())?;
+                Ok(Completed::SignedHookPreflight(report))
             }
             Self::ResolveCdf(source, asset_root) => {
                 let definition = read_cdf(&source).map_err(|e| e.to_string())?;
@@ -850,7 +876,7 @@ impl Operation {
             }
             Self::RebuildSignedPak(
                 src,
-                old_pub,
+                key_stage,
                 signing_key,
                 new_pub,
                 name,
@@ -858,9 +884,10 @@ impl Operation {
                 replacement,
                 dest,
             ) => {
+                let original_key = modding_keys::verified_archive_key(&key_stage, &src, &name)?;
                 let result = rebuild_signed_pak_entry(
                     &src,
-                    &old_pub,
+                    &original_key,
                     &signing_key,
                     &new_pub,
                     &name,
