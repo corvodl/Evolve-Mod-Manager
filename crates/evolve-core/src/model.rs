@@ -588,11 +588,19 @@ pub(crate) mod tests {
     // terminal chunk records, not the CrChF v7 chunk table.
     fn legacy_2012_fixture() -> Vec<u8> {
         let positions = [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
-            .iter().flatten().flat_map(|f| f.to_le_bytes()).collect::<Vec<_>>();
-        let indices = [0u16, 1, 2].iter()
-            .flat_map(|index| index.to_le_bytes()).collect::<Vec<_>>();
+            .iter()
+            .flatten()
+            .flat_map(|f| f.to_le_bytes())
+            .collect::<Vec<_>>();
+        let indices = [0u16, 1, 2]
+            .iter()
+            .flat_map(|index| index.to_le_bytes())
+            .collect::<Vec<_>>();
         let uv = [[0.0f32, 0.0], [1.0, 0.0], [0.0, 1.0]]
-            .iter().flatten().flat_map(|f| f.to_le_bytes()).collect::<Vec<_>>();
+            .iter()
+            .flatten()
+            .flat_map(|f| f.to_le_bytes())
+            .collect::<Vec<_>>();
         let streams = [(0u32, 12u32, positions), (5, 2, indices), (2, 8, uv)];
         let mut data = vec![0u8; 20];
         data[..8].copy_from_slice(b"CryTek\0\0");
