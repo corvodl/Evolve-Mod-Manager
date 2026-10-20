@@ -166,6 +166,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
         if !state.viewer_wireframe {
             shader(TexturedScene {
                 mesh: mesh.clone(),
+                surfaces: state.cdf_surfaces.clone(),
                 diffuse: state.diffuse.clone(),
                 normal_map: state.normal_map.clone(),
                 emissive: state.emissive_map.clone(),
