@@ -23,7 +23,10 @@ pub fn valid_blender(path: &str) -> Option<PathBuf> {
         None
     } else {
         let candidate = Path::new(path);
-        if candidate.file_name().is_none_or(|name| !name.eq_ignore_ascii_case("blender.exe")) {
+        if candidate
+            .file_name()
+            .is_none_or(|name| !name.eq_ignore_ascii_case("blender.exe"))
+        {
             None
         } else {
             installed_file(candidate)
@@ -52,7 +55,10 @@ fn discover_in_roots(roots: &[PathBuf]) -> Option<PathBuf> {
     let mut versions = Vec::new();
     for base in roots {
         let vendor = base.join("Blender Foundation");
-        if !fs::symlink_metadata(&vendor).ok().is_some_and(|m| m.file_type().is_dir()) {
+        if !fs::symlink_metadata(&vendor)
+            .ok()
+            .is_some_and(|m| m.file_type().is_dir())
+        {
             continue;
         }
         let Ok(installs) = fs::read_dir(vendor) else {
@@ -79,18 +85,23 @@ fn discover_in_roots(roots: &[PathBuf]) -> Option<PathBuf> {
 
 #[cfg(target_os = "windows")]
 fn standard_roots() -> Vec<PathBuf> {
-    ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"]
-        .into_iter()
-        .filter_map(env::var_os)
-        .map(PathBuf::from)
-        .map(|root| {
-            if root.ends_with("AppData\\Local") {
-                root.join("Programs")
-            } else {
-                root
-            }
-        })
-        .collect()
+    [
+        "ProgramW6432",
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "LOCALAPPDATA",
+    ]
+    .into_iter()
+    .filter_map(env::var_os)
+    .map(PathBuf::from)
+    .map(|root| {
+        if root.ends_with("AppData\\Local") {
+            root.join("Programs")
+        } else {
+            root
+        }
+    })
+    .collect()
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -106,8 +117,12 @@ fn installed_standard() -> Option<PathBuf> {
     // The Steam distribution is a common alternative to Blender Foundation.
     for root in roots {
         if let Some(path) = installed_file(
-            &root.join("Steam").join("steamapps").join("common")
-                .join("Blender").join("blender.exe"),
+            &root
+                .join("Steam")
+                .join("steamapps")
+                .join("common")
+                .join("Blender")
+                .join("blender.exe"),
         ) {
             return Some(path);
         }
@@ -131,7 +146,13 @@ mod tests {
     #[test]
     fn picks_newest_compatible_standard_blender_and_ignores_symlink_aliases() {
         let temp = tempfile::tempdir().unwrap();
-        for version in ["Blender 4.1", "Blender 4.2", "Blender 5.2", "Blender 5.1.3", "Blender NotAVersion"] {
+        for version in [
+            "Blender 4.1",
+            "Blender 4.2",
+            "Blender 5.2",
+            "Blender 5.1.3",
+            "Blender NotAVersion",
+        ] {
             let folder = temp.path().join("Blender Foundation").join(version);
             fs::create_dir_all(&folder).unwrap();
             fs::write(folder.join("blender.exe"), b"fixture").unwrap();
