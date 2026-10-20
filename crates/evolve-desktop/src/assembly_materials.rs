@@ -201,6 +201,9 @@ fn role_channel(role: &str) -> Option<usize> {
     }
 }
 
+/// Per-channel resolved source textures and independent missing-map diagnostics.
+type ResolvedMaterialMaps = ([Option<Arc<image::RgbaImage>>; 6], Vec<String>);
+
 fn authored_maps(
     document: &MaterialDocument,
     material_slot: u32,
@@ -209,7 +212,7 @@ fn authored_maps(
     build: Option<&str>,
     cache: &SharedCache,
     budget: &mut TextureBudget,
-) -> Result<([Option<Arc<image::RgbaImage>>; 6], Vec<String>), String> {
+) -> Result<ResolvedMaterialMaps, String> {
     let slot = document.slots.get(material_slot as usize).ok_or_else(|| {
         format!(
             "Source material slot {} exceeds {} authored leaves",
