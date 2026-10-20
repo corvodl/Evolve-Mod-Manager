@@ -124,6 +124,28 @@ pub fn decoded_dds_indexed(
     build: Option<&str>,
 ) -> Result<(DdsInfo, Arc<RgbaImage>), String> {
     let lower = virtual_path.replace('\\', "/").to_ascii_lowercase();
+    // The 2012 high archive also contains two .dds.0a files whose payload
+    // starts at the 124-byte DDS_HEADER rather than the usual DDS magic.
+    // Accept them only if the documented 124-byte structure is present.
+    if lower.ends_with(".dds.0a") {
+        let meta = fs::symlink_metadata(source).map_err(|e| e.to_string())?;
+        if !meta.file_type().is_file() || meta.len() > 256 * 1024 * 1024 {
+            return Err("Invalid or oversized 2012 DDS alpha auxiliary".into());
+        }
+        let mut headerless = fs::read(source).map_err(|e| e.to_string())?;
+        if headerless.len() < 124
+            || headerless[..4] != 124u32.to_le_bytes()
+        {
+            return Err("The .dds.0a file does not contain a verified DDS header".into());
+        }
+        let staging = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let mut wrapped = b"DDS ".to_vec();
+        wrapped.append(&mut headerless);
+        let path = staging.path().join("alpha.dds");
+        fs::write(&path, wrapped).map_err(|e| e.to_string())?;
+        let (info, pixels) = decode_preview_image(&path, DdsLayout::Linear)?;
+        return Ok((info, Arc::new(pixels)));
+    }
     let base = if let Some((name, suffix)) = lower.rsplit_once(".dds.") {
         if suffix.parse::<usize>().is_err() {
             return Err("Invalid numbered DDS fragment".into());
