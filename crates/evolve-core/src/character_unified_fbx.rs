@@ -2,8 +2,8 @@
 //! Fail closed on any missing part, UV, mismatched rig or invalid Blender output.
 //! This is geometry/rig unification; full multi-slot materials remain a separate gate.
 use crate::cdf::{AssetResolution, read_cdf, resolve_cdf, resolve_virtual};
-use crate::fbx::publish_verified_binary_fbx;
 use crate::character_assembly::select_attachments;
+use crate::fbx::publish_verified_binary_fbx;
 use crate::inventory::Inventory;
 use crate::materials::{read_material, resolve_materials};
 use crate::model::read_model;
