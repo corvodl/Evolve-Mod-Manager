@@ -6,7 +6,7 @@ use rsa::{RsaPublicKey, pkcs1::{DecodeRsaPublicKey, EncodeRsaPublicKey}, traits:
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::Path;
 
 const HOOK_SIZE: usize = 4096;
@@ -41,6 +41,8 @@ pub struct HookPairReport {
 pub struct PakHookPairReport {
     pub schema: u32,
     pub archive_basename: String,
+    pub original_pak_sha256: String,
+    pub custom_pak_sha256: String,
     pub signed_original_entries: usize,
     pub signed_replacement_entries: usize,
     pub archive_member_paths_match: bool,
@@ -68,6 +70,27 @@ fn hook_bytes(path: &Path) -> Result<Vec<u8>, ClientHookError> {
         return Err(ClientHookError::Format);
     }
     Ok(fs::read(path)?)
+}
+fn archive_fingerprint(path: &Path) -> Result<String, ClientHookError> {
+    let meta = fs::symlink_metadata(path)?;
+    if !meta.file_type().is_file() || meta.len() > 16 * 1024 * 1024 * 1024 {
+        return Err(ClientHookError::Format);
+    }
+    let mut file = fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut chunk = [0u8; 128 * 1024];
+    let mut total = 0u64;
+    loop {
+        let n = file.read(&mut chunk)?;
+        if n == 0 { break; }
+        total = total.checked_add(n as u64).ok_or(ClientHookError::Format)?;
+        if total > meta.len() { return Err(ClientHookError::Format); }
+        hasher.update(&chunk[..n]);
+    }
+    if total != meta.len() {
+        return Err(ClientHookError::Format);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 fn fingerprint(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -184,6 +207,8 @@ pub fn inspect_pak_hook_pair(
     Ok(PakHookPairReport {
         schema: 1,
         archive_basename: basename.to_owned(),
+        original_pak_sha256: archive_fingerprint(original_pak)?,
+        custom_pak_sha256: archive_fingerprint(custom_pak)?,
         signed_original_entries: old.entries.len(),
         signed_replacement_entries: new.entries.len(),
         archive_member_paths_match: true,
