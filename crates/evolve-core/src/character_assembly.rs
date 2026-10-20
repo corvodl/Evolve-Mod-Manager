@@ -389,22 +389,25 @@ pub fn read_static_cdf_assembly_with_imported(
     }
     let definition = read_cdf(&cdf_location)?;
     let (skin_set, selected) = select_attachments(&definition)?;
-    let skeleton_path = preview_source(library, &definition.skeleton, imported, build)?
-        .ok_or_else(|| {
-            AssemblyError::Incomplete(format!(
-                "CDF skeleton absent from imported sources: {}",
-                definition.skeleton
-            ))
-        })?;
-    let skeleton = fs::read(&skeleton_path)
-        .ok()
-        .and_then(|bytes| parse_compiled_skeleton(&bytes).ok());
     let mut notes = Vec::new();
+    // Static skinned mesh geometry can be rendered without a .chr skeleton.
+    // Lack of a verified bind pose must only disable rigid bone sockets and
+    // animation, not make a character's valid authored .skinm invisible.
+    let skeleton_path = match preview_source(library, &definition.skeleton, imported, build) {
+        Ok(path) => path,
+        Err(error) => {
+            notes.push(format!("CDF skeleton: {error}"));
+            None
+        }
+    };
+    let skeleton = skeleton_path.as_ref()
+        .and_then(|path| fs::read(path).ok())
+        .and_then(|bytes| parse_compiled_skeleton(&bytes).ok());
     if skeleton.is_none() {
-        notes.push(
-            "Compiled bind-pose skeleton cannot be verified; rigid sockets and animation disabled"
-                .into(),
-        );
+        notes.push(format!(
+            "Compiled bind-pose skeleton unavailable ({}); static skin geometry remains viewable, but rigid sockets and animation are disabled",
+            definition.skeleton
+        ));
     }
     let mut names_seen = HashSet::new();
     let mut meshes = Vec::new();
@@ -416,32 +419,44 @@ pub fn read_static_cdf_assembly_with_imported(
         if !selected.contains(&attachment.name.as_str()) {
             continue;
         }
+        // The .skin is the authored skeletal binding, not necessarily a
+        // renderable mesh, and may live in a different source PAK. A precise
+        // virtual-path .skinm companion is sufficient for STATIC preview;
+        // it does not authorize animation without original .skin weights.
         let bound = match preview_source(library, &attachment.binding, imported, build) {
-            Ok(Some(path)) => path,
-            Ok(None) => {
-                notes.push(format!(
-                    "{}: missing authored CDF binding {}",
-                    attachment.name, attachment.binding
-                ));
-                continue;
-            }
+            Ok(path) => path,
             Err(error) => {
-                notes.push(format!("{}: {error}", attachment.name));
-                continue;
+                notes.push(format!("{}: authored binding: {error}", attachment.name));
+                None
             }
         };
-        // A compiled render companion is preferred, but the author-declared
-        // original may itself contain geometry (notably older .chr meshes).
-        let rendered = match compiled_companion(&attachment.binding) {
-            Some(companion) => match preview_source(library, &companion, imported, build) {
-                Ok(Some(path)) => path,
-                Ok(None) => bound,
+        let companion = compiled_companion(&attachment.binding);
+        let compiled = match companion.as_deref() {
+            Some(path) => match preview_source(library, path, imported, build) {
+                Ok(found) => found,
                 Err(error) => {
-                    notes.push(format!("{}: {error}", attachment.name));
-                    continue;
+                    notes.push(format!("{}: render companion: {error}", attachment.name));
+                    None
                 }
             },
-            None => bound,
+            None => None,
+        };
+        let rendered = if let Some(rendered) = compiled {
+            if bound.is_none() {
+                notes.push(format!(
+                    "{}: original binding {} absent; rendering exact compiled companion only (skin weights unverified)",
+                    attachment.name, attachment.binding
+                ));
+            }
+            rendered
+        } else if let Some(bound) = bound {
+            bound
+        } else {
+            notes.push(format!(
+                "{}: missing original binding and exact render companion",
+                attachment.name
+            ));
+            continue;
         };
         if !names_seen.insert(attachment.binding.to_ascii_lowercase()) {
             notes.push(format!(
@@ -552,7 +567,7 @@ pub fn read_static_cdf_assembly_with_imported(
         source_parts,
         geometry_parts,
         verified_bones: skeleton.as_ref().map(|s| s.names.len()),
-        skeleton_source: skeleton.as_ref().map(|_| skeleton_path),
+        skeleton_source: skeleton.as_ref().and(skeleton_path),
         warnings: notes,
     };
     Ok((mesh, report))
