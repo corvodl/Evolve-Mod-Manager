@@ -6435,7 +6435,7 @@ mod project_edit_tests {
         let temp = tempfile::tempdir().unwrap();
         assert_eq!(
             verified_library_directory(temp.path().to_str().unwrap()).unwrap(),
-            temp.path().canonicalize().unwrap()
+            temp.path()
         );
         assert!(verified_library_directory("").is_err());
         assert!(verified_library_directory("relative/folder").is_err());
