@@ -160,8 +160,14 @@ pub fn prepare_client_hook(
         return Err(ClientHookError::OriginalMismatch);
     }
     let parent = destination.parent().ok_or(ClientHookError::UnsafeOutput)?;
-    if destination.file_name().and_then(|n| n.to_str()) != Some("inject.dll")
-        || !fs::symlink_metadata(parent)?.file_type().is_dir()
+    // The offline launcher consumes stage/inject-custom.dll; export tools
+    // also support a separately staged copy named inject.dll. Both require
+    // a NEW path and an exact unchanged original hook except its RSA region.
+    let accepted = matches!(
+        destination.file_name().and_then(|n| n.to_str()),
+        Some("inject.dll" | "inject-custom.dll")
+    );
+    if !accepted || !fs::symlink_metadata(parent)?.file_type().is_dir()
         || fs::symlink_metadata(destination).is_ok()
     {
         return Err(ClientHookError::UnsafeOutput);
@@ -282,6 +288,20 @@ mod tests {
         fs::write(&shim, bytes).unwrap();
         (dir, shim, old, new)
     }
+    #[test]
+    fn private_launcher_stage_hook_name_is_supported_without_overwriting_original() {
+        let (dir, original, old, new) = setup();
+        let custom = dir.path().join("inject-custom.dll");
+        let original_bytes = fs::read(&original).unwrap();
+        let verified = prepare_client_hook(&original, &old, &new, &custom).unwrap();
+        assert!(verified.only_public_key_bytes_changed);
+        assert!(inspect_client_hook_pair(&original, &custom, &old, &new).is_ok());
+        assert_eq!(fs::read(&original).unwrap(), original_bytes);
+        assert!(prepare_client_hook(&original, &old, &new, &custom).is_err());
+        let wrong = dir.path().join("inject-custom.dll.bak");
+        assert!(prepare_client_hook(&original, &old, &new, &wrong).is_err());
+    }
+
     #[test]
     fn creates_only_an_exact_custom_key_hook_without_touching_original() {
         let (dir, original, old, new) = setup();
