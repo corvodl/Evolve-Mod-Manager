@@ -7,6 +7,7 @@ pub mod batch;
 pub mod caf_layers;
 pub mod cdf;
 pub mod character_assembly;
+pub mod client_hook;
 pub mod character_folder_fbx;
 pub mod character_unified_fbx;
 pub mod converter;
@@ -44,6 +45,10 @@ pub use caf_layers::{CafLayer, sample_verified_caf_layers};
 pub use cdf::{
     AssetResolution, CdfAttachment, CdfDefinition, CdfDependencyReport, CdfError, parse_cdf,
     read_cdf, resolve_cdf, resolve_virtual,
+};
+pub use client_hook::{
+    ClientHookError, HookPairReport, PakHookPairReport, inspect_client_hook_pair,
+    inspect_pak_hook_pair, prepare_client_hook,
 };
 pub use character_assembly::{
     AssemblyError, AssemblyReport, combine_source_meshes, read_static_cdf_assembly,
