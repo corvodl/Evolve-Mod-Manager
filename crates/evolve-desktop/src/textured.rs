@@ -1142,7 +1142,17 @@ mod tests {
         )
         .validate(&module)
         .expect("GPU normal/emissive shader must pass Naga validation");
-        assert!(module.entry_points.iter().any(|entry| entry.name == "fs_opacity"));
-        assert!(module.entry_points.iter().any(|entry| entry.name == "fs_main"));
+        assert!(
+            module
+                .entry_points
+                .iter()
+                .any(|entry| entry.name == "fs_opacity")
+        );
+        assert!(
+            module
+                .entry_points
+                .iter()
+                .any(|entry| entry.name == "fs_main")
+        );
     }
 }
