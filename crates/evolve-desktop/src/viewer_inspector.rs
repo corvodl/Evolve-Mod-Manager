@@ -2,7 +2,7 @@
 //! original-vs-modified diagnostics. No graph edges are inferred from names.
 use super::{Message, State, ViewerTab, uv_preview};
 use crate::design;
-use evolve_core::{DependencyGraph, DependencyStatus};
+use evolve_core::{AssetResolution, DependencyGraph, DependencyStatus};
 use iced::widget::canvas::{self, Path, Stroke};
 use iced::widget::{canvas as canvas_widget, column, container, row, scrollable, space, text};
 use iced::{Color, Element, Fill, Length, Point, Rectangle, Renderer, Theme, mouse};
@@ -124,7 +124,14 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     text(format!("Native CAF • {} controller(s) • {:.2}s • cyclic={} additive={}",
                         clip.controllers.len(), clip.duration_seconds(), clip.cyclic, clip.additive))
                         .size(12),
-                    text("Controllers are source bone CRCs, not yet associated with a validated skin hierarchy.")
+                    text(if let Some(skin) = &state.skin_preview {
+                        format!(
+                            "Bound to {} verified original bones and {} weighted vertices; CAF playback updates the wgpu mesh with CPU skinning.",
+                            skin.original_bones(), skin.original_vertices()
+                        )
+                    } else {
+                        "Controllers are source bone CRCs; select an exact compiled mesh and source skeleton to verify skin playback.".into()
+                    })
                         .size(12).style(design::muted),
                 ].spacing(5);
                 for controller in clip.controllers.iter().take(14) {
@@ -148,6 +155,44 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 text("Open a native CAF or compatible converted GLB to inspect source animation tracks.")
                     .size(12).style(design::muted).into()
             };
+            let material_details: Element<'_, Message> = if let Some(report) = &state.material_report {
+                let mut rows = column![
+                    text(format!(
+                        "Authored CryEngine material • {} slot(s), {} texture reference(s)",
+                        report.slots, report.textures.len()
+                    )).size(12),
+                ].spacing(3);
+                for (label, roles, loaded) in [
+                    ("Diffuse", &["diffuse"][..], state.diffuse.is_some()),
+                    ("Normal", &["normals", "normal", "bumpmap"][..], state.normal_map.is_some()),
+                    ("Emissive", &["emittance", "emissive", "emission", "glow"][..], state.emissive_map.is_some()),
+                    ("Specular", &["specular", "specularcolor"][..], state.specular_map.is_some()),
+                    ("Gloss", &["gloss", "glossiness", "smoothness"][..], state.gloss_map.is_some()),
+                ] {
+                    let authored: Vec<_> = report.textures.iter()
+                        .filter(|entry| roles.contains(&entry.role.as_str()))
+                        .collect();
+                    let exact = authored.iter().filter(|entry| matches!(
+                        entry.resolution, AssetResolution::Found(_)
+                    )).count();
+                    let unresolved = authored.len() - exact;
+                    rows = rows.push(
+                        text(format!(
+                            "{label}: {} GPU • {exact}/{} authored exact • {unresolved} unresolved",
+                            if loaded { "loaded" } else { "not loaded" }, authored.len()
+                        )).size(12).style(if loaded { design::normal } else { design::muted })
+                    );
+                }
+                if report.slots > 1 {
+                    rows = rows.push(text(
+                        "Multiple authored submaterials are tracked separately; full per-triangle GPU slot mapping is not yet validated."
+                    ).size(12).style(design::muted));
+                }
+                scrollable(rows).height(Length::Fixed(165.0)).into()
+            } else {
+                text("Material channels are resolved automatically from the selected model's exact authored MTL. Missing or ambiguous assets are never substituted.")
+                    .size(12).style(design::muted).into()
+            };
             column![
                 text("Viewer controls").size(14),
                 text("Original CryEngine mesh and UV0 remain unmodified. Camera and panel layout can be saved.")
@@ -159,6 +204,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     design::button("Save workspace").on_press(Message::ViewerSaveLayout),
                 ].spacing(8),
                 motion_details,
+                material_details,
             ].spacing(6).into()
         }
         ViewerTab::Uv => {
