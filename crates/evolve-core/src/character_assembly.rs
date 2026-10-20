@@ -612,12 +612,20 @@ mod tests {
         .unwrap();
         let inventory = crate::scan_directory(&folder).unwrap();
         let (mesh, report) = read_static_cdf_assembly(&cdf, &inventory).unwrap();
-        assert_eq!(report.original_parts, ["torso", "head", "palps", "basher_l", "basher_r"]);
+        assert_eq!(
+            report.original_parts,
+            ["torso", "head", "palps", "basher_l", "basher_r"]
+        );
         assert_eq!(report.source_parts.len(), 5);
         assert_eq!(report.geometry_parts.len(), 5);
         assert_eq!(mesh.indices.len(), 15);
         assert!(mesh.uv0.is_some());
-        assert!(report.warnings.iter().any(|w| w.contains("Compiled bind-pose")));
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("Compiled bind-pose"))
+        );
     }
 
     #[test]
@@ -626,7 +634,11 @@ mod tests {
         let root = temp.path().join("characters");
         let folder = root.join("monsters/ParasiteHost");
         fs::create_dir_all(&folder).unwrap();
-        fs::write(folder.join("ParasiteHost3.chr"), crate::model::tests::fixture()).unwrap();
+        fs::write(
+            folder.join("ParasiteHost3.chr"),
+            crate::model::tests::fixture(),
+        )
+        .unwrap();
         let cdf = folder.join("ParasiteHost3.cdf");
         fs::write(
             &cdf,
@@ -644,7 +656,11 @@ mod tests {
         assert_eq!(report.original_parts, ["Mesh"]);
         assert_eq!(mesh.indices.len(), 3);
         assert_eq!(report.geometry_parts.len(), 1);
-        assert!(report.geometry_parts[0].source.ends_with("ParasiteHost3.chr"));
+        assert!(
+            report.geometry_parts[0]
+                .source
+                .ends_with("ParasiteHost3.chr")
+        );
     }
 
     #[test]
