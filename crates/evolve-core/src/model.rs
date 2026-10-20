@@ -56,12 +56,20 @@ fn u32at(data: &[u8], at: usize) -> Result<u32, ModelError> {
 fn read_f32(data: &[u8], at: usize) -> Result<f32, ModelError> {
     Ok(f32::from_bits(u32at(data, at)?))
 }
+fn endian_u32(data: &[u8], at: usize, big: bool) -> Result<u32, ModelError> {
+    let v = u32at(data, at)?;
+    Ok(if big { v.swap_bytes() } else { v })
+}
+fn endian_f32(data: &[u8], at: usize, big: bool) -> Result<f32, ModelError> {
+    Ok(f32::from_bits(endian_u32(data, at, big)?))
+}
 
 #[derive(Clone, Copy)]
 struct Stream {
     offset: usize,
     count: usize,
     stride: usize,
+    big_endian: bool,
 }
 type ModelChunks = (String, u32, Vec<(u32, usize, usize, bool)>);
 fn validate_chunks(data: &[u8]) -> Result<ModelChunks, ModelError> {
@@ -214,9 +222,10 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
         if *size < header_size {
             return Err(ModelError::Format("truncated stream header".into()));
         }
+        let swapped = legacy && u32at(data, *offset + 4)? == 0x80000800;
         if legacy
             && (u32at(data, *offset)? != *ty
-                || u32at(data, *offset + 4)? != 0x800
+                || !matches!(u32at(data, *offset + 4)?, 0x800 | 0x80000800)
                 || u32at(data, *offset + 8)? as usize != *offset)
         {
             return Err(ModelError::Format(
@@ -224,17 +233,17 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
             ));
         }
         let base = offset + if legacy { 16 } else { 0 };
-        let stream_type = u32at(data, base + 4)?;
+        let stream_type = endian_u32(data, base + 4, swapped)?;
         if !matches!(stream_type, 0 | 1 | 2 | 5 | 15) {
             continue;
         }
-        let count = u32at(data, base + 8)? as usize;
-        let stride = u32at(data, base + 12)? as usize;
-        let a = u32at(data, base + 16)?;
-        let b = u32at(data, base + 20)?;
+        let count = endian_u32(data, base + 8, swapped)? as usize;
+        let stride = endian_u32(data, base + 12, swapped)? as usize;
+        let a = endian_u32(data, base + 16, swapped)?;
+        let b = endian_u32(data, base + 20, swapped)?;
         if count == 0
             || stride == 0
-            || (legacy && (u32at(data, base)? != 0 || a != 0 || b != 0))
+            || (legacy && (endian_u32(data, base, swapped)? != 0 || a != 0 || b != 0))
             || count
                 .checked_mul(stride)
                 .and_then(|v| v.checked_add(header_size))
@@ -251,6 +260,7 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
                     offset: offset + header_size,
                     count,
                     stride,
+                    big_endian: swapped,
                 },
             )
             .is_some()
@@ -337,9 +347,9 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
             [v[0], v[1], v[2]]
         } else {
             [
-                read_f32(data, at)?,
-                read_f32(data, at + 4)?,
-                read_f32(data, at + 8)?,
+                endian_f32(data, at, positions_stream.big_endian)?,
+                endian_f32(data, at + 4, positions_stream.big_endian)?,
+                endian_f32(data, at + 8, positions_stream.big_endian)?,
             ]
         };
         if v.iter()
@@ -352,7 +362,11 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
     let indices = (0..ni)
         .map(|i| {
             let at = indices_stream.offset + i * 2;
-            u16::from_le_bytes([data[at], data[at + 1]]) as u32
+            if indices_stream.big_endian {
+                u16::from_be_bytes([data[at], data[at + 1]]) as u32
+            } else {
+                u16::from_le_bytes([data[at], data[at + 1]]) as u32
+            }
         })
         .collect::<Vec<_>>();
     if indices.iter().any(|v| *v >= nv as u32) {
@@ -369,8 +383,8 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
                 .map(|i| {
                     let at = stream.offset + i * 8;
                     [
-                        read_f32(data, at).unwrap_or(f32::NAN),
-                        read_f32(data, at + 4).unwrap_or(f32::NAN),
+                        endian_f32(data, at, stream.big_endian).unwrap_or(f32::NAN),
+                        endian_f32(data, at + 4, stream.big_endian).unwrap_or(f32::NAN),
                     ]
                 })
                 .collect::<Vec<_>>(),
@@ -392,9 +406,9 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
                 .map(|i| {
                     let at = stream.offset + i * 12;
                     [
-                        read_f32(data, at).unwrap_or(f32::NAN),
-                        read_f32(data, at + 4).unwrap_or(f32::NAN),
-                        read_f32(data, at + 8).unwrap_or(f32::NAN),
+                        endian_f32(data, at, stream.big_endian).unwrap_or(f32::NAN),
+                        endian_f32(data, at + 4, stream.big_endian).unwrap_or(f32::NAN),
+                        endian_f32(data, at + 8, stream.big_endian).unwrap_or(f32::NAN),
                     ]
                 })
                 .collect::<Vec<_>>();
