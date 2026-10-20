@@ -448,7 +448,7 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
 /// paint every triangle with slot zero or guess equipment material IDs.
 pub fn has_original_mesh_subset_table(data: &[u8]) -> Result<bool, ModelError> {
     let (_format, _version, chunks) = validate_chunks(data)?;
-    Ok(chunks.iter().any(|(kind, _, _, _)| matches!(kind, 0x08001017 | 0xCCCC0017)))
+    Ok(chunks.iter().any(|(kind, _, _, _)| matches!(*kind, 0x08001017 | 0xCCCC0017)))
 }
 
 /// Verified CryEngine CrChF v7 triangle ranges and the source MTL leaf ID.
