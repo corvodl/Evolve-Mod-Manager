@@ -61,7 +61,7 @@ impl PreviewCache {
         if let Some(index) = self
             .entries
             .iter()
-            .position(|entry| entry.key.canonical == key.canonical)
+            .position(|entry| entry.key.canonical == key.canonical && entry.key.layout == key.layout)
             && let Some(old) = self.entries.remove(index)
         {
             self.bytes = self.bytes.saturating_sub(old.bytes);
@@ -84,8 +84,27 @@ impl PreviewCache {
 }
 /// Reuse verified decoded pixels without blocking the UI. A changed source
 /// invalidates a cached entry; only current decoded pixels remain in memory.
+/// The Xbox 360 DDS writer in the historical 2012 archive labels the
+/// platform with CRYF, console block layout flags, and 0x401008 caps.
+/// Require all three before touching pixel order; PC/Stage 2 stays linear.
+fn detect_source_layout(path: &Path) -> Result<DdsLayout, String> {
+    use std::io::Read;
+    let mut header = [0u8; 128];
+    let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
+    if file.read_exact(&mut header).is_ok()
+        && &header[..4] == b"DDS "
+        && &header[124..128] == b"CRYF"
+        && matches!(u32::from_le_bytes(header[36..40].try_into().unwrap()), 0x1800 | 0x1040 | 0x1840)
+        && u32::from_le_bytes(header[108..112].try_into().unwrap()) == 0x401008
+    {
+        return Ok(DdsLayout::Xbox360Tiled);
+    }
+    Ok(DdsLayout::Linear)
+}
+
 pub fn decoded_dds(cache: &SharedCache, path: &Path) -> Result<(DdsInfo, Arc<RgbaImage>), String> {
-    decoded_dds_with_layout(cache, path, DdsLayout::Linear)
+    let layout = detect_source_layout(path)?;
+    decoded_dds_with_layout(cache, path, layout)
 }
 
 pub fn decoded_dds_with_layout(cache: &SharedCache, path: &Path, layout: DdsLayout) -> Result<(DdsInfo, Arc<RgbaImage>), String> {
