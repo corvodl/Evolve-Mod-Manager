@@ -4137,6 +4137,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             pixels.width(), pixels.height(), pixels.as_raw().clone(),
                         );
                         state.texture_preview = Some(handle);
+                        state.material_report = None;
                         state.model = None;
                         state.skin_preview = None;
                         state.native_caf = None;
@@ -4184,6 +4185,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::StaticCharacter(mesh, report)) => {
                     state.texture_preview = None;
+                    state.material_report = None;
                     state.status = format!(
                         "Static CDF preview: {} exact parts, {} vertices, {} triangles, skin set {:?}. Rigged animation and multi-slot materials not enabled.",
                         report.original_parts.len(),
@@ -4240,6 +4242,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::Model(mesh)) => {
                     state.texture_preview = None;
+                    state.material_report = None;
                     state.skin_preview = None;
                     state.status = format!(
                         "Loaded {} source vertices and {} triangles (raw geometry only).",
