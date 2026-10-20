@@ -111,7 +111,10 @@ impl canvas::Program<super::Message> for MeshViewport {
                 2 => (Color::from_rgba(0.79, 0.30, 0.34, 0.75), 1.2),
                 _ => (Color::from_rgba(0.35, 0.73, 0.46, 0.75), 1.2),
             };
-            frame.stroke(&plane, Stroke::default().with_color(color).with_width(width));
+            frame.stroke(
+                &plane,
+                Stroke::default().with_color(color).with_width(width),
+            );
         }
         // Cap the displayed triangles to keep UI responsive even when real
         // Stage 2 character meshes contain hundreds of thousands of faces.
