@@ -303,6 +303,33 @@ pub struct Pipeline {
     depth_dimensions: (u32, u32),
 }
 
+// Every runtime material bind group must follow the same schema used by
+// textured.wgsl, including the standalone DDS refresh path. Keep this single
+// helper for initialization, CDF attachment ranges and texture reloads.
+const MATERIAL_BINDINGS: [u32; 7] = [0, 1, 2, 3, 4, 5, 6];
+
+fn material_entries<'a>(
+    views: [&'a wgpu::TextureView; 6],
+    sampler: &'a wgpu::Sampler,
+) -> [wgpu::BindGroupEntry<'a>; MATERIAL_BINDINGS.len()] {
+    let texture = |binding: usize, channel: usize| wgpu::BindGroupEntry {
+        binding: MATERIAL_BINDINGS[binding],
+        resource: wgpu::BindingResource::TextureView(views[channel]),
+    };
+    [
+        texture(0, 0), // diffuse
+        wgpu::BindGroupEntry {
+            binding: MATERIAL_BINDINGS[1],
+            resource: wgpu::BindingResource::Sampler(sampler),
+        },
+        texture(2, 1), // normal
+        texture(3, 2), // emissive
+        texture(4, 3), // specular
+        texture(5, 4), // gloss
+        texture(6, 5), // authored opacity or neutral white
+    ]
+}
+
 impl Pipeline {
     fn depth_view(device: &wgpu::Device, size: (u32, u32)) -> wgpu::TextureView {
         device
@@ -659,36 +686,10 @@ impl Pipeline {
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Evolve actual texture sampler group"),
             layout: &layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&normal_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&emissive_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::TextureView(&specular_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::TextureView(&gloss_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: wgpu::BindingResource::TextureView(&opacity_view),
-                },
-            ],
+            entries: &material_entries(
+                [&view, &normal_view, &emissive_view, &specular_view, &gloss_view, &opacity_view],
+                &sampler,
+            ),
         });
         let vertex = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Evolve source vertex buffer"),
@@ -874,36 +875,10 @@ impl Pipeline {
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Exact CDF attachment material"),
                 layout: &self.layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&views[0]),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&views[1]),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(&views[2]),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::TextureView(&views[3]),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: wgpu::BindingResource::TextureView(&views[4]),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 6,
-                        resource: wgpu::BindingResource::TextureView(&views[5]),
-                    },
-                ],
+                entries: &material_entries(
+                    [&views[0], &views[1], &views[2], &views[3], &views[4], &views[5]],
+                    &self.sampler,
+                ),
             });
             self.gpu_surfaces.push(GpuSurface {
                 range: part.first_index..part.first_index + part.index_count,
@@ -1055,32 +1030,17 @@ impl Pipeline {
             self.group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Exact CryEngine DDS texture sampler group"),
                 layout: &self.layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&self.view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&self.normal_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(&self.emissive_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::TextureView(&self.specular_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: wgpu::BindingResource::TextureView(&self.gloss_view),
-                    },
-                ],
+                entries: &material_entries(
+                    [
+                        &self.view,
+                        &self.normal_view,
+                        &self.emissive_view,
+                        &self.specular_view,
+                        &self.gloss_view,
+                        &self._opacity_view,
+                    ],
+                    &self.sampler,
+                ),
             });
             self.last_texture_identity = primitive.texture_identity;
             self.last_normal_identity = primitive.normal_identity;
@@ -1230,6 +1190,21 @@ mod tests {
         )
         .validate(&module)
         .expect("GPU normal/emissive shader must pass Naga validation");
+        // Regression for Rocky3: all three GPU material group creation sites
+        // use material_entries, whose seven bindings must match source WGSL.
+        let mut shader_bindings: Vec<u32> = module
+            .global_variables
+            .iter()
+            .filter_map(|(_, variable)| {
+                variable
+                    .binding
+                    .as_ref()
+                    .filter(|binding| binding.group == 0)
+                    .map(|binding| binding.binding)
+            })
+            .collect();
+        shader_bindings.sort_unstable();
+        assert_eq!(shader_bindings, super::MATERIAL_BINDINGS);
         assert!(
             module
                 .entry_points
