@@ -8,6 +8,7 @@ use crate::cdf::{
 use crate::inventory::Inventory;
 use crate::library_catalog::{LibraryReferenceStatus, resolve_imported_reference};
 use crate::model::{ModelError, ModelInfo, RenderMesh, read_model};
+use crate::character_equipment::{EquipmentOverrides, validated_equipment_overrides};
 use crate::rig::{CompiledSkeleton, parse_compiled_skeleton, remap_verified_weights};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -378,6 +379,19 @@ pub fn read_static_cdf_assembly_with_imported(
     imported: Option<&Path>,
     build: Option<&str>,
 ) -> Result<(RenderMesh, AssemblyReport), AssemblyError> {
+    read_static_cdf_assembly_with_equipment(
+        cdf_file, library, imported, build, &EquipmentOverrides::new(),
+    )
+}
+
+/// Alternate bindings must be verified source variants. Never patch originals.
+pub fn read_static_cdf_assembly_with_equipment(
+    cdf_file: &Path,
+    library: &Inventory,
+    imported: Option<&Path>,
+    build: Option<&str>,
+    requested: &EquipmentOverrides,
+) -> Result<(RenderMesh, AssemblyReport), AssemblyError> {
     let root = fs::canonicalize(&library.root)?;
     let cdf_metadata = fs::symlink_metadata(cdf_file)?;
     let cdf_location = fs::canonicalize(cdf_file)?;
@@ -387,6 +401,8 @@ pub fn read_static_cdf_assembly_with_imported(
         ));
     }
     let definition = read_cdf(&cdf_location)?;
+    let overrides = validated_equipment_overrides(&definition, library, requested)
+        .map_err(AssemblyError::Incomplete)?;
     let (skin_set, selected) = select_attachments(&definition)?;
     let mut notes = Vec::new();
     // Static skinned mesh geometry can be rendered without a .chr skeleton.
@@ -418,18 +434,22 @@ pub fn read_static_cdf_assembly_with_imported(
         if !selected.contains(&attachment.name.as_str()) {
             continue;
         }
+        let binding = overrides
+            .get(&attachment.name)
+            .map(String::as_str)
+            .unwrap_or(&attachment.binding);
         // The .skin is the authored skeletal binding, not necessarily a
         // renderable mesh, and may live in a different source PAK. A precise
         // virtual-path .skinm companion is sufficient for STATIC preview;
         // it does not authorize animation without original .skin weights.
-        let bound = match preview_source(library, &attachment.binding, imported, build) {
+        let bound = match preview_source(library, binding, imported, build) {
             Ok(path) => path,
             Err(error) => {
                 notes.push(format!("{}: authored binding: {error}", attachment.name));
                 None
             }
         };
-        let companion = compiled_companion(&attachment.binding);
+        let companion = compiled_companion(binding);
         let compiled = match companion.as_deref() {
             Some(path) => match preview_source(library, path, imported, build) {
                 Ok(found) => found,
@@ -444,7 +464,7 @@ pub fn read_static_cdf_assembly_with_imported(
             if bound.is_none() {
                 notes.push(format!(
                     "{}: original binding {} absent; rendering exact compiled companion only (skin weights unverified)",
-                    attachment.name, attachment.binding
+                    attachment.name, binding
                 ));
             }
             rendered
@@ -526,7 +546,7 @@ pub fn read_static_cdf_assembly_with_imported(
         for (first, indices, material_slot) in ranges {
             source_parts.push(AssemblyPart {
                 name: attachment.name.clone(),
-                binding: attachment.binding.clone(),
+                binding: binding.to_owned(),
                 first_index: index_cursor.checked_add(first).ok_or_else(|| {
                     AssemblyError::Incomplete("Material index offset overflow".into())
                 })?,
