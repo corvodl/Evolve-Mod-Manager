@@ -3262,10 +3262,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     resource_build(state),
                 )
             } else if filename.ends_with(".dds")
-                || filename.ends_with(".dds.0a")
-                || filename
-                    .rsplit_once(".dds.")
-                    .is_some_and(|(_, n)| n.parse::<u8>().is_ok())
+                || filename.rsplit_once(".dds.").is_some_and(|(_, suffix)| {
+                    let mip = suffix.strip_suffix('a').unwrap_or(suffix);
+                    mip.parse::<u8>().is_ok_and(|n| n < 20)
+                })
             {
                 Operation::PreviewDds(
                     source,
