@@ -817,7 +817,7 @@ fn explorer(state: &State) -> Element<'_, Message> {
     .into()
 }
 
-fn export_dialog(state: &State) -> Element<'_, Message> {
+pub(super) fn export_dialog(state: &State) -> Element<'_, Message> {
     let mut picker = column![].spacing(3);
     let filter = state.export_filter.to_ascii_lowercase();
     if let Some(inventory) = &state.inventory {
@@ -878,28 +878,36 @@ fn export_dialog(state: &State) -> Element<'_, Message> {
             state.export_selected.len())).size(11).style(design::muted),
         design::text_input("Filter indexed models, CDFs, and DDS textures…", &state.export_filter)
             .on_input(Message::ExportFilterChanged),
-        scrollable(picker).height(Length::Fixed(132.0)),
+        scrollable(picker).height(Length::Fixed(295.0)),
         flags,
-        design::text_input("Existing absolute parent folder (e.g. C:\\Exports)", &state.export_parent)
-            .on_input(Message::ExportParentChanged),
+        row![
+            text(format!("Destination: {}", if state.export_parent.is_empty() { "Not selected" } else { &state.export_parent })).width(Fill),
+            design::button("Browse folder…").on_press(Message::ExportBrowse("folder")),
+        ].spacing(8),
         design::text_input("New export folder name (e.g. Scorpid)", &state.export_folder_name)
             .on_input(Message::ExportFolderChanged),
         if crate::blender_install::valid_blender(&state.blender_path).is_some() {
             Element::from(text(format!("Blender ready: {}", state.blender_path))
                 .size(11).style(design::muted))
         } else {
-            Element::from(design::text_input("Blender not detected — select blender.exe", &state.blender_path)
-                .on_input(Message::BlenderChanged))
+            Element::from(row![
+                text("Blender executable not found").width(Fill),
+                design::button("Select Blender…").on_press(Message::ExportBrowse("blender")),
+            ].spacing(8))
         },
         if state.export_rigged {
             Element::from(column![
-                design::text_input("Standalone skeleton path (CDF finds its own)", &state.skeleton_path)
-                    .on_input(Message::SkeletonChanged),
+                row![
+                    text(if state.skeleton_path.is_empty() { "Skeleton: autodetect from CDF" } else { &state.skeleton_path }).width(Fill),
+                    design::button("Select skeleton…").on_press(Message::ExportBrowse("skeleton")),
+                ].spacing(8),
                 design::button(if state.export_include_animation {
                     "☑ Include verified CAF" } else { "☐ Include verified CAF" })
                     .on_press(Message::ViewerToggleExportAnimations),
-                design::text_input("Exact CAF path (optional)", &state.caf_path)
-                    .on_input(Message::CafInputChanged),
+                row![
+                    text(if state.caf_path.is_empty() { "CAF: none selected" } else { &state.caf_path }).width(Fill),
+                    design::button("Select CAF…").on_press(Message::ExportBrowse("caf")),
+                ].spacing(8),
             ].spacing(4))
         } else {
             Element::from(text("Static FBX preserves source mesh geometry and UV0.").size(11))
@@ -912,7 +920,7 @@ fn export_dialog(state: &State) -> Element<'_, Message> {
                     .then_some(Message::ExportBegin)),
             design::button("Cancel").on_press(Message::ExportClose),
         ].spacing(10),
-    ].spacing(7).into()
+    ].spacing(12).padding(20).into()
 }
 
 pub(super) fn view(state: &State) -> Element<'_, Message> {
@@ -991,21 +999,13 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         background: Some(Background::Color(theme.palette().background)),
         ..container::Style::default()
     });
-    if state.export_dialog_open {
-        crate::menu_popup::overlay(base, Some(export_dialog(state)), 70.0, 55.0, 580.0)
-    } else {
-        crate::menu_popup::overlay(
-            base,
-            dropdown(state),
-            dropdown_x(state.viewer_menu),
-            36.0,
-            if state.viewer_menu == Some("Model") {
-                460.0
-            } else {
-                310.0
-            },
-        )
-    }
+    crate::menu_popup::overlay(
+        base,
+        dropdown(state),
+        dropdown_x(state.viewer_menu),
+        36.0,
+        if state.viewer_menu == Some("Model") { 460.0 } else { 310.0 },
+    )
 }
 
 /// The narrow vertical separator is the only splitter control: drag it
