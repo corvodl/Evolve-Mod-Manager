@@ -74,17 +74,27 @@ fn dropdown(state: &State) -> Option<Element<'_, Message>> {
             design::button("Refresh Projects").on_press(Message::ModdingRefresh),
             design::button("Browse staged PAKs").on_press(Message::ModdingBrowsePaks),
             design::button("Installed Mods / Profiles").on_press(Message::ModdingToggleProfiles),
-        ].spacing(3).into(),
+        ]
+        .spacing(3)
+        .into(),
         "Edit" => column![
             design::button("Continue Editing").on_press(Message::ModdingOpenProject),
             design::button("Review Changes").on_press(Message::ModdingReviewChanges),
             design::button("Build Mod").on_press(Message::ModdingBuild),
-        ].spacing(3).into(),
+        ]
+        .spacing(3)
+        .into(),
         "View" => column![
-            design::button(if state.modding_advanced { "Hide archive browser" } else { "Show archive browser" })
-                .on_press(Message::ModdingToggleAdvanced),
+            design::button(if state.modding_advanced {
+                "Hide archive browser"
+            } else {
+                "Show archive browser"
+            })
+            .on_press(Message::ModdingToggleAdvanced),
             design::button("Open Asset Viewer").on_press(Message::OpenViewer),
-        ].spacing(3).into(),
+        ]
+        .spacing(3)
+        .into(),
         "Tools" => column![
             design::button("Verify selected signed PAK").on_press(Message::StartSignedInspection),
             design::button("Initialize isolated stage").on_press(Message::StartStageInit),
@@ -94,12 +104,18 @@ fn dropdown(state: &State) -> Option<Element<'_, Message>> {
             design::button("Apply signed replacement").on_press(Message::StartStageApply),
             design::button("Installed Mods / Profiles").on_press(Message::ModdingToggleProfiles),
             design::button("Asset Library").on_press(Message::Navigate(super::Page::AssetLibrary)),
-            design::button("Verify offline launcher + signed PAKs").on_press(Message::StartOfflineLauncherCheck),
-            design::button("Play with mods (existing private helper)").on_press(Message::StartOfflineLauncherLaunch),
-            design::button("Restore original PAKs + hook").on_press(Message::StartOfflineLauncherRestore),
+            design::button("Verify offline launcher + signed PAKs")
+                .on_press(Message::StartOfflineLauncherCheck),
+            design::button("Play with mods (existing private helper)")
+                .on_press(Message::StartOfflineLauncherLaunch),
+            design::button("Restore original PAKs + hook")
+                .on_press(Message::StartOfflineLauncherRestore),
             text("Offline only. Launcher and backup checks are verified before use.")
-                .size(11).style(design::muted),
-        ].spacing(3).into(),
+                .size(11)
+                .style(design::muted),
+        ]
+        .spacing(3)
+        .into(),
         _ => return None,
     };
     Some(commands)
