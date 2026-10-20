@@ -92,33 +92,42 @@ pub(super) fn sidebar_inspector(state: &State) -> Element<'_, Message> {
     let mut summary = column![
         text("INSPECTOR").size(16),
         text("Read-only information for the selected asset. Nothing here edits your game files.")
-            .size(11).style(design::muted),
+            .size(11)
+            .style(design::muted),
         text("1 · Selected asset").size(14),
-    ].spacing(8);
-    let source = state.selected.and_then(|i| state.inventory.as_ref()?.entries.get(i));
+    ]
+    .spacing(8);
+    let source = state
+        .selected
+        .and_then(|i| state.inventory.as_ref()?.entries.get(i));
     summary = summary.push(
-        text(source.map_or("No file selected".to_owned(), |e| e.relative_path.clone()))
-            .size(12),
+        text(source.map_or("No file selected".to_owned(), |e| e.relative_path.clone())).size(12),
     );
 
     summary = summary.push(text("2 · Model geometry").size(14));
     if let Some(mesh) = &state.model {
-        summary = summary.push(text(format!(
-            "{} vertices · {} triangles",
-            mesh.positions.len(),
-            mesh.indices.len() / 3
-        )).size(12));
+        summary = summary.push(
+            text(format!(
+                "{} vertices · {} triangles",
+                mesh.positions.len(),
+                mesh.indices.len() / 3
+            ))
+            .size(12),
+        );
         summary = summary.push(
             text(if mesh.uv0.is_some() {
                 "UV coordinates: available (needed for textures)"
             } else {
                 "UV coordinates: unavailable (textures cannot be positioned reliably)"
-            }).size(12).style(design::muted)
+            })
+            .size(12)
+            .style(design::muted),
         );
     } else {
         summary = summary.push(
             text("No 3D model loaded. Choose a .skinm, .chrm or CDF in Files.")
-                .size(12).style(design::muted)
+                .size(12)
+                .style(design::muted),
         );
     }
 
@@ -129,33 +138,61 @@ pub(super) fn sidebar_inspector(state: &State) -> Element<'_, Message> {
                 "{} original material slots · {} texture references",
                 report.slots,
                 report.textures.len()
-            )).size(12)
+            ))
+            .size(12),
         );
         // Consistent, beginner-readable order; never imply a referenced map
         // was loaded when it exists only as an authored MTL path.
         for (friendly, roles, explanation) in [
             ("Color", &["diffuse"][..], "Surface color and patterns"),
-            ("Normal", &["normal", "normals", "bumpmap"][..], "Fine surface detail"),
-            ("Specular", &["specular", "specularcolor"][..], "Reflected-light color"),
-            ("Gloss", &["gloss", "glossiness", "smoothness"][..], "Shininess"),
-            ("Glow", &["glow", "emissive", "emission", "emittance"][..], "Self-lit parts"),
+            (
+                "Normal",
+                &["normal", "normals", "bumpmap"][..],
+                "Fine surface detail",
+            ),
+            (
+                "Specular",
+                &["specular", "specularcolor"][..],
+                "Reflected-light color",
+            ),
+            (
+                "Gloss",
+                &["gloss", "glossiness", "smoothness"][..],
+                "Shininess",
+            ),
+            (
+                "Glow",
+                &["glow", "emissive", "emission", "emittance"][..],
+                "Self-lit parts",
+            ),
             ("Transparency", &["opacity"][..], "See-through areas"),
         ] {
-            let refs: Vec<_> = report.textures.iter()
-                .filter(|r| roles.contains(&r.role.as_str())).collect();
+            let refs: Vec<_> = report
+                .textures
+                .iter()
+                .filter(|r| roles.contains(&r.role.as_str()))
+                .collect();
             if refs.is_empty() {
                 continue;
             }
-            let found = refs.iter()
-                .filter(|r| matches!(r.resolution, AssetResolution::Found(_))).count();
+            let found = refs
+                .iter()
+                .filter(|r| matches!(r.resolution, AssetResolution::Found(_)))
+                .count();
             summary = summary.push(
-                text(format!("{friendly}: {found}/{} located — {explanation}", refs.len()))
-                    .size(12)
-                    .color(if found == refs.len() { OK } else { WARN })
+                text(format!(
+                    "{friendly}: {found}/{} located — {explanation}",
+                    refs.len()
+                ))
+                .size(12)
+                .color(if found == refs.len() { OK } else { WARN }),
             );
         }
-        let unresolved = report.textures.iter()
-            .filter(|r| !matches!(r.resolution, AssetResolution::Found(_))).count();
+        let unresolved = report
+            .textures
+            .iter()
+            .filter(|r| !matches!(r.resolution, AssetResolution::Found(_)))
+            .count();
         if unresolved > 0 {
             summary = summary.push(
                 text(format!("{unresolved} texture reference(s) still need verification. Some surfaces may look incomplete."))
@@ -168,7 +205,8 @@ pub(super) fn sidebar_inspector(state: &State) -> Element<'_, Message> {
                 text(format!(
                     "GPU material assignments: {textured}/{} model sections have color maps",
                     surfaces.len()
-                )).size(12)
+                ))
+                .size(12),
             );
         } else if report.slots > 1 {
             summary = summary.push(
@@ -185,35 +223,44 @@ pub(super) fn sidebar_inspector(state: &State) -> Element<'_, Message> {
 
     summary = summary.push(text("4 · Animation").size(14));
     summary = summary.push(
-        text(format!("{} animation(s) identified for this character", state.auto_clips.len()))
-            .size(12)
+        text(format!(
+            "{} animation(s) identified for this character",
+            state.auto_clips.len()
+        ))
+        .size(12),
     );
     summary = summary.push(
-        text(if state.skin_preview.is_some() || state.cdf_caf_preview.is_some() {
-            "Original skeleton and animation are connected to the model."
-        } else if state.native_caf.is_some() {
-            "Animation file loaded; its bone connection has not been verified."
-        } else {
-            "No animation currently attached to this model."
-        }).size(12).style(design::muted)
+        text(
+            if state.skin_preview.is_some() || state.cdf_caf_preview.is_some() {
+                "Original skeleton and animation are connected to the model."
+            } else if state.native_caf.is_some() {
+                "Animation file loaded; its bone connection has not been verified."
+            } else {
+                "No animation currently attached to this model."
+            },
+        )
+        .size(12)
+        .style(design::muted),
     );
     summary = summary.push(
         row![
-            design::button("Animation Browser")
-                .on_press(Message::ViewerSidebarAnimations(true)),
-            design::button("Dependency Graph")
-                .on_press(Message::StartDependencyInspection),
-        ].spacing(6)
+            design::button("Animation Browser").on_press(Message::ViewerSidebarAnimations(true)),
+            design::button("Dependency Graph").on_press(Message::StartDependencyInspection),
+        ]
+        .spacing(6),
     );
     if !state.auto_resource_note.is_empty() {
         summary = summary.push(text("5 · Diagnostic details").size(14));
         summary = summary.push(
-            text(state.auto_resource_note.as_str()).size(11).style(design::muted)
+            text(state.auto_resource_note.as_str())
+                .size(11)
+                .style(design::muted),
         );
     }
-    scrollable(
-        container(summary).padding(12).width(Fill)
-    ).height(Fill).width(Fill).into()
+    scrollable(container(summary).padding(12).width(Fill))
+        .height(Fill)
+        .width(Fill)
+        .into()
 }
 
 /// Dock the actual authored-reference graph next to Files, with unresolved
@@ -230,24 +277,47 @@ pub(super) fn sidebar_dependencies(state: &State) -> Element<'_, Message> {
         content = content.push(
             text(format!(
                 "{} file links · {} missing · {} ambiguous",
-                graph.edges.len(), graph.missing, graph.ambiguous
-            )).size(12).color(if graph.missing + graph.ambiguous == 0 { OK } else { WARN })
-        );
-        content = content.push(canvas_widget(DependencyCanvas {
-            graph: Arc::new(graph.clone())
-        }).height(Length::Fixed(200.0)).width(Fill));
-        content = content.push(text("Referenced files (problems first)").size(14));
-        let mut links: Vec<_> = graph.edges.iter().filter_map(|edge| {
-            graph.nodes.get(edge.to).map(|node| (
-                dependency_order(&node.status),
-                edge.label.clone(),
-                node.label.clone(),
-                friendly_dependency_status(&node.status),
-                mark(&node.status),
+                graph.edges.len(),
+                graph.missing,
+                graph.ambiguous
             ))
-        }).collect();
-        links.sort_by(|a,b| (a.0, a.2.to_ascii_lowercase(), a.1.to_ascii_lowercase())
-            .cmp(&(b.0, b.2.to_ascii_lowercase(), b.1.to_ascii_lowercase())));
+            .size(12)
+            .color(if graph.missing + graph.ambiguous == 0 {
+                OK
+            } else {
+                WARN
+            }),
+        );
+        content = content.push(
+            canvas_widget(DependencyCanvas {
+                graph: Arc::new(graph.clone()),
+            })
+            .height(Length::Fixed(200.0))
+            .width(Fill),
+        );
+        content = content.push(text("Referenced files (problems first)").size(14));
+        let mut links: Vec<_> = graph
+            .edges
+            .iter()
+            .filter_map(|edge| {
+                graph.nodes.get(edge.to).map(|node| {
+                    (
+                        dependency_order(&node.status),
+                        edge.label.clone(),
+                        node.label.clone(),
+                        friendly_dependency_status(&node.status),
+                        mark(&node.status),
+                    )
+                })
+            })
+            .collect();
+        links.sort_by(|a, b| {
+            (a.0, a.2.to_ascii_lowercase(), a.1.to_ascii_lowercase()).cmp(&(
+                b.0,
+                b.2.to_ascii_lowercase(),
+                b.1.to_ascii_lowercase(),
+            ))
+        });
         for (_, relation, target, status, color) in links.iter().take(120) {
             content = content.push(
                 column![
@@ -262,17 +332,23 @@ pub(super) fn sidebar_dependencies(state: &State) -> Element<'_, Message> {
         if links.len() > 120 {
             content = content.push(
                 text(format!("Showing 120 of {} links.", links.len()))
-                    .size(11).style(design::muted)
+                    .size(11)
+                    .style(design::muted),
             );
         }
     } else {
         content = content.push(
-            text("Choose a CDF or MTL in Files, then use Check selected asset to find linked files.")
-                .size(12).style(design::muted)
+            text(
+                "Choose a CDF or MTL in Files, then use Check selected asset to find linked files.",
+            )
+            .size(12)
+            .style(design::muted),
         );
     }
     scrollable(container(content).padding(12).width(Fill))
-        .height(Fill).width(Fill).into()
+        .height(Fill)
+        .width(Fill)
+        .into()
 }
 
 fn friendly_dependency_status(status: &DependencyStatus) -> &'static str {
@@ -299,9 +375,18 @@ mod dock_tests {
     #[test]
     fn beginner_dependency_labels_and_problem_order_are_stable() {
         assert_eq!(dependency_order(&DependencyStatus::Missing), 0);
-        assert!(dependency_order(&DependencyStatus::Ambiguous) < dependency_order(&DependencyStatus::Resolved));
-        assert_eq!(friendly_dependency_status(&DependencyStatus::Ambiguous), "Multiple matches");
-        assert_eq!(friendly_dependency_status(&DependencyStatus::Resolved), "Found");
+        assert!(
+            dependency_order(&DependencyStatus::Ambiguous)
+                < dependency_order(&DependencyStatus::Resolved)
+        );
+        assert_eq!(
+            friendly_dependency_status(&DependencyStatus::Ambiguous),
+            "Multiple matches"
+        );
+        assert_eq!(
+            friendly_dependency_status(&DependencyStatus::Resolved),
+            "Found"
+        );
     }
 }
 
