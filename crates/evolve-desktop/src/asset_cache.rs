@@ -171,9 +171,9 @@ pub fn decoded_dds_indexed(
         {
             LibraryReferenceStatus::Found(reference) => Ok(Some(reference.absolute_path.into())),
             LibraryReferenceStatus::Missing => Ok(None),
-            LibraryReferenceStatus::Ambiguous(_) => {
-                Err(format!("Ambiguous imported DDS fragment {virtual_part}; select a build"))
-            }
+            LibraryReferenceStatus::Ambiguous(_) => Err(format!(
+                "Ambiguous imported DDS fragment {virtual_part}; select a build"
+            )),
         }
     };
     let header = resolve(0)?.ok_or_else(|| format!(
@@ -186,7 +186,11 @@ pub fn decoded_dds_indexed(
     let mut count = 0usize;
     let mut staged_bytes = 0u64;
     for i in 0..20 {
-        let Some(original) = (if i == 0 { Some(header.clone()) } else { resolve(i)? }) else {
+        let Some(original) = (if i == 0 {
+            Some(header.clone())
+        } else {
+            resolve(i)?
+        }) else {
             continue;
         };
         let meta = fs::symlink_metadata(&original).map_err(|e| e.to_string())?;
@@ -234,9 +238,17 @@ fn decode_preview_image(path: &Path, layout: DdsLayout) -> Result<(DdsInfo, Rgba
     // arrays rather than assigning a made-up face to a source bitmap.
     let width = value(16);
     let height = value(12);
-    let mips = if value(8) & 0x20000 != 0 { value(28) } else { 1 };
-    if width == 0 || height == 0 || width > 8192 || height > 8192
-        || mips == 0 || mips > 16
+    let mips = if value(8) & 0x20000 != 0 {
+        value(28)
+    } else {
+        1
+    };
+    if width == 0
+        || height == 0
+        || width > 8192
+        || height > 8192
+        || mips == 0
+        || mips > 16
         || u64::from(width) * u64::from(height) * 6 > 40_000_000
     {
         return Err("Unsupported cubemap dimensions/mip count".into());
@@ -263,13 +275,17 @@ fn decode_preview_image(path: &Path, layout: DdsLayout) -> Result<(DdsInfo, Rgba
         usize::try_from(len).map_err(|e| e.to_string())
     };
     let top_size = surface_size(width, height)?;
-    let full_face_size = (0..mips).try_fold(0usize, |total, level| {
-        let w = (width >> level).max(1);
-        let h = (height >> level).max(1);
-        total.checked_add(surface_size(w, h).ok()?)
-    }).ok_or("DDS cubemap size overflow")?;
+    let full_face_size = (0..mips)
+        .try_fold(0usize, |total, level| {
+            let w = (width >> level).max(1);
+            let h = (height >> level).max(1);
+            total.checked_add(surface_size(w, h).ok()?)
+        })
+        .ok_or("DDS cubemap size overflow")?;
     let source_bytes = bytes.len() - 128;
-    let is_staged = path.file_name().is_some_and(|n| n.to_string_lossy() == "preview.dds.0");
+    let is_staged = path
+        .file_name()
+        .is_some_and(|n| n.to_string_lossy() == "preview.dds.0");
     let mut top_mip = None;
     if is_staged {
         let parent = path.parent().ok_or("Missing staging folder")?;
@@ -284,7 +300,9 @@ fn decode_preview_image(path: &Path, layout: DdsLayout) -> Result<(DdsInfo, Rgba
                 .map(|level| surface_size((width >> level).max(1), (height >> level).max(1)))
                 .collect::<Result<Vec<_>, _>>()?;
             let tail_count = (1..mips as usize)
-                .find(|n| mip_sizes[mip_sizes.len() - n..].iter().sum::<usize>() * 6 == source_bytes)
+                .find(|n| {
+                    mip_sizes[mip_sizes.len() - n..].iter().sum::<usize>() * 6 == source_bytes
+                })
                 .ok_or("Cubemap low-mip DDS.0 has an invalid tail size")?;
             let required = mips as usize - tail_count;
             if numbered.len() != required
@@ -309,15 +327,22 @@ fn decode_preview_image(path: &Path, layout: DdsLayout) -> Result<(DdsInfo, Rgba
     if top_mip.is_none() && source_bytes != full_face_size * 6 {
         return Err("Incomplete six-face cubemap mip set".into());
     }
-    let face_stride = if top_mip.is_some() { top_size } else { full_face_size };
+    let face_stride = if top_mip.is_some() {
+        top_size
+    } else {
+        full_face_size
+    };
     let source = top_mip.as_deref().unwrap_or(&bytes[128..]);
     let mut atlas = RgbaImage::new(width * 3, height * 2);
     let folder = tempfile::tempdir().map_err(|e| e.to_string())?;
     let mut info = None;
     for face in 0..6usize {
         let start = face * face_stride;
-        let end = start.checked_add(top_size).ok_or("Cubemap face size overflow")?;
-        let pixels = source.get(start..end)
+        let end = start
+            .checked_add(top_size)
+            .ok_or("Cubemap face size overflow")?;
+        let pixels = source
+            .get(start..end)
             .ok_or("Cubemap face extends past original texture")?;
         let mut header = bytes[..128].to_vec();
         let flags = value(8) & !0x20000;
@@ -330,7 +355,8 @@ fn decode_preview_image(path: &Path, layout: DdsLayout) -> Result<(DdsInfo, Rgba
         let (details, image) = decode_dds_rgba_with_layout(&file, layout)
             .map_err(|e| format!("Cubemap face {face}: {e}"))?;
         image::imageops::replace(
-            &mut atlas, &image,
+            &mut atlas,
+            &image,
             i64::from((face % 3) as u32 * width),
             i64::from((face / 3) as u32 * height),
         );
@@ -384,7 +410,10 @@ mod tests {
         hdr[108..112].copy_from_slice(&0x1000u32.to_le_bytes());
         hdr[124..128].copy_from_slice(b"FYRC");
         fs::write(&file, hdr).unwrap();
-        assert_eq!(detect_source_layout(&file).unwrap(), DdsLayout::Xbox360Tiled);
+        assert_eq!(
+            detect_source_layout(&file).unwrap(),
+            DdsLayout::Xbox360Tiled
+        );
         let mut hdr = hdr;
         hdr[124..128].copy_from_slice(b"CRYF");
         fs::write(&file, hdr).unwrap();
