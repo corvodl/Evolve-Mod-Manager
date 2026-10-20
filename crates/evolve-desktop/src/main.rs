@@ -43,7 +43,7 @@ use evolve_core::{
     batch_stage_status, compare_assets, convert_glb_to_fbx, convert_original_motion,
     create_mod_profile, decode_dds_rgba, export_dds_png, export_flat_cdf_parts_fbx,
     export_level_scene_glb, export_rigged_character_fbx_textured_animated,
-    export_rigged_character_glb, export_unified_cdf_fbx, extract_legacy_pak, extract_signed_pak,
+    export_rigged_character_glb, export_unified_cdf_fbx_with_equipment, extract_legacy_pak, extract_signed_pak,
     import_signed_library_selection, import_stage_pak, imported_archive_files, imported_library,
     initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_pak_hook_pair,
     inspect_signed_pak, list_mod_profiles, load_level_scene, material_texture_candidates,
@@ -376,7 +376,7 @@ enum Operation {
     ),
     RiggedGlb(PathBuf, PathBuf, PathBuf),
     FlatCdfFbx(PathBuf, Inventory, PathBuf, PathBuf, Option<PathBuf>),
-    UnifiedCdfFbx(PathBuf, Inventory, PathBuf, PathBuf, Option<PathBuf>),
+    UnifiedCdfFbx(PathBuf, Inventory, PathBuf, PathBuf, Option<PathBuf>, EquipmentOverrides),
     RiggedFbx(
         PathBuf,
         PathBuf,
@@ -630,13 +630,14 @@ impl Operation {
                 )?;
                 Ok(Completed::FlatCdfFbxExport(report, destination))
             }
-            Self::UnifiedCdfFbx(source, inventory, blender, destination, caf) => {
-                let report = export_unified_cdf_fbx(
+            Self::UnifiedCdfFbx(source, inventory, blender, destination, caf, equipment) => {
+                let report = export_unified_cdf_fbx_with_equipment(
                     &source,
                     &inventory,
                     &blender,
                     &destination,
                     caf.as_deref(),
+                    &equipment,
                 )?;
                 Ok(Completed::UnifiedCdfFbxExport(report, destination))
             }
@@ -3862,9 +3863,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let destination = PathBuf::from(&state.output);
             let caf = (state.export_include_animation && !state.caf_path.trim().is_empty())
                 .then(|| PathBuf::from(&state.caf_path));
+            let equipment = if state.equipment_source.as_ref() == Some(&source) {
+                state.equipment_overrides.clone()
+            } else {
+                EquipmentOverrides::new()
+            };
             return launch(
                 state,
-                Operation::UnifiedCdfFbx(source, inventory, blender, destination, caf),
+                Operation::UnifiedCdfFbx(source, inventory, blender, destination, caf, equipment),
             );
         }
         Message::StartRigFbx => {
