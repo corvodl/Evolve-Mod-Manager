@@ -1204,7 +1204,6 @@ enum Message {
     CompareModifiedChanged(String),
     StartAssetCompare,
     ViewerToggleInspector,
-    ViewerSplitChanged(f32),
     ViewerSelectTab(ViewerTab),
     ViewerSaveLayout,
     PlaybackSpeedChanged(f32),
@@ -1667,6 +1666,8 @@ fn clear_viewer_asset(state: &mut State) {
     state.texture_preview = None;
     state.texture = None;
     state.material_report = None;
+    state.dependency_graph = None;
+    state.comparison = None;
     state.character = None;
     state.cdf_dependencies = None;
     state.diffuse = None;
@@ -2821,6 +2822,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ViewerSelectFile(index) => {
             state.viewer_context_index = None;
+            // An old dependency diagram must not describe a newly selected file.
+            state.dependency_graph = None;
             let visible: Vec<usize> = state
                 .viewer_rows
                 .iter()
@@ -6300,6 +6303,9 @@ mod project_edit_tests {
         assert!(state.viewer_sidebar_animations);
         assert!(state.viewer_explorer_visible);
         let _ = update(&mut state, Message::ViewerSidebarAnimations(false));
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
+        assert!(state.viewer_sidebar_animations);
+        let _ = update(&mut state, Message::ViewerSidebarClose(ViewerSidebarTab::Animations));
         assert!(!state.viewer_sidebar_animations);
     }
 
