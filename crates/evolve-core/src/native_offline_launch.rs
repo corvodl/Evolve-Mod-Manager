@@ -392,34 +392,47 @@ mod tests {
         fs::write(&replacement, b"replaced offline content").unwrap();
         let replacement_hash = crate::staging::digest(&replacement).unwrap();
         let plan = NativeOfflineSwapPlan {
-            schema:1, game_root:game.clone(), stage_root:stage,
-            profile_id:"local-test".into(), native_launch_armed:false,
-            targets:vec![NativeOfflineTarget {
-                relative_path:"Game/libs.pak".into(),
-                original_sha256:original_hash,
-                replacement_sha256:replacement_hash,
+            schema: 1,
+            game_root: game.clone(),
+            stage_root: stage,
+            profile_id: "local-test".into(),
+            native_launch_armed: false,
+            targets: vec![NativeOfflineTarget {
+                relative_path: "Game/libs.pak".into(),
+                original_sha256: original_hash,
+                replacement_sha256: replacement_hash,
             }],
         };
         let snapshot = fs::read(&installed).unwrap();
-        assert_eq!(audit_native_offline_swap(&plan).unwrap()[0].1,
-            NativeRecoveryState::OriginalReady);
+        assert_eq!(
+            audit_native_offline_swap(&plan).unwrap()[0].1,
+            NativeRecoveryState::OriginalReady
+        );
         assert_eq!(fs::read(&installed).unwrap(), snapshot);
         fs::rename(&installed, &backup).unwrap();
-        assert_eq!(audit_native_offline_swap(&plan).unwrap()[0].1,
-            NativeRecoveryState::InterruptedBeforeMount);
+        assert_eq!(
+            audit_native_offline_swap(&plan).unwrap()[0].1,
+            NativeRecoveryState::InterruptedBeforeMount
+        );
         fs::copy(&replacement, &installed).unwrap();
-        assert_eq!(audit_native_offline_swap(&plan).unwrap()[0].1,
-            NativeRecoveryState::OfflineReplacementMounted);
+        assert_eq!(
+            audit_native_offline_swap(&plan).unwrap()[0].1,
+            NativeRecoveryState::OfflineReplacementMounted
+        );
         fs::write(&installed, b"third party changes").unwrap();
         assert!(audit_native_offline_swap(&plan).is_err());
         fs::remove_file(&installed).unwrap();
         fs::copy(&backup, &installed).unwrap();
-        assert_eq!(audit_native_offline_swap(&plan).unwrap()[0].1,
-            NativeRecoveryState::StrandedOriginalBackup);
+        assert_eq!(
+            audit_native_offline_swap(&plan).unwrap()[0].1,
+            NativeRecoveryState::StrandedOriginalBackup
+        );
         assert_eq!(fs::read(&backup).unwrap(), snapshot);
         fs::remove_file(&backup).unwrap();
-        assert_eq!(audit_native_offline_swap(&plan).unwrap()[0].1,
-            NativeRecoveryState::OriginalReady);
+        assert_eq!(
+            audit_native_offline_swap(&plan).unwrap()[0].1,
+            NativeRecoveryState::OriginalReady
+        );
     }
 
     #[test]
