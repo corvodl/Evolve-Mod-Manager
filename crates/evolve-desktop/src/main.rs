@@ -2187,9 +2187,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Inspect an original level before exporting edits.".into();
                 return Task::none();
             };
-            let Some(scene) = &state.level_scene else {
+            if state.level_scene.is_none() {
                 return Task::none();
-            };
+            }
             let destination = PathBuf::from(state.level_edit_output.trim());
             if !destination.is_absolute()
                 || destination
