@@ -85,7 +85,9 @@ pub use model::{
 pub use native_caf::{
     CafBonePose, CafController, NativeCafError, NativeCafMotion, decode_native_caf, read_native_caf,
 };
-pub use native_dba::{NativeDbaError, NativeDbaInspection, inspect_native_dba_bytes, inspect_native_dba_file};
+pub use native_dba::{
+    NativeDbaError, NativeDbaInspection, inspect_native_dba_bytes, inspect_native_dba_file,
+};
 pub use native_offline_launch::{NativeOfflineReadiness, inspect_native_offline_readiness};
 pub use policy::{AnimationPolicy, ExportFeature, FeatureStatus, PARITY_MATRIX};
 pub use rig::{
