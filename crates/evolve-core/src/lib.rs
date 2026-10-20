@@ -95,7 +95,7 @@ pub use scene::{
 pub use signed_pak::{
     SignedEntry, SignedPakError, SignedPakInfo, SignedRebuildReport, extract_signed_pak,
     inspect_signed_pak, open_verified_signed_pak, rebuild_signed_pak_entries,
-    rebuild_signed_pak_entry,
+    rebuild_signed_pak_entry, resign_signed_pak,
 };
 pub use skin_preview::VerifiedCafSkin;
 pub use terrain::{
