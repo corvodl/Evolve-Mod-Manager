@@ -370,28 +370,6 @@ fn dependency_order(status: &DependencyStatus) -> u8 {
     }
 }
 
-#[cfg(test)]
-mod dock_tests {
-    use super::*;
-
-    #[test]
-    fn beginner_dependency_labels_and_problem_order_are_stable() {
-        assert_eq!(dependency_order(&DependencyStatus::Missing), 0);
-        assert!(
-            dependency_order(&DependencyStatus::Ambiguous)
-                < dependency_order(&DependencyStatus::Resolved)
-        );
-        assert_eq!(
-            friendly_dependency_status(&DependencyStatus::Ambiguous),
-            "Multiple matches"
-        );
-        assert_eq!(
-            friendly_dependency_status(&DependencyStatus::Resolved),
-            "Found"
-        );
-    }
-}
-
 fn tab_button(
     label: &'static str,
     tab: ViewerTab,
@@ -713,4 +691,26 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     column![tabs, container(content).width(Fill).padding(8)]
         .spacing(6)
         .into()
+}
+
+#[cfg(test)]
+mod dock_tests {
+    use super::*;
+
+    #[test]
+    fn beginner_dependency_labels_and_problem_order_are_stable() {
+        assert_eq!(dependency_order(&DependencyStatus::Missing), 0);
+        assert!(
+            dependency_order(&DependencyStatus::Ambiguous)
+                < dependency_order(&DependencyStatus::Resolved)
+        );
+        assert_eq!(
+            friendly_dependency_status(&DependencyStatus::Ambiguous),
+            "Multiple matches"
+        );
+        assert_eq!(
+            friendly_dependency_status(&DependencyStatus::Resolved),
+            "Found"
+        );
+    }
 }
