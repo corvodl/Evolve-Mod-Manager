@@ -166,43 +166,63 @@ fn verify_prepared_journal(
     journal: &Value,
     files: &[(String, PathBuf, PathBuf)],
 ) -> Result<(), String> {
-    let records = journal["files"].as_array().ok_or("Prepared swap has no file ledger")?;
+    let records = journal["files"]
+        .as_array()
+        .ok_or("Prepared swap has no file ledger")?;
     if records.len() != files.len() {
         return Err("Prepared swap file count differs from the authenticated PAK/hook plan".into());
     }
     let mut seen = std::collections::HashSet::new();
     for (name, target, staged) in files {
-        let record = records.iter().find(|record| record["name"].as_str() == Some(name.as_str()))
+        let record = records
+            .iter()
+            .find(|record| record["name"].as_str() == Some(name.as_str()))
             .ok_or_else(|| format!("Prepared swap lacks expected {name}"))?;
         if !seen.insert(name.to_ascii_lowercase()) {
             return Err("Duplicate prepared target".into());
         }
-        let recorded_source = Path::new(record["source"].as_str().ok_or("Prepared source missing")?);
-        let recorded_target = Path::new(record["target"].as_str().ok_or("Prepared target missing")?);
+        let recorded_source =
+            Path::new(record["source"].as_str().ok_or("Prepared source missing")?);
+        let recorded_target =
+            Path::new(record["target"].as_str().ok_or("Prepared target missing")?);
         if fs::canonicalize(recorded_source).map_err(|e| e.to_string())? != *staged
             || fs::canonicalize(recorded_target).map_err(|e| e.to_string())? != *target
         {
             return Err(format!("Prepared source/target path mismatch: {name}"));
         }
-        let ready_text = record["ready"].as_str().ok_or("Prepared ready path missing")?;
-        let backup_text = record["backup"].as_str().ok_or("Prepared backup path missing")?;
+        let ready_text = record["ready"]
+            .as_str()
+            .ok_or("Prepared ready path missing")?;
+        let backup_text = record["backup"]
+            .as_str()
+            .ok_or("Prepared backup path missing")?;
         let ready_path = Path::new(ready_text);
         let backup_path = Path::new(backup_text);
-        let target_name = target.file_name().and_then(|part| part.to_str())
+        let target_name = target
+            .file_name()
+            .and_then(|part| part.to_str())
             .ok_or("Unsafe original target filename")?;
         let ready_name = format!("{target_name}.customkey-ready");
         let backup_name = format!("{target_name}.customkey-original");
-        if !ready_path.file_name().and_then(|n| n.to_str())
-                .is_some_and(|n| n.eq_ignore_ascii_case(&ready_name))
-            || !backup_path.file_name().and_then(|n| n.to_str())
+        if !ready_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.eq_ignore_ascii_case(&ready_name))
+            || !backup_path
+                .file_name()
+                .and_then(|n| n.to_str())
                 .is_some_and(|n| n.eq_ignore_ascii_case(&backup_name))
             || fs::canonicalize(ready_path.parent().ok_or("Ready path has no parent")?)
-                .map_err(|e| e.to_string())? != target.parent().ok_or("Target has no parent")?
+                .map_err(|e| e.to_string())?
+                != target.parent().ok_or("Target has no parent")?
             || fs::canonicalize(backup_path.parent().ok_or("Backup path has no parent")?)
-                .map_err(|e| e.to_string())? != target.parent().ok_or("Target has no parent")?
+                .map_err(|e| e.to_string())?
+                != target.parent().ok_or("Target has no parent")?
             || fs::symlink_metadata(backup_path).is_ok()
         {
-            return Err(format!("Prepared ready/backup location differs from the original target: {name}"));
+            return Err(format!(
+                "Prepared ready/backup location differs from the original target: {name}"
+            ));
         }
         no_orphaned_backup(target)?;
         let ready = plain(ready_path, 16 * 1024 * 1024 * 1024)?;
@@ -212,7 +232,9 @@ fn verify_prepared_journal(
             || record["sha256"].as_str() != Some(digest.as_str())
             || sha(staged)? != digest
         {
-            return Err(format!("Prepared file changed since signature verification: {name}"));
+            return Err(format!(
+                "Prepared file changed since signature verification: {name}"
+            ));
         }
     }
     Ok(())
