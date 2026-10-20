@@ -398,36 +398,50 @@ pub fn read_static_cdf_assembly_with_imported(
         if !selected.contains(&attachment.name.as_str()) {
             continue;
         }
-        let bound =
-            preview_source(library, &attachment.binding, imported, build)?.ok_or_else(|| {
-                AssemblyError::Incomplete(format!(
-                    "Missing authored CDF binding {}: {}",
-                    attachment.name, attachment.binding
-                ))
-            })?;
+        let bound = match preview_source(library, &attachment.binding, imported, build) {
+            Ok(Some(path)) => path,
+            Ok(None) => {
+                notes.push(format!("{}: missing authored CDF binding {}", attachment.name, attachment.binding));
+                continue;
+            }
+            Err(error) => {
+                notes.push(format!("{}: {error}", attachment.name));
+                continue;
+            }
+        };
         // A compiled render companion is preferred, but the author-declared
         // original may itself contain geometry (notably older .chr meshes).
         let rendered = match compiled_companion(&attachment.binding) {
-            Some(companion) => {
-                preview_source(library, &companion, imported, build)?.unwrap_or(bound)
-            }
+            Some(companion) => match preview_source(library, &companion, imported, build) {
+                Ok(Some(path)) => path,
+                Ok(None) => bound,
+                Err(error) => {
+                    notes.push(format!("{}: {error}", attachment.name));
+                    continue;
+                }
+            },
             None => bound,
         };
         if !names_seen.insert(attachment.binding.to_ascii_lowercase()) {
-            return Err(AssemblyError::Incomplete(format!(
-                "Repeated CDF binding without a distinct authored transform: {}",
-                attachment.binding
-            )));
+            notes.push(format!("{}: repeated binding lacks distinct placement", attachment.name));
+            continue;
         }
-        let mut mesh = read_model(&rendered)?;
+        let mut mesh = match read_model(&rendered) {
+            Ok(mesh) => mesh,
+            Err(error) => {
+                notes.push(format!("{}: unsupported geometry ({error})", attachment.name));
+                continue;
+            }
+        };
         if matches!(attachment.kind, AttachmentKind::Bone) {
-            let verified = skeleton.as_ref().ok_or_else(|| {
-                AssemblyError::Incomplete(format!(
-                    "Cannot place rigid prop {} without a verified bind skeleton",
-                    attachment.name
-                ))
-            })?;
-            transform_equipment(&mut mesh, attachment, verified)?;
+            let Some(verified) = skeleton.as_ref() else {
+                notes.push(format!("{}: no verified skeleton for bone socket", attachment.name));
+                continue;
+            };
+            if let Err(error) = transform_equipment(&mut mesh, attachment, verified) {
+                notes.push(format!("{}: {error}", attachment.name));
+                continue;
+            }
         }
         let verified_skin_weights = if matches!(
             attachment.kind,
@@ -475,9 +489,9 @@ pub fn read_static_cdf_assembly_with_imported(
             .ok_or_else(|| AssemblyError::Incomplete("Assembly index ranges overflow".into()))?;
         meshes.push((attachment.name.clone(), mesh));
     }
-    if meshes.len() != selected.len() {
+    if meshes.is_empty() {
         return Err(AssemblyError::Incomplete(
-            "CDF assembly selection was incomplete".into(),
+            "No authored CDF attachments could be rendered; inspect the part diagnostics".into(),
         ));
     }
     let (mesh, original_parts) = combine_source_meshes(meshes)?;
