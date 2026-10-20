@@ -438,7 +438,6 @@ mod tests {
             detect_source_layout(&file).unwrap(),
             DdsLayout::Xbox360Tiled
         );
-        let mut hdr = hdr;
         hdr[124..128].copy_from_slice(b"CRYF");
         fs::write(&file, hdr).unwrap();
         assert_eq!(detect_source_layout(&file).unwrap(), DdsLayout::Linear);
