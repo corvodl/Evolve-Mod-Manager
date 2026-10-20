@@ -145,6 +145,7 @@ struct State {
     profile_feedback: String,
     diffuse_input: String,
     diffuse: Option<Arc<::image::RgbaImage>>,
+    texture_preview: Option<image::Handle>,
     diffuse_status: String,
     normal_input: String,
     normal_map: Option<Arc<::image::RgbaImage>>,
@@ -310,6 +311,7 @@ enum Operation {
     InspectPak(PathBuf),
     AnalyzeStorage(PathBuf, PathBuf, PathBuf, PathBuf, PathBuf),
     InspectDds(PathBuf),
+    PreviewDds(PathBuf, SharedCache),
     LoadDiffuse(PathBuf, SharedCache),
     LoadNormal(PathBuf, SharedCache),
     LoadEmissive(PathBuf, SharedCache),
@@ -391,6 +393,7 @@ enum Completed {
     Inventory(Inventory),
     Pak(PakInventory),
     Texture(DdsInfo),
+    DdsPreview(PathBuf, DdsInfo, Arc<::image::RgbaImage>),
     StorageAnalyzed(storage_usage::StorageUsage),
     Diffuse(DdsInfo, Arc<::image::RgbaImage>),
     Normal(DdsInfo, Arc<::image::RgbaImage>),
@@ -738,6 +741,10 @@ impl Operation {
             Self::InspectDds(source) => inspect_dds(&source)
                 .map(Completed::Texture)
                 .map_err(|e| e.to_string()),
+            Self::PreviewDds(source, cache) => {
+                let (info, pixels) = decoded_dds(&cache, &source)?;
+                Ok(Completed::DdsPreview(source, info, pixels))
+            },
             Self::DiscoverModelResources(relative, inventory, library_root, build) => {
                 let discovery = auto_resources::discover(
                     &relative,
@@ -2714,6 +2721,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             }
             state.input = source.to_string_lossy().to_string();
+            state.texture_preview = None;
             let filename = relative.relative_path.to_ascii_lowercase();
             let operation = if [".skin", ".skinm", ".chr", ".cgf"]
                 .iter()
@@ -2723,7 +2731,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             } else if filename.ends_with(".cdf") {
                 Operation::InspectCdfResolved(source, inventory.clone())
             } else if filename.ends_with(".dds") || filename.ends_with(".dds.0") {
-                Operation::InspectDds(source)
+                Operation::PreviewDds(source, state.preview_cache.clone())
             } else if filename.ends_with(".caf") {
                 Operation::LoadCaf(source)
             } else if filename.ends_with(".mtl") {
@@ -4096,6 +4104,30 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.diffuse = Some(pixels);
                     state.page = Some(Page::Models);
                 }
+                Ok(Completed::DdsPreview(source, info, pixels)) => {
+                    // Do not replace the latest model/texture with a stale
+                    // thumbnail decoded before the user selected another file.
+                    if state.viewer_queued_preview.is_none()
+                        && Path::new(&state.input) == source
+                    {
+                        let handle = image::Handle::from_rgba(
+                            pixels.width(), pixels.height(), pixels.as_raw().clone(),
+                        );
+                        state.texture_preview = Some(handle);
+                        state.model = None;
+                        state.skin_preview = None;
+                        state.native_caf = None;
+                        state.glb_motion = None;
+                        state.playing = false;
+                        state.texture = Some(info.clone());
+                        state.auto_resource_note = "Original highest-resolution DDS pixels".into();
+                        state.status = format!(
+                            "Previewing original DDS {} × {} ({:?}), {} streaming part(s).",
+                            info.width, info.height, info.format, info.streaming_parts
+                        );
+                        state.page = Some(Page::Models);
+                    }
+                }
                 Ok(Completed::Texture(texture)) => {
                     state.status = format!(
                         "DDS: {} × {} • {:?} • {} mipmaps • {} fragment(s)",
@@ -4128,6 +4160,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::StaticCharacter(mesh, report)) => {
+                    state.texture_preview = None;
                     state.status = format!(
                         "Static CDF preview: {} exact parts, {} vertices, {} triangles, skin set {:?}. Rigged animation and multi-slot materials not enabled.",
                         report.original_parts.len(),
@@ -4183,6 +4216,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::Model(mesh)) => {
+                    state.texture_preview = None;
+                    state.skin_preview = None;
                     state.status = format!(
                         "Loaded {} source vertices and {} triangles (raw geometry only).",
                         mesh.info.vertex_count, mesh.info.triangle_count
