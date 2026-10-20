@@ -420,7 +420,11 @@ pub fn export_unified_cdf_fbx(
         let original_materials = exact_multi_slot_materials(&root, original, inventory)?;
         // More than one source submaterial requires explicit source MTL and
         // original subset IDs; never paint every face with the first leaf.
+        if source_subsets.iter().any(|(_, _, id)| *id == 255) {
+            return Err(format!("CDF part {name} has unresolved source material IDs"));
+        }
         if source_subsets.len() > 1
+            || source_subsets[0].2 != 0
             || original_materials.as_ref().is_some_and(|slots| slots.len() > 1)
         {
             let slots = original_materials.ok_or_else(|| {
