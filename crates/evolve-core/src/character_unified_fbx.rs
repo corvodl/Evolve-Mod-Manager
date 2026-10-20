@@ -352,7 +352,12 @@ pub fn export_unified_cdf_fbx(
     caf: Option<&Path>,
 ) -> Result<UnifiedCdfFbxReport, String> {
     export_unified_cdf_fbx_with_equipment(
-        source, inventory, blender, destination, caf, &EquipmentOverrides::new()
+        source,
+        inventory,
+        blender,
+        destination,
+        caf,
+        &EquipmentOverrides::new(),
     )
 }
 
