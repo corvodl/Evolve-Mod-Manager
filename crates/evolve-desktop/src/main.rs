@@ -337,7 +337,12 @@ enum Operation {
     LoadEmissive(PathBuf, SharedCache),
     ResolveMaterial(PathBuf, PathBuf, Option<PathBuf>, Option<String>),
     LoadModelSurfaces(
-        PathBuf, PathBuf, Inventory, Option<PathBuf>, Option<String>, SharedCache,
+        PathBuf,
+        PathBuf,
+        Inventory,
+        Option<PathBuf>,
+        Option<String>,
+        SharedCache,
     ),
     LoadCaf(PathBuf),
     LoadCafLayer(String, Arc<NativeCafMotion>, String, PathBuf),
@@ -802,8 +807,12 @@ impl Operation {
             }
             Self::LoadModelSurfaces(model, material, inventory, imported, build, cache) => {
                 let (surfaces, warnings) = assembly_materials::load_model(
-                    &model, &material, &inventory, imported.as_deref(),
-                    build.as_deref(), &cache,
+                    &model,
+                    &material,
+                    &inventory,
+                    imported.as_deref(),
+                    build.as_deref(),
+                    &cache,
                 )?;
                 Ok(Completed::ModelSurfaces(model, surfaces, warnings))
             }
@@ -851,8 +860,12 @@ impl Operation {
             }
             Self::InspectIndexedModel(source, virtual_path, inventory, imported, build) => {
                 let render_source = auto_resources::exact_render_companion(
-                    &virtual_path, &inventory, imported.as_deref(), build.as_deref(),
-                )?.unwrap_or(source);
+                    &virtual_path,
+                    &inventory,
+                    imported.as_deref(),
+                    build.as_deref(),
+                )?
+                .unwrap_or(source);
                 read_model(&render_source)
                     .map(|mesh| Completed::Model(mesh, render_source.clone()))
                     .map_err(|e| format!(
@@ -1349,7 +1362,9 @@ fn bind_current_native_caf(state: &mut State) -> Option<Task<Message>> {
     {
         return None;
     }
-    let compiled = state.render_source.clone()
+    let compiled = state
+        .render_source
+        .clone()
         .unwrap_or_else(|| preferred_render_source(&source));
     let skeleton = PathBuf::from(&state.skeleton_path);
     let clip = (**motion).clone();
@@ -2959,8 +2974,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let filename = relative.relative_path.to_ascii_lowercase();
             let operation = if is_viewer_model_source(&filename) {
                 Operation::InspectIndexedModel(
-                    source, relative.relative_path.clone(), inventory.clone(),
-                    state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
+                    source,
+                    relative.relative_path.clone(),
+                    inventory.clone(),
+                    state
+                        .library_catalog
+                        .as_ref()
+                        .map(|c| PathBuf::from(&c.root)),
                     resource_build(state),
                 )
             } else if filename.ends_with(".cdf") {
@@ -4470,7 +4490,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                 }
                 Ok(Completed::BoundCafPreview(source, skin)) => {
-                    let expected = state.render_source.clone()
+                    let expected = state
+                        .render_source
+                        .clone()
                         .unwrap_or_else(|| preferred_render_source(Path::new(&state.input)));
                     if state.viewer_queued_preview.is_none()
                         && expected == source
@@ -4551,11 +4573,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         if let (Some(inventory), Some(model)) =
                             (state.inventory.clone(), state.render_source.clone())
                         {
-                            return launch(state, Operation::LoadModelSurfaces(
-                                model, material_source, inventory,
-                                state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
-                                resource_build(state), state.preview_cache.clone(),
-                            ));
+                            return launch(
+                                state,
+                                Operation::LoadModelSurfaces(
+                                    model,
+                                    material_source,
+                                    inventory,
+                                    state
+                                        .library_catalog
+                                        .as_ref()
+                                        .map(|c| PathBuf::from(&c.root)),
+                                    resource_build(state),
+                                    state.preview_cache.clone(),
+                                ),
+                            );
                         }
                     }
                     if let Some(idle) = state.auto_idle_pending.take() {
@@ -4573,7 +4604,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.auto_resource_note = format!(
                             "Original CryEngine GPU mesh subsets: {textured} textured; {} material warnings. {}",
                             warnings.len(),
-                            warnings.iter().take(3).cloned().collect::<Vec<_>>().join(" | "),
+                            warnings
+                                .iter()
+                                .take(3)
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join(" | "),
                         );
                         state.status = state.auto_resource_note.clone();
                         if let Some(idle) = state.auto_idle_pending.take() {
