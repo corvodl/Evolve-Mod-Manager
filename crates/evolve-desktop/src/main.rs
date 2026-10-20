@@ -25,6 +25,7 @@ mod textured;
 mod updater;
 mod uv_preview;
 mod view_navigation;
+mod viewer_grid;
 mod viewer_inspector;
 mod viewport;
 use asset_cache::{SharedCache, decoded_dds};
