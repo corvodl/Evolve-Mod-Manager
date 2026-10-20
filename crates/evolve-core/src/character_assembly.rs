@@ -5,12 +5,12 @@
 use crate::cdf::{
     AssetResolution, AttachmentKind, CdfDefinition, CdfError, read_cdf, resolve_virtual,
 };
+use crate::character_equipment::{EquipmentOverrides, validated_equipment_overrides};
 use crate::inventory::Inventory;
+use crate::legacy_rig::{parse_legacy_skeleton, read_legacy_skin};
 use crate::library_catalog::{LibraryReferenceStatus, resolve_imported_reference};
 use crate::model::{ModelError, ModelInfo, RenderMesh, read_model};
-use crate::character_equipment::{EquipmentOverrides, validated_equipment_overrides};
 use crate::rig::{CompiledSkeleton, parse_compiled_skeleton, remap_verified_weights};
-use crate::legacy_rig::{parse_legacy_skeleton, read_legacy_skin};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -381,7 +381,11 @@ pub fn read_static_cdf_assembly_with_imported(
     build: Option<&str>,
 ) -> Result<(RenderMesh, AssemblyReport), AssemblyError> {
     read_static_cdf_assembly_with_equipment(
-        cdf_file, library, imported, build, &EquipmentOverrides::new(),
+        cdf_file,
+        library,
+        imported,
+        build,
+        &EquipmentOverrides::new(),
     )
 }
 
@@ -512,7 +516,8 @@ pub fn read_static_cdf_assembly_with_equipment(
                     if raw.starts_with(b"CryTek\0\0") {
                         read_legacy_skin(&raw, master, mesh.positions.len()).is_ok()
                     } else {
-                        remap_verified_weights(&raw, mesh.positions.len(), skeleton.names.len()).is_ok()
+                        remap_verified_weights(&raw, mesh.positions.len(), skeleton.names.len())
+                            .is_ok()
                     }
                 })
             } else {
