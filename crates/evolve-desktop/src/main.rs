@@ -6422,7 +6422,7 @@ impl Desktop {
                 let within_library = self.state.inventory.as_ref().is_some_and(|inventory| {
                     let catalog_root = std::fs::canonicalize(&self.state.library_root);
                     let indexed_root = std::fs::canonicalize(&inventory.root);
-                    matches!((catalog_root, indexed_root), (Ok(lib), Ok(index)) if index.starts_with(lib))
+                    matches!((catalog_root, indexed_root), (Ok(lib), Ok(index)) if index.starts_with(&lib))
                 });
                 if !within_library {
                     self.state.status =
