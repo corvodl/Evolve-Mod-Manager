@@ -486,8 +486,7 @@ fn decode_block(format: DdsFormat, bytes: &[u8]) -> [[u8; 4]; 16] {
                 let y = f32::from(rg[1]) / 127.5 - 1.0;
                 let z = (1.0 - x * x - y * y).max(0.0).sqrt();
                 let length = (x * x + y * y + z * z).sqrt().max(f32::EPSILON);
-                let blue = (((z / length + 1.0) * 127.5).round() as i32)
-                    .clamp(0, 255) as u8;
+                let blue = (((z / length + 1.0) * 127.5).round() as i32).clamp(0, 255) as u8;
                 *pixel = [rg[0], rg[1], blue, 255];
             }
             pixels
