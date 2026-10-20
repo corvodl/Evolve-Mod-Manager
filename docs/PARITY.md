@@ -222,6 +222,31 @@ rewrite. Test each using real permitted Stage 2 assets and Blender before
 changing these labels or authorizing v1.0.
 
 
+## Level Editor PR #3 reviewer hardening
+
+- A local WXYZ quaternion edit marks **only its placement subtree** dirty:
+  child world transforms update in parent-to-child order using cached ancestors.
+  Other branches retain their already computed world transforms; the scene
+  value is still cloned for immutable UI rendering, so that copy has linear cost.
+- Author-authored local TRS values are captured **once** when the original
+  source is loaded; a 64-entry deque stores exact `(GUID, previous, next)`
+  changes and undo/redo never rewrites the authored baseline. Export compares
+  against those originals, excluding fully undone edits.
+- Editable XYZ, WXYZ, and scale inputs reject non-finite and excessively
+  large values; malformed components and quaternion order have regression
+  tests rather than being silently coerced.
+- Export preflights canonical paths for the source, Asset Library, staged
+  projects, game storage, and any indexed roots, including symlink aliases.
+  It stages XML privately, rejects duplicate/missing GUIDs, verifies the
+  original file's SHA-256 **before and after serialization**, and publishes
+  only via atomic no-clobber creation. A preexisting target is never deleted
+  or overwritten, nor is a partial edited output exposed on failed validation.
+- Regression coverage includes out-of-order parent declarations, thousands
+  of unaffected sibling placements, history capacity, missing/duplicate GUIDs,
+  protected output trees, symlinked aliases, non-finite input, and target
+  collisions. Windows GUI and actual CryEngine layer acceptance are still
+  required before release.
+
 ## Level Editor local transform editing milestone (preview)
 
 - The native Level Editor lets an inspected .lyr/mission XML placement's **authored

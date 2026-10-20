@@ -54,7 +54,7 @@ use modding_projects::{ProjectRow, discover_projects};
 use selection::MultiSelection;
 use settings::{Preferences, load_from, save_to, settings_path};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
@@ -122,6 +122,13 @@ impl Page {
             Self::Settings => "Settings",
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct LevelTransformDiff {
+    guid: String,
+    old_local: evolve_core::Transform,
+    new_local: evolve_core::Transform,
 }
 
 #[derive(Default)]
@@ -254,8 +261,9 @@ struct State {
     level_source: Option<PathBuf>,
     level_source_sha: String,
     level_original_transforms: HashMap<String, evolve_core::Transform>,
-    level_undo: Vec<(String, evolve_core::Transform)>,
-    level_redo: Vec<(String, evolve_core::Transform)>,
+    level_dirty_count: usize,
+    level_undo: VecDeque<LevelTransformDiff>,
+    level_redo: VecDeque<LevelTransformDiff>,
     level_edit_position: String,
     level_edit_rotation: String,
     level_edit_scale: String,
@@ -334,6 +342,7 @@ enum Operation {
         PathBuf,
         PathBuf,
         Vec<(String, evolve_core::Transform)>,
+        Vec<PathBuf>,
         String,
     ),
     InspectTerrain(PathBuf),
@@ -763,20 +772,15 @@ impl Operation {
                 }
                 Ok(Completed::Level(scene, source, checksum))
             }
-            Self::ExportEditedLevel(source, destination, edits, expected_sha) => {
-                if level_source_hash(&source)? != expected_sha {
-                    return Err(
-                        "Level source changed since inspection; reload before exporting".into(),
-                    );
-                }
-                evolve_core::export_edited_layers(&source, &destination, &edits)
-                    .map_err(|e| e.to_string())?;
-                if level_source_hash(&source)? != expected_sha {
-                    let _ = std::fs::remove_file(&destination);
-                    return Err(
-                        "Level source changed during export; incomplete output removed".into(),
-                    );
-                }
+            Self::ExportEditedLevel(source, destination, edits, protected, expected_sha) => {
+                evolve_core::export_edited_layers_guarded(
+                    &source,
+                    &destination,
+                    &edits,
+                    &protected,
+                    &expected_sha,
+                )
+                .map_err(|e| e.to_string())?;
                 Ok(Completed::EditedLevelExported(destination, edits.len()))
             }
             Self::InspectTerrain(source) => {
@@ -1183,6 +1187,41 @@ fn apply_current_skin_frame(state: &mut State) {
     }
 }
 
+/// Authoring baselines are captured once when loading the source layer.
+/// A complete undo leaves zero edited placements, not 200,000 dirty entries.
+fn level_pending_edits(state: &State) -> Vec<(String, evolve_core::Transform)> {
+    let Some(scene) = &state.level_scene else {
+        return Vec::new();
+    };
+    scene
+        .objects
+        .iter()
+        .filter_map(|object| {
+            state
+                .level_original_transforms
+                .get(&object.id)
+                .and_then(|original| {
+                    (object.local != *original).then_some((object.id.clone(), object.local))
+                })
+        })
+        .collect()
+}
+
+fn track_level_dirty(
+    state: &mut State,
+    id: &str,
+    previous: evolve_core::Transform,
+    next: evolve_core::Transform,
+) {
+    if let Some(original) = state.level_original_transforms.get(id) {
+        match (previous != *original, next != *original) {
+            (false, true) => state.level_dirty_count += 1,
+            (true, false) => state.level_dirty_count = state.level_dirty_count.saturating_sub(1),
+            _ => (),
+        }
+    }
+}
+
 fn sync_level_fields(state: &mut State) {
     let transform = state
         .level_selected
@@ -1203,29 +1242,34 @@ fn sync_level_fields(state: &mut State) {
 
 fn restore_level_history(state: &mut State, undo: bool) {
     let entry = if undo {
-        state.level_undo.pop()
+        state.level_undo.pop_back()
     } else {
-        state.level_redo.pop()
+        state.level_redo.pop_back()
     };
-    let Some((id, previous)) = entry else {
+    let Some(diff) = entry else {
         return;
     };
+    let target = if undo { diff.old_local } else { diff.new_local };
+    let previous = if undo { diff.new_local } else { diff.old_local };
     let result = state.level_scene.as_ref().and_then(|scene| {
-        let current = scene.objects.iter().find(|object| object.id == id)?.local;
-        Some((
-            current,
-            evolve_core::edit_level_transform(scene, &id, previous),
-        ))
+        let current = scene
+            .objects
+            .iter()
+            .find(|object| object.id == diff.guid)?
+            .local;
+        let expected = if undo { diff.new_local } else { diff.old_local };
+        (current == expected).then(|| evolve_core::edit_level_transform(scene, &diff.guid, target))
     });
     match result {
-        Some((current, Ok(scene))) => {
+        Some(Ok(scene)) => {
+            track_level_dirty(state, &diff.guid, previous, target);
             state.level_scene = Some(Arc::new(scene));
             let other = if undo {
                 &mut state.level_redo
             } else {
                 &mut state.level_undo
             };
-            other.push((id, current));
+            other.push_back(diff);
             sync_level_fields(state);
             state.status = if undo {
                 "Reverted the last level transform (original layer unchanged).".into()
@@ -1235,9 +1279,9 @@ fn restore_level_history(state: &mut State, undo: bool) {
         }
         _ => {
             if undo {
-                state.level_undo.push((id, previous));
+                state.level_undo.push_back(diff);
             } else {
-                state.level_redo.push((id, previous));
+                state.level_redo.push_back(diff);
             }
             state.status = "Cannot restore level history; reload the level source.".into();
         }
@@ -2196,14 +2240,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Ok(edited) => {
                     let applied = edited.objects[index].local;
                     if applied != previous {
-                        state
-                            .level_original_transforms
-                            .entry(id.clone())
-                            .or_insert(previous);
-                        if state.level_undo.len() >= 64 {
-                            state.level_undo.remove(0);
+                        // The authored transform map was frozen at load; never
+                        // replace its originals with an edited/undone value.
+                        if !state.level_original_transforms.contains_key(&id) {
+                            state.status = "Original placement missing; reload source.".into();
+                            return Task::none();
                         }
-                        state.level_undo.push((id, previous));
+                        if state.level_undo.len() >= 64 {
+                            state.level_undo.pop_front();
+                        }
+                        track_level_dirty(state, &id, previous, applied);
+                        state.level_undo.push_back(LevelTransformDiff {
+                            guid: id,
+                            old_local: previous,
+                            new_local: applied,
+                        });
                         state.level_redo.clear();
                         state.level_scene = Some(Arc::new(edited));
                         sync_level_fields(state);
@@ -2220,9 +2271,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Inspect an original level before exporting edits.".into();
                 return Task::none();
             };
-            let Some(scene) = &state.level_scene else {
+            if state.level_scene.is_none() {
                 return Task::none();
-            };
+            }
             let destination = PathBuf::from(state.level_edit_output.trim());
             if !destination.is_absolute()
                 || destination
@@ -2247,34 +2298,56 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     return Task::none();
                 }
             };
+            // Resolve actual filesystem paths, including symlink aliases,
+            // instead of comparing unchecked strings. The worker repeats all
+            // these checks after serializing and immediately before publish.
             let mut protected = vec![source.parent().unwrap_or(source.as_path()).to_path_buf()];
             if let Some(inventory) = &state.inventory {
                 protected.push(PathBuf::from(&inventory.root));
             }
-            if !state.library_root.trim().is_empty() {
-                protected.push(PathBuf::from(&state.library_root));
+            if let Some(catalog) = &state.library_catalog {
+                protected.push(PathBuf::from(&catalog.root));
             }
-            if protected
-                .iter()
-                .any(|root| std::fs::canonicalize(root).is_ok_and(|root| parent.starts_with(root)))
-            {
-                state.status =
-                    "Export outside the original extracted assets and Asset Library.".into();
-                return Task::none();
+            for candidate in [
+                &state.library_root,
+                &state.preferences.asset_library_root,
+                &state.preferences.projects,
+                &state.preferences.stage,
+                &state.preferences.game_storage_root,
+            ] {
+                if !candidate.trim().is_empty() {
+                    let path = PathBuf::from(candidate);
+                    // Only existing source/library directories need protection.
+                    // Missing paths cannot contain a valid output parent.
+                    if path.exists() {
+                        protected.push(path);
+                    }
+                }
             }
-            let edits = state
-                .level_original_transforms
-                .iter()
-                .filter_map(|(id, original)| {
-                    scene
-                        .objects
-                        .iter()
-                        .find(|object| &object.id == id)
-                        .and_then(|object| {
-                            (object.local != *original).then_some((id.clone(), object.local))
-                        })
-                })
-                .collect::<Vec<_>>();
+            let mut checked = Vec::new();
+            for directory in protected {
+                match std::fs::canonicalize(&directory) {
+                    Ok(root) if root.is_dir() => {
+                        if parent.starts_with(&root) {
+                            state.status = format!(
+                                "Export blocked inside protected source/library directory: {}",
+                                root.display()
+                            );
+                            return Task::none();
+                        }
+                        if !checked.contains(&root) {
+                            checked.push(root);
+                        }
+                    }
+                    _ => {
+                        state.status =
+                            "A protected asset directory could not be verified; export refused."
+                                .into();
+                        return Task::none();
+                    }
+                }
+            }
+            let edits = level_pending_edits(state);
             if edits.is_empty() || edits.len() > 128 {
                 state.status =
                     "No changed level placements, or more than 128 pending edits.".into();
@@ -2284,7 +2357,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let expected_sha = state.level_source_sha.clone();
             return launch(
                 state,
-                Operation::ExportEditedLevel(source, destination, edits, expected_sha),
+                Operation::ExportEditedLevel(source, destination, edits, checked, expected_sha),
             );
         }
         Message::ViewerSaveLayout => {
@@ -4180,10 +4253,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                     state.level_source = Some(source);
                     state.level_source_sha = hash;
+                    state.level_original_transforms = scene
+                        .objects
+                        .iter()
+                        .map(|object| (object.id.clone(), object.local))
+                        .collect();
+                    state.level_dirty_count = 0;
                     state.level_scene = Some(Arc::new(scene));
                     state.level_selected = None;
                     state.level_selection.clear();
-                    state.level_original_transforms.clear();
                     state.level_undo.clear();
                     state.level_redo.clear();
                     sync_level_fields(state);
@@ -5369,7 +5447,13 @@ mod project_edit_tests {
         </Objects>"#;
         let scene = evolve_core::parse_level_scene(&[("test.lyr", xml)]).unwrap();
         let initial = scene.clone();
+        let originals = scene
+            .objects
+            .iter()
+            .map(|object| (object.id.clone(), object.local))
+            .collect();
         let mut state = State {
+            level_original_transforms: originals,
             level_scene: Some(Arc::new(scene)),
             level_selected: Some(0),
             ..State::default()
@@ -5392,6 +5476,8 @@ mod project_edit_tests {
             [5.0, 7.0, 9.0]
         );
         assert_eq!(state.level_redo.len(), 1);
+        assert_eq!(state.level_dirty_count, 0);
+        assert!(level_pending_edits(&state).is_empty());
         let _ = update(&mut state, Message::LevelRedoTransform);
         assert_eq!(
             state.level_scene.as_ref().unwrap().objects[1]
@@ -5400,7 +5486,53 @@ mod project_edit_tests {
             [15.0, 17.0, 19.0]
         );
         assert_eq!(initial.objects[1].world.position, [5.0, 7.0, 9.0]);
-        assert_eq!(state.level_original_transforms.len(), 1);
+        assert_eq!(state.level_original_transforms.len(), 2);
+        assert_eq!(state.level_dirty_count, 1);
+    }
+
+    #[test]
+    fn authored_undo_history_keeps_exact_64_latest_diffs() {
+        let xml = br#"<Objects><Object Id="parent" Pos="1,0,0"/></Objects>"#;
+        let scene = evolve_core::parse_level_scene(&[("test.lyr", xml)]).unwrap();
+        let baseline = scene.objects[0].local;
+        let mut state = State {
+            level_scene: Some(Arc::new(scene)),
+            level_selected: Some(0),
+            level_original_transforms: HashMap::from([("parent".into(), baseline)]),
+            ..State::default()
+        };
+        sync_level_fields(&mut state);
+        for i in 2..=70 {
+            let _ = update(
+                &mut state,
+                Message::LevelEditPositionChanged(format!("{i},0,0")),
+            );
+            let _ = update(&mut state, Message::LevelApplyTransform);
+        }
+        assert_eq!(state.level_undo.len(), 64);
+        assert_eq!(state.level_dirty_count, 1);
+        for _ in 0..64 {
+            let _ = update(&mut state, Message::LevelUndoTransform);
+        }
+        // The five oldest edits aged out; no fabricated full-history undo.
+        assert_eq!(
+            state.level_scene.as_ref().unwrap().objects[0]
+                .local
+                .position,
+            [6., 0., 0.]
+        );
+        assert_eq!(state.level_redo.len(), 64);
+        assert_eq!(state.level_dirty_count, 1);
+        for _ in 0..64 {
+            let _ = update(&mut state, Message::LevelRedoTransform);
+        }
+        assert_eq!(
+            state.level_scene.as_ref().unwrap().objects[0]
+                .local
+                .position,
+            [70., 0., 0.]
+        );
+        assert_eq!(state.level_original_transforms["parent"], baseline);
     }
 
     #[test]
