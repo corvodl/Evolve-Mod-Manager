@@ -1025,6 +1025,178 @@ pub(crate) fn embed_verified_material_png_glb(
     Ok(output)
 }
 
+/// Exact source MTL leaf (including empty and NoDraw leaves). The caller
+/// resolves each DDS through the indexed asset library, never by basename.
+#[derive(Default)]
+pub(crate) struct OriginalMaterialPng {
+    pub name: String,
+    pub no_draw: bool,
+    pub diffuse: Option<Vec<u8>>,
+    pub normal: Option<Vec<u8>>,
+    pub emissive: Option<Vec<u8>>,
+    pub specular: Option<Vec<u8>>,
+    pub roughness: Option<Vec<u8>>,
+}
+
+/// Split ONE verified rigged GLB into original material-ID primitives, reusing
+/// the source index buffer, original UV0 and all skin joint/weight attributes.
+/// Each authored MTL leaf gets its own original texture set. A NoDraw leaf
+/// remains an identifiable, fully transparent material instead of moving
+/// subsequent CryEngine subset indices or deleting original geometry.
+pub(crate) fn embed_original_material_slots_glb(
+    source: &[u8],
+    subsets: &[(u32, u32, u32)],
+    slots: &[OriginalMaterialPng],
+) -> Result<Vec<u8>, RigError> {
+    if source.len() < 28 || source.get(..4) != Some(b"glTF")
+        || slots.is_empty() || slots.len() > 128 || subsets.is_empty() || subsets.len() > 128
+    {
+        return Err(RigError::Invalid("Invalid verified multi-slot FBX source".into()));
+    }
+    let json_size = u32::from_le_bytes(source[12..16].try_into().map_err(|_| RigError::Limits)?) as usize;
+    let json_end = 20usize.checked_add(json_size).ok_or(RigError::Limits)?;
+    let mut doc: Value = serde_json::from_slice(
+        source.get(20..json_end).ok_or(RigError::Limits)?
+    )?;
+    if source.get(json_end + 4..json_end + 8) != Some(b"BIN\0") {
+        return Err(RigError::Invalid("Rigged GLB has no valid BIN chunk".into()));
+    }
+    let primitives = doc["meshes"][0]["primitives"].as_array()
+        .ok_or_else(|| RigError::Invalid("Rigged geometry has no primitives".into()))?;
+    if primitives.len() != 1 || doc["skins"].as_array().is_none_or(|v| v.len() != 1) {
+        return Err(RigError::Invalid("Expected one verified source skinned mesh".into()));
+    }
+    let base = primitives[0].clone();
+    for attr in ["POSITION", "TEXCOORD_0", "JOINTS_0", "WEIGHTS_0"] {
+        if base["attributes"][attr].as_u64().is_none() {
+            return Err(RigError::Invalid("Rigged GLB has incomplete source attributes".into()));
+        }
+    }
+    let accessor_id = base["indices"].as_u64().ok_or(RigError::Limits)? as usize;
+    let index_acc = doc["accessors"].get(accessor_id).ok_or(RigError::Limits)?;
+    let total = index_acc["count"].as_u64().ok_or(RigError::Limits)? as u32;
+    let view = index_acc["bufferView"].as_u64().ok_or(RigError::Limits)?;
+    if index_acc["componentType"] != 5125 || index_acc["type"] != "SCALAR"
+        || index_acc["byteOffset"].as_u64().unwrap_or(0) != 0
+    {
+        return Err(RigError::Invalid("Source index buffer is not UINT32 triangle data".into()));
+    }
+    let mut offset = 0u32;
+    let mut rewritten = Vec::with_capacity(subsets.len());
+    for &(first, count, material) in subsets {
+        let last = first.checked_add(count).ok_or(RigError::Limits)?;
+        if first != offset || count == 0 || !count.is_multiple_of(3)
+            || last > total || material == 255 || material as usize >= slots.len()
+        {
+            return Err(RigError::Invalid("Unverified CryEngine subset material index".into()));
+        }
+        let mut primitive = base.clone();
+        let accessors = doc["accessors"].as_array_mut().ok_or(RigError::Limits)?;
+        let sub = accessors.len();
+        accessors.push(json!({
+            "bufferView":view, "byteOffset":first as u64 * 4,
+            "componentType":5125, "count":count, "type":"SCALAR"
+        }));
+        primitive["indices"] = json!(sub);
+        primitive["material"] = json!(material);
+        rewritten.push(primitive);
+        offset = last;
+    }
+    if offset != total {
+        return Err(RigError::Invalid("CDF multi-material subsets do not cover mesh".into()));
+    }
+
+    let mut binary = source.get(json_end + 8..).ok_or(RigError::Limits)?.to_vec();
+    let mut images = Vec::new();
+    let mut textures = Vec::new();
+    let mut materials = Vec::with_capacity(slots.len());
+    let mut any_specular = false;
+    for (slot_index, slot) in slots.iter().enumerate() {
+        if slot.name.is_empty() || slot.name.len() > 256
+            || slot.name.chars().any(char::is_control)
+        {
+            return Err(RigError::Invalid("Unsafe source MTL leaf name".into()));
+        }
+        let mut material = json!({
+            "name": format!("CryEngine slot {slot_index:03} - {}", slot.name),
+            "doubleSided":true,
+            "pbrMetallicRoughness":{"metallicFactor":0.0,"roughnessFactor":1.0}
+        });
+        if slot.no_draw {
+            material["alphaMode"] = json!("BLEND");
+            material["pbrMetallicRoughness"]["baseColorFactor"] =
+                json!([1.0, 1.0, 1.0, 0.0]);
+        }
+        for (role, png) in [
+            ("diffuse", slot.diffuse.as_deref()),
+            ("normal", slot.normal.as_deref()),
+            ("emissive", slot.emissive.as_deref()),
+            ("specular", slot.specular.as_deref()),
+            ("roughness", slot.roughness.as_deref()),
+        ] {
+            let Some(bytes) = png else { continue };
+            if bytes.len() < 8 || bytes.get(..8) != Some(b"\x89PNG\r\n\x1a\n") {
+                return Err(RigError::Invalid("Authored multi-slot map is not PNG".into()));
+            }
+            let image_view = add_view(&mut binary, &mut doc, bytes, None)?;
+            let image_index = images.len();
+            images.push(json!({
+                "name": format!("CryEngine {slot_index} {role}"),
+                "mimeType":"image/png", "bufferView":image_view
+            }));
+            let texture_index = textures.len();
+            textures.push(json!({"source":image_index}));
+            match role {
+                "diffuse" => material["pbrMetallicRoughness"]["baseColorTexture"] =
+                    json!({"index":texture_index}),
+                "normal" => material["normalTexture"] = json!({"index":texture_index}),
+                "emissive" => {
+                    material["emissiveTexture"] = json!({"index":texture_index});
+                    material["emissiveFactor"] = json!([1., 1., 1.]);
+                }
+                "specular" => {
+                    any_specular = true;
+                    material["extensions"]["KHR_materials_specular"]["specularColorTexture"] =
+                        json!({"index":texture_index});
+                    material["extensions"]["KHR_materials_specular"]["specularColorFactor"] =
+                        json!([1., 1., 1.]);
+                }
+                "roughness" => material["pbrMetallicRoughness"]["metallicRoughnessTexture"] =
+                    json!({"index":texture_index}),
+                _ => unreachable!(),
+            }
+        }
+        materials.push(material);
+    }
+    if any_specular {
+        doc["extensionsUsed"] = json!(["KHR_materials_specular"]);
+    }
+    doc["meshes"][0]["primitives"] = json!(rewritten);
+    doc["materials"] = json!(materials);
+    doc["images"] = json!(images);
+    doc["textures"] = json!(textures);
+    while !binary.len().is_multiple_of(4) { binary.push(0); }
+    doc["buffers"][0]["byteLength"] = json!(binary.len());
+    let mut json_blob = serde_json::to_vec(&doc)?;
+    while !json_blob.len().is_multiple_of(4) { json_blob.push(b' '); }
+    let total = 28usize.checked_add(json_blob.len())
+        .and_then(|n| n.checked_add(binary.len())).ok_or(RigError::Limits)?;
+    if total > MAX_BYTES * 4 || total > u32::MAX as usize {
+        return Err(RigError::Limits);
+    }
+    let mut out = Vec::with_capacity(total);
+    out.extend_from_slice(b"glTF");
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&(total as u32).to_le_bytes());
+    out.extend_from_slice(&(json_blob.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"JSON");
+    out.extend_from_slice(&json_blob);
+    out.extend_from_slice(&(binary.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"BIN\0");
+    out.extend_from_slice(&binary);
+    Ok(out)
+}
+
 fn embed_diffuse_png_glb(source: &[u8], png: &[u8]) -> Result<Vec<u8>, RigError> {
     embed_verified_maps_png_glb(source, Some(png), None, None)
 }
