@@ -546,7 +546,7 @@ impl Pipeline {
                 return;
             }
             let Some(end) = cursor.checked_add(surface.index_count) else { return };
-            if usize::try_from(end).is_err_or(|end| end > index_count) {
+            if usize::try_from(end).ok().is_none_or(|end| end > index_count) {
                 return;
             }
             cursor = end;
