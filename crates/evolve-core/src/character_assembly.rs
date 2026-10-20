@@ -2,11 +2,13 @@
 //! Original CDF skin meshes remain in source skeleton space. CA_BONE rigid
 //! props can be positioned only using verified authored sockets and bind pose.
 //! Playback and export still require separately validated skinning.
-use crate::cdf::{AssetResolution, AttachmentKind, CdfDefinition, CdfError, read_cdf, resolve_virtual};
-use crate::library_catalog::{LibraryReferenceStatus, resolve_imported_reference};
-use crate::rig::{CompiledSkeleton, parse_compiled_skeleton, remap_verified_weights};
+use crate::cdf::{
+    AssetResolution, AttachmentKind, CdfDefinition, CdfError, read_cdf, resolve_virtual,
+};
 use crate::inventory::Inventory;
+use crate::library_catalog::{LibraryReferenceStatus, resolve_imported_reference};
 use crate::model::{ModelError, ModelInfo, RenderMesh, read_model};
+use crate::rig::{CompiledSkeleton, parse_compiled_skeleton, remap_verified_weights};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
@@ -203,27 +205,37 @@ fn preview_source(
     let root = fs::canonicalize(&inventory.root)?;
     let (location, allowed_root) = match resolve_virtual(inventory, authored) {
         AssetResolution::Found(relative) => (root.join(relative), root),
-        AssetResolution::Ambiguous(_) => return Err(AssemblyError::Incomplete(
-            format!("Ambiguous local asset: {authored}"))),
+        AssetResolution::Ambiguous(_) => {
+            return Err(AssemblyError::Incomplete(format!(
+                "Ambiguous local asset: {authored}"
+            )));
+        }
         AssetResolution::Missing => {
-            let Some(imported) = imported else { return Ok(None) };
+            let Some(imported) = imported else {
+                return Ok(None);
+            };
             let imported_root = fs::canonicalize(imported)?;
             match resolve_imported_reference(imported, authored, build)
-                .map_err(|e| AssemblyError::Incomplete(e.to_string()))? {
+                .map_err(|e| AssemblyError::Incomplete(e.to_string()))?
+            {
                 LibraryReferenceStatus::Found(hit) => {
                     (std::path::PathBuf::from(hit.absolute_path), imported_root)
                 }
                 LibraryReferenceStatus::Missing => return Ok(None),
-                LibraryReferenceStatus::Ambiguous(_) => return Err(AssemblyError::Incomplete(
-                    format!("Ambiguous imported asset: {authored}"))),
+                LibraryReferenceStatus::Ambiguous(_) => {
+                    return Err(AssemblyError::Incomplete(format!(
+                        "Ambiguous imported asset: {authored}"
+                    )));
+                }
             }
         }
     };
     let metadata = fs::symlink_metadata(&location)?;
     let canonical = fs::canonicalize(&location)?;
     if !metadata.file_type().is_file() || !canonical.starts_with(allowed_root) {
-        return Err(AssemblyError::Incomplete(
-            format!("Source is no longer a safe regular asset: {authored}")));
+        return Err(AssemblyError::Incomplete(format!(
+            "Source is no longer a safe regular asset: {authored}"
+        )));
     }
     Ok(Some(canonical))
 }
@@ -245,50 +257,81 @@ fn transform_equipment(
     skeleton: &CompiledSkeleton,
 ) -> Result<(), AssemblyError> {
     let bone = attachment.bone_name.as_deref().ok_or_else(|| {
-        AssemblyError::Incomplete(format!("Equipment {} has no authored BoneName", attachment.name))
+        AssemblyError::Incomplete(format!(
+            "Equipment {} has no authored BoneName",
+            attachment.name
+        ))
     })?;
-    let matches = skeleton.names.iter().enumerate()
+    let matches = skeleton
+        .names
+        .iter()
+        .enumerate()
         .filter(|(_, name)| name.eq_ignore_ascii_case(bone))
-        .map(|(i, _)| i).collect::<Vec<_>>();
+        .map(|(i, _)| i)
+        .collect::<Vec<_>>();
     if matches.len() != 1 {
         return Err(AssemblyError::Incomplete(format!(
-            "Equipment {} references absent/ambiguous compiled bone: {bone}", attachment.name)));
+            "Equipment {} references absent/ambiguous compiled bone: {bone}",
+            attachment.name
+        )));
     }
     let matrix = &skeleton.world[matches[0]];
-    let [w,x,y,z] = attachment.rotation.unwrap_or([1.,0.,0.,0.]);
-    let norm = w*w + x*x + y*y + z*z;
+    let [w, x, y, z] = attachment.rotation.unwrap_or([1., 0., 0., 0.]);
+    let norm = w * w + x * x + y * y + z * z;
     if !norm.is_finite() || (norm - 1.).abs() > 0.1 {
         return Err(AssemblyError::Incomplete(format!(
-            "Equipment {} has invalid authored quaternion", attachment.name)));
+            "Equipment {} has invalid authored quaternion",
+            attachment.name
+        )));
     }
     let f = 1. / norm;
-    let (w,x,y,z) = (w*f.sqrt(), x*f.sqrt(), y*f.sqrt(), z*f.sqrt());
+    let (w, x, y, z) = (w * f.sqrt(), x * f.sqrt(), y * f.sqrt(), z * f.sqrt());
     let rotation = [
-        [1.-2.*(y*y+z*z), 2.*(x*y-z*w), 2.*(x*z+y*w)],
-        [2.*(x*y+z*w), 1.-2.*(x*x+z*z), 2.*(y*z-x*w)],
-        [2.*(x*z-y*w), 2.*(y*z+x*w), 1.-2.*(x*x+y*y)],
+        [
+            1. - 2. * (y * y + z * z),
+            2. * (x * y - z * w),
+            2. * (x * z + y * w),
+        ],
+        [
+            2. * (x * y + z * w),
+            1. - 2. * (x * x + z * z),
+            2. * (y * z - x * w),
+        ],
+        [
+            2. * (x * z - y * w),
+            2. * (y * z + x * w),
+            1. - 2. * (x * x + y * y),
+        ],
     ];
-    let offset = attachment.position.unwrap_or([0.,0.,0.]);
-    let rotate = |p: [f32;3]| -> [f32;3] {
-        std::array::from_fn(|i| (0..3).map(|j| rotation[i][j]*p[j]).sum::<f32>())
+    let offset = attachment.position.unwrap_or([0., 0., 0.]);
+    let rotate = |p: [f32; 3]| -> [f32; 3] {
+        std::array::from_fn(|i| (0..3).map(|j| rotation[i][j] * p[j]).sum::<f32>())
     };
     for point in &mut mesh.positions {
         let local = rotate(*point);
-        let transformed: [f32;3] = std::array::from_fn(|i|
-            (0..3).map(|j| matrix[i][j]*(local[j]+offset[j])).sum::<f32>() + matrix[i][3]);
+        let transformed: [f32; 3] = std::array::from_fn(|i| {
+            (0..3)
+                .map(|j| matrix[i][j] * (local[j] + offset[j]))
+                .sum::<f32>()
+                + matrix[i][3]
+        });
         if transformed.iter().any(|c| !c.is_finite() || c.abs() > 1e7) {
-            return Err(AssemblyError::Incomplete("Equipment transform out of range".into()));
+            return Err(AssemblyError::Incomplete(
+                "Equipment transform out of range".into(),
+            ));
         }
         *point = transformed;
     }
     if let Some(normals) = &mut mesh.normals {
         for normal in normals {
             let rotated = rotate(*normal);
-            let transformed: [f32;3] = std::array::from_fn(|i|
-                (0..3).map(|j| matrix[i][j]*rotated[j]).sum::<f32>());
-            let len = transformed.iter().map(|c| c*c).sum::<f32>().sqrt();
+            let transformed: [f32; 3] =
+                std::array::from_fn(|i| (0..3).map(|j| matrix[i][j] * rotated[j]).sum::<f32>());
+            let len = transformed.iter().map(|c| c * c).sum::<f32>().sqrt();
             if !len.is_finite() || len < 1e-6 {
-                return Err(AssemblyError::Incomplete("Invalid equipment normal matrix".into()));
+                return Err(AssemblyError::Incomplete(
+                    "Invalid equipment normal matrix".into(),
+                ));
             }
             *normal = transformed.map(|c| c / len);
         }
@@ -316,18 +359,27 @@ pub fn read_static_cdf_assembly_with_imported(
     let cdf_location = fs::canonicalize(cdf_file)?;
     if !cdf_metadata.file_type().is_file() || !cdf_location.starts_with(&root) {
         return Err(AssemblyError::Incomplete(
-            "CDF file must be a real indexed file inside the selected asset root".into()));
+            "CDF file must be a real indexed file inside the selected asset root".into(),
+        ));
     }
     let definition = read_cdf(&cdf_location)?;
     let (skin_set, selected) = select_attachments(&definition)?;
     let skeleton_path = preview_source(library, &definition.skeleton, imported, build)?
-        .ok_or_else(|| AssemblyError::Incomplete(
-            format!("CDF skeleton absent from imported sources: {}", definition.skeleton)))?;
-    let skeleton = fs::read(&skeleton_path).ok()
+        .ok_or_else(|| {
+            AssemblyError::Incomplete(format!(
+                "CDF skeleton absent from imported sources: {}",
+                definition.skeleton
+            ))
+        })?;
+    let skeleton = fs::read(&skeleton_path)
+        .ok()
         .and_then(|bytes| parse_compiled_skeleton(&bytes).ok());
     let mut notes = Vec::new();
     if skeleton.is_none() {
-        notes.push("Compiled bind-pose skeleton cannot be verified; rigid sockets and animation disabled".into());
+        notes.push(
+            "Compiled bind-pose skeleton cannot be verified; rigid sockets and animation disabled"
+                .into(),
+        );
     }
     let mut names_seen = HashSet::new();
     let mut meshes = Vec::new();
@@ -337,57 +389,87 @@ pub fn read_static_cdf_assembly_with_imported(
         if !selected.contains(&attachment.name.as_str()) {
             continue;
         }
-        let bound = preview_source(library, &attachment.binding, imported, build)?
-            .ok_or_else(|| AssemblyError::Incomplete(
-                format!("Missing authored CDF binding {}: {}",attachment.name,attachment.binding)))?;
+        let bound =
+            preview_source(library, &attachment.binding, imported, build)?.ok_or_else(|| {
+                AssemblyError::Incomplete(format!(
+                    "Missing authored CDF binding {}: {}",
+                    attachment.name, attachment.binding
+                ))
+            })?;
         // A compiled render companion is preferred, but the author-declared
         // original may itself contain geometry (notably older .chr meshes).
         let rendered = match compiled_companion(&attachment.binding) {
-            Some(companion) => preview_source(library, &companion, imported, build)?.unwrap_or(bound),
+            Some(companion) => {
+                preview_source(library, &companion, imported, build)?.unwrap_or(bound)
+            }
             None => bound,
         };
         if !names_seen.insert(attachment.binding.to_ascii_lowercase()) {
             return Err(AssemblyError::Incomplete(format!(
-                "Repeated CDF binding without a distinct authored transform: {}",attachment.binding)));
+                "Repeated CDF binding without a distinct authored transform: {}",
+                attachment.binding
+            )));
         }
         let mut mesh = read_model(&rendered)?;
         if matches!(attachment.kind, AttachmentKind::Bone) {
-            let verified = skeleton.as_ref().ok_or_else(|| AssemblyError::Incomplete(
-                format!("Cannot place rigid prop {} without a verified bind skeleton",attachment.name)))?;
+            let verified = skeleton.as_ref().ok_or_else(|| {
+                AssemblyError::Incomplete(format!(
+                    "Cannot place rigid prop {} without a verified bind skeleton",
+                    attachment.name
+                ))
+            })?;
             transform_equipment(&mut mesh, attachment, verified)?;
         }
-        let verified_skin_weights = if matches!(attachment.kind, AttachmentKind::Skin | AttachmentKind::UniqueSkin) {
+        let verified_skin_weights = if matches!(
+            attachment.kind,
+            AttachmentKind::Skin | AttachmentKind::UniqueSkin
+        ) {
             if let Some(skeleton) = &skeleton {
-                fs::read(&rendered).ok()
-                    .and_then(|raw| remap_verified_weights(&raw, mesh.positions.len(), skeleton.names.len()).ok())
+                fs::read(&rendered)
+                    .ok()
+                    .and_then(|raw| {
+                        remap_verified_weights(&raw, mesh.positions.len(), skeleton.names.len())
+                            .ok()
+                    })
                     .is_some()
-            } else { false }
-        } else { false };
+            } else {
+                false
+            }
+        } else {
+            false
+        };
         if !verified_skin_weights && !matches!(attachment.kind, AttachmentKind::Bone) {
-            notes.push(format!("{}: original weights not yet verified against selected skeleton",attachment.name));
+            notes.push(format!(
+                "{}: original weights not yet verified against selected skeleton",
+                attachment.name
+            ));
         }
         let count = u32::try_from(mesh.indices.len())
             .map_err(|_| AssemblyError::Incomplete("CDF part exceeds index limits".into()))?;
-        let ranges = crate::model::original_mesh_subsets(
-            &fs::read(&rendered)?, mesh.indices.len())?;
+        let ranges =
+            crate::model::original_mesh_subsets(&fs::read(&rendered)?, mesh.indices.len())?;
         for (first, indices, material_slot) in ranges {
             source_parts.push(AssemblyPart {
                 name: attachment.name.clone(),
                 binding: attachment.binding.clone(),
-                first_index: index_cursor.checked_add(first)
-                    .ok_or_else(|| AssemblyError::Incomplete("Material index offset overflow".into()))?,
+                first_index: index_cursor.checked_add(first).ok_or_else(|| {
+                    AssemblyError::Incomplete("Material index offset overflow".into())
+                })?,
                 index_count: indices,
                 material_slot,
                 material_hint: attachment.material.clone(),
                 verified_skin_weights,
             });
         }
-        index_cursor = index_cursor.checked_add(count)
+        index_cursor = index_cursor
+            .checked_add(count)
             .ok_or_else(|| AssemblyError::Incomplete("Assembly index ranges overflow".into()))?;
         meshes.push((attachment.name.clone(), mesh));
     }
     if meshes.len() != selected.len() {
-        return Err(AssemblyError::Incomplete("CDF assembly selection was incomplete".into()));
+        return Err(AssemblyError::Incomplete(
+            "CDF assembly selection was incomplete".into(),
+        ));
     }
     let (mesh, original_parts) = combine_source_meshes(meshes)?;
     let report = AssemblyReport {
