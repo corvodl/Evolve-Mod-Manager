@@ -428,20 +428,30 @@ mod tests {
     fn compiled_material_fixture(with_subsets: bool) -> Vec<u8> {
         let mut data = vec![0u8; 16 + (if with_subsets { 4 } else { 3 }) * 16];
         data[..8].copy_from_slice(b"CrChF\x07\0\0");
-        data[8..12].copy_from_slice(&(if with_subsets {4u32} else {3u32}).to_le_bytes());
+        data[8..12].copy_from_slice(&(if with_subsets { 4u32 } else { 3u32 }).to_le_bytes());
         data[12..16].copy_from_slice(&16u32.to_le_bytes());
-        let vertices = [
-            [0f32, 0., 0.], [1., 0., 0.], [0., 1., 0.], [1., 1., 0.],
-        ];
+        let vertices = [[0f32, 0., 0.], [1., 0., 0.], [0., 1., 0.], [1., 1., 0.]];
         let uvs = [[0f32, 0.], [1., 0.], [0., 1.], [1., 1.]];
-        let coords = vertices.iter().flat_map(|p| p.iter().flat_map(|c| c.to_le_bytes())).collect::<Vec<_>>();
-        let texcoords = uvs.iter().flat_map(|p| p.iter().flat_map(|c| c.to_le_bytes())).collect::<Vec<_>>();
-        let indices = [0u16, 1, 2, 1, 3, 2].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>();
+        let coords = vertices
+            .iter()
+            .flat_map(|p| p.iter().flat_map(|c| c.to_le_bytes()))
+            .collect::<Vec<_>>();
+        let texcoords = uvs
+            .iter()
+            .flat_map(|p| p.iter().flat_map(|c| c.to_le_bytes()))
+            .collect::<Vec<_>>();
+        let indices = [0u16, 1, 2, 1, 3, 2]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<_>>();
         for (i, (kind, count, stride, bytes)) in [
             (0u32, 4u32, 12u32, coords),
             (5, 6, 2, indices),
             (2, 4, 8, texcoords),
-        ].into_iter().enumerate() {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let offset = data.len();
             let mut chunk = vec![0u8; 24];
             chunk[4..8].copy_from_slice(&kind.to_le_bytes());
@@ -449,10 +459,10 @@ mod tests {
             chunk[12..16].copy_from_slice(&stride.to_le_bytes());
             chunk.extend_from_slice(&bytes);
             let table = 16 + 16 * i;
-            data[table..table+4].copy_from_slice(&0x08001016u32.to_le_bytes());
-            data[table+4..table+8].copy_from_slice(&(i as u32).to_le_bytes());
-            data[table+8..table+12].copy_from_slice(&(chunk.len() as u32).to_le_bytes());
-            data[table+12..table+16].copy_from_slice(&(offset as u32).to_le_bytes());
+            data[table..table + 4].copy_from_slice(&0x08001016u32.to_le_bytes());
+            data[table + 4..table + 8].copy_from_slice(&(i as u32).to_le_bytes());
+            data[table + 8..table + 12].copy_from_slice(&(chunk.len() as u32).to_le_bytes());
+            data[table + 12..table + 16].copy_from_slice(&(offset as u32).to_le_bytes());
             data.extend_from_slice(&chunk);
         }
         if with_subsets {
@@ -480,15 +490,24 @@ mod tests {
         let source = dir.path().join("hunter.skinm");
         let material = dir.path().join("hunter.mtl");
         std::fs::write(&source, compiled_material_fixture(true)).unwrap();
-        std::fs::write(&material,
+        std::fs::write(
+            &material,
             br#"<Material Name="hunter"><SubMaterials>
                 <Material Name="hidden" Shader="NoDraw"/>
                 <Material Name="body"/>
-            </SubMaterials></Material>"#).unwrap();
+            </SubMaterials></Material>"#,
+        )
+        .unwrap();
         let inventory = evolve_core::scan_directory(dir.path()).unwrap();
         let (surfaces, warnings) = load_model(
-            &source, &material, &inventory, None, None, &SharedCache::default(),
-        ).unwrap();
+            &source,
+            &material,
+            &inventory,
+            None,
+            None,
+            &SharedCache::default(),
+        )
+        .unwrap();
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(surfaces.len(), 2);
         assert_eq!((surfaces[0].first_index, surfaces[0].index_count), (0, 3));
@@ -496,9 +515,18 @@ mod tests {
         assert!(!surfaces[0].visible);
         assert!(surfaces[1].visible);
         std::fs::write(&source, compiled_material_fixture(false)).unwrap();
-        assert!(load_model(
-            &source, &material, &inventory, None, None, &SharedCache::default(),
-        ).unwrap_err().contains("no original mesh-subset table"));
+        assert!(
+            load_model(
+                &source,
+                &material,
+                &inventory,
+                None,
+                None,
+                &SharedCache::default(),
+            )
+            .unwrap_err()
+            .contains("no original mesh-subset table")
+        );
     }
 
     #[test]
