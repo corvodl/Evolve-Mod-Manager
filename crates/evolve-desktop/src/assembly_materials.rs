@@ -1,7 +1,7 @@
 //! Resolve each CDF attachment's original CryEngine material and cooked DDS
 //! independently. All reads are source/path-checked, background-only, and
 //! shared through the bounded decoded preview cache.
-use crate::asset_cache::{SharedCache, decoded_dds};
+use crate::asset_cache::{SharedCache, decoded_dds_indexed};
 use crate::auto_resources;
 use crate::textured::{MAX_GPU_PREVIEW_TEXTURE_BYTES, Surface};
 use evolve_core::{
@@ -300,13 +300,16 @@ fn authored_maps(
             let mut found = None;
             for candidate in material_texture_candidates(&map.path) {
                 if let Some(path) = auto_resources::exact(inventory, &candidate, imported, build)? {
-                    found = Some(path);
+                    found = Some((path, candidate));
                     break;
                 }
             }
-            let path = found.ok_or_else(|| format!("Missing exact cooked DDS for {}", map.path))?;
+            let (path, virtual_path) =
+                found.ok_or_else(|| format!("Missing exact cooked DDS for {}", map.path))?;
             let canonical = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
-            let (_info, image) = decoded_dds(cache, &canonical)?;
+            let (_info, image) = decoded_dds_indexed(
+                cache, &canonical, &virtual_path, inventory, imported, build,
+            )?;
             Ok((canonical, image))
         })();
         let (canonical, image) = match decoded {
