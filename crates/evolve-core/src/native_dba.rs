@@ -150,7 +150,6 @@ pub fn inspect_native_dba_bytes(data: &[u8]) -> Result<NativeDbaInspection, Nati
     })
 }
 
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DbaAnimationRecord {
     pub name: String,
@@ -178,18 +177,18 @@ pub fn index_native_dba_bytes(data: &[u8]) -> Result<Vec<DbaAnimationRecord>, Na
     }
     let (start, size) =
         chunk.ok_or_else(|| NativeDbaError::Invalid("Missing Controller_905".into()))?;
-    let end = start.checked_add(size).ok_or_else(|| NativeDbaError::Invalid(
-        "Controller_905 boundary overflow".into()
-    ))?;
+    let end = start
+        .checked_add(size)
+        .ok_or_else(|| NativeDbaError::Invalid("Controller_905 boundary overflow".into()))?;
     let nt = summary.time_tracks;
     let np = summary.position_tracks;
     let nr = summary.rotation_tracks;
     let mut cursor = start + 16;
     let mut advance = |bytes: usize| -> Result<usize, NativeDbaError> {
         let old = cursor;
-        cursor = old.checked_add(bytes).ok_or_else(|| NativeDbaError::Invalid(
-            "DBA track-table offset overflow".into()
-        ))?;
+        cursor = old
+            .checked_add(bytes)
+            .ok_or_else(|| NativeDbaError::Invalid("DBA track-table offset overflow".into()))?;
         if cursor > end {
             return Err(NativeDbaError::Invalid("Truncated DBA track table".into()));
         }
@@ -241,30 +240,37 @@ pub fn index_native_dba_bytes(data: &[u8]) -> Result<Vec<DbaAnimationRecord>, Na
                 offset >= 0 && (offset as usize) <= extent
             };
             if !valid {
-                return Err(NativeDbaError::Invalid("Invalid DBA shared-track offset".into()));
+                return Err(NativeDbaError::Invalid(
+                    "Invalid DBA shared-track offset".into(),
+                ));
             }
         }
     }
     if summary.inplace_streaming {
         let pad = word(data, advance(4)?)? as usize;
         if pad > size {
-            return Err(NativeDbaError::Invalid("Unbounded streaming DBA padding".into()));
+            return Err(NativeDbaError::Invalid(
+                "Unbounded streaming DBA padding".into(),
+            ));
         }
         advance(pad)?;
     }
     // CryEngine's Controller_905 uses four-byte alignment after the offset
     // arrays (and optional streaming padding).
-    cursor = cursor.checked_add(3).ok_or_else(|| NativeDbaError::Invalid(
-        "DBA alignment overflow".into()
-    ))? & !3;
+    cursor = cursor
+        .checked_add(3)
+        .ok_or_else(|| NativeDbaError::Invalid("DBA alignment overflow".into()))?
+        & !3;
     if cursor > end {
-        return Err(NativeDbaError::Invalid("DBA alignment outside chunk".into()));
+        return Err(NativeDbaError::Invalid(
+            "DBA alignment outside chunk".into(),
+        ));
     }
     let mut names_at = cursor;
     if !summary.inplace_streaming {
-        names_at = names_at.checked_add(extent).ok_or_else(|| NativeDbaError::Invalid(
-            "DBA track extent overflows chunk".into()
-        ))?;
+        names_at = names_at
+            .checked_add(extent)
+            .ok_or_else(|| NativeDbaError::Invalid("DBA track extent overflows chunk".into()))?;
     }
     if names_at > end {
         return Err(NativeDbaError::Invalid("DBA tracks exceed chunk".into()));
@@ -277,38 +283,52 @@ pub fn index_native_dba_bytes(data: &[u8]) -> Result<Vec<DbaAnimationRecord>, Na
     let mut all_controller_counts = Vec::new();
     for _ in 0..summary.declared_animations {
         if position + 2 > end {
-            return Err(NativeDbaError::Invalid("Truncated DBA animation name".into()));
+            return Err(NativeDbaError::Invalid(
+                "Truncated DBA animation name".into(),
+            ));
         }
         let name_length = u16::from_le_bytes([data[position], data[position + 1]]) as usize;
         position += 2;
         if name_length == 0 || name_length > MAX_NAME || position + name_length > end {
-            return Err(NativeDbaError::Invalid("Unbounded DBA animation name".into()));
+            return Err(NativeDbaError::Invalid(
+                "Unbounded DBA animation name".into(),
+            ));
         }
         let name = std::str::from_utf8(&data[position..position + name_length])
             .map_err(|_| NativeDbaError::Invalid("Invalid DBA animation name".into()))?;
         if name.chars().any(char::is_control) {
-            return Err(NativeDbaError::Invalid("Control character in DBA animation name".into()));
+            return Err(NativeDbaError::Invalid(
+                "Control character in DBA animation name".into(),
+            ));
         }
         position += name_length;
         if position + MOTION_PARAMS + 2 > end {
-            return Err(NativeDbaError::Invalid("Truncated DBA motion params".into()));
+            return Err(NativeDbaError::Invalid(
+                "Truncated DBA motion params".into(),
+            ));
         }
         let flags = word(data, position)?;
         position += MOTION_PARAMS;
         let foot_count = u16::from_le_bytes([data[position], data[position + 1]]) as usize;
         position += 2;
         if position + foot_count + 2 > end {
-            return Err(NativeDbaError::Invalid("Truncated DBA footplant track".into()));
+            return Err(NativeDbaError::Invalid(
+                "Truncated DBA footplant track".into(),
+            ));
         }
         position += foot_count;
         let controllers = u16::from_le_bytes([data[position], data[position + 1]]) as usize;
         position += 2;
         if controllers == 0 || controllers > 4096 {
-            return Err(NativeDbaError::Invalid("Unsupported DBA controller count".into()));
+            return Err(NativeDbaError::Invalid(
+                "Unsupported DBA controller count".into(),
+            ));
         }
         if summary.inplace_streaming {
             if position + 4 > end {
-                return Err(NativeDbaError::Invalid("Truncated streaming controller pointer".into()));
+                return Err(NativeDbaError::Invalid(
+                    "Truncated streaming controller pointer".into(),
+                ));
             }
             position += 4;
         } else {
@@ -328,10 +348,14 @@ pub fn index_native_dba_bytes(data: &[u8]) -> Result<Vec<DbaAnimationRecord>, Na
         for count in all_controller_counts {
             position = parse_dba_controllers(data, position, end, count, nt, np, nr)?;
         }
-        let aligned = position.checked_add(3)
-            .ok_or_else(|| NativeDbaError::Invalid("DBA alignment overflow".into()))? & !3;
+        let aligned = position
+            .checked_add(3)
+            .ok_or_else(|| NativeDbaError::Invalid("DBA alignment overflow".into()))?
+            & !3;
         if aligned.checked_add(extent).is_none_or(|n| n > end) {
-            return Err(NativeDbaError::Invalid("DBA streaming track block is truncated".into()));
+            return Err(NativeDbaError::Invalid(
+                "DBA streaming track block is truncated".into(),
+            ));
         }
     }
     Ok(records)
@@ -346,18 +370,26 @@ fn parse_dba_controllers(
     position_tracks: usize,
     rotation_tracks: usize,
 ) -> Result<usize, NativeDbaError> {
-    let finish = start.checked_add(count.checked_mul(20).ok_or_else(|| NativeDbaError::Invalid(
-        "DBA controller table overflow".into()
-    ))?).ok_or_else(|| NativeDbaError::Invalid("DBA controller table overflow".into()))?;
+    let finish = start
+        .checked_add(
+            count
+                .checked_mul(20)
+                .ok_or_else(|| NativeDbaError::Invalid("DBA controller table overflow".into()))?,
+        )
+        .ok_or_else(|| NativeDbaError::Invalid("DBA controller table overflow".into()))?;
     if finish > end {
-        return Err(NativeDbaError::Invalid("Truncated DBA controller table".into()));
+        return Err(NativeDbaError::Invalid(
+            "Truncated DBA controller table".into(),
+        ));
     }
     let mut seen = std::collections::HashSet::new();
     for i in 0..count {
         let at = start + i * 20;
         let crc = word(bytes, at)?;
         if !seen.insert(crc) {
-            return Err(NativeDbaError::Invalid("Repeated DBA controller CRC".into()));
+            return Err(NativeDbaError::Invalid(
+                "Repeated DBA controller CRC".into(),
+            ));
         }
         let index = |n| word(bytes, at + n).map(|v| v as i32);
         let pos_time = index(4)?;
@@ -371,14 +403,20 @@ fn parse_dba_controllers(
             (rot, rotation_tracks),
         ] {
             if value != -1 && (value < 0 || value as usize >= bound) {
-                return Err(NativeDbaError::Invalid("DBA controller track index out of range".into()));
+                return Err(NativeDbaError::Invalid(
+                    "DBA controller track index out of range".into(),
+                ));
             }
         }
         if (pos_time == -1) != (pos == -1) || (rot_time == -1) != (rot == -1) {
-            return Err(NativeDbaError::Invalid("Incomplete DBA controller channel".into()));
+            return Err(NativeDbaError::Invalid(
+                "Incomplete DBA controller channel".into(),
+            ));
         }
         if pos == -1 && rot == -1 {
-            return Err(NativeDbaError::Invalid("DBA controller has no source channels".into()));
+            return Err(NativeDbaError::Invalid(
+                "DBA controller has no source channels".into(),
+            ));
         }
     }
     Ok(finish)
