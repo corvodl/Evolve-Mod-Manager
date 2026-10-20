@@ -10,7 +10,6 @@ use crate::library_catalog::{LibraryReferenceStatus, resolve_imported_reference}
 use crate::model::{ModelError, ModelInfo, RenderMesh, read_model};
 use crate::rig::{CompiledSkeleton, parse_compiled_skeleton, remap_verified_weights};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
@@ -410,7 +409,6 @@ pub fn read_static_cdf_assembly_with_imported(
             definition.skeleton
         ));
     }
-    let mut names_seen = HashSet::new();
     let mut meshes = Vec::new();
     let mut source_parts = Vec::new();
     let mut geometry_parts = Vec::new();
@@ -459,13 +457,6 @@ pub fn read_static_cdf_assembly_with_imported(
             ));
             continue;
         };
-        if !names_seen.insert(attachment.binding.to_ascii_lowercase()) {
-            notes.push(format!(
-                "{}: repeated binding lacks distinct placement",
-                attachment.name
-            ));
-            continue;
-        }
         let mut mesh = match read_model(&rendered) {
             Ok(mesh) => mesh,
             Err(error) => {
@@ -638,6 +629,40 @@ mod tests {
                 .any(|w| w.contains("static skin geometry"))
         );
         assert!(report.warnings.iter().any(|w| w.contains("binding")));
+    }
+
+    #[test]
+    fn repeated_authored_bindings_remain_separate_assembly_instances() {
+        // An authored CDF may reuse an exact compiled mesh in two differently
+        // named attachment slots. Deduplicating by Binding silently removed
+        // the second instance and its original material/geometry spans.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir(root.join("characters")).unwrap();
+        fs::write(
+            root.join("characters/armor.skinm"),
+            crate::model::tests::fixture(),
+        )
+        .unwrap();
+        let cdf = root.join("both.cdf");
+        fs::write(
+            &cdf,
+            br#"<CharacterDefinition><Model File="characters/rig.chr"/>
+            <AttachmentList>
+                <Attachment Type="CA_SKIN" AName="left_armor" Binding="characters/armor.skin"/>
+                <Attachment Type="CA_SKIN" AName="right_armor" Binding="characters/armor.skin"/>
+            </AttachmentList></CharacterDefinition>"#,
+        )
+        .unwrap();
+        let inventory = crate::scan_directory(root).unwrap();
+        let (mesh, report) = read_static_cdf_assembly(&cdf, &inventory).unwrap();
+        assert_eq!(report.original_parts, ["left_armor", "right_armor"]);
+        assert_eq!(mesh.indices, [0, 1, 2, 3, 4, 5]);
+        assert_eq!(report.geometry_parts.len(), 2);
+        assert_eq!(report.source_parts.len(), 2);
+        assert_eq!(report.source_parts[0].first_index, 0);
+        assert_eq!(report.source_parts[1].first_index, 3);
+        assert_eq!(report.source_parts[0].binding, report.source_parts[1].binding);
     }
 
     #[test]
