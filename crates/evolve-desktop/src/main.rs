@@ -3216,6 +3216,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     resource_build(state),
                 )
             } else if filename.ends_with(".dds")
+                || filename.ends_with(".dds.0a")
                 || filename
                     .rsplit_once(".dds.")
                     .is_some_and(|(_, n)| n.parse::<u8>().is_ok())
