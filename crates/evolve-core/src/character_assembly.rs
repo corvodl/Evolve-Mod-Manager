@@ -72,12 +72,18 @@ pub fn select_attachments(
         None
     } else if cdf.skin_sets.contains_key("default") {
         Some("default".to_owned())
-    } else if cdf.skin_sets.len() == 1 {
-        cdf.skin_sets.keys().next().cloned()
     } else {
-        return Err(AssemblyError::Incomplete(
-            "Multiple named skin variants and no default: choose a variant explicitly".into(),
-        ));
+        // Stage 2 CDFs often use SkinSets named HiddenWhen*Selected as
+        // equipment exclusion metadata, not actual renderable variants.
+        // Those sets must not make the entire character unviewable.
+        let actual_variants = cdf.skin_sets.keys()
+            .filter(|name| !name.starts_with("hiddenwhen"))
+            .collect::<Vec<_>>();
+        if actual_variants.len() == 1 {
+            Some(actual_variants[0].clone())
+        } else {
+            None
+        }
     };
     let keys = chosen.as_deref().and_then(|name| cdf.skin_sets.get(name));
     let selected = cdf
