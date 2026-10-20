@@ -434,7 +434,7 @@ impl Pipeline {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &program,
-                entry_point: Some("fs_main"),
+                entry_point: Some("fs_opaque"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
                     blend: None,
@@ -1153,6 +1153,12 @@ mod tests {
                 .entry_points
                 .iter()
                 .any(|entry| entry.name == "fs_main")
+        );
+        assert!(
+            module
+                .entry_points
+                .iter()
+                .any(|entry| entry.name == "fs_opaque")
         );
     }
 }
