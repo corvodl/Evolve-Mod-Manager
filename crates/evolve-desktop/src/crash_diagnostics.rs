@@ -158,5 +158,4 @@ mod tests {
         assert!(enabled());
         set_enabled(old);
     }
-
 }
