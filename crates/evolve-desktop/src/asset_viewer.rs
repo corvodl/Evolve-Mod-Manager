@@ -1,7 +1,7 @@
 //! Separate Asset Library and Modding preview window. Matches the private
 //! manager's viewport/explorer split; Asset Library originals are read-only.
 //! Heavy decoding and indexing are run by the main application's worker tasks.
-use super::{MeshViewport, Message, State, TexturedScene, viewer_inspector};
+use super::{MeshViewport, Message, State, TexturedScene, ViewerSidebarTab, viewer_inspector};
 use crate::design;
 use iced::widget::{
     canvas, column, container, image, mouse_area, row, scrollable, shader, slider, stack, text,
@@ -58,8 +58,8 @@ fn strip(state: &State) -> Element<'_, Message> {
             design::button("Move Explorer").on_press(Message::PreferenceExplorerSide),
             design::button("Reset Camera").on_press(Message::ViewerResetCamera),
             design::button("Detach Inspector").on_press(Message::OpenInspectorWindow),
-            design::button(if state.viewer_show_inspector { "Hide Inspector" } else { "Show Inspector" })
-                .on_press(Message::ViewerToggleInspector),
+            design::button("Inspector")
+                .on_press(Message::ViewerSidebarSelect(ViewerSidebarTab::Inspector)),
         ].spacing(8).into(),
         Some("Model") => column![
             row![
@@ -104,6 +104,7 @@ fn strip(state: &State) -> Element<'_, Message> {
         Some("Tools") => row![
             design::button("Index extracted files").on_press(Message::StartScan),
             design::button("Inspect selected asset").on_press(Message::ViewerPreviewSelected),
+            design::button("Dependency Graph").on_press(Message::StartDependencyInspection),
         ].spacing(8).into(),
         Some("Help") => text("Read-only preview. Use the file explorer to select extracted assets; original PAK members must be extracted before preview.").size(13).into(),
         _ => column![].into(),
@@ -228,34 +229,58 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
     .into()
 }
 
-fn browser(state: &State) -> Element<'_, Message> {
-    let tabs = row![
-        design::button("Files")
-            .on_press(Message::ViewerSidebarAnimations(false))
-            .style(if state.viewer_sidebar_animations {
-                design::secondary
-            } else {
-                design::primary
-            }),
-        design::button("Animations")
-            .on_press(Message::ViewerSidebarAnimations(true))
-            .style(if state.viewer_sidebar_animations {
-                design::primary
-            } else {
-                design::secondary
-            }),
+fn dock_tab<'a>(
+    label: &'static str,
+    tab: ViewerSidebarTab,
+    active: ViewerSidebarTab,
+) -> Element<'a, Message> {
+    let select = design::button(text(label).size(11))
+        .padding([6, 5])
+        .style(if active == tab {
+            design::primary
+        } else {
+            design::secondary
+        })
+        .on_press(Message::ViewerSidebarSelect(tab));
+    if tab == ViewerSidebarTab::Files {
+        return select.into();
+    }
+    row![
+        select,
+        tooltip(
+            design::button(text("×").size(14))
+                .padding([5, 4])
+                .style(design::text_button)
+                .on_press(Message::ViewerSidebarClose(tab)),
+            text(format!("Close {label} tab")).size(11),
+            tooltip::Position::Bottom,
+        ),
     ]
-    .spacing(5);
-    let content = if state.viewer_sidebar_animations {
-        animation_browser(state)
-    } else {
-        explorer(state)
+    .spacing(0)
+    .align_y(iced::Center)
+    .into()
+}
+
+fn browser(state: &State) -> Element<'_, Message> {
+    let active = state.viewer_sidebar_active;
+    let mut tabs = row![dock_tab("Files", ViewerSidebarTab::Files, active)].spacing(4);
+    if state.viewer_sidebar_animations {
+        tabs = tabs.push(dock_tab("Animations", ViewerSidebarTab::Animations, active));
+    }
+    if state.viewer_show_inspector {
+        tabs = tabs.push(dock_tab("Inspector", ViewerSidebarTab::Inspector, active));
+    }
+    if state.viewer_sidebar_dependencies {
+        tabs = tabs.push(dock_tab("Dependencies", ViewerSidebarTab::Dependencies, active));
+    }
+    let content = match active {
+        ViewerSidebarTab::Files => explorer(state),
+        ViewerSidebarTab::Animations if state.viewer_sidebar_animations => animation_browser(state),
+        ViewerSidebarTab::Inspector if state.viewer_show_inspector => viewer_inspector::sidebar_inspector(state),
+        ViewerSidebarTab::Dependencies if state.viewer_sidebar_dependencies => viewer_inspector::sidebar_dependencies(state),
+        _ => explorer(state),
     };
-    column![tabs, content]
-        .spacing(5)
-        .height(Fill)
-        .width(Fill)
-        .into()
+    column![tabs, content].spacing(5).height(Fill).width(Fill).into()
 }
 
 fn viewport(state: &State) -> Element<'_, Message> {
@@ -775,7 +800,6 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             strip(state),
             heading,
             panes,
-            viewer_inspector::view(state),
             footer
         ]
         .spacing(7)
