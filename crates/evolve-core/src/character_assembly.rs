@@ -640,6 +640,42 @@ mod tests {
         assert!(report.warnings.iter().any(|w| w.contains("binding")));
     }
 
+    #[test]
+    fn rigid_equipment_uses_authored_socket_transform_not_world_origin() {
+        let identity = [
+            [1., 0., 0., 0.], [0., 1., 0., 0.],
+            [0., 0., 1., 0.], [0., 0., 0., 1.],
+        ];
+        let mut socket = identity;
+        socket[0][3] = 10.;
+        socket[1][3] = 20.;
+        socket[2][3] = 30.;
+        let skeleton = CompiledSkeleton {
+            controller_ids: vec![17],
+            names: vec!["RightHand".into()],
+            parents: vec![None],
+            world: vec![socket],
+            inverse: vec![identity],
+        };
+        let attachment = crate::cdf::CdfAttachment {
+            name: "rifle".into(),
+            binding: "characters/rifle.cgf".into(),
+            kind: AttachmentKind::Bone,
+            bone_name: Some("RightHand".into()),
+            material: None,
+            position: Some([1., 2., 3.]),
+            rotation: Some([1., 0., 0., 0.]),
+        };
+        let mut rifle = part(3, true);
+        rifle.positions[0] = [1., 0., 0.];
+        transform_equipment(&mut rifle, &attachment, &skeleton).unwrap();
+        assert_eq!(rifle.positions[0], [12., 22., 33.]);
+        assert_eq!(rifle.normals.as_ref().unwrap()[0], [0., 0., 1.]);
+        let mut wrong = attachment;
+        wrong.bone_name = Some("OtherWeaponSocket".into());
+        assert!(transform_equipment(&mut rifle, &wrong, &skeleton).is_err());
+    }
+
     fn part(count: usize, uv: bool) -> RenderMesh {
         RenderMesh {
             info: ModelInfo {
