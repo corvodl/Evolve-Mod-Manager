@@ -9,6 +9,8 @@ struct Output {
 @group(0) @binding(1) var material_sampler: sampler;
 @group(0) @binding(2) var normal_map: texture_2d<f32>;
 @group(0) @binding(3) var emissive_map: texture_2d<f32>;
+@group(0) @binding(4) var specular_map: texture_2d<f32>;
+@group(0) @binding(5) var gloss_map: texture_2d<f32>;
 
 @vertex
 fn vs_main(
@@ -32,6 +34,11 @@ fn fs_main(input: Output) -> @location(0) vec4<f32> {
     let base = textureSample(diffuse, material_sampler, input.uv);
     let encoded_normal = textureSample(normal_map, material_sampler, input.uv).rg;
     let glow = textureSample(emissive_map, material_sampler, input.uv).rgb;
+    // Specular is source reflectance color, NOT a gloss/roughness scalar.
+    // Only an explicitly authored Gloss/Glossiness/Smoothness map controls
+    // the highlight width. Missing specular uses a black neutral fallback.
+    let specular_color = textureSample(specular_map, material_sampler, input.uv).rgb;
+    let gloss = textureSample(gloss_map, material_sampler, input.uv).r;
 
     // CryEngine BC5 stores tangent-space XY. Reconstruct non-negative Z,
     // without treating the normal texture as sRGB. Missing maps use flat XY.
@@ -79,7 +86,16 @@ fn fs_main(input: Output) -> @location(0) vec4<f32> {
     let fill_amount = abs(dot(surface, fill));
     let brightness = (0.30 + 0.54 * key_amount + 0.16 * fill_amount)
         * clamp(input.light_strength, 0.1, 2.0);
-    // Emission is manually selected and authored as sRGB; exact MTL
-    // GlowAmount and transparency still require verified material resolution.
-    return vec4<f32>(base.rgb * brightness + glow, base.a);
+    // Studio-light preview: highlight direction uses original view-space
+    // normal and authored specular/gloss data, without assuming metallic PBR.
+    let to_eye = normalize(vec3<f32>(-input.view_position.xy, 3.0 - input.view_position.z));
+    let half_key = normalize(key + to_eye);
+    let half_fill = normalize(fill + to_eye);
+    let exponent = mix(6.0, 112.0, clamp(gloss, 0.0, 1.0));
+    let highlight = pow(abs(dot(surface, half_key)), exponent) * 0.8
+                  + pow(abs(dot(surface, half_fill)), exponent) * 0.2;
+    let specular_light = specular_color * highlight * clamp(input.light_strength, 0.1, 2.0);
+    // Emissive remains unlit. Do not multiply specular color into the
+    // diffuse texture or use its alpha as inferred gloss.
+    return vec4<f32>(base.rgb * brightness + glow + specular_light, base.a);
 }
