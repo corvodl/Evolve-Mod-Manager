@@ -109,8 +109,18 @@ fn material_for_part(
     build: Option<&str>,
 ) -> Result<Option<PathBuf>, String> {
     if let Some(explicit) = explicit {
-        // An explicit override is authoritative. Do not substitute an
-        // unrelated same-named material if its source cannot be found.
+        // Some CDFs use a relative material basename. Try the owning
+        // attachment folder first; then the complete virtual path.
+        let parent = binding.rsplit_once('/').map_or("", |(folder, _)| folder);
+        let root_path = explicit.starts_with("characters/")
+            || explicit.starts_with("objects/")
+            || explicit.starts_with("materials/");
+        if !root_path && !parent.is_empty() {
+            let scoped = format!("{parent}/{explicit}");
+            if let Some(found) = auto_resources::exact(inventory, &scoped, imported, build)? {
+                return Ok(Some(found));
+            }
+        }
         return auto_resources::exact(inventory, explicit, imported, build)?
             .ok_or_else(|| format!("Source CDF material not found: {explicit}"))
             .map(Some);
