@@ -60,7 +60,9 @@ pub use character_equipment::{
     validated_equipment_overrides,
 };
 pub use character_folder_fbx::{FlatCdfFbxReport, export_flat_cdf_parts_fbx};
-pub use character_unified_fbx::{UnifiedCdfFbxReport, export_unified_cdf_fbx};
+pub use character_unified_fbx::{
+    UnifiedCdfFbxReport, export_unified_cdf_fbx, export_unified_cdf_fbx_with_equipment,
+};
 pub use client_hook::{
     ClientHookError, HookPairReport, PakHookPairReport, inspect_client_hook_pair,
     inspect_pak_hook_pair, prepare_client_hook,
