@@ -773,7 +773,10 @@ mod tests {
         let single =
             exact_single_slot_maps(root.path(), &model.join("scorpid3.chr"), &inventory, None)
                 .unwrap();
-        assert_eq!(single.diffuse.unwrap(), model.join("textures/body.dds.0"));
+        assert_eq!(
+            fs::canonicalize(single.diffuse.unwrap()).unwrap(),
+            fs::canonicalize(model.join("textures/body.dds.0")).unwrap()
+        );
         let multiple =
             exact_multi_slot_materials(root.path(), &model.join("scorpid3.chr"), &inventory, None)
                 .unwrap()
