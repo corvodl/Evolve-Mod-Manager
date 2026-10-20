@@ -97,7 +97,7 @@ fn safe_part_name(raw: &str) -> Result<String, String> {
     Ok(filtered)
 }
 
-type ResolvedCdfParts = (PathBuf, String, Option<String>, Vec<(String, PathBuf)>);
+type ResolvedCdfParts = (PathBuf, String, Option<String>, Vec<(String, PathBuf, Option<String>)>);
 
 fn plan_parts(
     source: &Path,
@@ -139,7 +139,7 @@ fn plan_parts(
         }
         let bound = input_file(&root, relative)?;
         let compiled = preferred_compiled_mesh(&root, &bound, inventory)?;
-        parts.push((name, compiled));
+        parts.push((name, compiled, part.material.clone()));
     }
     if parts.is_empty() || parts.len() != selected.len() || parts.len() > MAX_PARTS {
         return Err("CDF has incomplete or excessive selected attachments".into());
@@ -176,6 +176,84 @@ fn exact_original_texture(
     Ok(None)
 }
 
+/// A CDF can bind Scorpid3_Rig.chr while its original MTL is
+/// Scorpid3.mtl. Source attachment overrides outrank all fallbacks. For a
+/// true CryTek 0x745 source only, allow the historical owning variant and
+/// folder-specific material names; never search neighboring character MTLs.
+fn original_model_material(
+    root: &Path,
+    mesh: &Path,
+    inventory: &Inventory,
+    override_mtl: Option<&str>,
+) -> Result<Option<(String, PathBuf)>, String> {
+    let relative = mesh
+        .strip_prefix(root)
+        .map_err(|_| "Model material lookup escaped original asset root")?;
+    let virtual_mesh = relative.to_string_lossy().replace('\\', "/");
+    let parent = virtual_mesh.rsplit_once('/').map_or("", |(parent, _)| parent);
+    let stem = mesh
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .ok_or("Source mesh filename is not UTF-8")?;
+    let mut paths = Vec::new();
+    if let Some(authored) = override_mtl {
+        let authored = authored.trim().replace('\\', "/");
+        let rooted = ["characters/", "objects/", "materials/", "levels/", "libs/"]
+            .iter()
+            .any(|prefix| authored.to_ascii_lowercase().starts_with(prefix));
+        if !rooted && !parent.is_empty() {
+            paths.push(format!("{parent}/{authored}"));
+        }
+        paths.push(authored);
+    } else {
+        paths.push(format!("{parent}/{stem}.mtl"));
+        use std::io::Read;
+        let mut header = [0u8; 16];
+        let historical = fs::File::open(mesh)
+            .and_then(|mut file| file.read_exact(&mut header))
+            .is_ok()
+            && &header[..8] == b"CryTek\\0\\0"
+            && u32::from_le_bytes(header[12..16].try_into().unwrap_or_default()) == 0x745;
+        if historical {
+            let folder = parent.rsplit('/').next().unwrap_or("");
+            let family = folder.split('_').next().unwrap_or("");
+            let looks_owned = family.len() >= 4
+                && stem.to_ascii_lowercase().starts_with(&family.to_ascii_lowercase());
+            if looks_owned {
+                if let Some((variant, _)) = stem.split_once('_') {
+                    if variant.len() >= family.len() {
+                        paths.push(format!("{parent}/{variant}.mtl"));
+                    }
+                }
+                paths.push(format!("{parent}/{folder}.mtl"));
+                paths.push(format!("{parent}/{family}.mtl"));
+            }
+        }
+    }
+    let mut tried = HashSet::new();
+    for candidate in paths {
+        if !tried.insert(candidate.to_ascii_lowercase()) {
+            continue;
+        }
+        match resolve_virtual(inventory, &candidate) {
+            AssetResolution::Found(relative) => {
+                let file = input_file(root, &relative)?;
+                return Ok(Some((relative, file)));
+            }
+            AssetResolution::Missing => {}
+            AssetResolution::Ambiguous(_) => {
+                return Err(format!("Conflicting original MTL for {virtual_mesh}: {candidate}"));
+            }
+        }
+    }
+    if let Some(authored) = override_mtl {
+        return Err(format!(
+            "CDF attachment explicitly requires missing material {authored}; no other MTL can replace it"
+        ));
+    }
+    Ok(None)
+}
+
 /// Resolve actual MTL texture roles, never the first same-named DDS found
 /// somewhere else. Multiple submaterials need the original subset map and
 /// are left untextured rather than painted with an incorrect atlas.
@@ -183,21 +261,15 @@ fn exact_single_slot_maps(
     root: &Path,
     mesh_path: &Path,
     inventory: &Inventory,
+    override_mtl: Option<&str>,
 ) -> Result<AuthoredMaps, String> {
     let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
-    let material = mesh_path.with_extension("mtl");
-    let rel = material
-        .strip_prefix(&root)
-        .map_err(|_| "Material path escaped the original asset root")?;
-    let candidate = rel.to_string_lossy().replace('\\', "/");
-    let found = match resolve_virtual(inventory, &candidate) {
-        AssetResolution::Found(path) => path,
-        AssetResolution::Missing => return Ok(AuthoredMaps::default()),
-        AssetResolution::Ambiguous(_) => {
-            return Err(format!("Ambiguous authored CDF material: {candidate}"));
-        }
+    let Some((candidate, material)) =
+        original_model_material(&root, mesh_path, inventory, override_mtl)?
+    else {
+        return Ok(AuthoredMaps::default());
     };
-    let document = read_material(&input_file(&root, &found)?)
+    let document = read_material(&material)
         .map_err(|e| format!("Invalid authored material {candidate}: {e}"))?;
     if document.slots.len() != 1 {
         return Ok(AuthoredMaps::default());
@@ -231,19 +303,14 @@ fn exact_multi_slot_materials(
     root: &Path,
     mesh_path: &Path,
     inventory: &Inventory,
+    override_mtl: Option<&str>,
 ) -> Result<Option<Vec<OriginalMaterialPng>>, String> {
-    let material = mesh_path.with_extension("mtl");
-    let virtual_mtl = material
-        .strip_prefix(root)
-        .map_err(|_| "Original material escaped indexed asset root")?
-        .to_string_lossy()
-        .replace('\\', "/");
-    let file = match resolve_virtual(inventory, &virtual_mtl) {
-        AssetResolution::Found(file) => file,
-        AssetResolution::Missing => return Ok(None),
-        AssetResolution::Ambiguous(_) => return Err("Ambiguous original character MTL".into()),
+    let Some((virtual_mtl, material)) =
+        original_model_material(root, mesh_path, inventory, override_mtl)?
+    else {
+        return Ok(None);
     };
-    let doc = read_material(&input_file(root, &file)?)
+    let doc = read_material(&material)
         .map_err(|e| format!("Invalid CryEngine MTL {virtual_mtl}: {e}"))?;
     if doc.slots.len() > 128 {
         return Err("CryEngine MTL exceeds 128 original slots".into());
@@ -448,7 +515,7 @@ pub fn export_unified_cdf_fbx_options(
     let mut total_glb_bytes = 0u64;
     let mut labels = Vec::new();
     let mut diffuse_textured_parts = 0usize;
-    for (index, (name, original)) in parts.iter().enumerate() {
+    for (index, (name, original, material_hint)) in parts.iter().enumerate() {
         let mesh = read_model(original).map_err(|e| format!("CDF part {name}: {e}"))?;
         if mesh
             .uv0
@@ -475,7 +542,7 @@ pub fn export_unified_cdf_fbx_options(
             .ok_or("Vertex count overflow")?;
         let source_subsets = original_mesh_subsets(&raw, mesh.indices.len())
             .map_err(|e| format!("CDF part {name} source subset mapping: {e}"))?;
-        let original_materials = exact_multi_slot_materials(&root, original, inventory)?;
+        let original_materials = exact_multi_slot_materials(&root, original, inventory, material_hint.as_deref())?;
         // More than one source submaterial requires explicit source MTL and
         // original subset IDs; never paint every face with the first leaf.
         if source_subsets.iter().any(|(_, _, id)| *id == 255) {
@@ -501,7 +568,7 @@ pub fn export_unified_cdf_fbx_options(
             glb = embed_original_material_slots_glb(&glb, &source_subsets, &slots)
                 .map_err(|e| format!("CDF part {name} original multi-material: {e}"))?;
         } else {
-            let maps = exact_single_slot_maps(&root, original, inventory)?;
+            let maps = exact_single_slot_maps(&root, original, inventory, material_hint.as_deref())?;
             let diffuse = maps
                 .diffuse
                 .as_deref()
@@ -647,7 +714,7 @@ mod tests {
         let original = fs::canonicalize(root.join("hunter.skin")).unwrap();
         let compiled = preferred_compiled_mesh(root, &original, &inventory).unwrap();
         assert!(compiled.ends_with("hunter.skinm"));
-        let diffuse = exact_single_slot_maps(root, &compiled, &inventory)
+        let diffuse = exact_single_slot_maps(root, &compiled, &inventory, None)
             .unwrap()
             .diffuse
             .unwrap();
@@ -679,16 +746,47 @@ mod tests {
         fs::write(model.join("textures/body.dds"), b"lower-priority").unwrap();
         let inventory = crate::scan_directory(root.path()).unwrap();
         let single = exact_single_slot_maps(
-            root.path(), &model.join("scorpid3.chr"), &inventory,
+            root.path(), &model.join("scorpid3.chr"), &inventory, None,
         )
         .unwrap();
         assert_eq!(single.diffuse.unwrap(), model.join("textures/body.dds.0"));
         let multiple =
-            exact_multi_slot_materials(root.path(), &model.join("scorpid3.chr"), &inventory)
+            exact_multi_slot_materials(root.path(), &model.join("scorpid3.chr"), &inventory, None)
                 .unwrap()
                 .unwrap();
         assert_eq!(multiple.len(), 1);
         assert!(multiple[0].diffuse.as_ref().is_some_and(|png| png.starts_with(&[137, 80, 78, 71])));
+    }
+
+    #[test]
+    fn legacy_cdf_variant_picks_only_original_owned_material_or_explicit_override() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let parent = root.join("objects/characters/monsters/scorpid_2");
+        fs::create_dir_all(&parent).unwrap();
+        let mut body = vec![0u8; 20];
+        body[..8].copy_from_slice(b"CryTek\\0\\0");
+        body[8..12].copy_from_slice(&0xFFFF0000u32.to_le_bytes());
+        body[12..16].copy_from_slice(&0x745u32.to_le_bytes());
+        let part = parent.join("scorpid3_rig.chr");
+        fs::write(&part, &body).unwrap();
+        fs::write(parent.join("scorpid3.mtl"), br#"<Material Name="Correct"/>"#).unwrap();
+        fs::write(parent.join("scorpid2.mtl"), br#"<Material Name="Other"/>"#).unwrap();
+        let inventory = crate::scan_directory(root).unwrap();
+        let (relative, _) = original_model_material(root, &part, &inventory, None)
+            .unwrap()
+            .unwrap();
+        assert!(relative.eq_ignore_ascii_case("objects/characters/monsters/scorpid_2/scorpid3.mtl"));
+        let (explicit, _) = original_model_material(
+            root, &part, &inventory,
+            Some("objects/characters/monsters/scorpid_2/scorpid2.mtl"),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(explicit.ends_with("scorpid2.mtl"));
+        assert!(original_model_material(
+            root, &part, &inventory, Some("objects/characters/monsters/scorpid_2/missing.mtl"),
+        ).is_err());
     }
 
     #[test]
@@ -702,7 +800,7 @@ mod tests {
         let inventory = crate::scan_directory(root).unwrap();
         let mesh = fs::canonicalize(root.join("hunter.skinm")).unwrap();
         assert!(
-            exact_single_slot_maps(root, &mesh, &inventory)
+            exact_single_slot_maps(root, &mesh, &inventory, None)
                 .unwrap()
                 .diffuse
                 .is_none()
