@@ -101,7 +101,7 @@ fn embedded_material_hints(
     Ok(hints)
 }
 
-fn material_for_part(
+pub(crate) fn material_for_part(
     binding: &str,
     explicit: Option<&str>,
     inventory: &Inventory,
