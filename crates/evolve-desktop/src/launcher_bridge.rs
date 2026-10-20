@@ -72,6 +72,12 @@ fn safe_pak_name(raw: &str) -> Result<&str, String> {
     }
     Ok(raw)
 }
+fn normalized_pak_name(raw: &str) -> Result<String, String> {
+    let normalized = raw.replace('\\', "/");
+    safe_pak_name(&normalized)?;
+    Ok(normalized)
+}
+
 /// Python's pathlib.Path stringifies source-relative PAKs with Windows
 /// backslashes, while rekey_plan.json stores virtual paths using '/'.
 /// Compare only canonical safe relative paths, not raw separator spelling.
@@ -80,8 +86,7 @@ fn normalized_swap_name(raw: &str) -> Result<String, String> {
     if normalized.eq_ignore_ascii_case("bin64_SteamRetail/inject.dll") {
         return Ok("bin64_SteamRetail/inject.dll".into());
     }
-    safe_pak_name(&normalized)?;
-    Ok(normalized)
+    normalized_pak_name(&normalized)
 }
 
 fn within_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
@@ -372,14 +377,14 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
     let mut seen = std::collections::HashSet::new();
     let mut planned = Vec::with_capacity(signed.len() + 1);
     for entry in signed {
-        let path = safe_pak_name(entry["path"].as_str().ok_or("Missing PAK path")?)?;
+        let path = normalized_pak_name(entry["path"].as_str().ok_or("Missing PAK path")?)?;
         if !seen.insert(path.to_ascii_lowercase()) {
             return Err("Duplicate signed PAK destination in plan".into());
         }
-        let original_pak = within_file(&game, path)?;
-        let custom_pak = within_file(&stage.join("paks"), path)?;
+        let original_pak = within_file(&game, &path)?;
+        let custom_pak = within_file(&stage.join("paks"), &path)?;
         no_orphaned_backup(&original_pak)?;
-        let basename = Path::new(path)
+        let basename = Path::new(&path)
             .file_name()
             .and_then(|x| x.to_str())
             .ok_or("Invalid PAK basename")?;
@@ -543,15 +548,15 @@ fn guarded_restore_state(stage: &Path, swap: &Path) -> Result<String, String> {
         if entry["kind"].as_str() != Some("signed-encrypted") {
             continue;
         }
-        let name = safe_pak_name(
+        let name = normalized_pak_name(
             entry["path"]
                 .as_str()
                 .ok_or("Missing signed archive path")?,
         )?;
         expected.push((
-            name.to_owned(),
-            stage.join("paks").join(name),
-            game.join(name),
+            name.clone(),
+            stage.join("paks").join(&name),
+            game.join(&name),
         ));
     }
     if expected.is_empty() || expected.len() > MAX_ARCHIVES {
@@ -858,6 +863,10 @@ mod tests {
     fn private_windows_journal_names_normalize_without_path_traversal() {
         assert_eq!(
             normalized_swap_name("Game\\\\libs.pak").unwrap(),
+            "Game/libs.pak"
+        );
+        assert_eq!(
+            normalized_pak_name("Game\\\\libs.pak").unwrap(),
             "Game/libs.pak"
         );
         assert_eq!(
