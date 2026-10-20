@@ -286,7 +286,9 @@ pub fn read_legacy_skin(
     let mut triangles = Vec::with_capacity(indices.count);
     for chunk in indices.data.as_chunks::<2>().0 {
         let id = u16::from_le_bytes([chunk[0], chunk[1]]) as usize;
-        if id >= vertices { return Err(invalid("2012 triangle escapes vertices")); }
+        if id >= vertices {
+            return Err(invalid("2012 triangle escapes vertices"));
+        }
         triangles.push(id);
     }
     let subset = single(&parts, SUBSETS)?;
