@@ -52,9 +52,8 @@ fn chunks(data: &[u8]) -> Result<Vec<Chunk<'_>>, RigError> {
     // directory. Derive its chunk sizes only from strictly unique offsets;
     // never interpret a partially written five-dword directory as four.
     // This mirrors the established private historical mesh parser.
-    let terminal_four = start
-        .checked_add(count.checked_mul(16).ok_or(RigError::Limits)?)
-        == Some(data.len());
+    let terminal_four =
+        start.checked_add(count.checked_mul(16).ok_or(RigError::Limits)?) == Some(data.len());
     let entry_size = if terminal_four { 16 } else { 20 };
     let end = start
         .checked_add(count.checked_mul(entry_size).ok_or(RigError::Limits)?)
@@ -71,9 +70,7 @@ fn chunks(data: &[u8]) -> Result<Vec<Chunk<'_>>, RigError> {
         let version = u32_at(data, at + 4)?;
         let offset = u32_at(data, at + 8)? as usize;
         let id = u32_at(data, at + 12)?;
-        if !ids.insert(id) || !offsets.insert(offset)
-            || offset < 20 || offset >= table
-        {
+        if !ids.insert(id) || !offsets.insert(offset) || offset < 20 || offset >= table {
             return Err(invalid("Historical bone/stream chunk table mismatch"));
         }
         let declared_size = if terminal_four {
@@ -91,10 +88,13 @@ fn chunks(data: &[u8]) -> Result<Vec<Chunk<'_>>, RigError> {
         let upper = if let Some(size) = declared_size {
             offset.checked_add(size).ok_or(RigError::Limits)?
         } else {
-            let index = sorted.binary_search(&offset).map_err(|_| RigError::Limits)?;
+            let index = sorted
+                .binary_search(&offset)
+                .map_err(|_| RigError::Limits)?;
             sorted.get(index + 1).copied().unwrap_or(table)
         };
-        if upper < offset + 16 || upper > table
+        if upper < offset + 16
+            || upper > table
             || data.get(offset..offset + 4) != Some(&kind.to_le_bytes())
             || u32_at(data, offset + 4)? != version
             || u32_at(data, offset + 8)? as usize != offset
@@ -572,7 +572,6 @@ mod tests {
         assert_eq!(weights.weight_bytes[1][0], 255);
         assert_eq!(weights.subsets, 1);
     }
-
 
     /// The 2012 private parser accepts this terminal four-dword table.
     /// Its offsets are verified against embedded chunk headers and the

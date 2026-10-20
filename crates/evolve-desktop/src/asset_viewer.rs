@@ -4,8 +4,8 @@
 use super::{MeshViewport, Message, State, TexturedScene, ViewerSidebarTab, viewer_inspector};
 use crate::design;
 use iced::widget::{
-    canvas, column, container, image, mouse_area, row, scrollable, shader, slider, stack, text,
-    tooltip, svg,
+    canvas, column, container, image, mouse_area, row, scrollable, shader, slider, stack, svg,
+    text, tooltip,
 };
 use iced::{
     Background, Border, Color, Element, Event, Fill, Length, Point, Rectangle, Renderer, Theme,
@@ -466,10 +466,12 @@ fn viewport(state: &State) -> Element<'_, Message> {
         camera_icon("+", "Zoom in", Message::ViewerZoomWheel(2.0)),
         tooltip(
             row![
-                svg(svg::Handle::from_memory(include_bytes!("../../../assets/nav/light.svg")))
-                    .style(design::icon)
-                    .width(Length::Fixed(18.0))
-                    .height(Length::Fixed(18.0)),
+                svg(svg::Handle::from_memory(include_bytes!(
+                    "../../../assets/nav/light.svg"
+                )))
+                .style(design::icon)
+                .width(Length::Fixed(18.0))
+                .height(Length::Fixed(18.0)),
                 slider(
                     0.2..=4.0,
                     state.light_strength.clamp(0.2, 4.0),
