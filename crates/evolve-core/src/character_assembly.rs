@@ -217,7 +217,41 @@ pub fn read_static_cdf_assembly(
                 "Unsafe attachment path: {relative}"
             )));
         }
-        meshes.push((part.clone(), read_model(&resolved)?));
+        // CryEngine's compiled .skin/.chr descriptor may have its renderable
+        // geometry in an identically named .skinm/.chrm companion. Resolve it
+        // case-insensitively from the indexed inventory, never by guessing a
+        // nearby character or trusting an unindexed symlink.
+        let render_path = if let Some((stem, ext)) = relative.rsplit_once('.') {
+            let companion = match ext.to_ascii_lowercase().as_str() {
+                "skin" => Some(format!("{stem}.skinm")),
+                "chr" => Some(format!("{stem}.chrm")),
+                _ => None,
+            };
+            if let Some(companion) = companion {
+                match crate::cdf::resolve_virtual(library, &companion) {
+                    AssetResolution::Found(path) => {
+                        let candidate = root.join(path);
+                        let meta = fs::symlink_metadata(&candidate)?;
+                        let canonical = fs::canonicalize(&candidate)?;
+                        if !meta.file_type().is_file() || !canonical.starts_with(&root) {
+                            return Err(AssemblyError::Incomplete(format!(
+                                "Unsafe geometry companion for {relative}"
+                            )));
+                        }
+                        canonical
+                    }
+                    AssetResolution::Ambiguous(_) => return Err(AssemblyError::Incomplete(
+                        format!("Ambiguous geometry companion for {relative}")
+                    )),
+                    AssetResolution::Missing => resolved.clone(),
+                }
+            } else {
+                resolved.clone()
+            }
+        } else {
+            resolved.clone()
+        };
+        meshes.push((part.clone(), read_model(&render_path)?));
     }
     if meshes.len() != selected.len() {
         return Err(AssemblyError::Incomplete(
