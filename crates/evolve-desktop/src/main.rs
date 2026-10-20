@@ -6164,7 +6164,10 @@ mod project_edit_tests {
         };
         let _task = update(&mut state, Message::ViewerPreviewSelected);
         assert!(state.busy, "CDF preview should start a background assembly");
-        assert_eq!(PathBuf::from(&state.input), source);
+        assert_eq!(
+            std::fs::canonicalize(&state.input).unwrap(),
+            std::fs::canonicalize(&source).unwrap()
+        );
         // A metadata-only CDF inspection used to leave the previously
         // displayed character visible. The full-assembly route clears the
         // previous DDS preview before starting its worker.
