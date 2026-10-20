@@ -1,7 +1,7 @@
 //! Verified CryEngine Stage 2 CrChF compiled bone tables, subset-local
 //! bone palettes and Blender-compatible glTF skin export. Never substitute
 //! guessed indices/weights for missing native source data.
-use crate::fbx::{FbxError, FbxReport, convert_glb_to_fbx};
+use crate::fbx::{FbxError, FbxReport};
 use crate::glb::{GlbError, geometry_glb_bytes};
 use crate::model::{ModelError, RenderMesh, read_model};
 use crate::native_caf::NativeCafMotion;

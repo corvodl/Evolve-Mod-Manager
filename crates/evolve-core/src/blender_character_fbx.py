@@ -7,6 +7,7 @@ import math
 import sys
 import traceback
 from pathlib import Path
+from blender_uv0 import prepare_original_uv
 
 def check(condition, reason):
     if not condition:
@@ -124,7 +125,7 @@ def main():
         bpy.ops.import_scene.gltf(filepath=str(source))
         added = set(bpy.data.objects) - before
         arms = [o for o in added if o.type == "ARMATURE"]
-        imported = actual_meshes(added, arms)
+        imported = prepare_original_uv(actual_meshes(added, arms))
         check(len(arms) == 1 and 1 <= len(imported) <= 128,
               "part has no original rig or too many material fragments")
         arm = arms[0]
@@ -171,7 +172,7 @@ def main():
     bpy.ops.export_scene.fbx(
         filepath=str(destination), use_selection=True,
         object_types={"ARMATURE", "MESH"}, add_leaf_bones=False,
-        use_armature_deform_only=False, axis_forward="-Z", axis_up="Y",
+        use_armature_deform_only=False, axis_forward="-Y", axis_up="Z",
         bake_anim=animate, bake_anim_use_all_actions=animate,
         bake_anim_use_nla_strips=animate, bake_anim_simplify_factor=0,
         path_mode="COPY", embed_textures=embed_textures)

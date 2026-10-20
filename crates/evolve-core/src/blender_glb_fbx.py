@@ -5,6 +5,7 @@ import bpy
 import json
 import sys
 from pathlib import Path
+from blender_uv0 import prepare_original_uv
 
 def run():
     # blender.exe --background --factory-startup --python <script> -- input.glb output.fbx 0|1
@@ -23,7 +24,8 @@ def run():
     bpy.ops.object.delete(use_global=False)
     bpy.ops.import_scene.gltf(filepath=str(source))
     visible = [o for o in bpy.data.objects if o.type in ('MESH','ARMATURE')]
-    meshes = [o for o in visible if o.type == 'MESH']
+    meshes = prepare_original_uv([o for o in visible if o.type == 'MESH'])
+    visible = [o for o in bpy.data.objects if o in visible or o in meshes]
     if not meshes:
         raise RuntimeError("Imported GLB contains no actual mesh")
     if not include_animation:
@@ -48,7 +50,7 @@ def run():
         object_types={'MESH', 'ARMATURE', 'EMPTY'},
         apply_unit_scale=True,
         bake_space_transform=False,
-        axis_forward='-Z', axis_up='Y',
+        axis_forward='-Y', axis_up='Z',
         use_mesh_modifiers=True,
         mesh_smooth_type='FACE',
         use_armature_deform_only=False,

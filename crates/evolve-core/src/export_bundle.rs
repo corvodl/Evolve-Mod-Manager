@@ -135,7 +135,38 @@ fn dependencies(
             return Err("Dependency graph exceeds safe limit".into());
         }
         let lower = relative.to_ascii_lowercase();
-        if !(lower.ends_with(".cdf") || lower.ends_with(".mtl")) { continue; }
+        if !(lower.ends_with(".cdf") || lower.ends_with(".mtl")) {
+            // Standalone export also discovers exactly indexed sidecar MTL.
+            if [".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cgfm", ".cga", ".cgam"]
+                .iter().any(|suffix| lower.ends_with(suffix)) {
+                let candidate = Path::new(&relative).with_extension("mtl")
+                    .to_string_lossy().replace('\\', "/");
+                match crate::resolve_virtual(inventory, &candidate) {
+                    crate::AssetResolution::Found(found) => {
+                        queue.push_back(found.clone());
+                        if files.insert(found.to_ascii_lowercase()) {
+                            let material = indexed_file(root, inventory, &found)?;
+                            let size = fs::metadata(&material).map_err(|e| e.to_string())?.len();
+                            copied = copied.checked_add(size).ok_or("Dependency size overflow")?;
+                            if copied > MAX_COPY_BYTES {
+                                return Err("Dependencies exceed 1 GiB budget".into());
+                            }
+                            let output = bundle.join("dependencies").join(relative_path(&found)?);
+                            if let Some(parent) = output.parent() {
+                                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                            }
+                            fs::copy(material, output).map_err(|e| e.to_string())?;
+                            others += 1;
+                        }
+                    }
+                    crate::AssetResolution::Missing => (),
+                    crate::AssetResolution::Ambiguous(_) => {
+                        return Err(format!("Ambiguous exact material for {relative}"));
+                    }
+                }
+            }
+            continue;
+        }
         let graph = inspect_dependencies(inventory, &relative)
             .map_err(|e| format!("Cannot resolve {relative} dependencies: {e}"))?;
         for node in graph.nodes.iter().skip(1) {
@@ -144,7 +175,7 @@ fn dependencies(
             }
             let dep = &node.candidates[0];
             let key = dep.to_ascii_lowercase();
-            if !files.insert(key) { continue; }
+            if !files.insert(key.clone()) { continue; }
             if files.len() > MAX_REFERENCES {
                 return Err("Too many dependency files".into());
             }
@@ -177,6 +208,35 @@ fn dependencies(
             }
             if key.ends_with(".mtl") {
                 queue.push_back(dep.clone());
+            } else if [".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cgfm",
+                ".cga", ".cgam"].iter().any(|suffix| key.ends_with(suffix)) {
+                // A mesh's material isn't a CDF edge. Include the one exact
+                // indexed same-stem original MTL when it exists.
+                let candidate = Path::new(dep).with_extension("mtl")
+                    .to_string_lossy().replace('\\', "/");
+                match crate::resolve_virtual(inventory, &candidate) {
+                    crate::AssetResolution::Found(found) => {
+                        if files.insert(found.to_ascii_lowercase()) {
+                            let material = indexed_file(root, inventory, &found)?;
+                            let size = fs::metadata(&material).map_err(|e| e.to_string())?.len();
+                            copied = copied.checked_add(size).ok_or("Dependency size overflow")?;
+                            if copied > MAX_COPY_BYTES {
+                                return Err("Dependencies exceed 1 GiB budget".into());
+                            }
+                            let output = bundle.join("dependencies").join(relative_path(&found)?);
+                            if let Some(parent) = output.parent() {
+                                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                            }
+                            fs::copy(material, output).map_err(|e| e.to_string())?;
+                            others += 1;
+                            queue.push_back(found);
+                        }
+                    }
+                    crate::AssetResolution::Missing => (),
+                    crate::AssetResolution::Ambiguous(_) => {
+                        return Err(format!("Ambiguous exact material for {dep}"));
+                    }
+                }
             }
         }
     }
