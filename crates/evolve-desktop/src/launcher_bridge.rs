@@ -472,6 +472,142 @@ fn check_private_helper_runtime() -> Result<(), String> {
     Ok(())
 }
 
+/// Validate all file paths in an interrupted swap journal *before* asking
+/// the trusted private restore helper to use it. Interrupted swaps can be
+/// partially renamed, so target/backup FILES need not all exist; their
+/// parents, names and exact plan/source mapping must still match.
+fn guarded_restore_state(stage: &Path, swap: &Path) -> Result<String, String> {
+    let stage = directory(stage)?;
+    let swap = directory(swap)?;
+    let journal = json(&swap.join("controlled_swap_state.json"))?;
+    if journal["version"].as_u64() != Some(1) {
+        return Err("Unrecognized private swap recovery journal version".into());
+    }
+    let phase = journal["phase"].as_str().ok_or("Missing recovery phase")?;
+    if !matches!(phase, "prepared" | "restored" | "swapped" | "interrupted" | "restoring") {
+        return Err("Unrecognized/unsafe private swap recovery phase".into());
+    }
+    let plan = json(&stage.join("rekey_plan.json"))?;
+    let game = directory(Path::new(
+        plan["source_root"].as_str().ok_or("Missing original game root")?
+    ))?;
+    if game.starts_with(&stage) || stage.starts_with(&game)
+        || game.starts_with(&swap) || swap.starts_with(&game)
+    {
+        return Err("Game and stage/swap helper directories overlap".into());
+    }
+    if directory(Path::new(journal["game"].as_str().ok_or("Journal game root missing")?))? != game
+        || directory(Path::new(journal["stage"].as_str().ok_or("Journal signing stage missing")?))? != stage
+    {
+        return Err("Recovery journal was created for another installed game or signing stage".into());
+    }
+    let mut expected = Vec::new();
+    for entry in plan["entries"].as_array().ok_or("Signing stage plan has no entries")? {
+        if entry["kind"].as_str() != Some("signed-encrypted") {
+            continue;
+        }
+        let name = safe_pak_name(entry["path"].as_str().ok_or("Missing signed archive path")?)?;
+        expected.push((
+            name.to_owned(),
+            stage.join("paks").join(name),
+            game.join(name),
+        ));
+    }
+    if expected.is_empty() || expected.len() > MAX_ARCHIVES {
+        return Err("No valid signed archive recovery targets".into());
+    }
+    expected.push((
+        "bin64_SteamRetail/inject.dll".to_owned(),
+        stage.join("inject-custom.dll"),
+        game.join("bin64_SteamRetail/inject.dll"),
+    ));
+    let records = journal["files"].as_array().ok_or("Recovery journal missing files")?;
+    if records.len() != expected.len() || journal["count"].as_u64() != Some(expected.len() as u64) {
+        return Err("Recovery ledger differs from original PAK and hook plan".into());
+    }
+    let mut seen = std::collections::HashSet::new();
+    for (record, (name, source, target)) in records.iter().zip(expected) {
+        if record["name"].as_str() != Some(name.as_str())
+            || !seen.insert(name.to_ascii_lowercase())
+        {
+            return Err(format!("Recovery journal target ordering changed: {name}"));
+        }
+        let expected_source = plain(&source, 16 * 1024 * 1024 * 1024)?;
+        let recorded_source = plain(
+            Path::new(record["source"].as_str().ok_or("Journal source path missing")?),
+            16 * 1024 * 1024 * 1024
+        )?;
+        if expected_source != recorded_source {
+            return Err(format!("Recovery source does not match staged signed asset: {name}"));
+        }
+        let expected_parent = directory(target.parent().ok_or("Original target parent missing")?)?;
+        let target_name = target.file_name().and_then(|x| x.to_str())
+            .ok_or("Original target filename missing")?;
+        for (field, suffix) in [("target", ""), ("backup", ".customkey-original"), ("ready", ".customkey-ready")] {
+            let raw = Path::new(record[field].as_str().ok_or("Recovery file path missing")?);
+            let parent = directory(raw.parent().ok_or("Recovery file parent missing")?)?;
+            let filename = raw.file_name().and_then(|x| x.to_str())
+                .ok_or("Recovery filename missing")?;
+            if parent != expected_parent || !filename.eq_ignore_ascii_case(&format!("{target_name}{suffix}")) {
+                return Err(format!("Recovery {field} path does not match installed original: {name}"));
+            }
+            if fs::symlink_metadata(raw).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+                return Err(format!("Unsafe symlink in private recovery journal: {name}"));
+            }
+        }
+    }
+    Ok(phase.to_owned())
+}
+
+/// Explicit recovery shortcut for an interrupted offline-only private swap.
+/// The Rust manager NEVER hand-rolls reverse renames: it invokes the existing
+/// helper which owns the original journal, then re-verifies the restored
+/// original client hook and signed PAKs with the public prelaunch gate.
+#[cfg(windows)]
+pub fn restore_existing_offline_client(stage: &Path, swap: &Path) -> Result<usize, String> {
+    use std::os::windows::process::CommandExt;
+    games_closed()?;
+    let stage = directory(stage)?;
+    let swap = directory(swap)?;
+    let phase = guarded_restore_state(&stage, &swap)?;
+    if matches!(phase.as_str(), "prepared" | "restored") {
+        let checked = inspect_existing_launcher(&stage, &swap)?;
+        return Ok(checked.archive_count);
+    }
+    check_private_helper_runtime()?;
+    let script = helper(&swap, "reusable_restore.py")?;
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(swap.join("rust-restore-bridge.log"))
+        .map_err(|e| e.to_string())?;
+    let stderr = log.try_clone().map_err(|e| e.to_string())?;
+    let result = Command::new("py")
+        .args(["-3.11", "-u"])
+        .arg(script)
+        .current_dir(&swap)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(stderr))
+        .creation_flags(0x08000000)
+        .status()
+        .map_err(|e| format!("Private recovery helper unavailable: {e}"))?;
+    if !result.success() {
+        return Err(format!(
+            "Private recovery helper failed ({result}); inspect rust-restore-bridge.log before launching again"
+        ));
+    }
+    let checked = inspect_existing_launcher(&stage, &swap)?;
+    if checked.prepared {
+        return Err("Recovery unexpectedly left a prepared instead of restored journal".into());
+    }
+    Ok(checked.archive_count)
+}
+#[cfg(not(windows))]
+pub fn restore_existing_offline_client(_: &Path, _: &Path) -> Result<usize, String> {
+    Err("Offline Evolve launcher recovery requires Windows x64".into())
+}
+
 /// Reuse the private launcher's already-tested control flow. It performs
 /// same-volume .customkey-ready renames only during its Frida CreateProcessW
 /// pause and starts an independent restore watchdog. Nothing here injects,
@@ -732,6 +868,57 @@ mod tests {
         )
         .unwrap();
         assert!(inspect_hook_startup_log(&log, beginning).is_err());
+    }
+
+    #[test]
+    fn restore_guard_rejects_foreign_and_forged_journals_without_mutation() {
+        let home = tempfile::tempdir().unwrap();
+        let game = home.path().join("game");
+        let stage = home.path().join("stage");
+        let swap = home.path().join("swap");
+        fs::create_dir_all(game.join("bin64_SteamRetail")).unwrap();
+        fs::create_dir_all(game.join("Game")).unwrap();
+        fs::create_dir_all(stage.join("paks/Game")).unwrap();
+        fs::create_dir(&swap).unwrap();
+        fs::write(stage.join("paks/Game/libs.pak"), b"signed staged archive").unwrap();
+        fs::write(stage.join("inject-custom.dll"), b"stage hook bytes").unwrap();
+        fs::write(stage.join("rekey_plan.json"), serde_json::to_vec(&serde_json::json!({
+            "source_root": game,
+            "entries": [{"kind": "signed-encrypted", "path": "Game/libs.pak"}]
+        })).unwrap()).unwrap();
+        let pak_target = game.join("Game/libs.pak");
+        let hook_target = game.join("bin64_SteamRetail/inject.dll");
+        let source_pak = stage.join("paks/Game/libs.pak");
+        let source_hook = stage.join("inject-custom.dll");
+        let row = |name: &str, source: &Path, target: &Path| serde_json::json!({
+            "name": name,
+            "source": source,
+            "target": target,
+            "ready": format!("{}.customkey-ready", target.display()),
+            "backup": format!("{}.customkey-original", target.display()),
+            "bytes": 5,
+            "sha256": "test-only"
+        });
+        let mut journal = serde_json::json!({
+            "version": 1, "phase": "interrupted",
+            "game": game, "stage": stage, "count": 2,
+            "files": [
+                row("Game/libs.pak", &source_pak, &pak_target),
+                row("bin64_SteamRetail/inject.dll", &source_hook, &hook_target)
+            ]
+        });
+        let ledger = swap.join("controlled_swap_state.json");
+        fs::write(&ledger, serde_json::to_vec(&journal).unwrap()).unwrap();
+        assert_eq!(guarded_restore_state(&stage, &swap).unwrap(), "interrupted");
+        journal["files"].as_array_mut().unwrap().reverse();
+        fs::write(&ledger, serde_json::to_vec(&journal).unwrap()).unwrap();
+        assert!(guarded_restore_state(&stage, &swap).is_err());
+        journal["files"].as_array_mut().unwrap().reverse();
+        journal["files"][1]["backup"] = serde_json::json!(home.path().join("foreign-original"));
+        fs::write(&ledger, serde_json::to_vec(&journal).unwrap()).unwrap();
+        assert!(guarded_restore_state(&stage, &swap).is_err());
+        assert!(!pak_target.exists());
+        assert!(!hook_target.exists());
     }
 
     #[test]
