@@ -9,6 +9,26 @@ Updated: **2026-10-20** · Repository: `corvodl/Evolve-Mod-Manager` · Working P
 3. Resume **real Blender 5.2 character acceptance** for unified FBX, then native character CAF/DBA and offline installed-game workflows. Any real extracted assets remain out of Git and release packages.
 4. Update this file after each verified advance with the exact commit/run, observation, blockers, and next operation. Keep PR open until representative real-asset acceptance and CI pass; no release just for green synthetic tests.
 
+## Viewer regression work — indexed .skin and CDF assembly, authored GPU textures
+
+User validation on 2026-10-20 identified: standalone `.skin` selections and full CDF assemblies were not viewable, associated equipment did not attach, and an 11-slot MTL showed 23 resolved DDS references but no per-face GPU textures. The screenshot was intentionally in **wireframe mode** to demonstrate source geometry; red wireframe by itself is not a texture failure.
+
+Implemented on PR #6 after last fully green run, **pending the latest CI and real-game acceptance**:
+
+- `auto_resources::exact_render_companion`: selecting a native `.skin`/ `.chr`/ `.cgf`/ `.cga` tries only its same-virtual-name compiled `.skinm`/ `.chrm`/ `.cgfm`/ `.cgam` via indexed assets or the manifest-verified imported PAK library. It does not select a similar filename or combine archives/builds without provenance.
+- `Operation::InspectIndexedModel` and `State.render_source`: preview the exact render companion while retaining the user-selected skeletal binding in the explorer. CAF binding and GPU surface loading follow the render source, including one stored in another imported PAK. Missing compiled companions must produce actionable errors rather than silently loading an unrelated mesh.
+- `read_static_cdf_assembly_with_imported`: allow a CDF to draw original `.skinm` geometry when the separate `.skin` metadata or compiled skeleton is missing. The report explicitly warns that **original skin weights, bone sockets and animation cannot be verified**; missing/ambiguous socket transforms are never invented. A genuine `CA_BONE` still requires the original verified bind-pose skeleton and matching `BoneName`.
+- `assembly_materials::load_model` and main background job: after MTL discovery, upload original per-subset diffuse/normal/emissive/specular/gloss maps using strict `0x08001017` indices. With multiple MTL leaves but no original source subset mapping, refuse to paint all triangles with slot zero. Preserve NoDraw/hole face spans. The inspector reports **actual GPU-bound original subsets**, not only resolved MTL asset counts.
+- Viewer layout: explorer defaults to the **left** for new settings, with a one-click left/right toggle. Shaded/wireframe switching is visible in the viewport toolbar. Existing saved explorer placement preferences are preserved.
+- Synthetic tests cover precise `.skinm` companion choice, CDF static fallback when an original skeleton and separate `.skin` are absent, and authored rigid equipment socket transform placement.
+
+Still required:
+1. Latest GitHub Actions format/core/desktop/Windows portable validation, including no regressions in 2012 `CryTek 0x745` meshes.
+2. **Real Stage 2 and 2012 asset tests:** Kala (torso/equipment DDS), Wraith stages, Griffin and Goliath/Behemoth skin rigs. Record the exact error and original CDF attachment names, matched render-companion virtual paths, number of GPU subset surfaces/textures, bone names and missing dependencies. Do not commit copyrighted extracted assets.
+3. When a CDF lacks the true skeleton or rendered compiled equipment companion, the model must report incomplete assembly rather than falsely claim every attachment loaded. Implement original bone-paletted skinning and bone-attached animation only against real skeletons.
+4. Current model viewer does **not** automatically infer which CDF owns an arbitrary selected standalone `.skin`; selecting the authored CDF is still the supported full-assembly route. Future discovery should match exact CDF Binding references, not filename similarity.
+5. Source MTLs with no original mesh-subset table still cannot safely assign individual texture slots. No guessed face/material association is permitted.
+
 ## Follow-up implementation — DBA indexing, multi-material FBX, recovery phases
 
 Work is on PR #6 branch `feature/blender-viewport-cdf-autoload`. **Run the latest core + desktop + portable checks after this commit; earlier green runs do not validate these changes.**
