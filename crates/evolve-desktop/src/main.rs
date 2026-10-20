@@ -241,6 +241,8 @@ struct State {
     viewer_menu: Option<&'static str>,
     viewer_explorer_visible: bool,
     viewer_sidebar_animations: bool,
+    viewer_sidebar_dependencies: bool,
+    viewer_sidebar_active: ViewerSidebarTab,
     viewer_from_library: bool,
     developer_password: String,
     developer_status: String,
@@ -304,6 +306,17 @@ struct State {
     modding_profiles: bool,
     modding_open_editor_when_scanned: bool,
     modding_pending_focus: Option<PathBuf>,
+}
+
+/// Docked tools all share the same resizable sidebar. Files is permanent;
+/// the other three tabs can be opened and dismissed independently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ViewerSidebarTab {
+    #[default]
+    Files,
+    Animations,
+    Inspector,
+    Dependencies,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1151,6 +1164,8 @@ enum Message {
     OpenViewer,
     OpenViewerPreferences,
     ViewerSidebarAnimations(bool),
+    ViewerSidebarSelect(ViewerSidebarTab),
+    ViewerSidebarClose(ViewerSidebarTab),
     ViewerSplitDrag(f32),
     OpenInspectorWindow,
     InspectorOpened,
@@ -2434,9 +2449,38 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.viewer_explorer_visible = !state.viewer_explorer_visible;
         }
         Message::ViewerSidebarAnimations(value) => {
-            state.viewer_sidebar_animations = value;
+            // Legacy menu action: selecting Files does not close Animations.
+            if value {
+                state.viewer_sidebar_animations = true;
+                state.viewer_sidebar_active = ViewerSidebarTab::Animations;
+            } else {
+                state.viewer_sidebar_active = ViewerSidebarTab::Files;
+            }
             state.viewer_explorer_visible = true;
             state.viewer_menu = None;
+        }
+        Message::ViewerSidebarSelect(tab) => {
+            state.viewer_sidebar_active = tab;
+            if tab == ViewerSidebarTab::Animations {
+                state.viewer_sidebar_animations = true;
+            } else if tab == ViewerSidebarTab::Inspector {
+                state.viewer_show_inspector = true;
+            } else if tab == ViewerSidebarTab::Dependencies {
+                state.viewer_sidebar_dependencies = true;
+            }
+            state.viewer_explorer_visible = true;
+            state.viewer_menu = None;
+        }
+        Message::ViewerSidebarClose(tab) => {
+            match tab {
+                ViewerSidebarTab::Files => {}, // The file explorer is permanent.
+                ViewerSidebarTab::Animations => state.viewer_sidebar_animations = false,
+                ViewerSidebarTab::Inspector => state.viewer_show_inspector = false,
+                ViewerSidebarTab::Dependencies => state.viewer_sidebar_dependencies = false,
+            }
+            if state.viewer_sidebar_active == tab {
+                state.viewer_sidebar_active = ViewerSidebarTab::Files;
+            }
         }
         Message::ViewerSplitDrag(delta) => {
             if delta.is_finite() {
@@ -2445,10 +2489,25 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::ViewerToggleInspector => {
-            state.viewer_show_inspector = !state.viewer_show_inspector
+            if state.viewer_show_inspector {
+                state.viewer_show_inspector = false;
+                if state.viewer_sidebar_active == ViewerSidebarTab::Inspector {
+                    state.viewer_sidebar_active = ViewerSidebarTab::Files;
+                }
+            } else {
+                state.viewer_show_inspector = true;
+                state.viewer_sidebar_active = ViewerSidebarTab::Inspector;
+                state.viewer_explorer_visible = true;
+            }
         }
-        Message::ViewerSplitChanged(value) => state.viewer_split = value.clamp(0.25, 0.8),
-        Message::ViewerSelectTab(tab) => state.viewer_tab = tab,
+        Message::ViewerSelectTab(tab) => {
+            state.viewer_tab = tab;
+            if tab == ViewerTab::Dependencies {
+                state.viewer_sidebar_dependencies = true;
+                state.viewer_sidebar_active = ViewerSidebarTab::Dependencies;
+                state.viewer_explorer_visible = true;
+            }
+        },
         Message::PlaybackSpeedChanged(value) => state.playback_speed = value.clamp(0.1, 3.0),
         Message::PlaybackLoopChanged => state.playback_loop = !state.playback_loop,
         Message::ViewerToggleWireframe => state.viewer_wireframe = !state.viewer_wireframe,
@@ -2683,6 +2742,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::StartDependencyInspection => {
+            state.viewer_sidebar_dependencies = true;
+            state.viewer_sidebar_active = ViewerSidebarTab::Dependencies;
+            state.viewer_explorer_visible = true;
+            state.viewer_menu = None;
             let Some(inventory) = &state.inventory else {
                 state.status = "Index extracted assets before inspecting dependencies.".into();
                 return Task::none();
@@ -6194,6 +6257,40 @@ mod project_edit_tests {
         );
         assert_eq!(state.viewer_queued_preview, None);
         assert_eq!(state.selected, Some(1));
+    }
+
+    #[test]
+    fn docked_tools_can_open_switch_and_close_without_closing_files() {
+        let mut state = State::default();
+        let _ = update(&mut state, Message::ViewerSidebarSelect(ViewerSidebarTab::Animations));
+        let _ = update(&mut state, Message::ViewerSidebarSelect(ViewerSidebarTab::Inspector));
+        let _ = update(&mut state, Message::ViewerSidebarSelect(ViewerSidebarTab::Dependencies));
+        assert!(state.viewer_sidebar_animations);
+        assert!(state.viewer_show_inspector);
+        assert!(state.viewer_sidebar_dependencies);
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Dependencies);
+        let _ = update(&mut state, Message::ViewerSidebarClose(ViewerSidebarTab::Inspector));
+        assert!(!state.viewer_show_inspector);
+        assert!(state.viewer_sidebar_dependencies);
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Dependencies);
+        let _ = update(&mut state, Message::ViewerSidebarClose(ViewerSidebarTab::Dependencies));
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
+        let _ = update(&mut state, Message::ViewerSidebarClose(ViewerSidebarTab::Files));
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
+        let _ = update(&mut state, Message::ViewerSidebarSelect(ViewerSidebarTab::Animations));
+        assert!(state.viewer_sidebar_animations);
+        let _ = update(&mut state, Message::ViewerSidebarClose(ViewerSidebarTab::Animations));
+        assert!(!state.viewer_sidebar_animations);
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
+    }
+
+    #[test]
+    fn opening_dependency_inspection_docks_tab_even_without_a_source() {
+        let mut state = State::default();
+        let _ = update(&mut state, Message::StartDependencyInspection);
+        assert!(state.viewer_sidebar_dependencies);
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Dependencies);
+        assert!(state.status.contains("Index extracted assets"));
     }
 
     #[test]
