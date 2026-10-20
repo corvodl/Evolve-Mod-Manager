@@ -34,6 +34,7 @@ use asset_cache::{SharedCache, decoded_dds};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph,
+    EquipmentOverrides, EquipmentSlot, discover_equipment,
     FlatCdfFbxReport, HookPairReport, ImportedLibrary, ImportedPak, Inventory, LevelScene,
     LibraryBatchImportReport, LibraryReferenceStatus, MaterialReport, ModProfile, ModelInfo,
     NativeCafMotion, PakHookPairReport, PakInventory, ProfileCatalog, ProfileMod, ProfilePlan,
@@ -47,7 +48,7 @@ use evolve_core::{
     initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_pak_hook_pair,
     inspect_signed_pak, list_mod_profiles, load_level_scene, material_texture_candidates,
     plan_mod_profile, prepare_client_hook, read_cdf, read_material, read_model, read_native_caf,
-    read_static_cdf_assembly_with_imported, read_terrain, rebuild_legacy_pak,
+    read_static_cdf_assembly_with_equipment, read_terrain, rebuild_legacy_pak,
     rebuild_signed_pak_entry, resign_signed_pak, resolve_cdf, resolve_imported_reference,
     resolve_materials, restore_profile_stage, restore_stage, scan_directory,
     scan_directory_with_progress, stage_status,
@@ -245,6 +246,9 @@ struct State {
     viewer_sidebar_animations: bool,
     viewer_sidebar_dependencies: bool,
     viewer_sidebar_active: ViewerSidebarTab,
+    equipment_source: Option<PathBuf>,
+    equipment_slots: Vec<EquipmentSlot>,
+    equipment_overrides: EquipmentOverrides,
     viewer_from_library: bool,
     developer_password: String,
     developer_status: String,
@@ -319,6 +323,7 @@ enum ViewerSidebarTab {
     Animations,
     Inspector,
     Dependencies,
+    Equipment,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -389,6 +394,7 @@ enum Operation {
         Option<PathBuf>,
         Option<String>,
         SharedCache,
+        EquipmentOverrides,
     ),
     ResolveCdf(PathBuf, PathBuf),
     InspectModel(PathBuf),
@@ -988,13 +994,14 @@ impl Operation {
             Self::InspectCdf(source) => read_cdf(&source)
                 .map(Completed::Character)
                 .map_err(|e| e.to_string()),
-            Self::BuildStaticCdf(source, inventory, imported, build, cache) => {
+            Self::BuildStaticCdf(source, inventory, imported, build, cache, equipment) => {
                 crash_diagnostics::record("cdf_worker_begin", "reading authored CDF attachments");
-                let (mesh, report) = read_static_cdf_assembly_with_imported(
+                let (mesh, report) = read_static_cdf_assembly_with_equipment(
                     &source,
                     &inventory,
                     imported.as_deref(),
                     build.as_deref(),
+                    &equipment,
                 )
                 .map_err(|e| e.to_string())?;
                 crash_diagnostics::record(
@@ -1189,6 +1196,7 @@ enum Message {
     ViewerSidebarAnimations(bool),
     ViewerSidebarSelect(ViewerSidebarTab),
     ViewerSidebarClose(ViewerSidebarTab),
+    ViewerEquip(String, String),
     ViewerSplitDrag(f32),
     OpenInspectorWindow,
     InspectorOpened,
@@ -1689,6 +1697,9 @@ fn clear_viewer_asset(state: &mut State) {
     state.cdf_rest_mesh = None;
     state.cdf_caf_preview = None;
     state.cdf_report = None;
+    state.equipment_source = None;
+    state.equipment_slots.clear();
+    state.equipment_overrides.clear();
     state.texture_preview = None;
     state.texture = None;
     state.material_report = None;
@@ -2497,6 +2508,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.viewer_explorer_visible = true;
             state.viewer_menu = None;
         }
+        Message::ViewerEquip(slot, binding) => {
+            if state.busy {
+                state.status = "Finish the current character preview before swapping equipment.".into();
+                return Task::none();
+            }
+            let Some(existing) = state.equipment_slots.iter().find(|entry| entry.name == slot) else {
+                state.status = "Equipment attachment was not verified for this character.".into();
+                return Task::none();
+            };
+            if !existing.choices.iter().any(|c| c.binding.eq_ignore_ascii_case(&binding)) {
+                state.status = "Equipment file is not a verified option for this exact slot.".into();
+                return Task::none();
+            }
+            if binding.eq_ignore_ascii_case(&existing.original) {
+                state.equipment_overrides.remove(&slot);
+            } else {
+                state.equipment_overrides.insert(slot.clone(), binding.clone());
+            }
+            state.viewer_sidebar_active = ViewerSidebarTab::Equipment;
+            return update(state, Message::ViewerPreviewStaticCdf);
+        }
         Message::ViewerSidebarSelect(tab) => {
             state.viewer_sidebar_active = tab;
             if tab == ViewerSidebarTab::Animations {
@@ -2511,7 +2543,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ViewerSidebarClose(tab) => {
             match tab {
-                ViewerSidebarTab::Files => {} // The file explorer is permanent.
+                ViewerSidebarTab::Files | ViewerSidebarTab::Equipment => {} // Permanent tool tabs.
                 ViewerSidebarTab::Animations => state.viewer_sidebar_animations = false,
                 ViewerSidebarTab::Inspector => state.viewer_show_inspector = false,
                 ViewerSidebarTab::Dependencies => state.viewer_sidebar_dependencies = false,
@@ -3020,6 +3052,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "CDF source changed or escaped the indexed Asset Library.".into();
                 return Task::none();
             }
+            if state.equipment_source.as_ref() != Some(&source) {
+                state.equipment_overrides.clear();
+                state.equipment_source = Some(source.clone());
+                state.equipment_slots = read_cdf(&source)
+                    .map(|cdf| discover_equipment(&cdf, inventory))
+                    .unwrap_or_default();
+            }
             crash_diagnostics::record("cdf_preview_selected", &entry.relative_path);
             state.input = source.to_string_lossy().into_owned();
             state.texture_preview = None;
@@ -3034,6 +3073,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .map(|c| PathBuf::from(&c.root)),
                 resource_build(state),
                 state.preview_cache.clone(),
+                state.equipment_overrides.clone(),
             );
             return launch(state, operation);
         }
@@ -6425,6 +6465,21 @@ mod project_edit_tests {
             Message::ViewerSidebarClose(ViewerSidebarTab::Animations),
         );
         assert!(!state.viewer_sidebar_animations);
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
+    }
+
+    #[test]
+    fn equipment_tab_rejects_unverified_cross_character_swaps() {
+        let mut state = State::default();
+        let _ = update(&mut state, Message::ViewerSidebarSelect(ViewerSidebarTab::Equipment));
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Equipment);
+        let _ = update(&mut state, Message::ViewerEquip(
+            "basher_l".into(),
+            "objects/characters/monsters/scorpid_2/scorpid3_r_shield.chr".into(),
+        ));
+        assert!(state.equipment_overrides.is_empty());
+        assert!(state.status.contains("not verified"));
+        let _ = update(&mut state, Message::ViewerSidebarClose(ViewerSidebarTab::Equipment));
         assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
     }
 
