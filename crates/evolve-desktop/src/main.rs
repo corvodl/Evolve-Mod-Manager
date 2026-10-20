@@ -3209,7 +3209,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.preferences.crash_logging_enabled = !state.preferences.crash_logging_enabled;
             crash_diagnostics::set_enabled(state.preferences.crash_logging_enabled);
             persist_preferences(state);
-            if !state.settings_status.starts_with("Preferences could not be saved") {
+            if !state
+                .settings_status
+                .starts_with("Preferences could not be saved")
+            {
                 state.settings_status = if state.preferences.crash_logging_enabled {
                     "Crash logs enabled. New preview events and Rust panics are recorded locally."
                         .into()
