@@ -50,10 +50,7 @@ fn quaternion_blend(a: [f32; 4], b: [f32; 4], weight: f32) -> Result<[f32; 4], N
 /// Compose two local CryEngine XYZW unit quaternions. Additive CAF data
 /// stores delta rotations, so apply the weighted delta AFTER the base local
 /// rotation; never reinterpret it as an absolute bone orientation.
-fn quaternion_compose(
-    base: [f32; 4],
-    delta: [f32; 4],
-) -> Result<[f32; 4], NativeCafError> {
+fn quaternion_compose(base: [f32; 4], delta: [f32; 4]) -> Result<[f32; 4], NativeCafError> {
     let [x, y, z, w] = base;
     let [a, b, c, d] = delta;
     let result = [
@@ -209,9 +206,7 @@ fn blend_pose_inner(
             match (target.rotation, controller.rotation) {
                 (Some(a), Some(b)) => {
                     target.rotation = Some(if layer.motion.additive {
-                        let weighted = quaternion_blend(
-                            [0., 0., 0., 1.], b, layer.weight
-                        )?;
+                        let weighted = quaternion_blend([0., 0., 0., 1.], b, layer.weight)?;
                         quaternion_compose(a, weighted)?
                     } else {
                         quaternion_blend(a, b, layer.weight)?
@@ -325,10 +320,7 @@ mod tests {
         let base = clip(123, 4.);
         let mut delta = clip(123, 3.);
         delta.additive = true;
-        delta.controllers[0].rotations = vec![
-            [0., 0., 1., 0.],
-            [0., 0., 1., 0.],
-        ];
+        delta.controllers[0].rotations = vec![[0., 0., 1., 0.], [0., 0., 1., 0.]];
         let bind = vec![CafBonePose {
             bone_crc32: 123,
             translation: Some([2., 1., 0.]),
@@ -346,9 +338,7 @@ mod tests {
         assert!((q[3].abs() - 0.70710677).abs() < 0.0001);
         let no_layer = sample_caf_layers_with_bind(&base, 0., &[], &bind).unwrap();
         assert_eq!(no_layer[0].translation, Some([4., 0., 0.]));
-        assert!(sample_verified_caf_layers(
-            &base, 0., &layers, &HashSet::from([123]),
-        ).is_err());
+        assert!(sample_verified_caf_layers(&base, 0., &layers, &HashSet::from([123]),).is_err());
     }
 
     #[test]
@@ -361,13 +351,33 @@ mod tests {
             translation: Some([0., 0., 0.]),
             rotation: Some([0., 0., 0., 1.]),
         }];
-        assert!(sample_caf_layers_with_bind(&base, 0., &[CafLayer {
-            motion: &delta, seconds: 0., weight: 1.,
-        }], &bind).is_err());
+        assert!(
+            sample_caf_layers_with_bind(
+                &base,
+                0.,
+                &[CafLayer {
+                    motion: &delta,
+                    seconds: 0.,
+                    weight: 1.,
+                }],
+                &bind
+            )
+            .is_err()
+        );
         delta.controllers[0].bone_crc32 = 123;
-        assert!(sample_caf_layers_with_bind(&base, 0., &[CafLayer {
-            motion: &delta, seconds: 0., weight: 1.5,
-        }], &bind).is_err());
+        assert!(
+            sample_caf_layers_with_bind(
+                &base,
+                0.,
+                &[CafLayer {
+                    motion: &delta,
+                    seconds: 0.,
+                    weight: 1.5,
+                }],
+                &bind
+            )
+            .is_err()
+        );
     }
 
     #[test]
