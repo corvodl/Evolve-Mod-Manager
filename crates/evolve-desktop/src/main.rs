@@ -5557,7 +5557,11 @@ mod project_edit_tests {
         let file = dir.path().join("hunter.cdf");
         std::fs::write(&file, b"<CharacterDefinition/>").unwrap();
         let inventory = scan_directory(dir.path()).unwrap();
-        let index = inventory.entries.iter().position(|e| e.relative_path.ends_with("hunter.cdf")).unwrap();
+        let index = inventory
+            .entries
+            .iter()
+            .position(|e| e.relative_path.ends_with("hunter.cdf"))
+            .unwrap();
         let mut state = State {
             inventory: Some(inventory),
             selected: Some(index),
@@ -5574,8 +5578,16 @@ mod project_edit_tests {
         std::fs::write(dir.path().join("first.dds"), b"stand-in DDS").unwrap();
         std::fs::write(dir.path().join("second.dds"), b"stand-in DDS").unwrap();
         let inventory = scan_directory(dir.path()).unwrap();
-        let first = inventory.entries.iter().position(|e| e.relative_path == "first.dds").unwrap();
-        let second = inventory.entries.iter().position(|e| e.relative_path == "second.dds").unwrap();
+        let first = inventory
+            .entries
+            .iter()
+            .position(|e| e.relative_path == "first.dds")
+            .unwrap();
+        let second = inventory
+            .entries
+            .iter()
+            .position(|e| e.relative_path == "second.dds")
+            .unwrap();
         let mut state = State {
             inventory: Some(inventory),
             ..State::default()
