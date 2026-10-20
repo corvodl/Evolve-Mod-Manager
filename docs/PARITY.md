@@ -1,3 +1,15 @@
+## Unified FBX exporter continuation (October 20)
+
+Detailed resumable status, current implementation files, exact remaining gates and
+Blender 5.2 real-asset acceptance steps live in [PARITY_HANDOFF.md](PARITY_HANDOFF.md).
+The unified character FBX binary publisher now shares the standard exporter’s
+atomic full-byte, signature-verified copy; the Blender bridge uses an explicit
+Python-failure exit code and excludes only bone-referenced display shapes
+from reimport mesh checks. UV0 and bone-weight checks are stricter, but live
+Wraith stages, Kala equipment and monster bone/action parity have **not** been
+revalidated against real assets in this working branch. Do not infer completion
+from older green synthetic CI runs.
+
 ## October 20 — whole-CDF verified native CAF preview (experimental)
 
 - The CDF worker retains each successfully resolved attachment's canonical render source,
