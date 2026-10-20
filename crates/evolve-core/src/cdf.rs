@@ -390,8 +390,9 @@ mod tests {
             <SkinSets><SkinSet name=" Default "><skin name="body"/><skin name="Helmet"/></SkinSet></SkinSets>
         </CharacterDefinition>"#;
         let cdf = parse_cdf(text).unwrap();
-        assert_eq!(cdf.attachments.len(), 2);
+        assert_eq!(cdf.attachments.len(), 3);
         assert_eq!(cdf.attachments[0].kind, AttachmentKind::UniqueSkin);
+        assert_eq!(cdf.attachments[2].kind, AttachmentKind::Bone);
         assert_eq!(cdf.attachments[1].kind, AttachmentKind::Skin);
         assert_eq!(cdf.skin_sets["default"], vec!["body", "helmet"]);
         assert!(cdf.skeleton.ends_with("krakenelder1_skeleton.chr"));
