@@ -21,6 +21,8 @@ pub struct Surface {
     pub emissive: Option<Arc<image::RgbaImage>>,
     pub specular: Option<Arc<image::RgbaImage>>,
     pub gloss: Option<Arc<image::RgbaImage>>,
+    /// Verified authored opacity DDS; not interchangeable with diffuse alpha.
+    pub opacity: Option<Arc<image::RgbaImage>>,
 }
 
 #[derive(Clone)]
@@ -239,6 +241,7 @@ impl shader::Program<super::Message> for Scene {
 struct GpuSurface {
     range: std::ops::Range<u32>,
     transparent: bool,
+    opacity_map: bool,
     bind_group: wgpu::BindGroup,
     // Bind groups must retain the original uploaded texture allocations.
     _textures: Vec<wgpu::Texture>,
@@ -247,6 +250,7 @@ struct GpuSurface {
 pub struct Pipeline {
     render_pipeline: wgpu::RenderPipeline,
     translucent_pipeline: wgpu::RenderPipeline,
+    opacity_pipeline: wgpu::RenderPipeline,
     ground_pipeline: wgpu::RenderPipeline,
     ground_vertex: wgpu::Buffer,
     ground_capacity: usize,
@@ -270,6 +274,8 @@ pub struct Pipeline {
     specular_view: wgpu::TextureView,
     gloss_texture: wgpu::Texture,
     gloss_view: wgpu::TextureView,
+    opacity_texture: wgpu::Texture,
+    opacity_view: wgpu::TextureView,
     normal_texture: wgpu::Texture,
     normal_view: wgpu::TextureView,
     emissive_texture: wgpu::Texture,
@@ -396,6 +402,16 @@ impl Pipeline {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let program = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -453,6 +469,40 @@ impl Pipeline {
             fragment: Some(wgpu::FragmentState {
                 module: &program,
                 entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let opacity_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Evolve explicit authored opacity DDS material"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &program,
+                entry_point: Some("vs_main"),
+                buffers: &[Vertex::descriptor()],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &program,
+                entry_point: Some("fs_opacity"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
@@ -583,6 +633,14 @@ impl Pipeline {
             wgpu::TextureFormat::Rgba8Unorm,
             "Neutral unverified gloss",
         );
+        let (opacity_texture, opacity_view) = Self::upload_map(
+            device,
+            queue,
+            None,
+            &[255, 255, 255, 255],
+            wgpu::TextureFormat::Rgba8Unorm,
+            "Neutral authored opacity",
+        );
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Evolve actual texture sampler group"),
             layout: &layout,
@@ -611,6 +669,10 @@ impl Pipeline {
                     binding: 5,
                     resource: wgpu::BindingResource::TextureView(&gloss_view),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(&opacity_view),
+                },
             ],
         });
         let vertex = device.create_buffer(&wgpu::BufferDescriptor {
@@ -629,6 +691,7 @@ impl Pipeline {
         Self {
             render_pipeline,
             translucent_pipeline,
+            opacity_pipeline,
             ground_pipeline,
             ground_vertex,
             ground_capacity: 32,
@@ -652,6 +715,8 @@ impl Pipeline {
             specular_view,
             gloss_texture,
             gloss_view,
+            opacity_texture,
+            opacity_view,
             normal_texture,
             normal_view,
             emissive_texture,
@@ -739,9 +804,15 @@ impl Pipeline {
                     wgpu::TextureFormat::Rgba8Unorm,
                     "CDF part gloss",
                 ),
+                (
+                    part.opacity.as_ref(),
+                    [255, 255, 255, 255],
+                    wgpu::TextureFormat::Rgba8Unorm,
+                    "CDF authored opacity",
+                ),
             ];
-            let mut textures = Vec::with_capacity(5);
-            let mut views = Vec::with_capacity(5);
+            let mut textures = Vec::with_capacity(6);
+            let mut views = Vec::with_capacity(6);
             for (image, fallback, format, label) in inputs {
                 let (texture, view) =
                     Self::upload_map(device, queue, image, &fallback, format, label);
@@ -776,11 +847,16 @@ impl Pipeline {
                         binding: 5,
                         resource: wgpu::BindingResource::TextureView(&views[4]),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::TextureView(&views[5]),
+                    },
                 ],
             });
             self.gpu_surfaces.push(GpuSurface {
                 range: part.first_index..part.first_index + part.index_count,
                 transparent: part.transparent,
+                opacity_map: part.opacity.is_some(),
                 bind_group: group,
                 _textures: textures,
             });
@@ -1003,11 +1079,18 @@ impl Pipeline {
         if self.surface_table_valid {
             // NoDraw-only characters intentionally have zero visible parts.
             // Do not silently fall back to rendering the whole mesh.
-            for surface in &self.gpu_surfaces {
-                pass.set_pipeline(if surface.transparent {
-                    &self.translucent_pipeline
+            // Write the depth of every opaque original face before any
+            // transparent section; authoring order is not render order.
+            for surface in self.gpu_surfaces.iter().filter(|part| !part.transparent) {
+                pass.set_pipeline(&self.render_pipeline);
+                pass.set_bind_group(0, &surface.bind_group, &[]);
+                pass.draw_indexed(surface.range.clone(), 0, 0..1);
+            }
+            for surface in self.gpu_surfaces.iter().filter(|part| part.transparent) {
+                pass.set_pipeline(if surface.opacity_map {
+                    &self.opacity_pipeline
                 } else {
-                    &self.render_pipeline
+                    &self.translucent_pipeline
                 });
                 pass.set_bind_group(0, &surface.bind_group, &[]);
                 pass.draw_indexed(surface.range.clone(), 0, 0..1);
@@ -1059,5 +1142,7 @@ mod tests {
         )
         .validate(&module)
         .expect("GPU normal/emissive shader must pass Naga validation");
+        assert!(module.entry_points.iter().any(|entry| entry.name == "fs_opacity"));
+        assert!(module.entry_points.iter().any(|entry| entry.name == "fs_main"));
     }
 }
