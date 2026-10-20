@@ -12,6 +12,9 @@ const SUBSETS: u32 = 0xCCCC0017;
 // A historical source-control path chunk holds raw NUL-terminated text,
 // not the usual embedded 16-byte binary chunk header.
 const SOURCE_PATH: u32 = 0xCCCC0013;
+// Some original 2012 metadata records retain their compiler-side source
+// offset in the embedded header, rather than their final directory offset.
+const HISTORICAL_METADATA: u32 = 0xCCCC000D;
 const RECORD: usize = 584;
 
 #[derive(Clone, Copy)]
@@ -123,15 +126,22 @@ fn chunks(data: &[u8]) -> Result<Vec<Chunk<'_>>, RigError> {
         // the header check for every OTHER chunk while bounding this
         // known metadata record and requiring its text terminator.
         let source_path_metadata = kind == SOURCE_PATH && version == 0;
+        let stale_offset_metadata = kind == HISTORICAL_METADATA && version == 0x826;
         let metadata_valid = source_path_metadata
+            && valid_region
+            && upper >= offset
             && upper - offset <= 4096
             && data[offset..upper].contains(&0);
-        let embedded_header_valid = data.get(offset..offset + 4) == Some(&kind.to_le_bytes())
+        let embedded_header_valid = valid_region
+            && data.get(offset..offset + 4) == Some(&kind.to_le_bytes())
             && u32_at(data, offset + 4)? == version
-            && u32_at(data, offset + 8)? as usize == offset
+            && (stale_offset_metadata || u32_at(data, offset + 8)? as usize == offset)
             && u32_at(data, offset + 12)? == id;
+        let stale_metadata_valid = !stale_offset_metadata
+            || (upper >= offset && upper - offset <= 1024);
         if upper < offset + 16
             || !valid_region
+            || !stale_metadata_valid
             || !(if source_path_metadata {
                 metadata_valid
             } else {
@@ -759,6 +769,33 @@ mod tests {
         // An unterminated raw source path is not an acceptable exception.
         with_path[path_at..path_at + 160].fill(b'X');
         assert!(read_legacy_skin(&with_path, &master, 3).is_err());
+    }
+
+    #[test]
+    fn bounded_2012_auxiliary_metadata_can_retain_old_source_offset() {
+        let source = sample_body();
+        let table = u32_at(&source, 16).unwrap() as usize;
+        let count = u32_at(&source, table).unwrap() as usize;
+        let mut sections = vec![(HISTORICAL_METADATA, vec![0u8; 72])];
+        for i in 0..count {
+            let at = table + 4 + i * 20;
+            let kind = u32_at(&source, at).unwrap();
+            let offset = u32_at(&source, at + 8).unwrap() as usize;
+            let size = u32_at(&source, at + 16).unwrap() as usize;
+            sections.push((kind, source[offset..offset + size].to_vec()));
+        }
+        let mut body = initial_five_directory(original_container(sections));
+        // The original file retains the earlier compiler offset in this
+        // optional metadata header but agrees on kind, version and ID.
+        put_u32(&mut body, 24 + 4, 0x826);
+        let aux_at = u32_at(&body, 24 + 8).unwrap() as usize;
+        put_u32(&mut body, aux_at + 4, 0x826);
+        put_u32(&mut body, aux_at + 8, 0x27C);
+        let master = initial_five_directory(original_container(vec![(BONE, sample_bones())]));
+        assert!(read_legacy_skin(&body, &master, 3).is_ok());
+        // An arbitrary mismatched auxiliary identity still fails.
+        put_u32(&mut body, aux_at + 12, 123456);
+        assert!(read_legacy_skin(&body, &master, 3).is_err());
     }
 
     #[test]
