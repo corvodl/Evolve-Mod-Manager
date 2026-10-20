@@ -1475,6 +1475,64 @@ mod tests {
         );
     }
     #[test]
+    fn original_submaterial_primitives_keep_exact_ids_and_skin_accessors() {
+        let mesh = RenderMesh {
+            info: crate::model::ModelInfo {
+                format: "synthetic".into(), version: 7, chunk_count: 0,
+                vertex_count: 3, triangle_count: 2,
+                original_uv0: true, original_normals: false,
+            },
+            positions: vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]],
+            indices: vec![0, 1, 2, 0, 2, 1],
+            uv0: Some(vec![[0., 0.], [1., 0.], [0., 1.]]),
+            normals: None,
+        };
+        let geometry = crate::glb::geometry_glb_bytes(&mesh).unwrap();
+        let json_len = u32::from_le_bytes(geometry[12..16].try_into().unwrap()) as usize;
+        let mut doc: Value = serde_json::from_slice(&geometry[20..20 + json_len]).unwrap();
+        // Structural fixture only. This is not an actual native weighted rig:
+        // the production exporter generates real JOINTS/WEIGHTS from CrChF.
+        doc["skins"] = json!([{"joints":[0]}]);
+        doc["meshes"][0]["primitives"][0]["attributes"]["JOINTS_0"] = json!(0);
+        doc["meshes"][0]["primitives"][0]["attributes"]["WEIGHTS_0"] = json!(0);
+        let binary = &geometry[20 + json_len + 8..];
+        let mut json_bytes = serde_json::to_vec(&doc).unwrap();
+        while !json_bytes.len().is_multiple_of(4) { json_bytes.push(b' '); }
+        let mut source = Vec::new();
+        source.extend_from_slice(b"glTF");
+        source.extend_from_slice(&2u32.to_le_bytes());
+        source.extend_from_slice(&((28 + json_bytes.len() + binary.len()) as u32).to_le_bytes());
+        source.extend_from_slice(&(json_bytes.len() as u32).to_le_bytes());
+        source.extend_from_slice(b"JSON");
+        source.extend_from_slice(&json_bytes);
+        source.extend_from_slice(&(binary.len() as u32).to_le_bytes());
+        source.extend_from_slice(b"BIN\0");
+        source.extend_from_slice(binary);
+        let slots = vec![
+            OriginalMaterialPng {name:"hidden".into(),no_draw:true,..Default::default()},
+            OriginalMaterialPng {name:"armor".into(),
+                diffuse: Some(b"\x89PNG\r\n\x1a\n".to_vec()),
+                ..Default::default()},
+        ];
+        let out = embed_original_material_slots_glb(
+            &source, &[(0, 3, 0), (3, 3, 1)], &slots
+        ).unwrap();
+        let len = u32::from_le_bytes(out[12..16].try_into().unwrap()) as usize;
+        let result: Value = serde_json::from_slice(&out[20..20 + len]).unwrap();
+        let primitives = result["meshes"][0]["primitives"].as_array().unwrap();
+        assert_eq!(primitives.len(), 2);
+        assert_eq!(primitives[0]["material"], 0);
+        assert_eq!(primitives[1]["material"], 1);
+        assert_eq!(primitives[0]["attributes"]["JOINTS_0"], 0);
+        assert_eq!(primitives[1]["attributes"]["TEXCOORD_0"], 1);
+        assert_eq!(result["materials"][0]["alphaMode"], "BLEND");
+        assert_eq!(result["materials"][1]["pbrMetallicRoughness"]["baseColorTexture"]["index"], 0);
+        assert_eq!(result["accessors"][primitives[1]["indices"].as_u64().unwrap() as usize]["byteOffset"], 12);
+        assert!(embed_original_material_slots_glb(&source, &[(0, 3, 0), (6, 3, 1)], &slots).is_err());
+        assert!(embed_original_material_slots_glb(&source, &[(0, 3, 0), (3, 3, 255)], &slots).is_err());
+    }
+
+    #[test]
     fn verifies_inverse_bind_and_unchanged_hierarchy() {
         let raw = sample_skeleton();
         let bones = parse_compiled_skeleton(&raw).unwrap();
