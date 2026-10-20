@@ -6,7 +6,7 @@ use crate::character_assembly::select_attachments;
 use crate::character_equipment::{EquipmentOverrides, validated_equipment_overrides};
 use crate::fbx::publish_verified_binary_fbx;
 use crate::inventory::Inventory;
-use crate::materials::{material_texture_candidates, read_material, resolve_materials};
+use crate::materials::{read_material, scoped_texture_candidates};
 use crate::model::{original_mesh_subsets, read_model};
 use crate::native_caf::read_native_caf;
 use crate::rig::{
@@ -156,6 +156,26 @@ struct AuthoredMaps {
     gloss: Option<PathBuf>,
 }
 
+/// The FBX exporter must use the SAME authored MTL ownership search as
+/// the live GPU viewer, not an unrelated global texture with the right name.
+fn exact_original_texture(
+    root: &Path,
+    inventory: &Inventory,
+    material_virtual: &str,
+    authored: &str,
+) -> Result<Option<PathBuf>, String> {
+    for candidate in scoped_texture_candidates(authored, material_virtual)? {
+        match resolve_virtual(inventory, &candidate) {
+            AssetResolution::Found(path) => return input_file(root, &path).map(Some),
+            AssetResolution::Missing => {}
+            AssetResolution::Ambiguous(_) => {
+                return Err(format!("Ambiguous source texture {candidate} in {material_virtual}"));
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// Resolve actual MTL texture roles, never the first same-named DDS found
 /// somewhere else. Multiple submaterials need the original subset map and
 /// are left untextured rather than painted with an incorrect atlas.
@@ -182,9 +202,9 @@ fn exact_single_slot_maps(
     if document.slots.len() != 1 {
         return Ok(AuthoredMaps::default());
     }
-    let resolved = resolve_materials(inventory, &document);
     let mut maps = AuthoredMaps::default();
-    for item in &resolved.textures {
+    let mut used_roles = HashSet::new();
+    for item in &document.slots[0].maps {
         let target = match item.role.as_str() {
             "diffuse" => &mut maps.diffuse,
             "normal" | "normals" | "bumpmap" => &mut maps.normal,
@@ -193,22 +213,13 @@ fn exact_single_slot_maps(
             "gloss" | "glossiness" | "smoothness" => &mut maps.gloss,
             _ => continue,
         };
-        if target.is_some() {
+        if !used_roles.insert(item.role.as_str()) || target.is_some() {
             return Err(format!(
                 "Multiple original {} layers in {candidate}",
                 item.role
             ));
         }
-        match &item.resolution {
-            AssetResolution::Found(path) => *target = Some(input_file(&root, path)?),
-            AssetResolution::Missing => (),
-            AssetResolution::Ambiguous(_) => {
-                return Err(format!(
-                    "Ambiguous authored {} in {candidate}",
-                    item.authored_path
-                ));
-            }
-        }
+        *target = exact_original_texture(&root, inventory, &candidate, &item.path)?;
     }
     Ok(maps)
 }
@@ -253,20 +264,11 @@ fn exact_multi_slot_materials(
                 "gloss" | "glossiness" | "smoothness" => 4,
                 _ => continue,
             };
-            let mut found = None;
-            for candidate in material_texture_candidates(&map.path) {
-                match resolve_virtual(inventory, &candidate) {
-                    AssetResolution::Found(path) => {
-                        found = Some(input_file(root, &path)?);
-                        break;
-                    }
-                    AssetResolution::Ambiguous(_) => {
-                        return Err(format!("Ambiguous original MTL map {}", map.path));
-                    }
-                    AssetResolution::Missing => {}
-                }
-            }
-            let Some(file) = found else { continue };
+            let Some(file) =
+                exact_original_texture(root, inventory, &virtual_mtl, &map.path)?
+            else {
+                continue;
+            };
             let target = match role {
                 0 => &mut slot.diffuse,
                 1 => &mut slot.normal,
@@ -651,6 +653,42 @@ mod tests {
             .unwrap();
         assert!(diffuse.ends_with("hunter.dds.0"));
         assert_eq!(fs::read(original).unwrap(), b"original binding");
+    }
+
+    #[test]
+    fn fbx_source_material_texture_matches_viewer_relative_highest_mip() {
+        let root = tempfile::tempdir().unwrap();
+        let model = root.path().join("characters/monsters/scorpid_2");
+        fs::create_dir_all(model.join("textures")).unwrap();
+        fs::write(
+            model.join("scorpid3.mtl"),
+            br#"<Material Name="Scorpid"><Textures><Texture Map="Diffuse" File="body.tif"/></Textures></Material>"#,
+        )
+        .unwrap();
+        let mut dds = vec![0u8; 136];
+        dds[..4].copy_from_slice(b"DDS ");
+        dds[4..8].copy_from_slice(&124u32.to_le_bytes());
+        dds[8..12].copy_from_slice(&0x1007u32.to_le_bytes());
+        dds[12..16].copy_from_slice(&4u32.to_le_bytes());
+        dds[16..20].copy_from_slice(&4u32.to_le_bytes());
+        dds[76..80].copy_from_slice(&32u32.to_le_bytes());
+        dds[80..84].copy_from_slice(&4u32.to_le_bytes());
+        dds[84..88].copy_from_slice(b"DXT1");
+        dds[128..136].copy_from_slice(&[0, 248, 0, 0, 0, 0, 0, 0]);
+        fs::write(model.join("textures/body.dds.0"), &dds).unwrap();
+        fs::write(model.join("textures/body.dds"), b"lower-priority").unwrap();
+        let inventory = crate::scan_directory(root.path()).unwrap();
+        let single = exact_single_slot_maps(
+            root.path(), &model.join("scorpid3.chr"), &inventory,
+        )
+        .unwrap();
+        assert_eq!(single.diffuse.unwrap(), model.join("textures/body.dds.0"));
+        let multiple =
+            exact_multi_slot_materials(root.path(), &model.join("scorpid3.chr"), &inventory)
+                .unwrap()
+                .unwrap();
+        assert_eq!(multiple.len(), 1);
+        assert!(multiple[0].diffuse.as_ref().is_some_and(|png| png.starts_with(&[137, 80, 78, 71])));
     }
 
     #[test]
