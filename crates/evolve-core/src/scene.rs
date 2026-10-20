@@ -4,12 +4,12 @@
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, Writer};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
-use std::path::PathBuf;
-use sha2::{Digest, Sha256};
 use std::io::{self, Write};
 use std::path::Path;
+use std::path::PathBuf;
 
 const MAX_LAYER_BYTES: usize = 48 * 1024 * 1024;
 const MAX_OBJECTS: usize = 200_000;
@@ -629,9 +629,10 @@ fn verified_output_path(
     protected_roots: &[PathBuf],
 ) -> Result<PathBuf, SceneError> {
     if !target.is_absolute()
-        || !target.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| {
-            ext.eq_ignore_ascii_case("lyr") || ext.eq_ignore_ascii_case("xml")
-        })
+        || !target
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("lyr") || ext.eq_ignore_ascii_case("xml"))
     {
         return Err(SceneError::UnsafeDestination);
     }
@@ -682,7 +683,9 @@ pub fn export_edited_layers_guarded(
     expected_source_sha256: &str,
 ) -> Result<(), SceneError> {
     if expected_source_sha256.len() != 64
-        || !expected_source_sha256.bytes().all(|b| b.is_ascii_hexdigit())
+        || !expected_source_sha256
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit())
     {
         return Err(SceneError::SourceChanged);
     }
@@ -773,8 +776,12 @@ mod tests {
         let changed = edit_level_transform(
             &original,
             "left",
-            Transform { position: [7., 0., 0.], ..Transform::default() },
-        ).unwrap();
+            Transform {
+                position: [7., 0., 0.],
+                ..Transform::default()
+            },
+        )
+        .unwrap();
         assert_eq!(changed.objects[0].world.position, [11., 5., 6.]);
         assert_eq!(changed.objects[1].world.position, [13., 5., 6.]);
         for i in [2, 3, 4] {
@@ -790,7 +797,9 @@ mod tests {
     fn large_sibling_hierarchy_recomputes_only_the_affected_branch() {
         let mut xml = String::from("<Objects><Object Id=\"root\"/>");
         for i in 0..5000 {
-            xml.push_str(&format!("<Object Id=\"sibling{i}\" Parent=\"root\" Pos=\"1,0,0\"/>"));
+            xml.push_str(&format!(
+                "<Object Id=\"sibling{i}\" Parent=\"root\" Pos=\"1,0,0\"/>"
+            ));
         }
         xml.push_str("<Object Id=\"leaf\" Parent=\"sibling1\" Pos=\"2,0,0\"/></Objects>");
         let initial = parse_level_scene(&[("large.lyr", xml.as_bytes())]).unwrap();
@@ -798,8 +807,12 @@ mod tests {
         let changed = edit_level_transform(
             &initial,
             "sibling1",
-            Transform { position: [5., 0., 0.], ..Transform::default() },
-        ).unwrap();
+            Transform {
+                position: [5., 0., 0.],
+                ..Transform::default()
+            },
+        )
+        .unwrap();
         assert_eq!(changed.objects[leaf].world.position, [7., 0., 0.]);
         assert_eq!(changed.objects[2500].world, initial.objects[2500].world);
     }
@@ -850,19 +863,31 @@ mod tests {
         let bytes = br#"<Objects><Object Id="a" Pos="1,0,0"/></Objects>"#;
         fs::write(&source, bytes).unwrap();
         let expected = original_layer_digest(&source).unwrap();
-        let edit = vec![("a".into(), Transform {
-            position: [4., 0., 0.], ..Transform::default()
-        })];
+        let edit = vec![(
+            "a".into(),
+            Transform {
+                position: [4., 0., 0.],
+                ..Transform::default()
+            },
+        )];
         let roots = vec![extracted.clone(), library.clone()];
         assert!(matches!(
             export_edited_layers_guarded(
-                &source, &library.join("inside.lyr"), &edit, &roots, &expected,
+                &source,
+                &library.join("inside.lyr"),
+                &edit,
+                &roots,
+                &expected,
             ),
             Err(SceneError::UnsafeDestination)
         ));
         assert!(matches!(
             export_edited_layers_guarded(
-                &source, &extracted.join("inside.lyr"), &edit, &roots, &expected,
+                &source,
+                &extracted.join("inside.lyr"),
+                &edit,
+                &roots,
+                &expected,
             ),
             Err(SceneError::UnsafeDestination)
         ));
@@ -875,7 +900,10 @@ mod tests {
         assert_eq!(fs::read(&target).unwrap(), b"already here");
         fs::remove_file(&target).unwrap();
         export_edited_layers_guarded(&source, &target, &edit, &roots, &expected).unwrap();
-        assert_eq!(load_level_scene(&target).unwrap().objects[0].local.position, [4., 0., 0.]);
+        assert_eq!(
+            load_level_scene(&target).unwrap().objects[0].local.position,
+            [4., 0., 0.]
+        );
         assert_eq!(fs::read(source).unwrap(), bytes);
     }
 
@@ -891,13 +919,21 @@ mod tests {
         let sha = original_layer_digest(&source).unwrap();
         let dest = output_dir.join("edited.lyr");
         let edit = vec![("a".into(), Transform::default())];
-        fs::write(&source, br#"<Objects><Object Id="a" Pos="8,9,10"/></Objects>"#).unwrap();
+        fs::write(
+            &source,
+            br#"<Objects><Object Id="a" Pos="8,9,10"/></Objects>"#,
+        )
+        .unwrap();
         assert!(matches!(
             export_edited_layers_guarded(&source, &dest, &edit, &[], &sha),
             Err(SceneError::SourceChanged)
         ));
         assert!(!dest.exists());
-        fs::write(&source, br#"<Objects><Object Id="a"/><Object Id="A"/></Objects>"#).unwrap();
+        fs::write(
+            &source,
+            br#"<Objects><Object Id="a"/><Object Id="A"/></Objects>"#,
+        )
+        .unwrap();
         let duplicate_sha = original_layer_digest(&source).unwrap();
         assert!(matches!(
             export_edited_layers_guarded(&source, &dest, &edit, &[], &duplicate_sha),
@@ -922,7 +958,13 @@ mod tests {
         let sha = original_layer_digest(&src).unwrap();
         let edited = vec![("a".into(), Transform::default())];
         assert!(matches!(
-            export_edited_layers_guarded(&src, &alias.join("edited.lyr"), &edited, &[library], &sha),
+            export_edited_layers_guarded(
+                &src,
+                &alias.join("edited.lyr"),
+                &edited,
+                &[library],
+                &sha
+            ),
             Err(SceneError::UnsafeDestination)
         ));
     }
