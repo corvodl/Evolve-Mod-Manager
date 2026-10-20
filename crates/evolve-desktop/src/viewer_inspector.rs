@@ -180,7 +180,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                         text(format!(
                             "{label}: {} GPU • {exact}/{} authored exact • {unresolved} unresolved",
                             if loaded { "loaded" } else { "not loaded" }, authored.len()
-                        )).size(12).style(if loaded { design::normal } else { design::muted })
+                        )).size(12).style(if loaded { design::accent } else { design::muted })
                     );
                 }
                 if report.slots > 1 {
