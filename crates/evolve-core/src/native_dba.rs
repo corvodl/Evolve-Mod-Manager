@@ -33,27 +33,35 @@ pub struct NativeDbaInspection {
 }
 
 fn word(data: &[u8], at: usize) -> Result<u32, NativeDbaError> {
-    let raw = data.get(at..at.checked_add(4).ok_or_else(|| NativeDbaError::Invalid(
-        "DBA offset overflow".into()
-    ))?).ok_or_else(|| NativeDbaError::Invalid("Truncated DBA".into()))?;
-    Ok(u32::from_le_bytes(raw.try_into().map_err(|_| NativeDbaError::Invalid(
-        "DBA word length invalid".into()
-    ))?))
+    let raw = data
+        .get(
+            at..at
+                .checked_add(4)
+                .ok_or_else(|| NativeDbaError::Invalid("DBA offset overflow".into()))?,
+        )
+        .ok_or_else(|| NativeDbaError::Invalid("Truncated DBA".into()))?;
+    Ok(u32::from_le_bytes(raw.try_into().map_err(|_| {
+        NativeDbaError::Invalid("DBA word length invalid".into())
+    })?))
 }
 
 /// Only the known CrChF v7 chunk-table layout and Controller_905 metadata
 /// are inspected. Unknown packed formats fail instead of guessing offsets.
 pub fn inspect_native_dba_bytes(data: &[u8]) -> Result<NativeDbaInspection, NativeDbaError> {
-    if data.len() < 32 || data.len() > MAX_DBA_BYTES
-        || data.get(..8) != Some(b"CrChF\x07\0\0")
-    {
-        return Err(NativeDbaError::Invalid("Unsupported DBA magic or size".into()));
+    if data.len() < 32 || data.len() > MAX_DBA_BYTES || data.get(..8) != Some(b"CrChF\x07\0\0") {
+        return Err(NativeDbaError::Invalid(
+            "Unsupported DBA magic or size".into(),
+        ));
     }
     let count = word(data, 8)? as usize;
     let table = word(data, 12)? as usize;
-    let end = table.checked_add(count.checked_mul(16).ok_or_else(|| NativeDbaError::Invalid(
-        "DBA chunk-table overflow".into()
-    ))?).ok_or_else(|| NativeDbaError::Invalid("DBA directory overflow".into()))?;
+    let end = table
+        .checked_add(
+            count
+                .checked_mul(16)
+                .ok_or_else(|| NativeDbaError::Invalid("DBA chunk-table overflow".into()))?,
+        )
+        .ok_or_else(|| NativeDbaError::Invalid("DBA directory overflow".into()))?;
     if count == 0 || count > MAX_CHUNKS || table < 16 || end > data.len() {
         return Err(NativeDbaError::Invalid("Invalid DBA chunk-table".into()));
     }
@@ -64,16 +72,18 @@ pub fn inspect_native_dba_bytes(data: &[u8]) -> Result<NativeDbaInspection, Nati
         let kind = word(data, at)?;
         let size = word(data, at + 8)? as usize;
         let offset = word(data, at + 12)? as usize;
-        let finish = offset.checked_add(size).ok_or_else(|| NativeDbaError::Invalid(
-            "DBA chunk length overflow".into()
-        ))?;
+        let finish = offset
+            .checked_add(size)
+            .ok_or_else(|| NativeDbaError::Invalid("DBA chunk length overflow".into()))?;
         if size == 0 || offset < end || finish > data.len() {
             return Err(NativeDbaError::Invalid("Invalid DBA chunk bounds".into()));
         }
         seen.push((offset, finish));
         if kind & 0xffff == 0x100d && kind >> 16 == 0x905 {
             if controller.replace((offset, size)).is_some() {
-                return Err(NativeDbaError::Invalid("Multiple DBA Controller_905 chunks".into()));
+                return Err(NativeDbaError::Invalid(
+                    "Multiple DBA Controller_905 chunks".into(),
+                ));
             }
         }
     }
@@ -81,18 +91,22 @@ pub fn inspect_native_dba_bytes(data: &[u8]) -> Result<NativeDbaInspection, Nati
     if seen.windows(2).any(|pair| pair[0].1 > pair[1].0) {
         return Err(NativeDbaError::Invalid("Overlapping DBA chunks".into()));
     }
-    let (at, size) = controller.ok_or_else(|| NativeDbaError::Invalid(
-        "Controller_905 DBA metadata not found".into()
-    ))?;
+    let (at, size) = controller
+        .ok_or_else(|| NativeDbaError::Invalid("Controller_905 DBA metadata not found".into()))?;
     if size < 120 {
-        return Err(NativeDbaError::Invalid("Truncated DBA controller header".into()));
+        return Err(NativeDbaError::Invalid(
+            "Truncated DBA controller header".into(),
+        ));
     }
     let position_tracks = word(data, at)? as usize;
     let rotation_tracks = word(data, at + 4)? as usize;
     let time_tracks = word(data, at + 8)? as usize;
     let animations = word(data, at + 12)? as usize;
-    if position_tracks > MAX_TRACKS || rotation_tracks > MAX_TRACKS || time_tracks > MAX_TRACKS
-        || animations == 0 || animations > MAX_TRACKS
+    if position_tracks > MAX_TRACKS
+        || rotation_tracks > MAX_TRACKS
+        || time_tracks > MAX_TRACKS
+        || animations == 0
+        || animations > MAX_TRACKS
     {
         return Err(NativeDbaError::Invalid("Unbounded DBA track counts".into()));
     }
@@ -100,20 +114,24 @@ pub fn inspect_native_dba_bytes(data: &[u8]) -> Result<NativeDbaInspection, Nati
     // 9 position / 9 rotation format-count u32 arrays; then signed
     // time/position/rotation offsets, with an extra rotation terminator.
     let required = 16usize
-        .checked_add(time_tracks.checked_mul(6).ok_or_else(|| NativeDbaError::Invalid(
-            "DBA time table overflow".into()
-        ))?)
+        .checked_add(
+            time_tracks
+                .checked_mul(6)
+                .ok_or_else(|| NativeDbaError::Invalid("DBA time table overflow".into()))?,
+        )
         .and_then(|v| v.checked_add(position_tracks.checked_mul(6)?))
         .and_then(|v| v.checked_add(rotation_tracks.checked_mul(6)?))
         .and_then(|v| v.checked_add(28 + 36 + 36 + 4))
         .ok_or_else(|| NativeDbaError::Invalid("DBA table overflow".into()))?;
     if required > size {
-        return Err(NativeDbaError::Invalid("Incomplete DBA track tables".into()));
+        return Err(NativeDbaError::Invalid(
+            "Incomplete DBA track tables".into(),
+        ));
     }
     // Signed time track offsets identify in-place streaming mode. Do not
     // parse keyframe contents without validating their storage format.
-    let time_offsets_at = at + 16 + 2 * time_tracks + 28
-        + 2 * position_tracks + 36 + 2 * rotation_tracks + 36;
+    let time_offsets_at =
+        at + 16 + 2 * time_tracks + 28 + 2 * position_tracks + 36 + 2 * rotation_tracks + 36;
     let first_time_offset = if time_tracks > 0 {
         Some(word(data, time_offsets_at)? as i32)
     } else {
@@ -134,7 +152,9 @@ pub fn inspect_native_dba_bytes(data: &[u8]) -> Result<NativeDbaInspection, Nati
 pub fn inspect_native_dba_file(path: &Path) -> Result<NativeDbaInspection, NativeDbaError> {
     let meta = fs::symlink_metadata(path)?;
     if !meta.file_type().is_file() || meta.len() as usize > MAX_DBA_BYTES {
-        return Err(NativeDbaError::Invalid("Unsafe or oversized native DBA".into()));
+        return Err(NativeDbaError::Invalid(
+            "Unsafe or oversized native DBA".into(),
+        ));
     }
     inspect_native_dba_bytes(&fs::read(path)?)
 }
