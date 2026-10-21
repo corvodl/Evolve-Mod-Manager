@@ -1175,7 +1175,8 @@ impl Pipeline {
             self.last_emissive_time = primitive.emissive_time;
             for surface in &self.gpu_surfaces {
                 if surface.emissive_uv.is_some() {
-                    let transform = emissive_uv_values(surface.emissive_uv, primitive.emissive_time);
+                    let transform =
+                        emissive_uv_values(surface.emissive_uv, primitive.emissive_time);
                     queue.write_buffer(&surface._uv_uniform, 0, bytemuck::bytes_of(&transform));
                 }
             }
@@ -1489,13 +1490,23 @@ mod tests {
     fn animated_kala_uv_does_not_change_regular_mesh_sampler() {
         assert_eq!(super::emissive_uv_values(None, 31.0), [1.0, 1.0, 0.0, 0.0]);
         let authored = evolve_core::DecalTexMod {
-            tile_u: 3.0, tile_v: 4.0, u_type: 2, u_rate: 1.0,
-            u_amplitude: 0.2, v_type: 0, v_rate: 0.0, v_amplitude: 0.1,
+            tile_u: 3.0,
+            tile_v: 4.0,
+            u_type: 2,
+            u_rate: 1.0,
+            u_amplitude: 0.2,
+            v_type: 0,
+            v_rate: 0.0,
+            v_amplitude: 0.1,
         };
-        assert_eq!(super::emissive_uv_values(Some(authored), 1.0),
-            [3.0, 4.0, 0.2, 0.0]);
-        assert_eq!(super::emissive_uv_values(Some(authored), 2.0),
-            [3.0, 4.0, 0.4, 0.0]);
+        assert_eq!(
+            super::emissive_uv_values(Some(authored), 1.0),
+            [3.0, 4.0, 0.2, 0.0]
+        );
+        assert_eq!(
+            super::emissive_uv_values(Some(authored), 2.0),
+            [3.0, 4.0, 0.4, 0.0]
+        );
         let shader = include_str!("textured.wgsl");
         assert!(shader.contains("input.uv * emissive_uv.xy + emissive_uv.zw"));
         assert!(shader.contains("textureSample(diffuse, material_sampler, input.uv)"));
