@@ -1,7 +1,7 @@
 //! Separate Asset Library and Modding preview window. Matches the private
 //! manager's viewport/explorer split; Asset Library originals are read-only.
 //! Heavy decoding and indexing are run by the main application's worker tasks.
-use super::{MeshViewport, Message, State, TexturedScene, ViewerSidebarTab, viewer_inspector};
+use super::{GfxToolsSection, MeshViewport, Message, State, TexturedScene, ViewerSidebarTab, viewer_inspector};
 use crate::design;
 use iced::widget::{
     canvas, column, container, image, mouse_area, progress_bar, row, scrollable, shader, slider,
@@ -534,7 +534,7 @@ fn dock_tab<'a>(
             design::secondary
         })
         .on_press(Message::ViewerSidebarSelect(tab));
-    if matches!(tab, ViewerSidebarTab::Files | ViewerSidebarTab::Equipment) {
+    if matches!(tab, ViewerSidebarTab::Files | ViewerSidebarTab::Equipment | ViewerSidebarTab::GfxTools) {
         return select.into();
     }
     row![
@@ -560,6 +560,9 @@ fn browser(state: &State) -> Element<'_, Message> {
         dock_tab("Model Options", ViewerSidebarTab::Equipment, active),
     ]
     .spacing(4);
+    if state.gfx_active {
+        tabs = tabs.push(dock_tab("GFX Tools", ViewerSidebarTab::GfxTools, active));
+    }
     if state.viewer_sidebar_animations {
         tabs = tabs.push(dock_tab("Animations", ViewerSidebarTab::Animations, active));
     }
@@ -576,6 +579,7 @@ fn browser(state: &State) -> Element<'_, Message> {
     let content = match active {
         ViewerSidebarTab::Files => explorer(state),
         ViewerSidebarTab::Equipment => equipment_browser(state),
+        ViewerSidebarTab::GfxTools if state.gfx_active => gfx_tools(state),
         ViewerSidebarTab::Animations if state.viewer_sidebar_animations => animation_browser(state),
         ViewerSidebarTab::Inspector if state.viewer_show_inspector => {
             viewer_inspector::sidebar_inspector(state)
@@ -592,185 +596,117 @@ fn browser(state: &State) -> Element<'_, Message> {
         .into()
 }
 
-fn gfx_viewport(state: &State) -> Element<'_, Message> {
+
+fn gfx_nav_section<'a>(
+    state: &State,
+    label: &'static str,
+    section: GfxToolsSection,
+) -> Element<'a, Message> {
+    design::button(text(label).size(12))
+        .padding([7, 9])
+        .style(if state.gfx_tools_section == section {
+            design::primary
+        } else {
+            design::secondary
+        })
+        .on_press(Message::GfxToolsSection(section))
+        .into()
+}
+
+/// All GFX commands live in the same docked right sidebar as Files/Model
+/// Options. Sections retain the existing staged edit operations and status.
+fn gfx_tools(state: &State) -> Element<'_, Message> {
     let mut actions = column![
-        text("SCALEFORM GFX · DESIGN / INTERACTIVE PREVIEW").size(16),
-        text("FFDec 26.3.0 is an optional external editor; game callbacks and ActionScript are not executed in static preview.")
-            .size(11).style(design::muted),
-        text_input("Absolute ffdec-cli.exe or ffdec.jar path", &state.preferences.ffdec_executable)
-            .on_input(Message::GfxConfigChanged).padding(8),
-        design::button("Choose FFDec installation…").on_press(Message::GfxPickBackend),
-        text(state.gfx_status.as_str()).size(12).style(design::muted)
-    ].spacing(8);
-    let mut preview: Element<'_, Message> = text(
-        "No static FFDec frame rendered yet. Runtime-defined text and menus may remain blank.",
-    )
-    .size(12)
-    .style(design::muted)
-    .into();
-    if let Some(handle) = &state.gfx_preview {
-        preview = image(handle.clone())
-            .content_fit(iced::ContentFit::Contain)
-            .width(Fill)
-            .height(Fill)
-            .into();
-    }
+        row![
+            text("GFX TOOLS").size(16),
+            iced::widget::space().width(Fill),
+            text(if state.gfx_busy { "Working…" } else { "Ready" })
+                .size(11).style(design::muted),
+        ].align_y(iced::Center),
+        row![
+            gfx_nav_section(state, "Preview", GfxToolsSection::Preview),
+            gfx_nav_section(state, "Layout", GfxToolsSection::Layout),
+            gfx_nav_section(state, "Scripts", GfxToolsSection::Scripts),
+        ].spacing(5),
+        row![
+            gfx_nav_section(state, "Resources", GfxToolsSection::Resources),
+            gfx_nav_section(state, "Inspector", GfxToolsSection::Inspector),
+            gfx_nav_section(state, "Project", GfxToolsSection::Project),
+        ].spacing(5),
+    ].spacing(10);
     if let Some(session) = &state.gfx_session {
         let info = &session.info;
-        actions = actions.push(
-            row![
-                design::button(if state.gfx_layout_open {
-                    "Close design mode"
-                } else {
-                    "Design / layout editor"
-                })
-                .on_press(Message::GfxToggleLayout),
-                design::button(if state.gfx_interactive_open {
-                    "Close interactive controls"
-                } else {
-                    "Interactive ActionScript preview"
-                })
-                .on_press(Message::GfxToggleInteractive),
-            ]
-            .spacing(6),
-        );
-        if state.gfx_interactive_open {
-            actions = actions
-                .push(text("INTERACTIVE PREVIEW · EXTERNAL RUFFLE").size(14))
-                .push(text("Runs original Flash ActionScript, timelines and mouse input where supported. Evolve/CryEngine callbacks are unavailable; an empty ExternalInterface prevents game actions. Interactive content opens in a separate Ruffle window; no project or PAK files are changed.")
-                    .size(11).style(design::muted))
-                .push(text_input("Path to installed ruffle.exe", &state.preferences.ruffle_executable)
-                    .on_input(Message::GfxRuffleConfigChanged).padding(8))
-                .push(row![
-                    design::button("Choose Ruffle executable…").on_press(Message::GfxPickRuffle),
-                    design::button("Launch / restart interactive preview")
-                        .on_press_maybe((!state.gfx_busy).then_some(Message::GfxRunInteractive)),
-                    design::button("Stop preview").on_press_maybe(
-                        state.gfx_interactive_running.as_ref().map(|_| Message::GfxStopInteractive)),
-                ].spacing(6))
-                .push(text(if state.gfx_interactive_running.as_ref().is_some_and(|p| p.is_running()) {
-                    "Ruffle process: running (external window)"
-                } else {
-                    "Ruffle process: stopped / not launched"
-                }).size(11).style(design::muted))
-                .push(text(state.gfx_interactive_status.as_str()).size(11).style(design::muted))
-                .push(text("Only validated same-build UI_Assets imagery and imported GFX/SWF files are passed to the temporary player. Player can prompt for local imports; native UI data, localization, services and gameplay remain stubbed.")
-                    .size(11).style(design::muted));
-        }
-        actions = actions
-            .push(
-                text(format!(
-                    "{} · {}×{} · {:.1} FPS · {} frames · {} sprites · {} tags",
-                    session.relative,
-                    info.width,
-                    info.height,
-                    info.fps,
-                    info.frames,
-                    info.sprites.len(),
-                    info.tags,
-                ))
-                .size(12),
-            )
-            .push(
-                text(format!(
-                    "{} · {} resources · {} imports · ActionScript: {}",
-                    if info.compressed { "CFX/zlib" } else { "GFX" },
-                    info.resources.len(),
-                    info.imports.len(),
-                    if info.script_present {
-                        "present"
+        match state.gfx_tools_section {
+            GfxToolsSection::Preview => {
+                actions = actions
+                    .push(text("FRAME RENDERING").size(13))
+                    .push(text(format!(
+                        "{} · {}×{} · {} frame(s) · {:.1} FPS",
+                        session.relative, info.width, info.height, info.frames, info.fps
+                    )).size(11))
+                    .push(text(format!(
+                        "{} sprites · {} tags · {} bitmap resources · {} imports",
+                        info.sprites.len(), info.tags, info.resources.len(), info.imports.len()
+                    )).size(11).style(design::muted))
+                    .push(row![
+                        design::button("Render frame").on_press_maybe(
+                            (!state.gfx_busy).then_some(Message::GfxAction(
+                                crate::gfx_editor::Action::PreviewFrame
+                            ))
+                        ),
+                        design::button("Open FFDec").on_press_maybe(
+                            (!state.gfx_busy).then_some(Message::GfxAction(
+                                crate::gfx_editor::Action::OpenGui
+                            ))
+                        ),
+                        design::button("Reload").on_press_maybe(
+                            (!state.gfx_busy).then_some(Message::GfxAction(
+                                crate::gfx_editor::Action::ReloadGui
+                            ))
+                        ),
+                    ].spacing(5))
+                    .push(text(state.gfx_status.as_str()).size(11).style(design::muted))
+                    .push(text("FFDec executable").size(12))
+                    .push(text_input("Path to ffdec-cli.exe or ffdec.jar", &state.preferences.ffdec_executable)
+                        .on_input(Message::GfxConfigChanged).padding(8))
+                    .push(design::button("Choose FFDec…").on_press(Message::GfxPickBackend))
+                    .push(text("INTERACTIVE PLAYBACK").size(13))
+                    .push(design::button(if state.gfx_interactive_open {
+                        "Hide Ruffle controls"
                     } else {
-                        "none detected"
-                    },
-                ))
-                .size(11)
-                .style(design::muted),
-            )
-            .push(
-                text(format!(
-                    "{} · {} staged changes · {}",
-                    if session.project.is_some() {
-                        "Editable Mod Project"
-                    } else {
-                        "Asset Library / read-only"
-                    },
-                    session.edits,
-                    if session.applied {
-                        "Applied to extracted project"
-                    } else {
-                        "Not applied to project"
-                    },
-                ))
-                .size(11)
-                .style(design::muted),
-            )
-            .push(
-                row![
-                    design::button("Render selected frame")
-                        .on_press_maybe((!state.gfx_busy).then_some(Message::GfxAction(
-                            crate::gfx_editor::Action::PreviewFrame
-                        ))),
-                    design::button("Open full FFDec editor…").on_press_maybe(
-                        (!state.gfx_busy)
-                            .then_some(Message::GfxAction(crate::gfx_editor::Action::OpenGui))
-                    ),
-                    design::button("Reload FFDec changes").on_press_maybe(
-                        (!state.gfx_busy)
-                            .then_some(Message::GfxAction(crate::gfx_editor::Action::ReloadGui))
-                    ),
-                ]
-                .spacing(5),
-            )
-            .push(
-                row![
-                    design::button("Export editable tag XML…").on_press_maybe(
-                        (!state.gfx_busy)
-                            .then_some(Message::GfxAction(crate::gfx_editor::Action::ExportXml))
-                    ),
-                    design::button("Rebuild from edited XML…").on_press_maybe(
-                        (!state.gfx_busy)
-                            .then_some(Message::GfxAction(crate::gfx_editor::Action::ImportXml))
-                    ),
-                ]
-                .spacing(5),
-            )
-            .push(
-                row![
-                    design::button("Export ActionScript sources…").on_press_maybe(
-                        (!state.gfx_busy).then_some(Message::GfxAction(
-                            crate::gfx_editor::Action::ExportScripts
-                        ))
-                    ),
-                    design::button("Rebuild from edited ActionScript…").on_press_maybe(
-                        (!state.gfx_busy).then_some(Message::GfxAction(
-                            crate::gfx_editor::Action::ImportScripts
-                        ))
-                    ),
-                ]
-                .spacing(5),
-            )
-            .push(
-                row![
-                    design::button("Import edited GFX…")
-                        .on_press_maybe((!state.gfx_busy).then_some(Message::GfxPickEdited)),
-                    design::button("Undo staged edit").on_press_maybe(
-                        (!state.gfx_busy && session.edits > 0)
-                            .then_some(Message::GfxAction(crate::gfx_editor::Action::Undo))
-                    ),
-                    design::button("Open editing files…").on_press(Message::GfxRevealSession),
-                ]
-                .spacing(5),
-            )
-            .push(
-                design::button("Apply to Mod Project (with EditorBackups)").on_press_maybe(
-                    (!state.gfx_busy
-                        && session.project.is_some()
-                        && session.edits > 0
-                        && !session.applied)
-                        .then_some(Message::GfxApply),
-                ),
-            );
-        if state.gfx_layout_open {
+                        "Show Ruffle controls"
+                    }).on_press(Message::GfxToggleInteractive));
+                if state.gfx_interactive_open {
+                    actions = actions
+                        .push(text_input("Path to ruffle.exe", &state.preferences.ruffle_executable)
+                            .on_input(Message::GfxRuffleConfigChanged).padding(8))
+                        .push(design::button("Choose Ruffle…").on_press(Message::GfxPickRuffle))
+                        .push(row![
+                            design::button("Launch / restart")
+                                .on_press_maybe((!state.gfx_busy).then_some(Message::GfxRunInteractive)),
+                            design::button("Stop").on_press_maybe(
+                                state.gfx_interactive_running.as_ref()
+                                    .map(|_| Message::GfxStopInteractive)
+                            )
+                        ].spacing(6))
+                        .push(text(if state.gfx_interactive_running.as_ref().is_some_and(|p| p.is_running()) {
+                            "Ruffle: running in separate window"
+                        } else {
+                            "Ruffle: stopped"
+                        }).size(11).style(design::muted))
+                        .push(text(state.gfx_interactive_status.as_str())
+                            .size(11).style(design::muted));
+                }
+                actions = actions.push(
+                    text("Interactive preview runs original ActionScript where supported. Evolve's native menu callbacks are not emulated: the front prompt's close button needs its real callback identified before it can dismiss the original layer.")
+                        .size(11).style(design::muted)
+                );
+            }
+            GfxToolsSection::Layout => {
+                actions = actions.push(text("ROOT FIRST-FRAME LAYERS").size(13))
+                    .push(text("Select a layer, drag its bounds in the viewport or edit its transform, then stage the change.")
+                        .size(11).style(design::muted));
+        if !session.layers.is_empty() {
             actions = actions.push(
                 design::button(if state.gfx_layout_show_raster {
                     "Hide FFDec raster backdrop"
@@ -850,6 +786,95 @@ fn gfx_viewport(state: &State) -> Element<'_, Message> {
                     ));
             }
         }
+
+            }
+            GfxToolsSection::Scripts => {
+                actions = actions
+                    .push(text("SOURCE & ACTIONSCRIPT").size(13))
+                    .push(text(if info.script_present {
+                        "Compiled ActionScript detected. FFDec exports editable scripts from the staged GFX."
+                    } else {
+                        "No embedded ActionScript detected in this movie."
+                    }).size(11).style(design::muted))
+                    .push(design::button("Export ActionScript…").on_press_maybe(
+                        (!state.gfx_busy).then_some(Message::GfxAction(
+                            crate::gfx_editor::Action::ExportScripts
+                        ))
+                    ))
+                    .push(design::button("Rebuild staged ActionScript…").on_press_maybe(
+                        (!state.gfx_busy).then_some(Message::GfxAction(
+                            crate::gfx_editor::Action::ImportScripts
+                        ))
+                    ))
+                    .push(text("DISPLAY TAG XML").size(13))
+                    .push(design::button("Export tag XML…").on_press_maybe(
+                        (!state.gfx_busy).then_some(Message::GfxAction(
+                            crate::gfx_editor::Action::ExportXml
+                        ))
+                    ))
+                    .push(design::button("Rebuild staged XML…").on_press_maybe(
+                        (!state.gfx_busy).then_some(Message::GfxAction(
+                            crate::gfx_editor::Action::ImportXml
+                        ))
+                    ))
+                    .push(text("Edits remain in the isolated workspace until applied to the Mod Project.")
+                        .size(11).style(design::muted));
+            }
+            GfxToolsSection::Resources => {
+                actions = actions.push(text("IMPORTS & RESOURCE IDS").size(13));
+        if !session.dependencies.is_empty() {
+            actions = actions.push(text("SAME-BUILD GFX/SWF DEPENDENCIES").size(13));
+            for dep in &session.dependencies {
+                actions = actions.push(
+                    text(format!("{} — {}", dep.reference, dep.outcome))
+                        .size(11)
+                        .style(design::muted),
+                );
+            }
+        }
+        if !info.resources.is_empty() {
+            actions = actions.push(text("REPLACE EXISTING RESOURCE · CHARACTER ID").size(13));
+            for (index, item) in info.resources.iter().enumerate().take(80) {
+                actions = actions.push(
+                    design::button(text(format!(
+                        "{} #{} {}",
+                        item.kind,
+                        item.id,
+                        if state.gfx_resource == index {
+                            " ✓"
+                        } else {
+                            ""
+                        }
+                    )))
+                    .on_press(Message::GfxSelectResource(index)),
+                );
+            }
+            if info.resources.len() > 80 {
+                actions = actions.push(
+                    text("Only the first 80 tags are selectable here; use full FFDec for others.")
+                        .size(11)
+                        .style(design::muted),
+                );
+            }
+            actions = actions.push(
+                design::button("Replace selected resource…")
+                    .on_press_maybe((!state.gfx_busy).then_some(Message::GfxPickReplacement)),
+            );
+        }
+        if !info.imports.is_empty() {
+            actions = actions.push(
+                text(format!(
+                    "Imported movies (same-build assets required): {}",
+                    info.imports.join(", ")
+                ))
+                .size(11)
+                .style(design::muted),
+            );
+        }
+
+            }
+            GfxToolsSection::Inspector => {
+                actions = actions.push(text("UI HIERARCHY").size(13));
         actions = actions.push(
             design::button(if state.gfx_live_open {
                 "Close Live UI Inspector (read-only)"
@@ -905,59 +930,48 @@ fn gfx_viewport(state: &State) -> Element<'_, Message> {
                 ).size(11).style(design::muted));
             }
         }
-        if !session.dependencies.is_empty() {
-            actions = actions.push(text("SAME-BUILD GFX/SWF DEPENDENCIES").size(13));
-            for dep in &session.dependencies {
-                actions = actions.push(
-                    text(format!("{} — {}", dep.reference, dep.outcome))
-                        .size(11)
-                        .style(design::muted),
-                );
+
             }
-        }
-        if !info.resources.is_empty() {
-            actions = actions.push(text("REPLACE EXISTING RESOURCE · CHARACTER ID").size(13));
-            for (index, item) in info.resources.iter().enumerate().take(80) {
-                actions = actions.push(
-                    design::button(text(format!(
-                        "{} #{} {}",
-                        item.kind,
-                        item.id,
-                        if state.gfx_resource == index {
-                            " ✓"
-                        } else {
-                            ""
-                        }
-                    )))
-                    .on_press(Message::GfxSelectResource(index)),
-                );
+            GfxToolsSection::Project => {
+                actions = actions
+                    .push(text("STAGED GFX CHANGES").size(13))
+                    .push(text(format!(
+                        "{} · {} staged edit(s) · {}",
+                        if session.project.is_some() { "Mod Project" } else { "Read-only library" },
+                        session.edits,
+                        if session.applied { "Applied" } else { "Not applied" },
+                    )).size(11).style(design::muted))
+                    .push(design::button("Import compiled GFX…")
+                        .on_press_maybe((!state.gfx_busy).then_some(Message::GfxPickEdited)))
+                    .push(design::button("Undo last staged edit")
+                        .on_press_maybe((!state.gfx_busy && session.edits > 0)
+                            .then_some(Message::GfxAction(crate::gfx_editor::Action::Undo))))
+                    .push(design::button("Open editing files…")
+                        .on_press(Message::GfxRevealSession))
+                    .push(design::button("Apply to Mod Project")
+                        .style(design::primary)
+                        .on_press_maybe((
+                            !state.gfx_busy && session.project.is_some()
+                                && session.edits > 0 && !session.applied
+                        ).then_some(Message::GfxApply)))
+                    .push(text("The original PAK remains unchanged. Applying keeps EditorBackups in the extracted Mod Project.")
+                        .size(11).style(design::muted));
             }
-            if info.resources.len() > 80 {
-                actions = actions.push(
-                    text("Only the first 80 tags are selectable here; use full FFDec for others.")
-                        .size(11)
-                        .style(design::muted),
-                );
-            }
-            actions = actions.push(
-                design::button("Replace selected resource…")
-                    .on_press_maybe((!state.gfx_busy).then_some(Message::GfxPickReplacement)),
-            );
-        }
-        if !info.imports.is_empty() {
-            actions = actions.push(
-                text(format!(
-                    "Imported movies (same-build assets required): {}",
-                    info.imports.join(", ")
-                ))
-                .size(11)
-                .style(design::muted),
-            );
         }
     } else {
         actions = actions
-            .push(design::button("Inspect selected .gfx").on_press(Message::GfxOpenSelected));
+            .push(text("Select a .gfx in Files to inspect or edit it.")
+                .size(12).style(design::muted))
+            .push(design::button("Inspect selected GFX")
+                .on_press(Message::GfxOpenSelected));
     }
+    scrollable(panel(actions.padding(12)).width(Fill))
+        .height(Fill).width(Fill).into()
+}
+
+/// Only the original stage or layout canvas occupies the viewport. All
+/// FFDec/Ruffle/project controls are docked with the other sidebar tools.
+fn gfx_viewport(state: &State) -> Element<'_, Message> {
     if state.gfx_layout_open
         && let Some(session) = &state.gfx_session
     {
@@ -968,46 +982,34 @@ fn gfx_viewport(state: &State) -> Element<'_, Message> {
             selected: state.gfx_layout_selected,
             stage,
             raster_background: show_raster,
-        })
-        .width(Fill)
-        .height(Fill);
+        }).width(Fill).height(Fill);
         let surface: Element<'_, Message> =
             if let (true, Some(handle)) = (show_raster, &state.gfx_preview) {
                 stack![
                     image(handle.clone())
                         .content_fit(iced::ContentFit::Contain)
-                        .width(Fill)
-                        .height(Fill),
+                        .width(Fill).height(Fill),
                     canvas,
-                ]
-                .width(Fill)
-                .height(Fill)
-                .into()
+                ].width(Fill).height(Fill).into()
             } else {
                 canvas.into()
             };
-        return row![
-                scrollable(actions.padding(8)).width(Length::FillPortion(2)),
-                column![
-                    text("ORIGINAL STAGE COORDINATES · STATIC ROOT FIRST FRAME")
-                        .size(12).style(design::muted),
-                    surface,
-                    text("Drag outlined shapes to update X/Y, then click Stage. Numeric changes are staged only on confirmation.")
-                        .size(11).style(design::muted),
-                    text("Use Undo staged edit to revert. No GFX or installed PAK is changed until Apply to Mod Project.")
-                        .size(11).style(design::muted)
-                ].height(Fill).width(Length::FillPortion(3)).spacing(8)
-            ].spacing(12).height(Fill).into();
+        return column![
+            text("GFX LAYOUT · FIRST FRAME").size(12).style(design::muted),
+            surface,
+            text("Drag bounded shapes to move them; stage changes in GFX Tools → Layout.")
+                .size(11).style(design::muted),
+        ].spacing(8).height(Fill).width(Fill).into();
     }
-    row![
-        scrollable(actions.padding(8)).width(Length::FillPortion(2)),
-        container(preview)
-            .center(Fill)
-            .width(Length::FillPortion(3))
-    ]
-    .spacing(12)
-    .height(Fill)
-    .into()
+    let surface: Element<'_, Message> = if let Some(handle) = &state.gfx_preview {
+        image(handle.clone())
+            .content_fit(iced::ContentFit::Contain)
+            .width(Fill).height(Fill).into()
+    } else {
+        text("Render a GFX frame from GFX Tools → Preview. The original Ruffle interactive window opens separately.")
+            .size(12).style(design::muted).into()
+    };
+    container(surface).center(Fill).width(Fill).height(Fill).into()
 }
 
 fn viewport(state: &State) -> Element<'_, Message> {
@@ -1680,7 +1682,11 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         ))
         .size(12),
         iced::widget::space().width(Fill),
-        text("Orbit: drag  •  Pan: Shift/right drag  •  Zoom: wheel")
+        text(if state.gfx_active {
+            "GFX: controls in right-hand GFX Tools tab"
+        } else {
+            "Orbit: drag  •  Pan: Shift/right drag  •  Zoom: wheel"
+        })
             .size(11)
             .style(design::muted),
     ]
