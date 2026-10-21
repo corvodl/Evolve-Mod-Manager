@@ -397,7 +397,10 @@ pub fn export_bundle(
             )
             .map_err(|e| format!("{relative}: {e}"))?;
         } else if options.rigged {
-            if !options.equipment.is_empty() || options.full_armor_glow || options.damage_blend_percent > 0 {
+            if !options.equipment.is_empty()
+                || options.full_armor_glow
+                || options.damage_blend_percent > 0
+            {
                 return Err("Model Options equipment and full-armor glow apply only to the selected CDF assembly".into());
             }
             let skeleton = options
@@ -442,7 +445,9 @@ pub fn export_bundle(
             .map_err(|e| format!("{relative}: {e}"))?;
         } else {
             if options.full_armor_glow || options.damage_blend_percent > 0 {
-                return Err("Full-armor glow and damage blend require rigged textured CDF export".into());
+                return Err(
+                    "Full-armor glow and damage blend require rigged textured CDF export".into(),
+                );
             }
             let mesh = if relative.to_ascii_lowercase().ends_with(".cdf") {
                 // Static character export honors exactly the same verified
