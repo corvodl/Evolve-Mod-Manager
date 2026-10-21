@@ -2961,6 +2961,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             if choice != state.kala_tubing {
                 state.kala_tubing = choice;
+                // The state-specific source calibration now carries the
+                // reported blue/red brightness. Reset the shared slider to
+                // neutral when switching states instead of carrying 0.3/4x.
+                state.emissive_strength = 1.0;
                 state.viewer_sidebar_active = ViewerSidebarTab::Equipment;
                 return update(state, Message::ViewerPreviewStaticCdf);
             }
@@ -3552,14 +3556,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if state.equipment_source.as_ref() != Some(&source) {
                 state.equipment_overrides.clear();
                 state.kala_tubing = KalaTubingState::Banshee;
-                // Preview-only boost makes this subdued authored tint easier to inspect
-                // without altering its GlowAmount=3, exported DDS or game materials.
-                state.emissive_strength =
-                    if read_cdf(&source).is_ok_and(|cdf| evolve_core::is_original_kala_3p(&cdf)) {
-                        1.25
-                    } else {
-                        1.0
-                    };
+                // Source-verified Kala tubing receives its own blue/red
+                // viewport calibration, so the slider starts neutral.
+                state.emissive_strength = 1.0;
                 // Armor glow is the normal monster preview state. Missing
                 // original glow DDS must not block regular diffuse rendering.
                 let virtual_source = entry.relative_path.replace('\\', "/").to_ascii_lowercase();
@@ -7357,7 +7356,7 @@ mod project_edit_tests {
             emissive: None,
             armor_emissive: None,
             emission_strength: 1.0,
-            kala_emission_calibrated: false,
+            kala_emission_state: None,
             emissive_uv: None,
             specular: None,
             gloss: None,
@@ -7412,7 +7411,7 @@ mod project_edit_tests {
             emissive: Some(Arc::clone(&pixels)),
             armor_emissive: None,
             emission_strength: 3.0,
-            kala_emission_calibrated: false,
+            kala_emission_state: None,
             emissive_uv: None,
             specular: None,
             gloss: None,
