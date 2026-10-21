@@ -6,8 +6,10 @@ use crate::character_assembly::select_attachments;
 use crate::character_equipment::{EquipmentOverrides, validated_equipment_overrides};
 use crate::fbx::publish_verified_binary_fbx;
 use crate::inventory::Inventory;
+use crate::library_catalog::{
+    LibraryReferenceStatus, imported_library, resolve_imported_reference,
+};
 use crate::materials::{read_material, scoped_texture_candidates};
-use crate::library_catalog::{imported_library, resolve_imported_reference, LibraryReferenceStatus};
 use crate::model::{original_mesh_subsets, read_model};
 use crate::native_caf::read_native_caf;
 use crate::rig::{
@@ -178,9 +180,10 @@ fn texture_scope(inventory: &Inventory) -> Option<ImportedTextureScope> {
     let archive = files.parent()?;
     let library_root = archive.parent()?;
     let catalog = imported_library(library_root).ok()?;
-    let source = catalog.archives.iter().find(|record| {
-        fs::canonicalize(&record.directory).is_ok_and(|path| path == archive)
-    })?;
+    let source = catalog
+        .archives
+        .iter()
+        .find(|record| fs::canonicalize(&record.directory).is_ok_and(|path| path == archive))?;
     // If the source belongs to multiple builds, do not guess a game version.
     let build = (source.builds.len() == 1).then(|| source.builds[0].clone());
     Some(ImportedTextureScope {
@@ -439,7 +442,8 @@ fn exact_multi_slot_materials_with_scope(
                 "gloss" | "glossiness" | "smoothness" => 4,
                 _ => continue,
             };
-            let Some(file) = exact_original_texture(&root, inventory, &virtual_mtl, &map.path, imported)?
+            let Some(file) =
+                exact_original_texture(&root, inventory, &virtual_mtl, &map.path, imported)?
             else {
                 continue;
             };
