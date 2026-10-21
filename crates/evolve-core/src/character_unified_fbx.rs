@@ -1635,6 +1635,102 @@ mod tests {
     }
 
     #[test]
+    fn flat_monster_texture_paks_find_their_own_original_glow() {
+        // The real Grounder/Kraken TS PAK stores grounder_glow_diff.dds.0
+        // through .7 at its /files root, not in characters/monsters/grounder.
+        // The Grounder3 CDF stem therefore cannot serve as the sole prefix.
+        let temp = tempfile::tempdir().unwrap();
+        let source_root = temp.path().join("extracted");
+        let library = temp.path().join("library");
+        let foreign = library.join("characters_monsters_rocky_ts.pak__22222222222222222222");
+        let old = library.join("characters_monsters_grounder_ts.pak__33333333333333333333");
+        let cases = [
+            ("grounder", "grounder3", "grounder_glow_diff.dds.0"),
+            ("teleporter", "teleporter3", "teleporter_glow_diff.dds.0"),
+        ];
+        let mut stage_ids = serde_json::Map::new();
+        let mut legacy_ids = serde_json::Map::new();
+        for (index, (owner, cdf_name, texture)) in cases.iter().enumerate() {
+            let folder = source_root.join(format!("characters/monsters/{owner}"));
+            fs::create_dir_all(&folder).unwrap();
+            fs::write(folder.join(format!("{cdf_name}.cdf")), b"source cdf").unwrap();
+
+            let id = format!("{:020}", index + 1);
+            let archive = library.join(format!("characters_monsters_{owner}_ts.pak__{id}"));
+            let name = format!("characters_monsters_{owner}_ts.pak");
+            let image = archive.join("files").join(texture);
+            fs::create_dir_all(image.parent().unwrap()).unwrap();
+            fs::write(&image, b"low fragment").unwrap();
+            // High numbered fragments are part of the same source texture.
+            for mip in 1..=7 {
+                fs::write(image.with_file_name(format!("{owner}_glow_diff.dds.{mip}")), b"hi")
+                    .unwrap();
+            }
+            let entries = (0..=7)
+                .map(|n| serde_json::json!({
+                    "path": format!("{owner}_glow_diff.dds.{n}"),
+                    "bytes": if n == 0 { 12 } else { 2 }
+                }))
+                .collect::<Vec<_>>();
+            fs::write(
+                archive.join("asset-library.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version":1, "name":name, "source":"C:/test/game.pak", "entries":entries
+                })).unwrap(),
+            ).unwrap();
+            stage_ids.insert(id, serde_json::json!({}));
+        }
+        // Same name from another actor's TS archive and a different build
+        // must NOT be silently used, even though the filename is identical.
+        for (directory, archive_name, id) in [
+            (&foreign, "characters_monsters_rocky_ts.pak", "22222222222222222222"),
+            (&old, "characters_monsters_grounder_ts.pak", "33333333333333333333")
+        ] {
+            fs::create_dir_all(directory.join("files")).unwrap();
+            fs::write(directory.join("files/grounder_glow_diff.dds.0"), b"wrong").unwrap();
+            fs::write(directory.join("asset-library.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version":1,"name":archive_name,"source":"C:/test/other.pak",
+                    "entries":[{"path":"grounder_glow_diff.dds.0","bytes":5}]
+                })).unwrap(),
+            ).unwrap();
+            if id == "33333333333333333333" {
+                legacy_ids.insert(id.into(), serde_json::json!({}));
+            } else {
+                stage_ids.insert(id.into(), serde_json::json!({}));
+            }
+        }
+        fs::write(library.join("build-collections.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version":1,
+                "builds":{
+                    "stage-two":{"label":"Stage 2","members":stage_ids},
+                    "legacy":{"label":"Legacy","members":legacy_ids}
+                }
+            })).unwrap(),
+        ).unwrap();
+        let inventory = crate::scan_directory(&source_root).unwrap();
+        for (owner, stem, texture) in cases {
+            let cdf = source_root.join(format!("characters/monsters/{owner}/{stem}.cdf"));
+            assert!(monster_glow_path(&cdf, &inventory).unwrap().is_none());
+            let result = monster_glow_path_with_library(
+                &cdf, &inventory, Some(&library), Some("Stage 2")
+            ).unwrap().unwrap();
+            assert_eq!(result.file_name().unwrap(), texture);
+            assert!(result.to_string_lossy().contains(&format!("characters_monsters_{owner}_ts.pak")));
+        }
+        let grounder = source_root.join("characters/monsters/grounder/grounder3.cdf");
+        // Legacy has an identically named path, but source-build selection
+        // keeps it distinct from Stage 2.
+        let legacy = monster_glow_path_with_library(
+            &grounder, &inventory, Some(&library), Some("Legacy")
+        ).unwrap().unwrap();
+        assert!(legacy.to_string_lossy().contains("33333333333333333333"));
+        assert!(monster_glow_path_with_library(&grounder, &inventory, Some(&library), None)
+            .unwrap().is_none());
+    }
+
+    #[test]
     fn cdf_resolves_scoped_high_dds_from_another_imported_pak() {
         let library = tempfile::tempdir().unwrap();
         let objects = library.path().join("Objects.pak__11111111111111111111");
