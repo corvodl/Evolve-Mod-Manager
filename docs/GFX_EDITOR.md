@@ -93,3 +93,49 @@ path checks, and canvas hit testing. FFDec and original Evolve GFX source files
 are required to verify real render quality and game-side behavior on Windows.
 Runtime ActionScript callbacks, localization, buttons created in code and
 video playback cannot be faithfully rendered from a static movie.
+
+
+## Interactive ActionScript preview (experimental)
+
+The GFX pane now has separate **Design / layout editor** and
+**Interactive ActionScript preview** controls. The former uses conservative
+first-frame layout editing and staged Undo/Apply exactly as before.
+
+Interactive preview requires separately installing the **Ruffle desktop
+runtime** (usually `ruffle.exe` on Windows) and selecting the absolute
+executable path. It is **not** bundled or automatically downloaded.
+Click **Launch / restart interactive preview** to open a separate Ruffle
+window. Close the window or click **Stop preview** to end the process.
+
+The manager:
+- Validates and reads the **staged working GFX** (not the installed game).
+- Uses the same manifest/build-scoped `UI_Assets` atlas reconstruction
+  as the static FFDec preview.
+- Validates same-build imported GFX/SWF movies already staged in the
+  isolated FFDec session; converts compiled Scaleform GFX/CFX headers
+  to Flash SWF headers for runtime inspection **only in temporary files**.
+- Preserves original ActionScript bytecode, tag ordering, timeline states,
+  shape placement, and button definitions wherever the Flash emulator
+  understands their instructions.
+- Runs an **empty ExternalInterface** in Ruffle and blocks URL launches,
+  without sending commands to CryEngine or a real Evolve session.
+  Local filesystem access uses Ruffle's prompt-based mode for imports.
+- Owns the child process and temporary working directory, and stops it
+  when the user stops/restarts the preview, opens another GFX, or stages
+  a movie-changing operation.
+
+**Limits:** Ruffle is an independent Flash emulator, not Evolve's original
+Scaleform runtime. It does not recreate CryEngine's native GFx callbacks,
+game state, menu data, game-specific UI services, or missing imported
+assets. The dummy ExternalInterface returns no Evolve-specific values.
+Some ActionScript 1/2/3 constructs and Scaleform extensions are unsupported.
+A menu may animate or respond to mouse input without populating real
+button lists or navigation. No fake button data or guessed image placements
+are used. Exact parity requires a verified callback catalog, a compatible
+host bridge, matching `UI_Data` and `UI_Assets` files, and comparisons
+to the **same frame and input state** in-game.
+
+Tests cover unsafe runtime paths, unsafe imported movie names and invalid
+Flash signatures. End-to-end interaction requires a locally installed
+Ruffle desktop build and real Evolve files; tests do not claim that every
+game GFX can run in this environment.
