@@ -776,10 +776,19 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                         .on_press(Message::GfxToggleLayoutRaster),
                     );
                     actions = actions
-                        .push(text_input("Filter layers by name, ID or depth…", &state.gfx_layer_filter)
-                            .on_input(Message::GfxLayerFilterChanged).padding(8))
-                        .push(text(format!("{} original root layer(s)", session.layers.len()))
-                            .size(11).style(design::muted));
+                        .push(
+                            text_input(
+                                "Filter layers by name, ID or depth…",
+                                &state.gfx_layer_filter,
+                            )
+                            .on_input(Message::GfxLayerFilterChanged)
+                            .padding(8),
+                        )
+                        .push(
+                            text(format!("{} original root layer(s)", session.layers.len()))
+                                .size(11)
+                                .style(design::muted),
+                        );
                     for (i, layer) in session.layers.iter().enumerate() {
                         let query = state.gfx_layer_filter.trim().to_ascii_lowercase();
                         if !query.is_empty()
