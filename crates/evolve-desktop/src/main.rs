@@ -1042,15 +1042,14 @@ impl Operation {
                         .to_string_lossy()
                         .replace('\\', "/")
                         .to_ascii_lowercase();
-                    let owner = cdf_dir.find("characters/monsters/")
+                    let owner = cdf_dir
+                        .find("characters/monsters/")
                         .map(|position| &cdf_dir[position..])
                         .ok_or("Selected CDF is not a monster")?;
                     let mut mapped = 0usize;
                     for (part, surface) in report.source_parts.iter().zip(surfaces.iter_mut()) {
                         let binding = part.binding.replace('\\', "/").to_ascii_lowercase();
-                        if surface.visible && surface.diffuse.is_some()
-                            && binding.contains(owner)
-                        {
+                        if surface.visible && surface.diffuse.is_some() && binding.contains(owner) {
                             surface.emissive = Some(emissive.clone());
                             mapped += 1;
                         }
@@ -2705,7 +2704,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Select a monster CDF to enable full-armor glow.".into();
                 return Task::none();
             };
-            if !source.to_string_lossy().replace('\\', "/").to_ascii_lowercase().contains("/monsters/") {
+            if !source
+                .to_string_lossy()
+                .replace('\\', "/")
+                .to_ascii_lowercase()
+                .contains("/monsters/")
+            {
                 state.status = "Full-armor glow is only available for monster CDFs.".into();
                 return Task::none();
             }
@@ -3443,11 +3447,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if (!state.equipment_overrides.is_empty() || state.full_armor_glow)
                 && !export_matches_viewport
             {
-                state.status = "To export current Model Options, select only the active CDF assembly.".into();
+                state.status =
+                    "To export current Model Options, select only the active CDF assembly.".into();
                 return Task::none();
             }
             if state.full_armor_glow && (!state.export_rigged || !state.export_embed_textures) {
-                state.status = "Full-armor glow needs Rigged and Embedded textures enabled for FBX export.".into();
+                state.status =
+                    "Full-armor glow needs Rigged and Embedded textures enabled for FBX export."
+                        .into();
                 return Task::none();
             }
             let equipment = if export_matches_viewport {
