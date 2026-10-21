@@ -28,6 +28,7 @@ mod storage_usage;
 mod system_health;
 mod textured;
 mod updater;
+mod updater_apply;
 mod uv_preview;
 mod view_navigation;
 mod viewer_grid;
@@ -75,9 +76,8 @@ use std::sync::{
 };
 use std::time::Duration;
 use textured::Scene as TexturedScene;
-use updater::{
-    ReleaseUpdate, UpdateChannel, discover_update, download_installer, launch_verified_installer,
-};
+use updater::{ReleaseUpdate, UpdateChannel, discover_update};
+use updater_apply::{PreparedUpdate, launch_worker, prepare_update};
 use viewport::MeshViewport;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -248,7 +248,6 @@ struct State {
     storage_usage: Option<storage_usage::StorageUsage>,
     update_status: String,
     available_update: Option<ReleaseUpdate>,
-    staged_installer: Option<PathBuf>,
     startup_update_checked: bool,
     viewer_search: String,
     viewer_rows: Vec<explorer_tree::ExplorerRow>,
@@ -1499,9 +1498,8 @@ enum Message {
     SavePreferences,
     CheckUpdates,
     UpdateChecked(Result<Option<ReleaseUpdate>, String>),
-    DownloadUpdate,
-    UpdateDownloaded(Result<PathBuf, String>),
-    RunVerifiedInstaller,
+    ApplyUpdate,
+    UpdatePrepared(Result<PreparedUpdate, String>),
     AssetsRootChanged(String),
     TerrainSourceChanged(String),
     YawChanged(f32),
@@ -3998,7 +3996,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.preferences.experimental_updates = true;
             }
             state.available_update = None;
-            state.staged_installer = None;
             persist_preferences(state);
         }
         Message::PreferenceAutoUpdates => {
@@ -4059,7 +4056,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.startup_update_checked = true;
             state.update_status = "Checking public GitHub Releases for verified updates...".into();
             state.available_update = None;
-            state.staged_installer = None;
             let channel = if state.preferences.nightly_updates {
                 UpdateChannel::Nightly
             } else if state.preferences.experimental_updates {
@@ -4082,7 +4078,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             Err(error) => state.update_status = format!("Cannot verify latest release: {error}"),
         },
-        Message::DownloadUpdate => {
+        Message::ApplyUpdate => {
             let Some(update) = state.available_update.clone() else {
                 return Task::none();
             };
@@ -4094,53 +4090,43 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             };
             let Some(root) = settings.parent().map(PathBuf::from) else {
+                state.update_status = "Application update directory is unavailable.".into();
                 return Task::none();
             };
             state.busy = true;
-            state.update_status = "Downloading and verifying installer checksum...".into();
+            state.update_status =
+                "Downloading and checking the verified update. The manager will restart when ready..."
+                    .into();
             return Task::perform(
                 async move {
                     tokio::task::spawn_blocking(move || {
-                        download_installer(&update, &root).map_err(|e| e.to_string())
+                        prepare_update(&update, &root).map_err(|error| error.to_string())
                     })
                     .await
-                    .map_err(|e| format!("Download worker stopped: {e}"))?
+                    .map_err(|error| format!("Update worker stopped: {error}"))?
                 },
-                Message::UpdateDownloaded,
+                Message::UpdatePrepared,
             );
         }
-        Message::UpdateDownloaded(result) => {
+        Message::UpdatePrepared(result) => {
             state.busy = false;
             match result {
-                Ok(path) => {
-                    state.update_status =
-                        "Installer checksum verified. Run it only if you approve this update."
-                            .into();
-                    state.staged_installer = Some(path);
-                }
+                Ok(update) => match launch_worker(&update) {
+                    Ok(()) => {
+                        state.update_status =
+                            "Verified update prepared. Closing to install and restart...".into();
+                        // The external helper replaces the executable only
+                        // after this process has released all Windows handles.
+                        return iced::exit();
+                    }
+                    Err(error) => {
+                        state.update_status =
+                            format!("Update was verified but could not start: {error}");
+                    }
+                },
                 Err(error) => {
-                    state.update_status = format!("Update rejected: {error}");
-                    state.staged_installer = None;
+                    state.update_status = format!("Could not install update: {error}");
                 }
-            }
-        }
-        Message::RunVerifiedInstaller => {
-            let (Some(installer), Some(update)) =
-                (&state.staged_installer, &state.available_update)
-            else {
-                return Task::none();
-            };
-            let root = settings_path()
-                .ok()
-                .and_then(|p| p.parent().map(PathBuf::from));
-            match root {
-                Some(root) => {
-                    state.update_status = match launch_verified_installer(installer, update, &root) {
-                        Ok(()) => "Verified installer opened. Close the manager when the installer requests it.".into(),
-                        Err(err) => format!("Could not launch verified installer: {err}"),
-                    };
-                }
-                None => state.update_status = "User update folder unavailable.".into(),
             }
         }
 
@@ -6164,24 +6150,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
 
 fn download_action(state: &State) -> Element<'_, Message> {
     if let Some(update) = &state.available_update {
-        design::button(text(format!(
-            "Download verified {} installer",
-            update.version
-        )))
-        .on_press(Message::DownloadUpdate)
-        .into()
+        let button = design::button(text(format!("Update to {} and restart", update.version)));
+        if state.busy {
+            button.into()
+        } else {
+            button.on_press(Message::ApplyUpdate).into()
+        }
     } else {
-        text("Choose Stable, Beta or Nightly to check available verified releases.").into()
-    }
-}
-fn run_installer_action(state: &State) -> Element<'_, Message> {
-    if state.staged_installer.is_some() {
-        design::button("Run verified installer (requires approval)")
-            .on_press(Message::RunVerifiedInstaller)
-            .into()
-    } else {
-        text("No installer staged. The game and its PAKs are never modified by update checks.")
-            .into()
+        text("Choose Stable, Beta or Nightly and check for a newer verified release.").into()
     }
 }
 
@@ -7135,6 +7111,9 @@ impl Desktop {
 }
 
 fn main() -> iced::Result {
+    if updater_apply::try_run_helper() {
+        return Ok(());
+    }
     let logging_enabled = settings_path()
         .ok()
         .and_then(|path| load_from(&path).ok())
