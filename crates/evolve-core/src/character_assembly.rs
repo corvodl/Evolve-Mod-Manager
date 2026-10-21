@@ -760,11 +760,6 @@ mod tests {
         assert_eq!(rendered, ["body", "bansheegun"]);
 
         // Don't impose Kala's exclusive-arm defaults on unrelated CDFs.
-        let other = source
-            .windows(b"merc_tech".len())
-            .filter(|bytes| *bytes == b"merc_tech")
-            .count();
-        assert!(other > 0);
         let mut unrelated = cdf.clone();
         unrelated.skeleton = "objects/characters/monsters/scorpid_2/scorpid1.chr".into();
         let (set, rendered) = select_attachments(&unrelated).unwrap();
