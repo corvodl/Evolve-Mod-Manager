@@ -611,19 +611,30 @@ mod tests {
         let duplicate = rebuild(&header, &tags, false).unwrap();
         assert!(static_layers(&duplicate).unwrap().is_empty());
         let edit = LayoutEdit {
-            depth: 3, character: 7, x: 1., y: 2.,
-            scale_x: 1., scale_y: 1., rotation: 0., visible: true,
+            depth: 3,
+            character: 7,
+            x: 1.,
+            y: 2.,
+            scale_x: 1.,
+            scale_y: 1.,
+            rotation: 0.,
+            visible: true,
         };
         assert!(edit_first_frame(&duplicate, edit).is_err());
 
         let (head, mut tags) = root_tags(&original).unwrap();
-        let script = Tag { code: 12, payload: b"safe-original-script".to_vec() };
+        let script = Tag {
+            code: 12,
+            payload: b"safe-original-script".to_vec(),
+        };
         tags.insert(tags.len() - 1, script);
         let source = rebuild(&head, &tags, false).unwrap();
         let changed = edit_first_frame(&source, edit).unwrap();
-        assert!(changed.windows(b"safe-original-script".len())
-            .any(|window| window == b"safe-original-script"));
+        assert!(
+            changed
+                .windows(b"safe-original-script".len())
+                .any(|window| window == b"safe-original-script")
+        );
         assert!(inspect_gfx(&changed).unwrap().script_present);
     }
-
 }
