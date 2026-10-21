@@ -14,6 +14,7 @@ mod design;
 mod developer_auth;
 mod explorer_tree;
 mod gfx_dependencies;
+mod gfx_external_textures;
 mod gfx_editor;
 mod gfx_layout_canvas;
 mod gfx_live_inspector;
