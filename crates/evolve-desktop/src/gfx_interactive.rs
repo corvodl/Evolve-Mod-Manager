@@ -3,7 +3,7 @@
 //! only supported Scaleform DDS image tags are reconstructed for rendering.
 //! This is intentionally NOT a CryEngine host callback implementation.
 use crate::{gfx_editor::Session, gfx_external_textures};
-use evolve_core::gfx::{inspect_gfx, MAX_DECOMPRESSED, MAX_SOURCE};
+use evolve_core::gfx::{MAX_DECOMPRESSED, MAX_SOURCE, inspect_gfx};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
