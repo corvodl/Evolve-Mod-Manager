@@ -1484,6 +1484,7 @@ enum Message {
     OpenCrashLogs,
     OpenCrashLogsFolder,
     PreferenceExperimental,
+    PreferenceUpdateChannel,
     PreferenceAutoUpdates,
     PreferenceStage(String),
     PreferenceGameStorage(String),
