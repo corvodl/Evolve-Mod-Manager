@@ -1065,6 +1065,23 @@ pub fn export_unified_cdf_fbx_options_with_glow(
         None
     };
     let skeleton_bytes = local_skeleton.as_deref().unwrap_or(&cdf_skeleton_bytes);
+    // Real original 2012 Rocky attachments do not all share the same rest
+    // skeleton: two parts use 47 joints while the left arm has 48. Keep the
+    // per-part, verified local bind skeleton when shared retargeting fails.
+    // Blender will combine only identical rigs and retain distinct verified
+    // historical armatures within the same FBX. No joint is discarded, added
+    // or reassigned to make counts match.
+    let allow_distinct_historical_rigs = cdf_skeleton_bytes.starts_with(b"CryTek\\0\\0")
+        && parts.iter().all(|(_, path, _)| {
+            fs::File::open(path)
+                .and_then(|mut file| {
+                    use std::io::Read;
+                    let mut magic = [0u8; 8];
+                    file.read_exact(&mut magic)?;
+                    Ok(&magic == b"CryTek\\0\\0")
+                })
+                .unwrap_or(false)
+        });
     let motion = caf
         .map(|path| {
             let relative = path
@@ -1111,13 +1128,16 @@ pub fn export_unified_cdf_fbx_options_with_glow(
         .map_err(|e| format!("CDF part {name} cannot be rigged: {e}"))?;
         if let Some(previous) = bone_count
             && previous != verified.bone_count
+            && !allow_distinct_historical_rigs
         {
             return Err(format!(
                 "CDF part {name} has {} verified bones, but the preceding parts have {previous}; original rest skeletons are incompatible",
                 verified.bone_count
             ));
         }
-        bone_count = Some(verified.bone_count);
+        // For legitimate historical per-part rigs this represents the largest
+        // individual bone count, NOT an invented joint count for a new skeleton.
+        bone_count = Some(bone_count.unwrap_or(0).max(verified.bone_count));
         vertices = vertices
             .checked_add(verified.weighted_vertices)
             .ok_or("Vertex count overflow")?;
@@ -1325,7 +1345,8 @@ pub fn export_unified_cdf_fbx_options_with_glow(
         &manifest,
         serde_json::to_vec(&json!({
             "parts":entries, "include_animation":motion.is_some(),
-            "embed_textures":embed_textures
+            "embed_textures":embed_textures,
+            "allow_distinct_historical_armatures":allow_distinct_historical_rigs
         }))
         .map_err(|e| e.to_string())?,
     )
