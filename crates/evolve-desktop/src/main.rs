@@ -5302,15 +5302,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         // A missing standalone-model MTL is not a CDF material
                         // failure: do not overwrite valid 7/7 GPU material
                         // diagnostics with "No verified material for this mesh".
-                        state.auto_resource_note =
-                            if relative.to_ascii_lowercase().ends_with(".cdf")
-                                && resources.material.is_none()
-                            {
-                                "CDF attachment materials are verified per mesh section in the Inspector"
+                        state.auto_resource_note = if relative
+                            .to_ascii_lowercase()
+                            .ends_with(".cdf")
+                            && resources.material.is_none()
+                        {
+                            "CDF attachment materials are verified per mesh section in the Inspector"
                                     .into()
-                            } else {
-                                resources.material_note
-                            };
+                        } else {
+                            resources.material_note
+                        };
                         if !resources.warnings.is_empty() {
                             state
                                 .auto_resource_note
