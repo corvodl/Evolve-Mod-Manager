@@ -374,7 +374,11 @@ fn emission_uniform_values(
     } else {
         1.0
     };
-    let calibration = if kala_emission_calibrated { 100.0 / 3.0 } else { 1.0 };
+    let calibration = if kala_emission_calibrated {
+        100.0 / 3.0
+    } else {
+        1.0
+    };
     [source, gain, calibration, 0.0]
 }
 
@@ -1118,7 +1122,10 @@ impl Pipeline {
                 }
             }
             let emission_uniform = Self::emission_uniform(
-                device, queue, part.emission_strength, part.kala_emission_calibrated
+                device,
+                queue,
+                part.emission_strength,
+                part.kala_emission_calibrated,
             );
             let uv_uniform = Self::emissive_uv_uniform(device, queue, part.emissive_uv);
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1495,10 +1502,22 @@ mod tests {
 
     #[test]
     fn emissive_slider_multiplies_source_relative_glow_without_replacing_it() {
-        assert_eq!(super::emission_uniform_values(3.0, 1.0, false)[..2], [3.0, 1.0]);
-        assert_eq!(super::emission_uniform_values(3.0, 2.5, false)[..2], [3.0, 2.5]);
-        assert_eq!(super::emission_uniform_values(0.0, 4.0, false)[..2], [0.0, 4.0]);
-        assert_eq!(super::emission_uniform_values(3.0, 0.0, false)[..2], [3.0, 0.0]);
+        assert_eq!(
+            super::emission_uniform_values(3.0, 1.0, false)[..2],
+            [3.0, 1.0]
+        );
+        assert_eq!(
+            super::emission_uniform_values(3.0, 2.5, false)[..2],
+            [3.0, 2.5]
+        );
+        assert_eq!(
+            super::emission_uniform_values(0.0, 4.0, false)[..2],
+            [0.0, 4.0]
+        );
+        assert_eq!(
+            super::emission_uniform_values(3.0, 0.0, false)[..2],
+            [3.0, 0.0]
+        );
         assert_eq!(
             super::emission_uniform_values(f32::NAN, f32::NAN, false)[..2],
             [0.0, 1.0]
