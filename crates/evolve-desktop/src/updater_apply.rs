@@ -197,17 +197,24 @@ fn apply_portable_update(plan: &PreparedUpdate) -> Result<(), UpdateError> {
         }
         to.sync_all()?;
     }
-    let mut replaced: Vec<(&str, bool)> = Vec::new();
+    // Validate every destination BEFORE modifying even the first one.
+    // A symlink or unexpected directory must not leave a partially updated app.
+    let mut destinations = Vec::new();
     for name in PORTABLE_MEMBERS {
+        let target = folder.join(name);
+        let existed = match fs::symlink_metadata(&target) {
+            Ok(info) if info.file_type().is_file() => true,
+            Ok(_) => return Err(UpdateError::Invalid("unsafe portable target file".into())),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => false,
+            Err(err) => return Err(UpdateError::Io(err)),
+        };
+        destinations.push((name, existed));
+    }
+    let mut replaced: Vec<(&str, bool)> = Vec::new();
+    for (name, previously_existed) in destinations {
         let destination = folder.join(name);
         let backup = staging.path().join(format!("old-{name}"));
         let replacement = staging.path().join(format!("new-{name}"));
-        let previously_existed = match fs::symlink_metadata(&destination) {
-            Ok(info) if info.file_type().is_file() => true,
-            Ok(_) => return Err(UpdateError::Invalid("unsafe portable target file".into())),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => false,
-            Err(e) => return Err(UpdateError::Io(e)),
-        };
         if previously_existed {
             fs::rename(&destination, &backup)?;
         }
