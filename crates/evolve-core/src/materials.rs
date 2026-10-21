@@ -600,6 +600,46 @@ mod tests {
 }
 
 #[cfg(test)]
+mod damage_layer_tests {
+    use super::*;
+
+    #[test]
+    fn authored_illum_damage_pair_is_preserved_without_becoming_opacity() {
+        let doc = parse_material(
+            br#"<Material Name="Goliath3"><SubMaterials>
+                <Material Name="mesh" Shader="Illum"><Textures>
+                    <Texture Map="Diffuse" File="characters/monsters/goliath/textures/goliath3_diff.tif"/>
+                    <Texture Map="Opacity" File="characters/monsters/goliath/textures/goliath1_damage_blend_diff.tif"/>
+                    <Texture Map="Custom" File="characters/monsters/goliath/textures/goliath3_damage_diff.tif"/>
+                    <Texture Map="[1] Custom" File="characters/monsters/goliath/textures/goliath3_damage_ddn.tif"/>
+                </Textures></Material>
+                <Material Name="eyes" Shader="Illum"/>
+            </SubMaterials></Material>"#,
+        ).unwrap();
+        let (damage, mask) = authored_damage_layer(&doc.slots[0]).unwrap();
+        assert!(damage.ends_with("goliath3_damage_diff.tif"));
+        assert!(mask.ends_with("goliath1_damage_blend_diff.tif"));
+        assert_eq!(doc.slots[0].maps.len(), 4);
+        assert!(authored_damage_layer(&doc.slots[1]).is_none());
+    }
+
+    #[test]
+    fn damage_blending_changes_rgb_without_cutting_out_character() {
+        let base = image::RgbaImage::from_pixel(2, 1, image::Rgba([200, 100, 50, 3]));
+        let damaged = image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 100, 200, 4]));
+        let mask = image::RgbaImage::from_raw(
+            2, 1, vec![0, 0, 0, 0, 255, 255, 255, 255]
+        ).unwrap();
+        let mixed = blend_damage_rgba(&base, &damaged, &mask, 50).unwrap();
+        assert_eq!(mixed.get_pixel(0, 0).0, [200, 100, 50, 255]);
+        assert_eq!(mixed.get_pixel(1, 0).0, [100, 100, 125, 255]);
+        assert_eq!(blend_damage_rgba(&base, &damaged, &mask, 100).unwrap().get_pixel(1, 0).0,
+            [0, 100, 200, 255]);
+        assert!(blend_damage_rgba(&base, &damaged, &mask, 101).is_err());
+    }
+}
+
+#[cfg(test)]
 mod leaf_slot_tests {
     use super::*;
     #[test]
