@@ -310,6 +310,20 @@ pub fn previous_update_failure(root: &Path) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
+// Inno Setup's exit codes describe setup phases, not release verification.
+fn inno_exit_detail(code: Option<i32>) -> &'static str {
+    match code {
+        Some(1) => "setup could not initialize",
+        Some(2) => "installation was cancelled before starting",
+        Some(3) => "fatal error while preparing the installation",
+        Some(4) => "fatal error during file installation",
+        Some(5) => "installation cancelled or aborted",
+        Some(7) => "installer preparation determined it cannot proceed",
+        Some(8) => "installer preparation requires a Windows restart",
+        _ => "unexpected setup failure",
+    }
+}
+
 fn apply_update_plan(manifest: &Path) -> Result<(), UpdateError> {
     let info = fs::symlink_metadata(manifest)?;
     if !info.file_type().is_file() || info.len() > 16 * 1024 {
@@ -332,6 +346,12 @@ fn apply_update_plan(manifest: &Path) -> Result<(), UpdateError> {
             let directory = plan.executable.parent().ok_or_else(|| {
                 UpdateError::Invalid("installer destination is unavailable".into())
             })?;
+            // Keep the installer log in the managed, per-user Updates
+            // directory. It explains silent setup failures such as exit 3.
+            let setup_log = managed_folder.join("last-installer-log.txt");
+            if setup_log.exists() {
+                fs::remove_file(&setup_log)?;
+            }
             let status = Command::new(&plan.payload)
                 .args([
                     "/VERYSILENT",
@@ -340,11 +360,14 @@ fn apply_update_plan(manifest: &Path) -> Result<(), UpdateError> {
                     "/CLOSEAPPLICATIONS",
                 ])
                 .arg(format!("/DIR={}", installer_directory_arg(directory)))
+                .arg(format!("/LOG={}", installer_directory_arg(&setup_log)))
                 .status()?;
             if !status.success() {
-                return Err(UpdateError::Invalid(format!(
-                    "Windows setup failed with exit status {:?}",
-                    status.code()
+                return Err(UpdateError::Install(format!(
+                    "exit code {:?} ({}). Inno Setup log: {}",
+                    status.code(),
+                    inno_exit_detail(status.code()),
+                    setup_log.display()
                 )));
             }
         }
@@ -517,6 +540,18 @@ mod tests {
         assert_eq!(
             installer_directory_arg(Path::new(r"\\?\UNC\server\share\EvolveModManager")),
             r"\\server\share\EvolveModManager"
+        );
+    }
+
+    #[test]
+    fn inno_exit_three_is_an_installation_failure_not_release_metadata() {
+        assert_eq!(
+            inno_exit_detail(Some(3)),
+            "fatal error while preparing the installation"
+        );
+        assert_eq!(
+            UpdateError::Install("exit code Some(3)".into()).to_string(),
+            "Windows installer failed: exit code Some(3)"
         );
     }
 
