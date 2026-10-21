@@ -1159,7 +1159,9 @@ mod tests {
         )
         .unwrap();
         let slot = &document.slots[0];
-        assert!(needs_alpha_blending(slot));
+        // Authored opacity masks on solid shaders now use depth-writing
+        // alpha test, unlike genuinely translucent glass/water surfaces.
+        assert!(!needs_alpha_blending(slot));
         assert!(
             slot.maps
                 .iter()
@@ -1212,7 +1214,7 @@ mod tests {
             role: "opacity".into(),
             path: "characters/glass_mask.dds".into(),
         });
-        assert!(needs_alpha_blending(&transparent));
+        assert!(!needs_alpha_blending(&transparent));
     }
 
     #[test]
