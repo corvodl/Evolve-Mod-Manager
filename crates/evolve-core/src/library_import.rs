@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const XML_LIMIT: usize = 16 * 1024 * 1024;
 const MAX_SOURCE_BYTES: u64 = 32 * 1024 * 1024 * 1024;
@@ -287,6 +287,39 @@ pub fn import_signed_library_pak(
     })
 }
 
+/// Authenticate each archive with every candidate public key before extraction.
+/// Original-game and custom-signed PAKs may be imported in one selection.
+pub fn import_signed_library_pak_with_keys(
+    root: &Path,
+    source: &Path,
+    public_keys: &[PathBuf],
+) -> Result<LibraryImportReport, String> {
+    if public_keys.is_empty() {
+        return Err("No RSA public verification keys were available".into());
+    }
+    let basename = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("Source PAK name is not valid Unicode")?;
+    let mut errors = Vec::new();
+    for key in public_keys {
+        match crate::signed_pak::inspect_signed_pak(source, key, basename) {
+            Ok(_) => return import_signed_library_pak(root, source, key),
+            Err(err) => errors.push(format!(
+                "{}: {err}",
+                key.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("RSA public key")
+            )),
+        }
+    }
+    Err(format!(
+        "No matching RSA verification key for {basename} ({} attempted): {}",
+        public_keys.len(),
+        errors.join("; ")
+    ))
+}
+
 /// Import one user-selected PAK, or the direct .pak children of one folder.
 ///
 /// Directory selection does not recurse, follow symlinks, or silently treat
@@ -298,9 +331,17 @@ pub fn import_signed_library_selection(
     source: &Path,
     public_key: &Path,
 ) -> Result<LibraryBatchImportReport, String> {
+    import_signed_library_selection_with_keys(root, source, &[public_key.to_path_buf()])
+}
+
+pub fn import_signed_library_selection_with_keys(
+    root: &Path,
+    source: &Path,
+    public_keys: &[PathBuf],
+) -> Result<LibraryBatchImportReport, String> {
     let source_meta = fs::symlink_metadata(source).map_err(|e| e.to_string())?;
     if source_meta.file_type().is_file() {
-        return import_signed_library_pak(root, source, public_key).map(|report| {
+        return import_signed_library_pak_with_keys(root, source, public_keys).map(|report| {
             LibraryBatchImportReport {
                 imported: vec![report],
                 failed: Vec::new(),
@@ -363,7 +404,7 @@ pub fn import_signed_library_selection(
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "<invalid filename>".into());
-        match import_signed_library_pak(root, &path, public_key) {
+        match import_signed_library_pak_with_keys(root, &path, public_keys) {
             Ok(imported) => report.imported.push(imported),
             Err(reason) => report.failed.push(LibraryImportFailure {
                 archive: name,
@@ -377,6 +418,20 @@ pub fn import_signed_library_selection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn multiple_key_import_rejects_unverifiable_archive_without_side_effects() {
+        let root = tempfile::tempdir().unwrap();
+        let library = root.path().join("AssetLibrary");
+        fs::create_dir(&library).unwrap();
+        let source = root.path().join("original.pak");
+        fs::write(&source, b"not a signed PAK").unwrap();
+        assert!(import_signed_library_pak_with_keys(&library, &source, &[]).is_err());
+        let missing_key = root.path().join("missing.der");
+        let result = import_signed_library_pak_with_keys(&library, &source, &[missing_key]);
+        assert!(result.unwrap_err().contains("No matching RSA verification key"));
+        assert_eq!(fs::read_dir(&library).unwrap().count(), 0);
+    }
+
     #[test]
     fn folder_import_is_bounded_and_does_not_recurse() {
         let home = tempfile::tempdir().unwrap();
