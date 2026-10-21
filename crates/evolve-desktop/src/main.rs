@@ -15,6 +15,7 @@ mod developer_auth;
 mod explorer_tree;
 mod gfx_dependencies;
 mod gfx_external_textures;
+mod gfx_interactive;
 mod gfx_editor;
 mod gfx_layout_canvas;
 mod gfx_live_inspector;
@@ -177,6 +178,9 @@ struct State {
     gfx_active: bool,
     gfx_busy: bool,
     gfx_preview: Option<image::Handle>,
+    gfx_interactive_open: bool,
+    gfx_interactive_running: Option<gfx_interactive::RunningPreview>,
+    gfx_interactive_status: String,
     gfx_resource: usize,
     gfx_status: String,
     gfx_layout_open: bool,
@@ -1431,6 +1435,13 @@ enum Message {
     GfxConfigChanged(String),
     GfxPickBackend,
     GfxBackendPicked(Option<PathBuf>),
+    GfxRuffleConfigChanged(String),
+    GfxPickRuffle,
+    GfxRufflePicked(Option<PathBuf>),
+    GfxToggleInteractive,
+    GfxRunInteractive,
+    GfxInteractiveStarted(Result<gfx_interactive::RunningPreview, String>),
+    GfxStopInteractive,
     GfxSelectResource(usize),
     GfxToggleLayout,
     GfxToggleLayoutRaster,
@@ -4015,6 +4026,78 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 );
             }
         }
+        Message::GfxRuffleConfigChanged(path) => {
+            if path.len() <= 4096 {
+                state.preferences.ruffle_executable = path;
+                persist_preferences(state);
+            }
+        }
+        Message::GfxPickRuffle => {
+            return Task::perform(
+                async {
+                    tokio::task::spawn_blocking(|| native_export_picker("file"))
+                        .await
+                        .ok()
+                        .flatten()
+                },
+                Message::GfxRufflePicked,
+            );
+        }
+        Message::GfxRufflePicked(selected) => {
+            if let Some(path) = selected {
+                return update(
+                    state,
+                    Message::GfxRuffleConfigChanged(path.to_string_lossy().into()),
+                );
+            }
+        }
+        Message::GfxToggleInteractive => {
+            state.gfx_interactive_open = !state.gfx_interactive_open;
+            if state.gfx_interactive_open {
+                state.gfx_layout_open = false;
+            }
+        }
+        Message::GfxRunInteractive => {
+            if state.gfx_busy || state.busy {
+                state.gfx_interactive_status = "Wait for the current GFX operation to finish.".into();
+                return Task::none();
+            }
+            let Some(session) = state.gfx_session.clone() else {
+                state.gfx_interactive_status = "Open a GFX first.".into();
+                return Task::none();
+            };
+            state.gfx_interactive_running = None; // Kill an old preview before replacing files.
+            state.gfx_busy = true;
+            state.gfx_interactive_status = "Preparing isolated UI_Assets and ActionScript preview...".into();
+            let executable = state.preferences.ruffle_executable.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        gfx_interactive::launch(&session, &executable)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Ruffle preview worker stopped: {e}")))
+                },
+                Message::GfxInteractiveStarted,
+            );
+        }
+        Message::GfxInteractiveStarted(result) => {
+            state.gfx_busy = false;
+            match result {
+                Ok(preview) => {
+                    state.gfx_interactive_status = format!(
+                        "Ruffle window launched · {} restored DDS tiles · {} skipped · {} missing imports. Original ActionScript executes where supported; Evolve callbacks are empty.",
+                        preview.restored_images, preview.skipped_images, preview.missing_imports,
+                    );
+                    state.gfx_interactive_running = Some(preview);
+                }
+                Err(error) => state.gfx_interactive_status = format!("Interactive preview failed: {error}"),
+            }
+        }
+        Message::GfxStopInteractive => {
+            state.gfx_interactive_running = None;
+            state.gfx_interactive_status = "Stopped external Ruffle preview; no GFX project changes.".into();
+        }
         Message::GfxSelectResource(index) => {
             if state
                 .gfx_session
@@ -4088,6 +4171,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .then(|| p.source_build.clone())
                 })
             });
+            state.gfx_interactive_running = None;
             state.gfx_busy = true;
             state.gfx_active = true;
             state.gfx_preview = None;
@@ -4172,6 +4256,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.gfx_layout_show_raster = !state.gfx_layout_show_raster
         }
         Message::GfxToggleLayout => {
+            state.gfx_interactive_open = false;
             state.gfx_layout_open = !state.gfx_layout_open;
             if state.gfx_layout_open
                 && state.gfx_layout_selected.is_none()
@@ -4337,6 +4422,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             };
             let configured = state.preferences.ffdec_executable.clone();
+            if !matches!(
+                action,
+                gfx_editor::Action::PreviewFrame
+                    | gfx_editor::Action::ExportXml
+                    | gfx_editor::Action::ExportScripts
+            ) {
+                state.gfx_interactive_running = None;
+                state.gfx_interactive_status = "Staged movie changed; interactive preview closed.".into();
+            }
             // Any edit/undo/FFDec GUI handoff invalidates the old raster. Do
             // not paint a stale frame behind newly moved GFX placements.
             if !matches!(
