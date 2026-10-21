@@ -55,9 +55,19 @@ when an import references SWF and that compiled GFX equivalent is present.
 Unresolved, ambiguous or cross-build dependencies are shown in diagnostics.
 No game install or imported archive is rewritten.
 
-This does not yet reproduce all private-manager external DDS atlas injection
-or `UI_Data` texture references. Unverified image placements are never
-guessed or overlaid onto a compiled GFX frame.
+The **Render selected frame** action now reconstructs recognized Scaleform
+external bitmap tags 1008/1009 using matching UI_Assets DDS/DDS.0 textures.
+Only exact same-folder or unique manifest-verified matching-build textures are
+used. The original shape fills, transforms, nesting, masks and clipping tags
+are left untouched, and generated standard SWF bitmap definitions are saved
+**only in the temporary FFDec rendering copy**. UI_Data UIElement XML is
+resolved as a same-build association, not a source of invented placements.
+The status reports how many bitmap characters were recovered/skipped.
+
+This improves the authenticity of button artwork, but it is still a *static*
+frame: ActionScript-driven states, hover/pressed transitions, runtime-generated
+text, fonts, animations and game callbacks are not executed and cannot yet
+be guaranteed pixel-identical to the live game.
 
 ## Live UI inspector status
 
