@@ -1507,8 +1507,7 @@ mod tests {
         for authored in [0.0, 0.3, 1.0, 2.0, 3.0, 4.0, 20.0] {
             let params = super::emission_uniform_values(authored, 1.0, None);
             assert_eq!(params[0], authored);
-            assert!((params[0] * params[1] * params[2]
-                - authored * (100.0 / 3.0)).abs() < 0.0001);
+            assert!((params[0] * params[1] * params[2] - authored * (100.0 / 3.0)).abs() < 0.0001);
         }
         let boosted = super::emission_uniform_values(3.0, 2.0, None);
         assert!((boosted[0] * boosted[1] * boosted[2] - 200.0).abs() < 0.0001);
