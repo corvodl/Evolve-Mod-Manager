@@ -319,10 +319,22 @@ pub fn identical_legacy_bind_skeletons(a: &[u8], b: &[u8]) -> Result<bool, RigEr
     let first = parse_legacy_skeleton(a)?;
     let second = parse_legacy_skeleton(b)?;
     Ok(first.names.len() == second.names.len()
-        && first.names.iter().zip(&second.names).all(|(x, y)| x.eq_ignore_ascii_case(y))
+        && first
+            .names
+            .iter()
+            .zip(&second.names)
+            .all(|(x, y)| x.eq_ignore_ascii_case(y))
         && first.parents == second.parents
-        && first.world.iter().zip(&second.world).all(|(x, y)| same_rest(x, y))
-        && first.inverse.iter().zip(&second.inverse).all(|(x, y)| same_rest(x, y)))
+        && first
+            .world
+            .iter()
+            .zip(&second.world)
+            .all(|(x, y)| same_rest(x, y))
+        && first
+            .inverse
+            .iter()
+            .zip(&second.inverse)
+            .all(|(x, y)| same_rest(x, y)))
 }
 
 /// Return a verified source skeleton and original four-influence data.
