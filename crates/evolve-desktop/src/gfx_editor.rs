@@ -2,6 +2,7 @@
 //! No operation modifies original PAKs, libraries or the game installation.
 use crate::modding_projects::{self, ProjectRow};
 use evolve_core::gfx::{GfxInfo, MAX_SOURCE, inspect_gfx};
+use evolve_core::gfx_layout::{LayoutEdit, StaticLayer, edit_first_frame, static_layers};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -24,6 +25,7 @@ pub struct Session {
     pub project: Option<ProjectRow>,
     pub original_sha: String,
     pub info: GfxInfo,
+    pub layers: Vec<StaticLayer>,
     pub edits: usize,
     pub applied: bool,
 }
@@ -40,6 +42,7 @@ pub enum Action {
     Undo,
     Apply { projects_root: PathBuf },
     PreviewFrame,
+    StageLayout(LayoutEdit),
 }
 
 fn digest(bytes: &[u8]) -> String {
@@ -172,6 +175,7 @@ pub fn create(
         folder,
         project,
         original_sha: digest(&bytes),
+        layers: static_layers(&bytes).map_err(|e| e.to_string())?,
         info,
         edits: 0,
         applied: false,
@@ -186,6 +190,7 @@ fn ensure_unchanged(session: &Session) -> Result<(), String> {
 }
 fn stage(session: &mut Session, bytes: &[u8]) -> Result<(), String> {
     let info = inspect_gfx(bytes).map_err(|e| e.to_string())?;
+    let layers = static_layers(bytes).map_err(|e| e.to_string())?;
     if digest(bytes) == digest(&fs::read(&session.editable).map_err(|e| e.to_string())?) {
         return Err("FFDec returned an unchanged movie".into());
     }
@@ -203,6 +208,7 @@ fn stage(session: &mut Session, bytes: &[u8]) -> Result<(), String> {
     fs::rename(&pending, &session.editable).map_err(|e| e.to_string())?;
     session.edits += 1;
     session.info = info;
+    session.layers = layers;
     session.applied = false;
     Ok(())
 }
@@ -476,6 +482,12 @@ pub fn run(
             import_compiled(&mut session, &output)?;
             "Compiled edited ActionScript; staged only in private GFX session.".to_owned()
         }
+        Action::StageLayout(edit) => {
+            let (before, _) = read_gfx(&session.editable)?;
+            let rewritten = edit_first_frame(&before, edit).map_err(|e| e.to_string())?;
+            stage(&mut session, &rewritten)?;
+            format!("Staged depth {} / character {} transform in isolated GFX copy. Use Undo or Apply to Mod Project.", edit.depth, edit.character)
+        }
         Action::Undo => {
             if session.edits == 0 {
                 return Err("No staged GFX edits to undo".into());
@@ -486,6 +498,7 @@ pub fn run(
             fs::remove_file(previous).map_err(|e| e.to_string())?;
             session.edits -= 1;
             session.info = info;
+            session.layers = static_layers(&bytes).map_err(|e| e.to_string())?;
             session.applied = false;
             if bytes.is_empty() {
                 return Err("Undo snapshot was empty".into());
