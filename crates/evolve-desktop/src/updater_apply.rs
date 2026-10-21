@@ -231,12 +231,17 @@ fn apply_portable_update(plan: &PreparedUpdate) -> Result<(), UpdateError> {
         let destination = folder.join(name);
         let backup = staging.path().join(format!("old-{name}"));
         let replacement = staging.path().join(format!("new-{name}"));
-        if previously_existed {
-            fs::rename(&destination, &backup)?;
-        }
-        if let Err(err) = fs::rename(&replacement, &destination) {
-            let mut restore_failed = false;
+        // Even failure to MOVE the original into backup must roll back
+        // earlier members. No early return is allowed after the first write.
+        let replaced_current = (|| -> io::Result<()> {
             if previously_existed {
+                fs::rename(&destination, &backup)?;
+            }
+            fs::rename(&replacement, &destination)
+        })();
+        if let Err(err) = replaced_current {
+            let mut restore_failed = false;
+            if previously_existed && backup.exists() {
                 restore_failed |= fs::rename(&backup, &destination).is_err();
             }
             for (previous, had_backup) in replaced.iter().rev() {
@@ -361,6 +366,74 @@ mod tests {
         output.finish().unwrap();
         let mut archive = zip::ZipArchive::new(File::open(file).unwrap()).unwrap();
         assert!(verify_portable_contents(&mut archive).is_err());
+    }
+
+    fn make_test_portable_zip(path: &Path) {
+        let mut writer = zip::ZipWriter::new(File::create(path).unwrap());
+        for name in PORTABLE_MEMBERS {
+            writer
+                .start_file::<_, ()>(name, zip::write::FileOptions::default())
+                .unwrap();
+            writer.write_all(format!("new-{name}").as_bytes()).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    fn mock_plan(directory: &Path) -> PreparedUpdate {
+        let payload = directory.join("update.zip");
+        make_test_portable_zip(&payload);
+        PreparedUpdate {
+            version: "0.1.0-nightly.7".into(),
+            payload,
+            asset: VerifiedAsset {
+                name: "EvolveModManager-Portable-0.1.0-nightly.7.zip".into(),
+                size: 0,
+                sha256: String::new(),
+                url: String::new(),
+            },
+            executable: directory.join("evolve-mod-manager.exe"),
+            root: directory.to_path_buf(),
+            kind: InstallationKind::Portable,
+        }
+    }
+
+    #[test]
+    fn portable_in_place_update_preserves_unrelated_files() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in PORTABLE_MEMBERS {
+            fs::write(dir.path().join(name), format!("old-{name}")).unwrap();
+        }
+        fs::write(dir.path().join("settings.json"), b"keep settings").unwrap();
+        let plan = mock_plan(dir.path());
+        apply_portable_update(&plan).unwrap();
+        for name in PORTABLE_MEMBERS {
+            assert_eq!(
+                fs::read(dir.path().join(name)).unwrap(),
+                format!("new-{name}").as_bytes()
+            );
+        }
+        assert_eq!(
+            fs::read(dir.path().join("settings.json")).unwrap(),
+            b"keep settings"
+        );
+    }
+
+    #[test]
+    fn portable_preflight_prevents_partial_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in PORTABLE_MEMBERS {
+            if name == "evolve-cli.exe" {
+                fs::create_dir(dir.path().join(name)).unwrap();
+            } else {
+                fs::write(dir.path().join(name), format!("old-{name}")).unwrap();
+            }
+        }
+        let plan = mock_plan(dir.path());
+        assert!(apply_portable_update(&plan).is_err());
+        assert_eq!(
+            fs::read(dir.path().join("evolve-mod-manager.exe")).unwrap(),
+            b"old-evolve-mod-manager.exe"
+        );
     }
 
     #[test]
