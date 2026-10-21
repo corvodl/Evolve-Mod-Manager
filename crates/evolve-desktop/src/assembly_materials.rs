@@ -357,9 +357,8 @@ fn tint_legacy_decal(
     for pixel in result.pixels_mut() {
         let mask = f32::from(pixel[3]) / 255.0;
         for channel in 0..3 {
-            pixel[channel] = linear_srgb(
-                srgb_linear(pixel[channel]) * tint[channel].clamp(0.0, 1.0) * mask
-            );
+            pixel[channel] =
+                linear_srgb(srgb_linear(pixel[channel]) * tint[channel].clamp(0.0, 1.0) * mask);
         }
         pixel[3] = 255;
     }
@@ -1282,7 +1281,8 @@ mod tests {
                     <TexMod TileU="3" TileV="4"/>
                 </Texture>
             </Textures></Material>"#,
-        ).unwrap();
+        )
+        .unwrap();
         let slot = &document.slots[0];
         assert!(!slot.alpha_glow);
         assert_eq!(legacy_decal_role(slot, "decal"), Some(2));
@@ -1299,7 +1299,8 @@ mod tests {
             br#"<Material Shader="Illum" GlowAmount="0"><Textures>
                 <Texture Map="Decal" File="textures/particle/light/chroma_fan320tiled_01b.tif"/>
             </Textures></Material>"#,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(legacy_decal_role(&disabled.slots[0], "decal"), None);
     }
 
