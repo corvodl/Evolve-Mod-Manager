@@ -7229,6 +7229,86 @@ mod project_edit_tests {
     }
 
     #[test]
+    fn damage_slider_zero_and_full_reuse_loaded_materials_without_cdf_worker() {
+        let path = PathBuf::from("characters/monsters/goliath/goliath3.cdf");
+        let pixels = Arc::new(::image::RgbaImage::from_pixel(
+            1, 1, ::image::Rgba([20, 50, 80, 255]),
+        ));
+        let full_pixels = Arc::new(::image::RgbaImage::from_pixel(
+            1, 1, ::image::Rgba([230, 170, 80, 255]),
+        ));
+        let original = textured::Surface {
+            first_index: 0, index_count: 3, visible: true, transparent: false,
+            diffuse: Some(Arc::clone(&pixels)), normal: None, emissive: None,
+            specular: None, gloss: None, opacity: None,
+        };
+        let mut damaged = original.clone();
+        damaged.diffuse = Some(Arc::clone(&full_pixels));
+        let mut state = State {
+            equipment_source: Some(path),
+            damage_blend_enabled: true,
+            damage_blend_percent: 100,
+            cdf_base_surfaces: Some(Arc::new(vec![original])),
+            cdf_full_damage_surfaces: Some(Arc::new(vec![damaged])),
+            ..State::default()
+        };
+        let _task = update(&mut state, Message::ViewerDamageBlendCommit);
+        assert!(!state.busy, "100% must not spawn a CDF worker");
+        assert!(Arc::ptr_eq(
+            state.cdf_surfaces.as_ref().unwrap()[0].diffuse.as_ref().unwrap(),
+            &full_pixels,
+        ));
+        let _ = update(&mut state, Message::ViewerDamageBlendChanged(0));
+        let _ = update(&mut state, Message::ViewerDamageBlendCommit);
+        assert!(!state.busy, "0% must not spawn a CDF worker");
+        assert!(state.damage_blend_enabled, "slider must stay visible at 0%");
+        assert!(Arc::ptr_eq(
+            state.cdf_surfaces.as_ref().unwrap()[0].diffuse.as_ref().unwrap(),
+            &pixels,
+        ));
+    }
+
+    #[test]
+    fn legacy_2012_header_removes_stage_two_damage_and_glow_actions() {
+        let dir = tempfile::tempdir().unwrap();
+        let model = dir.path().join("old.chr");
+        let mut original = [0u8; 16];
+        original[..8].copy_from_slice(b"CryTek\0\0");
+        original[12..16].copy_from_slice(&0x745u32.to_le_bytes());
+        std::fs::write(&model, original).unwrap();
+        let report = AssemblyReport {
+            cdf_skeleton: "old.chr".into(),
+            selected_skin_set: None,
+            original_parts: vec!["body".into()],
+            vertices: 3, triangles: 1,
+            original_uv0_complete: true, original_normals_complete: true,
+            skeletal_animation_enabled: false, source_parts: vec![],
+            geometry_parts: vec![evolve_core::AssemblyGeometry {
+                name: "body".into(), source: model.clone(),
+                vertex_first: 0, vertex_count: 3,
+                bone_socket: None, verified_skin_weights: false,
+            }],
+            verified_bones: None,
+            skeleton_source: None, warnings: vec![],
+        };
+        assert!(historical_2012_cdf(&report));
+        let mut newer = original;
+        newer[12..16].copy_from_slice(&0x746u32.to_le_bytes());
+        std::fs::write(&model, newer).unwrap();
+        assert!(!historical_2012_cdf(&report));
+        let mut state = State {
+            equipment_source: Some(dir.path().join("characters/monsters/rocky/rocky3.cdf")),
+            cdf_legacy_2012: true,
+            ..State::default()
+        };
+        let _ = update(&mut state, Message::ViewerToggleDamageBlend);
+        let _ = update(&mut state, Message::ViewerToggleMonsterGlow);
+        assert!(!state.full_armor_glow);
+        assert!(!state.damage_blend_enabled);
+        assert_eq!(state.damage_blend_percent, 0);
+    }
+
+    #[test]
     fn equipment_tab_rejects_unverified_cross_character_swaps() {
         let mut state = State::default();
         let _ = update(
