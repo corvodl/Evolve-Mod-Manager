@@ -7,7 +7,7 @@ use crate::textured::{MAX_GPU_PREVIEW_TEXTURE_BYTES, Surface};
 use evolve_core::{
     AssemblyReport, Inventory, MaterialDocument, read_material, scoped_texture_candidates,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
