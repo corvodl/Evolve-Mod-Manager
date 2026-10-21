@@ -460,13 +460,8 @@ pub fn monster_glow_path_with_library(
     for name in stems {
         for suffix in ["_glow_diff.tif", "_glow.tif"] {
             let authored = format!("{name}{suffix}");
-            match resolve_imported_reference_in_archive(
-                &scope.root,
-                &authored,
-                build,
-                &archive,
-            )
-            .map_err(|error| format!("Cannot search {archive} for {authored}: {error}"))?
+            match resolve_imported_reference_in_archive(&scope.root, &authored, build, &archive)
+                .map_err(|error| format!("Cannot search {archive} for {authored}: {error}"))?
             {
                 LibraryReferenceStatus::Found(hit) => {
                     let path = PathBuf::from(hit.absolute_path);
@@ -1663,71 +1658,101 @@ mod tests {
             fs::write(&image, b"low fragment").unwrap();
             // High numbered fragments are part of the same source texture.
             for mip in 1..=7 {
-                fs::write(image.with_file_name(format!("{owner}_glow_diff.dds.{mip}")), b"hi")
-                    .unwrap();
+                fs::write(
+                    image.with_file_name(format!("{owner}_glow_diff.dds.{mip}")),
+                    b"hi",
+                )
+                .unwrap();
             }
             let entries = (0..=7)
-                .map(|n| serde_json::json!({
-                    "path": format!("{owner}_glow_diff.dds.{n}"),
-                    "bytes": if n == 0 { 12 } else { 2 }
-                }))
+                .map(|n| {
+                    serde_json::json!({
+                        "path": format!("{owner}_glow_diff.dds.{n}"),
+                        "bytes": if n == 0 { 12 } else { 2 }
+                    })
+                })
                 .collect::<Vec<_>>();
             fs::write(
                 archive.join("asset-library.json"),
                 serde_json::to_vec(&serde_json::json!({
                     "version":1, "name":name, "source":"C:/test/game.pak", "entries":entries
-                })).unwrap(),
-            ).unwrap();
+                }))
+                .unwrap(),
+            )
+            .unwrap();
             stage_ids.insert(id, serde_json::json!({}));
         }
         // Same name from another actor's TS archive and a different build
         // must NOT be silently used, even though the filename is identical.
         for (directory, archive_name, id) in [
-            (&foreign, "characters_monsters_rocky_ts.pak", "22222222222222222222"),
-            (&old, "characters_monsters_grounder_ts.pak", "33333333333333333333")
+            (
+                &foreign,
+                "characters_monsters_rocky_ts.pak",
+                "22222222222222222222",
+            ),
+            (
+                &old,
+                "characters_monsters_grounder_ts.pak",
+                "33333333333333333333",
+            ),
         ] {
             fs::create_dir_all(directory.join("files")).unwrap();
             fs::write(directory.join("files/grounder_glow_diff.dds.0"), b"wrong").unwrap();
-            fs::write(directory.join("asset-library.json"),
+            fs::write(
+                directory.join("asset-library.json"),
                 serde_json::to_vec(&serde_json::json!({
                     "version":1,"name":archive_name,"source":"C:/test/other.pak",
                     "entries":[{"path":"grounder_glow_diff.dds.0","bytes":5}]
-                })).unwrap(),
-            ).unwrap();
+                }))
+                .unwrap(),
+            )
+            .unwrap();
             if id == "33333333333333333333" {
                 legacy_ids.insert(id.into(), serde_json::json!({}));
             } else {
                 stage_ids.insert(id.into(), serde_json::json!({}));
             }
         }
-        fs::write(library.join("build-collections.json"),
+        fs::write(
+            library.join("build-collections.json"),
             serde_json::to_vec(&serde_json::json!({
                 "version":1,
                 "builds":{
                     "stage-two":{"label":"Stage 2","members":stage_ids},
                     "legacy":{"label":"Legacy","members":legacy_ids}
                 }
-            })).unwrap(),
-        ).unwrap();
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let inventory = crate::scan_directory(&source_root).unwrap();
         for (owner, stem, texture) in cases {
             let cdf = source_root.join(format!("characters/monsters/{owner}/{stem}.cdf"));
             assert!(monster_glow_path(&cdf, &inventory).unwrap().is_none());
-            let result = monster_glow_path_with_library(
-                &cdf, &inventory, Some(&library), Some("Stage 2")
-            ).unwrap().unwrap();
+            let result =
+                monster_glow_path_with_library(&cdf, &inventory, Some(&library), Some("Stage 2"))
+                    .unwrap()
+                    .unwrap();
             assert_eq!(result.file_name().unwrap(), texture);
-            assert!(result.to_string_lossy().contains(&format!("characters_monsters_{owner}_ts.pak")));
+            assert!(
+                result
+                    .to_string_lossy()
+                    .contains(&format!("characters_monsters_{owner}_ts.pak"))
+            );
         }
         let grounder = source_root.join("characters/monsters/grounder/grounder3.cdf");
         // Legacy has an identically named path, but source-build selection
         // keeps it distinct from Stage 2.
-        let legacy = monster_glow_path_with_library(
-            &grounder, &inventory, Some(&library), Some("Legacy")
-        ).unwrap().unwrap();
+        let legacy =
+            monster_glow_path_with_library(&grounder, &inventory, Some(&library), Some("Legacy"))
+                .unwrap()
+                .unwrap();
         assert!(legacy.to_string_lossy().contains("33333333333333333333"));
-        assert!(monster_glow_path_with_library(&grounder, &inventory, Some(&library), None)
-            .unwrap().is_none());
+        assert!(
+            monster_glow_path_with_library(&grounder, &inventory, Some(&library), None)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
