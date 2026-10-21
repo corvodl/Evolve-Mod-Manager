@@ -3103,7 +3103,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return update(state, Message::ViewerPreviewStaticCdf);
         }
         Message::ViewerEmetFace(face) => {
-            if state.busy { return Task::none(); }
+            if state.busy {
+                return Task::none();
+            }
             let Some(options) = state.emet_options.as_ref() else {
                 state.status = "Emet expressions require the original Emet 3P CDF.".into();
                 return Task::none();
@@ -3114,20 +3116,32 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Face is not present in Emet's authored CDF.".into();
                 return Task::none();
             }
-            state.equipment_overrides.insert(evolve_core::character_emet::FACE.into(), face);
+            state
+                .equipment_overrides
+                .insert(evolve_core::character_emet::FACE.into(), face);
             state.viewer_sidebar_active = ViewerSidebarTab::Equipment;
             return update(state, Message::ViewerPreviewStaticCdf);
         }
         Message::ViewerEmetBeacon(show) => {
-            if state.busy { return Task::none(); }
-            if !state.emet_options.as_ref().is_some_and(|options| !options.beacons.is_empty()) {
+            if state.busy {
+                return Task::none();
+            }
+            if !state
+                .emet_options
+                .as_ref()
+                .is_some_and(|options| !options.beacons.is_empty())
+            {
                 state.status = "No authored Respawn Beacon attachment in Emet's CDF.".into();
                 return Task::none();
             }
             state.equipment_overrides.insert(
                 evolve_core::character_emet::BEACON.into(),
-                (if show { evolve_core::character_emet::BEACON_ON }
-                    else { evolve_core::character_emet::BEACON_OFF }).into(),
+                (if show {
+                    evolve_core::character_emet::BEACON_ON
+                } else {
+                    evolve_core::character_emet::BEACON_OFF
+                })
+                .into(),
             );
             state.viewer_sidebar_active = ViewerSidebarTab::Equipment;
             return update(state, Message::ViewerPreviewStaticCdf);
