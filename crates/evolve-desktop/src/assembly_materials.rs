@@ -1351,8 +1351,7 @@ mod tests {
 
         // Regression: a red frame in the original rainbow/chroma atlas
         // must still generate BLUE light on Kala, without modifying UV motion.
-        let red_frame =
-            image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]));
+        let red_frame = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]));
         let corrected = tint_legacy_decal(slot, &red_frame);
         let color = corrected.get_pixel(0, 0);
         assert!(color[2] > color[1] && color[1] > color[0]);
@@ -1361,9 +1360,11 @@ mod tests {
         assert_eq!(slot.decal_tex_mod.unwrap().sample(2.0)[..2], [3.0, 4.0]);
 
         // Atlas alpha remains an intensity mask, not mesh opacity.
-        let transparent =
-            image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 0]));
-        assert_eq!(tint_legacy_decal(slot, &transparent).get_pixel(0, 0).0, [0, 0, 0, 255]);
+        let transparent = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 0]));
+        assert_eq!(
+            tint_legacy_decal(slot, &transparent).get_pixel(0, 0).0,
+            [0, 0, 0, 255]
+        );
         let mut unrelated = slot.clone();
         unrelated.name = "other legacy emissive".into();
         assert!(!kala_banshee_brightness_mask(&unrelated));
