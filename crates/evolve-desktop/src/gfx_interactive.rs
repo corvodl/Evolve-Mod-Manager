@@ -34,9 +34,10 @@ pub struct RunningPreview {
 }
 impl RunningPreview {
     pub fn is_running(&self) -> bool {
-        self.process.child.lock().is_ok_and(|mut child| {
-            child.try_wait().ok().flatten().is_none()
-        })
+        self.process
+            .child
+            .lock()
+            .is_ok_and(|mut child| child.try_wait().ok().flatten().is_none())
     }
 }
 fn executable(path: &str) -> Result<PathBuf, String> {
@@ -49,7 +50,10 @@ fn executable(path: &str) -> Result<PathBuf, String> {
             )
         })
     {
-        return Err("Choose the absolute path to an installed Ruffle desktop executable (ruffle.exe).".into());
+        return Err(
+            "Choose the absolute path to an installed Ruffle desktop executable (ruffle.exe)."
+                .into(),
+        );
     }
     let meta = fs::symlink_metadata(candidate).map_err(|e| e.to_string())?;
     if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > MAX_PLAYER_BYTES {
@@ -58,9 +62,13 @@ fn executable(path: &str) -> Result<PathBuf, String> {
     fs::canonicalize(candidate).map_err(|e| e.to_string())
 }
 fn safe_import(name: &str) -> bool {
-    !name.is_empty() && name.len() < 1024
-        && !name.contains(['\\', ':']) && !name.starts_with('/')
-        && name.split('/').all(|part| !part.is_empty() && part != "." && part != "..")
+    !name.is_empty()
+        && name.len() < 1024
+        && !name.contains(['\\', ':'])
+        && !name.starts_with('/')
+        && name
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
         && (name.to_ascii_lowercase().ends_with(".swf")
             || name.to_ascii_lowercase().ends_with(".gfx"))
 }
@@ -103,17 +111,26 @@ fn renderable_movie(
     // Ruffle can then rasterize preserved bitmap-fill shapes and run supported
     // AVM1/AVM2 actions in the original script tags.
     let mut canonical = bytes.to_vec();
-    if canonical.len() < 3 { return Err("Movie signature is truncated".into()); }
+    if canonical.len() < 3 {
+        return Err("Movie signature is truncated".into());
+    }
     match &canonical[..3] {
         b"FWS" => canonical[..3].copy_from_slice(b"GFX"),
         b"CWS" => canonical[..3].copy_from_slice(b"CFX"),
         _ => (),
     }
     let result = gfx_external_textures::prepare_preview(
-        &canonical, virtual_movie, source,
-        session.library_root.as_deref(), session.source_build.as_deref(),
+        &canonical,
+        virtual_movie,
+        source,
+        session.library_root.as_deref(),
+        session.source_build.as_deref(),
     )?;
-    Ok((flash_movie(&result.movie)?, result.converted, result.skipped))
+    Ok((
+        flash_movie(&result.movie)?,
+        result.converted,
+        result.skipped,
+    ))
 }
 fn stage_import(
     session: &Session,
@@ -126,7 +143,9 @@ fn stage_import(
     }
     let source_root = fs::canonicalize(session.folder.path()).map_err(|e| e.to_string())?;
     let candidate = source_root.join(reference);
-    let Ok(real) = fs::canonicalize(candidate) else { return Ok(None) };
+    let Ok(real) = fs::canonicalize(candidate) else {
+        return Ok(None);
+    };
     if !real.starts_with(&source_root) {
         return Err("Imported movie escaped the GFX scratch directory".into());
     }
@@ -135,14 +154,16 @@ fn stage_import(
         return Err("Imported movie is not a regular bounded file".into());
     }
     let bytes = fs::read(&real).map_err(|e| e.to_string())?;
-    let virtual_path = virtual_movie.rsplit_once('/')
+    let virtual_path = virtual_movie
+        .rsplit_once('/')
         .map(|(parent, _)| format!("{parent}/{reference}"))
         .unwrap_or_else(|| reference.to_owned());
-    let (swf, converted, skipped) = renderable_movie(
-        &bytes, &virtual_path, &session.source, session,
-    )?;
+    let (swf, converted, skipped) =
+        renderable_movie(&bytes, &virtual_path, &session.source, session)?;
     let target = output.join(reference);
-    let parent = target.parent().ok_or("Invalid imported movie destination")?;
+    let parent = target
+        .parent()
+        .ok_or("Invalid imported movie destination")?;
     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     fs::write(target, swf).map_err(|e| e.to_string())?;
     Ok(Some((converted, skipped)))
@@ -160,9 +181,8 @@ pub fn launch(session: &Session, ruffle_exe: &str) -> Result<RunningPreview, Str
         .tempdir()
         .map_err(|e| e.to_string())?;
     let input = fs::read(&session.editable).map_err(|e| e.to_string())?;
-    let (swf, mut converted, mut skipped) = renderable_movie(
-        &input, &session.relative, &session.source, session,
-    )?;
+    let (swf, mut converted, mut skipped) =
+        renderable_movie(&input, &session.relative, &session.source, session)?;
     let root_movie = root.path().join("movie.swf");
     fs::write(&root_movie, swf).map_err(|e| e.to_string())?;
     let mut missing = 0usize;
