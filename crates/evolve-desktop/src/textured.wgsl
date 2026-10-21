@@ -20,6 +20,9 @@ struct Output {
 // Separate, optional armor overlay: this channel is black when unchecked,
 // independently of any source-authored Emittance/GlowAmount texture.
 @group(0) @binding(8) var armor_glow_map: texture_2d<f32>;
+// Independent authored Decal UV transform: x/y tiling, z/w animation offset.
+// Only the emission map uses these values; other maps stay at mesh UV0.
+@group(0) @binding(9) var<uniform> emissive_uv: vec4<f32>;
 
 @vertex
 fn vs_main(
@@ -41,7 +44,8 @@ fn vs_main(
 fn shade(input: Output) -> vec4<f32> {
     let base = textureSample(diffuse, material_sampler, input.uv);
     let encoded_normal = textureSample(normal_map, material_sampler, input.uv).rg;
-    let glow = textureSample(emissive_map, material_sampler, input.uv).rgb;
+    let decal_coord = input.uv * emissive_uv.xy + emissive_uv.zw;
+    let glow = textureSample(emissive_map, material_sampler, decal_coord).rgb;
     let armor_glow = textureSample(armor_glow_map, material_sampler, input.uv).rgb;
     // Specular is source reflectance color, NOT a gloss/roughness scalar.
     // Only an explicitly authored Gloss/Glossiness/Smoothness map controls

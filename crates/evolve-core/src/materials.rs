@@ -31,6 +31,49 @@ pub struct TextureReference {
     pub role: String,
     pub path: String,
 }
+/// The independently authored UV transform for an Illum Decal. This
+/// applies to emission only; diffuse, normal, opacity and UV0 remain intact.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DecalTexMod {
+    pub tile_u: f32,
+    pub tile_v: f32,
+    pub u_type: i32,
+    pub u_rate: f32,
+    pub u_amplitude: f32,
+    pub v_type: i32,
+    pub v_rate: f32,
+    pub v_amplitude: f32,
+}
+
+impl DecalTexMod {
+    /// CryEngine ETexModMoveType: 0=no change, 1=fixed, 2=constant,
+    /// 4=pan (pendulum). Unknown numeric types are not guessed.
+    fn offset(kind: i32, rate: f32, amplitude: f32, seconds: f32) -> f32 {
+        match kind {
+            1 => amplitude,
+            2 => seconds.max(0.0) * rate * amplitude,
+            4 => amplitude * (seconds.max(0.0) * rate * std::f32::consts::TAU).sin(),
+            _ => 0.0,
+        }
+    }
+
+    /// (U tile, V tile, U offset, V offset). Called each render tick without
+    /// re-decoding the source DDS or changing the actual mesh UVs.
+    pub fn sample(self, seconds: f32) -> [f32; 4] {
+        let t = if seconds.is_finite() {
+            seconds.rem_euclid(3600.0)
+        } else {
+            0.0
+        };
+        [
+            self.tile_u,
+            self.tile_v,
+            Self::offset(self.u_type, self.u_rate, self.u_amplitude, t),
+            Self::offset(self.v_type, self.v_rate, self.v_amplitude, t),
+        ]
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MaterialSlot {
     pub name: String,
@@ -43,6 +86,15 @@ pub struct MaterialSlot {
     /// Original material GlowAmount (e.g. 3.0 is not "100%" by assumption).
     #[serde(default)]
     pub glow_amount: Option<f32>,
+    /// Exact CryEngine StringGenMask ALPHAGLOW flag, not diffuse alpha alone.
+    #[serde(default)]
+    pub alpha_glow: bool,
+    /// The authored RGB Diffuse scalar. This is distinct from the Diffuse DDS.
+    #[serde(default)]
+    pub diffuse_tint: Option<[f32; 3]>,
+    /// Source TexMod of an explicitly authored Decal, if present.
+    #[serde(default)]
+    pub decal_tex_mod: Option<DecalTexMod>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MaterialDocument {
@@ -113,6 +165,72 @@ fn authored_glow_amount(node: &BytesStart<'_>) -> Result<Option<f32>, MaterialEr
     Ok(Some(amount))
 }
 
+fn source_alpha_glow(node: &BytesStart<'_>) -> Result<bool, MaterialError> {
+    Ok(attr(node, b"StringGenMask")?
+        .unwrap_or_default()
+        .split('%')
+        .any(|token| token.eq_ignore_ascii_case("ALPHAGLOW")))
+}
+
+/// Material Diffuse is an authored scalar, not a texture-name heuristic.
+/// Malformed color values are left absent instead of replacing them with white.
+fn source_diffuse_tint(node: &BytesStart<'_>) -> Result<Option<[f32; 3]>, MaterialError> {
+    let Some(raw) = attr(node, b"Diffuse")? else {
+        return Ok(None);
+    };
+    let values = raw
+        .split(',')
+        .map(|v| v.trim().parse::<f32>())
+        .collect::<Result<Vec<_>, _>>();
+    let Ok(values) = values else {
+        return Ok(None);
+    };
+    if values.len() != 3 || values.iter().any(|v| !v.is_finite() || *v < 0.0) {
+        return Ok(None);
+    }
+    Ok(Some([values[0], values[1], values[2]]))
+}
+
+fn parse_decal_tex_mod(node: &BytesStart<'_>) -> Result<DecalTexMod, MaterialError> {
+    fn scalar(node: &BytesStart<'_>, field: &[u8], default: f32) -> Result<f32, MaterialError> {
+        let value = attr(node, field)?
+            .map(|v| v.parse::<f32>())
+            .transpose()
+            .map_err(|_| MaterialError::Xml("Invalid Decal TexMod scalar".into()))?
+            .unwrap_or(default);
+        if !value.is_finite() || value.abs() > 64.0 {
+            return Err(MaterialError::Xml(
+                "Decal TexMod scalar out of bounds".into(),
+            ));
+        }
+        Ok(value)
+    }
+    fn oscillator(node: &BytesStart<'_>, field: &[u8]) -> Result<i32, MaterialError> {
+        attr(node, field)?
+            .map(|v| {
+                v.parse::<i32>()
+                    .map_err(|_| MaterialError::Xml("Invalid Decal oscillator type".into()))
+            })
+            .transpose()
+            .map(|v| v.unwrap_or(0))
+    }
+    let tile_u = scalar(node, b"TileU", 1.0)?;
+    let tile_v = scalar(node, b"TileV", 1.0)?;
+    if tile_u <= 0.0 || tile_v <= 0.0 {
+        return Err(MaterialError::Xml("Decal UV tiles must be positive".into()));
+    }
+    Ok(DecalTexMod {
+        tile_u,
+        tile_v,
+        u_type: oscillator(node, b"TexMod_UOscillatorType")?,
+        u_rate: scalar(node, b"TexMod_UOscillatorRate", 0.0)?,
+        u_amplitude: scalar(node, b"TexMod_UOscillatorAmplitude", 0.0)?,
+        v_type: oscillator(node, b"TexMod_VOscillatorType")?,
+        v_rate: scalar(node, b"TexMod_VOscillatorRate", 0.0)?,
+        v_amplitude: scalar(node, b"TexMod_VOscillatorAmplitude", 0.0)?,
+    })
+}
+
 fn normalize_texture(raw: &str) -> Result<String, MaterialError> {
     let slashes = raw.trim().replace('\\', "/");
     // Authored game materials sometimes repeat an interior separator. Keep
@@ -149,6 +267,11 @@ fn append_texture(
             | "emissive"
             | "emission"
             | "glow"
+            | "emissivecolor"
+            | "emissionmap"
+            | "glowmap"
+            | "selfillum"
+            | "selfillumination"
             | "decal"
             | "specular"
             | "specularcolor"
@@ -294,6 +417,9 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         maps: Vec::new(),
                         opacity,
                         glow_amount,
+                        alpha_glow: source_alpha_glow(&node)?,
+                        diffuse_tint: source_diffuse_tint(&node)?,
+                        decal_tex_mod: None,
                     });
                     nonleaf.push(false);
                     material_indices.push((parents.len() + 1, slots.len() - 1));
@@ -304,6 +430,17 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                     && let Some((_, index)) = material_indices.last()
                 {
                     append_texture(&node, &mut slots, *index)?;
+                } else if tag.eq_ignore_ascii_case(b"TexMod")
+                    && parents
+                        .last()
+                        .is_some_and(|parent| parent.eq_ignore_ascii_case(b"Texture"))
+                    && let Some((_, index)) = material_indices.last()
+                    && slots[*index]
+                        .maps
+                        .last()
+                        .is_some_and(|map| map.role == "decal")
+                {
+                    slots[*index].decal_tex_mod = Some(parse_decal_tex_mod(&node)?);
                 } else if (tag.eq_ignore_ascii_case(b"PublicParams")
                     || tag.eq_ignore_ascii_case(b"ShaderParams")
                     || (tag.eq_ignore_ascii_case(b"Param")
@@ -346,6 +483,9 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         maps: Vec::new(),
                         opacity: material_opacity(&node)?,
                         glow_amount: authored_glow_amount(&node)?,
+                        alpha_glow: source_alpha_glow(&node)?,
+                        diffuse_tint: source_diffuse_tint(&node)?,
+                        decal_tex_mod: None,
                     });
                     nonleaf.push(false);
                 } else if tag.eq_ignore_ascii_case(b"Texture")
@@ -355,6 +495,17 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                     && let Some((_, index)) = material_indices.last()
                 {
                     append_texture(&node, &mut slots, *index)?;
+                } else if tag.eq_ignore_ascii_case(b"TexMod")
+                    && parents
+                        .last()
+                        .is_some_and(|parent| parent.eq_ignore_ascii_case(b"Texture"))
+                    && let Some((_, index)) = material_indices.last()
+                    && slots[*index]
+                        .maps
+                        .last()
+                        .is_some_and(|map| map.role == "decal")
+                {
+                    slots[*index].decal_tex_mod = Some(parse_decal_tex_mod(&node)?);
                 } else if (tag.eq_ignore_ascii_case(b"PublicParams")
                     || tag.eq_ignore_ascii_case(b"ShaderParams")
                     || (tag.eq_ignore_ascii_case(b"Param")
@@ -575,6 +726,81 @@ mod tests {
         assert!(normalize_texture("textures//../secret.tif").is_err());
         assert!(normalize_texture("C:\\secret.tif").is_err());
     }
+    #[test]
+    fn real_kala_glow_material_semantics_are_distinct_from_body_alpha_glow() {
+        // Synthetic MTL fixture based on the user's 2012+ Stage 2 material
+        // properties. Original game files are never included in the repository.
+        let source = br#"<Material><SubMaterials>
+          <Material Name="Body" Shader="Illum"
+            StringGenMask="%ALPHAGLOW%BUMP_MAP%GLOSS_MAP%"
+            Diffuse="1,1,1" Emissive="0,0,0" GlowAmount="3">
+              <Textures><Texture Map="Diffuse" File="characters/hunters/merc_tech/body.tif"/></Textures>
+          </Material>
+          <Material Name="bansheegun glow" Shader="Illum"
+            StringGenMask="%SUBSURFACE_SCATTERING"
+            Diffuse="0.072271854,0.1470273,0.42326769"
+            Emissive="0,0,0" GlowAmount="3">
+              <Textures><Texture Map="Diffuse" File="characters/hunters/merc_tech/body.tif"/>
+                <Texture Map="Decal" File="textures/particle/light/chroma_fan320tiled_01b.tif">
+                  <TexMod TileU="3" TileV="4"/>
+                </Texture>
+              </Textures>
+          </Material>
+        </SubMaterials></Material>"#;
+        let parsed = parse_material(source).unwrap();
+        assert_eq!(parsed.slots.len(), 2);
+        assert!(parsed.slots[0].alpha_glow);
+        assert!(!parsed.slots[1].alpha_glow);
+        assert_eq!(parsed.slots[1].glow_amount, Some(3.0));
+        assert_eq!(
+            parsed.slots[1].diffuse_tint,
+            Some([0.072_271_85, 0.1470273, 0.423_267_7])
+        );
+        assert_eq!(parsed.slots[1].maps[1].role, "decal");
+    }
+
+    #[test]
+    fn exact_kala_banshee_decal_tiling_and_constant_motion() {
+        let document = parse_material(br#"<Material Name="bansheegun glow" Shader="Illum"
+            GlowAmount="3"><Textures><Texture Map="Decal" File="textures/particle/light/chroma_fan320tiled_01b.tif">
+            <TexMod TileU="3" TileV="4" TexMod_UOscillatorType="2"
+                TexMod_UOscillatorRate="1" TexMod_UOscillatorAmplitude="0.2"
+                TexMod_VOscillatorAmplitude="0.1"/>
+        </Texture></Textures></Material>"#).unwrap();
+        let modulator = document.slots[0].decal_tex_mod.unwrap();
+        assert_eq!(modulator.sample(0.0), [3.0, 4.0, 0.0, 0.0]);
+        assert_eq!(modulator.sample(2.0), [3.0, 4.0, 0.4, 0.0]);
+        assert_eq!(modulator.v_amplitude, 0.1);
+        assert!(
+            parse_material(
+                br#"<Material><Textures><Texture Map="Decal" File="a.tif">
+            <TexMod TileU="NaN"/></Texture></Textures></Material>"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn kala_equipment_emissive_aliases_keep_authored_texture_paths() {
+        // Equipment meshes may use alternate CryEngine material-map names.
+        // These are explicitly authored slots, NOT inferred from a filename.
+        let material = parse_material(
+            br#"<Material Name="BansheeGun" Shader="Illum"><Textures>
+            <Texture Map="Diffuse" File="characters/hunters/tech/banshee_diff.tif"/>
+            <Texture Map="EmissiveColor" File="characters/hunters/tech/banshee_glow.tif"/>
+            <Texture Map="GlowMap" File="characters/hunters/tech/banshee_secondary.tif"/>
+        </Textures></Material>"#,
+        )
+        .unwrap();
+        assert_eq!(material.slots[0].maps.len(), 3);
+        assert_eq!(material.slots[0].maps[1].role, "emissivecolor");
+        assert_eq!(
+            material.slots[0].maps[1].path,
+            "characters/hunters/tech/banshee_glow.tif"
+        );
+        assert_eq!(material.slots[0].maps[2].role, "glowmap");
+    }
+
     #[test]
     fn imported_texture_candidates_prefer_highest_authored_mip_and_keep_spec_roles() {
         assert_eq!(

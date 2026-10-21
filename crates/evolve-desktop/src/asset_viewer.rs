@@ -473,6 +473,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
                 zoom: state.zoom.max(0.2),
                 light_strength: state.light_strength,
                 emissive_gain: state.emissive_strength,
+                emissive_time: state.decal_time,
                 pan_x: state.pan_x,
                 pan_y: state.pan_y,
                 shift: state.keyboard_modifiers.shift(),

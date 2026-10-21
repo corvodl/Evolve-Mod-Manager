@@ -210,6 +210,8 @@ struct State {
     cdf_report: Option<Arc<AssemblyReport>>,
     cdf_rest_mesh: Option<Arc<RenderMesh>>,
     motion_time: f32,
+    /// Continuous shader Decal clock, separate from CAF animation playback.
+    decal_time: f32,
     playing: bool,
     assets_root: String,
     terrain_source: String,
@@ -4449,6 +4451,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::Tick => {
+            if state.cdf_surfaces.as_ref().is_some_and(|surfaces| {
+                surfaces.iter().any(|surface| surface.emissive_uv.is_some())
+            }) {
+                state.decal_time = (state.decal_time + 0.04).rem_euclid(3600.0);
+            }
             if state.playing {
                 let duration = if let Some(motion) = &state.native_caf {
                     Some((motion.duration_seconds(), motion.cyclic))
@@ -5298,7 +5305,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         if let Some(skeleton) = resources.skeleton {
                             state.skeleton_path = skeleton.to_string_lossy().into_owned();
                         }
-                        state.auto_resource_note = resources.material_note;
+                        // CDF assemblies resolve a separate MTL per attachment.
+                        // A missing standalone-model MTL is not a CDF material
+                        // failure: do not overwrite valid 7/7 GPU material
+                        // diagnostics with "No verified material for this mesh".
+                        state.auto_resource_note = if relative
+                            .to_ascii_lowercase()
+                            .ends_with(".cdf")
+                            && resources.material.is_none()
+                        {
+                            "CDF attachment materials are verified per mesh section in the Inspector"
+                                    .into()
+                        } else {
+                            resources.material_note
+                        };
                         if !resources.warnings.is_empty() {
                             state
                                 .auto_resource_note
@@ -6451,6 +6471,7 @@ fn view(state: &State) -> Element<'_, Message> {
                             yaw:state.yaw,pitch:state.pitch,zoom:state.zoom,
                             light_strength:state.light_strength,
                             emissive_gain:state.emissive_strength,
+                            emissive_time:state.decal_time,
                             pan_x:state.pan_x,pan_y:state.pan_y,shift:state.keyboard_modifiers.shift(),
                         }).width(Fill).height(Length::Fixed(400.)).into()
                     }else{
@@ -6588,6 +6609,7 @@ fn view(state: &State) -> Element<'_, Message> {
                         yaw:state.yaw,pitch:state.pitch,zoom:state.zoom.max(0.2),
                             light_strength:state.light_strength,
                             emissive_gain:state.emissive_strength,
+                            emissive_time:state.decal_time,
                             pan_x:state.pan_x,pan_y:state.pan_y,shift:state.keyboard_modifiers.shift(),
                     }).width(Fill).height(Length::Fixed(400.)).into()
                 }else{
@@ -7068,7 +7090,12 @@ impl Desktop {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let playback = if self.state.playing {
+        let animate_decal = self.state.cdf_surfaces.as_ref().is_some_and(|surfaces| {
+            surfaces
+                .iter()
+                .any(|surface| surface.visible && surface.emissive_uv.is_some())
+        }) && matches!(self.state.page.as_ref(), Some(Page::Models));
+        let playback = if self.state.playing || animate_decal {
             iced::time::every(Duration::from_millis(40)).map(|_| Message::Tick)
         } else {
             Subscription::none()
@@ -7304,6 +7331,7 @@ mod project_edit_tests {
             emissive: None,
             armor_emissive: None,
             emission_strength: 1.0,
+            emissive_uv: None,
             specular: None,
             gloss: None,
             opacity: None,
@@ -7357,6 +7385,7 @@ mod project_edit_tests {
             emissive: Some(Arc::clone(&pixels)),
             armor_emissive: None,
             emission_strength: 3.0,
+            emissive_uv: None,
             specular: None,
             gloss: None,
             opacity: None,

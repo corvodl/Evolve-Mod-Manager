@@ -43,7 +43,8 @@ fn legacy_alpha_emission(
     if !matches!(
         slot.shader.to_ascii_lowercase().as_str(),
         "illum" | "cloth" | "humanskin"
-    ) || !slot.glow_amount.is_some_and(|amount| amount > 0.0)
+    ) || !slot.alpha_glow
+        || !slot.glow_amount.is_some_and(|amount| amount > 0.0)
         || !diffuse.pixels().any(|pixel| pixel[3] < 255)
     {
         return None;
@@ -319,12 +320,66 @@ fn role_channel(role: &str) -> Option<usize> {
     match role {
         "diffuse" => Some(0),
         "normals" | "normal" | "bumpmap" => Some(1),
-        "emittance" | "emissive" | "emission" | "glow" => Some(2),
+        "emittance" | "emissive" | "emission" | "glow" | "emissivecolor" | "emissionmap"
+        | "glowmap" | "selfillum" | "selfillumination" => Some(2),
         "specular" | "specularcolor" => Some(3),
         "gloss" | "glossiness" | "smoothness" => Some(4),
         "opacity" => Some(5),
         _ => None,
     }
+}
+
+/// An explicitly authored Illum Decal with positive GlowAmount is a
+/// separate legacy glow source, not a second diffuse-alpha mask. Kala's
+/// Banshee Gun Glow submaterial deliberately lacks the ALPHAGLOW flag.
+fn legacy_decal_role(slot: &evolve_core::MaterialSlot, role: &str) -> Option<usize> {
+    if role == "decal"
+        && slot.shader.eq_ignore_ascii_case("Illum")
+        && slot.glow_amount.is_some_and(|amount| amount > 0.0)
+        && !slot.alpha_glow
+    {
+        Some(2)
+    } else {
+        role_channel(role)
+    }
+}
+
+/// Source-only static approximation: the authored Decal RGB and alpha are
+/// tinted by the material's authored Diffuse RGB, never by the unrelated
+/// body diffuse-alpha map or its serialized Emissive="0,0,0".
+/// Animated Decal TexMod coordinates require a separate renderer feature.
+fn source_decal_motion(slot: &evolve_core::MaterialSlot) -> Option<evolve_core::DecalTexMod> {
+    let source = slot.decal_tex_mod?;
+    let emitted = slot
+        .maps
+        .iter()
+        .any(|map| map.role == "decal" && legacy_decal_role(slot, &map.role) == Some(2));
+    let other_emission = slot
+        .maps
+        .iter()
+        .any(|map| map.role != "decal" && role_channel(&map.role) == Some(2));
+    if emitted && !other_emission {
+        Some(source)
+    } else {
+        None
+    }
+}
+
+fn tint_legacy_decal(
+    slot: &evolve_core::MaterialSlot,
+    decal: &image::RgbaImage,
+) -> image::RgbaImage {
+    let tint = slot.diffuse_tint.unwrap_or([1.0, 1.0, 1.0]);
+    let mut result = decal.clone();
+    for pixel in result.pixels_mut() {
+        let mask = f32::from(pixel[3]) / 255.0;
+        for channel in 0..3 {
+            pixel[channel] =
+                linear_srgb(srgb_linear(pixel[channel]) * tint[channel].clamp(0.0, 1.0) * mask);
+        }
+        pixel[3] = 255;
+    }
+    result
 }
 
 /// Keep material-relative paths in the original indexed namespace; this is
@@ -407,6 +462,22 @@ fn is_damage_blend_mask(
         && map.path.to_ascii_lowercase().contains("damage_blend_diff")
 }
 
+/// CryEngine's generic Opacity channel can hold non-cutout shader data on
+/// solid monster and equipment meshes. A map by itself does not establish
+/// alpha-test semantics. Real cutout/alpha-labelled sources are preserved.
+fn unverified_solid_body_opacity(slot: &evolve_core::MaterialSlot) -> bool {
+    matches!(
+        slot.shader.to_ascii_lowercase().as_str(),
+        "illum" | "cloth" | "humanskin"
+    ) && slot.opacity.unwrap_or(1.0) >= 0.999
+        && !slot.maps.iter().any(|map| {
+            map.role == "opacity"
+                && ["cutout", "alphatest", "_alpha"]
+                    .iter()
+                    .any(|marker| map.path.to_ascii_lowercase().contains(marker))
+        })
+}
+
 /// Per-channel resolved source textures and independent missing-map diagnostics.
 type ResolvedMaterialMaps = ([Option<Arc<image::RgbaImage>>; 6], Vec<String>);
 
@@ -447,11 +518,19 @@ fn authored_maps(
     let mut counts = [0usize; 6];
     for map in &slot.maps {
         if !is_damage_blend_mask(slot, map)
-            && let Some(index) = role_channel(&map.role)
+            && let Some(index) = legacy_decal_role(slot, &map.role)
         {
             counts[index] += 1;
         }
     }
+    // A uniquely authored Emittance entry outranks alternate spellings
+    // when both appear. Two different Emittance maps remain ambiguous.
+    let emittance = slot
+        .maps
+        .iter()
+        .filter(|map| map.role == "emittance")
+        .collect::<Vec<_>>();
+    let primary_emittance = (emittance.len() == 1).then(|| emittance[0].path.as_str());
     for map in &slot.maps {
         if is_damage_blend_mask(slot, map) {
             warnings.push(
@@ -459,10 +538,25 @@ fn authored_maps(
             );
             continue;
         }
-        let Some(index) = role_channel(&map.role) else {
+        let Some(index) = legacy_decal_role(slot, &map.role) else {
             continue;
         };
-        if counts[index] > 1 {
+        if index == 5 && unverified_solid_body_opacity(slot) {
+            warnings.push(format!(
+                "{}: ignored an unverified opacity cutout on opaque {} body material; base diffuse remains visible",
+                slot.name, slot.shader
+            ));
+            continue;
+        }
+        if index == 2 && counts[index] > 1 && primary_emittance.is_some() {
+            if Some(map.path.as_str()) != primary_emittance {
+                continue;
+            }
+            warnings.push(format!(
+                "{}: selected uniquely authored Emittance over other emission-role maps",
+                slot.name
+            ));
+        } else if counts[index] > 1 {
             if !warnings
                 .iter()
                 .any(|w: &String| w.contains(&format!("channel {index}")))
@@ -505,7 +599,15 @@ fn authored_maps(
             }
             budget.decoded.insert(canonical);
         }
-        result[index] = Some(image);
+        if index == 2 && map.role == "decal" {
+            result[index] = Some(Arc::new(tint_legacy_decal(slot, &image)));
+            warnings.push(format!(
+                "{}: legacy Illum Decal uses authored GlowAmount and blue Diffuse tint, without diffuse-alpha masking; the viewer animates the Decal's independent TexMod (FBX stores its original map without baked motion)",
+                slot.name
+            ));
+        } else {
+            result[index] = Some(image);
+        }
     }
     if result[2].is_none()
         && !slot
@@ -616,6 +718,7 @@ pub fn load_model(
             emissive: None,
             armor_emissive: None,
             emission_strength: 1.0,
+            emissive_uv: None,
             specular: None,
             gloss: None,
             opacity: None,
@@ -661,6 +764,7 @@ pub fn load_model(
                         surface.normal = normal;
                         surface.emissive = emissive;
                         surface.emission_strength = leaf.glow_amount.unwrap_or(1.0).max(0.0);
+                        surface.emissive_uv = source_decal_motion(leaf);
                         surface.specular = specular;
                         surface.gloss = gloss;
                         // Original scalar opacity, when present, is independent
@@ -918,6 +1022,7 @@ pub fn load_with_progress(
             emissive: None,
             armor_emissive: None,
             emission_strength: 1.0,
+            emissive_uv: None,
             specular: None,
             gloss: None,
             opacity: None,
@@ -988,6 +1093,7 @@ pub fn load_with_progress(
             surface.normal = normal;
             surface.emissive = emissive;
             surface.emission_strength = leaf.glow_amount.unwrap_or(1.0).max(0.0);
+            surface.emissive_uv = source_decal_motion(leaf);
             surface.specular = specular;
             surface.gloss = gloss;
             surface.opacity = verified_opacity(leaf, opacity);
@@ -1070,6 +1176,7 @@ mod tests {
             emissive: None,
             armor_emissive: None,
             emission_strength: 1.0,
+            emissive_uv: None,
             specular: None,
             gloss: None,
             opacity: None,
@@ -1138,6 +1245,9 @@ mod tests {
             maps: vec![],
             opacity: None,
             glow_amount: Some(3.0),
+            alpha_glow: true,
+            diffuse_tint: None,
+            decal_tex_mod: None,
         };
         let mask = legacy_alpha_emission(&slot, &diffuse).unwrap();
         assert!(mask.get_pixel(0, 0)[0] > 150);
@@ -1147,8 +1257,95 @@ mod tests {
         slot.glow_amount = None;
         assert!(legacy_alpha_emission(&slot, &diffuse).is_none());
         slot.glow_amount = Some(3.0);
+        slot.alpha_glow = false;
+        assert!(legacy_alpha_emission(&slot, &diffuse).is_none());
+        slot.alpha_glow = true;
         let opaque = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 255, 255, 255]));
         assert!(legacy_alpha_emission(&slot, &opaque).is_none());
+    }
+
+    #[test]
+    fn grounder_illum_body_does_not_disappear_from_an_unverified_opacity_channel() {
+        let plain = evolve_core::parse_material(
+            br#"<Material Name="Grounder_Body" Shader="Illum" Opacity="1">
+                <Textures>
+                    <Texture Map="Diffuse" File="characters/monsters/grounder/grounder3_diff.tif"/>
+                    <Texture Map="Opacity" File="characters/monsters/grounder/grounder3_detail.tif"/>
+                </Textures>
+            </Material>"#,
+        )
+        .unwrap();
+        assert!(unverified_solid_body_opacity(&plain.slots[0]));
+        let verified = evolve_core::parse_material(
+            br#"<Material Name="MaskedFin" Shader="Illum">
+                <Textures><Texture Map="Opacity" File="fin_cutout.tif"/></Textures>
+            </Material>"#,
+        )
+        .unwrap();
+        assert!(!unverified_solid_body_opacity(&verified.slots[0]));
+        let glass = evolve_core::parse_material(
+            br#"<Material Name="Glass" Shader="Glass">
+                <Textures><Texture Map="Opacity" File="glass_opacity.tif"/></Textures>
+            </Material>"#,
+        )
+        .unwrap();
+        assert!(!unverified_solid_body_opacity(&glass.slots[0]));
+    }
+
+    #[test]
+    fn kala_real_banshee_glow_decal_is_not_zeroed_by_body_alpha() {
+        let document = evolve_core::parse_material(
+            br#"<Material Name="bansheegun glow" Shader="Illum"
+                StringGenMask="%SUBSURFACE_SCATTERING"
+                Diffuse="0.072271854,0.1470273,0.42326769"
+                Emissive="0,0,0" GlowAmount="3"><Textures>
+                <Texture Map="Diffuse" File="characters/hunters/merc_tech/body.tif"/>
+                <Texture Map="Decal" File="textures/particle/light/chroma_fan320tiled_01b.tif">
+                    <TexMod TileU="3" TileV="4"/>
+                </Texture>
+            </Textures></Material>"#,
+        )
+        .unwrap();
+        let slot = &document.slots[0];
+        assert!(!slot.alpha_glow);
+        assert_eq!(
+            slot.decal_tex_mod.unwrap().sample(0.0),
+            [3.0, 4.0, 0.0, 0.0]
+        );
+        assert_eq!(legacy_decal_role(slot, "decal"), Some(2));
+        assert_eq!(legacy_decal_role(slot, "normals"), Some(1));
+        let original = image::RgbaImage::from_pixel(2, 2, image::Rgba([180, 180, 180, 220]));
+        let decal = tint_legacy_decal(slot, &original);
+        assert!(decal.pixels().all(|p| p[2] > p[1] && p[1] > p[0]));
+        assert!(decal.pixels().all(|p| p[2] > 0));
+        assert_eq!(original.get_pixel(0, 0)[0], 180);
+        let mut body = slot.clone();
+        body.alpha_glow = true;
+        assert_eq!(legacy_decal_role(&body, "decal"), None);
+        let disabled = evolve_core::parse_material(
+            br#"<Material Shader="Illum" GlowAmount="0"><Textures>
+                <Texture Map="Decal" File="textures/particle/light/chroma_fan320tiled_01b.tif"/>
+            </Textures></Material>"#,
+        )
+        .unwrap();
+        assert_eq!(legacy_decal_role(&disabled.slots[0], "decal"), None);
+    }
+
+    #[test]
+    fn kala_banshee_emissive_roles_and_source_zero_are_distinct() {
+        assert_eq!(role_channel("emissivecolor"), Some(2));
+        assert_eq!(role_channel("glowmap"), Some(2));
+        assert_eq!(role_channel("selfillumination"), Some(2));
+        assert_eq!(role_channel("normals"), Some(1));
+        assert_eq!(role_channel("custom"), None);
+        let authored = evolve_core::parse_material(
+            br#"<Material Name="BansheeGun" Shader="Illum" GlowAmount="0"><Textures>
+                <Texture Map="EmissiveColor" File="characters/hunters/tech/banshee_glow.tif"/>
+            </Textures></Material>"#,
+        )
+        .unwrap();
+        assert_eq!(authored.slots[0].glow_amount, Some(0.0));
+        assert_eq!(role_channel(&authored.slots[0].maps[0].role), Some(2));
     }
 
     #[test]
@@ -1158,6 +1355,9 @@ mod tests {
             shader: shader.into(),
             opacity: scalar,
             glow_amount: None,
+            alpha_glow: false,
+            diffuse_tint: None,
+            decal_tex_mod: None,
             maps: if with_mask {
                 vec![evolve_core::TextureReference {
                     role: "opacity".into(),
@@ -1292,6 +1492,7 @@ mod tests {
             emissive: None,
             armor_emissive: None,
             emission_strength: 1.0,
+            emissive_uv: None,
             specular: None,
             gloss: None,
             opacity: None,
@@ -1686,6 +1887,9 @@ mod tests {
             }],
             opacity: None,
             glow_amount: None,
+            alpha_glow: false,
+            diffuse_tint: None,
+            decal_tex_mod: None,
         };
         assert!(!needs_alpha_blending(&ordinary));
         let mut transparent = ordinary;
