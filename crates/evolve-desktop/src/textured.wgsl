@@ -9,6 +9,17 @@ struct Output {
 @group(0) @binding(1) var material_sampler: sampler;
 @group(0) @binding(2) var normal_map: texture_2d<f32>;
 @group(0) @binding(3) var emissive_map: texture_2d<f32>;
+@group(0) @binding(4) var specular_map: texture_2d<f32>;
+@group(0) @binding(5) var gloss_map: texture_2d<f32>;
+// Explicit authored opacity map. Diffuse alpha may hold CryEngine gloss/mask
+// data, so it is never reused for a separate opacity-reference material.
+@group(0) @binding(6) var opacity_map: texture_2d<f32>;
+// x is authored GlowAmount for this material leaf (3 != 100%).
+// y is the viewport-only Emissive strength slider, default 1x.
+@group(0) @binding(7) var<uniform> emission_params: vec4<f32>;
+// Separate, optional armor overlay: this channel is black when unchecked,
+// independently of any source-authored Emittance/GlowAmount texture.
+@group(0) @binding(8) var armor_glow_map: texture_2d<f32>;
 
 @vertex
 fn vs_main(
@@ -27,11 +38,16 @@ fn vs_main(
     return out;
 }
 
-@fragment
-fn fs_main(input: Output) -> @location(0) vec4<f32> {
+fn shade(input: Output) -> vec4<f32> {
     let base = textureSample(diffuse, material_sampler, input.uv);
     let encoded_normal = textureSample(normal_map, material_sampler, input.uv).rg;
     let glow = textureSample(emissive_map, material_sampler, input.uv).rgb;
+    let armor_glow = textureSample(armor_glow_map, material_sampler, input.uv).rgb;
+    // Specular is source reflectance color, NOT a gloss/roughness scalar.
+    // Only an explicitly authored Gloss/Glossiness/Smoothness map controls
+    // the highlight width. Missing specular uses a black neutral fallback.
+    let specular_color = textureSample(specular_map, material_sampler, input.uv).rgb;
+    let gloss = textureSample(gloss_map, material_sampler, input.uv).r;
 
     // CryEngine BC5 stores tangent-space XY. Reconstruct non-negative Z,
     // without treating the normal texture as sRGB. Missing maps use flat XY.
@@ -70,16 +86,98 @@ fn fs_main(input: Output) -> @location(0) vec4<f32> {
             surface = normalize(t * tangent_normal.x + b * tangent_normal.y + surface * tangent_normal.z);
         }
     }
-    // Neutral studio lights keep source surface detail visible without
-    // inventing missing diffuse artwork. Two-sided light accommodates
-    // CryEngine meshes with reversed source winding in isolated previews.
-    let key = normalize(vec3<f32>(0.45, -0.4, 0.8));
-    let fill = normalize(vec3<f32>(-0.7, 0.25, 0.5));
-    let key_amount = abs(dot(surface, key));
-    let fill_amount = abs(dot(surface, fill));
-    let brightness = (0.30 + 0.54 * key_amount + 0.16 * fill_amount)
-        * clamp(input.light_strength, 0.1, 2.0);
-    // Emission is manually selected and authored as sRGB; exact MTL
-    // GlowAmount and transparency still require verified material resolution.
-    return vec4<f32>(base.rgb * brightness + glow, base.a);
+    // CryEngine-inspired preview lighting: warm directional key/sun,
+    // cool sky fill, lower hemisphere bounce, and a subtle rear rim light.
+    // It is a material-inspection rig, not a claim to reproduce the game's
+    // actual deferred lighting, time-of-day, GI, SSAO or shadow cascades.
+    // Two-sided contribution keeps historical 2012 CryTek winding visible.
+    let key = normalize(vec3<f32>(0.48, -0.46, 0.75));
+    let fill = normalize(vec3<f32>(-0.62, 0.26, 0.54));
+    let back = normalize(vec3<f32>(-0.2, 0.78, 0.55));
+    let key_diffuse = abs(dot(surface, key));
+    let fill_diffuse = abs(dot(surface, fill));
+    let back_diffuse = max(dot(surface, back), 0.0);
+    let sky = clamp(surface.z * 0.5 + 0.5, 0.0, 1.0);
+    let ambient = mix(vec3<f32>(0.20, 0.18, 0.17),
+                      vec3<f32>(0.30, 0.33, 0.37), sky);
+    let irradiance = ambient
+        + vec3<f32>(0.58, 0.52, 0.45) * key_diffuse
+        + vec3<f32>(0.15, 0.19, 0.25) * fill_diffuse
+        + vec3<f32>(0.13, 0.15, 0.19) * pow(back_diffuse, 2.0);
+    let exposure = clamp(input.light_strength, 0.2, 4.0);
+    // Original CryEngine-style spec/gloss slots remain authoritative.
+    // No missing source specular is invented: an absent map stays black.
+    let to_eye = normalize(vec3<f32>(-input.view_position.xy, 3.0 - input.view_position.z));
+    let half_key = normalize(key + to_eye);
+    let half_fill = normalize(fill + to_eye);
+    let exponent = mix(8.0, 120.0, clamp(gloss, 0.0, 1.0));
+    let highlight = 0.84 * pow(abs(dot(surface, half_key)), exponent)
+                  + 0.16 * pow(abs(dot(surface, half_fill)), exponent);
+    let specular_light = specular_color * highlight * exposure;
+    // Emissive is independent of incident light, as in the game material.
+    return vec4<f32>(base.rgb * irradiance * exposure
+        + glow * emission_params.x * emission_params.y
+        + armor_glow * emission_params.y + specular_light, base.a);
+}
+
+@fragment
+fn fs_opaque(input: Output) -> @location(0) vec4<f32> {
+    // A disabled GPU blend alone does not make the offscreen wgpu target
+    // opaque: copying diffuse alpha into that target can still create holes
+    // when Iced composites the viewport with the rest of the interface.
+    let color = shade(input);
+    return vec4<f32>(color.rgb, 1.0);
+}
+
+@fragment
+fn fs_main(input: Output) -> @location(0) vec4<f32> {
+    // WGPU opaque mode disregards alpha entirely. For glass/water this is
+    // the authored diffuse-alpha translucency entrypoint.
+    return shade(input);
+}
+
+// Solid CryEngine character masks are alpha-tested with depth writes.
+// A gray authored opacity mask must not make the entire body see-through.
+// Preserve true blending for authored glass/water materials.
+@fragment
+fn fs_masked(input: Output) -> @location(0) vec4<f32> {
+    let coverage = clamp(textureSample(opacity_map, material_sampler, input.uv).r, 0.0, 1.0);
+    if coverage < 0.5 {
+        discard;
+    }
+    let color = shade(input);
+    return vec4<f32>(color.rgb, 1.0);
+}
+
+@fragment
+fn fs_opacity(input: Output) -> @location(0) vec4<f32> {
+    let color = shade(input);
+    // Use the explicitly authored opacity texture in linear space. This
+    // source controls transparency independently of the diffuse DDS alpha.
+    let opacity = clamp(textureSample(opacity_map, material_sampler, input.uv).r, 0.0, 1.0);
+    if opacity <= 0.001 {
+        discard;
+    }
+    return vec4<f32>(color.rgb, opacity);
+}
+
+// The floor uses a separate untextured line pipeline but the *same*
+// source-space camera projection/depth as the mesh. It cannot alter assets.
+struct FloorOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+}
+@vertex
+fn vs_floor(
+    @location(0) position: vec3<f32>,
+    @location(1) color: vec4<f32>,
+) -> FloorOutput {
+    var out: FloorOutput;
+    out.position = vec4<f32>(position, 1.0);
+    out.color = color;
+    return out;
+}
+@fragment
+fn fs_floor(input: FloorOutput) -> @location(0) vec4<f32> {
+    return input.color;
 }

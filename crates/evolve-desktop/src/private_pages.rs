@@ -30,7 +30,8 @@ fn tile(name: &'static str, description: &'static str, page: Page) -> Element<'s
             ]
             .spacing(5),
         ]
-        .spacing(14),
+        .spacing(14)
+        .align_y(iced::Center),
     )
     .style(|theme, status| {
         let mut style = design::secondary(theme, status);

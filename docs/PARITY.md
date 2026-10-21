@@ -1,3 +1,38 @@
+## Unified FBX exporter continuation (October 20)
+
+Detailed resumable status, current implementation files, exact remaining gates and
+Blender 5.2 real-asset acceptance steps live in [parity_handoff.md](parity_handoff.md).
+The unified character FBX binary publisher now shares the standard exporter’s
+atomic full-byte, signature-verified copy; the Blender bridge uses an explicit
+Python-failure exit code and excludes only bone-referenced display shapes
+from reimport mesh checks. UV0 and bone-weight checks are stricter, but live
+Wraith stages, Kala equipment and monster bone/action parity have **not** been
+revalidated against real assets in this working branch. Do not infer completion
+from older green synthetic CI runs.
+
+## October 20 — whole-CDF verified native CAF preview (experimental)
+
+- The CDF worker retains each successfully resolved attachment's canonical render source,
+  original contiguous vertex span, verified skin-weight status and authored rigid-bone socket.
+  Per-submaterial GPU draw ranges remain separate from these original geometry spans.
+- A native non-additive CAF selected or auto-discovered for the current CDF can now bind
+  all its **verified skinned attachments** against the exact compiled skeleton, rather
+  than only supporting individual .skin/.chr models. A single CAF time controls all
+  attached skinned parts; source UV0, triangle order and per-part materials remain unchanged.
+- Rigid CA_BONE equipment follows its original compiled socket's pose delta
+  (animated bone world transform multiplied by inverse bind). Invalid/missing sockets,
+  unequal source rest meshes, missing verified weights and unbound CAF controllers
+  fail explicitly instead of animating invented geometry.
+- Bind preparation runs in the background; scrubbing uses the existing bounded CPU
+  skeletal evaluator, and wgpu renders the assembled deformed mesh. Switching to
+  another model or converted DBA/GLB clears the previous assembly skin state.
+
+**Still blocking release:** Actual Stage 2 character assembly/CAF screenshot and bone
+deformation validation; performance on large CDFs; multi-CAF layering, additive clips,
+native DBA database bitstreams and character-wide multi-Action FBX; UV/material export
+subset equivalence; online/offline launch recovery and game mount verification. This
+change is not a claim of GPU compute skinning or full private-manager parity.
+
 # Evolve Mod Manager — Rust 1.0 feature-parity gate
 
 This table tracks **actual Rust implementation state**, not feature mockups. The existing production manager's behavior is the acceptance baseline. Real proprietary test assets must stay outside this public repository.
@@ -222,6 +257,250 @@ rewrite. Test each using real permitted Stage 2 assets and Blender before
 changing these labels or authorizing v1.0.
 
 
+## Level Editor PR #3 reviewer hardening
+
+- A local WXYZ quaternion edit marks **only its placement subtree** dirty:
+  child world transforms update in parent-to-child order using cached ancestors.
+  Other branches retain their already computed world transforms; the scene
+  value is still cloned for immutable UI rendering, so that copy has linear cost.
+- Author-authored local TRS values are captured **once** when the original
+  source is loaded; a 64-entry deque stores exact `(GUID, previous, next)`
+  changes and undo/redo never rewrites the authored baseline. Export compares
+  against those originals, excluding fully undone edits.
+- Editable XYZ, WXYZ, and scale inputs reject non-finite and excessively
+  large values; malformed components and quaternion order have regression
+  tests rather than being silently coerced.
+- Export preflights canonical paths for the source, Asset Library, staged
+  projects, game storage, and any indexed roots, including symlink aliases.
+  It stages XML privately, rejects duplicate/missing GUIDs, verifies the
+  original file's SHA-256 **before and after serialization**, and publishes
+  only via atomic no-clobber creation. A preexisting target is never deleted
+  or overwritten, nor is a partial edited output exposed on failed validation.
+- Regression coverage includes out-of-order parent declarations, thousands
+  of unaffected sibling placements, history capacity, missing/duplicate GUIDs,
+  protected output trees, symlinked aliases, non-finite input, and target
+  collisions. Windows GUI and actual CryEngine layer acceptance are still
+  required before release.
+
+## Level Editor local transform editing milestone (preview)
+
+- The native Level Editor lets an inspected .lyr/mission XML placement's **authored
+  local** position, quaternion (WXYZ), and scale be changed in memory. Child
+  world placements are recalculated from the verified parent GUID hierarchy.
+- Up to 64 transform changes are undoable/redoable; edits are not written to
+  the original extracted level file. The original imported source hash is
+  checked before and after export.
+- Up to 128 changed exact-GUID placements can be exported together to a
+  **new** XML/LYR file. Exports inside the original asset directory or
+  imported Asset Library are rejected, and an existing output cannot be
+  replaced.
+- This is not yet full private Level Editor parity: 3D instancing, gizmos,
+  terrain materials, multi-level scene editing, asset placement/removal and
+  broader scene-history operations remain unported. Synthetic regression tests
+  and Windows real-map acceptance remain required.
+
+## Automatic authored material channels (release-gated)
+
+- Selecting an indexed model automatically discovers its exact authored MTL
+  dependency and loads available source **diffuse**, **BC5/normal**,
+  **emissive/glow**, **specular-color**, and explicitly authored
+  **gloss/glossiness/smoothness** DDS references into the GPU viewport.
+  Specular color is not treated as gloss. Neutral fallback textures prevent
+  a missing specular map from producing artificial highlights.
+- Cooked .dds.0 is preferred before .dds across both the extracted source
+  and verified same-build Asset Library, with ambiguity treated as a
+  diagnostic, not an arbitrary filename match. All original paths remain
+  read-only and the previous character's maps are cleared on selection.
+- Experimental single-slot rigged FBX staging now also preserves explicit
+  specular color through KHR_materials_specular and inverse gloss in the
+  standard glTF metallic-roughness roughness channel. Blender support for
+  those extension semantics still requires actual import/export testing.
+- **Not production parity yet:** meshes with multiple CryEngine submaterial
+  IDs are recognized but their index-subset-to-slot mapping is not yet
+  applied to GPU draws, so maps from different authored slots are deliberately
+  withheld rather than mixed. Shader-specific alpha, environment/reflection,
+  CryEngine DDNA alpha gloss and game-exact physical lighting still need
+  source-asset validation. Do not claim full automatic texture correctness
+  or release v1.0 on this development milestone.
+
+## Signed Stage 2 CryPAK and client-hook swap preflight (PR #5)
+
+- Signed CryPAKs authenticate RSA-PSS SHA-256 against the exact case-sensitive
+  signed archive basename, decrypt their directory via original locally
+  supplied RSA-1024 PKCS#1 public key + Twofish keys, and verify member CRCs.
+  The rebuilt archive is signed to a **different, locally supplied matching**
+  private/public RSA pair, independently opened, and replaced member bytes
+  are round-tripped before a NEW output is published.
+- **Whole-archive resign** (no modified member) preserves *every byte* before
+  the 2320-byte signed comment, including encrypted local payloads, central
+  directory, original ZIP offsets and archive member ordering. Only RSA-PSS
+  signature and private-wrapped symmetric keys in the trailer are changed.
+  Outputs are staged, signature-verified, then published without overwriting.
+- The desktop and CLI distinguish the original `RSAKeyData.bin` alongside the
+  configured signing stage from the custom `stage/mykeys/public_key.bin`.
+  The exact old/new key for an archive is chosen by verifying its signature
+  (not by file name). No original or custom keys, DLLs, or game PAKs are
+  embedded in this repository.
+- **Client hook:** prepare a *new copy* of a user-supplied 4096-byte
+  `bin64_SteamRetail/inject.dll` only if its 140-byte RSA-1024 public DER
+  at byte offset `0x870` exactly matches the original known key. Validate
+  that **no other bytes** differ before a new staged `inject.dll` is
+  published. Neither the input DLL nor installed client is modified.
+- **Preflight:** independently verify both PAK signatures, identical
+  archived member names, and the hook's original/custom RSA slots. The
+  manager/CLI reject unexpected hook changes, incorrect keys, duplicate
+  targets and existing outputs. Synthetic RSA/Twofish test fixtures verify
+  re-signing, unchanged payload ciphertext, hook preparation, and corruption
+  rejection without including proprietary game binaries.
+- **Still not validated:** automatic paused-launcher live PAK and DLL swap,
+  hooks actually loading under Evolve Stage 2, real encrypted production PAK
+  acceptance, game-process lifecycle checks, automatic installed-file backup
+  and restore, and postlaunch archive mounting. The current Rust stage remains
+  isolated and offline-only. A successful cryptographic preflight or CI build
+  must **never** be reported as proof of a successful in-game swap.
+
+CLI examples (user-supplied files, with new destinations):
+
+```powershell
+evolve-cli signed resign original.pak RSAKeyData.bin private_key.pem public_key.bin original.pak new-folder/original.pak
+evolve-cli hook prepare bin64_SteamRetail/inject.dll RSAKeyData.bin public_key.bin staging/inject.dll
+evolve-cli hook pak-preflight original.pak new-folder/original.pak bin64_SteamRetail/inject.dll staging/inject.dll RSAKeyData.bin public_key.bin original.pak
+```
+
+## Private-launcher-compatible offline PAK/hook swap bridge (PR #5)
+
+- The original private manager's runtime uses **controlled_swap.py** to
+  prepare custom-key signed PAKs and `inject-custom.dll` as safe same-volume
+  `.customkey-ready` files; **auto_launch_frida.py** intercepts the user's
+  existing private launcher's `CreateProcessW` call immediately before
+  `Evolve.exe` exists, swaps verified staged PAKs and the 4 KiB hook, then
+  starts an independent **auto_restore_watch.py** recovery monitor.
+- The Rust manager's **Modding → Tools → Verify offline launcher + signed PAKs**
+  validates the existing private stage's `rekey_plan.json` and
+  `stage_status.json`, the exact installed game root, every original and
+  custom CryPAK RSA signature and matching member paths, the original and
+  RSA-key-only modified `inject.dll`, the staged hook SHA-256, and the
+  absence of orphaned original backups. It never changes the installed client.
+- **Play with mods (existing private helper)** reuses the user's already
+  installed `controlled_swap.py` and `auto_launch_frida.py` through Windows
+  Python 3.11 / Frida. When no valid prepared journal exists, the private
+  helper prepares the copies and the Rust manager rechecks the signed PAK and
+  hook pairing before invoking the independent launcher controller. The
+  controller, not Rust, owns process-creation interception and auto-restoration.
+  No private signing key, Frida agent, game DLL or game assets are packaged.
+- The separate **Prepare verified client hook copy** action now permits the
+  private launcher's exact `stage/inject-custom.dll` filename (in addition to
+  a new `inject.dll` elsewhere), and derives an unset source hook path from
+  the private stage's recorded original game root. It remains no-clobber.
+- **Not native standalone parity yet.** Without the user's preinstalled
+  original private launcher helper scripts, working Python 3.11/Frida and
+  a fully verified private signed stage, launching refuses to proceed.
+  A successful preflight or detached helper process ID does **not** prove
+  the game mounted the PAKs. Actual Windows Stage 2 launch, restore-watchdog
+  recovery, and an offline game-session test remain required before release.
+
+## Signed Stage 2 PAK / offline launcher handoff parity — PR #5
+
+- Re-signing and 1–64-member authenticated rebuilding already use locally
+  configured original/custom RSA keys, regenerate the encrypted CryPAK
+  trailer/directory as needed, and verify the new signature and all edited
+  payloads *before* publishing a new archive. Synthetic Twofish/RSA golden
+  tests cover a new signature, unchanged original encrypted payload and
+  offset preservation, mismatched hook key rejection and source immutability.
+- Original `inject.dll` is not modified by the manager. The separate
+  `inject-custom.dll` is constrained to the known 140-byte public-key slot;
+  the preflight derives both hook locations from the configured existing
+  signing stage, validates original and custom signatures, and rejects
+  mismatched archive member sets.
+- Compared with the private offline launcher, the bridge now validates the
+  **ordered**, version-1 `prepared` swap ledger (not only name membership),
+  blocks signing/game/helper directories nested inside the live install, and
+  checks that ready copies match staged files by SHA-256 with no orphaned
+  original backup.
+- Before starting the user's existing launcher, the bridge checks for x64
+  Python 3.11 and Frida and waits for a fresh
+  `Automatic CreateProcessW hook ready at ...` acknowledgement. It stops
+  the unready helper on startup errors or timeout rather than reporting a
+  successful swap from `Popen` alone. Only the private helper performs
+  the *paused*, reversible same-volume rename; a separate watchdog restores
+  original PAKs and the original shim after both game processes close.
+- The Modding page also exposes **Restore original PAKs + hook** for an
+  interrupted session after both game processes are closed. This validates
+  the exact signed-PAK-and-shim ledger, checks canonical game/stage roots,
+  rejects symlink path escapes and foreign/duplicate destinations, then
+  calls the private `reusable_restore.py` helper. The original signed
+  archive and shim signatures are checked again afterward. Restored
+  sessions legitimately finish as `prepared` if all verified custom files
+  were recycled, or `restored` if a fresh preparation is required.
+  Manual recovery never requires Frida to be installed.
+- Path comparisons accept the private Windows `pathlib.Path` convention
+  (`Game\\libs.pak`) and the signing plan's slash-delimited virtual
+  names (`Game/libs.pak`) without allowing traversal or duplicate names.
+- **Not yet complete:** the public Rust application still delegates the
+  actual paused swap/restore to the user's installed, existing private
+  Python/Frida helper scripts, and real Stage 2 runtime mount, crash recovery,
+  helper startup and restore must be verified on an actual Windows game
+  installation before publication. Signed preflight and hook-ready are
+  necessary but not evidence that the game consumed the modified assets.
+  No keys or injection DLLs are bundled in the public source.
+
+## Integrated Asset Viewer preview — PR #5
+
+- PR #5 combines complete development histories from PR #3 and PR #4
+  without replacing the Level Editor's protected export or dropping the
+  model/texture/animation renderer changes. It remains a draft preview.
+- The extracted-file explorer automatically previews selected original DDS
+  pixels at the highest decoded resolution inside the Asset Viewer, not only
+  their metadata. A selection made while another decode runs supersedes the
+  earlier preview. Switching to a model or CDF clears stale DDS imagery.
+- An explicit retry action is available, but a separate Inspect click is not
+  required for supported single-clicked assets. The original DDS, imported
+  Asset Library and game files remain read-only.
+- **Still blocked:** Accurate multi-submaterial CDF material bindings,
+  animated multi-part character rendering, some rig/CAF/DBA variants,
+  and real Windows Stage 2 performance and Blender export acceptance.
+
+## Native CAF weighted viewport preview (release-gated)
+
+- Selecting a compatible indexed .skin/.skinm or .chr/.chrm previews original geometry
+  without a second Inspect click. When a **non-additive CAF** and an exact
+  compiled source skeleton resolve, the model viewer now attempts to verify
+  the original subset palettes, bone weights, CRC identities, inverse bind
+  matrices and CAF tracks before enabling deformation.
+- Compatible source clips can be scrubbed and played. Skin deformation uses
+  the original 4- or 8-influence weights in a bounded CPU evaluator while
+  wgpu still renders the textured triangles. Source UVs, textures and files
+  remain untouched; source shapes and bone hierarchies are never guessed.
+- Cyclic CAF clips start playback automatically after successful source
+  binding. CAF keys without a verified skeleton remain inspectable but
+  **cannot** animate an unbound character mesh. Unverified/malformed rigs
+  fail instead of producing misleading moving vertices.
+- **Still blocked:** True GPU skeletal skinning, multiple attached CDF
+  parts in the same animated viewport, additive overlays, native DBA
+  bitstream playback, full CryEngine shader/material subsets, equipment
+  attachment transformations, and Windows/real-character acceptance.
+
+## Experimental unified original-rig CDF FBX (release-gated)
+
+- The native Asset Viewer can request **one new FBX** assembled from a selected
+  CDF's exactly resolved default skin attachments. Each part must independently
+  decode with verified original skin weights, UV0, and the same compiled
+  skeleton. No guessed bones or missing meshes are substituted.
+- A bounded external Blender bridge imports these independently verified GLBs,
+  checks original rest-bone names/parents/matrices, and rebinds all parts to one
+  original armature. It then reimports the resulting binary FBX to verify
+  exported meshes retain an armature modifier, weights, UVs and bone count.
+- Source assets and the Asset Library are left untouched, existing destinations
+  cannot be overwritten, and no partial FBX is published after an error.
+  An exact original non-additive CAF may be opted into, but multiple Actions,
+  native DBA decoding and live wgpu skeletal deformation remain unfinished.
+- **This does not yet guarantee full character export parity.** Per-part and
+  per-submaterial textures, transparency, secondary texture channels,
+  equipment offset/bone attachment variants, complex rig formats and real
+  Blender/Windows Stage 2 acceptance still need work. The resulting export
+  reports `fully_textured = false`; this path is experimental and not a
+  production-ready painting/animation workflow until verified on real assets.
+
 ## October 19 — file actions and flat CDF FBX staging
 
 - The native Asset Viewer file list now accepts a right-click on indexed
@@ -264,3 +543,36 @@ converter and verified extracted source. Skeleton retargeting, live wgpu
 skinning, full layered GPU animation, Action export for complete characters,
 and the private manager's native/on-demand archive handling are not at
 parity. They remain required before public 1.0.
+
+## Authored controller IDs and live CAF layer playback
+
+The compiled skeleton's stored controller IDs now drive native CAF binding in
+both the CPU viewport and the rigged GLB/FBX export path. Recomputing IDs from
+lowercased display names rejected valid assets (including every controller in
+the tested Wraith idle). Duplicate stored IDs and unmatched CAF tracks still
+fail rather than being assigned guessed bones.
+
+The Animation panel offers a non-additive **Blend layer** action, weight slider,
+and removal control for a bound native CAF character. Sparse base channels use
+the original local bind transforms. All skinned CDF parts and authored rigid
+bone sockets share a single sampled pose per frame. Selecting another base or
+asset clears the layer; late worker results cannot attach to a newer base.
+This is viewport blending; exported Actions do not yet bake the overlay.
+
+Read-only acceptance on the user's extracted Stage 2 Wraith CDFs validated all
+three evolution stages with idle plus stage-loop CAFs at five timeline samples.
+All base controllers matched (153, 153, 152); all vertices moved (20,313,
+20,987, 23,783 respectively); triangle indices and UV0 remained unchanged and
+positions remained finite. This is structural validation, not visual/game
+acceptance. Synthetic coverage also exercises two skinned parts plus equipment,
+zero-weight and removed layers, and rejection of foreign tracks.
+
+`cargo run -p evolve-core --example validate_character -- <extracted-root>
+<cdf> <base.caf> <layer.caf> <AssetLibrary> [build-label]` provides the repeatable
+read-only probe. No proprietary assets are included in this repository.
+
+Remaining release requirements still include native DBA and additive decoding,
+unified textured multi-stage/equipment FBX with Actions, complete level editing,
+mod/launcher recovery acceptance, library import/dependency workflows, GUI
+parity, media tools, and installer/updater rollback validation. This change does
+not mark the broader parity checklist complete.

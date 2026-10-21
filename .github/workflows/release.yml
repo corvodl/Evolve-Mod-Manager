@@ -44,9 +44,29 @@ jobs:
           if (!$package -or $package.version -ne $env:VERSION) {
             throw "Version must match the desktop Cargo package."
           }
-          $unfinished = Select-String -Path "docs/PARITY.md" -Pattern '\*\*Not ported\*\*|\*\*Partial\*\*'
-          if ($unfinished) {
-            throw "Parity checklist still has incomplete release requirements."
+          # Require every acceptance row to be independently marked verified.
+          # A status such as **Partial: ...** must NOT slip past a bare
+          # **Partial** string match.
+          $rows = @()
+          $inside = $false
+          foreach ($line in (Get-Content -LiteralPath "docs/PARITY.md")) {
+            if ($line -match '^\| Feature \| Rust rewrite status \|') {
+              $inside = $true
+              continue
+            }
+            if ($inside -and $line -notmatch '^\|') { break }
+            if ($inside -and $line -match '^\| ' -and $line -notmatch '^\| ---') {
+              $rows += $line
+            }
+          }
+          if ($rows.Count -lt 15) {
+            throw "Feature parity checklist missing or unexpectedly short."
+          }
+          foreach ($row in $rows) {
+            $fields = $row.Split('|')
+            if ($fields.Count -lt 5 -or $fields[2] -notmatch '\*\*Verified for v1\.0\*\*') {
+              throw "Release blocked by unverified feature: $row"
+            }
           }
 
       - uses: Swatinem/rust-cache@v2
