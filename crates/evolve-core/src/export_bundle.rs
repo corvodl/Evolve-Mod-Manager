@@ -2,10 +2,10 @@
 //! Source DDS files remain untouched; external texture exports are PNG only.
 use crate::character_unified_fbx::standalone_authored_diffuse;
 use crate::{
-    AnimationPolicy, DependencyStatus, EquipmentOverrides, Inventory,
+    AnimationPolicy, CdfExportAppearance, DependencyStatus, EquipmentOverrides, Inventory,
     convert_glb_to_fbx_with_options, export_dds_png, export_model_glb,
-    CdfExportAppearance, export_rigged_character_fbx_options, export_unified_cdf_fbx_options_with_glow, inspect_dependencies,
-    read_model, read_static_cdf_assembly_with_equipment,
+    export_rigged_character_fbx_options, export_unified_cdf_fbx_options_with_glow,
+    inspect_dependencies, read_model, read_static_cdf_assembly_with_equipment,
 };
 use std::collections::{HashSet, VecDeque};
 use std::fs;
