@@ -91,7 +91,7 @@ Extraction output must be an **absent folder**; PNG and JSON outputs must be **n
 ## Public release policy
 
 - Windows is the primary target. The codebase has independent public Git history.
-- Do not commit original game PAKs, extracted game assets, keys, personal settings, DRM bypass material, or user-specific files.
+- Do not commit original game PAKs, extracted assets, **private** signing keys, personal settings, DRM bypass material, or user-specific files. The bundled 140-byte `RSAKeyData.bin` is a **public verification key only**, not a private signing key.
 - Preserve exact high-resolution textures, original UV0, skeleton and skin weight relationships. Missing/ambiguous references must be reported rather than guessed.
 - The planned complete-character FBX exporter must preserve hunter 1P/3P equipment and all three independently rigged monster stages. Verified animations must be **optional and OFF by default**, matching the existing manager's latest merged behavior.
 - Publish `1.0.0` only once every requirement in [docs/PARITY.md](docs/PARITY.md) is implemented and passes synthetic regression, real Windows build, and real-game compatibility testing.
