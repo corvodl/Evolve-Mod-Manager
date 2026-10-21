@@ -924,7 +924,8 @@ mod tests {
         let high_mip = high.join("scorpid_body.dds.2");
         fs::write(&high_mip, solid_bc1(true).repeat(4)).unwrap();
         assert!(decode_dds_rgba(&source).is_err());
-        let (info, rgba) = decode_dds_rgba_with_parts(&source, std::slice::from_ref(&high_mip)).unwrap();
+        let (info, rgba) =
+            decode_dds_rgba_with_parts(&source, std::slice::from_ref(&high_mip)).unwrap();
         assert_eq!(info.streaming_parts, 3);
         assert_eq!(rgba.get_pixel(7, 7).0, [255, 0, 0, 255]);
         let wrong = high.join("another_monster.dds.2");
