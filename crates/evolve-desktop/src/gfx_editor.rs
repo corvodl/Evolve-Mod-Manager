@@ -1,6 +1,7 @@
 //! Isolated GFX editing sessions, following the private manager's FFDec flow.
 //! No operation modifies original PAKs, libraries or the game installation.
 use crate::modding_projects::{self, ProjectRow};
+use crate::gfx_dependencies::{self, Dependency};
 use evolve_core::gfx::{GfxInfo, MAX_SOURCE, inspect_gfx};
 use evolve_core::gfx_layout::{LayoutEdit, StaticLayer, edit_first_frame, static_layers};
 use serde_json::Value;
@@ -26,6 +27,7 @@ pub struct Session {
     pub original_sha: String,
     pub info: GfxInfo,
     pub layers: Vec<StaticLayer>,
+    pub dependencies: Vec<Dependency>,
     pub edits: usize,
     pub applied: bool,
 }
@@ -108,6 +110,8 @@ pub fn create(
     source: PathBuf,
     relative: String,
     project: Option<ProjectRow>,
+    imported_library: Option<PathBuf>,
+    source_build: Option<String>,
 ) -> Result<Session, String> {
     if !source.is_absolute()
         || !valid_member(&relative)
@@ -127,47 +131,14 @@ pub fn create(
     );
     let editable = folder.path().join("movie.gfx");
     fs::write(&editable, &bytes).map_err(|e| e.to_string())?;
-    // Stage only explicitly referenced local imports as optional read-only
-    // dependencies. Never follow symlinks, remote URLs, other-build files or
-    // unreferenced arbitrary library content. Cross-PAK sources need an
-    // explicit same-build resolver in a later parity milestone.
-    let parent = fs::canonicalize(source.parent().ok_or("Invalid GFX source path")?)
-        .map_err(|e| e.to_string())?;
-    for name in &info.imports {
-        if !valid_member(name)
-            || !["gfx", "swf"].contains(
-                &Path::new(name)
-                    .extension()
-                    .and_then(|v| v.to_str())
-                    .unwrap_or_default()
-                    .to_ascii_lowercase()
-                    .as_str(),
-            )
-        {
-            return Err("Unsafe imported GFX/SWF dependency path".into());
-        }
-        let candidate = parent.join(name);
-        if regular(&candidate, MAX_SOURCE as u64).is_err() {
-            continue; // Missing dependency is a preview diagnostic, not fabricated data.
-        }
-        let verified = fs::canonicalize(&candidate).map_err(|e| e.to_string())?;
-        if !verified.starts_with(&parent) {
-            return Err("An imported GFX movie resolves outside its source directory".into());
-        }
-        let content = fs::read(&verified).map_err(|e| e.to_string())?;
-        if content.len() < 16
-            || ![b"GFX", b"CFX", b"FWS", b"CWS"]
-                .iter()
-                .any(|prefix| content.starts_with(prefix.as_slice()))
-        {
-            return Err("Referenced imported movie is not valid Scaleform content".into());
-        }
-        let target = folder.path().join(name);
-        if let Some(directory) = target.parent() {
-            fs::create_dir_all(directory).map_err(|e| e.to_string())?;
-        }
-        fs::write(target, content).map_err(|e| e.to_string())?;
-    }
+    let dependencies = gfx_dependencies::stage_imports(
+        &info.imports,
+        &relative,
+        &source,
+        folder.path(),
+        imported_library.as_deref(),
+        source_build.as_deref(),
+    )?;
     Ok(Session {
         source,
         relative,
@@ -176,6 +147,7 @@ pub fn create(
         project,
         original_sha: digest(&bytes),
         layers: static_layers(&bytes).map_err(|e| e.to_string())?,
+        dependencies,
         info,
         edits: 0,
         applied: false,
