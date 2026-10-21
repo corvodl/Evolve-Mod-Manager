@@ -66,7 +66,7 @@ fn clean_import(value: &[u8]) -> Result<String, GfxError> {
     let movie = std::str::from_utf8(&value[..end])
         .map_err(|_| Invalid("Invalid imported movie encoding"))?;
     // Only file-local, relative imports; never open an arbitrary URL or path.
-    if movie.contains(['\\', ':']) || movie.starts_with('/') ||
+    if movie.contains('\\') || movie.contains(':') || movie.starts_with('/') ||
         movie.split('/').any(|piece| piece.is_empty() || piece == "." || piece == "..") {
         return Err(Invalid("Unsafe external GFX import reference"));
     }
@@ -261,15 +261,15 @@ mod tests {
         compressed.extend(&raw[3..8]);
         compressed.extend(encoder.finish().unwrap());
         assert_eq!(inspect_gfx(&compressed).unwrap().width, 1920);
-        assert!(inspect_gfx(b"FWS\\x09").is_err());
+        assert!(inspect_gfx(b"FWS\x09").is_err());
         let mut truncated = raw.clone();
         truncated.pop();
         assert!(inspect_gfx(&truncated).is_err());
     }
     #[test]
     fn reject_import_escape() {
-        assert!(clean_import(b"../external.gfx\\0").is_err());
-        assert!(clean_import(b"https://evil.invalid\\0").is_err());
-        assert_eq!(clean_import(b"gfxfontlib_locfont.gfx\\0").unwrap(), "gfxfontlib_locfont.gfx");
+        assert!(clean_import(b"../external.gfx\0").is_err());
+        assert!(clean_import(b"https://evil.invalid\0").is_err());
+        assert_eq!(clean_import(b"gfxfontlib_locfont.gfx\0").unwrap(), "gfxfontlib_locfont.gfx");
     }
 }
