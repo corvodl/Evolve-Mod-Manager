@@ -20,6 +20,7 @@ mod gfx_external_textures;
 mod gfx_interactive;
 mod gfx_layout_canvas;
 mod gfx_live_inspector;
+mod gfx_tool_install;
 mod launcher_bridge;
 mod level_workspace;
 mod menu_popup;
@@ -182,6 +183,8 @@ struct State {
     gfx_interactive_open: bool,
     gfx_interactive_running: Option<gfx_interactive::RunningPreview>,
     gfx_interactive_status: String,
+    gfx_install_busy: bool,
+    gfx_install_status: String,
     gfx_resource: usize,
     gfx_status: String,
     gfx_layout_open: bool,
@@ -1443,6 +1446,8 @@ enum Message {
     GfxRunInteractive,
     GfxInteractiveStarted(Result<gfx_interactive::RunningPreview, String>),
     GfxStopInteractive,
+    GfxInstallTool(gfx_tool_install::Tool),
+    GfxToolInstalled(gfx_tool_install::Tool, Result<PathBuf, String>),
     GfxSelectResource(usize),
     GfxToggleLayout,
     GfxToggleLayoutRaster,
@@ -4025,6 +4030,61 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state,
                     Message::GfxConfigChanged(path.to_string_lossy().into()),
                 );
+            }
+        }
+        Message::GfxInstallTool(tool) => {
+            if state.gfx_install_busy {
+                return Task::none();
+            }
+            let already = match tool {
+                gfx_tool_install::Tool::Ffdec => {
+                    gfx_bundled_tools::valid_ffdec(&state.preferences.ffdec_executable).is_some()
+                }
+                gfx_tool_install::Tool::Ruffle => {
+                    gfx_bundled_tools::valid_ruffle(&state.preferences.ruffle_executable).is_some()
+                }
+            };
+            if already {
+                state.gfx_install_status = format!("{} is already configured.", tool.name());
+                return Task::none();
+            }
+            state.gfx_install_busy = true;
+            state.gfx_install_status = format!(
+                "Downloading and verifying {} from its pinned official release...",
+                tool.name(),
+            );
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || gfx_tool_install::install(tool))
+                        .await
+                        .unwrap_or_else(|e| Err(format!("Installer worker failed: {e}")))
+                },
+                move |result| Message::GfxToolInstalled(tool, result),
+            );
+        }
+        Message::GfxToolInstalled(tool, result) => {
+            state.gfx_install_busy = false;
+            match result {
+                Ok(path) => {
+                    let path = path.to_string_lossy().into_owned();
+                    match tool {
+                        gfx_tool_install::Tool::Ffdec => state.preferences.ffdec_executable = path,
+                        gfx_tool_install::Tool::Ruffle => state.preferences.ruffle_executable = path,
+                    }
+                    state.gfx_install_status = format!(
+                        "{} installed. {}",
+                        tool.name(),
+                        if tool == gfx_tool_install::Tool::Ffdec {
+                            "A compatible Java runtime may also be required."
+                        } else {
+                            "Interactive preview is ready to configure."
+                        },
+                    );
+                    persist_preferences(state);
+                }
+                Err(reason) => {
+                    state.gfx_install_status = format!("{} installation failed: {reason}", tool.name());
+                }
             }
         }
         Message::GfxRuffleConfigChanged(path) => {
