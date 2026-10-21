@@ -843,32 +843,32 @@ fn gfx_viewport(state: &State) -> Element<'_, Message> {
     if state.gfx_layout_open
         && let Some(session) = &state.gfx_session
     {
-            let stage = iced::Size::new(session.info.width as f32, session.info.height as f32);
-            let show_raster = state.gfx_layout_show_raster && state.gfx_preview.is_some();
-            let canvas = canvas(super::gfx_layout_canvas::GfxLayoutCanvas {
-                layers: &session.layers,
-                selected: state.gfx_layout_selected,
-                stage,
-                raster_background: show_raster,
-            })
-            .width(Fill)
-            .height(Fill);
-            let surface: Element<'_, Message> =
-                if let (true, Some(handle)) = (show_raster, &state.gfx_preview) {
-                    stack![
-                        image(handle.clone())
-                            .content_fit(iced::ContentFit::Contain)
-                            .width(Fill)
-                            .height(Fill),
-                        canvas,
-                    ]
-                    .width(Fill)
-                    .height(Fill)
-                    .into()
-                } else {
-                    canvas.into()
-                };
-            return row![
+        let stage = iced::Size::new(session.info.width as f32, session.info.height as f32);
+        let show_raster = state.gfx_layout_show_raster && state.gfx_preview.is_some();
+        let canvas = canvas(super::gfx_layout_canvas::GfxLayoutCanvas {
+            layers: &session.layers,
+            selected: state.gfx_layout_selected,
+            stage,
+            raster_background: show_raster,
+        })
+        .width(Fill)
+        .height(Fill);
+        let surface: Element<'_, Message> =
+            if let (true, Some(handle)) = (show_raster, &state.gfx_preview) {
+                stack![
+                    image(handle.clone())
+                        .content_fit(iced::ContentFit::Contain)
+                        .width(Fill)
+                        .height(Fill),
+                    canvas,
+                ]
+                .width(Fill)
+                .height(Fill)
+                .into()
+            } else {
+                canvas.into()
+            };
+        return row![
                 scrollable(actions.padding(8)).width(Length::FillPortion(2)),
                 column![
                     text("ORIGINAL STAGE COORDINATES · STATIC ROOT FIRST FRAME")
