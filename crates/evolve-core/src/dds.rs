@@ -266,6 +266,16 @@ fn parse_part_name(path: &Path) -> Result<(String, Option<usize>), DdsError> {
 type LoadedDds = (DdsInfo, Vec<u8>, usize, Option<[u32; 4]>);
 
 fn load_dds(source: &Path) -> Result<LoadedDds, DdsError> {
+    load_dds_with_parts(source, &[])
+}
+
+/// Combine verified externally-supplied streaming fragments with a local
+/// .dds.0 mip tail. Each numbered part is still required exactly once;
+/// callers must validate cross-archive source/build provenance separately.
+fn load_dds_with_parts(source: &Path, additional: &[PathBuf]) -> Result<LoadedDds, DdsError> {
+    if additional.len() >= MAX_PARTS {
+        return Err(DdsError::LimitsExceeded);
+    }
     let (base, index) = parse_part_name(source)?;
     let header_path = if index.is_some_and(|i| i != 0) {
         source.with_file_name(format!("{base}.0"))
@@ -299,6 +309,17 @@ fn load_dds(source: &Path) -> Result<LoadedDds, DdsError> {
         {
             return Err(DdsError::Unsupported(
                 "duplicate numbered DDS fragment".into(),
+            ));
+        }
+    }
+    for path in additional {
+        let (name, index) = parse_part_name(path)?;
+        let Some(number) = index else {
+            return Err(DdsError::InvalidFile);
+        };
+        if name != base || number == 0 || parts.insert(number, path.clone()).is_some() {
+            return Err(DdsError::Unsupported(
+                "external streaming DDS fragments mismatch or duplicate local mip".into(),
             ));
         }
     }
@@ -594,7 +615,25 @@ pub fn decode_dds_rgba_with_layout(
     source: &Path,
     layout: DdsLayout,
 ) -> Result<(DdsInfo, RgbaImage), DdsError> {
-    let (info, bytes, offset, masks) = load_dds(source)?;
+    decode_dds_rgba_with_layout_parts(source, layout, &[])
+}
+
+/// Decode a complete cross-archive mip chain without modifying or copying
+/// any original DDS. Extra numbered fragments are validated by the same
+/// dimensions, exact mip lengths and contiguous set checks as local parts.
+pub fn decode_dds_rgba_with_parts(
+    source: &Path,
+    additional: &[PathBuf],
+) -> Result<(DdsInfo, RgbaImage), DdsError> {
+    decode_dds_rgba_with_layout_parts(source, DdsLayout::Linear, additional)
+}
+
+fn decode_dds_rgba_with_layout_parts(
+    source: &Path,
+    layout: DdsLayout,
+    additional: &[PathBuf],
+) -> Result<(DdsInfo, RgbaImage), DdsError> {
+    let (info, bytes, offset, masks) = load_dds_with_parts(source, additional)?;
     let pixels_len = u64::from(info.width) * u64::from(info.height) * 4;
     let capacity = usize::try_from(pixels_len).map_err(|_| DdsError::LimitsExceeded)?;
     let mut rgba = vec![0u8; capacity];
@@ -868,6 +907,30 @@ mod tests {
         assert_eq!(info.streaming_parts, 3);
         assert_eq!(info.width, 8);
         assert_eq!(rgba.get_pixel(7, 7).0, [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn split_low_mips_and_external_high_mip_reconstruct_exact_original_pixels() {
+        let dir = tempfile::tempdir().unwrap();
+        let low = dir.path().join("dds_low");
+        let high = dir.path().join("dds_high");
+        fs::create_dir(&low).unwrap();
+        fs::create_dir(&high).unwrap();
+        let source = low.join("scorpid_body.dds.0");
+        let mut tail = header(8, 8, 3, b"DXT1");
+        tail.extend_from_slice(&solid_bc1(false));
+        fs::write(&source, tail).unwrap();
+        fs::write(low.join("scorpid_body.dds.1"), solid_bc1(false)).unwrap();
+        let high_mip = high.join("scorpid_body.dds.2");
+        fs::write(&high_mip, solid_bc1(true).repeat(4)).unwrap();
+        assert!(decode_dds_rgba(&source).is_err());
+        let (info, rgba) = decode_dds_rgba_with_parts(&source, std::slice::from_ref(&high_mip)).unwrap();
+        assert_eq!(info.streaming_parts, 3);
+        assert_eq!(rgba.get_pixel(7, 7).0, [255, 0, 0, 255]);
+        let wrong = high.join("another_monster.dds.2");
+        fs::write(&wrong, solid_bc1(false).repeat(4)).unwrap();
+        assert!(decode_dds_rgba_with_parts(&source, &[wrong]).is_err());
+        assert!(decode_dds_rgba_with_parts(&source, &[high_mip.clone(), high_mip]).is_err());
     }
 
     #[test]
