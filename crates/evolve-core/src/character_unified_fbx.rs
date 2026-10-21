@@ -1507,6 +1507,74 @@ mod tests {
     }
 
     #[test]
+    fn monster_glow_uses_selected_build_glow_from_imported_dds_pak() {
+        // A normal extracted CDF is not necessarily inside a managed
+        // archive/files directory. The caller's explicit same-build catalog
+        // must still locate its variant glow without searching other builds.
+        let temp = tempfile::tempdir().unwrap();
+        let source_root = temp.path().join("extracted");
+        let monster = source_root.join("characters/monsters/goliath");
+        fs::create_dir_all(&monster).unwrap();
+        let cdf = monster.join("goliath3.cdf");
+        fs::write(&cdf, b"original selected CDF").unwrap();
+        let library = temp.path().join("library");
+        let stage = library.join("dds_low.pak__11111111111111111111");
+        let legacy = library.join("legacy.pak__22222222222222222222");
+        let name = "characters/monsters/goliath/goliath3_glow_diff.dds.0";
+        let stage_dds = stage.join("files").join(name);
+        let legacy_dds = legacy.join("files").join(name);
+        for (dir, file, archive_name) in [
+            (&stage, &stage_dds, "dds_low.pak"),
+            (&legacy, &legacy_dds, "legacy.pak"),
+        ] {
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, b"original").unwrap();
+            fs::write(
+                dir.join("asset-library.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version": 1,
+                    "name": archive_name,
+                    "source": "C:/game/game.pak",
+                    "entries": [{"path": name, "bytes": 8}]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        fs::write(
+            library.join("build-collections.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version":1,
+                "builds":{
+                    "stage-two":{"label":"Stage 2",
+                        "members":{"11111111111111111111":{}}},
+                    "legacy":{"label":"Legacy",
+                        "members":{"22222222222222222222":{}}}
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let inventory = crate::scan_directory(&source_root).unwrap();
+        assert!(
+            monster_glow_path(&cdf, &inventory).unwrap().is_none(),
+            "No source glow exists in the local CDF directory"
+        );
+        let selected = monster_glow_path_with_library(
+            &cdf,
+            &inventory,
+            Some(&library),
+            Some("Stage 2"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            fs::canonicalize(selected).unwrap(),
+            fs::canonicalize(stage_dds).unwrap()
+        );
+    }
+
+    #[test]
     fn cdf_resolves_scoped_high_dds_from_another_imported_pak() {
         let library = tempfile::tempdir().unwrap();
         let objects = library.path().join("Objects.pak__11111111111111111111");
