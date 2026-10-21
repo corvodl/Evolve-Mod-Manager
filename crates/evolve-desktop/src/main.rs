@@ -1419,6 +1419,9 @@ enum Message {
     GfxApply,
     GfxPickReplacement,
     GfxReplacementPicked(Option<PathBuf>),
+    GfxPickEdited,
+    GfxEditedPicked(Option<PathBuf>),
+    GfxRevealSession,
     GfxFinished(Result<(gfx_editor::Session, String, Option<Vec<u8>>), String>),
     ViewerAutoClip(usize),
     ViewerAutoClipFilter(String),
@@ -4044,6 +4047,32 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 tokio::task::spawn_blocking(|| native_export_picker("file"))
                     .await.ok().flatten()
             }, Message::GfxReplacementPicked);
+        }
+        Message::GfxPickEdited => {
+            return Task::perform(async {
+                tokio::task::spawn_blocking(|| native_export_picker("file"))
+                    .await.ok().flatten()
+            }, Message::GfxEditedPicked);
+        }
+        Message::GfxEditedPicked(selected) => {
+            if let Some(path) = selected {
+                return update(state, Message::GfxAction(gfx_editor::Action::ImportGfx(path)));
+            }
+        }
+        Message::GfxRevealSession => {
+            if let Some(session) = &state.gfx_session {
+                #[cfg(target_os = "windows")]
+                let command = std::process::Command::new("explorer.exe")
+                    .arg(session.folder.path()).spawn();
+                #[cfg(not(target_os = "windows"))]
+                let command = std::process::Command::new("xdg-open")
+                    .arg(session.folder.path()).spawn();
+                state.gfx_status = if command.is_ok() {
+                    "Opened GFX editing scratch folder; modify exported XML/scripts there.".into()
+                } else {
+                    format!("Temporary editor folder: {}", session.folder.path().display())
+                };
+            }
         }
         Message::GfxReplacementPicked(selected) => {
             if let Some(replacement) = selected {
