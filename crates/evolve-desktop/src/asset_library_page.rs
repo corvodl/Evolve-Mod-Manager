@@ -168,7 +168,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 space().width(Fill),
                 design::button("Close").on_press(Message::LibraryToggleConfiguration).style(design::text_button),
             ].spacing(8),
-            text("The Asset Library location is detected automatically. Select one signed .pak or a directory containing up to 64 .pak files. Imports use the configured setup's local verification key; original PAK files are not modified.")
+            text("The Asset Library location is detected automatically. Select one signed .pak or a directory containing up to 64 .pak files. Imports authenticate each PAK using the bundled original public RSA key and any configured original/custom public keys. Original archives are not modified.")
                 .size(12).style(design::muted),
             row![
                 design::text_input("Stage 2 .pak file or folder path...", &state.library_import_source)
