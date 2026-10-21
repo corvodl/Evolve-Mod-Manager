@@ -23,7 +23,9 @@ pub fn valid_ffdec(path: &str) -> Option<PathBuf> {
     {
         return None;
     }
-    if !candidate.is_absolute() { return None; }
+    if !candidate.is_absolute() {
+        return None;
+    }
     let info = fs::symlink_metadata(candidate).ok()?;
     if !info.file_type().is_file() || info.len() == 0 {
         return None;
@@ -32,13 +34,13 @@ pub fn valid_ffdec(path: &str) -> Option<PathBuf> {
 }
 pub fn valid_ruffle(path: &str) -> Option<PathBuf> {
     let candidate = Path::new(path.trim());
-    if !candidate.is_absolute()
-        || !candidate.file_name()?.eq_ignore_ascii_case("ruffle.exe")
-    {
+    if !candidate.is_absolute() || !candidate.file_name()?.eq_ignore_ascii_case("ruffle.exe") {
         return None;
     }
     let info = fs::symlink_metadata(candidate).ok()?;
-    if !info.file_type().is_file() || info.len() == 0 { return None; }
+    if !info.file_type().is_file() || info.len() == 0 {
+        return None;
+    }
     fs::canonicalize(candidate).ok()
 }
 
