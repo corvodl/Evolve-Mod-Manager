@@ -35,6 +35,11 @@ pub struct UnifiedCdfFbxReport {
     pub selected_skin_set: Option<String>,
     pub parts: Vec<String>,
     pub bones: usize,
+    /// Number of verified original armatures in the FBX. A historical 2012
+    /// character can preserve several incompatible source rest skeletons
+    /// without silently dropping the extra joint or reassigning weights.
+    #[serde(default)]
+    pub armatures: usize,
     pub weighted_vertices: usize,
     pub diffuse_textured_parts: usize,
     pub animations_embedded: bool,
@@ -1386,6 +1391,35 @@ pub fn export_unified_cdf_fbx_options_with_glow(
             None => std::thread::sleep(Duration::from_millis(150)),
         }
     }
+    // Blender saves this only after importing the exported FBX back and
+    // revalidating every original armature, mesh binding, weight and UV.
+    // Never publish a success without this round-trip confirmation.
+    let verification: serde_json::Value = serde_json::from_slice(
+        &fs::read(work.path().join("verified-export.json"))
+            .map_err(|e| format!("Missing Blender original-rig validation: {e}"))?,
+    )
+    .map_err(|e| format!("Invalid Blender original-rig validation: {e}"))?;
+    let rig_count = verification["armatures"]
+        .as_u64()
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or("Missing verified FBX armature count")?;
+    let verified_bones = verification["bones"]
+        .as_u64()
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or("Missing verified FBX bone count")?;
+    let verified_parts = verification["parts"]
+        .as_u64()
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or("Missing verified FBX part count")?;
+    if rig_count == 0
+        || rig_count > parts.len()
+        || (!allow_distinct_historical_rigs && rig_count != 1)
+        || verified_bones < bone_count.unwrap_or(0)
+        || verified_bones > parts.len() * 1024
+        || verified_parts != parts.len()
+    {
+        return Err("Blender original-rig verification counts disagree with source parts".into());
+    }
     // Shares the same byte-for-byte, non-overwriting FBX publish path as
     // single-model exports. The old flow consumed the first 23 bytes while
     // verifying the signature and accidentally discarded them on copy.
@@ -1394,7 +1428,8 @@ pub fn export_unified_cdf_fbx_options_with_glow(
         original_skeleton: skeleton_ref,
         selected_skin_set: skin_set,
         parts: labels,
-        bones: bone_count.unwrap_or(0),
+        bones: verified_bones,
+        armatures: rig_count,
         weighted_vertices: vertices,
         diffuse_textured_parts,
         animations_embedded: motion.is_some(),
