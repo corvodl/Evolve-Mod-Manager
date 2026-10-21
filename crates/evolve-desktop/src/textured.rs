@@ -50,6 +50,8 @@ pub struct Surface {
     pub diffuse: Option<Arc<image::RgbaImage>>,
     pub normal: Option<Arc<image::RgbaImage>>,
     pub emissive: Option<Arc<image::RgbaImage>>,
+    /// Optional Stage 2 *_glow_diff overlay, never the source's Emittance.
+    pub armor_emissive: Option<Arc<image::RgbaImage>>,
     /// Exact per-leaf authored GlowAmount, not a guessed percentage.
     pub emission_strength: f32,
     pub specular: Option<Arc<image::RgbaImage>>,
@@ -323,6 +325,8 @@ pub struct Pipeline {
     normal_view: wgpu::TextureView,
     emissive_texture: wgpu::Texture,
     emissive_view: wgpu::TextureView,
+    _armor_emissive_texture: wgpu::Texture,
+    _armor_emissive_view: wgpu::TextureView,
     texture: wgpu::Texture,
     view: wgpu::TextureView,
     sampler: wgpu::Sampler,
@@ -335,7 +339,7 @@ pub struct Pipeline {
 // Every runtime material bind group must follow the same schema used by
 // textured.wgsl, including the standalone DDS refresh path. Keep this single
 // helper for initialization, CDF attachment ranges and texture reloads.
-const MATERIAL_BINDINGS: [u32; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+const MATERIAL_BINDINGS: [u32; 9] = [0, 1, 2, 3, 4, 5, 6, 7, 8];
 
 /// Keep the two gains separate: the CryEngine authored strength (3 != 100%)
 /// and the user's optional viewport setting. Shader multiplies x*y, never
@@ -355,7 +359,7 @@ fn emission_uniform_values(source_strength: f32, preview_gain: f32) -> [f32; 4] 
 }
 
 fn material_entries<'a>(
-    views: [&'a wgpu::TextureView; 6],
+    views: [&'a wgpu::TextureView; 7],
     sampler: &'a wgpu::Sampler,
     emission_uniform: &'a wgpu::Buffer,
 ) -> [wgpu::BindGroupEntry<'a>; MATERIAL_BINDINGS.len()] {
@@ -378,6 +382,7 @@ fn material_entries<'a>(
             binding: MATERIAL_BINDINGS[7],
             resource: emission_uniform.as_entire_binding(),
         },
+        texture(8, 6), // optional armor glow, not original Emittance
     ]
 }
 
@@ -526,6 +531,16 @@ impl Pipeline {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
                         min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
                     },
                     count: None,
                 },
@@ -771,6 +786,14 @@ impl Pipeline {
             wgpu::TextureFormat::Rgba8UnormSrgb,
             "No source emission",
         );
+        let (armor_emissive_texture, armor_emissive_view) = Self::upload_map(
+            device,
+            queue,
+            None,
+            &[0, 0, 0, 255],
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            "No optional armor glow",
+        );
         let (specular_texture, specular_view) = Self::upload_map(
             device,
             queue,
@@ -807,6 +830,7 @@ impl Pipeline {
                     &specular_view,
                     &gloss_view,
                     &opacity_view,
+                    &armor_emissive_view,
                 ],
                 &sampler,
                 &emission_uniform,
@@ -861,6 +885,8 @@ impl Pipeline {
             normal_view,
             emissive_texture,
             emissive_view,
+            _armor_emissive_texture: armor_emissive_texture,
+            _armor_emissive_view: armor_emissive_view,
             texture,
             view,
             sampler,
@@ -976,8 +1002,14 @@ impl Pipeline {
                     wgpu::TextureFormat::Rgba8Unorm,
                     "CDF authored opacity",
                 ),
+                (
+                    part.armor_emissive.as_ref(),
+                    [0, 0, 0, 255],
+                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                    "Optional monster armor emission",
+                ),
             ];
-            let mut views = Vec::with_capacity(6);
+            let mut views = Vec::with_capacity(7);
             let mut opacity_uploaded = false;
             for (role, (image, fallback, format, label)) in inputs.into_iter().enumerate() {
                 // A DDS may be shared by many assembly sections. View/texture
@@ -1026,6 +1058,7 @@ impl Pipeline {
                 entries: &material_entries(
                     [
                         &views[0], &views[1], &views[2], &views[3], &views[4], &views[5],
+                        &views[6],
                     ],
                     &self.sampler,
                     &emission_uniform,
@@ -1203,6 +1236,7 @@ impl Pipeline {
                         &self.specular_view,
                         &self.gloss_view,
                         &self._opacity_view,
+                        &self._armor_emissive_view,
                     ],
                     &self.sampler,
                     &self._emission_uniform,
@@ -1358,6 +1392,18 @@ mod tests {
         // for the remaining protected budget.
         assert!(!super::allows_cdf_role(0, 4 * mib, 300 * mib, 2, false));
         assert!(super::allows_cdf_role(0, 4 * mib, 300 * mib, 0, false));
+    }
+
+    #[test]
+    fn independent_armor_emission_does_not_inherit_authored_source_strength() {
+        let authored = super::emission_uniform_values(0.0, 2.5);
+        assert_eq!(authored[0], 0.0);
+        assert_eq!(authored[1], 2.5);
+        // WGSL uses the authored multiplier only for original emission:
+        // optional armor glow remains controlled by the preview gain alone.
+        let source = include_str!("textured.wgsl");
+        assert!(source.contains("glow * emission_params.x * emission_params.y"));
+        assert!(source.contains("armor_glow * emission_params.y"));
     }
 
     #[test]

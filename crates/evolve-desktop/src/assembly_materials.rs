@@ -614,6 +614,7 @@ pub fn load_model(
             diffuse: None,
             normal: None,
             emissive: None,
+            armor_emissive: None,
             emission_strength: 1.0,
             specular: None,
             gloss: None,
@@ -861,6 +862,7 @@ fn unique_gpu_material_bytes(surfaces: &[Surface]) -> usize {
             &surface.specular,
             &surface.gloss,
             &surface.opacity,
+            &surface.armor_emissive,
         ]
         .into_iter()
         .enumerate()
@@ -914,6 +916,7 @@ pub fn load_with_progress(
             diffuse: None,
             normal: None,
             emissive: None,
+            armor_emissive: None,
             emission_strength: 1.0,
             specular: None,
             gloss: None,
@@ -1065,6 +1068,7 @@ mod tests {
             diffuse: Some(Arc::clone(&base_pixels)),
             normal: None,
             emissive: None,
+            armor_emissive: None,
             emission_strength: 1.0,
             specular: None,
             gloss: None,
@@ -1286,6 +1290,7 @@ mod tests {
             diffuse: Some(Arc::clone(&image)),
             normal: None,
             emissive: None,
+            armor_emissive: None,
             emission_strength: 1.0,
             specular: None,
             gloss: None,

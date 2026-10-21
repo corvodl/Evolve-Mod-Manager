@@ -10,6 +10,12 @@ incorrectly set `emission_strength=0` on *every* material when Full armor glow
 was unchecked; that hid original `Emittance` and CryEngine `GlowAmount` too.
 Now the switch solely controls loading/applying that monster-specific overlay.
 Explicit material emission remains on, with original source-relative gain.
+The renderer now binds source Emittance and the optional armor overlay as
+**independent GPU textures**, so turning the overlay on does not suppress or
+overwrite normally emitting areas. The shader computes source emission using
+authored GlowAmount, adds optional armor glow independently at unity source
+gain, then applies the user's shared viewport slider. Unchecking removes only
+the armor channel (neutral black map), without blanking original emission.
 
 **Model Options emissive-strength slider:** shown only when a loaded model has
 a visible emitting material or explicit standalone emissive map; 0–4×,

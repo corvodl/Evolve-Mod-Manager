@@ -1123,8 +1123,6 @@ impl Operation {
                                 for (part, surface) in report.source_parts.iter().zip(surfaces.iter_mut()) {
                                     let binding = part.binding.replace('\\', "/").to_ascii_lowercase();
                                     if surface.visible && binding.contains(owner)
-                                        && surface.emissive.is_none()
-                                        && surface.emission_strength > 0.0
                                         && let Some(base) = surface.diffuse.as_ref()
                                     {
                                         let key = Arc::as_ptr(base) as usize;
@@ -1135,13 +1133,15 @@ impl Operation {
                                             derived.insert(key, Arc::clone(&pixels));
                                             pixels
                                         };
-                                        surface.emissive = Some(image);
-                                        surface.emission_strength = 1.0;
+                                        // Separate armor-overlay channel: do not
+                                        // replace the material's existing Emittance
+                                        // or original per-slot GlowAmount.
+                                        surface.armor_emissive = Some(image);
                                         mapped += 1;
                                     }
                                 }
                                 warnings.push(format!(
-                                    "Full armor glow: {mapped} source alternate-glow sections; existing authored emissive maps retained with original GlowAmount"
+                                    "Full armor glow: {mapped} optional armor-overlay sections, composed beside original Emittance and GlowAmount"
                                 ));
                             }
                             Err(error) => warnings.push(format!(
@@ -2933,8 +2933,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     || state.cdf_surfaces.as_ref().is_some_and(|surfaces| {
                         surfaces.iter().any(|part| {
                             part.visible
-                                && part.emissive.is_some()
-                                && part.emission_strength > 0.0
+                                && (part.armor_emissive.is_some()
+                                    || (part.emissive.is_some()
+                                        && part.emission_strength > 0.0))
                         })
                     }))
             {
@@ -7294,6 +7295,7 @@ mod project_edit_tests {
             diffuse: Some(Arc::clone(&pixels)),
             normal: None,
             emissive: None,
+            armor_emissive: None,
             emission_strength: 1.0,
             specular: None,
             gloss: None,
@@ -7339,7 +7341,7 @@ mod project_edit_tests {
         let surface = textured::Surface {
             first_index: 0, index_count: 3, visible: true, transparent: false,
             diffuse: None, normal: None, emissive: Some(Arc::clone(&pixels)),
-            emission_strength: 3.0, specular: None, gloss: None, opacity: None
+            armor_emissive: None, emission_strength: 3.0, specular: None, gloss: None, opacity: None
         };
         let model = Arc::new(RenderMesh {
             info: evolve_core::ModelInfo {

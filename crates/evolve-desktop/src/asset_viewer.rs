@@ -297,8 +297,9 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
             || state.cdf_surfaces.as_ref().is_some_and(|surfaces| {
                 surfaces.iter().any(|surface| {
                     surface.visible
-                        && surface.emissive.is_some()
-                        && surface.emission_strength > 0.0
+                        && (surface.armor_emissive.is_some()
+                            || (surface.emissive.is_some()
+                                && surface.emission_strength > 0.0))
                 })
             }));
     if emissive_available {

@@ -17,6 +17,9 @@ struct Output {
 // x is authored GlowAmount for this material leaf (3 != 100%).
 // y is the viewport-only Emissive strength slider, default 1x.
 @group(0) @binding(7) var<uniform> emission_params: vec4<f32>;
+// Separate, optional armor overlay: this channel is black when unchecked,
+// independently of any source-authored Emittance/GlowAmount texture.
+@group(0) @binding(8) var armor_glow_map: texture_2d<f32>;
 
 @vertex
 fn vs_main(
@@ -39,6 +42,7 @@ fn shade(input: Output) -> vec4<f32> {
     let base = textureSample(diffuse, material_sampler, input.uv);
     let encoded_normal = textureSample(normal_map, material_sampler, input.uv).rg;
     let glow = textureSample(emissive_map, material_sampler, input.uv).rgb;
+    let armor_glow = textureSample(armor_glow_map, material_sampler, input.uv).rgb;
     // Specular is source reflectance color, NOT a gloss/roughness scalar.
     // Only an explicitly authored Gloss/Glossiness/Smoothness map controls
     // the highlight width. Missing specular uses a black neutral fallback.
@@ -111,7 +115,9 @@ fn shade(input: Output) -> vec4<f32> {
                   + 0.16 * pow(abs(dot(surface, half_fill)), exponent);
     let specular_light = specular_color * highlight * exposure;
     // Emissive is independent of incident light, as in the game material.
-    return vec4<f32>(base.rgb * irradiance * exposure + glow * emission_params.x * emission_params.y + specular_light, base.a);
+    return vec4<f32>(base.rgb * irradiance * exposure
+        + glow * emission_params.x * emission_params.y
+        + armor_glow * emission_params.y + specular_light, base.a);
 }
 
 @fragment
