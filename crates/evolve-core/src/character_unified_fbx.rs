@@ -605,9 +605,9 @@ fn exact_multi_slot_materials_with_scope(
                 ));
             }
             *target = Some(if role == 4 {
-                authored_roughness_png(&file)?
+                authored_roughness_png(&file, imported)?
             } else {
-                authored_png(&file, role == 1)?
+                authored_png(&file, role == 1, imported)?
             });
         }
         slots.push(slot);
@@ -660,18 +660,8 @@ fn apply_export_damage_layer(
         let base = image::load_from_memory(base_png)
             .map_err(|e| format!("Invalid original subset diffuse PNG: {e}"))?
             .to_rgba8();
-        let (_, alternate) = crate::dds::decode_dds_rgba(&alternate_path).map_err(|e| {
-            format!(
-                "Cannot decode authored damage map {}: {e}",
-                alternate_path.display()
-            )
-        })?;
-        let (_, mask) = crate::dds::decode_dds_rgba(&blend_path).map_err(|e| {
-            format!(
-                "Cannot decode authored damage mask {}: {e}",
-                blend_path.display()
-            )
-        })?;
+        let (_, alternate) = decode_original_mip(&alternate_path, imported)?;
+        let (_, mask) = decode_original_mip(&blend_path, imported)?;
         let mixed = crate::materials::blend_damage_rgba(&base, &alternate, &mask, percent)?;
         let mut png = Vec::new();
         image::codecs::png::PngEncoder::new(&mut png)
@@ -691,9 +681,11 @@ fn apply_export_damage_layer(
 /// glTF metallicRoughnessTexture uses roughness in green and metallic in
 /// blue. An explicitly authored gloss map is *inverse* roughness; never
 /// derive it from arbitrary normal, specular or diffuse alpha.
-fn authored_roughness_png(path: &Path) -> Result<Vec<u8>, String> {
-    let (_info, mut rgba) = crate::dds::decode_dds_rgba(path)
-        .map_err(|e| format!("Cannot decode authored gloss DDS {}: {e}", path.display()))?;
+fn authored_roughness_png(
+    path: &Path,
+    imported: Option<&ImportedTextureScope>,
+) -> Result<Vec<u8>, String> {
+    let (_info, mut rgba) = decode_original_mip(path, imported)?;
     for pixel in rgba.pixels_mut() {
         let roughness = 255 - pixel[0];
         pixel.0 = [0, roughness, 0, 255];
@@ -710,9 +702,12 @@ fn authored_roughness_png(path: &Path) -> Result<Vec<u8>, String> {
     Ok(png)
 }
 
-fn authored_png(path: &Path, normal_map: bool) -> Result<Vec<u8>, String> {
-    let (info, mut rgba) = crate::dds::decode_dds_rgba(path)
-        .map_err(|e| format!("Could not decode original DDS {}: {e}", path.display()))?;
+fn authored_png(
+    path: &Path,
+    normal_map: bool,
+    imported: Option<&ImportedTextureScope>,
+) -> Result<Vec<u8>, String> {
+    let (info, mut rgba) = decode_original_mip(path, imported)?;
     if normal_map && info.format == crate::dds::DdsFormat::Bc5 {
         // BC5 contains tangent-space signed XY. glTF expects normal RGB;
         // reconstruct the nonnegative source Z, leaving UV0 unchanged.
@@ -843,7 +838,8 @@ pub fn export_unified_cdf_fbx_options_with_glow(
     let glow_png = if full_armor_glow {
         let path = monster_glow_path(source, inventory)?
             .ok_or("No exact full-armor glow DDS belongs to this monster and build")?;
-        Some(authored_png(&path, false).map_err(|e| format!("Full-armor glow DDS: {e}"))?)
+        Some(authored_png(&path, false, imported.as_ref())
+            .map_err(|e| format!("Full-armor glow DDS: {e}"))?)
     } else {
         None
     };
@@ -1056,7 +1052,7 @@ pub fn export_unified_cdf_fbx_options_with_glow(
             let mut diffuse = maps
                 .diffuse
                 .as_deref()
-                .map(|f| authored_png(f, false))
+                .map(|f| authored_png(f, false, imported.as_ref()))
                 .transpose()?;
             if damage_blend_percent > 0
                 && monster_dir.as_deref().is_some_and(|owner| {
@@ -1088,12 +1084,12 @@ pub fn export_unified_cdf_fbx_options_with_glow(
             let normal = maps
                 .normal
                 .as_deref()
-                .map(|f| authored_png(f, true))
+                .map(|f| authored_png(f, true, imported.as_ref()))
                 .transpose()?;
             let mut emissive = maps
                 .emissive
                 .as_deref()
-                .map(|f| authored_png(f, false))
+                .map(|f| authored_png(f, false, imported.as_ref()))
                 .transpose()?;
             if let (Some(glow), Some(owner)) = (&glow_png, &monster_dir)
                 && diffuse.is_some()
@@ -1111,12 +1107,12 @@ pub fn export_unified_cdf_fbx_options_with_glow(
             let specular = maps
                 .specular
                 .as_deref()
-                .map(|f| authored_png(f, false))
+                .map(|f| authored_png(f, false, imported.as_ref()))
                 .transpose()?;
             let roughness = maps
                 .gloss
                 .as_deref()
-                .map(authored_roughness_png)
+                .map(|f| authored_roughness_png(f, imported.as_ref()))
                 .transpose()?;
             if diffuse.is_some()
                 || normal.is_some()
