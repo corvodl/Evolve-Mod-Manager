@@ -989,6 +989,61 @@ mod tests {
     }
 
     #[test]
+    fn goliath_material_ranges_keep_distinct_authored_high_mip_colors() {
+        let dir = tempfile::tempdir().unwrap();
+        let model = dir.path().join("goliath3.skinm");
+        let material = dir.path().join("goliath3.mtl");
+        std::fs::write(&model, compiled_material_fixture(true)).unwrap();
+        std::fs::write(
+            &material,
+            br#"<Material Name="Goliath"><SubMaterials>
+                <Material Name="Goliath_Body" Shader="Illum"><Textures>
+                    <Texture Map="Diffuse" File="body.tif"/>
+                </Textures></Material>
+                <Material Name="Goliath_Arm" Shader="Illum"><Textures>
+                    <Texture Map="Diffuse" File="arm.tif"/>
+                </Textures></Material>
+            </SubMaterials></Material>"#,
+        )
+        .unwrap();
+        let make_dds = |red: bool| {
+            let mut data = vec![0u8; 136];
+            data[..4].copy_from_slice(b"DDS ");
+            data[4..8].copy_from_slice(&124u32.to_le_bytes());
+            data[8..12].copy_from_slice(&0x1007u32.to_le_bytes());
+            data[12..16].copy_from_slice(&4u32.to_le_bytes());
+            data[16..20].copy_from_slice(&4u32.to_le_bytes());
+            data[76..80].copy_from_slice(&32u32.to_le_bytes());
+            data[80..84].copy_from_slice(&4u32.to_le_bytes());
+            data[84..88].copy_from_slice(b"DXT1");
+            let color = if red { [0, 248] } else { [31, 0] };
+            data[128..130].copy_from_slice(&color);
+            data
+        };
+        std::fs::write(dir.path().join("body.dds.0"), make_dds(true)).unwrap();
+        std::fs::write(dir.path().join("arm.dds.0"), make_dds(false)).unwrap();
+        let inventory = evolve_core::scan_directory(dir.path()).unwrap();
+        let (surfaces, warnings) = load_model(
+            &model,
+            &material,
+            &inventory,
+            None,
+            None,
+            &SharedCache::default(),
+        )
+        .unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(surfaces.len(), 2);
+        assert_eq!((surfaces[0].first_index, surfaces[0].index_count), (0, 3));
+        assert_eq!((surfaces[1].first_index, surfaces[1].index_count), (3, 3));
+        let body = surfaces[0].diffuse.as_ref().unwrap();
+        let arm = surfaces[1].diffuse.as_ref().unwrap();
+        assert_ne!(body.get_pixel(0, 0)[0], arm.get_pixel(0, 0)[0]);
+        assert!(body.get_pixel(0, 0)[0] > body.get_pixel(0, 0)[2]);
+        assert!(arm.get_pixel(0, 0)[2] > arm.get_pixel(0, 0)[0]);
+    }
+
+    #[test]
     fn original_material_ids_drive_nodraw_and_visible_gpu_ranges() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("hunter.skinm");
