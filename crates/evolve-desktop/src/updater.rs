@@ -50,6 +50,8 @@ pub enum UpdateError {
     Network(#[from] reqwest::Error),
     #[error("Release metadata failed verification: {0}")]
     Invalid(String),
+    #[error("Windows installer failed: {0}")]
+    Install(String),
     #[error("The downloaded file failed SHA-256 integrity verification")]
     HashMismatch,
     #[error("The selected update exceeds the allowed size")]

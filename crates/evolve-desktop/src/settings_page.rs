@@ -279,6 +279,13 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 design::button(text(format!("Auto-check: {}", if state.preferences.automatic_update_checks { "On" } else { "Off" }))).on_press(Message::PreferenceAutoUpdates).style(design::secondary)
             ].spacing(8),
             text(state.update_status.as_str()).size(12).style(design::muted),
+            if let Some(error) = &state.update_worker_failure {
+                text(format!(
+                    "Previous update helper failure: {error}. See LocalAppData/EvolveModManager/Updates/last-update-error.txt"
+                )).size(12).style(design::muted)
+            } else {
+                text("").size(12)
+            },
             super::download_action(state),
             text("Updates are downloaded, SHA-256 verified and installed when you select Update and restart. Portable downloads remain portable; your game files and preferences are preserved.").size(12).style(design::muted),
         ].spacing(8)),

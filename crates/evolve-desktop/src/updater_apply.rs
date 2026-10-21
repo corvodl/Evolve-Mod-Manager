@@ -266,6 +266,64 @@ fn apply_portable_update(plan: &PreparedUpdate) -> Result<(), UpdateError> {
     Ok(())
 }
 
+// Windows canonical paths often start with \\?\\. Inno Setup's /DIR switch
+// accepts normal drive or UNC paths, not Windows verbatim path prefixes.
+fn installer_directory_arg(directory: &Path) -> String {
+    let path = directory.to_string_lossy();
+    if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else {
+        path.strip_prefix(r"\\?\").unwrap_or(&path).to_owned()
+    }
+}
+
+// A portable update may race the last Windows handle held by Iced. Retry
+// sharing violations for a bounded period; never retry malformed or unsafe
+// archives, and keep the existing rollback behavior after a failed attempt.
+fn apply_portable_with_retry<F>(mut apply: F) -> Result<(), UpdateError>
+where
+    F: FnMut() -> Result<(), UpdateError>,
+{
+    for attempt in 0..=20 {
+        match apply() {
+            Err(UpdateError::Io(error))
+                if error.kind() == io::ErrorKind::PermissionDenied && attempt < 20 =>
+            {
+                thread::sleep(Duration::from_millis(500));
+            }
+            result => return result,
+        }
+    }
+    unreachable!("the final update attempt must return a result")
+}
+
+/// Read a bounded, regular error log from an earlier silent helper failure.
+/// A failed worker cannot report into the closed Iced process.
+pub fn previous_update_failure(root: &Path) -> Option<String> {
+    let file = root.join("Updates").join("last-update-error.txt");
+    let meta = fs::symlink_metadata(&file).ok()?;
+    if !meta.file_type().is_file() || meta.len() > 4096 {
+        return None;
+    }
+    let message = fs::read_to_string(file).ok()?;
+    let trimmed = message.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
+// Inno Setup's exit codes describe setup phases, not release verification.
+fn inno_exit_detail(code: Option<i32>) -> &'static str {
+    match code {
+        Some(1) => "setup could not initialize",
+        Some(2) => "installation was cancelled before starting",
+        Some(3) => "fatal error while preparing the installation",
+        Some(4) => "fatal error during file installation",
+        Some(5) => "installation cancelled or aborted",
+        Some(7) => "installer preparation determined it cannot proceed",
+        Some(8) => "installer preparation requires a Windows restart",
+        _ => "unexpected setup failure",
+    }
+}
+
 fn apply_update_plan(manifest: &Path) -> Result<(), UpdateError> {
     let info = fs::symlink_metadata(manifest)?;
     if !info.file_type().is_file() || info.len() > 16 * 1024 {
@@ -288,6 +346,12 @@ fn apply_update_plan(manifest: &Path) -> Result<(), UpdateError> {
             let directory = plan.executable.parent().ok_or_else(|| {
                 UpdateError::Invalid("installer destination is unavailable".into())
             })?;
+            // Keep the installer log in the managed, per-user Updates
+            // directory. It explains silent setup failures such as exit 3.
+            let setup_log = managed_folder.join("last-installer-log.txt");
+            if setup_log.exists() {
+                fs::remove_file(&setup_log)?;
+            }
             let status = Command::new(&plan.payload)
                 .args([
                     "/VERYSILENT",
@@ -295,19 +359,23 @@ fn apply_update_plan(manifest: &Path) -> Result<(), UpdateError> {
                     "/NORESTART",
                     "/CLOSEAPPLICATIONS",
                 ])
-                .arg(format!("/DIR={}", directory.display()))
+                .arg(format!("/DIR={}", installer_directory_arg(directory)))
+                .arg(format!("/LOG={}", installer_directory_arg(&setup_log)))
                 .status()?;
             if !status.success() {
-                return Err(UpdateError::Invalid(format!(
-                    "Windows setup failed with exit status {:?}",
-                    status.code()
+                return Err(UpdateError::Install(format!(
+                    "exit code {:?} ({}). Inno Setup log: {}",
+                    status.code(),
+                    inno_exit_detail(status.code()),
+                    setup_log.display()
                 )));
             }
         }
-        InstallationKind::Portable => apply_portable_update(&plan)?,
+        InstallationKind::Portable => apply_portable_with_retry(|| apply_portable_update(&plan))?,
     }
 
     Command::new(&plan.executable).spawn()?;
+    let _ = fs::remove_file(plan.root.join("Updates").join("last-update-error.txt"));
     let _ = fs::remove_file(manifest);
     Ok(())
 }
@@ -430,6 +498,73 @@ mod tests {
         assert_eq!(
             fs::read(dir.path().join("evolve-mod-manager.exe")).unwrap(),
             b"old-evolve-mod-manager.exe"
+        );
+    }
+
+    #[test]
+    fn portable_retry_only_repeats_temporary_sharing_errors() {
+        let mut attempts = 0;
+        let result = apply_portable_with_retry(|| {
+            attempts += 1;
+            if attempts == 1 {
+                Err(UpdateError::Io(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "old executable is still in use",
+                )))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(result.is_ok());
+        assert_eq!(attempts, 2);
+
+        let mut unsafe_attempts = 0;
+        assert!(
+            apply_portable_with_retry(|| {
+                unsafe_attempts += 1;
+                Err(UpdateError::Invalid("unsafe archive".into()))
+            })
+            .is_err()
+        );
+        assert_eq!(unsafe_attempts, 1);
+    }
+
+    #[test]
+    fn installer_arg_uses_regular_windows_paths() {
+        assert_eq!(
+            installer_directory_arg(Path::new(
+                r"\\?\C:\Users\demo\AppData\Local\EvolveModManager"
+            )),
+            r"C:\Users\demo\AppData\Local\EvolveModManager"
+        );
+        assert_eq!(
+            installer_directory_arg(Path::new(r"\\?\UNC\server\share\EvolveModManager")),
+            r"\\server\share\EvolveModManager"
+        );
+    }
+
+    #[test]
+    fn inno_exit_three_is_an_installation_failure_not_release_metadata() {
+        assert_eq!(
+            inno_exit_detail(Some(3)),
+            "fatal error while preparing the installation"
+        );
+        assert_eq!(
+            UpdateError::Install("exit code Some(3)".into()).to_string(),
+            "Windows installer failed: exit code Some(3)"
+        );
+    }
+
+    #[test]
+    fn previous_worker_error_is_available_on_next_launch() {
+        let root = tempfile::tempdir().unwrap();
+        let updates = root.path().join("Updates");
+        fs::create_dir(&updates).unwrap();
+        assert!(previous_update_failure(root.path()).is_none());
+        fs::write(updates.join("last-update-error.txt"), "setup failed").unwrap();
+        assert_eq!(
+            previous_update_failure(root.path()).as_deref(),
+            Some("setup failed")
         );
     }
 
