@@ -722,20 +722,18 @@ mod tests {
     use super::*;
     #[test]
     fn solid_character_opacity_mask_is_depth_opaque_not_alpha_blended() {
-        let make = |shader: &str, scalar: Option<f32>, with_mask: bool| {
-            evolve_core::MaterialSlot {
-                name: "Goliath_Body".into(),
-                shader: shader.into(),
-                opacity: scalar,
-                maps: if with_mask {
-                    vec![evolve_core::TextureReference {
-                        role: "opacity".into(),
-                        path: "characters/monsters/goliath/body_opacity.tif".into(),
-                    }]
-                } else {
-                    vec![]
-                },
-            }
+        let make = |shader: &str, scalar: Option<f32>, with_mask: bool| evolve_core::MaterialSlot {
+            name: "Goliath_Body".into(),
+            shader: shader.into(),
+            opacity: scalar,
+            maps: if with_mask {
+                vec![evolve_core::TextureReference {
+                    role: "opacity".into(),
+                    path: "characters/monsters/goliath/body_opacity.tif".into(),
+                }]
+            } else {
+                vec![]
+            },
         };
         assert!(!needs_alpha_blending(&make("Illum", Some(1.0), true)));
         assert!(!needs_alpha_blending(&make("HumanSkin", Some(0.7), true)));
