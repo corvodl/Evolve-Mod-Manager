@@ -13,6 +13,7 @@ mod crash_diagnostics;
 mod design;
 mod developer_auth;
 mod explorer_tree;
+mod gfx_bundled_tools;
 mod gfx_dependencies;
 mod gfx_editor;
 mod gfx_external_textures;
@@ -7354,6 +7355,9 @@ fn initial_state() -> State {
     if let Ok(path) = blender_install::resolve_blender(&result.blender_path) {
         result.blender_path = path.to_string_lossy().into_owned();
     }
+    // Optional installer GFX tools are detected automatically. Any custom
+    // FFDec or Ruffle executable selected in settings takes precedence.
+    gfx_bundled_tools::detect_bundled(&mut result.preferences);
     result.library_root = result.preferences.asset_library_root.clone();
     result.assets_root = result.library_root.clone();
     if let Ok(executable) = std::env::current_exe()
