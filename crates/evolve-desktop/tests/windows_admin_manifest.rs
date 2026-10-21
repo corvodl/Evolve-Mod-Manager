@@ -19,3 +19,14 @@ fn gui_uac_policy_does_not_change_the_cli_worker() {
     assert!(!cli.contains("requireAdministrator"));
     assert!(!cli.contains("ShellExecuteW"));
 }
+
+#[test]
+fn installer_requests_uac_before_launching_privileged_gui() {
+    let setup = include_str!("../../../installer/EvolveModManager.iss");
+    assert!(setup.contains("PrivilegesRequired=admin"));
+    assert!(setup.contains(r"DefaultDirName={autopf}\EvolveModManager"));
+    // Never install a requireAdministrator EXE to a user-writable directory.
+    assert!(!setup.contains(r"DefaultDirName={localappdata}\EvolveModManager"));
+    assert!(setup.contains("UsePreviousAppDir=no"));
+    assert!(setup.contains(r#"Filename: "{app}\evolve-mod-manager.exe""#));
+}

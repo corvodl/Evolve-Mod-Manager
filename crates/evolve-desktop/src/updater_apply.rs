@@ -324,6 +324,18 @@ fn inno_exit_detail(code: Option<i32>) -> &'static str {
     }
 }
 
+/// Prior Nightlies put a GUI that requires administrator privileges under
+/// LocalAppData, which is user-writable. The new elevated installer must NOT
+/// be directed back to that unsafe location with an updater /DIR override.
+/// One-time manual setup migrates to Program Files and preserves user data.
+fn is_legacy_user_install(directory: &Path) -> bool {
+    let path = installer_directory_arg(directory)
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    path.ends_with("/appdata/local/evolvemodmanager")
+        || path.contains("/appdata/local/evolvemodmanager/")
+}
+
 fn apply_update_plan(manifest: &Path) -> Result<(), UpdateError> {
     let info = fs::symlink_metadata(manifest)?;
     if !info.file_type().is_file() || info.len() > 16 * 1024 {
@@ -346,6 +358,12 @@ fn apply_update_plan(manifest: &Path) -> Result<(), UpdateError> {
             let directory = plan.executable.parent().ok_or_else(|| {
                 UpdateError::Invalid("installer destination is unavailable".into())
             })?;
+            if is_legacy_user_install(directory) {
+                return Err(UpdateError::Install(
+                    "This old Nightly uses a user-writable AppData installation.                      The new elevated manager must be installed in Program Files:                      run the latest Nightly Setup EXE manually once. Your settings,                      game data and Asset Library are preserved. Then use the new                      Program Files shortcut for future in-app updates."
+                        .into(),
+                ));
+            }
             // Keep the installer log in the managed, per-user Updates
             // directory. It explains silent setup failures such as exit 3.
             let setup_log = managed_folder.join("last-installer-log.txt");
@@ -527,6 +545,22 @@ mod tests {
             .is_err()
         );
         assert_eq!(unsafe_attempts, 1);
+    }
+
+    #[test]
+    fn old_elevated_gui_in_localappdata_cannot_be_reinstalled_there() {
+        assert!(is_legacy_user_install(Path::new(
+            r"C:\Users\demo\AppData\Local\EvolveModManager"
+        )));
+        assert!(is_legacy_user_install(Path::new(
+            r"\\?\C:\Users\demo\AppData\Local\EvolveModManager"
+        )));
+        assert!(!is_legacy_user_install(Path::new(
+            r"C:\Program Files\EvolveModManager"
+        )));
+        assert!(!is_legacy_user_install(Path::new(
+            r"D:\Tools\EvolveModManager"
+        )));
     }
 
     #[test]

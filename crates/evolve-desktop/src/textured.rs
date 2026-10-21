@@ -358,7 +358,9 @@ const MATERIAL_BINDINGS: [u32; 10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 /// Apply the earlier public Qt preview's GlowAmount 3 -> 100 reference to
 /// every source-authored emissive material while retaining its GlowAmount.
 /// Kala's active equipment glow keeps its separately verified 0.3x/4x
-/// correction. The user slider remains independent of both factors.
+/// correction. The Armor Reducer reference is 2x after the user verified
+/// Nightly 13 requires only half of the old 4x multiplier at 1x slider.
+/// The user slider remains independent of both factors.
 fn emission_uniform_values(
     source_strength: f32,
     preview_gain: f32,
@@ -376,7 +378,7 @@ fn emission_uniform_values(
     };
     let state_factor = match kala_emission_state {
         Some(evolve_core::KalaTubingState::Banshee) => 0.3,
-        Some(evolve_core::KalaTubingState::ArmorReducer) => 4.0,
+        Some(evolve_core::KalaTubingState::ArmorReducer) => 2.0,
         None => 1.0,
     };
     let calibration = (100.0 / 3.0) * state_factor;
@@ -1551,15 +1553,15 @@ mod tests {
         assert_eq!(blue[1], 1.0);
         assert_eq!(red[1], 1.0);
         assert!((blue[0] * blue[2] - 30.0).abs() < 0.0001);
-        assert!((red[0] * red[2] - 400.0).abs() < 0.0001);
+        assert!((red[0] * red[2] - 200.0).abs() < 0.0001);
         let half_blue = super::emission_uniform_values(1.5, 1.0, Some(KalaTubingState::Banshee));
         let half_red =
             super::emission_uniform_values(1.5, 1.0, Some(KalaTubingState::ArmorReducer));
         assert!((half_blue[0] * half_blue[2] - 15.0).abs() < 0.0001);
-        assert!((half_red[0] * half_red[2] - 200.0).abs() < 0.0001);
+        assert!((half_red[0] * half_red[2] - 100.0).abs() < 0.0001);
         let old = 100.0 / 3.0;
         assert!((blue[0] * blue[1] * blue[2] - 3.0 * old * 0.3).abs() < 0.0001);
-        assert!((red[0] * red[1] * red[2] - 3.0 * old * 4.0).abs() < 0.0001);
+        assert!((red[0] * red[1] * red[2] - 3.0 * old * 2.0).abs() < 0.0001);
         let disabled =
             super::emission_uniform_values(3.0, 0.0, Some(KalaTubingState::ArmorReducer));
         assert_eq!(disabled[0] * disabled[1] * disabled[2], 0.0);

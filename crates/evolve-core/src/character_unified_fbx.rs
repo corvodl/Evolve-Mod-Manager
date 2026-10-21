@@ -378,6 +378,20 @@ pub fn monster_glow_path(
     cdf_source: &Path,
     inventory: &Inventory,
 ) -> Result<Option<PathBuf>, String> {
+    monster_glow_path_with_library(cdf_source, inventory, None, None)
+}
+
+/// Resolve the authored monster variant's optional glow DDS from either its
+/// original indexed PAK or other *verified same-build* Asset Library PAKs.
+/// The viewer already knows its imported Library root and selected build;
+/// don't silently discard that context (the old lookup did, and missed most
+/// externally stored dds_low/dds_high glow maps).
+pub fn monster_glow_path_with_library(
+    cdf_source: &Path,
+    inventory: &Inventory,
+    imported_library_root: Option<&Path>,
+    selected_build: Option<&str>,
+) -> Result<Option<PathBuf>, String> {
     let root = fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
     let source = fs::canonicalize(cdf_source).map_err(|e| e.to_string())?;
     let relative = source
@@ -394,11 +408,20 @@ pub fn monster_glow_path(
         .file_stem()
         .and_then(|s| s.to_str())
         .ok_or("Invalid monster CDF filename")?;
-    let imported = texture_scope(inventory);
+    // Explicit caller context wins when present; the auto-detected archive
+    // scope remains a fallback for existing FBX export callers.
+    let inferred = texture_scope(inventory);
+    let explicit = imported_library_root.map(|library_root| ImportedTextureScope {
+        root: library_root.to_path_buf(),
+        build: selected_build
+            .map(str::to_owned)
+            .or_else(|| inferred.as_ref().and_then(|scope| scope.build.clone())),
+    });
+    let imported = explicit.as_ref().or(inferred.as_ref());
     for suffix in ["_glow_diff.tif", "_glow.tif"] {
         let authored = format!("{stem}{suffix}");
         if let Some(found) =
-            exact_original_texture(&root, inventory, &virtual_cdf, &authored, imported.as_ref())?
+            exact_original_texture(&root, inventory, &virtual_cdf, &authored, imported)?
         {
             return Ok(Some(found));
         }
@@ -1483,6 +1506,70 @@ mod tests {
         fs::write(&hunter, b"hunter CDF").unwrap();
         let inventory = crate::scan_directory(dir.path()).unwrap();
         assert!(monster_glow_path(&hunter, &inventory).unwrap().is_none());
+    }
+
+    #[test]
+    fn monster_glow_uses_selected_build_glow_from_imported_dds_pak() {
+        // A normal extracted CDF is not necessarily inside a managed
+        // archive/files directory. The caller's explicit same-build catalog
+        // must still locate its variant glow without searching other builds.
+        let temp = tempfile::tempdir().unwrap();
+        let source_root = temp.path().join("extracted");
+        let monster = source_root.join("characters/monsters/goliath");
+        fs::create_dir_all(&monster).unwrap();
+        let cdf = monster.join("goliath3.cdf");
+        fs::write(&cdf, b"original selected CDF").unwrap();
+        let library = temp.path().join("library");
+        let stage = library.join("dds_low.pak__11111111111111111111");
+        let legacy = library.join("legacy.pak__22222222222222222222");
+        let name = "characters/monsters/goliath/goliath3_glow_diff.dds.0";
+        let stage_dds = stage.join("files").join(name);
+        let legacy_dds = legacy.join("files").join(name);
+        for (dir, file, archive_name) in [
+            (&stage, &stage_dds, "dds_low.pak"),
+            (&legacy, &legacy_dds, "legacy.pak"),
+        ] {
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, b"original").unwrap();
+            fs::write(
+                dir.join("asset-library.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version": 1,
+                    "name": archive_name,
+                    "source": "C:/game/game.pak",
+                    "entries": [{"path": name, "bytes": 8}]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        fs::write(
+            library.join("build-collections.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version":1,
+                "builds":{
+                    "stage-two":{"label":"Stage 2",
+                        "members":{"11111111111111111111":{}}},
+                    "legacy":{"label":"Legacy",
+                        "members":{"22222222222222222222":{}}}
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let inventory = crate::scan_directory(&source_root).unwrap();
+        assert!(
+            monster_glow_path(&cdf, &inventory).unwrap().is_none(),
+            "No source glow exists in the local CDF directory"
+        );
+        let selected =
+            monster_glow_path_with_library(&cdf, &inventory, Some(&library), Some("Stage 2"))
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            fs::canonicalize(selected).unwrap(),
+            fs::canonicalize(stage_dds).unwrap()
+        );
     }
 
     #[test]

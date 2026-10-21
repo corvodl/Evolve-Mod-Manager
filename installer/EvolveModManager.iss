@@ -10,9 +10,13 @@ AppVersion={#AppVersion}
 AppPublisher=Evolve Mod Manager
 AppPublisherURL=https://github.com/corvodl/Evolve-Mod-Manager
 AppSupportURL=https://github.com/corvodl/Evolve-Mod-Manager/issues
-DefaultDirName={localappdata}\EvolveModManager
+; The GUI executable itself requests requireAdministrator via app.manifest.
+; It must live in an administrator-controlled folder, never writable
+; LocalAppData, or a lower-privilege user could replace a privileged EXE.
+; Inno Setup will request UAC itself before copying or launching the GUI.
+DefaultDirName={autopf}\EvolveModManager
 DefaultGroupName=Evolve Mod Manager
-PrivilegesRequired=lowest
+PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=yes
@@ -26,7 +30,10 @@ SolidCompression=yes
 WizardStyle=modern
 AllowNoIcons=yes
 DisableProgramGroupPage=yes
-UsePreviousAppDir=yes
+; Old nightlies installed the admin-required GUI in a user-writable
+; LocalAppData directory. Do not reuse that unsafe location on upgrade.
+; User settings/assets live separately in LocalAppData and remain untouched.
+UsePreviousAppDir=no
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: unchecked

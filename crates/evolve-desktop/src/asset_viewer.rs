@@ -230,7 +230,7 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
 fn equipment_browser(state: &State) -> Element<'_, Message> {
     let mut entries = column![
         text("MODEL OPTIONS").size(15),
-        text("Equipment changes affect the viewport and CDF FBX export. Stage 2 monsters also support armor glow and damage blend. Original assets remain unchanged.")
+        text("Equipment changes affect the viewport and CDF FBX export. Stage 2 monsters also support Glow and damage blend. Original assets remain unchanged.")
             .size(11).style(design::muted),
     ].spacing(10);
     let monster_selected = state.equipment_source.as_ref().is_some_and(|path| {
@@ -241,22 +241,24 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
     });
     if monster_selected && state.cdf_legacy_2012 {
         entries = entries.push(
-            text("2012 original monster: Stage 2 armor glow and damage blend are not available.")
-                .size(11)
-                .style(design::muted),
+            text(
+                "2012 original monster: optional Stage 2 Glow and damage blend are not available.",
+            )
+            .size(11)
+            .style(design::muted),
         );
     }
     if monster_selected && !state.cdf_legacy_2012 {
         entries = entries.push(
             design::button(if state.full_armor_glow {
-                "☑ Full armor glow"
+                "☑ Glow"
             } else {
-                "☐ Full armor glow"
+                "☐ Glow"
             })
             .on_press_maybe((!state.busy).then_some(Message::ViewerToggleMonsterGlow)),
         );
         entries = entries.push(
-            text("Optional [name]_glow_diff armor overlay. Unchecking leaves normal diffuse and authored material emission intact; preview works independently of FBX export options.")
+            text("Optional source-verified [name]_glow_diff overlay for Stage 2 monsters. Turning Glow off removes only this alternate overlay; original materials, diffuse and authored emission remain intact.")
                 .size(11)
                 .style(design::muted),
         );
@@ -382,7 +384,7 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
             .spacing(7),
         );
         entries = entries.push(
-            text("Live viewport adjustment to existing emission and optional armor glow. Original source values and exported FBX remain unchanged.")
+            text("Live viewport adjustment to authored emission and the optional Glow overlay. Original source values and exported FBX remain unchanged.")
                 .size(11)
                 .style(design::muted),
         );
@@ -1090,12 +1092,12 @@ pub(super) fn export_dialog(state: &State) -> Element<'_, Message> {
             "CAUTION: Embedded textures is OFF. The FBX will contain geometry and UVs, but no packed character images; assign your own verified diffuse maps or enable embedding."
         }).size(11).style(design::muted),
         text(if !state.equipment_overrides.is_empty() || state.full_armor_glow || state.damage_blend_percent > 0 {
-            format!("Model Options: {} equipment override(s), armor glow {}, damage blend {}%. Export only the active CDF with Rigged + Embedded textures.",
+            format!("Model Options: {} equipment override(s), Glow {}, damage blend {}%. Export only the active CDF with Rigged + Embedded textures.",
                 state.equipment_overrides.len(),
                 if state.full_armor_glow { "ON" } else { "OFF" },
                 state.damage_blend_percent)
         } else {
-            "Model Options: default equipment, armor glow off, damage blend off".to_owned()
+            "Model Options: default equipment, Glow off, damage blend off".to_owned()
         }).size(11).style(design::muted),
         row![
             text(format!("Destination: {}", if state.export_parent.is_empty() { "Not selected" } else { &state.export_parent })).width(Fill),

@@ -1083,12 +1083,17 @@ impl Operation {
                 progress.store(90, Ordering::Relaxed);
                 // Historical CryTek 0x745 monster geometry is the 2012 build:
                 // it has no Stage 2 armor-glow/damage toggles.
-                // Full armor glow is *only* the optional monster
+                // Glow overlay is *only* the optional monster
                 // *_glow_diff overlay. Other authored emissive textures,
                 // GlowAmount and legacy alpha emission remain unchanged when
                 // the overlay checkbox is off.
                 if glow && !historical_2012_cdf(&report) {
-                    match evolve_core::monster_glow_path(&source, &inventory) {
+                    match evolve_core::monster_glow_path_with_library(
+                        &source,
+                        &inventory,
+                        imported.as_deref(),
+                        build.as_deref(),
+                    ) {
                         Ok(Some(texture)) => {
                             // A monster glow from dds_low.pak may need its
                             // original highest mip in the matching dds_high.pak.
@@ -1151,19 +1156,19 @@ impl Operation {
                                     }
                                 }
                                 warnings.push(format!(
-                                    "Full armor glow: {mapped} optional armor-overlay sections, composed beside original Emittance and GlowAmount"
+                                    "Glow: {mapped} source-verified overlay sections (original Emittance and GlowAmount preserved)"
                                 ));
                             }
                             Err(error) => warnings.push(format!(
-                                "Full armor glow unavailable for this monster: {error}; original diffuse preserved"
+                                "Glow overlay could not be decoded for this monster: {error}; original materials preserved"
                             )),
                             }
                         }
                         Ok(None) => warnings.push(
-                            "Full armor glow enabled, but this variant has no verified original glow DDS; previewing base materials".into(),
+                            "Glow: no source-verified variant DDS found in the selected Asset Library/build; original emissive materials remain visible".into(),
                         ),
                         Err(error) => warnings.push(format!(
-                            "Original armor glow could not be uniquely resolved: {error}; preserving base materials"
+                            "Glow source could not be uniquely resolved: {error}; retaining original material emission"
                         )),
                     }
                 }
@@ -2975,7 +2980,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             }
             let Some(source) = &state.equipment_source else {
-                state.status = "Select a monster CDF to enable full-armor glow.".into();
+                state.status = "Select a Stage 2 monster CDF to enable Glow.".into();
                 return Task::none();
             };
             if !source
@@ -2984,13 +2989,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .to_ascii_lowercase()
                 .contains("/monsters/")
             {
-                state.status = "Full-armor glow is only available for monster CDFs.".into();
+                state.status = "Glow overlay is only available for Stage 2 monster CDFs.".into();
                 return Task::none();
             }
             if state.cdf_legacy_2012 {
                 state.status =
-                    "Armor glow is a Stage 2 feature, unavailable for original 2012 monsters."
-                        .into();
+                    "The optional Glow overlay is not available for original 2012 monsters.".into();
                 return Task::none();
             }
             state.full_armor_glow = !state.full_armor_glow;
@@ -3753,7 +3757,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 && (!state.export_rigged || !state.export_embed_textures)
             {
                 state.status =
-                    "Full-armor glow and damage blend need Rigged and Embedded textures enabled for FBX export."
+                    "Glow and damage blend need Rigged and Embedded textures enabled for FBX export."
                         .into();
                 return Task::none();
             }
