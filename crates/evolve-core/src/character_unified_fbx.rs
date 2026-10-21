@@ -777,7 +777,39 @@ pub fn export_unified_cdf_fbx_options_with_glow(
         return Err("Choose an explicitly installed Blender.exe".into());
     }
     let (skeleton, skeleton_ref, skin_set, parts) = plan_parts(source, inventory, equipment)?;
-    let skeleton_bytes = fs::read(&skeleton).map_err(|e| e.to_string())?;
+    let cdf_skeleton_bytes = fs::read(&skeleton).map_err(|e| e.to_string())?;
+    // Rocky's historical original master has a baseroot that is not in
+    // its two 47-bone skinned parts. The legacy converter correctly
+    // refuses to retarget incompatible weighted bind poses. If EVERY
+    // selected historical part has the same verified local bind pose,
+    // rig all parts against that one original part-local skeleton instead
+    // of allowing one part to use the 48-bone master and another 47.
+    // No inference, fabricated joints or altered game file is involved.
+    let local_skeleton = if cdf_skeleton_bytes.starts_with(b"CryTek\\0\\0") {
+        let mut candidate: Option<Vec<u8>> = None;
+        let mut identical = true;
+        for (_, path, _) in &parts {
+            let raw = fs::read(path).map_err(|e| e.to_string())?;
+            if !raw.starts_with(b"CryTek\\0\\0") {
+                identical = false;
+                break;
+            }
+            if let Some(first) = &candidate {
+                if !crate::legacy_rig::identical_legacy_bind_skeletons(first, &raw)
+                    .map_err(|e| format!("Verifying 2012 CDF part bind poses: {e}"))?
+                {
+                    identical = false;
+                    break;
+                }
+            } else {
+                candidate = Some(raw);
+            }
+        }
+        identical.then_some(candidate).flatten()
+    } else {
+        None
+    };
+    let skeleton_bytes = local_skeleton.as_deref().unwrap_or(&cdf_skeleton_bytes);
     let motion = caf
         .map(|path| {
             let relative = path
@@ -822,8 +854,13 @@ pub fn export_unified_cdf_fbx_options_with_glow(
             _ => rigged_glb_bytes(&mesh, &raw, &skeleton_bytes),
         }
         .map_err(|e| format!("CDF part {name} cannot be rigged: {e}"))?;
-        if bone_count.is_some_and(|count| count != verified.bone_count) {
-            return Err("Compiled bone count changes between CDF parts".into());
+        if let Some(previous) = bone_count
+            && previous != verified.bone_count
+        {
+            return Err(format!(
+                "CDF part {name} has {} verified bones, but the preceding parts have {previous}; original rest skeletons are incompatible",
+                verified.bone_count
+            ));
         }
         bone_count = Some(verified.bone_count);
         vertices = vertices
