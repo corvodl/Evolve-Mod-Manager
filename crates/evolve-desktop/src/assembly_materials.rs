@@ -804,6 +804,7 @@ pub fn load_model(
             emissive: None,
             armor_emissive: None,
             emission_strength: 1.0,
+            kala_emission_calibrated: false,
             emissive_uv: None,
             specular: None,
             gloss: None,
@@ -1110,6 +1111,7 @@ pub fn load_with_progress(
             emissive: None,
             armor_emissive: None,
             emission_strength: 1.0,
+            kala_emission_calibrated: false,
             emissive_uv: None,
             specular: None,
             gloss: None,
@@ -1196,6 +1198,13 @@ pub fn load_with_progress(
                 surface.emission_strength = 0.0;
                 surface.emissive_uv = None;
             }
+            // Only a source-verified visible Kala 3P tube with a loaded
+            // emission map receives the earlier public viewer's 100/3
+            // preview calibration. No synthetic glow for missing textures,
+            // no change to model diffuse or FBX materials.
+            surface.kala_emission_calibrated = surface.emissive.is_some()
+                && surface.emission_strength > 0.0
+                && kala_tubing_leaf(&path, &part.binding, leaf);
             surface.specular = specular;
             surface.gloss = gloss;
             surface.opacity = verified_opacity(leaf, opacity);
@@ -1278,6 +1287,7 @@ mod tests {
             emissive: None,
             armor_emissive: None,
             emission_strength: 1.0,
+            kala_emission_calibrated: false,
             emissive_uv: None,
             specular: None,
             gloss: None,
@@ -1656,6 +1666,7 @@ mod tests {
             emissive: None,
             armor_emissive: None,
             emission_strength: 1.0,
+            kala_emission_calibrated: false,
             emissive_uv: None,
             specular: None,
             gloss: None,
