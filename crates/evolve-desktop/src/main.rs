@@ -1161,15 +1161,13 @@ impl Operation {
                                     .to_string_lossy()
                                     .replace('\\', "/")
                                     .to_ascii_lowercase();
-                                let owner = cdf_dir
-                                    .find("characters/monsters/")
-                                    .map(|position| &cdf_dir[position..])
-                                    .ok_or("Selected CDF is not a monster")?;
+                                let owner = monster_owner_prefix(&cdf_dir)
+                                    .ok_or("Selected CDF is not within an original monster folder")?;
                                 let mut mapped = 0usize;
                                 let mut derived = HashMap::<usize, Arc<::image::RgbaImage>>::new();
                                 for (part, surface) in report.source_parts.iter().zip(surfaces.iter_mut()) {
                                     let binding = part.binding.replace('\\', "/").to_ascii_lowercase();
-                                    if surface.visible && binding.contains(owner)
+                                    if surface.visible && binding.contains(&owner)
                                         && let Some(base) = surface.diffuse.as_ref()
                                     {
                                         let key = Arc::as_ptr(base) as usize;
@@ -2034,6 +2032,21 @@ fn selected_stage_target(state: &State) -> Result<String, String> {
 /// Identify original historical 2012 geometry by its verified CryTek
 /// 0x745 render headers, not a directory name (Goliath and Rocky exist in
 /// multiple builds). Read only 16 bytes from each already-verified source.
+/// Derive the exact monster's texture/mesh namespace, not an arbitrary
+/// substring of a nested CDF folder or a similarly named neighbor. This is
+/// also used to constrain optional Stage 2 glow overlays to their owner.
+fn monster_owner_prefix(virtual_cdf: &str) -> Option<String> {
+    let normal = virtual_cdf.replace('\\', "/").to_ascii_lowercase();
+    let (_, rest) = normal.split_once("characters/monsters/")?;
+    let folder = rest.split('/').next()?;
+    if folder.is_empty()
+        || !folder.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+    {
+        return None;
+    }
+    Some(format!("characters/monsters/{folder}/"))
+}
+
 fn historical_2012_cdf(report: &AssemblyReport) -> bool {
     use std::io::Read;
     !report.geometry_parts.is_empty()
@@ -8090,6 +8103,18 @@ mod project_edit_tests {
         state.cdf_surfaces = None;
         let _ = update(&mut state, Message::ViewerEmissiveStrengthChanged(4.0));
         assert_eq!(state.emissive_strength, 2.5);
+    }
+
+    #[test]
+    fn monster_glow_only_targets_its_exact_source_character_namespace() {
+        let owner = monster_owner_prefix("Objects/characters/monsters/grounder/grounder3.cdf")
+            .unwrap();
+        assert_eq!(owner, "characters/monsters/grounder/");
+        assert!("objects/characters/monsters/grounder/grounder3.skinm".contains(&owner));
+        assert!(!"objects/characters/monsters/grounder_alt/grounder3.skinm".contains(&owner));
+        assert!(!"objects/characters/monsters/rocky/rocky3.skinm".contains(&owner));
+        assert!(monster_owner_prefix("characters/hunters/tech/tech.cdf").is_none());
+        assert!(monster_owner_prefix("characters/monsters/../goliath.cdf").is_none());
     }
 
     #[test]
