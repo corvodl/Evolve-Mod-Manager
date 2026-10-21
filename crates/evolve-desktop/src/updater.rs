@@ -233,7 +233,7 @@ pub fn discover_update(
         UpdateChannel::Beta | UpdateChannel::Nightly => {
             serde_json::from_slice::<Vec<ApiRelease>>(&bytes)
                 .map_err(|e| UpdateError::Invalid(e.to_string()))?
-        },
+        }
     };
     let mut available = Vec::new();
     for candidate in candidates {
@@ -423,9 +423,13 @@ mod tests {
             asset.browser_download_url = format!("{prefix}{}", asset.name);
         }
         let digest = "a".repeat(64);
-        data.body = Some(data.assets.iter()
-            .map(|asset| format!("SHA256 {} {digest}", asset.name))
-            .collect::<Vec<_>>().join("\n"));
+        data.body = Some(
+            data.assets
+                .iter()
+                .map(|asset| format!("SHA256 {} {digest}", asset.name))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
         let parsed = parse_release(data).unwrap();
         assert_eq!(parsed.channel, UpdateChannel::Nightly);
         assert_eq!(parsed.version, version);
