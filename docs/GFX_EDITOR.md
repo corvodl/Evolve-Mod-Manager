@@ -111,11 +111,13 @@ The GFX pane now has separate **Design / layout editor** and
 **Interactive ActionScript preview** controls. The former uses conservative
 first-frame layout editing and staged Undo/Apply exactly as before.
 
-Interactive preview requires separately installing the **Ruffle desktop
-runtime** (usually `ruffle.exe` on Windows) and selecting the absolute
-executable path. It is **not** bundled or automatically downloaded.
-Click **Launch / restart interactive preview** to open a separate Ruffle
-window. Close the window or click **Stop preview** to end the process.
+Interactive preview uses **Ruffle desktop** (`ruffle.exe`). When the
+optional GFX tools are selected during Windows installation, the manager
+automatically detects its bundled path. Users of the portable ZIP or
+installations without the GFX tools option can select a separately installed
+Ruffle executable. Click **Launch / restart interactive preview** to open
+a separate Ruffle window. Close that window or click **Stop preview** to
+end the process.
 
 The manager:
 - Validates and reads the **staged working GFX** (not the installed game).
