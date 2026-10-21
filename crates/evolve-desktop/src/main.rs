@@ -1062,8 +1062,8 @@ impl Operation {
                 }
                 progress.store(90, Ordering::Relaxed);
                 if glow {
-                    match evolve_core::monster_glow_path(&source, &inventory)? {
-                        Some(texture) => {
+                    match evolve_core::monster_glow_path(&source, &inventory) {
+                        Ok(Some(texture)) => {
                             // A monster glow from dds_low.pak may need its
                             // original highest mip in the matching dds_high.pak.
                             // Resolve the actual indexed virtual path and let
@@ -1130,9 +1130,12 @@ impl Operation {
                             )),
                             }
                         }
-                        None => warnings.push(
+                        Ok(None) => warnings.push(
                             "Full armor glow enabled, but this variant has no verified original glow DDS; previewing base materials".into(),
                         ),
+                        Err(error) => warnings.push(format!(
+                            "Original armor glow could not be uniquely resolved: {error}; preserving base materials"
+                        )),
                     }
                 }
                 progress.store(98, Ordering::Relaxed);
