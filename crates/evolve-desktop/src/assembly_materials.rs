@@ -1308,7 +1308,10 @@ mod tests {
         .unwrap();
         let slot = &document.slots[0];
         assert!(!slot.alpha_glow);
-        assert!(slot.decal_tex_mod.is_none());
+        assert_eq!(
+            slot.decal_tex_mod.unwrap().sample(0.0),
+            [3.0, 4.0, 0.0, 0.0]
+        );
         assert_eq!(legacy_decal_role(slot, "decal"), Some(2));
         assert_eq!(legacy_decal_role(slot, "normals"), Some(1));
         let original = image::RgbaImage::from_pixel(2, 2, image::Rgba([180, 180, 180, 220]));
