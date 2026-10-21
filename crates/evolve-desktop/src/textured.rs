@@ -1535,13 +1535,15 @@ mod tests {
         assert!((blue[0] * blue[2] - 30.0).abs() < 0.0001);
         assert!((red[0] * red[2] - 400.0).abs() < 0.0001);
         let half_blue = super::emission_uniform_values(1.5, 1.0, Some(KalaTubingState::Banshee));
-        let half_red = super::emission_uniform_values(1.5, 1.0, Some(KalaTubingState::ArmorReducer));
+        let half_red =
+            super::emission_uniform_values(1.5, 1.0, Some(KalaTubingState::ArmorReducer));
         assert!((half_blue[0] * half_blue[2] - 15.0).abs() < 0.0001);
         assert!((half_red[0] * half_red[2] - 200.0).abs() < 0.0001);
         let old = 100.0 / 3.0;
         assert!((blue[0] * blue[1] * blue[2] - 3.0 * old * 0.3).abs() < 0.0001);
         assert!((red[0] * red[1] * red[2] - 3.0 * old * 4.0).abs() < 0.0001);
-        let disabled = super::emission_uniform_values(3.0, 0.0, Some(KalaTubingState::ArmorReducer));
+        let disabled =
+            super::emission_uniform_values(3.0, 0.0, Some(KalaTubingState::ArmorReducer));
         assert_eq!(disabled[0] * disabled[1] * disabled[2], 0.0);
         let zero = super::emission_uniform_values(0.0, 1.0, Some(KalaTubingState::Banshee));
         assert_eq!(zero[0] * zero[2], 0.0);
