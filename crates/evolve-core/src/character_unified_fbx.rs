@@ -613,6 +613,7 @@ fn exact_authored_mtl(
 /// A CDF can bind Scorpid3_Rig.chr while its original MTL is
 /// Scorpid3.mtl. Authored overrides outrank embedded MtlName, which outranks
 /// matching filenames. Never use a different character's material.
+#[cfg(test)]
 fn original_model_material(
     root: &Path,
     mesh: &Path,
