@@ -8,6 +8,7 @@ pub struct GfxLayoutCanvas<'a> {
     pub layers: &'a [StaticLayer],
     pub selected: Option<usize>,
     pub stage: Size,
+    pub raster_background: bool,
 }
 #[derive(Default)]
 pub struct DragState {
@@ -91,7 +92,9 @@ impl canvas::Program<super::Message> for GfxLayoutCanvas<'_> {
         _cursor:mouse::Cursor
     )->Vec<canvas::Geometry> {
         let mut frame=canvas::Frame::new(renderer,bounds.size());
-        frame.fill_rectangle(Point::ORIGIN,frame.size(),Color::from_rgb8(23,24,30));
+        if !self.raster_background {
+            frame.fill_rectangle(Point::ORIGIN,frame.size(),Color::from_rgb8(23,24,30));
+        }
         let (scale,offset)=projection(self.stage,bounds);
         if scale<=0. {return vec![frame.into_geometry()];}
         frame.stroke(&Path::rectangle(offset,Size::new(
