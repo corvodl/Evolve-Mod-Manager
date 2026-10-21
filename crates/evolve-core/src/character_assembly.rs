@@ -93,9 +93,9 @@ pub fn select_attachments(
         && cdf.skin_sets.contains_key("hiddenwhenbansheegunselected")
         && cdf.attachments.iter().any(|part| {
             part.name.eq_ignore_ascii_case("bansheegun")
-                && part.binding.eq_ignore_ascii_case(
-                    "characters/hunters/merc_tech/techbansheegun_3p.skin",
-                )
+                && part
+                    .binding
+                    .eq_ignore_ascii_case("characters/hunters/merc_tech/techbansheegun_3p.skin")
         })
         && cdf
             .skin_sets
