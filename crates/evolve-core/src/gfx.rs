@@ -227,7 +227,7 @@ mod tests {
     fn fixture(tag: Option<(u16, u16)>) -> Vec<u8> {
         // RECT: 12-bit signed values (0,1920*20,0,1080*20).
         let numbers = [0i32, 38400, 0, 21600];
-        let mut bits = vec![0u8; 5 + 4 * 17];
+        let mut bits = [0u8; 5 + 4 * 17];
         let mut put = |offset: usize, width: usize, v: u32| {
             for i in 0..width {
                 bits[offset + i] = ((v >> (width - 1 - i)) & 1) as u8;
