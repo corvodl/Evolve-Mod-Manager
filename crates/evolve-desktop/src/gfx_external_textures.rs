@@ -3,10 +3,10 @@
 //! relationships, never display-list coordinates. Shape and sprite transforms
 //! remain in the compiled movie. The reconstructed movie is preview-only.
 use evolve_core::dds::decode_dds_rgba;
-use evolve_core::gfx::{inspect_gfx, MAX_DECOMPRESSED};
-use evolve_core::{resolve_imported_reference, LibraryReferenceStatus};
-use flate2::{read::ZlibDecoder, write::ZlibEncoder, Compression};
-use image::{imageops, RgbaImage};
+use evolve_core::gfx::{MAX_DECOMPRESSED, inspect_gfx};
+use evolve_core::{LibraryReferenceStatus, resolve_imported_reference};
+use flate2::{Compression, read::ZlibDecoder, write::ZlibEncoder};
+use image::{RgbaImage, imageops};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
@@ -51,7 +51,9 @@ fn safe_virtual(path: &str) -> bool {
         && path.len() < 1024
         && !path.starts_with('/')
         && !path.contains(['\\', ':'])
-        && path.split('/').all(|s| !s.is_empty() && s != "." && s != "..")
+        && path
+            .split('/')
+            .all(|s| !s.is_empty() && s != "." && s != "..")
 }
 fn image_path(movie: &str, name: &str) -> Option<String> {
     let movie_parent = movie.rsplit_once('/').map_or("", |(p, _)| p);
@@ -133,8 +135,11 @@ fn encode_tag(code: u16, data: &[u8], output: &mut Vec<u8>) {
     output.extend(data);
 }
 fn encode_bitmap(id: u16, image: &RgbaImage) -> Result<Vec<u8>, String> {
-    if image.width() == 0 || image.height() == 0
-        || image.width() > u16::MAX as u32 || image.height() > u16::MAX as u32 {
+    if image.width() == 0
+        || image.height() == 0
+        || image.width() > u16::MAX as u32
+        || image.height() > u16::MAX as u32
+    {
         return Err("Unsupported external bitmap dimensions".into());
     }
     let mut argb = Vec::with_capacity(image.len());
@@ -169,16 +174,19 @@ fn atlas_def(tag: &Tag, movie: &str) -> Option<(u16, Atlas)> {
     let width = u16_at(&tag.data, 6)?;
     let height = u16_at(&tag.data, 8)?;
     let len = usize::from(*tag.data.get(11)?);
-    if width == 0 || height == 0 || len == 0 || tag.data.len() != 13 + len
-        || *tag.data.last()? != 0 {
+    if width == 0 || height == 0 || len == 0 || tag.data.len() != 13 + len || *tag.data.last()? != 0
+    {
         return None;
     }
     let path = std::str::from_utf8(&tag.data[12..12 + len]).ok()?;
-    Some((id, Atlas {
-        virtual_path: image_path(movie, path)?,
-        width,
-        height,
-    }))
+    Some((
+        id,
+        Atlas {
+            virtual_path: image_path(movie, path)?,
+            width,
+            height,
+        },
+    ))
 }
 fn bitmap_tile(tag: &Tag) -> Option<Tile> {
     if tag.code != 1008 || tag.data.len() != 12 {
@@ -216,10 +224,12 @@ fn resolve_image(
             let candidate = parent.join(filename);
             if let Ok(meta) = fs::symlink_metadata(&candidate)
                 && meta.file_type().is_file()
-                && let (Ok(real), Ok(base)) = (fs::canonicalize(&candidate), fs::canonicalize(parent))
-                && real.starts_with(base) {
-                    return Ok(Some(real));
-                }
+                && let (Ok(real), Ok(base)) =
+                    (fs::canonicalize(&candidate), fs::canonicalize(parent))
+                && real.starts_with(base)
+            {
+                return Ok(Some(real));
+            }
         }
     }
     let (Some(root), Some(label)) = (library_root, build) else {
@@ -228,9 +238,7 @@ fn resolve_image(
     if label.trim().is_empty() {
         return Ok(None);
     }
-    match resolve_imported_reference(root, virtual_image, Some(label))
-        .map_err(|e| e.to_string())?
-    {
+    match resolve_imported_reference(root, virtual_image, Some(label)).map_err(|e| e.to_string())? {
         LibraryReferenceStatus::Found(hit) => Ok(Some(PathBuf::from(hit.absolute_path))),
         LibraryReferenceStatus::Missing | LibraryReferenceStatus::Ambiguous(_) => Ok(None),
     }
@@ -243,22 +251,35 @@ fn associated_ui_data(
     library_root: Option<&Path>,
     build: Option<&str>,
 ) -> Option<String> {
-    let (Some(root), Some(build)) = (library_root, build) else { return None };
+    let (Some(root), Some(build)) = (library_root, build) else {
+        return None;
+    };
     let basename = movie.rsplit('/').next()?.strip_suffix(".gfx")?;
-    let element = basename.split('_')
+    let element = basename
+        .split('_')
         .filter(|s| !s.is_empty())
         .map(|s| {
             let mut chars = s.chars();
-            chars.next().map(|c| c.to_ascii_uppercase().to_string() + chars.as_str())
+            chars
+                .next()
+                .map(|c| c.to_ascii_uppercase().to_string() + chars.as_str())
                 .unwrap_or_default()
         })
         .collect::<String>();
     let path = format!("UI/UIElements/{element}.xml");
     let LibraryReferenceStatus::Found(ref_info) =
-        resolve_imported_reference(root, &path, Some(build)).ok()? else { return None };
+        resolve_imported_reference(root, &path, Some(build)).ok()?
+    else {
+        return None;
+    };
     let xml = fs::read_to_string(ref_info.absolute_path).ok()?;
-    if xml.len() > 512 * 1024 { return None; }
-    if xml.to_ascii_lowercase().contains(&format!("{basename}.gfx").to_ascii_lowercase()) {
+    if xml.len() > 512 * 1024 {
+        return None;
+    }
+    if xml
+        .to_ascii_lowercase()
+        .contains(&format!("{basename}.gfx").to_ascii_lowercase())
+    {
         Some(path)
     } else {
         None
@@ -322,21 +343,33 @@ pub fn prepare_preview(
         };
         let [x0, y0, x1, y1] = tile.rectangle;
         let crop_pixels = u64::from(x1.saturating_sub(x0)) * u64::from(y1.saturating_sub(y0));
-        if x0 >= x1 || y0 >= y1 || x1 > atlas.width || y1 > atlas.height
-            || crop_pixels > MAX_CROP_PIXELS || total_pixels + crop_pixels > MAX_TOTAL_PIXELS {
+        if x0 >= x1
+            || y0 >= y1
+            || x1 > atlas.width
+            || y1 > atlas.height
+            || crop_pixels > MAX_CROP_PIXELS
+            || total_pixels + crop_pixels > MAX_TOTAL_PIXELS
+        {
             result.skipped += 1;
             continue;
         }
         if !cached.contains_key(&atlas.virtual_path) {
             let Some(path) = resolve_image(
-                &atlas.virtual_path, virtual_movie, source, library_root, build
-            )? else {
+                &atlas.virtual_path,
+                virtual_movie,
+                source,
+                library_root,
+                build,
+            )?
+            else {
                 result.skipped += 1;
                 continue;
             };
             match decode_dds_rgba(&path) {
                 Ok((_info, image)) => {
-                    if cached.len() >= 3 { cached.clear(); }
+                    if cached.len() >= 3 {
+                        cached.clear();
+                    }
                     cached.insert(atlas.virtual_path.clone(), image);
                 }
                 Err(_) => {
@@ -345,18 +378,27 @@ pub fn prepare_preview(
                 }
             }
         }
-        let Some(image) = cached.get(&atlas.virtual_path) else { continue };
+        let Some(image) = cached.get(&atlas.virtual_path) else {
+            continue;
+        };
         if x1 as u32 > image.width() || y1 as u32 > image.height() {
             result.skipped += 1;
             continue;
         }
         let cut = imageops::crop_imm(
-            image, x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32
-        ).to_image();
+            image,
+            x0 as u32,
+            y0 as u32,
+            (x1 - x0) as u32,
+            (y1 - y0) as u32,
+        )
+        .to_image();
         converted.insert(tile.character, encode_bitmap(tile.character, &cut)?);
         total_pixels += crop_pixels;
     }
-    if converted.is_empty() { return Ok(result); }
+    if converted.is_empty() {
+        return Ok(result);
+    }
     // Leave every original tag other than replaced 1008 bitmap definitions
     // in its original order. Only the FFDec scratch movie receives injected
     // standard bitmap characters. Never rewrite project or PAK from this.
@@ -365,7 +407,9 @@ pub fn prepare_preview(
     let mut injected: Vec<_> = converted.into_iter().collect();
     injected.sort_by_key(|(id, _)| *id);
     let mut insert = Vec::new();
-    for (_id, bytes) in &injected { insert.extend(bytes); }
+    for (_id, bytes) in &injected {
+        insert.extend(bytes);
+    }
     if !tags.iter().any(|t| t.code == 69) {
         payload.extend(&insert);
         inserted = true;
@@ -378,8 +422,9 @@ pub fn prepare_preview(
             continue;
         }
         if let Some(tile) = bitmap_tile(&tag)
-            && injected.iter().any(|(id, _)| *id == tile.character) {
-                continue;
+            && injected.iter().any(|(id, _)| *id == tile.character)
+        {
+            continue;
         }
         encode_tag(tag.code, &tag.data, &mut payload);
     }
@@ -409,7 +454,10 @@ mod tests {
     }
     #[test]
     fn parses_verified_compiled_external_image_records() {
-        let mut tag = Tag { code: 1009, data: vec![0; 12] };
+        let mut tag = Tag {
+            code: 1009,
+            data: vec![0; 12],
+        };
         tag.data[0..2].copy_from_slice(&9u16.to_le_bytes());
         tag.data[6..8].copy_from_slice(&128u16.to_le_bytes());
         tag.data[8..10].copy_from_slice(&64u16.to_le_bytes());
@@ -423,7 +471,9 @@ mod tests {
         let tile = Tag {
             code: 1008,
             data: [15u16, 9, 0, 0, 16, 16]
-                .into_iter().flat_map(u16::to_le_bytes).collect(),
+                .into_iter()
+                .flat_map(u16::to_le_bytes)
+                .collect(),
         };
         assert_eq!(bitmap_tile(&tile).unwrap().character, 15);
     }
