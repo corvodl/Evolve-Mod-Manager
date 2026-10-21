@@ -14,9 +14,10 @@ struct Output {
 // Explicit authored opacity map. Diffuse alpha may hold CryEngine gloss/mask
 // data, so it is never reused for a separate opacity-reference material.
 @group(0) @binding(6) var opacity_map: texture_2d<f32>;
-// x is original GlowAmount, y is the viewport-only slider.
-// z is 100/3 for source-verified Kala tubing, 1 for every other material.
-// The Qt preview used GlowAmount 3 -> 100; the authored value stays 3.
+// x is the material's original GlowAmount, y is the user's viewport slider.
+// z is universal 100/3 legacy-Qt calibration times Kala's optional, verified
+// equipment-only state correction (Banshee 0.3, Armor Reducer 4).
+// Source values, texture masks, diffuse and FBX export remain unchanged.
 @group(0) @binding(7) var<uniform> emission_params: vec4<f32>;
 // Separate, optional armor overlay: this channel is black when unchecked,
 // independently of any source-authored Emittance/GlowAmount texture.
@@ -119,21 +120,27 @@ fn shade(input: Output) -> vec4<f32> {
     let highlight = 0.84 * pow(abs(dot(surface, half_key)), exponent)
                   + 0.16 * pow(abs(dot(surface, half_fill)), exponent);
     let specular_light = specular_color * highlight * exposure;
-    // Emissive is independent of incident light, as in the game material.
-    // Match the earlier public Qt preview's GlowAmount 3 -> 100 calibration
-    // only for verified Kala tubing. Its 8-bit viewport would otherwise clip
-    // the high-range RGB toward white, so roll off all RGB by the SAME peak
-    // to preserve the original blue/red tint and the animated light mask.
+    // Emissive is independent of incident light. The original public Qt
+    // manager interprets GlowAmount 3 as 100 visualization units for EVERY
+    // source material, not just Kala. Scale only true authored emission.
+    // Per-pixel peak rolloff keeps high-range RGB from clipping to white
+    // in the 8-bit preview; it does not invent bloom outside the mesh.
     let source_glow = glow * emission_params.x * emission_params.y;
     let calibrated_glow = source_glow * emission_params.z;
-    var viewport_glow = source_glow;
-    if emission_params.z > 1.0 {
-        let peak = max(max(calibrated_glow.r, calibrated_glow.g), calibrated_glow.b);
-        viewport_glow = calibrated_glow / (1.0 + peak);
-    }
+    let peak = max(max(calibrated_glow.r, calibrated_glow.g), calibrated_glow.b);
+    let viewport_glow = calibrated_glow / (1.0 + peak);
+
+    // Optional Stage 2 armor-glow overlay has no authored GlowAmount.
+    // Treat it as a separate neutral one-unit source using the same 3=>100
+    // preview calibration, never the active material's GlowAmount or Kala
+    // state multiplier. Disabled overlays stay black.
+    let armor_source = armor_glow * emission_params.y;
+    let armor_calibrated = armor_source * (100.0 / 3.0);
+    let armor_peak = max(max(armor_calibrated.r, armor_calibrated.g), armor_calibrated.b);
+    let armor_viewport = armor_calibrated / (1.0 + armor_peak);
     return vec4<f32>(base.rgb * irradiance * exposure
         + viewport_glow
-        + armor_glow * emission_params.y + specular_light, base.a);
+        + armor_viewport + specular_light, base.a);
 }
 
 @fragment
