@@ -3987,6 +3987,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::PreferenceExperimental => {
             state.preferences.experimental_updates = !state.preferences.experimental_updates;
+            state.preferences.nightly_updates = false;
+            persist_preferences(state);
+        }
+        Message::PreferenceUpdateChannel => {
+            if state.preferences.nightly_updates {
+                state.preferences.nightly_updates = false;
+                state.preferences.experimental_updates = false;
+            } else if state.preferences.experimental_updates {
+                state.preferences.nightly_updates = true;
+                state.preferences.experimental_updates = false;
+            } else {
+                state.preferences.nightly_updates = false;
+                state.preferences.experimental_updates = true;
+            }
+            state.available_update = None;
+            state.staged_installer = None;
             persist_preferences(state);
         }
         Message::PreferenceAutoUpdates => {
@@ -4048,7 +4064,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.update_status = "Checking public GitHub Releases for verified updates...".into();
             state.available_update = None;
             state.staged_installer = None;
-            let channel = if state.preferences.experimental_updates {
+            let channel = if state.preferences.nightly_updates {
+                UpdateChannel::Nightly
+            } else if state.preferences.experimental_updates {
                 UpdateChannel::Beta
             } else {
                 UpdateChannel::Stable
@@ -6139,7 +6157,7 @@ fn download_action(state: &State) -> Element<'_, Message> {
         .on_press(Message::DownloadUpdate)
         .into()
     } else {
-        text("Stable updates appear after the public release is published.").into()
+        text("Choose Stable, Beta or Nightly to check available verified releases.").into()
     }
 }
 fn run_installer_action(state: &State) -> Element<'_, Message> {
