@@ -666,7 +666,7 @@ pub fn export_unified_cdf_fbx_options_with_glow(
         .replace('\\', "/");
     let monster_dir = relative_cdf
         .rsplit_once('/')
-        .map(|(dir, _)| format!("{dir}/"));
+        .map(|(dir, _)| format!("{dir}/").to_ascii_lowercase());
     let mut applied_glow = false;
     if !destination.is_absolute()
         || !destination
@@ -783,6 +783,7 @@ pub fn export_unified_cdf_fbx_options_with_glow(
                     relative
                         .to_string_lossy()
                         .replace('\\', "/")
+                        .to_ascii_lowercase()
                         .starts_with(owner)
                 })
             {
@@ -825,6 +826,7 @@ pub fn export_unified_cdf_fbx_options_with_glow(
                     relative
                         .to_string_lossy()
                         .replace('\\', "/")
+                        .to_ascii_lowercase()
                         .starts_with(owner)
                 })
             {
