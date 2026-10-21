@@ -4172,14 +4172,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::GfxToggleLayout => {
             state.gfx_layout_open = !state.gfx_layout_open;
-            if state.gfx_layout_open && state.gfx_layout_selected.is_none() {
-                if let Some(index) = state
+            if state.gfx_layout_open
+                && state.gfx_layout_selected.is_none()
+                && let Some(index) = state
                     .gfx_session
                     .as_ref()
                     .and_then(|s| s.layers.iter().position(|layer| layer.editable))
-                {
-                    return update(state, Message::GfxLayoutSelect(index));
-                }
+            {
+                return update(state, Message::GfxLayoutSelect(index));
             }
         }
         Message::GfxLayoutSelect(index) => {
