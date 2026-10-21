@@ -1716,7 +1716,7 @@ mod tests {
                 "version":1,
                 "builds":{"stage-two":{
                     "label":"Stage 2",
-                    "members":{archive_id:{}}
+                    "members":{"11111111111111111111":{}}
                 }}
             })).unwrap(),
         ).unwrap();
