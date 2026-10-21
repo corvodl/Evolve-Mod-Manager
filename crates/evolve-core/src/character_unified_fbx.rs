@@ -7,6 +7,7 @@ use crate::character_equipment::{EquipmentOverrides, validated_equipment_overrid
 use crate::fbx::publish_verified_binary_fbx;
 use crate::inventory::Inventory;
 use crate::materials::{read_material, scoped_texture_candidates};
+use crate::library_catalog::{imported_library, resolve_imported_reference, LibraryReferenceStatus};
 use crate::model::{original_mesh_subsets, read_model};
 use crate::native_caf::read_native_caf;
 use crate::rig::{
@@ -161,6 +162,33 @@ struct AuthoredMaps {
     gloss: Option<PathBuf>,
 }
 
+/// Resolve other imported archives only when the source is an actual
+/// imported Asset Library PAK. The source archive's unique build label
+/// constrains lookups so Stage 2 and 2012 textures cannot be mixed.
+struct ImportedTextureScope {
+    root: PathBuf,
+    build: Option<String>,
+}
+
+fn texture_scope(inventory: &Inventory) -> Option<ImportedTextureScope> {
+    let files = fs::canonicalize(&inventory.root).ok()?;
+    if files.file_name()?.to_str()? != "files" {
+        return None;
+    }
+    let archive = files.parent()?;
+    let library_root = archive.parent()?;
+    let catalog = imported_library(library_root).ok()?;
+    let source = catalog.archives.iter().find(|record| {
+        fs::canonicalize(&record.directory).is_ok_and(|path| path == archive)
+    })?;
+    // If the source belongs to multiple builds, do not guess a game version.
+    let build = (source.builds.len() == 1).then(|| source.builds[0].clone());
+    Some(ImportedTextureScope {
+        root: library_root.to_path_buf(),
+        build,
+    })
+}
+
 /// The FBX exporter must use the SAME authored MTL ownership search as
 /// the live GPU viewer, not an unrelated global texture with the right name.
 fn exact_original_texture(
@@ -168,6 +196,7 @@ fn exact_original_texture(
     inventory: &Inventory,
     material_virtual: &str,
     authored: &str,
+    imported: Option<&ImportedTextureScope>,
 ) -> Result<Option<PathBuf>, String> {
     for candidate in scoped_texture_candidates(authored, material_virtual)? {
         match resolve_virtual(inventory, &candidate) {
@@ -177,6 +206,32 @@ fn exact_original_texture(
                 return Err(format!(
                     "Ambiguous source texture {candidate} in {material_virtual}"
                 ));
+            }
+        }
+        if let Some(scope) = imported {
+            match resolve_imported_reference(&scope.root, &candidate, scope.build.as_deref())
+                .map_err(|error| format!("Cannot search imported texture {candidate}: {error}"))?
+            {
+                LibraryReferenceStatus::Found(hit) => {
+                    // The library resolver checks manifest membership, size,
+                    // symlink boundaries, original archive and build identity.
+                    // Keep a final bounded read guard for the FBX encoder.
+                    let path = PathBuf::from(hit.absolute_path);
+                    let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+                    if !metadata.file_type().is_file()
+                        || metadata.len() == 0
+                        || metadata.len() > MAX_SOURCE
+                    {
+                        return Err(format!("Unsafe imported source texture {candidate}"));
+                    }
+                    return fs::canonicalize(path).map(Some).map_err(|e| e.to_string());
+                }
+                LibraryReferenceStatus::Missing => {}
+                LibraryReferenceStatus::Ambiguous(_) => {
+                    return Err(format!(
+                        "Multiple imported sources match {candidate}; choose one source build before FBX export"
+                    ));
+                }
             }
         }
     }
@@ -284,6 +339,16 @@ fn exact_single_slot_maps(
     inventory: &Inventory,
     override_mtl: Option<&str>,
 ) -> Result<AuthoredMaps, String> {
+    exact_single_slot_maps_with_scope(root, mesh_path, inventory, override_mtl, None)
+}
+
+fn exact_single_slot_maps_with_scope(
+    root: &Path,
+    mesh_path: &Path,
+    inventory: &Inventory,
+    override_mtl: Option<&str>,
+    imported: Option<&ImportedTextureScope>,
+) -> Result<AuthoredMaps, String> {
     let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
     let Some((candidate, material)) =
         original_model_material(&root, mesh_path, inventory, override_mtl)?
@@ -312,7 +377,7 @@ fn exact_single_slot_maps(
                 item.role
             ));
         }
-        *target = exact_original_texture(&root, inventory, &candidate, &item.path)?;
+        *target = exact_original_texture(&root, inventory, &candidate, &item.path, imported)?;
     }
     Ok(maps)
 }
@@ -336,6 +401,16 @@ fn exact_multi_slot_materials(
     mesh_path: &Path,
     inventory: &Inventory,
     override_mtl: Option<&str>,
+) -> Result<Option<Vec<OriginalMaterialPng>>, String> {
+    exact_multi_slot_materials_with_scope(root, mesh_path, inventory, override_mtl, None)
+}
+
+fn exact_multi_slot_materials_with_scope(
+    root: &Path,
+    mesh_path: &Path,
+    inventory: &Inventory,
+    override_mtl: Option<&str>,
+    imported: Option<&ImportedTextureScope>,
 ) -> Result<Option<Vec<OriginalMaterialPng>>, String> {
     let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
     let Some((virtual_mtl, material)) =
@@ -364,7 +439,7 @@ fn exact_multi_slot_materials(
                 "gloss" | "glossiness" | "smoothness" => 4,
                 _ => continue,
             };
-            let Some(file) = exact_original_texture(&root, inventory, &virtual_mtl, &map.path)?
+            let Some(file) = exact_original_texture(&root, inventory, &virtual_mtl, &map.path, imported)?
             else {
                 continue;
             };
@@ -495,6 +570,7 @@ pub fn export_unified_cdf_fbx_options(
     embed_textures: bool,
 ) -> Result<UnifiedCdfFbxReport, String> {
     let root = fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
+    let imported = texture_scope(inventory);
     if !destination.is_absolute()
         || !destination
             .extension()
@@ -574,8 +650,13 @@ pub fn export_unified_cdf_fbx_options(
             .ok_or("Vertex count overflow")?;
         let source_subsets = original_mesh_subsets(&raw, mesh.indices.len())
             .map_err(|e| format!("CDF part {name} source subset mapping: {e}"))?;
-        let original_materials =
-            exact_multi_slot_materials(&root, original, inventory, material_hint.as_deref())?;
+        let original_materials = exact_multi_slot_materials_with_scope(
+            &root,
+            original,
+            inventory,
+            material_hint.as_deref(),
+            imported.as_ref(),
+        )?;
         // More than one source submaterial requires explicit source MTL and
         // original subset IDs; never paint every face with the first leaf.
         if source_subsets.iter().any(|(_, _, id)| *id == 255) {
@@ -601,8 +682,13 @@ pub fn export_unified_cdf_fbx_options(
             glb = embed_original_material_slots_glb(&glb, &source_subsets, &slots)
                 .map_err(|e| format!("CDF part {name} original multi-material: {e}"))?;
         } else {
-            let maps =
-                exact_single_slot_maps(&root, original, inventory, material_hint.as_deref())?;
+            let maps = exact_single_slot_maps_with_scope(
+                &root,
+                original,
+                inventory,
+                material_hint.as_deref(),
+                imported.as_ref(),
+            )?;
             let diffuse = maps
                 .diffuse
                 .as_deref()
