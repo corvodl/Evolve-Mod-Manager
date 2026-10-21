@@ -1,6 +1,10 @@
 name: Nightly 0.1.0 Windows release
 
 on:
+  # Publish the first Nightly when this release workflow enters main.
+  push:
+    branches: [main]
+    paths: [".github/workflows/nightly.yml"]
   workflow_dispatch:
   schedule:
     - cron: "30 4 * * *"
