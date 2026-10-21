@@ -289,6 +289,9 @@ mod tests {
     fn reject_import_escape() {
         assert!(clean_import(b"../external.gfx\0").is_err());
         assert!(clean_import(b"https://evil.invalid\0").is_err());
-        assert_eq!(clean_import(b"gfxfontlib_locfont.gfx\0").unwrap(), "gfxfontlib_locfont.gfx");
+        assert_eq!(
+            clean_import(b"gfxfontlib_locfont.gfx\0").unwrap(),
+            "gfxfontlib_locfont.gfx"
+        );
     }
 }
