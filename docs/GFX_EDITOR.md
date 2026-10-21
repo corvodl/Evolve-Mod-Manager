@@ -8,10 +8,20 @@ runtime or a replacement for FFDec.
 
 Open a `.gfx` in the extracted Modding file browser. The manager inspects its
 native Scaleform header, stage dimensions, tags, frames, imports and resource
-identities. Install **JPEXS FFDec 26.3.0** separately and configure its
-`ffdec-cli.exe` (or Java `ffdec.jar`) using the native file picker.
-No FFDec installer, proprietary Evolve game resources, RSA keys or GFX assets
-are bundled.
+identities. The **Windows installer** offers an optional, preselected **GFX
+tools** task that bundles pinned FFDec 26.3.0 and Ruffle 0.7.1 for an
+additional approximately 40 MiB of compressed download size. If selected,
+the manager detects `{app}/third_party/FFDec/ffdec-cli.exe` and
+`{app}/third_party/Ruffle/ruffle.exe` automatically without overwriting
+existing custom executable paths. The portable ZIP remains small and users
+can still select external installations through the file pickers.
+
+The tooling binaries are downloaded during release packaging from the
+official upstream projects, pinned and SHA-256 verified; they are **not**
+committed to the repository. Upstream license notices are distributed with
+the tools. FFDec needs a compatible **Java runtime** on the user's PC (it
+is not bundled). No proprietary Evolve assets, RSA keys or original GFX
+files are bundled.
 
 Resource replacement, full FFDec editor launch/reload, editable ActionScript
 and tag XML round trips, and PNG static-frame preview all work on temporary
@@ -139,3 +149,14 @@ Tests cover unsafe runtime paths, unsafe imported movie names and invalid
 Flash signatures. End-to-end interaction requires a locally installed
 Ruffle desktop build and real Evolve files; tests do not claim that every
 game GFX can run in this environment.
+
+### Bundled tools and installation size
+
+The installer offers a **GFX editing tools** option (preselected, optional):
+Ruffle v0.7.1 Windows x64 (20.5 MiB ZIP) plus FFDec v26.3.0 portable
+(19.0 MiB ZIP). They are compiled into the installer only and can be
+omitted at installation. Setup adds no third-party shortcuts or services.
+Ruffle and FFDec remain independent upstream products distributed under
+their own licenses; notices and source locations are installed alongside
+them. The portable release intentionally does not include third-party
+executables; use separate tools with the existing picker there.
