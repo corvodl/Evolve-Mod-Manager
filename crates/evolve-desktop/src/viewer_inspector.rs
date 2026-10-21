@@ -174,7 +174,9 @@ pub(super) fn sidebar_inspector(state: &State) -> Element<'_, Message> {
                     roles.contains(&r.role.as_str())
                         && !(friendly == "Transparency"
                             && r.role == "opacity"
-                            && r.authored_path.to_ascii_lowercase().contains("damage_blend_diff"))
+                            && r.authored_path
+                                .to_ascii_lowercase()
+                                .contains("damage_blend_diff"))
                 })
                 .collect();
             if refs.is_empty() {
@@ -198,7 +200,10 @@ pub(super) fn sidebar_inspector(state: &State) -> Element<'_, Message> {
             .iter()
             .filter(|reference| {
                 reference.role == "opacity"
-                    && reference.authored_path.to_ascii_lowercase().contains("damage_blend_diff")
+                    && reference
+                        .authored_path
+                        .to_ascii_lowercase()
+                        .contains("damage_blend_diff")
             })
             .count();
         if damage_blend > 0 {
