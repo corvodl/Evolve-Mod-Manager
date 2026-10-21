@@ -820,7 +820,7 @@ fn warn_gpu_material_limit(surfaces: &[Surface], warnings: &mut Vec<String>) {
     }
 }
 
- /// Per-material-range progress reports completed source work, not elapsed time.
+/// Per-material-range progress reports completed source work, not elapsed time.
 /// The source CDF is read only; this never synthesizes texture assignments.
 pub fn load_with_progress(
     report: &AssemblyReport,
