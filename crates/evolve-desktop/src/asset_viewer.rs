@@ -345,7 +345,7 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
             .spacing(7),
         );
         entries = entries.push(
-            text("Uses Kala's original blue/red animated tubing materials. Default preview brightness is calibrated per state (Banshee 0.3×, Armor Reducer 4× relative to GlowAmount); the normal slider starts at 1×. The original DDS, UVs and diffuse are unchanged.")
+            text("Kala's named Glow material stays source-blue in both modes. Body's separate ALPHAGLOW highlights retain their actual diffuse RGB (which can be red); only the equipment glow follows the Banshee/Armor Reducer choice. Every emission uses the 3 = 100 preview reference. Original textures and FBX exports stay unchanged.")
                 .size(11)
                 .style(design::muted),
         );

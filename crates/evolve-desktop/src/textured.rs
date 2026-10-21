@@ -355,9 +355,10 @@ pub struct Pipeline {
 // helper for initialization, CDF attachment ranges and texture reloads.
 const MATERIAL_BINDINGS: [u32; 10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 
-/// For verified Kala tubing, preserve the older Qt 100/3 source glow
-/// calibration, further adjusted by user-measured Banshee 0.3x or Armor
-/// Reducer 4x. Original GlowAmount and the separate slider are unchanged.
+/// Apply the earlier public Qt preview's GlowAmount 3 -> 100 reference to
+/// every source-authored emissive material while retaining its GlowAmount.
+/// Kala's active equipment glow keeps its separately verified 0.3x/4x
+/// correction. The user slider remains independent of both factors.
 fn emission_uniform_values(
     source_strength: f32,
     preview_gain: f32,
@@ -373,11 +374,12 @@ fn emission_uniform_values(
     } else {
         1.0
     };
-    let calibration = match kala_emission_state {
-        Some(evolve_core::KalaTubingState::Banshee) => (100.0 / 3.0) * 0.3,
-        Some(evolve_core::KalaTubingState::ArmorReducer) => (100.0 / 3.0) * 4.0,
+    let state_factor = match kala_emission_state {
+        Some(evolve_core::KalaTubingState::Banshee) => 0.3,
+        Some(evolve_core::KalaTubingState::ArmorReducer) => 4.0,
         None => 1.0,
     };
+    let calibration = (100.0 / 3.0) * state_factor;
     [source, gain, calibration, 0.0]
 }
 
@@ -427,8 +429,8 @@ impl Pipeline {
         strength: f32,
         kala_emission_state: Option<evolve_core::KalaTubingState>,
     ) -> wgpu::Buffer {
-        // Keep source-relative gain. Guard against nonfinite/pathological
-        // values but never silently reinterpret source GlowAmount 3 as 100%.
+        // Retain the original GlowAmount as source multiplier, with the
+        // legacy Qt 3 => 100 visualization reference in a separate uniform.
         let values = emission_uniform_values(strength, 1.0, kala_emission_state);
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Source material emission amount"),
@@ -1492,11 +1494,27 @@ mod tests {
         let authored = super::emission_uniform_values(0.0, 2.5, None);
         assert_eq!(authored[0], 0.0);
         assert_eq!(authored[1], 2.5);
-        // WGSL uses the authored multiplier only for original emission:
-        // optional armor glow remains controlled by the preview gain alone.
+        // Non-authored optional armor glow does not inherit an unrelated
+        // material's GlowAmount; it uses a neutral 1-unit source reference.
         let source = include_str!("textured.wgsl");
         assert!(source.contains("glow * emission_params.x * emission_params.y"));
         assert!(source.contains("armor_glow * emission_params.y"));
+        assert!(source.contains("armor_calibrated = armor_source * (100.0 / 3.0)"));
+    }
+
+    #[test]
+    fn original_emission_calibration_scales_every_material_glow_amount() {
+        for authored in [0.0, 0.3, 1.0, 2.0, 3.0, 4.0, 20.0] {
+            let params = super::emission_uniform_values(authored, 1.0, None);
+            assert_eq!(params[0], authored);
+            assert!((params[0] * params[1] * params[2] - authored * (100.0 / 3.0)).abs() < 0.0001);
+        }
+        let boosted = super::emission_uniform_values(3.0, 2.0, None);
+        assert!((boosted[0] * boosted[1] * boosted[2] - 200.0).abs() < 0.0001);
+        let disabled = super::emission_uniform_values(3.0, 0.0, None);
+        assert_eq!(disabled[0] * disabled[1] * disabled[2], 0.0);
+        let invalid = super::emission_uniform_values(f32::NAN, 1.0, None);
+        assert_eq!(invalid[0], 0.0);
     }
 
     #[test]
@@ -1548,9 +1566,9 @@ mod tests {
         let zero = super::emission_uniform_values(0.0, 1.0, Some(KalaTubingState::Banshee));
         assert_eq!(zero[0] * zero[2], 0.0);
         let unrelated = super::emission_uniform_values(3.0, 1.0, None);
-        assert_eq!(unrelated[0] * unrelated[1] * unrelated[2], 3.0);
+        assert!((unrelated[0] * unrelated[1] * unrelated[2] - 100.0).abs() < 0.0001);
         let shader = include_str!("textured.wgsl");
-        assert!(shader.contains("emission_params.z > 1.0"));
+        assert!(shader.contains("let viewport_glow = calibrated_glow / (1.0 + peak)"));
         assert!(shader.contains("calibrated_glow / (1.0 + peak)"));
         assert!(shader.contains("armor_glow * emission_params.y"));
     }
