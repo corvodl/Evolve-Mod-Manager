@@ -5077,21 +5077,52 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .iter()
                         .filter(|t| matches!(t.resolution, AssetResolution::Ambiguous(_)))
                         .count();
-                    state.status = format!(
-                        "MTL: {} slot(s), {} authored references, {} uniquely resolved, {} ambiguous.{}",
-                        report.slots,
-                        report.textures.len(),
-                        found,
-                        ambiguous,
-                        if diagnostics.is_empty() {
-                            " No guessing.".to_string()
-                        } else {
-                            format!(" Unavailable maps: {}.", diagnostics.join(" | "))
+                    if state.cdf_report.is_some() {
+                        // A separately validated CDF already has original
+                        // per-subset GPU material bindings. The generic MTL
+                        // resolver does NOT perform cross-slot assignment,
+                        // so its informational diagnostic must not replace
+                        // the CDF renderer's actual assignment status.
+                        let (visible, mapped) = state.cdf_surfaces.as_ref().map_or((0, 0), |parts| {
+                            let visible = parts.iter().filter(|part| part.visible).count();
+                            let mapped = parts
+                                .iter()
+                                .filter(|part| part.visible && part.diffuse.is_some())
+                                .count();
+                            (visible, mapped)
+                        });
+                        state.status = format!(
+                            "CDF GPU: {mapped}/{visible} visible mesh ranges with original diffuse maps; {found}/{} authored DDS references located, {ambiguous} ambiguous.",
+                            report.textures.len()
+                        );
+                        let unresolved = diagnostics
+                            .iter()
+                            .filter(|note| !note.contains("require verified CryEngine mesh-subset assignments"))
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        if !unresolved.is_empty() {
+                            state.auto_resource_note = format!(
+                                "CDF material diagnostics: {}",
+                                unresolved.join(" | ")
+                            );
                         }
-                    );
-                    if !diagnostics.is_empty() {
-                        state.auto_resource_note =
-                            format!("Material partially loaded: {}", diagnostics.join(" | "));
+                    } else {
+                        state.status = format!(
+                            "MTL: {} slot(s), {} authored references, {} uniquely resolved, {} ambiguous.{}",
+                            report.slots,
+                            report.textures.len(),
+                            found,
+                            ambiguous,
+                            if diagnostics.is_empty() {
+                                " No guessing.".to_string()
+                            } else {
+                                format!(" Unavailable maps: {}.", diagnostics.join(" | "))
+                            }
+                        );
+                        if !diagnostics.is_empty() {
+                            state.auto_resource_note =
+                                format!("Material partially loaded: {}", diagnostics.join(" | "));
+                        }
                     }
                     // A new authored material must not inherit a previous
                     // character's maps when the reference is missing/ambiguous.
