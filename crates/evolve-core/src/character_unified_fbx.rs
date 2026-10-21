@@ -413,7 +413,9 @@ pub fn monster_glow_path_with_library(
     let inferred = texture_scope(inventory);
     let explicit = imported_library_root.map(|library_root| ImportedTextureScope {
         root: library_root.to_path_buf(),
-        build: selected_build.map(str::to_owned),
+        build: selected_build
+            .map(str::to_owned)
+            .or_else(|| inferred.as_ref().and_then(|scope| scope.build.clone())),
     });
     let imported = explicit.as_ref().or(inferred.as_ref());
     for suffix in ["_glow_diff.tif", "_glow.tif"] {
