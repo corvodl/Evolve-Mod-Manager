@@ -230,7 +230,7 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
 fn equipment_browser(state: &State) -> Element<'_, Message> {
     let mut entries = column![
         text("MODEL OPTIONS").size(15),
-        text("Equipment swaps and full-armor glow affect the viewport and the exported CDF assembly. Original source assets remain unchanged.")
+        text("Equipment, full armor glow, and authored damage blend affect the viewport and CDF FBX export. Original game files remain unchanged.")
             .size(11).style(design::muted),
     ].spacing(10);
     let monster_selected = state.equipment_source.as_ref().is_some_and(|path| {
@@ -250,6 +250,30 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
         );
         entries = entries.push(
             text("Uses this monster's exact [name]_glow_diff DDS as an emissive overlay. Requires a complete imported DDS set; export with Rigged + Embedded textures.")
+                .size(11)
+                .style(design::muted),
+        );
+        entries = entries.push(
+            design::button(if state.damage_blend_percent > 0 {
+                "☑ Damage blend"
+            } else {
+                "☐ Damage blend"
+            })
+            .on_press_maybe((!state.busy).then_some(Message::ViewerToggleDamageBlend)),
+        );
+        if state.damage_blend_percent > 0 {
+            entries = entries.push(
+                row![
+                    text(format!("Damage intensity: {}%", state.damage_blend_percent)).size(11),
+                    slider(0..=100, state.damage_blend_percent, Message::ViewerDamageBlendChanged)
+                        .on_release(Message::ViewerPreviewStaticCdf)
+                        .width(Fill),
+                ]
+                .spacing(8),
+            );
+        }
+        entries = entries.push(
+            text("Approximates the original CryEngine BLENDLAYER using only this monster's verified Custom damage diffuse and Opacity damage-blend mask. Keeps geometry opaque and exports with Rigged + Embedded textures.")
                 .size(11)
                 .style(design::muted),
         );
@@ -912,12 +936,13 @@ pub(super) fn export_dialog(state: &State) -> Element<'_, Message> {
             .on_input(Message::ExportFilterChanged),
         scrollable(picker).height(Length::Fixed(295.0)),
         flags,
-        text(if !state.equipment_overrides.is_empty() || state.full_armor_glow {
-            format!("Current Model Options: {} equipment override(s), full armor glow {}. Select only the active CDF to preserve these in FBX.",
+        text(if !state.equipment_overrides.is_empty() || state.full_armor_glow || state.damage_blend_percent > 0 {
+            format!("Model Options: {} equipment override(s), armor glow {}, damage blend {}%. Export only the active CDF with Rigged + Embedded textures.",
                 state.equipment_overrides.len(),
-                if state.full_armor_glow { "ON" } else { "OFF" })
+                if state.full_armor_glow { "ON" } else { "OFF" },
+                state.damage_blend_percent)
         } else {
-            "Current Model Options: default equipment, armor glow off".to_owned()
+            "Model Options: default equipment, armor glow off, damage blend off".to_owned()
         }).size(11).style(design::muted),
         row![
             text(format!("Destination: {}", if state.export_parent.is_empty() { "Not selected" } else { &state.export_parent })).width(Fill),
