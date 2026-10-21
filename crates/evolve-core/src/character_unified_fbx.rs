@@ -251,22 +251,26 @@ pub fn monster_glow_path(
 ) -> Result<Option<PathBuf>, String> {
     let root = fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
     let source = fs::canonicalize(cdf_source).map_err(|e| e.to_string())?;
-    let relative = source.strip_prefix(&root).map_err(|_| "Monster CDF outside indexed assets")?;
+    let relative = source
+        .strip_prefix(&root)
+        .map_err(|_| "Monster CDF outside indexed assets")?;
     let virtual_cdf = relative.to_string_lossy().replace('\\', "/");
     let lower = virtual_cdf.to_ascii_lowercase();
-    if !(lower.starts_with("characters/monsters/")
-        || lower.contains("/characters/monsters/"))
+    if !(lower.starts_with("characters/monsters/") || lower.contains("/characters/monsters/"))
         || !lower.ends_with(".cdf")
     {
         return Ok(None);
     }
-    let stem = source.file_stem().and_then(|s| s.to_str()).ok_or("Invalid monster CDF filename")?;
+    let stem = source
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or("Invalid monster CDF filename")?;
     let imported = texture_scope(inventory);
     for suffix in ["_glow_diff.tif", "_glow.tif"] {
         let authored = format!("{stem}{suffix}");
-        if let Some(found) = exact_original_texture(
-            &root, inventory, &virtual_cdf, &authored, imported.as_ref(),
-        )? {
+        if let Some(found) =
+            exact_original_texture(&root, inventory, &virtual_cdf, &authored, imported.as_ref())?
+        {
             return Ok(Some(found));
         }
     }
@@ -660,7 +664,9 @@ pub fn export_unified_cdf_fbx_options_with_glow(
         .map_err(|_| "CDF outside indexed source root")?
         .to_string_lossy()
         .replace('\\', "/");
-    let monster_dir = relative_cdf.rsplit_once('/').map(|(dir, _)| format!("{dir}/"));
+    let monster_dir = relative_cdf
+        .rsplit_once('/')
+        .map(|(dir, _)| format!("{dir}/"));
     let mut applied_glow = false;
     if !destination.is_absolute()
         || !destination
@@ -773,11 +779,17 @@ pub fn export_unified_cdf_fbx_options_with_glow(
             // Only original parts of THIS monster get the glow overlay;
             // equipment bindings in other folders remain untouched.
             if let (Some(glow), Some(owner)) = (&glow_png, &monster_dir)
-                && original
-                    .strip_prefix(&root)
-                    .is_ok_and(|relative| relative.to_string_lossy().replace('\\', "/").starts_with(owner))
+                && original.strip_prefix(&root).is_ok_and(|relative| {
+                    relative
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                        .starts_with(owner)
+                })
             {
-                for slot in slots.iter_mut().filter(|slot| slot.diffuse.is_some() && !slot.no_draw) {
+                for slot in slots
+                    .iter_mut()
+                    .filter(|slot| slot.diffuse.is_some() && !slot.no_draw)
+                {
                     slot.emissive = Some(glow.clone());
                     applied_glow = true;
                 }
@@ -809,9 +821,12 @@ pub fn export_unified_cdf_fbx_options_with_glow(
                 .transpose()?;
             if let (Some(glow), Some(owner)) = (&glow_png, &monster_dir)
                 && diffuse.is_some()
-                && original
-                    .strip_prefix(&root)
-                    .is_ok_and(|relative| relative.to_string_lossy().replace('\\', "/").starts_with(owner))
+                && original.strip_prefix(&root).is_ok_and(|relative| {
+                    relative
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                        .starts_with(owner)
+                })
             {
                 emissive = Some(glow.clone());
                 applied_glow = true;
@@ -858,7 +873,10 @@ pub fn export_unified_cdf_fbx_options_with_glow(
         labels.push(name.clone());
     }
     if full_armor_glow && !applied_glow {
-        return Err("Full-armor glow had no verified diffuse mesh section in the selected monster CDF".into());
+        return Err(
+            "Full-armor glow had no verified diffuse mesh section in the selected monster CDF"
+                .into(),
+        );
     }
     if embed_textures && diffuse_textured_parts == 0 {
         return Err(
@@ -1095,7 +1113,12 @@ mod tests {
         fs::write(&correct, b"exact stage glow").unwrap();
         let inventory = crate::scan_directory(dir.path()).unwrap();
         assert_eq!(
-            fs::canonicalize(monster_glow_path(&owner.join("goliath3.cdf"), &inventory).unwrap().unwrap()).unwrap(),
+            fs::canonicalize(
+                monster_glow_path(&owner.join("goliath3.cdf"), &inventory)
+                    .unwrap()
+                    .unwrap()
+            )
+            .unwrap(),
             fs::canonicalize(correct).unwrap()
         );
         fs::create_dir_all(dir.path().join("characters/hunters")).unwrap();
