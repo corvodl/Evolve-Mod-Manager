@@ -652,8 +652,9 @@ fn original_model_material_with_scope(
                 let mut candidates = Vec::new();
                 if !rooted && !parent.is_empty() {
                     candidates.push(format!("{parent}/{reference}"));
+                } else {
+                    candidates.push(reference);
                 }
-                candidates.push(reference);
                 for candidate in candidates {
                     if let Some(found) =
                         exact_authored_mtl(&root, inventory, &candidate, imported)?
@@ -680,8 +681,9 @@ fn original_model_material_with_scope(
             .any(|prefix| authored.to_ascii_lowercase().starts_with(prefix));
         if !rooted && !parent.is_empty() {
             paths.push(format!("{parent}/{authored}"));
+        } else {
+            paths.push(authored);
         }
-        paths.push(authored);
     } else {
         paths.push(if parent.is_empty() {
             format!("{stem}.mtl")
