@@ -1,0 +1,139 @@
+name: Publish Windows installer and portable ZIP
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Exact semver matching the desktop Cargo package"
+        required: true
+        type: string
+      parity_confirm:
+        description: "Type PARITY_VERIFIED_AND_TESTED after real-game checks"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: windows-2022
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Prevent premature or mismatched releases
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+          APPROVAL: ${{ inputs.parity_confirm }}
+        run: |
+          if ("${{ github.ref }}" -ne "refs/heads/main") {
+            throw "Production releases must run from main."
+          }
+          if ($env:APPROVAL -ne "PARITY_VERIFIED_AND_TESTED") {
+            throw "The real-game feature-parity acceptance gate has not been approved."
+          }
+          if ($env:VERSION -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-(?:beta|rc)\.[0-9]+)?$') {
+            throw "Invalid release version."
+          }
+          $meta = cargo metadata --no-deps --format-version=1 | ConvertFrom-Json
+          $package = $meta.packages | Where-Object { $_.name -eq "evolve-mod-manager" }
+          if (!$package -or $package.version -ne $env:VERSION) {
+            throw "Version must match the desktop Cargo package."
+          }
+          # Require every acceptance row to be independently marked verified.
+          # A status such as **Partial: ...** must NOT slip past a bare
+          # **Partial** string match.
+          $rows = @()
+          $inside = $false
+          foreach ($line in (Get-Content -LiteralPath "docs/PARITY.md")) {
+            if ($line -match '^\| Feature \| Rust rewrite status \|') {
+              $inside = $true
+              continue
+            }
+            if ($inside -and $line -notmatch '^\|') { break }
+            if ($inside -and $line -match '^\| ' -and $line -notmatch '^\| ---') {
+              $rows += $line
+            }
+          }
+          if ($rows.Count -lt 15) {
+            throw "Feature parity checklist missing or unexpectedly short."
+          }
+          foreach ($row in $rows) {
+            $fields = $row.Split('|')
+            if ($fields.Count -lt 5 -or $fields[2] -notmatch '\*\*Verified for v1\.0\*\*') {
+              throw "Release blocked by unverified feature: $row"
+            }
+          }
+
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace --all-targets
+      - run: cargo build --release --workspace --bins
+
+      - name: Package portable Windows distribution
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          $folder = "dist/EvolveModManager-Portable"
+          New-Item -ItemType Directory -Force $folder | Out-Null
+          foreach ($name in @("evolve-mod-manager.exe", "evolve-cli.exe")) {
+            $source = Join-Path "target/release" $name
+            if (!(Test-Path $source)) { throw "Windows binary missing: $name" }
+            Copy-Item -LiteralPath $source -Destination (Join-Path $folder $name)
+          }
+          Copy-Item "assets/hunt.ico" "$folder/hunt.ico"
+          Copy-Item "README.md" "$folder/README.md"
+          Compress-Archive -Path (Join-Path $folder '*') -DestinationPath "dist/EvolveModManager-Portable-$env:VERSION.zip" -CompressionLevel Optimal -Force
+
+      - name: Compile Windows installer
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          $compiler = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) "Inno Setup 6\ISCC.exe"
+          if (!(Test-Path $compiler)) {
+            choco install innosetup --no-progress -y
+          }
+          if (!(Test-Path $compiler)) { throw "Inno Setup compiler missing." }
+          & $compiler "/DAppVersion=$env:VERSION" "installer/EvolveModManager.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Installer compilation failed." }
+
+      - name: Check the only two distributable files
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          $installer = "dist/EvolveModManager-Setup-$env:VERSION.exe"
+          $portable = "dist/EvolveModManager-Portable-$env:VERSION.zip"
+          foreach ($item in @($installer, $portable)) {
+            if (!(Test-Path $item)) { throw "Missing release file: $item" }
+            if ((Get-Item $item).Length -lt 1024) { throw "Suspiciously small file: $item" }
+          }
+          $body = @("Evolve Mod Manager $env:VERSION",
+                    "Windows installer and portable ZIP only.",
+                    "")
+          foreach ($item in @($installer, $portable)) {
+            $name = Split-Path $item -Leaf
+            $hash = (Get-FileHash -Algorithm SHA256 $item).Hash.ToLowerInvariant()
+            $body += "SHA256 $name $hash"
+          }
+          Set-Content -LiteralPath "dist/release-notes.md" -Value $body -Encoding utf8
+
+      - name: Publish installer and portable ZIP
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version }}
+          name: Evolve Mod Manager v${{ inputs.version }}
+          prerelease: ${{ contains(inputs.version, '-beta.') || contains(inputs.version, '-rc.') }}
+          make_latest: ${{ !contains(inputs.version, '-') }}
+          body_path: dist/release-notes.md
+          fail_on_unmatched_files: true
+          files: |
+            dist/EvolveModManager-Setup-${{ inputs.version }}.exe
+            dist/EvolveModManager-Portable-${{ inputs.version }}.zip

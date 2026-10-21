@@ -1,0 +1,108 @@
+name: Nightly 0.1.0 Windows release
+
+on:
+  # Publish the first Nightly when this release workflow enters main.
+  push:
+    branches: [main]
+    paths: [".github/workflows/nightly.yml"]
+  workflow_dispatch:
+  schedule:
+    - cron: "30 4 * * *"
+
+permissions:
+  contents: write
+
+# Avoid overlapping 20-minute Windows release builds.
+concurrency:
+  group: evolve-nightly-windows
+  cancel-in-progress: false
+
+jobs:
+  nightly:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-2022
+    timeout-minutes: 55
+    env:
+      VERSION: 0.1.0-nightly.${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Stamp monotonically increasing Nightly prerelease version
+        shell: pwsh
+        run: |
+          $manifest = Get-Content "Cargo.toml" -Raw
+          if ($manifest -notmatch '(?m)^version = "0\.1\.0"$') {
+            throw "Expected Nightly 0.1.0 base version in workspace Cargo.toml"
+          }
+          $manifest = $manifest -replace '(?m)^version = "0\.1\.0"$', ('version = "' + $env:VERSION + '"')
+          Set-Content "Cargo.toml" -Value $manifest -Encoding utf8
+          Write-Host "Building Nightly $env:VERSION"
+
+      # Core and desktop tests run on the PR CI. Compile only once here.
+      - run: cargo fmt --all -- --check
+      - run: cargo build --release --workspace --bins
+
+      - name: Create portable ZIP (both Windows executables)
+        shell: pwsh
+        run: |
+          $folder = "dist/EvolveModManager-Portable"
+          New-Item -ItemType Directory -Path $folder -Force | Out-Null
+          foreach ($name in @("evolve-mod-manager.exe", "evolve-cli.exe")) {
+            $source = Join-Path "target/release" $name
+            if (!(Test-Path $source)) { throw "Windows executable missing: $name" }
+            Copy-Item -LiteralPath $source -Destination (Join-Path $folder $name)
+          }
+          Copy-Item -LiteralPath "assets/hunt.ico" -Destination "$folder/hunt.ico"
+          Copy-Item -LiteralPath "README.md" -Destination "$folder/README.md"
+          Compress-Archive -Path (Join-Path $folder '*') -DestinationPath "dist/EvolveModManager-Portable-$env:VERSION.zip" -CompressionLevel Optimal -Force
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: |
+          $compiler = Join-Path ([Environment]::GetFolderPath("ProgramFilesX86")) "Inno Setup 6/ISCC.exe"
+          if (!(Test-Path $compiler)) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw "Failed to install Inno Setup compiler" }
+          }
+          if (!(Test-Path $compiler)) { throw "Inno Setup compiler missing: $compiler" }
+          & $compiler "/DAppVersion=$env:VERSION" "installer/EvolveModManager.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Windows installer compilation failed" }
+
+      - name: Verify installer and portable ZIP, prepare SHA256 release notes
+        shell: pwsh
+        run: |
+          $installer = "dist/EvolveModManager-Setup-$env:VERSION.exe"
+          $portable = "dist/EvolveModManager-Portable-$env:VERSION.zip"
+          foreach ($item in @($installer, $portable)) {
+            if (!(Test-Path $item)) { throw "Missing Nightly release asset: $item" }
+            if ((Get-Item $item).Length -lt 1024) { throw "Suspiciously small Nightly asset: $item" }
+          }
+          $body = @(
+            "Evolve Mod Manager Nightly 0.1.0 (build $env:VERSION)",
+            "",
+            "Experimental Windows preview. The manager is not yet feature-complete.",
+            "Installer options: desktop shortcut, Start Menu shortcut, launch when finished.",
+            "Only the Windows installer and portable ZIP are published.",
+            ""
+          )
+          foreach ($item in @($installer, $portable)) {
+            $name = Split-Path $item -Leaf
+            $digest = (Get-FileHash -Algorithm SHA256 $item).Hash.ToLowerInvariant()
+            $body += "SHA256 $name $digest"
+          }
+          Set-Content -LiteralPath "dist/nightly-release-notes.md" -Value $body -Encoding utf8
+
+      - name: Publish Nightly 0.1.0 GitHub prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: Evolve Mod Manager Nightly 0.1.0 (build ${{ github.run_number }})
+          prerelease: true
+          make_latest: false
+          body_path: dist/nightly-release-notes.md
+          fail_on_unmatched_files: true
+          files: |
+            dist/EvolveModManager-Setup-${{ env.VERSION }}.exe
+            dist/EvolveModManager-Portable-${{ env.VERSION }}.zip
