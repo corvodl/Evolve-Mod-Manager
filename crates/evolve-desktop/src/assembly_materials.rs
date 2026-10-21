@@ -43,7 +43,8 @@ fn legacy_alpha_emission(
     if !matches!(
         slot.shader.to_ascii_lowercase().as_str(),
         "illum" | "cloth" | "humanskin"
-    ) || !slot.glow_amount.is_some_and(|amount| amount > 0.0)
+    ) || !slot.alpha_glow
+        || !slot.glow_amount.is_some_and(|amount| amount > 0.0)
         || !diffuse.pixels().any(|pixel| pixel[3] < 255)
     {
         return None;
@@ -328,6 +329,43 @@ fn role_channel(role: &str) -> Option<usize> {
     }
 }
 
+/// An explicitly authored Illum Decal with positive GlowAmount is a
+/// separate legacy glow source, not a second diffuse-alpha mask. Kala's
+/// Banshee Gun Glow submaterial deliberately lacks the ALPHAGLOW flag.
+fn legacy_decal_role(slot: &evolve_core::MaterialSlot, role: &str) -> Option<usize> {
+    if role == "decal"
+        && slot.shader.eq_ignore_ascii_case("Illum")
+        && slot.glow_amount.is_some_and(|amount| amount > 0.0)
+        && !slot.alpha_glow
+    {
+        Some(2)
+    } else {
+        role_channel(role)
+    }
+}
+
+/// Source-only static approximation: the authored Decal RGB and alpha are
+/// tinted by the material's authored Diffuse RGB, never by the unrelated
+/// body diffuse-alpha map or its serialized Emissive="0,0,0".
+/// Animated Decal TexMod coordinates require a separate renderer feature.
+fn tint_legacy_decal(
+    slot: &evolve_core::MaterialSlot,
+    decal: &image::RgbaImage,
+) -> image::RgbaImage {
+    let tint = slot.diffuse_tint.unwrap_or([1.0, 1.0, 1.0]);
+    let mut result = decal.clone();
+    for pixel in result.pixels_mut() {
+        let mask = f32::from(pixel[3]) / 255.0;
+        for channel in 0..3 {
+            pixel[channel] = linear_srgb(
+                srgb_linear(pixel[channel]) * tint[channel].clamp(0.0, 1.0) * mask
+            );
+        }
+        pixel[3] = 255;
+    }
+    result
+}
+
 /// Keep material-relative paths in the original indexed namespace; this is
 /// not a basename scan over unrelated actors or builds. Imported PAK sources
 /// live at <library>/<archive>/files/<game-virtual-path>.
@@ -464,7 +502,7 @@ fn authored_maps(
     let mut counts = [0usize; 6];
     for map in &slot.maps {
         if !is_damage_blend_mask(slot, map)
-            && let Some(index) = role_channel(&map.role)
+            && let Some(index) = legacy_decal_role(slot, &map.role)
         {
             counts[index] += 1;
         }
@@ -484,7 +522,7 @@ fn authored_maps(
             );
             continue;
         }
-        let Some(index) = role_channel(&map.role) else {
+        let Some(index) = legacy_decal_role(slot, &map.role) else {
             continue;
         };
         if index == 5 && unverified_solid_body_opacity(slot) {
@@ -545,7 +583,15 @@ fn authored_maps(
             }
             budget.decoded.insert(canonical);
         }
-        result[index] = Some(image);
+        if index == 2 && map.role == "decal" {
+            result[index] = Some(Arc::new(tint_legacy_decal(slot, &image)));
+            warnings.push(format!(
+                "{}: legacy Illum Decal glow uses source GlowAmount and Diffuse tint, without diffuse-alpha masking; animated Decal TexMod not yet supported in the static preview",
+                slot.name
+            ));
+        } else {
+            result[index] = Some(image);
+        }
     }
     if result[2].is_none()
         && !slot
@@ -1178,6 +1224,8 @@ mod tests {
             maps: vec![],
             opacity: None,
             glow_amount: Some(3.0),
+            alpha_glow: true,
+            diffuse_tint: None,
         };
         let mask = legacy_alpha_emission(&slot, &diffuse).unwrap();
         assert!(mask.get_pixel(0, 0)[0] > 150);
@@ -1187,6 +1235,9 @@ mod tests {
         slot.glow_amount = None;
         assert!(legacy_alpha_emission(&slot, &diffuse).is_none());
         slot.glow_amount = Some(3.0);
+        slot.alpha_glow = false;
+        assert!(legacy_alpha_emission(&slot, &diffuse).is_none());
+        slot.alpha_glow = true;
         let opaque = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 255, 255, 255]));
         assert!(legacy_alpha_emission(&slot, &opaque).is_none());
     }
@@ -1220,6 +1271,39 @@ mod tests {
     }
 
     #[test]
+    fn kala_real_banshee_glow_decal_is_not_zeroed_by_body_alpha() {
+        let document = evolve_core::parse_material(
+            br#"<Material Name="bansheegun glow" Shader="Illum"
+                StringGenMask="%SUBSURFACE_SCATTERING"
+                Diffuse="0.072271854,0.1470273,0.42326769"
+                Emissive="0,0,0" GlowAmount="3"><Textures>
+                <Texture Map="Diffuse" File="characters/hunters/merc_tech/body.tif"/>
+                <Texture Map="Decal" File="textures/particle/light/chroma_fan320tiled_01b.tif">
+                    <TexMod TileU="3" TileV="4"/>
+                </Texture>
+            </Textures></Material>"#,
+        ).unwrap();
+        let slot = &document.slots[0];
+        assert!(!slot.alpha_glow);
+        assert_eq!(legacy_decal_role(slot, "decal"), Some(2));
+        assert_eq!(legacy_decal_role(slot, "normals"), Some(1));
+        let original = image::RgbaImage::from_pixel(2, 2, image::Rgba([180, 180, 180, 220]));
+        let decal = tint_legacy_decal(slot, &original);
+        assert!(decal.pixels().all(|p| p[2] > p[1] && p[1] > p[0]));
+        assert!(decal.pixels().all(|p| p[2] > 0));
+        assert_eq!(original.get_pixel(0, 0)[0], 180);
+        let mut body = slot.clone();
+        body.alpha_glow = true;
+        assert_eq!(legacy_decal_role(&body, "decal"), None);
+        let disabled = evolve_core::parse_material(
+            br#"<Material Shader="Illum" GlowAmount="0"><Textures>
+                <Texture Map="Decal" File="textures/particle/light/chroma_fan320tiled_01b.tif"/>
+            </Textures></Material>"#,
+        ).unwrap();
+        assert_eq!(legacy_decal_role(&disabled.slots[0], "decal"), None);
+    }
+
+    #[test]
     fn kala_banshee_emissive_roles_and_source_zero_are_distinct() {
         assert_eq!(role_channel("emissivecolor"), Some(2));
         assert_eq!(role_channel("glowmap"), Some(2));
@@ -1243,6 +1327,8 @@ mod tests {
             shader: shader.into(),
             opacity: scalar,
             glow_amount: None,
+            alpha_glow: false,
+            diffuse_tint: None,
             maps: if with_mask {
                 vec![evolve_core::TextureReference {
                     role: "opacity".into(),
@@ -1771,6 +1857,8 @@ mod tests {
             }],
             opacity: None,
             glow_amount: None,
+            alpha_glow: false,
+            diffuse_tint: None,
         };
         assert!(!needs_alpha_blending(&ordinary));
         let mut transparent = ordinary;
