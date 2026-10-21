@@ -621,6 +621,78 @@ pub fn load_model(
     Ok((result, warnings))
 }
 
+/// Apply the material's authored BLENDLAYER over the exact original diffuse.
+/// This runs off the UI thread and only changes ephemeral preview pixels.
+/// The mask is NOT an alpha test: source Illum mesh coverage remains opaque.
+pub fn apply_damage_blend(
+    report: &AssemblyReport,
+    surfaces: &mut [Surface],
+    percent: u8,
+    inventory: &Inventory,
+    imported: Option<&Path>,
+    build: Option<&str>,
+    cache: &SharedCache,
+) -> Result<usize, String> {
+    if percent == 0 {
+        return Ok(0);
+    }
+    if percent > 100 || report.source_parts.len() != surfaces.len() {
+        return Err("Invalid model damage-blend selection".into());
+    }
+    let mut applied = 0usize;
+    let mut used = 0usize;
+    let mut previous = std::collections::HashMap::new();
+    for (part, surface) in report.source_parts.iter().zip(surfaces.iter_mut()) {
+        let Some(base) = surface.diffuse.as_ref() else { continue };
+        if !surface.visible || surface.transparent {
+            continue;
+        }
+        let Some(material) = material_for_part(
+            &part.binding, part.material_hint.as_deref(), inventory, imported, build,
+        )? else { continue };
+        let doc = read_material(&material).map_err(|e| e.to_string())?;
+        let Some(leaf) = doc.slots.get(part.material_slot as usize) else { continue };
+        let Some((damage_ref, mask_ref)) = evolve_core::authored_damage_layer(leaf) else {
+            continue;
+        };
+        let resolve = |reference: &str| -> Result<Arc<image::RgbaImage>, String> {
+            let (source, virtual_path) = authored_texture(
+                reference, &material, &part.binding, inventory, imported, build,
+            )?;
+            let canonical = std::fs::canonicalize(source).map_err(|e| e.to_string())?;
+            decoded_dds_indexed(cache, &canonical, &virtual_path, inventory, imported, build)
+                .map(|(_, image)| image)
+        };
+        let alternate = resolve(damage_ref)?;
+        let mask = resolve(mask_ref)?;
+        let key = (
+            Arc::as_ptr(base) as usize,
+            Arc::as_ptr(&alternate) as usize,
+            Arc::as_ptr(&mask) as usize,
+        );
+        let blended = if let Some(image) = previous.get(&key) {
+            Arc::clone(image)
+        } else {
+            let pixels = evolve_core::blend_damage_rgba(base, &alternate, &mask, percent)?;
+            used = used
+                .checked_add(pixels.as_raw().len())
+                .ok_or("Damage layer memory overflow")?;
+            if used > MAX_GPU_PREVIEW_TEXTURE_BYTES {
+                return Err("Damage layer exceeds 256 MiB GPU preview budget".into());
+            }
+            let image = Arc::new(pixels);
+            previous.insert(key, Arc::clone(&image));
+            image
+        };
+        surface.diffuse = Some(blended);
+        applied += 1;
+    }
+    if applied == 0 {
+        return Err("No verified authored damage Custom + Opacity blend pair exists in the selected monster CDF materials".into());
+    }
+    Ok(applied)
+}
+
 /// Estimate the same unique GPU role/source uploads used by the renderer.
 /// A CDF with repeated sections must not count one cached DDS repeatedly.
 fn unique_gpu_material_bytes(surfaces: &[Surface]) -> usize {
