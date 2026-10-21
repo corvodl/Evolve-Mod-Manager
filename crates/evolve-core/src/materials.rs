@@ -160,11 +160,13 @@ pub fn authored_damage_layer(slot: &MaterialSlot) -> Option<(&str, &str)> {
     }
     let mask = slot.maps.iter().find(|map| {
         map.role == "opacity"
-            && map.path.to_ascii_lowercase().contains("_damage_blend_diff.")
+            && map
+                .path
+                .to_ascii_lowercase()
+                .contains("_damage_blend_diff.")
     })?;
     let alternate = slot.maps.iter().find(|map| {
-        map.role == "custom"
-            && map.path.to_ascii_lowercase().contains("_damage_diff.")
+        map.role == "custom" && map.path.to_ascii_lowercase().contains("_damage_diff.")
     })?;
     Some((alternate.path.as_str(), mask.path.as_str()))
 }
@@ -180,9 +182,12 @@ pub fn blend_damage_rgba(
     percent: u8,
 ) -> Result<image::RgbaImage, String> {
     if percent > 100
-        || base.width() == 0 || base.height() == 0
-        || damaged.width() == 0 || damaged.height() == 0
-        || mask.width() == 0 || mask.height() == 0
+        || base.width() == 0
+        || base.height() == 0
+        || damaged.width() == 0
+        || damaged.height() == 0
+        || mask.width() == 0
+        || mask.height() == 0
         || u64::from(base.width()) * u64::from(base.height()) > 32 * 1024 * 1024
     {
         return Err("Invalid or oversized damage-blend source image".into());
@@ -194,11 +199,12 @@ pub fn blend_damage_rgba(
         let mx = u64::from(x) * u64::from(mask.width()) / u64::from(base.width());
         let my = u64::from(y) * u64::from(mask.height()) / u64::from(base.height());
         let alt = damaged.get_pixel(dx as u32, dy as u32);
-        let weight = u32::from(mask.get_pixel(mx as u32, my as u32)[0])
-            * u32::from(percent) / 100;
+        let weight = u32::from(mask.get_pixel(mx as u32, my as u32)[0]) * u32::from(percent) / 100;
         for channel in 0..3 {
             pixel[channel] = ((u32::from(pixel[channel]) * (255 - weight)
-                + u32::from(alt[channel]) * weight + 127) / 255) as u8;
+                + u32::from(alt[channel]) * weight
+                + 127)
+                / 255) as u8;
         }
         pixel[3] = 255;
     }
@@ -627,14 +633,17 @@ mod damage_layer_tests {
     fn damage_blending_changes_rgb_without_cutting_out_character() {
         let base = image::RgbaImage::from_pixel(2, 1, image::Rgba([200, 100, 50, 3]));
         let damaged = image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 100, 200, 4]));
-        let mask = image::RgbaImage::from_raw(
-            2, 1, vec![0, 0, 0, 0, 255, 255, 255, 255]
-        ).unwrap();
+        let mask = image::RgbaImage::from_raw(2, 1, vec![0, 0, 0, 0, 255, 255, 255, 255]).unwrap();
         let mixed = blend_damage_rgba(&base, &damaged, &mask, 50).unwrap();
         assert_eq!(mixed.get_pixel(0, 0).0, [200, 100, 50, 255]);
         assert_eq!(mixed.get_pixel(1, 0).0, [100, 100, 125, 255]);
-        assert_eq!(blend_damage_rgba(&base, &damaged, &mask, 100).unwrap().get_pixel(1, 0).0,
-            [0, 100, 200, 255]);
+        assert_eq!(
+            blend_damage_rgba(&base, &damaged, &mask, 100)
+                .unwrap()
+                .get_pixel(1, 0)
+                .0,
+            [0, 100, 200, 255]
+        );
         assert!(blend_damage_rgba(&base, &damaged, &mask, 101).is_err());
     }
 }
