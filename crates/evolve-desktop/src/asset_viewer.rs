@@ -648,7 +648,7 @@ fn gfx_viewport(state: &State) -> Element<'_, Message> {
             actions = actions.push(text("REPLACE EXISTING RESOURCE · CHARACTER ID").size(13));
             for (index, item) in info.resources.iter().enumerate().take(80) {
                 actions = actions.push(
-                    design::button(format!(
+                    design::button(text(format!(
                         "{} #{} {}",
                         item.kind,
                         item.id,
@@ -657,7 +657,7 @@ fn gfx_viewport(state: &State) -> Element<'_, Message> {
                         } else {
                             ""
                         }
-                    ))
+                    )))
                     .on_press(Message::GfxSelectResource(index)),
                 );
             }
