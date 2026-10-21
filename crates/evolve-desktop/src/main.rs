@@ -7091,7 +7091,9 @@ impl Desktop {
 
     fn subscription(&self) -> Subscription<Message> {
         let animate_decal = self.state.cdf_surfaces.as_ref().is_some_and(|surfaces| {
-            surfaces.iter().any(|surface| surface.visible && surface.emissive_uv.is_some())
+            surfaces
+                .iter()
+                .any(|surface| surface.visible && surface.emissive_uv.is_some())
         }) && matches!(self.state.page.as_ref(), Some(Page::Models));
         let playback = if self.state.playing || animate_decal {
             iced::time::every(Duration::from_millis(40)).map(|_| Message::Tick)
