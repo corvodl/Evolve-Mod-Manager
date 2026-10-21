@@ -1,6 +1,6 @@
 //! Original E.M.E.T. attachment variants in one 3P CDF. No guessed meshes:
 //! the UI can only select render attachments that the source CDF declares.
-use crate::cdf::{CdfDefinition, AttachmentKind};
+use crate::cdf::{AttachmentKind, CdfDefinition};
 use crate::character_equipment::EquipmentOverrides;
 
 pub const FACE: &str = "__emet_face";
@@ -21,7 +21,8 @@ pub fn is_emet_cdf(path: &str) -> bool {
 }
 
 fn tokenized(input: &str) -> Vec<String> {
-    input.to_ascii_lowercase()
+    input
+        .to_ascii_lowercase()
         .split(|ch: char| !ch.is_ascii_alphanumeric())
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
@@ -33,9 +34,28 @@ fn is_face(name: &str, binding: &str) -> bool {
     let path = binding.replace('\\', "/").to_ascii_lowercase();
     // Only explicit expression identifiers or facial asset folders. A body,
     // helmet or whole-head mesh is NOT implicitly a substitute face.
-    let named = ["oh", "smile", "happy", "sad", "angry", "neutral", "blink",
-        "grin", "frown", "surprised", "surprise", "shock", "scream",
-        "laugh", "evil", "mad", "normal", "default", "face", "expression"];
+    let named = [
+        "oh",
+        "smile",
+        "happy",
+        "sad",
+        "angry",
+        "neutral",
+        "blink",
+        "grin",
+        "frown",
+        "surprised",
+        "surprise",
+        "shock",
+        "scream",
+        "laugh",
+        "evil",
+        "mad",
+        "normal",
+        "default",
+        "face",
+        "expression",
+    ];
     tokens.iter().any(|token| named.contains(&token.as_str()))
         || path.contains("/faces/")
         || path.contains("/expressions/")
@@ -45,17 +65,21 @@ fn is_face(name: &str, binding: &str) -> bool {
 fn is_beacon(name: &str, binding: &str) -> bool {
     let a = name.to_ascii_lowercase();
     let b = binding.to_ascii_lowercase();
-    a.contains("respawn") || a.contains("beacon")
-        || b.contains("respawn") || b.contains("beacon")
+    a.contains("respawn") || a.contains("beacon") || b.contains("respawn") || b.contains("beacon")
 }
 
 /// Discover Emet 3P alternatives in the CDF itself; never search arbitrary
 /// local assets or another hunter's folder for a face or beacon.
 pub fn discover(path: &str, cdf: &CdfDefinition) -> Option<EmetOptions> {
-    if !is_emet_cdf(path) { return None; }
+    if !is_emet_cdf(path) {
+        return None;
+    }
     let mut result = EmetOptions::default();
     for item in &cdf.attachments {
-        if !matches!(item.kind, AttachmentKind::Skin | AttachmentKind::UniqueSkin | AttachmentKind::Bone) {
+        if !matches!(
+            item.kind,
+            AttachmentKind::Skin | AttachmentKind::UniqueSkin | AttachmentKind::Bone
+        ) {
             continue;
         }
         if is_beacon(&item.name, &item.binding) {
@@ -95,19 +119,22 @@ pub fn choose<'a>(
     }
     // Keep one expression. If no user choice exists, retain the first
     // declared expression, not every mutually exclusive face at once.
-    let active_face = face.map(String::as_str).unwrap_or_else(|| {
-        options.faces.first().map(String::as_str).unwrap_or(NO_FACE)
-    });
+    let active_face = face
+        .map(String::as_str)
+        .unwrap_or_else(|| options.faces.first().map(String::as_str).unwrap_or(NO_FACE));
     let show_beacon = beacon.map(String::as_str).unwrap_or(BEACON_ON) == BEACON_ON;
-    let result = selected.into_iter().filter(|part| {
-        if options.faces.iter().any(|name| name == part) {
-            return *part == active_face;
-        }
-        if options.beacons.iter().any(|name| name == part) {
-            return show_beacon;
-        }
-        true
-    }).collect::<Vec<_>>();
+    let result = selected
+        .into_iter()
+        .filter(|part| {
+            if options.faces.iter().any(|name| name == part) {
+                return *part == active_face;
+            }
+            if options.beacons.iter().any(|name| name == part) {
+                return show_beacon;
+            }
+            true
+        })
+        .collect::<Vec<_>>();
     if result.is_empty() {
         return Err("Selected Emet options have no renderable CDF attachments".into());
     }
@@ -149,7 +176,10 @@ mod tests {
         options.insert(FACE.into(), "angry".into());
         options.insert(BEACON.into(), BEACON_OFF.into());
         let all = cdf.attachments.iter().map(|a| a.name.as_str()).collect();
-        assert_eq!(choose(path, &cdf, all, &options).unwrap(), ["body", "angry"]);
+        assert_eq!(
+            choose(path, &cdf, all, &options).unwrap(),
+            ["body", "angry"]
+        );
         options.insert(FACE.into(), NO_FACE.into());
         let all = cdf.attachments.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(choose(path, &cdf, all, &options).unwrap(), ["body"]);
@@ -160,8 +190,24 @@ mod tests {
         let mut options = EquipmentOverrides::new();
         options.insert(FACE.into(), "face_from_another_hunter".into());
         let all = cdf.attachments.iter().map(|a| a.name.as_str()).collect();
-        assert!(choose("characters/hunters/merc_emet/emet_3p.cdf", &cdf, all, &options).is_err());
+        assert!(
+            choose(
+                "characters/hunters/merc_emet/emet_3p.cdf",
+                &cdf,
+                all,
+                &options
+            )
+            .is_err()
+        );
         let all = cdf.attachments.iter().map(|a| a.name.as_str()).collect();
-        assert!(choose("characters/hunters/merc_tech/tech_3p.cdf", &cdf, all, &options).is_err());
+        assert!(
+            choose(
+                "characters/hunters/merc_tech/tech_3p.cdf",
+                &cdf,
+                all,
+                &options
+            )
+            .is_err()
+        );
     }
 }
