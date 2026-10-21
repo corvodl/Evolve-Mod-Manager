@@ -241,6 +241,112 @@ fn exact_original_texture(
     Ok(None)
 }
 
+/// Find only immediately adjacent missing high mip indices for a DDS.0
+/// from an imported, uniquely build-qualified archive. Stage 2 sometimes
+/// splits the same original texture between dds_low.pak (.0..4) and
+/// dds_high.pak (.5). Reuse the verified Library manifest; never guess
+/// unindexed content, other builds, or missing middle fragments.
+fn matching_imported_high_mips(
+    file: &Path,
+    scope: Option<&ImportedTextureScope>,
+) -> Result<Vec<PathBuf>, String> {
+    let Some(scope) = scope else { return Ok(Vec::new()); };
+    if scope.build.is_none() {
+        // A unique build is essential before stitching across archives.
+        return Ok(Vec::new());
+    }
+    let real = fs::canonicalize(file).map_err(|e| e.to_string())?;
+    let library_root = fs::canonicalize(&scope.root).map_err(|e| e.to_string())?;
+    let Some(files) = real.ancestors().find(|candidate| {
+        candidate.file_name().is_some_and(|name| name == "files")
+            && candidate.parent().and_then(Path::parent) == Some(library_root.as_path())
+    }) else {
+        return Ok(Vec::new());
+    };
+    let relative = real.strip_prefix(files).map_err(|e| e.to_string())?;
+    let Some(filename) = relative.file_name().and_then(|name| name.to_str()) else {
+        return Ok(Vec::new());
+    };
+    let lowercase = filename.to_ascii_lowercase();
+    let Some((stem, number)) = lowercase.rsplit_once(".dds.") else {
+        return Ok(Vec::new());
+    };
+    if number != "0" {
+        return Ok(Vec::new());
+    }
+    let Some(parent) = real.parent() else { return Ok(Vec::new()); };
+    let mut highest = 0usize;
+    for item in fs::read_dir(parent).map_err(|e| e.to_string())? {
+        let item = item.map_err(|e| e.to_string())?;
+        let filename = item.file_name().to_string_lossy().to_ascii_lowercase();
+        if let Some(suffix) = filename.strip_prefix(&format!("{stem}.dds."))
+            && let Ok(index) = suffix.parse::<usize>()
+        {
+            highest = highest.max(index);
+        }
+    }
+    let base = relative
+        .with_file_name(format!("{stem}.dds"))
+        .to_string_lossy()
+        .replace('\\', "/");
+    let mut found = Vec::new();
+    for index in highest.saturating_add(1)..20 {
+        let candidate = format!("{base}.{index}");
+        match resolve_imported_reference(&scope.root, &candidate, scope.build.as_deref())
+            .map_err(|e| format!("Cannot verify source DDS fragment {candidate}: {e}"))?
+        {
+            LibraryReferenceStatus::Found(hit) => {
+                let path = PathBuf::from(hit.absolute_path);
+                let original = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+                if !original.file_type().is_file()
+                    || original.len() == 0
+                    || original.len() > MAX_SOURCE
+                {
+                    return Err(format!("Unsafe verified DDS fragment {candidate}"));
+                }
+                let canonical = fs::canonicalize(path).map_err(|e| e.to_string())?;
+                if !canonical.starts_with(&library_root) {
+                    return Err(format!("DDS fragment {candidate} escaped the imported library"));
+                }
+                found.push(canonical);
+            }
+            LibraryReferenceStatus::Missing => break,
+            LibraryReferenceStatus::Ambiguous(_) => {
+                return Err(format!("Multiple source-build matches for DDS fragment {candidate}"));
+            }
+        }
+    }
+    Ok(found)
+}
+
+fn decode_original_mip(
+    file: &Path,
+    imported: Option<&ImportedTextureScope>,
+) -> Result<(crate::dds::DdsInfo, image::RgbaImage), String> {
+    match crate::dds::decode_dds_rgba(file) {
+        Ok(result) => Ok(result),
+        Err(first) => {
+            let should_try = matches!(
+                &first,
+                crate::dds::DdsError::Unsupported(reason)
+                    if reason.contains("incomplete or noncontiguous split DDS set")
+            );
+            if !should_try {
+                return Err(format!("Cannot decode original DDS {}: {first}", file.display()));
+            }
+            let extra = matching_imported_high_mips(file, imported)?;
+            if extra.is_empty() {
+                return Err(format!(
+                    "Original DDS {} needs missing high-mip fragments from its matching build's imported dds_high.pak: {first}",
+                    file.display()
+                ));
+            }
+            crate::dds::decode_dds_rgba_with_parts(file, &extra)
+                .map_err(|e| format!("Cross-PAK original DDS {}: {e}", file.display()))
+        }
+    }
+}
+
 /// Source-exact full-armor monster glow. A glow asset must belong to the
 /// selected CDF's character/stage directory, and must have an indexed,
 /// manifest-verified texture (possibly from a matching imported DDS PAK).
