@@ -43,6 +43,12 @@ pub struct MaterialSlot {
     /// Original material GlowAmount (e.g. 3.0 is not "100%" by assumption).
     #[serde(default)]
     pub glow_amount: Option<f32>,
+    /// Exact CryEngine StringGenMask ALPHAGLOW flag, not diffuse alpha alone.
+    #[serde(default)]
+    pub alpha_glow: bool,
+    /// The authored RGB Diffuse scalar. This is distinct from the Diffuse DDS.
+    #[serde(default)]
+    pub diffuse_tint: Option<[f32; 3]>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MaterialDocument {
@@ -111,6 +117,32 @@ fn authored_glow_amount(node: &BytesStart<'_>) -> Result<Option<f32>, MaterialEr
         return Err(MaterialError::Xml("GlowAmount must be finite".into()));
     }
     Ok(Some(amount))
+}
+
+fn source_alpha_glow(node: &BytesStart<'_>) -> Result<bool, MaterialError> {
+    Ok(attr(node, b"StringGenMask")?
+        .unwrap_or_default()
+        .split('%')
+        .any(|token| token.eq_ignore_ascii_case("ALPHAGLOW")))
+}
+
+/// Material Diffuse is an authored scalar, not a texture-name heuristic.
+/// Malformed color values are left absent instead of replacing them with white.
+fn source_diffuse_tint(node: &BytesStart<'_>) -> Result<Option<[f32; 3]>, MaterialError> {
+    let Some(raw) = attr(node, b"Diffuse")? else {
+        return Ok(None);
+    };
+    let values = raw
+        .split(',')
+        .map(|v| v.trim().parse::<f32>())
+        .collect::<Result<Vec<_>, _>>();
+    let Ok(values) = values else {
+        return Ok(None);
+    };
+    if values.len() != 3 || values.iter().any(|v| !v.is_finite() || *v < 0.0) {
+        return Ok(None);
+    }
+    Ok(Some([values[0], values[1], values[2]]))
 }
 
 fn normalize_texture(raw: &str) -> Result<String, MaterialError> {
@@ -299,6 +331,8 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         maps: Vec::new(),
                         opacity,
                         glow_amount,
+                        alpha_glow: source_alpha_glow(&node)?,
+                        diffuse_tint: source_diffuse_tint(&node)?,
                     });
                     nonleaf.push(false);
                     material_indices.push((parents.len() + 1, slots.len() - 1));
@@ -351,6 +385,8 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         maps: Vec::new(),
                         opacity: material_opacity(&node)?,
                         glow_amount: authored_glow_amount(&node)?,
+                        alpha_glow: source_alpha_glow(&node)?,
+                        diffuse_tint: source_diffuse_tint(&node)?,
                     });
                     nonleaf.push(false);
                 } else if tag.eq_ignore_ascii_case(b"Texture")
@@ -580,6 +616,37 @@ mod tests {
         assert!(normalize_texture("textures//../secret.tif").is_err());
         assert!(normalize_texture("C:\\secret.tif").is_err());
     }
+    #[test]
+    fn real_kala_glow_material_semantics_are_distinct_from_body_alpha_glow() {
+        // Synthetic MTL fixture based on the user's 2012+ Stage 2 material
+        // properties. Original game files are never included in the repository.
+        let source = br#"<Material><SubMaterials>
+          <Material Name="Body" Shader="Illum"
+            StringGenMask="%ALPHAGLOW%BUMP_MAP%GLOSS_MAP%"
+            Diffuse="1,1,1" Emissive="0,0,0" GlowAmount="3">
+              <Textures><Texture Map="Diffuse" File="characters/hunters/merc_tech/body.tif"/></Textures>
+          </Material>
+          <Material Name="bansheegun glow" Shader="Illum"
+            StringGenMask="%SUBSURFACE_SCATTERING"
+            Diffuse="0.072271854,0.1470273,0.42326769"
+            Emissive="0,0,0" GlowAmount="3">
+              <Textures><Texture Map="Diffuse" File="characters/hunters/merc_tech/body.tif"/>
+                <Texture Map="Decal" File="textures/particle/light/chroma_fan320tiled_01b.tif">
+                  <TexMod TileU="3" TileV="4"/>
+                </Texture>
+              </Textures>
+          </Material>
+        </SubMaterials></Material>"#;
+        let parsed = parse_material(source).unwrap();
+        assert_eq!(parsed.slots.len(), 2);
+        assert!(parsed.slots[0].alpha_glow);
+        assert!(!parsed.slots[1].alpha_glow);
+        assert_eq!(parsed.slots[1].glow_amount, Some(3.0));
+        assert_eq!(parsed.slots[1].diffuse_tint,
+                   Some([0.072271854, 0.1470273, 0.42326769]));
+        assert_eq!(parsed.slots[1].maps[1].role, "decal");
+    }
+
     #[test]
     fn kala_equipment_emissive_aliases_keep_authored_texture_paths() {
         // Equipment meshes may use alternate CryEngine material-map names.
