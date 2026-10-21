@@ -87,6 +87,29 @@ pub fn select_attachments(
         None
     } else if cdf.skin_sets.contains_key("default") {
         Some("default".to_owned())
+    } else if cdf
+        .skeleton
+        .eq_ignore_ascii_case("characters/hunters/merc_tech/tech_3p_skeleton.chr")
+        && cdf.skin_sets.contains_key("hiddenwhenbansheegunselected")
+        && cdf.attachments.iter().any(|part| {
+            part.name.eq_ignore_ascii_case("bansheegun")
+                && part.binding.eq_ignore_ascii_case(
+                    "characters/hunters/merc_tech/techbansheegun_3p.skin",
+                )
+        })
+        && cdf
+            .skin_sets
+            .get("hiddenwhenbansheegunselected")
+            .is_some_and(|hidden| hidden.iter().any(|name| name == "armorreducer"))
+    {
+        // The original Kala tech_3p.cdf has mutually exclusive equipment:
+        // HiddenWhenBansheeGunSelected explicitly hides the red Armor
+        // Reducer, pistol and Rift Device when the blue Banshee Gun is
+        // selected. Without applying it, overlapping meshes make the arm
+        // look red despite the correct Banshee diffuse and blue Decal.
+        // Scope this to the verified original Kala skeleton and binding;
+        // other characters' SkinSets retain their existing behavior.
+        Some("hiddenwhenbansheegunselected".to_owned())
     } else {
         // Stage 2 CDFs often use SkinSets named HiddenWhen*Selected as
         // equipment exclusion metadata, not actual renderable variants.
@@ -114,8 +137,14 @@ pub fn select_attachments(
                     .chars()
                     .filter(char::is_ascii_alphanumeric)
                     .collect();
-                keys.contains(&normalized)
-                    || !cdf.skin_sets.values().any(|set| set.contains(&normalized))
+                if chosen.as_deref() == Some("hiddenwhenbansheegunselected") {
+                    // This Kala SkinSet is an exclusion list, not a list
+                    // of meshes to render. Keep the body and active gun.
+                    !keys.contains(&normalized)
+                } else {
+                    keys.contains(&normalized)
+                        || !cdf.skin_sets.values().any(|set| set.contains(&normalized))
+                }
             })
         })
         .map(|part| part.name.as_str())
@@ -689,6 +718,59 @@ mod tests {
                 .source
                 .ends_with("ParasiteHost3.chr")
         );
+    }
+
+    #[test]
+    fn original_kala_banshee_selection_hides_red_armor_reducer_and_other_weapons() {
+        // Synthetic fixture with the names and exclusive SkinSets from
+        // merc_tech.7z/tech_3p.cdf; no game asset bytes are committed.
+        let source = br#"<CharacterDefinition>
+            <Model File="characters/hunters/merc_tech/tech_3p_skeleton.chr"/>
+            <AttachmentList>
+                <Attachment Type="CA_SKIN" AName="body"
+                    Binding="characters/hunters/merc_tech/tech_3p.skin"/>
+                <Attachment Type="CA_SKIN" AName="armorreducer"
+                    Binding="characters/hunters/merc_tech/techarmorreducer_3p.skin"/>
+                <Attachment Type="CA_SKIN" AName="bansheegun"
+                    Binding="characters/hunters/merc_tech/techbansheegun_3p.skin"/>
+                <Attachment Type="CA_SKIN" AName="pistoltech"
+                    Binding="characters/hunters/merc_tech/techpistol_3p.skin"/>
+                <Attachment Type="CA_SKIN" AName="riftdevice"
+                    Binding="characters/hunters/merc_tech/techriftdevice_3p.skin"/>
+                <Attachment Type="CA_SKIN" AName="riftdevicearm"
+                    Binding="characters/hunters/merc_tech/techriftdevice_3p_arm.skin"/>
+            </AttachmentList>
+            <SkinSets>
+                <SkinSet name="HiddenWhenBansheeGunSelected">
+                    <skin name="armorreducer"/><skin name="pistoltech"/>
+                    <skin name="riftdevice"/><skin name="riftdevicearm"/>
+                </SkinSet>
+                <SkinSet name="HiddenWhenRiftDeviceSelected">
+                    <skin name="armorreducer"/><skin name="bansheegun"/>
+                    <skin name="pistoltech"/>
+                </SkinSet>
+            </SkinSets>
+        </CharacterDefinition>"#;
+        let cdf = crate::cdf::parse_cdf(source).unwrap();
+        let (selected_set, rendered) = select_attachments(&cdf).unwrap();
+        assert_eq!(
+            selected_set.as_deref(),
+            Some("hiddenwhenbansheegunselected")
+        );
+        assert_eq!(rendered, ["body", "bansheegun"]);
+
+        // Don't impose Kala's exclusive-arm defaults on unrelated CDFs.
+        let other = source
+            .windows(b"merc_tech".len())
+            .filter(|bytes| *bytes == b"merc_tech")
+            .count();
+        assert!(other > 0);
+        let mut unrelated = cdf.clone();
+        unrelated.skeleton = "objects/characters/monsters/scorpid_2/scorpid1.chr".into();
+        let (set, rendered) = select_attachments(&unrelated).unwrap();
+        assert!(set.is_none());
+        assert!(rendered.contains(&"armorreducer"));
+        assert!(rendered.contains(&"bansheegun"));
     }
 
     #[test]
