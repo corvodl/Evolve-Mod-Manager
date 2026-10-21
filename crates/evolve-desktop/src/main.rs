@@ -165,6 +165,7 @@ struct State {
     cdf_base_surfaces: Option<Arc<Vec<textured::Surface>>>,
     /// Once-only resolved 100% damage layer, reused for every slider position.
     cdf_full_damage_surfaces: Option<Arc<Vec<textured::Surface>>>,
+    cdf_damage_preparing: bool,
     cdf_legacy_2012: bool,
     texture_preview: Option<image::Handle>,
     diffuse_status: String,
@@ -1948,6 +1949,7 @@ fn clear_viewer_asset(state: &mut State) {
     state.cdf_surfaces = None;
     state.cdf_base_surfaces = None;
     state.cdf_full_damage_surfaces = None;
+    state.cdf_damage_preparing = false;
     state.cdf_legacy_2012 = false;
     state.cdf_rest_mesh = None;
     state.cdf_caf_preview = None;
@@ -2858,7 +2860,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             else {
                 return Task::none();
             };
-            return launch(state, Operation::PrepareCdfDamage(
+            let operation = Operation::PrepareCdfDamage(
                 source.clone(),
                 Arc::clone(report),
                 Arc::clone(base),
@@ -2866,7 +2868,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
                 resource_build(state),
                 state.preview_cache.clone(),
-            ));
+            );
+            state.cdf_damage_preparing = true;
+            return launch(state, operation);
         }
         Message::ViewerToggleDamageBlend => {
             if state.busy {
@@ -3496,6 +3500,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             crash_diagnostics::record("cdf_preview_selected", &entry.relative_path);
             state.cdf_base_surfaces = None;
             state.cdf_full_damage_surfaces = None;
+            state.cdf_damage_preparing = false;
             let progress = Arc::new(AtomicUsize::new(0));
             state.viewer_load_progress = Some(progress.clone());
             state.input = source.to_string_lossy().into_owned();
@@ -5576,6 +5581,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::StaticCharacter(mesh, report, surfaces, material_warnings)) => {
+                    state.cdf_legacy_2012 = historical_2012_cdf(&report);
+                    if state.cdf_legacy_2012 {
+                        state.full_armor_glow = false;
+                        state.damage_blend_percent = 0;
+                    }
+                    state.cdf_full_damage_surfaces = None;
+                    state.cdf_damage_preparing = false;
                     crash_diagnostics::record(
                         "cdf_ui_complete",
                         &format!(
@@ -5615,7 +5627,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .as_ref()
                         .map(|path| path.to_string_lossy().into_owned())
                         .unwrap_or_default();
-                    state.cdf_surfaces = Some(Arc::new(surfaces));
+                    let original = Arc::new(surfaces);
+                    state.cdf_base_surfaces = Some(Arc::clone(&original));
+                    state.cdf_surfaces = Some(original);
                     state.model = Some(Arc::new(mesh));
                     state.diffuse = None;
                     state.normal_map = None;
@@ -5654,6 +5668,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             );
                             return launch(state, operation);
                         }
+                    }
+                }
+                Ok(Completed::PreparedCdfDamage(source, full)) => {
+                    state.cdf_damage_preparing = false;
+                    if state.equipment_source.as_ref() == Some(&source)
+                        && !state.cdf_legacy_2012
+                        && state.cdf_base_surfaces.is_some()
+                    {
+                        state.cdf_full_damage_surfaces = Some(Arc::new(full));
+                        return update(state, Message::ViewerDamageBlendCommit);
+                    }
+                }
+                Ok(Completed::ReblendedCdfDamage(source, percent, surfaces)) => {
+                    if state.equipment_source.as_ref() == Some(&source)
+                        && !state.cdf_legacy_2012
+                        && percent == state.damage_blend_percent
+                    {
+                        state.cdf_surfaces = Some(Arc::new(surfaces));
+                        state.status = format!(
+                            "Damage blend {percent}%: updated cached GPU textures; CDF geometry and DDS sources unchanged."
+                        );
                     }
                 }
                 Ok(Completed::Character(character)) => {
@@ -6003,6 +6038,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                 }
                 Err(e) => {
+                    if state.cdf_damage_preparing {
+                        state.cdf_damage_preparing = false;
+                        state.damage_blend_percent = 0;
+                        if let Some(base) = &state.cdf_base_surfaces {
+                            state.cdf_surfaces = Some(Arc::clone(base));
+                        }
+                    }
                     crash_diagnostics::record("worker_refused", &e);
                     state.auto_play_native_caf = false;
                     state.status = format!("Operation refused: {e}");
@@ -6030,6 +6072,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         Message::ViewerPreviewSelected
                     },
                 );
+            }
+            // After an equipment swap has rebuilt the geometry, restore the
+            // selected damage percentage from the NEW verified base materials,
+            // without repeating that geometry work for slider changes.
+            if state.damage_blend_percent > 0
+                && !state.cdf_legacy_2012
+                && !state.cdf_damage_preparing
+                && state.cdf_full_damage_surfaces.is_none()
+                && state.cdf_base_surfaces.is_some()
+                && !state.busy
+            {
+                return update(state, Message::ViewerDamageBlendCommit);
             }
         }
     }
