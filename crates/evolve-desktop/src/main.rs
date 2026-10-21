@@ -6150,10 +6150,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
 
 fn download_action(state: &State) -> Element<'_, Message> {
     if let Some(update) = &state.available_update {
-        let button = design::button(text(format!(
-            "Update to {} and restart",
-            update.version
-        )));
+        let button = design::button(text(format!("Update to {} and restart", update.version)));
         if state.busy {
             button.into()
         } else {
