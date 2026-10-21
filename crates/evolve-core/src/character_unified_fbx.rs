@@ -518,12 +518,22 @@ fn exact_single_slot_maps_with_scope(
     }
     let mut maps = AuthoredMaps::default();
     let mut used_roles = HashSet::new();
+    let leaf = &document.slots[0];
+    let legacy_decal = leaf.shader.eq_ignore_ascii_case("Illum")
+        && !leaf.alpha_glow
+        && leaf.glow_amount.is_some_and(|amount| amount > 0.0)
+        && !leaf.maps.iter().any(|map| {
+            matches!(map.role.as_str(),
+                "emissive" | "emittance" | "emission" | "glow" | "emissivecolor"
+                | "emissionmap" | "glowmap" | "selfillum" | "selfillumination")
+        });
     for item in &document.slots[0].maps {
         let target = match item.role.as_str() {
             "diffuse" => &mut maps.diffuse,
             "normal" | "normals" | "bumpmap" => &mut maps.normal,
             "emissive" | "emittance" | "emission" | "glow" | "emissivecolor" | "emissionmap"
             | "glowmap" | "selfillum" | "selfillumination" => &mut maps.emissive,
+            "decal" if legacy_decal => &mut maps.emissive,
             "specular" | "specularcolor" => &mut maps.specular,
             "gloss" | "glossiness" | "smoothness" => &mut maps.gloss,
             _ => continue,
@@ -588,12 +598,21 @@ fn exact_multi_slot_materials_with_scope(
             no_draw: leaf.shader.eq_ignore_ascii_case("NoDraw"),
             ..Default::default()
         };
+        let legacy_decal = leaf.shader.eq_ignore_ascii_case("Illum")
+            && !leaf.alpha_glow
+            && leaf.glow_amount.is_some_and(|amount| amount > 0.0)
+            && !leaf.maps.iter().any(|map| {
+                matches!(map.role.as_str(),
+                    "emissive" | "emittance" | "emission" | "glow" | "emissivecolor"
+                    | "emissionmap" | "glowmap" | "selfillum" | "selfillumination")
+            });
         for map in &leaf.maps {
             let role = match map.role.as_str() {
                 "diffuse" => 0,
                 "normal" | "normals" | "bumpmap" => 1,
                 "emittance" | "emissive" | "emission" | "glow" | "emissivecolor"
                 | "emissionmap" | "glowmap" | "selfillum" | "selfillumination" => 2,
+                "decal" if legacy_decal => 2,
                 "specular" | "specularcolor" => 3,
                 "gloss" | "glossiness" | "smoothness" => 4,
                 _ => continue,
