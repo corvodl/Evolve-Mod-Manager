@@ -378,6 +378,20 @@ pub fn monster_glow_path(
     cdf_source: &Path,
     inventory: &Inventory,
 ) -> Result<Option<PathBuf>, String> {
+    monster_glow_path_with_library(cdf_source, inventory, None, None)
+}
+
+/// Resolve the authored monster variant's optional glow DDS from either its
+/// original indexed PAK or other *verified same-build* Asset Library PAKs.
+/// The viewer already knows its imported Library root and selected build;
+/// don't silently discard that context (the old lookup did, and missed most
+/// externally stored dds_low/dds_high glow maps).
+pub fn monster_glow_path_with_library(
+    cdf_source: &Path,
+    inventory: &Inventory,
+    imported_library_root: Option<&Path>,
+    selected_build: Option<&str>,
+) -> Result<Option<PathBuf>, String> {
     let root = fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
     let source = fs::canonicalize(cdf_source).map_err(|e| e.to_string())?;
     let relative = source
@@ -394,11 +408,18 @@ pub fn monster_glow_path(
         .file_stem()
         .and_then(|s| s.to_str())
         .ok_or("Invalid monster CDF filename")?;
-    let imported = texture_scope(inventory);
+    // Explicit caller context wins when present; the auto-detected archive
+    // scope remains a fallback for existing FBX export callers.
+    let inferred = texture_scope(inventory);
+    let explicit = imported_library_root.map(|library_root| ImportedTextureScope {
+        root: library_root.to_path_buf(),
+        build: selected_build.map(str::to_owned),
+    });
+    let imported = explicit.as_ref().or(inferred.as_ref());
     for suffix in ["_glow_diff.tif", "_glow.tif"] {
         let authored = format!("{stem}{suffix}");
         if let Some(found) =
-            exact_original_texture(&root, inventory, &virtual_cdf, &authored, imported.as_ref())?
+            exact_original_texture(&root, inventory, &virtual_cdf, &authored, imported)?
         {
             return Ok(Some(found));
         }
