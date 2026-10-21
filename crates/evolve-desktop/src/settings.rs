@@ -41,6 +41,7 @@ pub struct Preferences {
     pub archive_label: String,
     pub asset_library_root: String,
     pub blender_executable: String,
+    pub ffdec_executable: String,
     pub experimental_updates: bool,
     /// Separate opt-in for prerelease Nightly builds.
     pub nightly_updates: bool,
@@ -85,6 +86,7 @@ impl Default for Preferences {
             archive_label: String::new(),
             asset_library_root: String::new(),
             blender_executable: String::new(),
+            ffdec_executable: String::new(),
             experimental_updates: false,
             nightly_updates: env!("CARGO_PKG_VERSION").contains("-nightly."),
             automatic_update_checks: true,
