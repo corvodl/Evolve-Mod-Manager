@@ -392,11 +392,17 @@ fn kala_tubing_leaf(
     binding: &str,
     slot: &evolve_core::MaterialSlot,
 ) -> bool {
-    let path = material_source.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
+    let path = material_source
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
     let source = binding.replace('\\', "/").to_ascii_lowercase();
     let authored_decal = slot.maps.iter().any(|map| {
         map.role == "decal"
-            && map.path.rsplit('/').next()
+            && map
+                .path
+                .rsplit('/')
+                .next()
                 .is_some_and(|name| name.eq_ignore_ascii_case("chroma_fan320tiled_01b.tif"))
     });
     authored_decal
@@ -422,7 +428,9 @@ fn tint_legacy_decal_for_state(
     override_tint: Option<[f32; 3]>,
     kala_tubing: bool,
 ) -> image::RgbaImage {
-    let tint = override_tint.or(slot.diffuse_tint).unwrap_or([1.0, 1.0, 1.0]);
+    let tint = override_tint
+        .or(slot.diffuse_tint)
+        .unwrap_or([1.0, 1.0, 1.0]);
     let use_brightness_mask = kala_tubing || kala_banshee_brightness_mask(slot);
     let mut result = decal.clone();
     for pixel in result.pixels_mut() {
@@ -665,20 +673,19 @@ fn authored_maps(
             budget.decoded.insert(canonical);
         }
         if index == 2 && map.role == "decal" {
-            let verified_kala = kala_state.is_some()
-                && kala_tubing_leaf(material_source, material_binding, slot);
+            let verified_kala =
+                kala_state.is_some() && kala_tubing_leaf(material_source, material_binding, slot);
             let alternate_tint = (verified_kala
                 && kala_state == Some(evolve_core::KalaTubingState::ArmorReducer)
                 && slot.name.eq_ignore_ascii_case("Glow"))
-                .then_some(KALA_ARMOR_REDUCER_TINT);
-            result[index] = Some(Arc::new(tint_legacy_decal_for_state(
-                slot,
-                &image,
-                alternate_tint,
-                verified_kala,
-            )));
+            .then_some(KALA_ARMOR_REDUCER_TINT);
+            result[index] = Some(Arc::new(if verified_kala {
+                tint_legacy_decal_for_state(slot, &image, alternate_tint, true)
+            } else {
+                tint_legacy_decal(slot, &image)
+            }));
             warnings.push(format!(
-                "{}: legacy Illum Decal uses authored GlowAmount and blue Diffuse tint, without diffuse-alpha masking; the viewer animates the Decal's independent TexMod (FBX stores its original map without baked motion)",
+                "{}: legacy Illum Decal uses authored GlowAmount and Diffuse tint, without diffuse-alpha masking; the viewer animates the Decal's independent TexMod (FBX stores its original map without baked motion)",
                 slot.name
             ));
         } else {
@@ -1391,7 +1398,8 @@ mod tests {
                 Diffuse="0.072271854,0.1470273,0.42326769"><Textures>
                 <Texture Map="Decal" File="textures/particle/light/chroma_fan320tiled_01b.tif"/>
                 </Textures></Material>"#,
-        ).unwrap();
+        )
+        .unwrap();
         let leaf = &blue.slots[0];
         let source = Path::new("characters/hunters/merc_tech/tech_3p.mtl");
         let binding = "characters/hunters/merc_tech/tech_3p.skin";
@@ -1400,14 +1408,24 @@ mod tests {
         let red_atlas_frame = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]));
         let banshee = tint_legacy_decal_for_state(leaf, &red_atlas_frame, None, true);
         let armor = tint_legacy_decal_for_state(
-            leaf, &red_atlas_frame, Some(KALA_ARMOR_REDUCER_TINT), true
+            leaf,
+            &red_atlas_frame,
+            Some(KALA_ARMOR_REDUCER_TINT),
+            true,
         );
         let b = banshee.get_pixel(0, 0);
         let r = armor.get_pixel(0, 0);
         assert!(b[2] > b[1] && b[1] > b[0], "Banshee tube should be blue");
-        assert!(r[0] > r[1] && r[0] > r[2], "Armor Reducer tube should be red");
+        assert!(
+            r[0] > r[1] && r[0] > r[2],
+            "Armor Reducer tube should be red"
+        );
         assert_eq!(red_atlas_frame.get_pixel(0, 0).0, [255, 0, 0, 255]);
-        assert!(!kala_tubing_leaf(Path::new("characters/hunters/other/tech_3p.mtl"), binding, leaf));
+        assert!(!kala_tubing_leaf(
+            Path::new("characters/hunters/other/tech_3p.mtl"),
+            binding,
+            leaf
+        ));
     }
 
     #[test]
