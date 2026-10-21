@@ -261,14 +261,14 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
                 .style(design::muted),
         );
         entries = entries.push(
-            design::button(if state.damage_blend_percent > 0 {
+            design::button(if state.damage_blend_enabled {
                 "☑ Damage blend"
             } else {
                 "☐ Damage blend"
             })
             .on_press_maybe((!state.busy).then_some(Message::ViewerToggleDamageBlend)),
         );
-        if state.damage_blend_percent > 0 {
+        if state.damage_blend_enabled {
             entries = entries.push(
                 row![
                     text(format!("Damage intensity: {}%", state.damage_blend_percent)).size(11),
