@@ -1471,7 +1471,6 @@ enum Message {
     GfxInstallTool(gfx_tool_install::Tool),
     GfxToolInstalled(gfx_tool_install::Tool, Result<PathBuf, String>),
     GfxSelectResource(usize),
-    GfxToggleLayout,
     GfxToolsSection(GfxToolsSection),
     GfxToggleLayoutRaster,
     GfxLayoutSelect(usize),
@@ -4453,24 +4452,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::GfxToggleLayoutRaster => {
             state.gfx_layout_show_raster = !state.gfx_layout_show_raster
-        }
-        Message::GfxToggleLayout => {
-            state.gfx_interactive_open = false;
-            state.gfx_layout_open = !state.gfx_layout_open;
-            state.gfx_tools_section = if state.gfx_layout_open {
-                GfxToolsSection::Layout
-            } else {
-                GfxToolsSection::Preview
-            };
-            if state.gfx_layout_open
-                && state.gfx_layout_selected.is_none()
-                && let Some(index) = state
-                    .gfx_session
-                    .as_ref()
-                    .and_then(|s| s.layers.iter().position(|layer| layer.editable))
-            {
-                return update(state, Message::GfxLayoutSelect(index));
-            }
         }
         Message::GfxLayerFilterChanged(filter) => {
             if filter.len() <= 160 {
