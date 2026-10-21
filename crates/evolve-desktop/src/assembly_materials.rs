@@ -452,9 +452,14 @@ fn is_translucent_shader(slot: &evolve_core::MaterialSlot) -> bool {
 }
 
 fn needs_alpha_blending(slot: &evolve_core::MaterialSlot) -> bool {
+    // An explicit opacity IMAGE on a solid CryEngine material is an alpha
+    // TEST, not evidence the entire body is translucent. Blend only for
+    // glass/water or for an explicit subunit scalar without a cutout map.
+    // Solid masked faces must write depth so floor/background cannot show
+    // through Goliath's body when the mask has intermediate gray values.
     is_translucent_shader(slot)
-        || slot.opacity.is_some_and(|value| value < 0.999)
-        || slot.maps.iter().any(|map| map.role == "opacity")
+        || (slot.opacity.is_some_and(|value| value < 0.999)
+            && !slot.maps.iter().any(|map| map.role == "opacity"))
 }
 
 /// The authoring model, not the diffuse bitmap's fourth channel, decides
@@ -715,6 +720,31 @@ pub fn load(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn solid_character_opacity_mask_is_depth_opaque_not_alpha_blended() {
+        let make = |shader: &str, scalar: Option<f32>, with_mask: bool| {
+            evolve_core::MaterialSlot {
+                name: "Goliath_Body".into(),
+                shader: shader.into(),
+                opacity: scalar,
+                maps: if with_mask {
+                    vec![evolve_core::TextureReference {
+                        role: "opacity".into(),
+                        path: "characters/monsters/goliath/body_opacity.tif".into(),
+                    }]
+                } else {
+                    vec![]
+                },
+            }
+        };
+        assert!(!needs_alpha_blending(&make("Illum", Some(1.0), true)));
+        assert!(!needs_alpha_blending(&make("HumanSkin", Some(0.7), true)));
+        assert!(!needs_alpha_blending(&make("Illum", None, false)));
+        assert!(needs_alpha_blending(&make("Glass", Some(1.0), true)));
+        assert!(needs_alpha_blending(&make("Water", None, false)));
+        assert!(needs_alpha_blending(&make("Illum", Some(0.35), false)));
+    }
+
     #[test]
     fn character_relative_dds0_loading_matches_private_material_scoping() {
         let root = tempfile::tempdir().unwrap();
