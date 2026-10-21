@@ -43,15 +43,15 @@ pub fn valid_ruffle(path: &str) -> Option<PathBuf> {
 }
 
 pub fn fill_empty_paths_at(preferences: &mut Preferences, executable_dir: &Path) {
-    if preferences.ffdec_executable.trim().is_empty() {
-        if let Some(path) = regular_tool(executable_dir, "third_party/FFDec/ffdec-cli.exe") {
-            preferences.ffdec_executable = path.to_string_lossy().into_owned();
-        }
+    if preferences.ffdec_executable.trim().is_empty()
+        && let Some(path) = regular_tool(executable_dir, "third_party/FFDec/ffdec-cli.exe")
+    {
+        preferences.ffdec_executable = path.to_string_lossy().into_owned();
     }
-    if preferences.ruffle_executable.trim().is_empty() {
-        if let Some(path) = regular_tool(executable_dir, "third_party/Ruffle/ruffle.exe") {
-            preferences.ruffle_executable = path.to_string_lossy().into_owned();
-        }
+    if preferences.ruffle_executable.trim().is_empty()
+        && let Some(path) = regular_tool(executable_dir, "third_party/Ruffle/ruffle.exe")
+    {
+        preferences.ruffle_executable = path.to_string_lossy().into_owned();
     }
 }
 pub fn detect_bundled(preferences: &mut Preferences) {
