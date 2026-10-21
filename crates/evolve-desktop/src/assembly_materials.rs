@@ -759,7 +759,9 @@ pub fn blend_prepared_damage(
             let amount = u32::from(percent);
             let pixels = before
                 .as_raw()
-                .as_chunks::<4>().0.iter()
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .zip(after.as_raw().as_chunks::<4>().0.iter())
                 .flat_map(|(a, b)| {
                     [
@@ -1007,7 +1009,12 @@ mod tests {
         };
         let mut full = surface.clone();
         full.diffuse = Some(Arc::clone(&full_pixels));
-        let half = blend_prepared_damage(std::slice::from_ref(&surface), std::slice::from_ref(&full), 50).unwrap();
+        let half = blend_prepared_damage(
+            std::slice::from_ref(&surface),
+            std::slice::from_ref(&full),
+            50,
+        )
+        .unwrap();
         assert_eq!(
             half[0].diffuse.as_ref().unwrap().get_pixel(0, 0).0,
             [120, 100, 80, 255]
@@ -1015,14 +1022,24 @@ mod tests {
         assert_eq!(half[0].first_index, 0);
         assert_eq!(half[0].index_count, 3);
         assert!(Arc::ptr_eq(
-            blend_prepared_damage(std::slice::from_ref(&surface), std::slice::from_ref(&full), 0).unwrap()[0]
+            blend_prepared_damage(
+                std::slice::from_ref(&surface),
+                std::slice::from_ref(&full),
+                0
+            )
+            .unwrap()[0]
                 .diffuse
                 .as_ref()
                 .unwrap(),
             &base_pixels
         ));
         assert!(Arc::ptr_eq(
-            blend_prepared_damage(std::slice::from_ref(&surface), std::slice::from_ref(&full), 100).unwrap()[0]
+            blend_prepared_damage(
+                std::slice::from_ref(&surface),
+                std::slice::from_ref(&full),
+                100
+            )
+            .unwrap()[0]
                 .diffuse
                 .as_ref()
                 .unwrap(),
