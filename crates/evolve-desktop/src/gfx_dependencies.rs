@@ -33,7 +33,7 @@ fn verified(path: &Path, base: Option<&Path>) -> Result<Vec<u8>, String> {
         return Err("Referenced movie escaped its verified extraction root".into());
     }
     let blob = fs::read(real).map_err(|e| e.to_string())?;
-    if !matches!(&blob[..3], b"GFX" | b"CFX" | b"FWS" | b"CWS") {
+    if blob.len() < 16 || !matches!(&blob[..3], b"GFX" | b"CFX" | b"FWS" | b"CWS") {
         return Err("Referenced movie has unsupported Scaleform signature".into());
     }
     Ok(blob)
@@ -144,6 +144,9 @@ pub fn stage_imports(
             continue;
         };
         let target = destination.join(import);
+        if target == destination.join("movie.gfx") {
+            return Err("GFX import cannot overwrite its isolated editable movie".into());
+        }
         if let Some(directory) = target.parent() {
             fs::create_dir_all(directory).map_err(|e| e.to_string())?;
         }
