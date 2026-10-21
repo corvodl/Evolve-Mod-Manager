@@ -642,8 +642,10 @@ mod tests {
         assert!(parsed.slots[0].alpha_glow);
         assert!(!parsed.slots[1].alpha_glow);
         assert_eq!(parsed.slots[1].glow_amount, Some(3.0));
-        assert_eq!(parsed.slots[1].diffuse_tint,
-                   Some([0.072271854, 0.1470273, 0.42326769]));
+        assert_eq!(
+            parsed.slots[1].diffuse_tint,
+            Some([0.072271854, 0.1470273, 0.42326769])
+        );
         assert_eq!(parsed.slots[1].maps[1].role, "decal");
     }
 
