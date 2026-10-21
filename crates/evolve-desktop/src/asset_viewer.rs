@@ -384,7 +384,7 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
             .spacing(7),
         );
         entries = entries.push(
-            text("Live viewport adjustment to existing emission and optional armor glow. Original source values and exported FBX remain unchanged.")
+            text("Live viewport adjustment to authored emission and the optional Glow overlay. Original source values and exported FBX remain unchanged.")
                 .size(11)
                 .style(design::muted),
         );
