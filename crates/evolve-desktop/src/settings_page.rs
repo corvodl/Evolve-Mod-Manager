@@ -270,12 +270,12 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         ].spacing(8)),
         ].spacing(12).into(),
         Tab::Updates => column![
-        heading("UPDATES", "Stable by default, with a verified experimental channel available."),
+        heading("UPDATES", "Select Stable, Beta or Nightly. Nightly builds are prerelease versions."),
         panel(column![
             text(format!("Installed version: {}", env!("CARGO_PKG_VERSION"))).size(12),
             row![
                 design::button("Check for Updates").on_press(Message::CheckUpdates).style(design::primary),
-                design::button(text(format!("Experimental: {}", if state.preferences.experimental_updates { "On" } else { "Off" }))).on_press(Message::PreferenceExperimental).style(design::secondary),
+                design::button(text(format!("Channel: {}", if state.preferences.nightly_updates { "Nightly" } else if state.preferences.experimental_updates { "Beta" } else { "Stable" }))).on_press(Message::PreferenceUpdateChannel).style(design::secondary),
                 design::button(text(format!("Auto-check: {}", if state.preferences.automatic_update_checks { "On" } else { "Off" }))).on_press(Message::PreferenceAutoUpdates).style(design::secondary)
             ].spacing(8),
             text(state.update_status.as_str()).size(12).style(design::muted),
