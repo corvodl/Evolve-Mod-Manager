@@ -13,6 +13,7 @@ mod crash_diagnostics;
 mod design;
 mod developer_auth;
 mod explorer_tree;
+mod gfx_dependencies;
 mod gfx_editor;
 mod gfx_layout_canvas;
 mod launcher_bridge;
@@ -4067,14 +4068,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     })
                     .cloned()
             };
+            let library_root = state.library_catalog.as_ref().map(|catalog| PathBuf::from(&catalog.root));
+            let selected_build = resource_build(state).or_else(|| project.as_ref().and_then(|p| {
+                (p.source_build != "Unknown build" && !p.source_build.is_empty())
+                    .then(|| p.source_build.clone())
+            }));
             state.gfx_busy = true;
             state.gfx_active = true;
             state.gfx_preview = None;
-            state.gfx_status = "Inspecting source GFX and preparing isolated edit copy...".into();
+            state.gfx_status = "Inspecting source GFX and resolving verified same-build imports...".into();
             return Task::perform(
                 async move {
                     tokio::task::spawn_blocking(move || {
-                        gfx_editor::create(source, relative, project)
+                        gfx_editor::create(source, relative, project, library_root, selected_build)
                     })
                     .await
                     .unwrap_or_else(|e| Err(e.to_string()))
