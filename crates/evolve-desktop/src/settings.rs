@@ -388,7 +388,10 @@ mod tests {
         assert_eq!(prefs.file_explorer_side, "Left");
         assert!(!prefs.keep_original_snapshots);
         assert!(!prefs.experimental_updates);
-        assert_eq!(prefs.nightly_updates, env!("CARGO_PKG_VERSION").contains("-nightly."));
+        assert_eq!(
+            prefs.nightly_updates,
+            env!("CARGO_PKG_VERSION").contains("-nightly.")
+        );
         assert_eq!(
             prefs.previous_options.get("another_old_option"),
             Some(&serde_json::json!(true))
