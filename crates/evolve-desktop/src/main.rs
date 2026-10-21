@@ -190,6 +190,7 @@ struct State {
     gfx_layout_open: bool,
     gfx_tools_section: GfxToolsSection,
     gfx_layout_selected: Option<usize>,
+    gfx_layer_filter: String,
     gfx_layout_x: String,
     gfx_layout_y: String,
     gfx_layout_sx: String,
@@ -1474,6 +1475,7 @@ enum Message {
     GfxToolsSection(GfxToolsSection),
     GfxToggleLayoutRaster,
     GfxLayoutSelect(usize),
+    GfxLayerFilterChanged(String),
     GfxLayoutDragged(usize, f32, f32),
     GfxLayoutValue(&'static str, String),
     GfxLayoutVisible(bool),
@@ -4377,6 +4379,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.gfx_resource = 0;
                     state.gfx_live_snapshot = None;
                     state.gfx_layout_selected = None;
+                    state.gfx_layer_filter.clear();
                     state.gfx_active = true;
                     state.viewer_sidebar_active = ViewerSidebarTab::GfxTools;
                     state.viewer_explorer_visible = true;
@@ -4467,6 +4470,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .and_then(|s| s.layers.iter().position(|layer| layer.editable))
             {
                 return update(state, Message::GfxLayoutSelect(index));
+            }
+        }
+        Message::GfxLayerFilterChanged(filter) => {
+            if filter.len() <= 160 {
+                state.gfx_layer_filter = filter;
             }
         }
         Message::GfxLayoutSelect(index) => {
