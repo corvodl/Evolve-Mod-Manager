@@ -162,3 +162,27 @@ Ruffle and FFDec remain independent upstream products distributed under
 their own licenses; notices and source locations are installed alongside
 them. The portable release intentionally does not include third-party
 executables; use separate tools with the existing picker there.
+
+## Settings → Integrations: FFDec and Ruffle
+
+The Integrations page now lists **Blender**, **FFDec**, and **Ruffle**.
+The existing Blender detection remains unchanged. FFDec/Ruffle report their
+configured executable when available and show an **Install** action only
+when missing. The **Select existing…** picker and editable executable path
+remain available even when installed.
+
+The Install action downloads the pinned official portable ZIP (FFDec 26.3.0 or
+Ruffle 0.7.1 x64), checks the expected SHA-256, rejects invalid archive
+entries/symlinks and oversize archives, and installs into the manager's
+`third_party/FFDec` or `third_party/Ruffle` directory. An existing directory
+is never overwritten by an automatic install. This operation is initiated only
+by a click; it does not install tools at startup or contact upstream without
+an explicit request. Downloads run off the interface thread. FFDec requires
+Java separately; Ruffle is a Flash emulation preview and does not reproduce
+Evolve native callbacks. Existing custom tool paths retain priority over
+installer-bundled executables. Install actions are Windows-only.
+
+The protected Program Files installation may require administrator privileges,
+consistent with the manager's existing elevated Windows manifest; portable
+builds use their own executable folder. Users can always choose a manually
+installed executable without using the built-in downloader.
