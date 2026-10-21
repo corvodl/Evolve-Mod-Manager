@@ -4,8 +4,8 @@
 use super::{MeshViewport, Message, State, TexturedScene, ViewerSidebarTab, viewer_inspector};
 use crate::design;
 use iced::widget::{
-    canvas, column, container, image, mouse_area, row, scrollable, shader, slider, stack, svg,
-    text, tooltip,
+    canvas, column, container, image, mouse_area, progress_bar, row, scrollable, shader, slider,
+    stack, svg, text, tooltip,
 };
 use iced::{
     Background, Border, Color, Element, Event, Fill, Length, Point, Rectangle, Renderer, Theme,
@@ -602,11 +602,51 @@ fn viewport(state: &State) -> Element<'_, Message> {
     .spacing(8)
     .align_y(iced::Center);
 
+    // While an asset worker is running, replace the tiny animation
+    // timeline with one conspicuous progress area in exactly the same
+    // bottom position. Only report a percentage when the worker supplies
+    // measured stage/mesh-range completion.
+    let footer: Element<'_, Message> = if state.busy {
+        if let Some(progress) = &state.viewer_load_progress {
+            let percent = progress.load(std::sync::atomic::Ordering::Relaxed).min(100);
+            let phase = match percent {
+                0..=34 => "Assembling CDF geometry",
+                35..=84 => "Decoding original material and texture sections",
+                _ => "Finalizing glow and GPU materials",
+            };
+            panel(
+                row![
+                    text(format!("{phase} · {percent}%")).size(12),
+                    progress_bar(0.0..=100.0, percent as f32).width(Fill),
+                ]
+                .spacing(12)
+                .align_y(iced::Center),
+            )
+            .height(Length::Fixed(43.0))
+            .padding(8)
+            .into()
+        } else {
+            panel(
+                row![
+                    text("Loading original assets…").size(12),
+                    progress_bar(0.0..=100.0, 0.0).width(Fill),
+                    text("Progress unavailable").size(11).style(design::muted),
+                ]
+                .spacing(12)
+                .align_y(iced::Center),
+            )
+            .height(Length::Fixed(43.0))
+            .padding(8)
+            .into()
+        }
+    } else {
+        panel(container(timeline).padding(5)).height(Length::Fixed(43.0)).into()
+    };
     column![
         header,
         toolbar,
         preview,
-        panel(container(timeline).padding(5)).height(Length::Fixed(43.0))
+        footer
     ]
     .spacing(8)
     .height(Fill)
