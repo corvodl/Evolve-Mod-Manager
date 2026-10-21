@@ -224,7 +224,9 @@ pub(super) fn sidebar_inspector(state: &State) -> Element<'_, Message> {
                         .and_then(|cdf| cdf.source_parts.get(index))
                         .map_or_else(
                             || format!("mesh section {}", index + 1),
-                            |part| format!("{} (source MTL slot {})", part.name, part.material_slot),
+                            |part| {
+                                format!("{} (source MTL slot {})", part.name, part.material_slot)
+                            },
                         )
                 })
                 .collect::<Vec<_>>();
