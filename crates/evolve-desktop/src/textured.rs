@@ -50,6 +50,8 @@ pub struct Surface {
     pub diffuse: Option<Arc<image::RgbaImage>>,
     pub normal: Option<Arc<image::RgbaImage>>,
     pub emissive: Option<Arc<image::RgbaImage>>,
+    /// Exact per-leaf authored GlowAmount, not a guessed percentage.
+    pub emission_strength: f32,
     pub specular: Option<Arc<image::RgbaImage>>,
     pub gloss: Option<Arc<image::RgbaImage>>,
     /// Verified authored opacity DDS; not interchangeable with diffuse alpha.
@@ -275,6 +277,7 @@ struct GpuSurface {
     masked: bool,
     opacity_map: bool,
     bind_group: wgpu::BindGroup,
+    _emission_uniform: wgpu::Buffer,
 }
 
 pub struct Pipeline {
@@ -318,6 +321,7 @@ pub struct Pipeline {
     view: wgpu::TextureView,
     sampler: wgpu::Sampler,
     group: wgpu::BindGroup,
+    _emission_uniform: wgpu::Buffer,
     depth: wgpu::TextureView,
     depth_dimensions: (u32, u32),
 }
@@ -325,11 +329,12 @@ pub struct Pipeline {
 // Every runtime material bind group must follow the same schema used by
 // textured.wgsl, including the standalone DDS refresh path. Keep this single
 // helper for initialization, CDF attachment ranges and texture reloads.
-const MATERIAL_BINDINGS: [u32; 7] = [0, 1, 2, 3, 4, 5, 6];
+const MATERIAL_BINDINGS: [u32; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
 
 fn material_entries<'a>(
     views: [&'a wgpu::TextureView; 6],
     sampler: &'a wgpu::Sampler,
+    emission_uniform: &'a wgpu::Buffer,
 ) -> [wgpu::BindGroupEntry<'a>; MATERIAL_BINDINGS.len()] {
     let texture = |binding: usize, channel: usize| wgpu::BindGroupEntry {
         binding: MATERIAL_BINDINGS[binding],
@@ -346,10 +351,27 @@ fn material_entries<'a>(
         texture(4, 3), // specular
         texture(5, 4), // gloss
         texture(6, 5), // authored opacity or neutral white
+        wgpu::BindGroupEntry {
+            binding: MATERIAL_BINDINGS[7],
+            resource: emission_uniform.as_entire_binding(),
+        },
     ]
 }
 
 impl Pipeline {
+    fn emission_uniform(device: &wgpu::Device, queue: &wgpu::Queue, strength: f32) -> wgpu::Buffer {
+        // Keep source-relative gain. Guard against nonfinite/pathological
+        // values but never silently reinterpret source GlowAmount 3 as 100%.
+        let safe = if strength.is_finite() { strength.clamp(0.0, 100.0) } else { 0.0 };
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Source material emission amount"), size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&buffer, 0, bytemuck::bytes_of(&[safe, 0.0f32, 0.0, 0.0]));
+        buffer
+    }
+
     fn depth_view(device: &wgpu::Device, size: (u32, u32)) -> wgpu::TextureView {
         device
             .create_texture(&wgpu::TextureDescriptor {
@@ -470,6 +492,16 @@ impl Pipeline {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
                     count: None,
                 },
@@ -739,6 +771,7 @@ impl Pipeline {
             wgpu::TextureFormat::Rgba8Unorm,
             "Neutral authored opacity",
         );
+        let emission_uniform = Self::emission_uniform(device, queue, 1.0);
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Evolve actual texture sampler group"),
             layout: &layout,
@@ -752,6 +785,7 @@ impl Pipeline {
                     &opacity_view,
                 ],
                 &sampler,
+                &emission_uniform,
             ),
         });
         let vertex = device.create_buffer(&wgpu::BufferDescriptor {
@@ -806,6 +840,7 @@ impl Pipeline {
             view,
             sampler,
             group,
+            _emission_uniform: emission_uniform,
             depth,
             depth_dimensions: (1, 1),
         }
@@ -956,6 +991,7 @@ impl Pipeline {
                     opacity_uploaded = true;
                 }
             }
+            let emission_uniform = Self::emission_uniform(device, queue, part.emission_strength);
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Exact CDF attachment material"),
                 layout: &self.layout,
@@ -964,6 +1000,7 @@ impl Pipeline {
                         &views[0], &views[1], &views[2], &views[3], &views[4], &views[5],
                     ],
                     &self.sampler,
+                    &emission_uniform,
                 ),
             });
             self.gpu_surfaces.push(GpuSurface {
@@ -972,6 +1009,7 @@ impl Pipeline {
                 masked: !part.transparent && opacity_uploaded,
                 opacity_map: opacity_uploaded,
                 bind_group: group,
+                _emission_uniform: emission_uniform,
             });
         }
         super::crash_diagnostics::record(
@@ -1127,6 +1165,7 @@ impl Pipeline {
                         &self._opacity_view,
                     ],
                     &self.sampler,
+                    &self._emission_uniform,
                 ),
             });
             self.last_texture_identity = primitive.texture_identity;
@@ -1292,7 +1331,7 @@ mod tests {
         .validate(&module)
         .expect("GPU normal/emissive shader must pass Naga validation");
         // Regression for Rocky3: all three GPU material group creation sites
-        // use material_entries, whose seven bindings must match source WGSL.
+        // use material_entries, whose eight bindings must match source WGSL.
         let mut shader_bindings: Vec<u32> = module
             .global_variables
             .iter()

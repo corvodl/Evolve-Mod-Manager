@@ -40,6 +40,9 @@ pub struct MaterialSlot {
     /// (CryEngine may use that alpha for gloss, masking or emission).
     #[serde(default)]
     pub opacity: Option<f32>,
+    /// Original material GlowAmount (e.g. 3.0 is not "100%" by assumption).
+    #[serde(default)]
+    pub glow_amount: Option<f32>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MaterialDocument {
@@ -89,6 +92,23 @@ fn material_opacity(node: &BytesStart<'_>) -> Result<Option<f32>, MaterialError>
         ));
     }
     Ok(Some(value))
+}
+
+fn authored_glow_amount(node: &BytesStart<'_>) -> Result<Option<f32>, MaterialError> {
+    let raw = if let Some(amount) = attr(node, b"GlowAmount")? {
+        Some(amount)
+    } else if attr(node, b"Name")?.is_some_and(|name| name.eq_ignore_ascii_case("GlowAmount")) {
+        attr(node, b"Value")?
+    } else {
+        None
+    };
+    let Some(raw) = raw else { return Ok(None) };
+    let amount = raw.trim().parse::<f32>()
+        .map_err(|_| MaterialError::Xml("Invalid authored GlowAmount".into()))?;
+    if !amount.is_finite() {
+        return Err(MaterialError::Xml("GlowAmount must be finite".into()));
+    }
+    Ok(Some(amount))
 }
 
 fn normalize_texture(raw: &str) -> Result<String, MaterialError> {
@@ -262,6 +282,7 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         attr(&node, b"Name")?.unwrap_or_else(|| format!("Material{}", slots.len()));
                     let shader = attr(&node, b"Shader")?.unwrap_or_default();
                     let opacity = material_opacity(&node)?;
+                    let glow_amount = authored_glow_amount(&node)?;
                     if let Some((_, parent)) = material_indices.last() {
                         nonleaf[*parent] = true;
                     }
@@ -270,6 +291,7 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         shader,
                         maps: Vec::new(),
                         opacity,
+                        glow_amount,
                     });
                     nonleaf.push(false);
                     material_indices.push((parents.len() + 1, slots.len() - 1));
@@ -280,6 +302,13 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                     && let Some((_, index)) = material_indices.last()
                 {
                     append_texture(&node, &mut slots, *index)?;
+                } else if (tag.eq_ignore_ascii_case(b"PublicParams")
+                    || tag.eq_ignore_ascii_case(b"ShaderParams")
+                    || (tag.eq_ignore_ascii_case(b"Param") && parents.last().is_some_and(|p| p.eq_ignore_ascii_case(b"ShaderParams") || p.eq_ignore_ascii_case(b"PublicParams"))))
+                    && let Some((_, index)) = material_indices.last()
+                    && let Some(amount) = authored_glow_amount(&node)?
+                {
+                    slots[*index].glow_amount = Some(amount);
                 }
                 parents.push(tag.to_vec());
             }
@@ -310,6 +339,7 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         shader: attr(&node, b"Shader")?.unwrap_or_default(),
                         maps: Vec::new(),
                         opacity: material_opacity(&node)?,
+                        glow_amount: authored_glow_amount(&node)?,
                     });
                     nonleaf.push(false);
                 } else if tag.eq_ignore_ascii_case(b"Texture")
@@ -319,6 +349,13 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                     && let Some((_, index)) = material_indices.last()
                 {
                     append_texture(&node, &mut slots, *index)?;
+                } else if (tag.eq_ignore_ascii_case(b"PublicParams")
+                    || tag.eq_ignore_ascii_case(b"ShaderParams")
+                    || (tag.eq_ignore_ascii_case(b"Param") && parents.last().is_some_and(|p| p.eq_ignore_ascii_case(b"ShaderParams") || p.eq_ignore_ascii_case(b"PublicParams"))))
+                    && let Some((_, index)) = material_indices.last()
+                    && let Some(amount) = authored_glow_amount(&node)?
+                {
+                    slots[*index].glow_amount = Some(amount);
                 } else if parents.is_empty() {
                     return Err(MaterialError::Xml("Empty XML root".into()));
                 }
@@ -502,6 +539,22 @@ pub fn resolve_materials(inventory: &Inventory, document: &MaterialDocument) -> 
 mod tests {
     use super::*;
     use crate::inventory::{AssetEntry, AssetKind};
+
+    #[test]
+    fn glow_amount_is_preserved_per_leaf_without_invented_percent_calibration() {
+        let parsed = parse_material(br#"<Material><SubMaterials>
+            <Material Name="goliath" Shader="Illum"><PublicParams GlowAmount="3"/></Material>
+            <Material Name="zero" Shader="Illum" GlowAmount="0"/>
+            <Material Name="named" Shader="Illum"><ShaderParams><Param Name="GlowAmount" Value="0.75"/></ShaderParams></Material>
+            <Material Name="absent" Shader="Illum"/>
+        </SubMaterials></Material>"#).unwrap();
+        assert_eq!(parsed.slots.len(), 4);
+        assert_eq!(parsed.slots[0].glow_amount, Some(3.0));
+        assert_eq!(parsed.slots[1].glow_amount, Some(0.0));
+        assert_eq!(parsed.slots[2].glow_amount, Some(0.75));
+        assert_eq!(parsed.slots[3].glow_amount, None);
+        assert!(parse_material(br#"<Material GlowAmount="NaN"/>"#).is_err());
+    }
     #[test]
     fn repeated_interior_separators_preserve_virtual_texture_identity() {
         assert_eq!(

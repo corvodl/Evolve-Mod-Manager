@@ -14,6 +14,9 @@ struct Output {
 // Explicit authored opacity map. Diffuse alpha may hold CryEngine gloss/mask
 // data, so it is never reused for a separate opacity-reference material.
 @group(0) @binding(6) var opacity_map: texture_2d<f32>;
+// Source MTL GlowAmount for this original material leaf. No invented
+// "3 = 100%" calibration; an absent amount uses unity in the host.
+@group(0) @binding(7) var<uniform> emission_params: vec4<f32>;
 
 @vertex
 fn vs_main(
@@ -108,7 +111,7 @@ fn shade(input: Output) -> vec4<f32> {
                   + 0.16 * pow(abs(dot(surface, half_fill)), exponent);
     let specular_light = specular_color * highlight * exposure;
     // Emissive is independent of incident light, as in the game material.
-    return vec4<f32>(base.rgb * irradiance * exposure + glow + specular_light, base.a);
+    return vec4<f32>(base.rgb * irradiance * exposure + glow * emission_params.x + specular_light, base.a);
 }
 
 @fragment

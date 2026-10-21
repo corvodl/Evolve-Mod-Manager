@@ -2,6 +2,39 @@
 
 Updated: **2026-10-20** · Repository: `corvodl/Evolve-Mod-Manager` · Working PR: **#6** on `feature/blender-viewport-cdf-autoload`, based on PR #5's `feature/pr5-combined-viewer-preview`. This document is a resumable engineering checklist, **not** a claim of production parity. See [PARITY.md](PARITY.md) for the broader feature matrix.
 
+## October 20 — Stage 2 full-armor glow and source-authored intensity
+
+User-provided Goliath3 screenshot: **Full armor glow checked**, armor remains
+dark. Investigation on public branch `6d80591` verified two separate defects:
+the material parser discarded `GlowAmount` and other named shader parameters;
+and armor_emission clipped each encoded channel difference to **80/255** before
+the GPU's sRGB decode (approximately **0.08** linear intensity at the cap).
+Original 2012 shader source was also reported to distinguish alpha-glow and
+glow-pass; **there is no evidence that GlowAmount=3 means "100%"**.
+
+Implemented in the ongoing PR: keep GlowAmount verbatim as an optional per-leaf
+source scalar (root attribute, PublicParams, named ShaderParams); use it as a
+relative WGPU fragment multiplier on each exact source subset. A positive
+legacy Illum/Cloth/HumanSkin amount may use a diffuse-alpha emission mask only
+where actual source alpha differs from opaque and no explicit emitting map
+exists. An authored missing Emittance map is not replaced with a guessed alpha
+mask. The separate `*_glow_diff` overlay now derives only positive *linear-light*
+differences rather than capped sRGB differences; it does not replace an
+already verified emitting map or override explicitly authored zero emission.
+The monster checkbox disables preview glow on uncheck and rebuilds the
+preview on recheck; FBX Rigged/Embedded options are not required for viewport
+display. Source meshes, UV0, game assets and DDS bytes remain untouched.
+
+**Unverified:** real Goliath3/Behemoth/Kraken/Wraith source-map completeness
+and glow equivalence to game runtime; actual CryEngine alpha-glow and separate
+glow-pass algorithms, tone mapping and bloom; Windows WGPU driver rendering.
+The current target is LDR and may clip bright fragments. GPU intensity is
+guarded at 100 to avoid absurd shader values without changing archived
+GlowAmount. Verify both intensity and original tint per material in real
+Stage 2 views, on/off interaction, authored zero/missing DDS diagnostics,
+all material subsets/equipment, exact higher mip PAK sourcing, and Windows CI.
+Do not claim in-game parity or merge/release until visual comparisons pass.
+
 ## October 20 — local supplied FBX investigation and shared decoder fix
 
 This checkpoint is based on public branch `c207d2e`, preserving the newer remote

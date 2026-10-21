@@ -13,6 +13,38 @@ use std::sync::Arc;
 
 const MAX_DECODED_ASSEMBLY_BYTES: usize = 768 * 1024 * 1024;
 
+/// Exact authored DDS color channels are sRGB in the wgpu sampler. Calculate
+/// armor differences in linear light, never clipping them at 80/255.
+fn srgb_linear(byte: u8) -> f32 {
+    let x = f32::from(byte) / 255.0;
+    if x <= 0.04045 { x / 12.92 } else { ((x + 0.055) / 1.055).powf(2.4) }
+}
+fn linear_srgb(value: f32) -> u8 {
+    let x = value.clamp(0.0, 1.0);
+    let encoded = if x <= 0.0031308 { x * 12.92 } else { 1.055 * x.powf(1.0 / 2.4) - 0.055 };
+    (encoded * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
+/// A legacy positive GlowAmount permits diffuse-alpha emission only with
+/// actual alpha-mask evidence. Alpha alone may be gloss or opacity and is not
+/// a license to invent emission for unrelated materials.
+fn legacy_alpha_emission(slot: &evolve_core::MaterialSlot, diffuse: &image::RgbaImage) -> Option<image::RgbaImage> {
+    if !matches!(slot.shader.to_ascii_lowercase().as_str(), "illum" | "cloth" | "humanskin")
+        || !slot.glow_amount.is_some_and(|amount| amount > 0.0)
+        || !diffuse.pixels().any(|pixel| pixel[3] < 255)
+    {
+        return None;
+    }
+    let mut result = diffuse.clone();
+    for pixel in result.pixels_mut() {
+        for channel in 0..3 {
+            pixel[channel] = linear_srgb(srgb_linear(pixel[channel]) * f32::from(pixel[3]) / 255.0);
+        }
+        pixel[3] = 255;
+    }
+    Some(result)
+}
+
 /// MtlName 0x802 is an explicit author-authored CryEngine reference.
 /// This is more reliable than guessing an equipment texture from its filename.
 fn embedded_material_hints(
@@ -462,6 +494,14 @@ fn authored_maps(
         }
         result[index] = Some(image);
     }
+    if result[2].is_none()
+        && !slot.maps.iter().any(|map| role_channel(&map.role) == Some(2))
+        && let Some(base) = result[0].as_ref()
+        && let Some(mask) = legacy_alpha_emission(slot, base)
+    {
+        warnings.push(format!("Source GlowAmount={} uses a diffuse-alpha emission mask (preview approximation)", slot.glow_amount.unwrap_or(0.0)));
+        result[2] = Some(Arc::new(mask));
+    }
     Ok((result, warnings))
 }
 
@@ -555,6 +595,7 @@ pub fn load_model(
             diffuse: None,
             normal: None,
             emissive: None,
+            emission_strength: 1.0,
             specular: None,
             gloss: None,
             opacity: None,
@@ -599,6 +640,7 @@ pub fn load_model(
                         surface.diffuse = diffuse;
                         surface.normal = normal;
                         surface.emissive = emissive;
+                        surface.emission_strength = leaf.glow_amount.unwrap_or(1.0).max(0.0);
                         surface.specular = specular;
                         surface.gloss = gloss;
                         // Original scalar opacity, when present, is independent
@@ -853,6 +895,7 @@ pub fn load_with_progress(
             diffuse: None,
             normal: None,
             emissive: None,
+            emission_strength: 1.0,
             specular: None,
             gloss: None,
             opacity: None,
@@ -922,6 +965,7 @@ pub fn load_with_progress(
             surface.diffuse = diffuse;
             surface.normal = normal;
             surface.emissive = emissive;
+            surface.emission_strength = leaf.glow_amount.unwrap_or(1.0).max(0.0);
             surface.specular = specular;
             surface.gloss = gloss;
             surface.opacity = verified_opacity(leaf, opacity);
@@ -948,11 +992,10 @@ pub fn load_with_progress(
     (surfaces, warnings)
 }
 
-/// CryEngine's *_glow_diff contains alternate armor colors as well as
-/// bright regions. Feeding the entire image to an ADDITIVE emissive channel
-/// washes colored source diffuse (head/hands) white. Keep only verified
-/// positive color differences and cap their emission. This is a preview
-/// approximation; it does not alter source DDS, UVs or FBX data.
+/// CryEngine *_glow_diff contains alternate armor colors and highlights.
+/// Add only positive color differences from the original body in linear
+/// light, without clipping each encoded channel at 80/255. This remains
+/// an approximation, never an edit of source DDS, UV0 or FBX data.
 pub fn armor_emission(
     base: &image::RgbaImage,
     glow: &image::RgbaImage,
@@ -973,7 +1016,7 @@ pub fn armor_emission(
         );
         let normal = base.get_pixel(x, y);
         for c in 0..3 {
-            pixel[c] = sample[c].saturating_sub(normal[c]).min(80);
+            pixel[c] = linear_srgb((srgb_linear(sample[c]) - srgb_linear(normal[c])).max(0.0));
         }
         pixel[3] = 255;
     }
@@ -1003,6 +1046,7 @@ mod tests {
             diffuse: Some(Arc::clone(&base_pixels)),
             normal: None,
             emissive: None,
+            emission_strength: 1.0,
             specular: None,
             gloss: None,
             opacity: None,
@@ -1049,14 +1093,35 @@ mod tests {
     }
 
     #[test]
-    fn alternate_armor_diffuse_emission_preserves_base_color_and_caps_blowout() {
+    fn alternate_armor_diffuse_emission_preserves_base_and_linear_highlights() {
         let base = image::RgbaImage::from_pixel(2, 1, image::Rgba([70, 45, 30, 255]));
         let glow =
             image::RgbaImage::from_raw(2, 1, vec![250, 200, 150, 255, 50, 30, 20, 255]).unwrap();
         let emission = armor_emission(&base, &glow).unwrap();
-        assert_eq!(emission.get_pixel(0, 0).0, [80, 80, 80, 255]);
+        assert!(emission.get_pixel(0, 0)[0] > 180);
+        assert!(emission.get_pixel(0, 0)[1] > 130);
+        assert!(emission.get_pixel(0, 0)[2] > 100);
         assert_eq!(emission.get_pixel(1, 0).0, [0, 0, 0, 255]);
         assert_eq!(base.get_pixel(0, 0).0, [70, 45, 30, 255]);
+    }
+
+    #[test]
+    fn legacy_alpha_emission_requires_positive_authored_amount_and_real_mask() {
+        let diffuse = image::RgbaImage::from_raw(2, 1, vec![255, 80, 30, 128, 10, 10, 10, 0]).unwrap();
+        let mut slot = evolve_core::MaterialSlot {
+            name: "glow".into(), shader: "Illum".into(), maps: vec![],
+            opacity: None, glow_amount: Some(3.0),
+        };
+        let mask = legacy_alpha_emission(&slot, &diffuse).unwrap();
+        assert!(mask.get_pixel(0, 0)[0] > 150);
+        assert_eq!(mask.get_pixel(1, 0).0, [0, 0, 0, 255]);
+        slot.glow_amount = Some(0.0);
+        assert!(legacy_alpha_emission(&slot, &diffuse).is_none());
+        slot.glow_amount = None;
+        assert!(legacy_alpha_emission(&slot, &diffuse).is_none());
+        slot.glow_amount = Some(3.0);
+        let opaque = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 255, 255, 255]));
+        assert!(legacy_alpha_emission(&slot, &opaque).is_none());
     }
 
     #[test]
@@ -1065,6 +1130,7 @@ mod tests {
             name: "Goliath_Body".into(),
             shader: shader.into(),
             opacity: scalar,
+            glow_amount: None,
             maps: if with_mask {
                 vec![evolve_core::TextureReference {
                     role: "opacity".into(),
@@ -1197,6 +1263,7 @@ mod tests {
             diffuse: Some(Arc::clone(&image)),
             normal: None,
             emissive: None,
+            emission_strength: 1.0,
             specular: None,
             gloss: None,
             opacity: None,
@@ -1590,6 +1657,7 @@ mod tests {
                 path: "characters/armor.dds".into(),
             }],
             opacity: None,
+            glow_amount: None,
         };
         assert!(!needs_alpha_blending(&ordinary));
         let mut transparent = ordinary;

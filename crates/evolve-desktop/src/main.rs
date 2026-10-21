@@ -1071,6 +1071,12 @@ impl Operation {
                 progress.store(90, Ordering::Relaxed);
                 // Historical CryTek 0x745 monster geometry is the 2012 build:
                 // it has no Stage 2 armor-glow/damage toggles.
+                // Full armor glow controls Stage 2 monster preview only.
+                // Switching off disables even explicitly authored emission,
+                // without changing cached source DDS or any FBX export option.
+                if !glow && !historical_2012_cdf(&report) {
+                    for surface in &mut surfaces { surface.emission_strength = 0.0; }
+                }
                 if glow && !historical_2012_cdf(&report) {
                     match evolve_core::monster_glow_path(&source, &inventory) {
                         Ok(Some(texture)) => {
@@ -1117,6 +1123,8 @@ impl Operation {
                                 for (part, surface) in report.source_parts.iter().zip(surfaces.iter_mut()) {
                                     let binding = part.binding.replace('\\', "/").to_ascii_lowercase();
                                     if surface.visible && binding.contains(owner)
+                                        && surface.emissive.is_none()
+                                        && surface.emission_strength > 0.0
                                         && let Some(base) = surface.diffuse.as_ref()
                                     {
                                         let key = Arc::as_ptr(base) as usize;
@@ -1128,11 +1136,12 @@ impl Operation {
                                             pixels
                                         };
                                         surface.emissive = Some(image);
+                                        surface.emission_strength = 1.0;
                                         mapped += 1;
                                     }
                                 }
                                 warnings.push(format!(
-                                    "Full armor glow: {mapped} verified monster sections, masked to protect the original diffuse colors"
+                                    "Full armor glow: {mapped} source alternate-glow sections; existing authored emissive maps retained with original GlowAmount"
                                 ));
                             }
                             Err(error) => warnings.push(format!(
@@ -7264,6 +7273,7 @@ mod project_edit_tests {
             diffuse: Some(Arc::clone(&pixels)),
             normal: None,
             emissive: None,
+            emission_strength: 1.0,
             specular: None,
             gloss: None,
             opacity: None,
