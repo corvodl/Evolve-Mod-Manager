@@ -3,7 +3,7 @@
 //! under the application's third_party folder. No untrusted ZIP paths,
 //! symlinks, overwrites, or game assets are accepted.
 use sha2::{Digest, Sha256};
-use std::fs::{self, File};
+use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -150,6 +150,12 @@ fn install_at(tool: Tool, folder: &Path) -> Result<PathBuf, String> {
     // Never change a prior installation or delete user content. The installer
     // will also install to this location if the user selected the optional task.
     if destination.exists() || fs::symlink_metadata(&destination).is_ok() {
+        if !fs::symlink_metadata(&destination)
+            .map_err(|e| e.to_string())?
+            .file_type().is_dir()
+        {
+            return Err("Existing GFX tool directory is not a regular directory".into());
+        }
         let existing = validated_file(&destination, tool.executable());
         return existing.or_else(|_| Err(format!(
             "{} directory already exists but is incomplete; reinstall via the manager installer",
@@ -184,8 +190,14 @@ fn install_at(tool: Tool, folder: &Path) -> Result<PathBuf, String> {
         if !license.starts_with(b"# Ruffle") || license.len() < 512 {
             return Err("Ruffle license notice was not available; installation aborted".into());
         }
-        let mut license_file = File::create(payload.join("LICENSE.md")).map_err(|e| e.to_string())?;
-        license_file.write_all(&license).map_err(|e| e.to_string())?;
+        let notice = payload.join("LICENSE.md");
+        if fs::symlink_metadata(&notice).is_err() {
+            let mut license_file = fs::OpenOptions::new()
+                .write(true).create_new(true).open(&notice).map_err(|e| e.to_string())?;
+            license_file.write_all(&license).map_err(|e| e.to_string())?;
+        } else {
+            validated_file(&payload, "LICENSE.md")?;
+        }
     }
     // Within the same filesystem: make validated content visible only after
     // every required download, ZIP check, and copyright notice succeeded.
