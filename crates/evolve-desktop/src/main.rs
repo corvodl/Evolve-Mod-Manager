@@ -188,6 +188,7 @@ struct State {
     gfx_resource: usize,
     gfx_status: String,
     gfx_layout_open: bool,
+    gfx_tools_section: GfxToolsSection,
     gfx_layout_selected: Option<usize>,
     gfx_layout_x: String,
     gfx_layout_y: String,
@@ -383,6 +384,18 @@ enum ViewerSidebarTab {
     Inspector,
     Dependencies,
     Equipment,
+    GfxTools,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum GfxToolsSection {
+    #[default]
+    Preview,
+    Layout,
+    Scripts,
+    Resources,
+    Inspector,
+    Project,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1458,6 +1471,7 @@ enum Message {
     GfxToolInstalled(gfx_tool_install::Tool, Result<PathBuf, String>),
     GfxSelectResource(usize),
     GfxToggleLayout,
+    GfxToolsSection(GfxToolsSection),
     GfxToggleLayoutRaster,
     GfxLayoutSelect(usize),
     GfxLayoutDragged(usize, f32, f32),
@@ -3180,7 +3194,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return update(state, Message::ViewerPreviewStaticCdf);
         }
         Message::ViewerSidebarSelect(tab) => {
-            state.viewer_sidebar_active = tab;
+            state.viewer_sidebar_active = if tab == ViewerSidebarTab::GfxTools && !state.gfx_active {
+                ViewerSidebarTab::Files
+            } else {
+                tab
+            };
             if tab == ViewerSidebarTab::Animations {
                 state.viewer_sidebar_animations = true;
             } else if tab == ViewerSidebarTab::Inspector {
@@ -3193,7 +3211,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ViewerSidebarClose(tab) => {
             match tab {
-                ViewerSidebarTab::Files | ViewerSidebarTab::Equipment => {} // Permanent tool tabs.
+                ViewerSidebarTab::Files | ViewerSidebarTab::Equipment | ViewerSidebarTab::GfxTools => {} // Permanent context tool tabs.
                 ViewerSidebarTab::Animations => state.viewer_sidebar_animations = false,
                 ViewerSidebarTab::Inspector => state.viewer_show_inspector = false,
                 ViewerSidebarTab::Dependencies => state.viewer_sidebar_dependencies = false,
@@ -4029,12 +4047,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             // dependency metadata here left the viewer with no geometry.
             if filename.ends_with(".cdf") {
                 state.gfx_active = false;
+                if state.viewer_sidebar_active == ViewerSidebarTab::GfxTools {
+                    state.viewer_sidebar_active = ViewerSidebarTab::Files;
+                }
                 return update(state, Message::ViewerPreviewStaticCdf);
             }
             if filename.ends_with(".gfx") {
                 return update(state, Message::GfxOpenSelected);
             }
             state.gfx_active = false;
+            if state.viewer_sidebar_active == ViewerSidebarTab::GfxTools {
+                state.viewer_sidebar_active = ViewerSidebarTab::Files;
+            }
             let operation = if is_viewer_model_source(&filename) {
                 Operation::InspectIndexedModel(
                     source,
@@ -4318,6 +4342,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.gfx_interactive_running = None;
             state.gfx_busy = true;
             state.gfx_active = true;
+            state.viewer_sidebar_active = ViewerSidebarTab::GfxTools;
+            state.viewer_explorer_visible = true;
+            state.gfx_tools_section = GfxToolsSection::Preview;
+            state.gfx_layout_open = false;
             state.gfx_preview = None;
             state.gfx_status =
                 "Inspecting source GFX and resolving verified same-build imports...".into();
@@ -4347,9 +4375,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.gfx_live_snapshot = None;
                     state.gfx_layout_selected = None;
                     state.gfx_active = true;
+                    state.viewer_sidebar_active = ViewerSidebarTab::GfxTools;
+                    state.viewer_explorer_visible = true;
                 }
                 Err(e) => {
                     state.gfx_active = false;
+                    state.viewer_sidebar_active = ViewerSidebarTab::Files;
                     state.gfx_status = format!("GFX validation failed: {e}");
                     state.status = state.gfx_status.clone();
                 }
@@ -4396,12 +4427,33 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.gfx_live_status = format!("Cannot inspect UI hierarchy: {error}");
             }
         },
+        Message::GfxToolsSection(section) => {
+            if !state.gfx_active {
+                return Task::none();
+            }
+            state.gfx_tools_section = section;
+            state.viewer_sidebar_active = ViewerSidebarTab::GfxTools;
+            state.viewer_explorer_visible = true;
+            state.gfx_layout_open = section == GfxToolsSection::Layout;
+            if state.gfx_layout_open
+                && state.gfx_layout_selected.is_none()
+                && let Some(index) = state.gfx_session.as_ref()
+                    .and_then(|session| session.layers.iter().position(|layer| layer.editable))
+            {
+                return update(state, Message::GfxLayoutSelect(index));
+            }
+        }
         Message::GfxToggleLayoutRaster => {
             state.gfx_layout_show_raster = !state.gfx_layout_show_raster
         }
         Message::GfxToggleLayout => {
             state.gfx_interactive_open = false;
             state.gfx_layout_open = !state.gfx_layout_open;
+            state.gfx_tools_section = if state.gfx_layout_open {
+                GfxToolsSection::Layout
+            } else {
+                GfxToolsSection::Preview
+            };
             if state.gfx_layout_open
                 && state.gfx_layout_selected.is_none()
                 && let Some(index) = state
