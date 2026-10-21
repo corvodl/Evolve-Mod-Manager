@@ -12,6 +12,7 @@ pub struct GfxLayoutCanvas<'a> {
 #[derive(Default)]
 pub struct DragState {
     pressed: Option<(Point, usize)>,
+    hover: Option<Point>,
 }
 fn transform(layer: &StaticLayer, point: Point) -> Point {
     let (sin, cos) = layer.rotation.to_radians().sin_cos();
@@ -62,10 +63,12 @@ impl canvas::Program<super::Message> for GfxLayoutCanvas<'_> {
                     .find(|(_,layer)|points(layer,scale,offset).is_some_and(|polygon|inside(position,polygon)))?
                     .0;
                 state.pressed=Some((position,picked));
+                state.hover=Some(position);
                 Some(canvas::Action::publish(super::Message::GfxLayoutSelect(picked)).and_capture())
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))=>{
                 let (begin,index)=state.pressed.take()?;
+                state.hover=None;
                 let end=cursor.position_in(bounds)?;
                 let layer=self.layers.get(index)?;
                 if !layer.editable || scale<=0. {return None;}
@@ -76,11 +79,15 @@ impl canvas::Program<super::Message> for GfxLayoutCanvas<'_> {
                     Some(canvas::Action::capture())
                 }
             }
+            Event::Mouse(mouse::Event::CursorMoved { .. }) if state.pressed.is_some() => {
+                state.hover = cursor.position_in(bounds);
+                Some(canvas::Action::capture())
+            }
             _=>None
         }
     }
     fn draw(
-        &self,_state:&Self::State,renderer:&Renderer,_theme:&Theme,bounds:Rectangle,
+        &self,state:&Self::State,renderer:&Renderer,_theme:&Theme,bounds:Rectangle,
         _cursor:mouse::Cursor
     )->Vec<canvas::Geometry> {
         let mut frame=canvas::Frame::new(renderer,bounds.size());
@@ -91,7 +98,15 @@ impl canvas::Program<super::Message> for GfxLayoutCanvas<'_> {
             self.stage.width*scale,self.stage.height*scale
         )),Stroke::default().with_color(Color::from_rgb8(95,103,115)).with_width(1.));
         for (index,layer) in self.layers.iter().enumerate(){
-            if let Some(poly)=points(layer,scale,offset) {
+            if let Some(mut poly)=points(layer,scale,offset) {
+                if let Some((start,dragged))=state.pressed
+                    && dragged==index
+                    && let Some(hover)=state.hover {
+                    for point in &mut poly {
+                        point.x+=hover.x-start.x;
+                        point.y+=hover.y-start.y;
+                    }
+                }
                 let path=Path::new(|p|{
                     p.move_to(poly[0]);
                     for point in poly.into_iter().skip(1){p.line_to(point);}
