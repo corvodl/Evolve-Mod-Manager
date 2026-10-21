@@ -115,7 +115,7 @@ fn raw_movie(data: &[u8]) -> Result<Vec<u8>, GfxError> {
     }
     let mut out = data[..8].to_vec();
     out[0] = b'G';
-    let mut decoder = ZlibDecoder::new(&data[8..]);
+    let decoder = ZlibDecoder::new(&data[8..]);
     decoder
         .take((MAX_DECOMPRESSED + 1) as u64)
         .read_to_end(&mut out)?;
@@ -261,10 +261,11 @@ fn first_frame_layers(tags: &[Tag]) -> Vec<StaticLayer> {
     let mut seen = HashSet::new();
     let mut first = true;
     for tag in tags {
-        if matches!(tag.code, 2 | 22 | 32 | 83) && tag.payload.len() > 2 {
-            if let Ok((bounds, _)) = rect(&tag.payload[2..]) {
-                shapes.insert(u16::from_le_bytes([tag.payload[0], tag.payload[1]]), bounds);
-            }
+        if matches!(tag.code, 2 | 22 | 32 | 83)
+            && tag.payload.len() > 2
+            && let Ok((bounds, _)) = rect(&tag.payload[2..])
+        {
+            shapes.insert(u16::from_le_bytes([tag.payload[0], tag.payload[1]]), bounds);
         }
         if tag.code == 1 {
             first = false;
@@ -289,8 +290,8 @@ fn first_frame_layers(tags: &[Tag]) -> Vec<StaticLayer> {
         }
     }
     let mut elements: Vec<_> = placed
-        .into_iter()
-        .filter_map(|(_, item)| item)
+        .into_values()
+        .flatten()
         .map(|item| {
             let (x, y, sx, sy, angle, supported) = props(item.transform);
             let bounds = shapes.get(&item.character).copied();
