@@ -345,7 +345,7 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
             .spacing(7),
         );
         entries = entries.push(
-            text("Kala's BODY and front/waist Glow stay source-blue in both modes. The separate equipment glow switches between blue Banshee (0.3×) and red Armor Reducer (4×). Every emissive uses the original 3 = 100 intensity reference before 8-bit tone mapping. The slider starts at 1×; original materials and FBX exports are unchanged.")
+            text("Kala's named Glow material stays source-blue in both modes. Body's separate ALPHAGLOW highlights retain their actual diffuse RGB (which can be red); only the equipment glow follows the Banshee/Armor Reducer choice. Every emission uses the 3 = 100 preview reference. Original textures and FBX exports stay unchanged.")
                 .size(11)
                 .style(design::muted),
         );
