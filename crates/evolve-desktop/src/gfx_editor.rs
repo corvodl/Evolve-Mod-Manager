@@ -1,7 +1,7 @@
 //! Isolated GFX editing sessions, following the private manager's FFDec flow.
 //! No operation modifies original PAKs, libraries or the game installation.
 use crate::modding_projects::{self, ProjectRow};
-use evolve_core::gfx::{GfxInfo, inspect_gfx, MAX_SOURCE};
+use evolve_core::gfx::{GfxInfo, MAX_SOURCE, inspect_gfx};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -59,10 +59,13 @@ fn read_gfx(path: &Path) -> Result<(Vec<u8>, GfxInfo), String> {
     Ok((data, info))
 }
 fn valid_member(name: &str) -> bool {
-    !name.is_empty() && name.len() <= 2048
+    !name.is_empty()
+        && name.len() <= 2048
         && !name.contains([':', '\\'])
         && !name.starts_with('/')
-        && name.split('/').all(|part| !part.is_empty() && part != "." && part != "..")
+        && name
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 fn project_allows(project: &ProjectRow, source: &Path, member: &str) -> Result<(), String> {
     if !valid_member(member) || !member.to_ascii_lowercase().ends_with(".gfx") {
@@ -76,16 +79,24 @@ fn project_allows(project: &ProjectRow, source: &Path, member: &str) -> Result<(
     }
     regular(&folder.join(".evolve-pak-workspace.json"), 8 * 1024 * 1024)?;
     let manifest: Value = serde_json::from_slice(
-        &fs::read(folder.join(".evolve-pak-workspace.json")).map_err(|e| e.to_string())?
-    ).map_err(|e| e.to_string())?;
+        &fs::read(folder.join(".evolve-pak-workspace.json")).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
     if manifest.get("version").and_then(Value::as_u64) != Some(1)
         || manifest.get("reference_only").and_then(Value::as_bool) == Some(true)
     {
         return Err("Project is not an editable Stage 2 PAK workspace".into());
     }
-    let entries = manifest.get("entries").and_then(Value::as_array)
+    let entries = manifest
+        .get("entries")
+        .and_then(Value::as_array)
         .ok_or("Project has no validated entries")?;
-    if entries.iter().filter(|e| e.get("path").and_then(Value::as_str) == Some(member)).count() != 1 {
+    if entries
+        .iter()
+        .filter(|e| e.get("path").and_then(Value::as_str) == Some(member))
+        .count()
+        != 1
+    {
         return Err("Selected GFX is not uniquely listed in the project manifest".into());
     }
     Ok(())
@@ -95,7 +106,8 @@ pub fn create(
     relative: String,
     project: Option<ProjectRow>,
 ) -> Result<Session, String> {
-    if !source.is_absolute() || !valid_member(&relative)
+    if !source.is_absolute()
+        || !valid_member(&relative)
         || !relative.to_ascii_lowercase().ends_with(".gfx")
     {
         return Err("Select a verified extracted .gfx file".into());
@@ -104,9 +116,12 @@ pub fn create(
         project_allows(project, &source, &relative)?;
     }
     let (bytes, info) = read_gfx(&source)?;
-    let folder = Arc::new(tempfile::Builder::new()
-        .prefix("evolve-private-gfx-edit-")
-        .tempdir().map_err(|e| e.to_string())?);
+    let folder = Arc::new(
+        tempfile::Builder::new()
+            .prefix("evolve-private-gfx-edit-")
+            .tempdir()
+            .map_err(|e| e.to_string())?,
+    );
     let editable = folder.path().join("movie.gfx");
     fs::write(&editable, &bytes).map_err(|e| e.to_string())?;
     Ok(Session {
@@ -137,7 +152,10 @@ fn stage(session: &mut Session, bytes: &[u8]) -> Result<(), String> {
         return Err("GFX edit history limit reached; apply or reopen the project".into());
     }
     regular(&session.editable, MAX_SOURCE as u64)?;
-    let previous = session.folder.path().join(format!("undo-{:03}.gfx", session.edits));
+    let previous = session
+        .folder
+        .path()
+        .join(format!("undo-{:03}.gfx", session.edits));
     fs::copy(&session.editable, &previous).map_err(|e| e.to_string())?;
     let pending = session.folder.path().join("rebuilt.pending");
     fs::write(&pending, bytes).map_err(|e| e.to_string())?;
@@ -153,13 +171,18 @@ fn ffdec_command(config: &str) -> Result<Command, String> {
         return Err("Configure an absolute FFDec 26.3.0 ffdec-cli.exe or ffdec.jar path".into());
     }
     regular(path, 150 * 1024 * 1024)?;
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default();
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default();
     if ext.eq_ignore_ascii_case("jar") {
         let mut cmd = Command::new("java");
         cmd.arg("-jar").arg(path);
         Ok(cmd)
     } else if ext.eq_ignore_ascii_case("exe")
-        && path.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case("ffdec-cli.exe"))
+        && path
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case("ffdec-cli.exe"))
     {
         Ok(Command::new(path))
     } else {
@@ -168,15 +191,26 @@ fn ffdec_command(config: &str) -> Result<Command, String> {
 }
 fn run_cli(config: &str, folder: &Path, arguments: &[String]) -> Result<(), String> {
     let mut cmd = ffdec_command(config)?;
-    let mut child = cmd.arg("-cli").arg("-onerror").arg("abort")
-        .args(arguments).current_dir(folder)
-        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
-        .spawn().map_err(|e| format!("Unable to run FFDec: {e}"))?;
+    let mut child = cmd
+        .arg("-cli")
+        .arg("-onerror")
+        .arg("abort")
+        .args(arguments)
+        .current_dir(folder)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Unable to run FFDec: {e}"))?;
     let since = Instant::now();
     loop {
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
-            return if status.success() { Ok(()) } else {
-                Err(format!("FFDec failed (exit status {status}); original GFX remains untouched"))
+            return if status.success() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "FFDec failed (exit status {status}); original GFX remains untouched"
+                ))
             };
         }
         if since.elapsed() >= TIMEOUT {
@@ -191,10 +225,15 @@ fn bounded_xml(input: &Path) -> Result<(), String> {
     regular(input, MAX_XML)?;
     let mut file = fs::File::open(input).map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
-    file.by_ref().take(MAX_XML + 1).read_to_end(&mut bytes)
+    file.by_ref()
+        .take(MAX_XML + 1)
+        .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
     let content = String::from_utf8_lossy(&bytes).to_ascii_lowercase();
-    if ["<!doctype", "<!entity", "<?xml-stylesheet"].iter().any(|token| content.contains(token)) {
+    if ["<!doctype", "<!entity", "<?xml-stylesheet"]
+        .iter()
+        .any(|token| content.contains(token))
+    {
         return Err("FFDec XML must not contain external entities, DTD or stylesheet".into());
     }
     Ok(())
@@ -204,9 +243,11 @@ fn import_compiled(session: &mut Session, candidate: &Path) -> Result<(), String
     stage(session, &bytes)
 }
 /// Private manager parity: work only on expendable copies until explicit Apply.
-pub fn run(mut session: Session, action: Action, configured: &str)
-    -> Result<(Session, String, Option<Vec<u8>>), String>
-{
+pub fn run(
+    mut session: Session,
+    action: Action,
+    configured: &str,
+) -> Result<(Session, String, Option<Vec<u8>>), String> {
     let root = session.folder.path().to_path_buf();
     let mut preview = None;
     let message = match action {
@@ -215,21 +256,34 @@ pub fn run(mut session: Session, action: Action, configured: &str)
             let working = root.join("external-ffdec.gfx");
             fs::copy(&session.editable, &working).map_err(|e| e.to_string())?;
             let configured_path = Path::new(configured.trim());
-            let launcher = if configured_path.extension().is_some_and(|e| e.to_str().is_some_and(|e| e.eq_ignore_ascii_case("jar"))) {
+            let launcher = if configured_path
+                .extension()
+                .is_some_and(|e| e.to_str().is_some_and(|e| e.eq_ignore_ascii_case("jar")))
+            {
                 let mut command = Command::new("java");
                 command.arg("-jar").arg(configured_path);
                 command
             } else {
-                let parent = configured_path.parent().ok_or("Invalid FFDec installation path")?;
+                let parent = configured_path
+                    .parent()
+                    .ok_or("Invalid FFDec installation path")?;
                 let exe = parent.join("ffdec.exe");
-                if !exe.is_file() { return Err("Full FFDec GUI needs ffdec.exe beside ffdec-cli.exe".into()); }
+                if !exe.is_file() {
+                    return Err("Full FFDec GUI needs ffdec.exe beside ffdec-cli.exe".into());
+                }
                 Command::new(exe)
             };
             let mut launcher = launcher;
-            launcher.arg(&working).current_dir(&root)
-                .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
-                .spawn().map_err(|e| e.to_string())?;
-            "FFDec GUI launched on a private copy. Save, then click Reload FFDec changes.".to_owned()
+            launcher
+                .arg(&working)
+                .current_dir(&root)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| e.to_string())?;
+            "FFDec GUI launched on a private copy. Save, then click Reload FFDec changes."
+                .to_owned()
         }
         Action::ReloadGui => {
             import_compiled(&mut session, &root.join("external-ffdec.gfx"))?;
@@ -240,44 +294,68 @@ pub fn run(mut session: Session, action: Action, configured: &str)
             "Imported checked external GFX into private session; project unchanged.".to_owned()
         }
         Action::ReplaceResource { index, replacement } => {
-            let tag = session.info.resources.get(index).ok_or("Select an existing movie resource")?;
-            let ext = replacement.extension().and_then(|e| e.to_str())
-                .unwrap_or_default().to_ascii_lowercase();
+            let tag = session
+                .info
+                .resources
+                .get(index)
+                .ok_or("Select an existing movie resource")?;
+            let ext = replacement
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
             let supported = match tag.kind {
-                "image" => ["png","jpg","jpeg"].contains(&ext.as_str()),
+                "image" => ["png", "jpg", "jpeg"].contains(&ext.as_str()),
                 "shape" => ext == "svg",
                 "text" => ext == "txt",
                 "sound" => ["mp3", "wav"].contains(&ext.as_str()),
                 "binary" => ext == "bin",
                 _ => false,
             };
-            if !supported { return Err("Resource type and replacement extension do not match".into()); }
+            if !supported {
+                return Err("Resource type and replacement extension do not match".into());
+            }
             regular(&replacement, MAX_REPLACEMENT)?;
             let before = root.join("replace-before.gfx");
             let output = root.join("replace-result.gfx");
             fs::copy(&session.editable, &before).map_err(|e| e.to_string())?;
             let args = vec![
-                "-replace".into(), before.display().to_string(), output.display().to_string(),
-                tag.id.to_string(), replacement.display().to_string(),
+                "-replace".into(),
+                before.display().to_string(),
+                output.display().to_string(),
+                tag.id.to_string(),
+                replacement.display().to_string(),
             ];
             run_cli(configured, &root, &args)?;
             import_compiled(&mut session, &output)?;
-            format!("Rebuilt {} resource #{} through FFDec; project unchanged.", tag.kind, tag.id)
+            format!(
+                "Rebuilt {} resource #{} through FFDec; project unchanged.",
+                tag.kind, tag.id
+            )
         }
         Action::ExportXml => {
             let target = root.join("edited-tags.xml");
-            let args = vec!["-swf2xml".into(),
-                session.editable.display().to_string(), target.display().to_string()];
+            let args = vec![
+                "-swf2xml".into(),
+                session.editable.display().to_string(),
+                target.display().to_string(),
+            ];
             run_cli(configured, &root, &args)?;
             bounded_xml(&target)?;
-            format!("Exported editable tag XML: {}. Modify it before Rebuild.", target.display())
+            format!(
+                "Exported editable tag XML: {}. Modify it before Rebuild.",
+                target.display()
+            )
         }
         Action::ImportXml => {
             let input = root.join("edited-tags.xml");
             bounded_xml(&input)?;
             let output = root.join("xml-rebuilt.gfx");
-            let args = vec!["-xml2swf".into(),
-                input.display().to_string(), output.display().to_string()];
+            let args = vec![
+                "-xml2swf".into(),
+                input.display().to_string(),
+                output.display().to_string(),
+            ];
             run_cli(configured, &root, &args)?;
             import_compiled(&mut session, &output)?;
             "Compiled edited tag XML; staged only in private GFX session.".to_owned()
@@ -285,25 +363,37 @@ pub fn run(mut session: Session, action: Action, configured: &str)
         Action::ExportScripts => {
             let target = root.join("ActionScript");
             fs::create_dir_all(&target).map_err(|e| e.to_string())?;
-            let args = vec!["-export".into(), "script".into(),
-                target.display().to_string(), session.editable.display().to_string()];
+            let args = vec![
+                "-export".into(),
+                "script".into(),
+                target.display().to_string(),
+                session.editable.display().to_string(),
+            ];
             run_cli(configured, &root, &args)?;
             format!("Exported ActionScript for editing: {}", target.display())
         }
         Action::ImportScripts => {
             let input = root.join("ActionScript");
-            if !input.is_dir() { return Err("Export editable ActionScript first".into()); }
+            if !input.is_dir() {
+                return Err("Export editable ActionScript first".into());
+            }
             let before = root.join("scripts-before.gfx");
             fs::copy(&session.editable, &before).map_err(|e| e.to_string())?;
             let output = root.join("scripts-rebuilt.gfx");
-            let args = vec!["-importScript".into(), before.display().to_string(),
-                output.display().to_string(), input.display().to_string()];
+            let args = vec![
+                "-importScript".into(),
+                before.display().to_string(),
+                output.display().to_string(),
+                input.display().to_string(),
+            ];
             run_cli(configured, &root, &args)?;
             import_compiled(&mut session, &output)?;
             "Compiled edited ActionScript; staged only in private GFX session.".to_owned()
         }
         Action::Undo => {
-            if session.edits == 0 { return Err("No staged GFX edits to undo".into()); }
+            if session.edits == 0 {
+                return Err("No staged GFX edits to undo".into());
+            }
             let previous = root.join(format!("undo-{:03}.gfx", session.edits - 1));
             let (bytes, info) = read_gfx(&previous)?;
             fs::copy(&previous, &session.editable).map_err(|e| e.to_string())?;
@@ -311,12 +401,14 @@ pub fn run(mut session: Session, action: Action, configured: &str)
             session.edits -= 1;
             session.info = info;
             session.applied = false;
-            if bytes.is_empty() { return Err("Undo snapshot was empty".into()); }
+            if bytes.is_empty() {
+                return Err("Undo snapshot was empty".into());
+            }
             "Reverted the last staged GFX edit; extracted project unchanged.".to_owned()
         }
         Action::Apply { projects_root } => {
             let project = session.project.as_ref().ok_or(
-                "Asset Library is read-only. Open this movie from an editable Mod Project."
+                "Asset Library is read-only. Open this movie from an editable Mod Project.",
             )?;
             ensure_unchanged(&session)?;
             let (now, _) = read_gfx(&session.editable)?;
@@ -324,9 +416,14 @@ pub fn run(mut session: Session, action: Action, configured: &str)
                 return Err("No edits to apply".into());
             }
             let changed = modding_projects::import_raw_member(
-                project, &projects_root, &session.relative, &session.editable
+                project,
+                &projects_root,
+                &session.relative,
+                &session.editable,
             )?;
-            if !changed { return Err("Project was already byte-identical".into()); }
+            if !changed {
+                return Err("Project was already byte-identical".into());
+            }
             session.original_sha = digest(&now);
             session.applied = true;
             "Applied validated GFX to extracted Mod Project with EditorBackups; no installed PAK changed.".to_owned()
@@ -335,19 +432,34 @@ pub fn run(mut session: Session, action: Action, configured: &str)
             let output = root.join("preview");
             fs::create_dir_all(&output).map_err(|e| e.to_string())?;
             let args = vec![
-                "-select".into(), "1".into(), "-format".into(), "frame:png".into(),
-                "-importAssets".into(), "yes,local".into(),
-                "-export".into(), "frame".into(), output.display().to_string(),
+                "-select".into(),
+                "1".into(),
+                "-format".into(),
+                "frame:png".into(),
+                "-importAssets".into(),
+                "yes,local".into(),
+                "-export".into(),
+                "frame".into(),
+                output.display().to_string(),
                 session.editable.display().to_string(),
             ];
             run_cli(configured, &root, &args)?;
-            let pictures = fs::read_dir(&output).map_err(|e| e.to_string())?
-                .filter_map(Result::ok).map(|item| item.path())
-                .filter(|p| p.extension().is_some_and(|x| x.to_str().is_some_and(|x| x.eq_ignore_ascii_case("png")))).collect::<Vec<_>>();
-            if pictures.len() != 1 { return Err("FFDec did not export exactly one selected frame PNG".into()); }
+            let pictures = fs::read_dir(&output)
+                .map_err(|e| e.to_string())?
+                .filter_map(Result::ok)
+                .map(|item| item.path())
+                .filter(|p| {
+                    p.extension()
+                        .is_some_and(|x| x.to_str().is_some_and(|x| x.eq_ignore_ascii_case("png")))
+                })
+                .collect::<Vec<_>>();
+            if pictures.len() != 1 {
+                return Err("FFDec did not export exactly one selected frame PNG".into());
+            }
             regular(&pictures[0], 70 * 1024 * 1024)?;
             preview = Some(fs::read(&pictures[0]).map_err(|e| e.to_string())?);
-            "FFDec rendered the first static frame. Runtime ActionScript is not executed.".to_owned()
+            "FFDec rendered the first static frame. Runtime ActionScript is not executed."
+                .to_owned()
         }
     };
     Ok((session, message, preview))
@@ -359,7 +471,13 @@ mod tests {
     #[test]
     fn safe_member_rejects_traversal_and_windows_drive_paths() {
         assert!(valid_member("Libs/UI/main_menu.gfx"));
-        for path in ["../main.gfx", "/main.gfx", "C:/main.gfx", "a\\b.gfx", "a//b.gfx"] {
+        for path in [
+            "../main.gfx",
+            "/main.gfx",
+            "C:/main.gfx",
+            "a\\b.gfx",
+            "a//b.gfx",
+        ] {
             assert!(!valid_member(path));
         }
     }
@@ -372,7 +490,11 @@ mod tests {
     fn xml_dtd_and_external_entities_are_blocked() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("edited-tags.xml");
-        fs::write(&file, b"<!DOCTYPE x [<!ENTITY y SYSTEM 'file:///etc/passwd'>]>").unwrap();
+        fs::write(
+            &file,
+            b"<!DOCTYPE x [<!ENTITY y SYSTEM 'file:///etc/passwd'>]>",
+        )
+        .unwrap();
         assert!(bounded_xml(&file).is_err());
         fs::write(&file, b"<swf><tags /></swf>").unwrap();
         assert!(bounded_xml(&file).is_ok());
