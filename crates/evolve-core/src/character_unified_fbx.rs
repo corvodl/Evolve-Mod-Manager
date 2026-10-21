@@ -491,15 +491,135 @@ pub fn monster_glow_path_with_library(
     Ok(None)
 }
 
+/// Read the authored CryEngine CrChF / MtlName (0x08021014) reference.
+/// The live GPU viewer already accepts this chunk, but CDF FBX export
+/// previously ignored it and rejected multi-subset parts such as Emet's
+/// `oh` attachment even with the original shared MTL present.
+fn compiled_material_names(source: &[u8]) -> Result<Vec<String>, String> {
+    if source.len() < 32 || source.get(..5) != Some(b"CrChF") {
+        return Ok(Vec::new());
+    }
+    let value = |offset: usize| -> Option<usize> {
+        Some(u32::from_le_bytes(source.get(offset..offset + 4)?.try_into().ok()?) as usize)
+    };
+    let (Some(count), Some(start)) = (value(8), value(12)) else {
+        return Ok(Vec::new());
+    };
+    if count == 0 || count > 10_000
+        || start < 16
+        || count.checked_mul(16).and_then(|n| start.checked_add(n))
+            .is_none_or(|end| end > source.len())
+    {
+        return Ok(Vec::new());
+    }
+    let mut names = Vec::new();
+    for i in 0..count {
+        let at = start + i * 16;
+        if value(at) != Some(0x08021014) {
+            continue;
+        }
+        let (Some(len), Some(offset)) = (value(at + 8), value(at + 12)) else {
+            continue;
+        };
+        if len < 132
+            || offset < start + count * 16
+            || offset.checked_add(len).is_none_or(|end| end > source.len())
+        {
+            continue;
+        }
+        let Some(field) = source.get(offset..offset + 128) else {
+            continue;
+        };
+        let Some(end) = field.iter().position(|byte| *byte == 0) else {
+            continue;
+        };
+        let Ok(authored) = std::str::from_utf8(&field[..end]) else {
+            continue;
+        };
+        let authored = authored.trim().replace('\\', "/");
+        if authored.is_empty() {
+            continue;
+        }
+        let authored = if authored.to_ascii_lowercase().ends_with(".mtl") {
+            authored
+        } else {
+            format!("{authored}.mtl")
+        };
+        // Unlike a folder-wide filename search this is the exact authored
+        // reference inside this particular render mesh.
+        if !names.iter().any(|name: &String| name.eq_ignore_ascii_case(&authored)) {
+            names.push(authored);
+        }
+    }
+    Ok(names)
+}
+
+/// Locate an exact MTL from this source or its verified same-build library.
+/// Never accept similarly named files outside the authored virtual path.
+fn exact_authored_mtl(
+    root: &Path,
+    inventory: &Inventory,
+    candidate: &str,
+    imported: Option<&ImportedTextureScope>,
+) -> Result<Option<(String, PathBuf)>, String> {
+    match resolve_virtual(inventory, candidate) {
+        AssetResolution::Found(relative) => {
+            let path = input_file(root, &relative)?;
+            return Ok(Some((relative, path)));
+        }
+        AssetResolution::Ambiguous(_) => {
+            return Err(format!("Ambiguous original material reference {candidate}"));
+        }
+        AssetResolution::Missing => {}
+    }
+    let Some(scope) = imported else {
+        return Ok(None);
+    };
+    // Cross-PAK reference only when the source archive is bound to a
+    // single build: do not mix Stage 2, 2012 or other PAKs.
+    let Some(build) = scope.build.as_deref() else {
+        return Ok(None);
+    };
+    match resolve_imported_reference(&scope.root, candidate, Some(build))
+        .map_err(|e| format!("Cannot resolve original MTL {candidate}: {e}"))?
+    {
+        LibraryReferenceStatus::Found(hit) => {
+            let path = PathBuf::from(hit.absolute_path);
+            let meta = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+            let real = fs::canonicalize(&path).map_err(|e| e.to_string())?;
+            let library = fs::canonicalize(&scope.root).map_err(|e| e.to_string())?;
+            if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > MAX_SOURCE
+                || !real.starts_with(library)
+            {
+                return Err(format!("Unsafe indexed material {candidate}"));
+            }
+            Ok(Some((candidate.to_owned(), real)))
+        }
+        LibraryReferenceStatus::Missing => Ok(None),
+        LibraryReferenceStatus::Ambiguous(_) => {
+            Err(format!("Ambiguous same-build original MTL {candidate}"))
+        }
+    }
+}
+
 /// A CDF can bind Scorpid3_Rig.chr while its original MTL is
-/// Scorpid3.mtl. Source attachment overrides outrank all fallbacks. For a
-/// true CryTek 0x745 source only, allow the historical owning variant and
-/// folder-specific material names; never search neighboring character MTLs.
+/// Scorpid3.mtl. Authored overrides outrank embedded MtlName, which outranks
+/// matching filenames. Never use a different character's material.
 fn original_model_material(
     root: &Path,
     mesh: &Path,
     inventory: &Inventory,
     override_mtl: Option<&str>,
+) -> Result<Option<(String, PathBuf)>, String> {
+    original_model_material_with_scope(root, mesh, inventory, override_mtl, None)
+}
+
+fn original_model_material_with_scope(
+    root: &Path,
+    mesh: &Path,
+    inventory: &Inventory,
+    override_mtl: Option<&str>,
+    imported: Option<&ImportedTextureScope>,
 ) -> Result<Option<(String, PathBuf)>, String> {
     // Windows can spell an indexed temporary root with a \\?\\ prefix.
     // Compare canonical roots and meshes before producing virtual material paths.
@@ -517,6 +637,42 @@ fn original_model_material(
         .and_then(|name| name.to_str())
         .ok_or("Source mesh filename is not UTF-8")?;
     let mut paths = Vec::new();
+    if override_mtl.is_none() {
+        // Match the GPU viewer's MtlName precedence. These are original
+        // compiled references, not speculative adjacent-owner fallbacks.
+        let source = fs::symlink_metadata(&mesh).map_err(|e| e.to_string())?;
+        if source.file_type().is_file() && source.len() <= 16 * 1024 * 1024 {
+            let bytes = fs::read(&mesh).map_err(|e| e.to_string())?;
+            let authored = compiled_material_names(&bytes)?;
+            let mut hits = Vec::<(String, PathBuf)>::new();
+            for reference in authored {
+                let rooted = ["characters/", "objects/", "materials/", "levels/", "libs/"]
+                    .iter()
+                    .any(|prefix| reference.to_ascii_lowercase().starts_with(prefix));
+                let mut candidates = Vec::new();
+                if !rooted && !parent.is_empty() {
+                    candidates.push(format!("{parent}/{reference}"));
+                }
+                candidates.push(reference);
+                for candidate in candidates {
+                    if let Some(found) =
+                        exact_authored_mtl(&root, inventory, &candidate, imported)?
+                        && !hits.iter().any(|(_, path)| path == &found.1)
+                    {
+                        hits.push(found);
+                    }
+                }
+            }
+            if hits.len() > 1 {
+                return Err(format!(
+                    "Several conflicting original compiled MtlName references for {virtual_mesh}"
+                ));
+            }
+            if let Some(hit) = hits.pop() {
+                return Ok(Some(hit));
+            }
+        }
+    }
     if let Some(authored) = override_mtl {
         let authored = authored.trim().replace('\\', "/");
         let rooted = ["characters/", "objects/", "materials/", "levels/", "libs/"]
@@ -604,7 +760,7 @@ fn exact_single_slot_maps_with_scope(
 ) -> Result<AuthoredMaps, String> {
     let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
     let Some((candidate, material)) =
-        original_model_material(&root, mesh_path, inventory, override_mtl)?
+        original_model_material_with_scope(&root, mesh_path, inventory, override_mtl, imported)?
     else {
         return Ok(AuthoredMaps::default());
     };
@@ -678,7 +834,7 @@ fn exact_multi_slot_materials_with_scope(
 ) -> Result<Option<Vec<OriginalMaterialPng>>, String> {
     let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
     let Some((virtual_mtl, material)) =
-        original_model_material(&root, mesh_path, inventory, override_mtl)?
+        original_model_material_with_scope(&root, mesh_path, inventory, override_mtl, imported)?
     else {
         return Ok(None);
     };
@@ -759,7 +915,7 @@ fn apply_export_damage_layer(
         return Ok(0);
     }
     let Some((virtual_mtl, material)) =
-        original_model_material(root, original, inventory, material_hint)?
+        original_model_material_with_scope(root, original, inventory, material_hint, imported)?
     else {
         return Ok(0);
     };
