@@ -522,7 +522,8 @@ fn exact_single_slot_maps_with_scope(
         let target = match item.role.as_str() {
             "diffuse" => &mut maps.diffuse,
             "normal" | "normals" | "bumpmap" => &mut maps.normal,
-            "emissive" | "emittance" | "emission" | "glow" => &mut maps.emissive,
+            "emissive" | "emittance" | "emission" | "glow" | "emissivecolor"
+            | "emissionmap" | "glowmap" | "selfillum" | "selfillumination" => &mut maps.emissive,
             "specular" | "specularcolor" => &mut maps.specular,
             "gloss" | "glossiness" | "smoothness" => &mut maps.gloss,
             _ => continue,
@@ -591,7 +592,8 @@ fn exact_multi_slot_materials_with_scope(
             let role = match map.role.as_str() {
                 "diffuse" => 0,
                 "normal" | "normals" | "bumpmap" => 1,
-                "emittance" | "emissive" | "emission" | "glow" => 2,
+                "emittance" | "emissive" | "emission" | "glow" | "emissivecolor"
+                | "emissionmap" | "glowmap" | "selfillum" | "selfillumination" => 2,
                 "specular" | "specularcolor" => 3,
                 "gloss" | "glossiness" | "smoothness" => 4,
                 _ => continue,
