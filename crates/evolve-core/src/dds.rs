@@ -605,9 +605,10 @@ fn untile_xbox360(
     Ok(linear)
 }
 
-/// Decode exactly the highest-quality full-resolution mipmap.
+/// Decode the top mip using the verified source header platform layout.
+/// This shared path also feeds embedded FBX materials, not just PNG export.
 pub fn decode_dds_rgba(source: &Path) -> Result<(DdsInfo, RgbaImage), DdsError> {
-    decode_dds_rgba_with_layout(source, DdsLayout::Linear)
+    decode_dds_rgba_with_layout(source, source_layout_for_png(source)?)
 }
 
 /// Decode using the verified source platform, without modifying the game DDS.
@@ -625,7 +626,7 @@ pub fn decode_dds_rgba_with_parts(
     source: &Path,
     additional: &[PathBuf],
 ) -> Result<(DdsInfo, RgbaImage), DdsError> {
-    decode_dds_rgba_with_layout_parts(source, DdsLayout::Linear, additional)
+    decode_dds_rgba_with_layout_parts(source, source_layout_for_png(source)?, additional)
 }
 
 fn decode_dds_rgba_with_layout_parts(
@@ -707,12 +708,18 @@ fn decode_dds_rgba_with_layout_parts(
     Ok((info, image))
 }
 
-/// Platform selection for lossless source-faithful PNG export, using the
+/// Platform selection shared by image decoding and PNG/FBX export, using the
 /// historical Xbox DDS header marker and flags, never filename guesses.
 fn source_layout_for_png(source: &Path) -> Result<DdsLayout, DdsError> {
     use std::io::Read;
     let mut bytes = [0u8; 128];
-    let mut input = fs::File::open(source)?;
+    let (base, index) = parse_part_name(source)?;
+    let header = if index.is_some_and(|n| n != 0) {
+        source.with_file_name(format!("{base}.0"))
+    } else {
+        source.to_path_buf()
+    };
+    let mut input = fs::File::open(header)?;
     if input.read_exact(&mut bytes).is_ok()
         && &bytes[..4] == b"DDS "
         && &bytes[124..128] == b"FYRC"
@@ -844,6 +851,40 @@ mod tests {
         } else {
             [224, 7, 0, 248, 0, 0, 0, 0]
         }
+    }
+
+    #[test]
+    fn shared_fbx_decoder_uses_native_layout_for_local_and_cross_pak_mips() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("native.dds");
+        let mut bytes = header(128, 128, 1, b"DXT1");
+        bytes[124..128].copy_from_slice(b"FYRC");
+        bytes[36..40].copy_from_slice(&0x1800u32.to_le_bytes());
+        bytes[108..112].copy_from_slice(&0x1000u32.to_le_bytes());
+        // Big-endian RGB565 red endpoint, repeated over one native tile.
+        let native = [248, 0, 7, 224, 0, 0, 0, 0].repeat(32 * 32);
+        bytes.extend(&native);
+        std::fs::write(&source, &bytes).unwrap();
+        let (_, decoded) = decode_dds_rgba(&source).unwrap();
+        assert!(decoded.pixels().all(|p| p.0 == [255, 0, 0, 255]));
+        let (_, forced_linear) = decode_dds_rgba_with_layout(&source, DdsLayout::Linear).unwrap();
+        assert_ne!(decoded, forced_linear);
+        bytes.truncate(128);
+        bytes[28..32].copy_from_slice(&2u32.to_le_bytes());
+        bytes.extend([0u8; 2048]);
+        let low = dir.path().join("native.dds.0");
+        std::fs::write(&low, bytes).unwrap();
+        let high_dir = dir.path().join("high");
+        std::fs::create_dir(&high_dir).unwrap();
+        let high = high_dir.join("native.dds.1");
+        std::fs::write(&high, native).unwrap();
+        let (_, cross) = decode_dds_rgba_with_parts(&low, &[high]).unwrap();
+        assert_eq!(cross, decoded);
+        // Ordinary PC headers retain their original linear interpretation.
+        let mut pc = std::fs::read(&source).unwrap();
+        pc[124..128].copy_from_slice(b"GAME");
+        std::fs::write(&source, pc).unwrap();
+        assert_eq!(decode_dds_rgba(&source).unwrap().1, forced_linear);
     }
 
     #[test]

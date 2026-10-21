@@ -1,7 +1,7 @@
 ## Unified FBX exporter continuation (October 20)
 
 Detailed resumable status, current implementation files, exact remaining gates and
-Blender 5.2 real-asset acceptance steps live in [PARITY_HANDOFF.md](PARITY_HANDOFF.md).
+Blender 5.2 real-asset acceptance steps live in [parity_handoff.md](parity_handoff.md).
 The unified character FBX binary publisher now shares the standard exporter’s
 atomic full-byte, signature-verified copy; the Blender bridge uses an explicit
 Python-failure exit code and excludes only bone-referenced display shapes

@@ -2,6 +2,80 @@
 
 Updated: **2026-10-20** · Repository: `corvodl/Evolve-Mod-Manager` · Working PR: **#6** on `feature/blender-viewport-cdf-autoload`, based on PR #5's `feature/pr5-combined-viewer-preview`. This document is a resumable engineering checklist, **not** a claim of production parity. See [PARITY.md](PARITY.md) for the broader feature matrix.
 
+## October 20 — local supplied FBX investigation and shared decoder fix
+
+This checkpoint is based on public branch `c207d2e`, preserving the newer remote
+implementation. An older local investigation commit (`ed683b9`) was **not** pushed:
+its broad changes overlap newer work and must not be applied over this branch.
+All investigation and changes here are in the public repository. The original
+supplied `scorpid3.fbx` and game assets were read only; no game assets enter Git.
+
+**Confirmed remaining export bug:** PNG export and the desktop preview selected
+Xbox 360 layout from original DDS header evidence, but `decode_dds_rgba` and
+`decode_dds_rgba_with_parts` always selected `DdsLayout::Linear`. Unified FBX's
+`decode_original_mip` calls those shared APIs, including its cross-PAK retry.
+Thus even successful, fully linked embedded images contained corrupt pixels.
+The shared APIs now use the same strict existing `FYRC`/flags/caps checks as PNG
+export. Explicit-layout callers remain available. Numbered-fragment layout checks
+read the .0 header. This preserves the current same-build high/low resolver and
+per-material FBX verification instead of replacing them with older code.
+
+**Evidence:** Blender 5.2.2 extraction of the supplied Scorpid3 FBX found five mesh
+parts, fifteen packed images, and zero Actions. Its extracted pixels are visibly
+striped/corrupted independently of lighting. A real export at `c207d2e` reproduced
+that corruption despite having all five diffuse-textured parts, 124 bones and
+17,228 weighted vertices. The initial WhipSpider sample's imported high-mip bytes
+matched the original PAK; Xbox tiling + 16-bit word byte swapping yielded a coherent
+atlas, with pixel agreement against a separate Python/Pillow reconstruction.
+This establishes a decoder-path problem, not evidence of damaged source archives.
+
+**Fixed final-file acceptance:** Regenerated `scorpid3-current-fixed.fbx` with
+Blender 5.2.2, then imported that final published FBX in a separate Blender process
+and extracted its packed images. All five parts have linked diffuse textures;
+124 bones and 17,228 weighted vertices were retained. The body atlas (slot 10),
+head diffuse and head normal were visually inspected and are coherent, with the
+old striping gone. Both basher meshes remain included. The report still correctly
+says `fully_textured: false`: complete shader/texture-role parity is not proven.
+No CAF was supplied, so zero Actions is expected. Original supplied FBX untouched.
+Before/after images and JSON reports are local `current-before-*`/`current-after-*`
+artifacts; the fixed FBX is outside Git under `work/fbx-acceptance`.
+
+**Tests:** 279 tests passed on the reconciled code (core 146, CLI 1, integration 8,
+desktop 122, manifest 2); workspace all-targets Clippy with `-D warnings` passed.
+The new regression checks that both shared decode APIs recover a console-endian
+red tile, explicitly forced linear output differs, and a PC header remains linear.
+Tests also retain the existing tiling-address regression. Desktop tests ran from
+an asInvoker disposable EXE copy with `Start-Process -WindowStyle Hidden -Wait`
+and captured exit code 0; production UAC policy was unchanged. Rename-dependent
+filesystem tests ran outside the Windows sandbox using their temporary fixtures.
+
+**Reproducible export probe:** `cargo run -p evolve-core --example
+validate_unified_export -- <extracted-root> <cdf> <Blender.exe> <NEW absolute FBX>
+[original CAF]`. Output must be outside the source assets and public repository.
+Local acceptance artifacts are under the parent workspace's `work/fbx-acceptance`.
+Keep generated FBX, extracted images, original PAKs and machine-specific logs out
+of Git. The existing untracked Cargo.lock was not added.
+
+**Model viewer animation finding:** The real 2012 Scorpid3 chrparams declares
+`animations/Monsters/Scorpid2_3/Scorpid3.dba`; the matching 2012 Animations.pak import
+contains Scorpid1/2/3 DBA databases and LMGs, with no loose Scorpid CAF files.
+Automatic CAF idle lookup therefore cannot provide this character's animation.
+Current `native_dba.rs` indexes metadata but does not decode playable key streams.
+The desktop's converter-backed `DbaConverted` path clears the native CDF binding;
+`MotionGlb` loads a separate GLB node-animation preview and clears skin preview.
+It does not bind converted DBA tracks back to the original assembled character.
+The supplied FBX's zero Actions are consistent with a static export, but do not
+alone diagnose viewer playback. Native Stage 2 CAF remains a different path.
+
+**Resume here:** decode/verify packed DBA tracks (or converter-track binding) and
+map controllers to the actual 2012 skeleton before driving assembly deformation.
+Check rest hierarchy, local bone palettes, duration, idle selection, rigid sockets
+and additive convention against real clips. Preserve the current equipment chooser.
+A custom all-six-L/R-arm gallery with verified textures, independent presentation
+spacing and rigged FBX output still needs explicit acceptance; selecting one arm
+per side is not that gallery. Full shader/normal/UV visual equivalence, tiny/padded
+console textures, and interactive animation frame pacing remain unverified.
+
 ## October 20 — File → Export named FBX bundles, PNG dependencies and collaborator UV0 specifications
 
 **Requested behavior (implemented in PR #6, pending final CI/real-asset acceptance):**
