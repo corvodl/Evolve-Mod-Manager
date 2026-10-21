@@ -31,6 +31,45 @@ pub struct TextureReference {
     pub role: String,
     pub path: String,
 }
+/// The independently authored UV transform for an Illum Decal. This
+/// applies to emission only; diffuse, normal, opacity and UV0 remain intact.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DecalTexMod {
+    pub tile_u: f32,
+    pub tile_v: f32,
+    pub u_type: i32,
+    pub u_rate: f32,
+    pub u_amplitude: f32,
+    pub v_type: i32,
+    pub v_rate: f32,
+    pub v_amplitude: f32,
+}
+
+impl DecalTexMod {
+    /// CryEngine ETexModMoveType: 0=no change, 1=fixed, 2=constant,
+    /// 4=pan (pendulum). Unknown numeric types are not guessed.
+    fn offset(kind: i32, rate: f32, amplitude: f32, seconds: f32) -> f32 {
+        match kind {
+            1 => amplitude,
+            2 => seconds.max(0.0) * rate * amplitude,
+            4 => amplitude * (seconds.max(0.0) * rate * std::f32::consts::TAU).sin(),
+            _ => 0.0,
+        }
+    }
+
+    /// (U tile, V tile, U offset, V offset). Called each render tick without
+    /// re-decoding the source DDS or changing the actual mesh UVs.
+    pub fn sample(self, seconds: f32) -> [f32; 4] {
+        let t = if seconds.is_finite() { seconds.rem_euclid(3600.0) } else { 0.0 };
+        [
+            self.tile_u,
+            self.tile_v,
+            Self::offset(self.u_type, self.u_rate, self.u_amplitude, t),
+            Self::offset(self.v_type, self.v_rate, self.v_amplitude, t),
+        ]
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MaterialSlot {
     pub name: String,
@@ -49,6 +88,9 @@ pub struct MaterialSlot {
     /// The authored RGB Diffuse scalar. This is distinct from the Diffuse DDS.
     #[serde(default)]
     pub diffuse_tint: Option<[f32; 3]>,
+    /// Source TexMod of an explicitly authored Decal, if present.
+    #[serde(default)]
+    pub decal_tex_mod: Option<DecalTexMod>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MaterialDocument {
@@ -143,6 +185,46 @@ fn source_diffuse_tint(node: &BytesStart<'_>) -> Result<Option<[f32; 3]>, Materi
         return Ok(None);
     }
     Ok(Some([values[0], values[1], values[2]]))
+}
+
+fn parse_decal_tex_mod(node: &BytesStart<'_>) -> Result<DecalTexMod, MaterialError> {
+    fn scalar(
+        node: &BytesStart<'_>,
+        field: &[u8],
+        default: f32,
+    ) -> Result<f32, MaterialError> {
+        let value = attr(node, field)?
+            .map(|v| v.parse::<f32>())
+            .transpose()
+            .map_err(|_| MaterialError::Xml("Invalid Decal TexMod scalar".into()))?
+            .unwrap_or(default);
+        if !value.is_finite() || value.abs() > 64.0 {
+            return Err(MaterialError::Xml("Decal TexMod scalar out of bounds".into()));
+        }
+        Ok(value)
+    }
+    fn oscillator(node: &BytesStart<'_>, field: &[u8]) -> Result<i32, MaterialError> {
+        attr(node, field)?
+            .map(|v| v.parse::<i32>()
+                .map_err(|_| MaterialError::Xml("Invalid Decal oscillator type".into())))
+            .transpose()
+            .map(|v| v.unwrap_or(0))
+    }
+    let tile_u = scalar(node, b"TileU", 1.0)?;
+    let tile_v = scalar(node, b"TileV", 1.0)?;
+    if tile_u <= 0.0 || tile_v <= 0.0 {
+        return Err(MaterialError::Xml("Decal UV tiles must be positive".into()));
+    }
+    Ok(DecalTexMod {
+        tile_u,
+        tile_v,
+        u_type: oscillator(node, b"TexMod_UOscillatorType")?,
+        u_rate: scalar(node, b"TexMod_UOscillatorRate", 0.0)?,
+        u_amplitude: scalar(node, b"TexMod_UOscillatorAmplitude", 0.0)?,
+        v_type: oscillator(node, b"TexMod_VOscillatorType")?,
+        v_rate: scalar(node, b"TexMod_VOscillatorRate", 0.0)?,
+        v_amplitude: scalar(node, b"TexMod_VOscillatorAmplitude", 0.0)?,
+    })
 }
 
 fn normalize_texture(raw: &str) -> Result<String, MaterialError> {
@@ -333,6 +415,7 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         glow_amount,
                         alpha_glow: source_alpha_glow(&node)?,
                         diffuse_tint: source_diffuse_tint(&node)?,
+                        decal_tex_mod: None,
                     });
                     nonleaf.push(false);
                     material_indices.push((parents.len() + 1, slots.len() - 1));
@@ -343,6 +426,12 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                     && let Some((_, index)) = material_indices.last()
                 {
                     append_texture(&node, &mut slots, *index)?;
+                } else if tag.eq_ignore_ascii_case(b"TexMod")
+                    && parents.last().is_some_and(|parent| parent.eq_ignore_ascii_case(b"Texture"))
+                    && let Some((_, index)) = material_indices.last()
+                    && slots[*index].maps.last().is_some_and(|map| map.role == "decal")
+                {
+                    slots[*index].decal_tex_mod = Some(parse_decal_tex_mod(&node)?);
                 } else if (tag.eq_ignore_ascii_case(b"PublicParams")
                     || tag.eq_ignore_ascii_case(b"ShaderParams")
                     || (tag.eq_ignore_ascii_case(b"Param")
@@ -387,6 +476,7 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                         glow_amount: authored_glow_amount(&node)?,
                         alpha_glow: source_alpha_glow(&node)?,
                         diffuse_tint: source_diffuse_tint(&node)?,
+                        decal_tex_mod: None,
                     });
                     nonleaf.push(false);
                 } else if tag.eq_ignore_ascii_case(b"Texture")
@@ -396,6 +486,12 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                     && let Some((_, index)) = material_indices.last()
                 {
                     append_texture(&node, &mut slots, *index)?;
+                } else if tag.eq_ignore_ascii_case(b"TexMod")
+                    && parents.last().is_some_and(|parent| parent.eq_ignore_ascii_case(b"Texture"))
+                    && let Some((_, index)) = material_indices.last()
+                    && slots[*index].maps.last().is_some_and(|map| map.role == "decal")
+                {
+                    slots[*index].decal_tex_mod = Some(parse_decal_tex_mod(&node)?);
                 } else if (tag.eq_ignore_ascii_case(b"PublicParams")
                     || tag.eq_ignore_ascii_case(b"ShaderParams")
                     || (tag.eq_ignore_ascii_case(b"Param")
@@ -644,9 +740,25 @@ mod tests {
         assert_eq!(parsed.slots[1].glow_amount, Some(3.0));
         assert_eq!(
             parsed.slots[1].diffuse_tint,
-            Some([0.072271854, 0.1470273, 0.42326769])
+            Some([0.072271854, 0.1470273, 0.423_267_7])
         );
         assert_eq!(parsed.slots[1].maps[1].role, "decal");
+    }
+
+    #[test]
+    fn exact_kala_banshee_decal_tiling_and_constant_motion() {
+        let document = parse_material(br#"<Material Name="bansheegun glow" Shader="Illum"
+            GlowAmount="3"><Textures><Texture Map="Decal" File="textures/particle/light/chroma_fan320tiled_01b.tif">
+            <TexMod TileU="3" TileV="4" TexMod_UOscillatorType="2"
+                TexMod_UOscillatorRate="1" TexMod_UOscillatorAmplitude="0.2"
+                TexMod_VOscillatorAmplitude="0.1"/>
+        </Texture></Textures></Material>"#).unwrap();
+        let modulator = document.slots[0].decal_tex_mod.unwrap();
+        assert_eq!(modulator.sample(0.0), [3.0, 4.0, 0.0, 0.0]);
+        assert_eq!(modulator.sample(2.0), [3.0, 4.0, 0.4, 0.0]);
+        assert_eq!(modulator.v_amplitude, 0.1);
+        assert!(parse_material(br#"<Material><Textures><Texture Map="Decal" File="a.tif">
+            <TexMod TileU="NaN"/></Texture></Textures></Material>"#).is_err());
     }
 
     #[test]
