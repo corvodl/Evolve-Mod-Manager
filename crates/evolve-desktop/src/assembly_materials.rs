@@ -709,6 +709,72 @@ pub fn apply_damage_blend(
     Ok(applied)
 }
 
+/// Blend cached 0% and 100% authored damage previews without opening the
+/// CDF, scanning any archives or decoding any DDS again. Geometry, per-subset
+/// material bindings and all unrelated GPU maps are shared by Arc.
+pub fn blend_prepared_damage(
+    base: &[Surface],
+    full: &[Surface],
+    percent: u8,
+) -> Result<Vec<Surface>, String> {
+    if percent > 100 || base.len() != full.len() {
+        return Err("Mismatched cached damage preview".into());
+    }
+    if percent == 0 {
+        return Ok(base.to_vec());
+    }
+    if percent == 100 {
+        return Ok(full.to_vec());
+    }
+    let mut out = base.to_vec();
+    let mut derived = HashMap::<(usize, usize), Arc<image::RgbaImage>>::new();
+    let mut total = 0usize;
+    for ((original, damaged), target) in base.iter().zip(full).zip(out.iter_mut()) {
+        if original.first_index != damaged.first_index
+            || original.index_count != damaged.index_count
+            || original.visible != damaged.visible
+        {
+            return Err("Cached damage material ranges changed".into());
+        }
+        let (Some(before), Some(after)) = (&original.diffuse, &damaged.diffuse) else {
+            continue;
+        };
+        if Arc::ptr_eq(before, after) {
+            continue;
+        }
+        if before.dimensions() != after.dimensions() {
+            return Err("Cached damage dimensions changed".into());
+        }
+        let key = (Arc::as_ptr(before) as usize, Arc::as_ptr(after) as usize);
+        let image = if let Some(reused) = derived.get(&key) {
+            Arc::clone(reused)
+        } else {
+            let len = before.as_raw().len();
+            total = total.checked_add(len).ok_or("Damage blend memory overflow")?;
+            if total > MAX_GPU_PREVIEW_TEXTURE_BYTES {
+                return Err("Damage preview exceeds its GPU image budget".into());
+            }
+            let amount = u32::from(percent);
+            let pixels = before.as_raw().chunks_exact(4)
+                .zip(after.as_raw().chunks_exact(4))
+                .flat_map(|(a, b)| [
+                    ((u32::from(a[0]) * (100 - amount) + u32::from(b[0]) * amount + 50) / 100) as u8,
+                    ((u32::from(a[1]) * (100 - amount) + u32::from(b[1]) * amount + 50) / 100) as u8,
+                    ((u32::from(a[2]) * (100 - amount) + u32::from(b[2]) * amount + 50) / 100) as u8,
+                    255u8,
+                ])
+                .collect::<Vec<u8>>();
+            let blended = Arc::new(image::RgbaImage::from_raw(
+                before.width(), before.height(), pixels,
+            ).ok_or("Cached damage pixel count changed")?);
+            derived.insert(key, Arc::clone(&blended));
+            blended
+        };
+        target.diffuse = Some(image);
+    }
+    Ok(out)
+}
+
 /// Estimate the same unique GPU role/source uploads used by the renderer.
 /// A CDF with repeated sections must not count one cached DDS repeatedly.
 fn unique_gpu_material_bytes(surfaces: &[Surface]) -> usize {
@@ -767,6 +833,12 @@ pub fn load_with_progress(
     let mut warnings = Vec::new();
     let mut surfaces = Vec::with_capacity(report.source_parts.len());
     let mut budget = TextureBudget::default();
+    // CDFs often repeat a material for multiple subsets. Resolve the
+    // authored source, parse XML and find the same decoded DDS once per
+    // binding/slot, not once per triangle range.
+    let mut resolved_materials = HashMap::<(String, Option<String>), Result<Option<PathBuf>, String>>::new();
+    let mut parsed_materials = HashMap::<PathBuf, Result<evolve_core::MaterialDocument, String>>::new();
+    let mut decoded_slots = HashMap::<(PathBuf, String, u32), Result<ResolvedMaterialMaps, String>>::new();
     for (index, part) in report.source_parts.iter().enumerate() {
         let mut surface = Surface {
             first_index: part.first_index,
@@ -786,15 +858,19 @@ pub fn load_with_progress(
                 // material from the previous CryEngine face range.
                 return Ok(());
             }
-            let path = material_for_part(
-                &part.binding,
-                part.material_hint.as_deref(),
-                inventory,
-                imported,
-                build,
-            )?
-            .ok_or("No explicitly associated or same-stem MTL")?;
-            let authored = read_material(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let binding_key = (part.binding.clone(), part.material_hint.clone());
+            let material = resolved_materials.entry(binding_key).or_insert_with(|| {
+                material_for_part(
+                    &part.binding,
+                    part.material_hint.as_deref(),
+                    inventory, imported, build,
+                )
+            });
+            let path = material.as_ref().map_err(Clone::clone)?
+                .as_ref().ok_or("No explicitly associated or same-stem MTL")?.clone();
+            let authored = parsed_materials.entry(path.clone()).or_insert_with(|| {
+                read_material(&path).map_err(|e| format!("{}: {e}", path.display()))
+            }).as_ref().map_err(Clone::clone)?;
             let leaf = authored
                 .slots
                 .get(part.material_slot as usize)
@@ -805,9 +881,10 @@ pub fn load_with_progress(
                 surface.visible = false;
                 return Ok(());
             }
-            let ([diffuse, normal, emissive, specular, gloss, opacity], map_warnings) =
+            let slot_key = (path.clone(), part.binding.clone(), part.material_slot);
+            let maps = decoded_slots.entry(slot_key).or_insert_with(|| {
                 authored_maps(
-                    &authored,
+                    authored,
                     &path,
                     &part.binding,
                     part.material_slot,
@@ -818,7 +895,10 @@ pub fn load_with_progress(
                     },
                     cache,
                     &mut budget,
-                )?;
+                )
+            });
+            let ([diffuse, normal, emissive, specular, gloss, opacity], map_warnings) =
+                maps.as_ref().map_err(Clone::clone)?.clone();
             warnings.extend(
                 map_warnings
                     .into_iter()
@@ -888,6 +968,32 @@ pub fn armor_emission(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn slider_reblends_loaded_surfaces_without_redecoding_or_changing_geometry() {
+        let base_pixels = Arc::new(image::RgbaImage::from_pixel(2, 1, image::Rgba([20, 50, 80, 255])));
+        let full_pixels = Arc::new(image::RgbaImage::from_pixel(2, 1, image::Rgba([220, 150, 80, 255])));
+        let surface = Surface {
+            first_index: 0, index_count: 3, visible: true, transparent: false,
+            diffuse: Some(Arc::clone(&base_pixels)), normal: None, emissive: None,
+            specular: None, gloss: None, opacity: None,
+        };
+        let mut full = surface.clone();
+        full.diffuse = Some(Arc::clone(&full_pixels));
+        let half = blend_prepared_damage(&[surface.clone()], &[full.clone()], 50).unwrap();
+        assert_eq!(half[0].diffuse.as_ref().unwrap().get_pixel(0, 0).0, [120, 100, 80, 255]);
+        assert_eq!(half[0].first_index, 0);
+        assert_eq!(half[0].index_count, 3);
+        assert!(Arc::ptr_eq(
+            blend_prepared_damage(&[surface.clone()], &[full.clone()], 0).unwrap()[0].diffuse.as_ref().unwrap(),
+            &base_pixels
+        ));
+        assert!(Arc::ptr_eq(
+            blend_prepared_damage(&[surface.clone()], &[full], 100).unwrap()[0].diffuse.as_ref().unwrap(),
+            &full_pixels
+        ));
+        assert!(blend_prepared_damage(&[surface], &[], 50).is_err());
+    }
+
     #[test]
     fn alternate_armor_diffuse_emission_preserves_base_color_and_caps_blowout() {
         let base = image::RgbaImage::from_pixel(2, 1, image::Rgba([70, 45, 30, 255]));
