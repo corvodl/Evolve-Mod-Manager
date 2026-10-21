@@ -1938,13 +1938,12 @@ fn preferred_render_source(source: &Path) -> PathBuf {
 /// `<PAK name>__<20-char id>/files` folder and build-collections.json.
 /// An archive can belong to multiple snapshots; that is not proof of one
 /// build, so only a single exact membership is selected automatically.
-fn update_layout_drag(
-    state: &mut State, index: usize, x: f32, y: f32,
-) -> Task<Message> {
+fn update_layout_drag(state: &mut State, index: usize, x: f32, y: f32) -> Task<Message> {
     let result = update(state, Message::GfxLayoutSelect(index));
     state.gfx_layout_x = format!("{x:.2}");
     state.gfx_layout_y = format!("{y:.2}");
-    state.gfx_status = "Placement moved on canvas; click Stage layout change to record an undoable edit.".into();
+    state.gfx_status =
+        "Placement moved on canvas; click Stage layout change to record an undoable edit.".into();
     result
 }
 
@@ -4078,15 +4077,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     })
                     .cloned()
             };
-            let library_root = state.library_catalog.as_ref().map(|catalog| PathBuf::from(&catalog.root));
-            let selected_build = resource_build(state).or_else(|| project.as_ref().and_then(|p| {
-                (p.source_build != "Unknown build" && !p.source_build.is_empty())
-                    .then(|| p.source_build.clone())
-            }));
+            let library_root = state
+                .library_catalog
+                .as_ref()
+                .map(|catalog| PathBuf::from(&catalog.root));
+            let selected_build = resource_build(state).or_else(|| {
+                project.as_ref().and_then(|p| {
+                    (p.source_build != "Unknown build" && !p.source_build.is_empty())
+                        .then(|| p.source_build.clone())
+                })
+            });
             state.gfx_busy = true;
             state.gfx_active = true;
             state.gfx_preview = None;
-            state.gfx_status = "Inspecting source GFX and resolving verified same-build imports...".into();
+            state.gfx_status =
+                "Inspecting source GFX and resolving verified same-build imports...".into();
             return Task::perform(
                 async move {
                     tokio::task::spawn_blocking(move || {
@@ -4126,18 +4131,28 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.gfx_live_status = "Read-only hierarchy inspector. A verified native Evolve GFx snapshot provider is not yet available; imported JSON is external data, not a live capture.".into();
         }
         Message::GfxImportUiSnapshot => {
-            return Task::perform(async {
-                tokio::task::spawn_blocking(|| native_export_picker("file"))
-                    .await.ok().flatten()
-            },Message::GfxUiSnapshotPicked);
+            return Task::perform(
+                async {
+                    tokio::task::spawn_blocking(|| native_export_picker("file"))
+                        .await
+                        .ok()
+                        .flatten()
+                },
+                Message::GfxUiSnapshotPicked,
+            );
         }
         Message::GfxUiSnapshotPicked(selected) => {
-            let Some(source)=selected else {return Task::none();};
-            return Task::perform(async move {
-                tokio::task::spawn_blocking(move ||
-                    gfx_live_inspector::from_file(&source))
-                    .await.unwrap_or_else(|e|Err(e.to_string()))
-            },Message::GfxUiSnapshotLoaded);
+            let Some(source) = selected else {
+                return Task::none();
+            };
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || gfx_live_inspector::from_file(&source))
+                        .await
+                        .unwrap_or_else(|e| Err(e.to_string()))
+                },
+                Message::GfxUiSnapshotLoaded,
+            );
         }
         Message::GfxUiSnapshotLoaded(result) => match result {
             Ok(snapshot) => {
@@ -4152,13 +4167,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.gfx_live_status = format!("Cannot inspect UI hierarchy: {error}");
             }
         },
-        Message::GfxToggleLayoutRaster => state.gfx_layout_show_raster = !state.gfx_layout_show_raster,
+        Message::GfxToggleLayoutRaster => {
+            state.gfx_layout_show_raster = !state.gfx_layout_show_raster
+        }
         Message::GfxToggleLayout => {
             state.gfx_layout_open = !state.gfx_layout_open;
             if state.gfx_layout_open && state.gfx_layout_selected.is_none() {
-                if let Some(index) = state.gfx_session.as_ref().and_then(|s| {
-                    s.layers.iter().position(|layer| layer.editable)
-                }) {
+                if let Some(index) = state
+                    .gfx_session
+                    .as_ref()
+                    .and_then(|s| s.layers.iter().position(|layer| layer.editable))
+                {
                     return update(state, Message::GfxLayoutSelect(index));
                 }
             }
@@ -4176,7 +4195,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::GfxLayoutDragged(index, dx, dy) => {
             if !state.gfx_busy && dx.is_finite() && dy.is_finite() {
-                let Some(layer) = state.gfx_session.as_ref().and_then(|s| s.layers.get(index)) else {
+                let Some(layer) = state.gfx_session.as_ref().and_then(|s| s.layers.get(index))
+                else {
                     return Task::none();
                 };
                 if layer.editable && layer.bounds.is_some() {
@@ -4200,30 +4220,42 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::GfxLayoutVisible(visible) => state.gfx_layout_visible = visible,
         Message::GfxStageLayout => {
-            let Some(layer) = state.gfx_layout_selected
+            let Some(layer) = state
+                .gfx_layout_selected
                 .and_then(|i| state.gfx_session.as_ref()?.layers.get(i))
-            else { return Task::none(); };
+            else {
+                return Task::none();
+            };
             if !layer.editable || state.gfx_busy {
                 state.gfx_status = "Select a verified editable root first-frame placement.".into();
                 return Task::none();
             }
             let read = |value: &str| value.trim().parse::<f32>().ok().filter(|n| n.is_finite());
             let values = [
-                read(&state.gfx_layout_x), read(&state.gfx_layout_y),
-                read(&state.gfx_layout_sx), read(&state.gfx_layout_sy),
+                read(&state.gfx_layout_x),
+                read(&state.gfx_layout_y),
+                read(&state.gfx_layout_sx),
+                read(&state.gfx_layout_sy),
                 read(&state.gfx_layout_rotation),
             ];
             let [Some(x), Some(y), Some(sx), Some(sy), Some(rotation)] = values else {
-                state.gfx_status = "Enter finite numeric position, scale and rotation values.".into();
+                state.gfx_status =
+                    "Enter finite numeric position, scale and rotation values.".into();
                 return Task::none();
             };
-            return update(state, Message::GfxAction(gfx_editor::Action::StageLayout(
-                evolve_core::LayoutEdit {
-                    depth: layer.depth, character: layer.character, x, y,
-                    scale_x: sx / 100., scale_y: sy / 100., rotation,
+            return update(
+                state,
+                Message::GfxAction(gfx_editor::Action::StageLayout(evolve_core::LayoutEdit {
+                    depth: layer.depth,
+                    character: layer.character,
+                    x,
+                    y,
+                    scale_x: sx / 100.,
+                    scale_y: sy / 100.,
+                    rotation,
                     visible: state.gfx_layout_visible,
-                },
-            )));
+                })),
+            );
         }
         Message::GfxPickReplacement => {
             return Task::perform(
