@@ -345,7 +345,7 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
             .spacing(7),
         );
         entries = entries.push(
-            text("Uses Kala's original CDF weapon visibility groups and distinct blue/red animated tubing materials. GlowAmount=3 is retained; a modest 1.25× preview gain offsets missing in-game HDR bloom. Arm diffuse and source assets are unchanged.")
+            text("Uses Kala's original blue/red animated tubing materials. Default preview brightness is calibrated per state (Banshee 0.3×, Armor Reducer 4× relative to GlowAmount); the normal slider starts at 1×. The original DDS, UVs and diffuse are unchanged.")
                 .size(11)
                 .style(design::muted),
         );
