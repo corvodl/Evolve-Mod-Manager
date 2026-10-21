@@ -230,7 +230,7 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
 fn equipment_browser(state: &State) -> Element<'_, Message> {
     let mut entries = column![
         text("MODEL OPTIONS").size(15),
-        text("Equipment, full armor glow, and authored damage blend affect the viewport and CDF FBX export. Original game files remain unchanged.")
+        text("Equipment changes affect the viewport and CDF FBX export. Stage 2 monsters also support armor glow and damage blend. Original assets remain unchanged.")
             .size(11).style(design::muted),
     ].spacing(10);
     let monster_selected = state.equipment_source.as_ref().is_some_and(|path| {
@@ -239,7 +239,14 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
             .to_ascii_lowercase()
             .contains("/monsters/")
     });
-    if monster_selected {
+    if monster_selected && state.cdf_legacy_2012 {
+        entries = entries.push(
+            text("2012 original monster: Stage 2 armor glow and damage blend are not available.")
+                .size(11)
+                .style(design::muted),
+        );
+    }
+    if monster_selected && !state.cdf_legacy_2012 {
         entries = entries.push(
             design::button(if state.full_armor_glow {
                 "☑ Full armor glow"
@@ -270,7 +277,7 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
                         state.damage_blend_percent,
                         Message::ViewerDamageBlendChanged
                     )
-                    .on_release(Message::ViewerPreviewStaticCdf)
+                    .on_release(Message::ViewerDamageBlendCommit)
                     .width(Fill),
                 ]
                 .spacing(8),
