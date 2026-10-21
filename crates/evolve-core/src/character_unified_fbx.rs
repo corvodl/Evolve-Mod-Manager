@@ -155,6 +155,18 @@ fn plan_parts(
     Ok((skeleton, skeleton_ref, skin_set, parts))
 }
 
+const SOURCE_EMISSION_ROLES: &[&str] = &[
+    "emissive",
+    "emittance",
+    "emission",
+    "glow",
+    "emissivecolor",
+    "emissionmap",
+    "glowmap",
+    "selfillum",
+    "selfillumination",
+];
+
 #[derive(Default)]
 struct AuthoredMaps {
     diffuse: Option<PathBuf>,
@@ -522,11 +534,10 @@ fn exact_single_slot_maps_with_scope(
     let legacy_decal = leaf.shader.eq_ignore_ascii_case("Illum")
         && !leaf.alpha_glow
         && leaf.glow_amount.is_some_and(|amount| amount > 0.0)
-        && !leaf.maps.iter().any(|map| {
-            matches!(map.role.as_str(),
-                "emissive" | "emittance" | "emission" | "glow" | "emissivecolor"
-                | "emissionmap" | "glowmap" | "selfillum" | "selfillumination")
-        });
+        && !leaf
+            .maps
+            .iter()
+            .any(|map| SOURCE_EMISSION_ROLES.contains(&map.role.as_str()));
     for item in &document.slots[0].maps {
         let target = match item.role.as_str() {
             "diffuse" => &mut maps.diffuse,
@@ -601,11 +612,10 @@ fn exact_multi_slot_materials_with_scope(
         let legacy_decal = leaf.shader.eq_ignore_ascii_case("Illum")
             && !leaf.alpha_glow
             && leaf.glow_amount.is_some_and(|amount| amount > 0.0)
-            && !leaf.maps.iter().any(|map| {
-                matches!(map.role.as_str(),
-                    "emissive" | "emittance" | "emission" | "glow" | "emissivecolor"
-                    | "emissionmap" | "glowmap" | "selfillum" | "selfillumination")
-            });
+            && !leaf
+            .maps
+            .iter()
+            .any(|map| SOURCE_EMISSION_ROLES.contains(&map.role.as_str()));
         for map in &leaf.maps {
             let role = match map.role.as_str() {
                 "diffuse" => 0,
