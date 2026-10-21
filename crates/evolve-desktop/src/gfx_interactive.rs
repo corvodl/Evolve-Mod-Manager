@@ -239,7 +239,7 @@ mod tests {
     fn valid_gfx_keeps_bytecode_and_tags_when_converted_for_runtime() {
         // Minimal SWF frame header and one DoAction tag, deliberately without
         // invoking a player or requiring copyrighted game files.
-        let mut bits = vec![0u8; 5 + 4 * 17];
+        let mut bits = [0u8; 5 + 4 * 17];
         let mut put = |offset: usize, width: usize, value: u32| {
             for n in 0..width {
                 bits[offset + n] = ((value >> (width - 1 - n)) & 1) as u8;
