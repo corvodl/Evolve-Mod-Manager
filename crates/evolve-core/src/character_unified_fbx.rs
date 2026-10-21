@@ -1633,6 +1633,90 @@ mod tests {
         assert_eq!(fs::read(original).unwrap(), b"original binding");
     }
 
+    /// Minimal validated CrChF MtlName record; uses the same compiled
+    /// material table structure recognized by the GPU viewer.
+    fn source_mesh_with_mtl_names(names: &[&str]) -> Vec<u8> {
+        let mut bytes = vec![0u8; 32 + names.len() * 16];
+        bytes[..5].copy_from_slice(b"CrChF");
+        bytes[8..12].copy_from_slice(&(names.len() as u32).to_le_bytes());
+        bytes[12..16].copy_from_slice(&32u32.to_le_bytes());
+        for (i, name) in names.iter().enumerate() {
+            assert!(name.len() < 127);
+            let at = 32 + i * 16;
+            let offset = bytes.len();
+            bytes[at..at + 4].copy_from_slice(&0x08021014u32.to_le_bytes());
+            bytes[at + 8..at + 12].copy_from_slice(&132u32.to_le_bytes());
+            bytes[at + 12..at + 16].copy_from_slice(&(offset as u32).to_le_bytes());
+            let mut name_record = vec![0u8; 132];
+            name_record[..name.len()].copy_from_slice(name.as_bytes());
+            bytes.extend_from_slice(&name_record);
+        }
+        bytes
+    }
+
+    #[test]
+    fn emet_offhand_part_uses_authored_mtl_name_before_same_stem() {
+        let source = tempfile::tempdir().unwrap();
+        let folder = source.path().join("characters/hunters/merc_emet");
+        fs::create_dir_all(&folder).unwrap();
+        // Emet's CDF attachment is named "oh", which is *not* the material
+        // filename. The original cooked mesh points at emet_3o.mtl.
+        let part = folder.join("oh.skinm");
+        fs::write(&part, source_mesh_with_mtl_names(&["emet_3o"])).unwrap();
+        fs::write(folder.join("emet_3o.mtl"),
+            br#"<Material Name="Emet"><SubMaterials>
+               <Material Name="Body" Shader="Illum"/>
+               <Material Name="Equipment" Shader="Illum"/>
+               </SubMaterials></Material>"#).unwrap();
+        // This same-stem file is deliberately not the compiled source
+        // material; finding it first would silently assign wrong subset IDs.
+        fs::write(folder.join("oh.mtl"), br#"<Material Name="Wrong"/>"#).unwrap();
+        let inventory = crate::scan_directory(source.path()).unwrap();
+        let (virtual_name, file) = original_model_material(
+            source.path(), &part, &inventory, None,
+        ).unwrap().unwrap();
+        assert_eq!(virtual_name.to_ascii_lowercase(),
+            "characters/hunters/merc_emet/emet_3o.mtl");
+        assert_eq!(file, fs::canonicalize(folder.join("emet_3o.mtl")).unwrap());
+        let slots = exact_multi_slot_materials_with_scope(
+            source.path(), &part, &inventory, None, None
+        ).unwrap().unwrap();
+        assert_eq!(slots.len(), 2);
+        assert_eq!(slots[0].name, "Body");
+        assert_eq!(slots[1].name, "Equipment");
+        // Explicit per-attachment CDF material always wins over MtlName.
+        let (explicit, _) = original_model_material(
+            source.path(), &part, &inventory, Some("oh.mtl"),
+        ).unwrap().unwrap();
+        assert_eq!(explicit.to_ascii_lowercase(),
+            "characters/hunters/merc_emet/oh.mtl");
+    }
+
+    #[test]
+    fn compiled_material_name_rejects_conflicts_without_borrowing_another_actor() {
+        let source = tempfile::tempdir().unwrap();
+        let folder = source.path().join("characters/hunters/merc_emet");
+        let other = source.path().join("characters/hunters/merc_other");
+        fs::create_dir_all(&folder).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        let part = folder.join("oh.skinm");
+        fs::write(&part, source_mesh_with_mtl_names(&["emet_3o"])).unwrap();
+        fs::write(other.join("emet_3o.mtl"), b"<Material/>").unwrap();
+        let inventory = crate::scan_directory(source.path()).unwrap();
+        assert!(original_model_material(source.path(), &part, &inventory, None)
+            .unwrap().is_none());
+        fs::write(folder.join("emet_3o.mtl"), b"<Material/>").unwrap();
+        fs::write(folder.join("emet_alt.mtl"), b"<Material/>").unwrap();
+        fs::write(&part, source_mesh_with_mtl_names(&["emet_3o", "emet_alt"])).unwrap();
+        let inventory = crate::scan_directory(source.path()).unwrap();
+        assert!(original_model_material(source.path(), &part, &inventory, None)
+            .unwrap_err().contains("conflicting"));
+        assert!(compiled_material_names(&source_mesh_with_mtl_names(
+            &["characters\\hunters\\merc_emet\\emet_3o"]
+        )).unwrap()[0].ends_with("emet_3o.mtl"));
+        assert!(compiled_material_names(b"invalid legacy stream").unwrap().is_empty());
+    }
+
     #[test]
     fn fbx_source_material_texture_matches_viewer_relative_highest_mip() {
         let root = tempfile::tempdir().unwrap();
