@@ -53,15 +53,16 @@ fn is_face(name: &str, binding: &str) -> bool {
         "face",
         "expression",
     ];
-    let face_folder = path.contains("/faces/")
-        || path.contains("/expressions/")
-        || path.contains("/expression/");
+    let face_folder =
+        path.contains("/faces/") || path.contains("/expressions/") || path.contains("/expression/");
     let neutral = ["neutral", "normal", "default"];
     tokens.iter().any(|token| named.contains(&token.as_str()))
         || face_folder
         || (tokens.len() == 1 && neutral.contains(&tokens[0].as_str()))
         || (tokens.iter().any(|token| neutral.contains(&token.as_str()))
-            && tokens.iter().any(|token| token == "face" || token == "expression"))
+            && tokens
+                .iter()
+                .any(|token| token == "face" || token == "expression"))
 }
 
 fn is_beacon(name: &str, binding: &str) -> bool {
@@ -188,10 +189,22 @@ mod tests {
     }
     #[test]
     fn generic_body_default_and_head_default_are_not_facial_expressions() {
-        assert!(!is_face("body_default", "characters/hunters/merc_emet/emet_body.skin"));
-        assert!(!is_face("head_default", "characters/hunters/merc_emet/emet_head.skin"));
-        assert!(is_face("neutral", "characters/hunters/merc_emet/neutral.skin"));
-        assert!(is_face("face_default", "characters/hunters/merc_emet/face_default.skin"));
+        assert!(!is_face(
+            "body_default",
+            "characters/hunters/merc_emet/emet_body.skin"
+        ));
+        assert!(!is_face(
+            "head_default",
+            "characters/hunters/merc_emet/emet_head.skin"
+        ));
+        assert!(is_face(
+            "neutral",
+            "characters/hunters/merc_emet/neutral.skin"
+        ));
+        assert!(is_face(
+            "face_default",
+            "characters/hunters/merc_emet/face_default.skin"
+        ));
     }
     #[test]
     fn refuses_invented_face_and_cross_character_options() {
