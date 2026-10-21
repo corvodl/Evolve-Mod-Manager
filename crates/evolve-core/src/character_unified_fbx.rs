@@ -1686,6 +1686,60 @@ mod tests {
     }
 
     #[test]
+    fn emet_multi_slot_mtl_can_resolve_from_verified_same_build_pak() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("characters/hunters/merc_emet");
+        fs::create_dir_all(&folder).unwrap();
+        let part = folder.join("oh.skinm");
+        fs::write(&part, source_mesh_with_mtl_names(&["emet_3o"])).unwrap();
+        let inventory = crate::scan_directory(root.path()).unwrap();
+        let library = tempfile::tempdir().unwrap();
+        let archive_id = "11111111111111111111";
+        let archive = library.path().join(format!("ui_characters.pak__{archive_id}"));
+        let virtual_mtl = "characters/hunters/merc_emet/emet_3o.mtl";
+        let mtl = archive.join("files").join(virtual_mtl);
+        fs::create_dir_all(mtl.parent().unwrap()).unwrap();
+        let xml = br#"<Material Name="Emet"><SubMaterials>
+            <Material Name="slot0" Shader="Illum"/>
+            <Material Name="slot1" Shader="Illum"/>
+            </SubMaterials></Material>"#;
+        fs::write(&mtl, xml).unwrap();
+        fs::write(archive.join("asset-library.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version":1,"name":"ui_characters.pak",
+                "source":"C:/Game/ui_characters.pak",
+                "entries":[{"path":virtual_mtl,"bytes":xml.len()}]
+            })).unwrap(),
+        ).unwrap();
+        fs::write(library.path().join("build-collections.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version":1,
+                "builds":{"stage-two":{
+                    "label":"Stage 2",
+                    "members":{archive_id:{}}
+                }}
+            })).unwrap(),
+        ).unwrap();
+        let scope = ImportedTextureScope {
+            root: library.path().to_path_buf(),
+            build: Some("Stage 2".into()),
+        };
+        let slots = exact_multi_slot_materials_with_scope(
+            root.path(), &part, &inventory, None, Some(&scope),
+        ).unwrap().unwrap();
+        assert_eq!(slots.len(), 2);
+        assert_eq!(slots[0].name, "slot0");
+        assert_eq!(slots[1].name, "slot1");
+        let wrong_build = ImportedTextureScope {
+            root: library.path().to_path_buf(),
+            build: Some("Legacy 2012".into()),
+        };
+        assert!(original_model_material_with_scope(
+            root.path(), &part, &inventory, None, Some(&wrong_build),
+        ).unwrap().is_none());
+    }
+
+    #[test]
     fn compiled_material_name_rejects_conflicts_without_borrowing_another_actor() {
         let source = tempfile::tempdir().unwrap();
         let folder = source.path().join("characters/hunters/merc_emet");
