@@ -96,7 +96,8 @@ pub use library_catalog::{
 };
 pub use library_import::{
     LibraryBatchImportReport, LibraryImportFailure, LibraryImportReport, import_signed_library_pak,
-    import_signed_library_selection,
+    import_signed_library_pak_with_keys, import_signed_library_selection,
+    import_signed_library_selection_with_keys,
 };
 pub use model::{
     ModelError, ModelInfo, RenderMesh, export_model_obj, has_original_mesh_subset_table,
