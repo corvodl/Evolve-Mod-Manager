@@ -43,6 +43,11 @@ fn points(layer: &StaticLayer, scale: f32, offset: Point) -> Option<[Point; 4]> 
     }))
 }
 fn inside(p: Point, poly: [Point; 4]) -> bool {
+    let area = (poly[1].x - poly[0].x) * (poly[2].y - poly[0].y)
+        - (poly[1].y - poly[0].y) * (poly[2].x - poly[0].x);
+    if area.abs() < 0.001 {
+        return false; // Degenerate authored RECT is never an infinite hit target.
+    }
     // Convex rotated quad, rejecting points outside without approximating a
     // sprite/bitmap rectangle not specified by authored SWF shape bounds.
     let mut sign = 0f32;
@@ -198,5 +203,6 @@ mod tests {
         let box_points = points(&layer, 1., Point::ORIGIN).unwrap();
         assert!(inside(Point::new(85., 100.), box_points));
         assert!(!inside(Point::new(140., 100.), box_points));
+        assert!(!inside(Point::new(500., 500.), [Point::ORIGIN; 4]));
     }
 }
