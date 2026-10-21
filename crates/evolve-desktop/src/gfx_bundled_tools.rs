@@ -13,6 +13,35 @@ fn regular_tool(directory: &Path, relative: &str) -> Option<PathBuf> {
     }
     fs::canonicalize(candidate).ok()
 }
+/// A status check, not an execution or signature verification. Installer and
+/// in-app downloads use pinned archives with SHA-256 validation.
+pub fn valid_ffdec(path: &str) -> Option<PathBuf> {
+    let candidate = Path::new(path.trim());
+    let filename = candidate.file_name()?.to_str()?;
+    if !filename.eq_ignore_ascii_case("ffdec-cli.exe")
+        && !filename.eq_ignore_ascii_case("ffdec.jar")
+    {
+        return None;
+    }
+    if !candidate.is_absolute() { return None; }
+    let info = fs::symlink_metadata(candidate).ok()?;
+    if !info.file_type().is_file() || info.len() == 0 {
+        return None;
+    }
+    fs::canonicalize(candidate).ok()
+}
+pub fn valid_ruffle(path: &str) -> Option<PathBuf> {
+    let candidate = Path::new(path.trim());
+    if !candidate.is_absolute()
+        || !candidate.file_name()?.eq_ignore_ascii_case("ruffle.exe")
+    {
+        return None;
+    }
+    let info = fs::symlink_metadata(candidate).ok()?;
+    if !info.file_type().is_file() || info.len() == 0 { return None; }
+    fs::canonicalize(candidate).ok()
+}
+
 pub fn fill_empty_paths_at(preferences: &mut Preferences, executable_dir: &Path) {
     if preferences.ffdec_executable.trim().is_empty() {
         if let Some(path) = regular_tool(executable_dir, "third_party/FFDec/ffdec-cli.exe") {
