@@ -68,7 +68,7 @@ fn dropdown(state: &State) -> Option<Element<'_, Message>> {
         "Model" => column![
             design::button("Retry selected preview").on_press(Message::MenuCommand(Box::new(Message::ViewerPreviewSelected))),
             design::button("Inspect CDF").on_press(Message::MenuCommand(Box::new(Message::StartCdfInspection))),
-            design::button("Character equipment").on_press(Message::MenuCommand(Box::new(
+            design::button("Model Options").on_press(Message::MenuCommand(Box::new(
                 Message::ViewerSidebarSelect(ViewerSidebarTab::Equipment)
             ))),
             design::button("Preview CDF assembly (static)").on_press(Message::MenuCommand(Box::new(Message::ViewerPreviewStaticCdf))),
@@ -229,13 +229,32 @@ fn animation_browser(state: &State) -> Element<'_, Message> {
 
 fn equipment_browser(state: &State) -> Element<'_, Message> {
     let mut entries = column![
-        text("CHARACTER EQUIPMENT").size(15),
-        text("Preview exact CDF equipment alternatives. Each source mesh, material and authored original stays unchanged.")
+        text("MODEL OPTIONS").size(15),
+        text("Equipment swaps and full-armor glow affect the viewport and the exported CDF assembly. Original source assets remain unchanged.")
             .size(11).style(design::muted),
     ].spacing(10);
+    let monster_selected = state
+        .equipment_source
+        .as_ref()
+        .is_some_and(|path| path.to_string_lossy().replace('\\', "/").to_ascii_lowercase().contains("/monsters/"));
+    if monster_selected {
+        entries = entries.push(
+            design::button(if state.full_armor_glow {
+                "☑ Full armor glow"
+            } else {
+                "☐ Full armor glow"
+            })
+            .on_press_maybe((!state.busy).then_some(Message::ViewerToggleMonsterGlow)),
+        );
+        entries = entries.push(
+            text("Uses this monster's exact [name]_glow_diff DDS as an emissive overlay. Requires a complete imported DDS set; export with Rigged + Embedded textures.")
+                .size(11)
+                .style(design::muted),
+        );
+    }
     if state.equipment_slots.is_empty() {
         entries = entries.push(
-            text("Open a character .cdf to load available equipment. Verified interchangeable left/right arms appear separately.")
+            text("Open a character .cdf to choose model options. Verified interchangeable left/right arms appear separately.")
                 .size(12).style(design::muted)
         );
     }
@@ -313,7 +332,7 @@ fn browser(state: &State) -> Element<'_, Message> {
     let active = state.viewer_sidebar_active;
     let mut tabs = row![
         dock_tab("Files", ViewerSidebarTab::Files, active),
-        dock_tab("Equipment", ViewerSidebarTab::Equipment, active),
+        dock_tab("Model Options", ViewerSidebarTab::Equipment, active),
     ]
     .spacing(4);
     if state.viewer_sidebar_animations {
@@ -891,6 +910,13 @@ pub(super) fn export_dialog(state: &State) -> Element<'_, Message> {
             .on_input(Message::ExportFilterChanged),
         scrollable(picker).height(Length::Fixed(295.0)),
         flags,
+        text(if !state.equipment_overrides.is_empty() || state.full_armor_glow {
+            format!("Current Model Options: {} equipment override(s), full armor glow {}. Select only the active CDF to preserve these in FBX.",
+                state.equipment_overrides.len(),
+                if state.full_armor_glow { "ON" } else { "OFF" })
+        } else {
+            "Current Model Options: default equipment, armor glow off".to_owned()
+        }).size(11).style(design::muted),
         row![
             text(format!("Destination: {}", if state.export_parent.is_empty() { "Not selected" } else { &state.export_parent })).width(Fill),
             design::button("Browse folder…").on_press(Message::ExportBrowse("folder")),
