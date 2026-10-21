@@ -1040,12 +1040,12 @@ pub fn export_unified_cdf_fbx_options_with_glow(
     // rig all parts against that one original part-local skeleton instead
     // of allowing one part to use the 48-bone master and another 47.
     // No inference, fabricated joints or altered game file is involved.
-    let local_skeleton = if cdf_skeleton_bytes.starts_with(b"CryTek\\0\\0") {
+    let local_skeleton = if cdf_skeleton_bytes.starts_with(b"CryTek\0\0") {
         let mut candidate: Option<Vec<u8>> = None;
         let mut identical = true;
         for (_, path, _) in &parts {
             let raw = fs::read(path).map_err(|e| e.to_string())?;
-            if !raw.starts_with(b"CryTek\\0\\0") {
+            if !raw.starts_with(b"CryTek\0\0") {
                 identical = false;
                 break;
             }
@@ -1071,14 +1071,14 @@ pub fn export_unified_cdf_fbx_options_with_glow(
     // Blender will combine only identical rigs and retain distinct verified
     // historical armatures within the same FBX. No joint is discarded, added
     // or reassigned to make counts match.
-    let allow_distinct_historical_rigs = cdf_skeleton_bytes.starts_with(b"CryTek\\0\\0")
+    let allow_distinct_historical_rigs = cdf_skeleton_bytes.starts_with(b"CryTek\0\0")
         && parts.iter().all(|(_, path, _)| {
             fs::File::open(path)
                 .and_then(|mut file| {
                     use std::io::Read;
                     let mut magic = [0u8; 8];
                     file.read_exact(&mut magic)?;
-                    Ok(&magic == b"CryTek\\0\\0")
+                    Ok(&magic == b"CryTek\0\0")
                 })
                 .unwrap_or(false)
         });
