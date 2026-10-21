@@ -7247,15 +7247,26 @@ mod project_edit_tests {
     fn damage_slider_zero_and_full_reuse_loaded_materials_without_cdf_worker() {
         let path = PathBuf::from("characters/monsters/goliath/goliath3.cdf");
         let pixels = Arc::new(::image::RgbaImage::from_pixel(
-            1, 1, ::image::Rgba([20, 50, 80, 255]),
+            1,
+            1,
+            ::image::Rgba([20, 50, 80, 255]),
         ));
         let full_pixels = Arc::new(::image::RgbaImage::from_pixel(
-            1, 1, ::image::Rgba([230, 170, 80, 255]),
+            1,
+            1,
+            ::image::Rgba([230, 170, 80, 255]),
         ));
         let original = textured::Surface {
-            first_index: 0, index_count: 3, visible: true, transparent: false,
-            diffuse: Some(Arc::clone(&pixels)), normal: None, emissive: None,
-            specular: None, gloss: None, opacity: None,
+            first_index: 0,
+            index_count: 3,
+            visible: true,
+            transparent: false,
+            diffuse: Some(Arc::clone(&pixels)),
+            normal: None,
+            emissive: None,
+            specular: None,
+            gloss: None,
+            opacity: None,
         };
         let mut damaged = original.clone();
         damaged.diffuse = Some(Arc::clone(&full_pixels));
@@ -7270,7 +7281,10 @@ mod project_edit_tests {
         let _task = update(&mut state, Message::ViewerDamageBlendCommit);
         assert!(!state.busy, "100% must not spawn a CDF worker");
         assert!(Arc::ptr_eq(
-            state.cdf_surfaces.as_ref().unwrap()[0].diffuse.as_ref().unwrap(),
+            state.cdf_surfaces.as_ref().unwrap()[0]
+                .diffuse
+                .as_ref()
+                .unwrap(),
             &full_pixels,
         ));
         let _ = update(&mut state, Message::ViewerDamageBlendChanged(0));
@@ -7278,7 +7292,10 @@ mod project_edit_tests {
         assert!(!state.busy, "0% must not spawn a CDF worker");
         assert!(state.damage_blend_enabled, "slider must stay visible at 0%");
         assert!(Arc::ptr_eq(
-            state.cdf_surfaces.as_ref().unwrap()[0].diffuse.as_ref().unwrap(),
+            state.cdf_surfaces.as_ref().unwrap()[0]
+                .diffuse
+                .as_ref()
+                .unwrap(),
             &pixels,
         ));
     }
@@ -7295,16 +7312,23 @@ mod project_edit_tests {
             cdf_skeleton: "old.chr".into(),
             selected_skin_set: None,
             original_parts: vec!["body".into()],
-            vertices: 3, triangles: 1,
-            original_uv0_complete: true, original_normals_complete: true,
-            skeletal_animation_enabled: false, source_parts: vec![],
+            vertices: 3,
+            triangles: 1,
+            original_uv0_complete: true,
+            original_normals_complete: true,
+            skeletal_animation_enabled: false,
+            source_parts: vec![],
             geometry_parts: vec![evolve_core::AssemblyGeometry {
-                name: "body".into(), source: model.clone(),
-                vertex_first: 0, vertex_count: 3,
-                bone_socket: None, verified_skin_weights: false,
+                name: "body".into(),
+                source: model.clone(),
+                vertex_first: 0,
+                vertex_count: 3,
+                bone_socket: None,
+                verified_skin_weights: false,
             }],
             verified_bones: None,
-            skeleton_source: None, warnings: vec![],
+            skeleton_source: None,
+            warnings: vec![],
         };
         assert!(historical_2012_cdf(&report));
         let mut newer = original;
