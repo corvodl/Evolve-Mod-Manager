@@ -278,9 +278,18 @@ pub(super) fn sidebar_inspector(state: &State) -> Element<'_, Message> {
         // a missing MaterialReport does NOT mean their per-part source MTLs
         // and DDS maps failed. Show the actual verified GPU bindings.
         let visible = surfaces.iter().filter(|surface| surface.visible).count();
-        let textured = surfaces.iter().filter(|surface| surface.visible && surface.diffuse.is_some()).count();
-        let normal = surfaces.iter().filter(|surface| surface.visible && surface.normal.is_some()).count();
-        let emission = surfaces.iter().filter(|surface| surface.visible && surface.emissive.is_some()).count();
+        let textured = surfaces
+            .iter()
+            .filter(|surface| surface.visible && surface.diffuse.is_some())
+            .count();
+        let normal = surfaces
+            .iter()
+            .filter(|surface| surface.visible && surface.normal.is_some())
+            .count();
+        let emission = surfaces
+            .iter()
+            .filter(|surface| surface.visible && surface.emissive.is_some())
+            .count();
         summary = summary.push(
             text(format!(
                 "CDF original sections: {textured}/{visible} with decoded diffuse, {normal}/{visible} normal maps, {emission}/{visible} glow/emission maps"
