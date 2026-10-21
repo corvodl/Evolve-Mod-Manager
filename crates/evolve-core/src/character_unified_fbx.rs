@@ -399,6 +399,7 @@ pub(crate) fn standalone_authored_diffuse(
 /// Resolve authored CryEngine leaf maps for every original subset, including
 /// empty NoDraw leaves, without shifting indexes or borrowing a neighbor DDS.
 /// Distinct PNGs stay bound to the original material ID in Blender.
+#[cfg(test)]
 fn exact_multi_slot_materials(
     root: &Path,
     mesh_path: &Path,
