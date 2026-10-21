@@ -3,7 +3,7 @@
 //! these binaries; discovery is best-effort and never downloads or installs.
 use crate::settings::Preferences;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 fn regular_tool(directory: &Path, relative: &str) -> Option<PathBuf> {
     let candidate = directory.join(relative);
