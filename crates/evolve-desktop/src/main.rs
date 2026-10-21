@@ -261,6 +261,8 @@ struct State {
     equipment_overrides: EquipmentOverrides,
     full_armor_glow: bool,
     damage_blend_percent: u8,
+    /// CDF source-part completion tracked by the loading worker.
+    viewer_load_progress: Option<Arc<AtomicUsize>>,
     viewer_from_library: bool,
     developer_password: String,
     developer_status: String,
@@ -415,6 +417,7 @@ enum Operation {
         EquipmentOverrides,
         bool,
         u8,
+        Arc<AtomicUsize>,
     ),
     ResolveCdf(PathBuf, PathBuf),
     InspectModel(PathBuf),
@@ -1012,7 +1015,9 @@ impl Operation {
                 equipment,
                 glow,
                 damage_percent,
+                progress,
             ) => {
+                progress.store(5, Ordering::Relaxed);
                 crash_diagnostics::record("cdf_worker_begin", "reading authored CDF attachments");
                 let (mesh, report) = read_static_cdf_assembly_with_equipment(
                     &source,
@@ -1031,13 +1036,15 @@ impl Operation {
                         report.triangles
                     ),
                 );
+                progress.store(35, Ordering::Relaxed);
                 crash_diagnostics::record("cdf_materials_begin", "loading authored material maps");
-                let (mut surfaces, mut warnings) = assembly_materials::load(
+                let (mut surfaces, mut warnings) = assembly_materials::load_with_progress(
                     &report,
                     &inventory,
                     imported.as_deref(),
                     build.as_deref(),
                     &cache,
+                    Some(&progress),
                 );
                 if damage_percent > 0 {
                     let count = assembly_materials::apply_damage_blend(
@@ -1053,40 +1060,48 @@ impl Operation {
                         "Original damage BLENDLAYER preview: {count} verified monster material ranges, {damage_percent}% intensity; no transparency changes"
                     ));
                 }
+                progress.store(90, Ordering::Relaxed);
                 if glow {
-                    let texture = evolve_core::monster_glow_path(&source, &inventory)?
-                        .ok_or("No original full-armor glow DDS found for this monster/stage")?;
-                    let (_, rgba) = decode_dds_rgba(&texture)
-                        .map_err(|e| format!("Cannot decode original full-armor glow DDS: {e}"))?;
-                    let emissive = Arc::new(rgba);
-                    let cdf_dir = source
-                        .strip_prefix(&inventory.root)
-                        .map_err(|_| "Monster CDF outside indexed source root")?
-                        .parent()
-                        .ok_or("Selected CDF lacks a character folder")?
-                        .to_string_lossy()
-                        .replace('\\', "/")
-                        .to_ascii_lowercase();
-                    let owner = cdf_dir
-                        .find("characters/monsters/")
-                        .map(|position| &cdf_dir[position..])
-                        .ok_or("Selected CDF is not a monster")?;
-                    let mut mapped = 0usize;
-                    for (part, surface) in report.source_parts.iter().zip(surfaces.iter_mut()) {
-                        let binding = part.binding.replace('\\', "/").to_ascii_lowercase();
-                        if surface.visible && surface.diffuse.is_some() && binding.contains(owner) {
-                            surface.emissive = Some(emissive.clone());
-                            mapped += 1;
-                        }
+                    match evolve_core::monster_glow_path(&source, &inventory)? {
+                        Some(texture) => match decode_dds_rgba(&texture) {
+                            Ok((_, rgba)) => {
+                                let cdf_dir = source
+                                    .strip_prefix(&inventory.root)
+                                    .map_err(|_| "Monster CDF outside indexed source root")?
+                                    .parent()
+                                    .ok_or("Selected CDF lacks a character folder")?
+                                    .to_string_lossy()
+                                    .replace('\\', "/")
+                                    .to_ascii_lowercase();
+                                let owner = cdf_dir
+                                    .find("characters/monsters/")
+                                    .map(|position| &cdf_dir[position..])
+                                    .ok_or("Selected CDF is not a monster")?;
+                                let mut mapped = 0usize;
+                                for (part, surface) in report.source_parts.iter().zip(surfaces.iter_mut()) {
+                                    let binding = part.binding.replace('\\', "/").to_ascii_lowercase();
+                                    if surface.visible && binding.contains(owner) {
+                                        if let Some(base) = surface.diffuse.as_ref() {
+                                            let pixels = assembly_materials::armor_emission(base, &rgba)?;
+                                            surface.emissive = Some(Arc::new(pixels));
+                                            mapped += 1;
+                                        }
+                                    }
+                                }
+                                warnings.push(format!(
+                                    "Full armor glow: {mapped} verified monster sections, masked to protect the original diffuse colors"
+                                ));
+                            }
+                            Err(error) => warnings.push(format!(
+                                "Full armor glow unavailable for this monster: {error}; original diffuse preserved"
+                            )),
+                        },
+                        None => warnings.push(
+                            "Full armor glow enabled, but this variant has no verified original glow DDS; previewing base materials".into(),
+                        ),
                     }
-                    if mapped == 0 {
-                        return Err("Full armor glow has no original monster mesh section with a diffuse map".into());
-                    }
-                    warnings.push(format!(
-                        "Full armor glow on: verified original {} mapped to {mapped} character mesh sections (equipment from other folders unchanged)",
-                        texture.display()
-                    ));
                 }
+                progress.store(98, Ordering::Relaxed);
                 crash_diagnostics::record(
                     "cdf_worker_ready",
                     &format!(
@@ -1738,6 +1753,9 @@ fn launch(state: &mut State, operation: Operation) -> Task<Message> {
         return Task::none();
     }
     state.busy = true;
+    if !matches!(&operation, Operation::BuildStaticCdf(..)) {
+        state.viewer_load_progress = None;
+    }
     state.status = "Working on explicitly selected local files...".into();
     Task::perform(
         async move {
@@ -1862,6 +1880,7 @@ fn clear_viewer_asset(state: &mut State) {
     state.equipment_overrides.clear();
     state.full_armor_glow = false;
     state.damage_blend_percent = 0;
+    state.viewer_load_progress = None;
     state.texture_preview = None;
     state.texture = None;
     state.material_report = None;
@@ -3335,7 +3354,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             if state.equipment_source.as_ref() != Some(&source) {
                 state.equipment_overrides.clear();
-                state.full_armor_glow = false;
+                // Armor glow is the normal monster preview state. Missing
+                // original glow DDS must not block regular diffuse rendering.
+                let virtual_source = entry.relative_path.replace('\\', "/").to_ascii_lowercase();
+                state.full_armor_glow = virtual_source.contains("characters/monsters/");
                 state.damage_blend_percent = 0;
                 state.equipment_source = Some(source.clone());
                 state.equipment_slots = read_cdf(&source)
@@ -3343,6 +3365,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .unwrap_or_default();
             }
             crash_diagnostics::record("cdf_preview_selected", &entry.relative_path);
+            let progress = Arc::new(AtomicUsize::new(0));
+            state.viewer_load_progress = Some(progress.clone());
             state.input = source.to_string_lossy().into_owned();
             state.texture_preview = None;
             state.status =
@@ -3359,6 +3383,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.equipment_overrides.clone(),
                 state.full_armor_glow,
                 state.damage_blend_percent,
+                progress,
             );
             return launch(state, operation);
         }
@@ -6809,7 +6834,7 @@ impl Desktop {
         } else {
             Subscription::none()
         };
-        let scan_progress = if self.state.scan_indexed.is_some() {
+        let scan_progress = if self.state.scan_indexed.is_some() || self.state.busy {
             iced::time::every(Duration::from_millis(250)).map(|_| Message::ScanPulse)
         } else {
             Subscription::none()
