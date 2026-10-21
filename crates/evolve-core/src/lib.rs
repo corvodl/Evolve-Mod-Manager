@@ -17,8 +17,8 @@ pub mod dds;
 pub mod dependency_graph;
 pub mod export_bundle;
 pub mod fbx;
-pub mod glb;
 pub mod gfx;
+pub mod glb;
 pub mod inventory;
 pub mod legacy_rig;
 pub mod level_export;
@@ -85,8 +85,8 @@ pub use export_bundle::{ExportBundleOptions, ExportBundleReport, export_bundle};
 pub use fbx::{
     FbxError, FbxReport, convert_glb_to_fbx, convert_glb_to_fbx_with_options, validate_glb_source,
 };
-pub use glb::{GlbError, export_model_glb, geometry_glb_bytes};
 pub use gfx::{GfxError, GfxInfo, GfxResource, inspect_gfx};
+pub use glb::{GlbError, export_model_glb, geometry_glb_bytes};
 pub use inventory::{
     AssetEntry, AssetKind, Inventory, InventoryError, MAX_ENTRIES, scan_directory,
     scan_directory_with_progress, write_inventory_json,
