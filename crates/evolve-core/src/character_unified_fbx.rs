@@ -241,6 +241,38 @@ fn exact_original_texture(
     Ok(None)
 }
 
+/// Source-exact full-armor monster glow. A glow asset must belong to the
+/// selected CDF's character/stage directory, and must have an indexed,
+/// manifest-verified texture (possibly from a matching imported DDS PAK).
+/// It is never selected by a global filename search.
+pub fn monster_glow_path(
+    cdf_source: &Path,
+    inventory: &Inventory,
+) -> Result<Option<PathBuf>, String> {
+    let root = fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
+    let source = fs::canonicalize(cdf_source).map_err(|e| e.to_string())?;
+    let relative = source.strip_prefix(&root).map_err(|_| "Monster CDF outside indexed assets")?;
+    let virtual_cdf = relative.to_string_lossy().replace('\\', "/");
+    let lower = virtual_cdf.to_ascii_lowercase();
+    if !(lower.starts_with("characters/monsters/")
+        || lower.contains("/characters/monsters/"))
+        || !lower.ends_with(".cdf")
+    {
+        return Ok(None);
+    }
+    let stem = source.file_stem().and_then(|s| s.to_str()).ok_or("Invalid monster CDF filename")?;
+    let imported = texture_scope(inventory);
+    for suffix in ["_glow_diff.tif", "_glow.tif"] {
+        let authored = format!("{stem}{suffix}");
+        if let Some(found) = exact_original_texture(
+            &root, inventory, &virtual_cdf, &authored, imported.as_ref(),
+        )? {
+            return Ok(Some(found));
+        }
+    }
+    Ok(None)
+}
+
 /// A CDF can bind Scorpid3_Rig.chr while its original MTL is
 /// Scorpid3.mtl. Source attachment overrides outrank all fallbacks. For a
 /// true CryTek 0x745 source only, allow the historical owning variant and
@@ -574,8 +606,43 @@ pub fn export_unified_cdf_fbx_options(
     equipment: &EquipmentOverrides,
     embed_textures: bool,
 ) -> Result<UnifiedCdfFbxReport, String> {
+    export_unified_cdf_fbx_options_with_glow(
+        source, inventory, blender, destination, caf, equipment, embed_textures, false,
+    )
+}
+
+/// Export selected CDF parts/equipment, including the optional source-exact
+/// full-armor glow emission used in Model Options.
+pub fn export_unified_cdf_fbx_options_with_glow(
+    source: &Path,
+    inventory: &Inventory,
+    blender: &Path,
+    destination: &Path,
+    caf: Option<&Path>,
+    equipment: &EquipmentOverrides,
+    embed_textures: bool,
+    full_armor_glow: bool,
+) -> Result<UnifiedCdfFbxReport, String> {
     let root = fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
     let imported = texture_scope(inventory);
+    if full_armor_glow && !embed_textures {
+        return Err("Full-armor glow requires embedded textures in a rigged FBX".into());
+    }
+    let glow_png = if full_armor_glow {
+        let path = monster_glow_path(source, inventory)?
+            .ok_or("No exact full-armor glow DDS belongs to this monster and build")?;
+        Some(authored_png(&path, false).map_err(|e| format!("Full-armor glow DDS: {e}"))?)
+    } else {
+        None
+    };
+    let relative_cdf = fs::canonicalize(source)
+        .map_err(|e| e.to_string())?
+        .strip_prefix(&root)
+        .map_err(|_| "CDF outside indexed source root")?
+        .to_string_lossy()
+        .replace('\\', "/");
+    let monster_dir = relative_cdf.rsplit_once('/').map(|(dir, _)| format!("{dir}/"));
+    let mut applied_glow = false;
     if !destination.is_absolute()
         || !destination
             .extension()
@@ -675,7 +742,7 @@ pub fn export_unified_cdf_fbx_options(
                 .as_ref()
                 .is_some_and(|slots| slots.len() > 1)
         {
-            let slots = original_materials.ok_or_else(|| {
+            let mut slots = original_materials.ok_or_else(|| {
                 format!("CDF part {name} has several subsets but no original source MTL")
             })?;
             if source_subsets.iter().any(|(_, _, index)| *index == 255) {
@@ -683,6 +750,18 @@ pub fn export_unified_cdf_fbx_options(
             }
             if slots.iter().any(|slot| slot.diffuse.is_some()) {
                 diffuse_textured_parts += 1;
+            }
+            // Only original parts of THIS monster get the glow overlay;
+            // equipment bindings in other folders remain untouched.
+            if let (Some(glow), Some(owner)) = (&glow_png, &monster_dir)
+                && original
+                    .strip_prefix(&root)
+                    .is_ok_and(|relative| relative.to_string_lossy().replace('\\', "/").starts_with(owner))
+            {
+                for slot in slots.iter_mut().filter(|slot| slot.diffuse.is_some() && !slot.no_draw) {
+                    slot.emissive = Some(glow.clone());
+                    applied_glow = true;
+                }
             }
             glb = embed_original_material_slots_glb(&glb, &source_subsets, &slots)
                 .map_err(|e| format!("CDF part {name} original multi-material: {e}"))?;
@@ -704,11 +783,20 @@ pub fn export_unified_cdf_fbx_options(
                 .as_deref()
                 .map(|f| authored_png(f, true))
                 .transpose()?;
-            let emissive = maps
+            let mut emissive = maps
                 .emissive
                 .as_deref()
                 .map(|f| authored_png(f, false))
                 .transpose()?;
+            if let (Some(glow), Some(owner)) = (&glow_png, &monster_dir)
+                && diffuse.is_some()
+                && original
+                    .strip_prefix(&root)
+                    .is_ok_and(|relative| relative.to_string_lossy().replace('\\', "/").starts_with(owner))
+            {
+                emissive = Some(glow.clone());
+                applied_glow = true;
+            }
             let specular = maps
                 .specular
                 .as_deref()
@@ -749,6 +837,9 @@ pub fn export_unified_cdf_fbx_options(
         fs::write(&staged, &glb).map_err(|e| e.to_string())?;
         entries.push(json!({"name":name,"source":staged}));
         labels.push(name.clone());
+    }
+    if full_armor_glow && !applied_glow {
+        return Err("Full-armor glow had no verified diffuse mesh section in the selected monster CDF".into());
     }
     if embed_textures && diffuse_textured_parts == 0 {
         return Err(
