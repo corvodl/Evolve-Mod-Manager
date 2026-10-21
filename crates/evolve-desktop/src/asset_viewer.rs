@@ -301,46 +301,72 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
                     .size(11)
                     .style(design::muted),
             );
-            let current = state.equipment_overrides
+            let current = state
+                .equipment_overrides
                 .get(evolve_core::character_emet::FACE)
                 .map(String::as_str)
-                .unwrap_or_else(|| emet.faces.first().map(String::as_str)
-                    .unwrap_or(evolve_core::character_emet::NO_FACE));
+                .unwrap_or_else(|| {
+                    emet.faces
+                        .first()
+                        .map(String::as_str)
+                        .unwrap_or(evolve_core::character_emet::NO_FACE)
+                });
             let mut faces = column![].spacing(4);
             for face in &emet.faces {
                 let active = face == current;
                 faces = faces.push(
-                    design::button(format!("{} {}", if active { "✓" } else { "○" }, face.replace('_', " ")))
-                        .style(if active { design::primary } else { design::secondary })
-                        .on_press_maybe((!state.busy && !active)
-                            .then_some(Message::ViewerEmetFace(face.clone()))),
+                    design::button(format!(
+                        "{} {}",
+                        if active { "✓" } else { "○" },
+                        face.replace('_', " ")
+                    ))
+                    .style(if active {
+                        design::primary
+                    } else {
+                        design::secondary
+                    })
+                    .on_press_maybe(
+                        (!state.busy && !active).then_some(Message::ViewerEmetFace(face.clone())),
+                    ),
                 );
             }
             let none = current == evolve_core::character_emet::NO_FACE;
             faces = faces.push(
-                design::button(if none { "✓ No expression" } else { "○ No expression" })
-                    .style(if none { design::primary } else { design::secondary })
-                    .on_press_maybe((!state.busy && !none)
-                        .then_some(Message::ViewerEmetFace(
-                            evolve_core::character_emet::NO_FACE.into()
-                        ))),
+                design::button(if none {
+                    "✓ No expression"
+                } else {
+                    "○ No expression"
+                })
+                .style(if none {
+                    design::primary
+                } else {
+                    design::secondary
+                })
+                .on_press_maybe((!state.busy && !none).then_some(Message::ViewerEmetFace(
+                    evolve_core::character_emet::NO_FACE.into(),
+                ))),
             );
             entries = entries.push(faces);
         } else {
             entries = entries.push(
                 text("No separately authored face attachments were found in this Emet CDF.")
-                    .size(11).style(design::muted),
+                    .size(11)
+                    .style(design::muted),
             );
         }
         if !emet.beacons.is_empty() {
-            let visible = state.equipment_overrides
+            let visible = state
+                .equipment_overrides
                 .get(evolve_core::character_emet::BEACON)
                 .is_none_or(|value| value == evolve_core::character_emet::BEACON_ON);
             entries = entries.push(text("Respawn Beacon").size(12));
             entries = entries.push(
-                design::button(if visible { "☑ Show Respawn Beacon" } else { "☐ Show Respawn Beacon" })
-                    .on_press_maybe((!state.busy)
-                        .then_some(Message::ViewerEmetBeacon(!visible))),
+                design::button(if visible {
+                    "☑ Show Respawn Beacon"
+                } else {
+                    "☐ Show Respawn Beacon"
+                })
+                .on_press_maybe((!state.busy).then_some(Message::ViewerEmetBeacon(!visible))),
             );
         } else {
             entries = entries.push(
