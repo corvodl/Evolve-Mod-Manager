@@ -1483,7 +1483,6 @@ enum Message {
     PreferenceCrashLogging,
     OpenCrashLogs,
     OpenCrashLogsFolder,
-    PreferenceExperimental,
     PreferenceUpdateChannel,
     PreferenceAutoUpdates,
     PreferenceStage(String),
@@ -3984,11 +3983,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.settings_status = format!("Crash log path unavailable: {error}")
                 }
             }
-        }
-        Message::PreferenceExperimental => {
-            state.preferences.experimental_updates = !state.preferences.experimental_updates;
-            state.preferences.nightly_updates = false;
-            persist_preferences(state);
         }
         Message::PreferenceUpdateChannel => {
             if state.preferences.nightly_updates {
