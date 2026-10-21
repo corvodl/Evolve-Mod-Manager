@@ -31,6 +31,7 @@ pub struct Session {
 pub enum Action {
     OpenGui,
     ReloadGui,
+    ImportGfx(PathBuf),
     ReplaceResource { index: usize, replacement: PathBuf },
     ExportXml,
     ImportXml,
@@ -214,7 +215,7 @@ pub fn run(mut session: Session, action: Action, configured: &str)
             let working = root.join("external-ffdec.gfx");
             fs::copy(&session.editable, &working).map_err(|e| e.to_string())?;
             let configured_path = Path::new(configured.trim());
-            let launcher = if configured_path.extension().is_some_and(|e| e.eq_ignore_ascii_case("jar")) {
+            let launcher = if configured_path.extension().is_some_and(|e| e.to_str().is_some_and(|e| e.eq_ignore_ascii_case("jar"))) {
                 let mut command = Command::new("java");
                 command.arg("-jar").arg(configured_path);
                 command
@@ -233,6 +234,10 @@ pub fn run(mut session: Session, action: Action, configured: &str)
         Action::ReloadGui => {
             import_compiled(&mut session, &root.join("external-ffdec.gfx"))?;
             "Validated external FFDec edit; original project remains unchanged.".to_owned()
+        }
+        Action::ImportGfx(candidate) => {
+            import_compiled(&mut session, &candidate)?;
+            "Imported checked external GFX into private session; project unchanged.".to_owned()
         }
         Action::ReplaceResource { index, replacement } => {
             let tag = session.info.resources.get(index).ok_or("Select an existing movie resource")?;
@@ -338,7 +343,7 @@ pub fn run(mut session: Session, action: Action, configured: &str)
             run_cli(configured, &root, &args)?;
             let pictures = fs::read_dir(&output).map_err(|e| e.to_string())?
                 .filter_map(Result::ok).map(|item| item.path())
-                .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("png"))).collect::<Vec<_>>();
+                .filter(|p| p.extension().is_some_and(|x| x.to_str().is_some_and(|x| x.eq_ignore_ascii_case("png")))).collect::<Vec<_>>();
             if pictures.len() != 1 { return Err("FFDec did not export exactly one selected frame PNG".into()); }
             regular(&pictures[0], 70 * 1024 * 1024)?;
             preview = Some(fs::read(&pictures[0]).map_err(|e| e.to_string())?);
