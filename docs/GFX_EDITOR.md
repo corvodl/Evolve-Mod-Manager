@@ -186,3 +186,45 @@ The protected Program Files installation may require administrator privileges,
 consistent with the manager's existing elevated Windows manifest; portable
 builds use their own executable folder. Users can always choose a manually
 installed executable without using the built-in downloader.
+
+## Docked GFX Tools workspace
+
+Opening an indexed `*.gfx` selects a contextual **GFX Tools** tab in the
+existing right-hand sidebar, beside Files and Model Options. The left/main
+pane is reserved for the **original GFX image** or draggable design canvas;
+it no longer contains a column of FFDec/Ruffle controls. The resizable
+explorer divider and its left/right placement setting still apply.
+
+GFX Tools is split into six compact sections:
+
+- **Preview:** static FFDec rendering, FFDec executable picker, standalone
+  Ruffle launch and status. Ruffle playback is separate from the static
+  viewport image.
+- **Layout:** root first-frame layer selection, raster backdrop toggle,
+  transform inputs, visibility and staged layout edits.
+- **Scripts:** FFDec ActionScript and tag XML export/rebuild commands.
+- **Resources:** verified imported GFX/SWF references and resource ID
+  replacement.
+- **Inspector:** externally captured, read-only UI hierarchy snapshots.
+- **Project:** staged GFX import, undo, editing folder, and Apply with backups.
+
+Switching between the tabs **does not apply or discard edits**. Layout
+selection activates the layout canvas; other sections return to the
+FFDec frame preview. The GFX Tools tab is available only during a GFX
+session; selecting other preview types returns to Files.
+
+### Why the front menu still needs native callbacks
+
+For `Libs/UI/main_menu.gfx`, the original GFX may create a login,
+challenge, or other front panel from game-provided state. This **cannot be
+identified from a screenshot**. The manager deliberately does not map an
+unknown button to "close" or hide an arbitrary sprite: doing so could give
+users a preview that differs from the game.
+
+Ruffle desktop is currently started with an **empty ExternalInterface**,
+so source-authored buttons requiring CryEngine's GFx host callbacks do not
+perform those game-side transitions. Static rendering can also miss fonts,
+localized text and specific external DDS symbols. A faithful close button
+requires the exact decompiled button handler and UI_Data event binding (and
+its full imported movie chain), followed by a preview-only, allowlisted
+host event simulator. Gameplay/network operations must never be executed.
