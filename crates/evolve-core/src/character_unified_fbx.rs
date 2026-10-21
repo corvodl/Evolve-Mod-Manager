@@ -1562,14 +1562,10 @@ mod tests {
             monster_glow_path(&cdf, &inventory).unwrap().is_none(),
             "No source glow exists in the local CDF directory"
         );
-        let selected = monster_glow_path_with_library(
-            &cdf,
-            &inventory,
-            Some(&library),
-            Some("Stage 2"),
-        )
-        .unwrap()
-        .unwrap();
+        let selected =
+            monster_glow_path_with_library(&cdf, &inventory, Some(&library), Some("Stage 2"))
+                .unwrap()
+                .unwrap();
         assert_eq!(
             fs::canonicalize(selected).unwrap(),
             fs::canonicalize(stage_dds).unwrap()
