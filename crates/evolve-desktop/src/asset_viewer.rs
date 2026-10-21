@@ -984,6 +984,11 @@ pub(super) fn export_dialog(state: &State) -> Element<'_, Message> {
             .on_input(Message::ExportFilterChanged),
         scrollable(picker).height(Length::Fixed(295.0)),
         flags,
+        text(if state.export_embed_textures {
+            "Embedded textures selected: FBX export verifies source diffuse images on every visible CDF part."
+        } else {
+            "CAUTION: Embedded textures is OFF. The FBX will contain geometry and UVs, but no packed character images; assign your own verified diffuse maps or enable embedding."
+        }).size(11).style(design::muted),
         text(if !state.equipment_overrides.is_empty() || state.full_armor_glow || state.damage_blend_percent > 0 {
             format!("Model Options: {} equipment override(s), armor glow {}, damage blend {}%. Export only the active CDF with Rigged + Embedded textures.",
                 state.equipment_overrides.len(),
