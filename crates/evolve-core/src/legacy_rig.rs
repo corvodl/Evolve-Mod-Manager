@@ -588,6 +588,17 @@ mod tests {
         bytes
     }
 
+    #[test]
+    fn accepts_only_identical_original_part_local_bind_skeletons() {
+        let first = original_container(vec![(BONE, sample_bones())]);
+        assert!(identical_legacy_bind_skeletons(&first, &first).unwrap());
+        let mut changed = first.clone();
+        // Change the first original bone name without altering any weights.
+        let at = 20 + 48 + 312;
+        changed[at] = b'B';
+        assert!(!identical_legacy_bind_skeletons(&first, &changed).unwrap());
+    }
+
     fn sample_body() -> Vec<u8> {
         let positions = [[0f32, 0f32, 0f32], [1f32, 0f32, 0f32], [0f32, 1f32, 0f32]]
             .into_iter()
