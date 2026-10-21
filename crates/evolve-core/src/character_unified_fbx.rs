@@ -1633,21 +1633,19 @@ mod tests {
                 ..Default::default()
             },
         ];
-        assert!(verify_embedded_source_diffuse(
-            "torso", &[(0, 3, 1)], &slots
-        ).unwrap_err().contains("Scorpid_Body"));
+        assert!(
+            verify_embedded_source_diffuse("torso", &[(0, 3, 1)], &slots)
+                .unwrap_err()
+                .contains("Scorpid_Body")
+        );
         // An unused skeleton leaf must not replace the actual body map.
-        assert!(verify_embedded_source_diffuse(
-            "torso", &[(0, 3, 0), (3, 3, 1)], &slots
-        ).is_err());
+        assert!(verify_embedded_source_diffuse("torso", &[(0, 3, 0), (3, 3, 1)], &slots).is_err());
         let mut textured = slots;
         textured[1].diffuse = Some(b"original diffuse PNG".to_vec());
-        assert!(verify_embedded_source_diffuse(
-            "torso", &[(0, 3, 0), (3, 3, 1)], &textured
-        ).is_ok());
-        assert!(verify_embedded_source_diffuse(
-            "torso", &[(0, 3, 2)], &textured
-        ).is_err());
+        assert!(
+            verify_embedded_source_diffuse("torso", &[(0, 3, 0), (3, 3, 1)], &textured).is_ok()
+        );
+        assert!(verify_embedded_source_diffuse("torso", &[(0, 3, 2)], &textured).is_err());
     }
 
     #[test]
