@@ -47,14 +47,13 @@ use evolve_core::{
     export_level_scene_glb, export_rigged_character_fbx_textured_animated,
     export_rigged_character_glb, extract_legacy_pak, extract_signed_pak,
     import_signed_library_selection_with_keys, import_stage_pak, imported_archive_files,
-    imported_library,
-    initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_pak_hook_pair,
-    inspect_signed_pak, list_mod_profiles, load_level_scene, material_texture_candidates,
-    plan_mod_profile, prepare_client_hook, read_cdf, read_material, read_model, read_native_caf,
-    read_static_cdf_assembly_with_equipment, read_terrain, rebuild_legacy_pak,
-    rebuild_signed_pak_entry, resign_signed_pak, resolve_cdf, resolve_imported_reference,
-    resolve_materials, restore_profile_stage, restore_stage, scan_directory,
-    scan_directory_with_progress, stage_status,
+    imported_library, initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak,
+    inspect_pak_hook_pair, inspect_signed_pak, list_mod_profiles, load_level_scene,
+    material_texture_candidates, plan_mod_profile, prepare_client_hook, read_cdf, read_material,
+    read_model, read_native_caf, read_static_cdf_assembly_with_equipment, read_terrain,
+    rebuild_legacy_pak, rebuild_signed_pak_entry, resign_signed_pak, resolve_cdf,
+    resolve_imported_reference, resolve_materials, restore_profile_stage, restore_stage,
+    scan_directory, scan_directory_with_progress, stage_status,
 };
 use iced::widget::{
     canvas, column, container, image, row, scrollable, shader, slider, space, svg, text, tooltip,
@@ -624,7 +623,8 @@ impl Operation {
                 if !root.exists() {
                     std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
                 }
-                let report = import_signed_library_selection_with_keys(&root, &source, &keys.paths)?;
+                let report =
+                    import_signed_library_selection_with_keys(&root, &source, &keys.paths)?;
                 let catalog = imported_library(&root).map_err(|e| e.to_string())?;
                 Ok(Completed::ImportedSignedLibrary(report, catalog))
             }
