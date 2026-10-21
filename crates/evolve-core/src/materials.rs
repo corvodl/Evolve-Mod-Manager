@@ -137,6 +137,8 @@ fn append_texture(
             | "detail"
             | "height"
             | "environment"
+            | "custom"
+            | "[1] custom"
     ) {
         // Keep unknown semantics out of a guessed GPU slot.
         return Ok(());
@@ -146,6 +148,61 @@ fn append_texture(
     }
     slots[index].maps.push(TextureReference { role, path });
     Ok(())
+}
+
+/// CryEngine Illum BLENDLAYER authored damage pair. The Opacity-named
+/// damage_blend_diff file is a grayscale blend weight, *not* coverage.
+/// "Custom" stores the alternate damaged diffuse. Other opacity and custom
+/// channels are not repurposed as a damage blend.
+pub fn authored_damage_layer(slot: &MaterialSlot) -> Option<(&str, &str)> {
+    if !slot.shader.eq_ignore_ascii_case("Illum") {
+        return None;
+    }
+    let mask = slot.maps.iter().find(|map| {
+        map.role == "opacity"
+            && map.path.to_ascii_lowercase().contains("_damage_blend_diff.")
+    })?;
+    let alternate = slot.maps.iter().find(|map| {
+        map.role == "custom"
+            && map.path.to_ascii_lowercase().contains("_damage_diff.")
+    })?;
+    Some((alternate.path.as_str(), mask.path.as_str()))
+}
+
+/// Deterministic approximation of CryEngine's authored damage BLENDLAYER.
+/// The existing diffuse and source UV0 stay unchanged, alpha is opaque for
+/// Illum body materials, and a distinct authored mask drives the blend.
+/// This is a viewport/FBX preview, not a recreation of every game shader knob.
+pub fn blend_damage_rgba(
+    base: &image::RgbaImage,
+    damaged: &image::RgbaImage,
+    mask: &image::RgbaImage,
+    percent: u8,
+) -> Result<image::RgbaImage, String> {
+    if percent > 100
+        || base.width() == 0 || base.height() == 0
+        || damaged.width() == 0 || damaged.height() == 0
+        || mask.width() == 0 || mask.height() == 0
+        || u64::from(base.width()) * u64::from(base.height()) > 32 * 1024 * 1024
+    {
+        return Err("Invalid or oversized damage-blend source image".into());
+    }
+    let mut blended = base.clone();
+    for (x, y, pixel) in blended.enumerate_pixels_mut() {
+        let dx = u64::from(x) * u64::from(damaged.width()) / u64::from(base.width());
+        let dy = u64::from(y) * u64::from(damaged.height()) / u64::from(base.height());
+        let mx = u64::from(x) * u64::from(mask.width()) / u64::from(base.width());
+        let my = u64::from(y) * u64::from(mask.height()) / u64::from(base.height());
+        let alt = damaged.get_pixel(dx as u32, dy as u32);
+        let weight = u32::from(mask.get_pixel(mx as u32, my as u32)[0])
+            * u32::from(percent) / 100;
+        for channel in 0..3 {
+            pixel[channel] = ((u32::from(pixel[channel]) * (255 - weight)
+                + u32::from(alt[channel]) * weight + 127) / 255) as u8;
+        }
+        pixel[3] = 255;
+    }
+    Ok(blended)
 }
 
 /// Parse explicit root/submaterial texture references, without XXE, DTD or
