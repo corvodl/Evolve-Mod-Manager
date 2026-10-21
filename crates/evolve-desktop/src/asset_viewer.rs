@@ -265,9 +265,13 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
             entries = entries.push(
                 row![
                     text(format!("Damage intensity: {}%", state.damage_blend_percent)).size(11),
-                    slider(0..=100, state.damage_blend_percent, Message::ViewerDamageBlendChanged)
-                        .on_release(Message::ViewerPreviewStaticCdf)
-                        .width(Fill),
+                    slider(
+                        0..=100,
+                        state.damage_blend_percent,
+                        Message::ViewerDamageBlendChanged
+                    )
+                    .on_release(Message::ViewerPreviewStaticCdf)
+                    .width(Fill),
                 ]
                 .spacing(8),
             );
