@@ -161,6 +161,11 @@ struct State {
     diffuse_input: String,
     diffuse: Option<Arc<::image::RgbaImage>>,
     cdf_surfaces: Option<Arc<Vec<textured::Surface>>>,
+    /// The immutable decoded CDF appearance: slider changes never read a CDF again.
+    cdf_base_surfaces: Option<Arc<Vec<textured::Surface>>>,
+    /// Once-only resolved 100% damage layer, reused for every slider position.
+    cdf_full_damage_surfaces: Option<Arc<Vec<textured::Surface>>>,
+    cdf_legacy_2012: bool,
     texture_preview: Option<image::Handle>,
     diffuse_status: String,
     normal_input: String,
@@ -416,8 +421,22 @@ enum Operation {
         SharedCache,
         EquipmentOverrides,
         bool,
-        u8,
         Arc<AtomicUsize>,
+    ),
+    PrepareCdfDamage(
+        PathBuf,
+        Arc<AssemblyReport>,
+        Arc<Vec<textured::Surface>>,
+        Inventory,
+        Option<PathBuf>,
+        Option<String>,
+        SharedCache,
+    ),
+    ReblendCdfDamage(
+        PathBuf,
+        Arc<Vec<textured::Surface>>,
+        Arc<Vec<textured::Surface>>,
+        u8,
     ),
     ResolveCdf(PathBuf, PathBuf),
     InspectModel(PathBuf),
@@ -517,6 +536,8 @@ enum Completed {
         Vec<textured::Surface>,
         Vec<String>,
     ),
+    PreparedCdfDamage(PathBuf, Vec<textured::Surface>),
+    ReblendedCdfDamage(PathBuf, u8, Vec<textured::Surface>),
     CharacterDependencies(CdfDependencyReport),
     Model(RenderMesh, PathBuf),
     ModelResources(String, auto_resources::AutoDiscovery),
@@ -1014,7 +1035,6 @@ impl Operation {
                 cache,
                 equipment,
                 glow,
-                damage_percent,
                 progress,
             ) => {
                 progress.store(5, Ordering::Relaxed);
@@ -1046,22 +1066,10 @@ impl Operation {
                     &cache,
                     Some(&progress),
                 );
-                if damage_percent > 0 {
-                    let count = assembly_materials::apply_damage_blend(
-                        &report,
-                        &mut surfaces,
-                        damage_percent,
-                        &inventory,
-                        imported.as_deref(),
-                        build.as_deref(),
-                        &cache,
-                    )?;
-                    warnings.push(format!(
-                        "Original damage BLENDLAYER preview: {count} verified monster material ranges, {damage_percent}% intensity; no transparency changes"
-                    ));
-                }
                 progress.store(90, Ordering::Relaxed);
-                if glow {
+                // Historical CryTek 0x745 monster geometry is the 2012 build:
+                // it has no Stage 2 armor-glow/damage toggles.
+                if glow && !historical_2012_cdf(&report) {
                     match evolve_core::monster_glow_path(&source, &inventory) {
                         Ok(Some(texture)) => {
                             // A monster glow from dds_low.pak may need its
@@ -1148,6 +1156,18 @@ impl Operation {
                     ),
                 );
                 Ok(Completed::StaticCharacter(mesh, report, surfaces, warnings))
+            }
+            Self::PrepareCdfDamage(source, report, base, inventory, imported, build, cache) => {
+                let mut full = base.as_ref().clone();
+                let _ = assembly_materials::apply_damage_blend(
+                    &report, &mut full, 100, &inventory,
+                    imported.as_deref(), build.as_deref(), &cache,
+                )?;
+                Ok(Completed::PreparedCdfDamage(source, full))
+            }
+            Self::ReblendCdfDamage(source, base, full, percent) => {
+                let blend = assembly_materials::blend_prepared_damage(&base, &full, percent)?;
+                Ok(Completed::ReblendedCdfDamage(source, percent, blend))
             }
             Self::RebuildSignedPak(
                 src,
@@ -1320,6 +1340,7 @@ enum Message {
     ViewerToggleMonsterGlow,
     ViewerToggleDamageBlend,
     ViewerDamageBlendChanged(u8),
+    ViewerDamageBlendCommit,
     ViewerSplitDrag(f32),
     OpenInspectorWindow,
     InspectorOpened,
@@ -1903,12 +1924,31 @@ fn selected_stage_target(state: &State) -> Result<String, String> {
     modding_keys::staged_target(&stage, PathBuf::from(&state.input).as_path())
 }
 
+/// Identify original historical 2012 geometry by its verified CryTek
+/// 0x745 render headers, not a directory name (Goliath and Rocky exist in
+/// multiple builds). Read only 16 bytes from each already-verified source.
+fn historical_2012_cdf(report: &AssemblyReport) -> bool {
+    use std::io::Read;
+    !report.geometry_parts.is_empty()
+        && report.geometry_parts.iter().all(|part| {
+            let mut header = [0u8; 16];
+            std::fs::File::open(&part.source)
+                .and_then(|mut file| file.read_exact(&mut header))
+                .is_ok()
+                && &header[..8] == b"CryTek\0\0"
+                && u32::from_le_bytes(header[12..16].try_into().unwrap_or_default()) == 0x745
+        })
+}
+
 /// A file or window transition must never retain the previous character's
 /// surfaces, textures, animation or CDF report in a new preview.
 fn clear_viewer_asset(state: &mut State) {
     state.model = None;
     state.render_source = None;
     state.cdf_surfaces = None;
+    state.cdf_base_surfaces = None;
+    state.cdf_full_damage_surfaces = None;
+    state.cdf_legacy_2012 = false;
     state.cdf_rest_mesh = None;
     state.cdf_caf_preview = None;
     state.cdf_report = None;
@@ -3402,6 +3442,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .unwrap_or_default();
             }
             crash_diagnostics::record("cdf_preview_selected", &entry.relative_path);
+            state.cdf_base_surfaces = None;
+            state.cdf_full_damage_surfaces = None;
             let progress = Arc::new(AtomicUsize::new(0));
             state.viewer_load_progress = Some(progress.clone());
             state.input = source.to_string_lossy().into_owned();
@@ -3419,7 +3461,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.preview_cache.clone(),
                 state.equipment_overrides.clone(),
                 state.full_armor_glow,
-                state.damage_blend_percent,
                 progress,
             );
             return launch(state, operation);
