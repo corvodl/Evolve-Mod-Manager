@@ -170,7 +170,12 @@ pub(super) fn sidebar_inspector(state: &State) -> Element<'_, Message> {
             let refs: Vec<_> = report
                 .textures
                 .iter()
-                .filter(|r| roles.contains(&r.role.as_str()))
+                .filter(|r| {
+                    roles.contains(&r.role.as_str())
+                        && !(friendly == "Transparency"
+                            && r.role == "opacity"
+                            && r.authored_path.to_ascii_lowercase().contains("damage_blend_diff"))
+                })
                 .collect();
             if refs.is_empty() {
                 continue;
@@ -186,6 +191,23 @@ pub(super) fn sidebar_inspector(state: &State) -> Element<'_, Message> {
                 ))
                 .size(12)
                 .color(if found == refs.len() { OK } else { WARN }),
+            );
+        }
+        let damage_blend = report
+            .textures
+            .iter()
+            .filter(|reference| {
+                reference.role == "opacity"
+                    && reference.authored_path.to_ascii_lowercase().contains("damage_blend_diff")
+            })
+            .count();
+        if damage_blend > 0 {
+            summary = summary.push(
+                text(format!(
+                    "Damage blend: {damage_blend} original mask reference(s) — not transparency; layered damage preview not yet supported"
+                ))
+                .size(12)
+                .style(design::muted),
             );
         }
         let unresolved = report
