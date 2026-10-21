@@ -17,20 +17,33 @@ const MAX_DECODED_ASSEMBLY_BYTES: usize = 768 * 1024 * 1024;
 /// armor differences in linear light, never clipping them at 80/255.
 fn srgb_linear(byte: u8) -> f32 {
     let x = f32::from(byte) / 255.0;
-    if x <= 0.04045 { x / 12.92 } else { ((x + 0.055) / 1.055).powf(2.4) }
+    if x <= 0.04045 {
+        x / 12.92
+    } else {
+        ((x + 0.055) / 1.055).powf(2.4)
+    }
 }
 fn linear_srgb(value: f32) -> u8 {
     let x = value.clamp(0.0, 1.0);
-    let encoded = if x <= 0.0031308 { x * 12.92 } else { 1.055 * x.powf(1.0 / 2.4) - 0.055 };
+    let encoded = if x <= 0.0031308 {
+        x * 12.92
+    } else {
+        1.055 * x.powf(1.0 / 2.4) - 0.055
+    };
     (encoded * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
 /// A legacy positive GlowAmount permits diffuse-alpha emission only with
 /// actual alpha-mask evidence. Alpha alone may be gloss or opacity and is not
 /// a license to invent emission for unrelated materials.
-fn legacy_alpha_emission(slot: &evolve_core::MaterialSlot, diffuse: &image::RgbaImage) -> Option<image::RgbaImage> {
-    if !matches!(slot.shader.to_ascii_lowercase().as_str(), "illum" | "cloth" | "humanskin")
-        || !slot.glow_amount.is_some_and(|amount| amount > 0.0)
+fn legacy_alpha_emission(
+    slot: &evolve_core::MaterialSlot,
+    diffuse: &image::RgbaImage,
+) -> Option<image::RgbaImage> {
+    if !matches!(
+        slot.shader.to_ascii_lowercase().as_str(),
+        "illum" | "cloth" | "humanskin"
+    ) || !slot.glow_amount.is_some_and(|amount| amount > 0.0)
         || !diffuse.pixels().any(|pixel| pixel[3] < 255)
     {
         return None;
@@ -495,11 +508,17 @@ fn authored_maps(
         result[index] = Some(image);
     }
     if result[2].is_none()
-        && !slot.maps.iter().any(|map| role_channel(&map.role) == Some(2))
+        && !slot
+            .maps
+            .iter()
+            .any(|map| role_channel(&map.role) == Some(2))
         && let Some(base) = result[0].as_ref()
         && let Some(mask) = legacy_alpha_emission(slot, base)
     {
-        warnings.push(format!("Source GlowAmount={} uses a diffuse-alpha emission mask (preview approximation)", slot.glow_amount.unwrap_or(0.0)));
+        warnings.push(format!(
+            "Source GlowAmount={} uses a diffuse-alpha emission mask (preview approximation)",
+            slot.glow_amount.unwrap_or(0.0)
+        ));
         result[2] = Some(Arc::new(mask));
     }
     Ok((result, warnings))
@@ -1107,10 +1126,14 @@ mod tests {
 
     #[test]
     fn legacy_alpha_emission_requires_positive_authored_amount_and_real_mask() {
-        let diffuse = image::RgbaImage::from_raw(2, 1, vec![255, 80, 30, 128, 10, 10, 10, 0]).unwrap();
+        let diffuse =
+            image::RgbaImage::from_raw(2, 1, vec![255, 80, 30, 128, 10, 10, 10, 0]).unwrap();
         let mut slot = evolve_core::MaterialSlot {
-            name: "glow".into(), shader: "Illum".into(), maps: vec![],
-            opacity: None, glow_amount: Some(3.0),
+            name: "glow".into(),
+            shader: "Illum".into(),
+            maps: vec![],
+            opacity: None,
+            glow_amount: Some(3.0),
         };
         let mask = legacy_alpha_emission(&slot, &diffuse).unwrap();
         assert!(mask.get_pixel(0, 0)[0] > 150);

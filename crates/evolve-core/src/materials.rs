@@ -103,7 +103,9 @@ fn authored_glow_amount(node: &BytesStart<'_>) -> Result<Option<f32>, MaterialEr
         None
     };
     let Some(raw) = raw else { return Ok(None) };
-    let amount = raw.trim().parse::<f32>()
+    let amount = raw
+        .trim()
+        .parse::<f32>()
         .map_err(|_| MaterialError::Xml("Invalid authored GlowAmount".into()))?;
     if !amount.is_finite() {
         return Err(MaterialError::Xml("GlowAmount must be finite".into()));
@@ -304,7 +306,11 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                     append_texture(&node, &mut slots, *index)?;
                 } else if (tag.eq_ignore_ascii_case(b"PublicParams")
                     || tag.eq_ignore_ascii_case(b"ShaderParams")
-                    || (tag.eq_ignore_ascii_case(b"Param") && parents.last().is_some_and(|p| p.eq_ignore_ascii_case(b"ShaderParams") || p.eq_ignore_ascii_case(b"PublicParams"))))
+                    || (tag.eq_ignore_ascii_case(b"Param")
+                        && parents.last().is_some_and(|p| {
+                            p.eq_ignore_ascii_case(b"ShaderParams")
+                                || p.eq_ignore_ascii_case(b"PublicParams")
+                        })))
                     && let Some((_, index)) = material_indices.last()
                     && let Some(amount) = authored_glow_amount(&node)?
                 {
@@ -351,7 +357,11 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                     append_texture(&node, &mut slots, *index)?;
                 } else if (tag.eq_ignore_ascii_case(b"PublicParams")
                     || tag.eq_ignore_ascii_case(b"ShaderParams")
-                    || (tag.eq_ignore_ascii_case(b"Param") && parents.last().is_some_and(|p| p.eq_ignore_ascii_case(b"ShaderParams") || p.eq_ignore_ascii_case(b"PublicParams"))))
+                    || (tag.eq_ignore_ascii_case(b"Param")
+                        && parents.last().is_some_and(|p| {
+                            p.eq_ignore_ascii_case(b"ShaderParams")
+                                || p.eq_ignore_ascii_case(b"PublicParams")
+                        })))
                     && let Some((_, index)) = material_indices.last()
                     && let Some(amount) = authored_glow_amount(&node)?
                 {

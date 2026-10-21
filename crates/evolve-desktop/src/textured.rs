@@ -362,9 +362,14 @@ impl Pipeline {
     fn emission_uniform(device: &wgpu::Device, queue: &wgpu::Queue, strength: f32) -> wgpu::Buffer {
         // Keep source-relative gain. Guard against nonfinite/pathological
         // values but never silently reinterpret source GlowAmount 3 as 100%.
-        let safe = if strength.is_finite() { strength.clamp(0.0, 100.0) } else { 0.0 };
+        let safe = if strength.is_finite() {
+            strength.clamp(0.0, 100.0)
+        } else {
+            0.0
+        };
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Source material emission amount"), size: 16,
+            label: Some("Source material emission amount"),
+            size: 16,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });

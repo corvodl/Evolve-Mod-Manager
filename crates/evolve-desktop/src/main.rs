@@ -1075,7 +1075,9 @@ impl Operation {
                 // Switching off disables even explicitly authored emission,
                 // without changing cached source DDS or any FBX export option.
                 if !glow && !historical_2012_cdf(&report) {
-                    for surface in &mut surfaces { surface.emission_strength = 0.0; }
+                    for surface in &mut surfaces {
+                        surface.emission_strength = 0.0;
+                    }
                 }
                 if glow && !historical_2012_cdf(&report) {
                     match evolve_core::monster_glow_path(&source, &inventory) {
