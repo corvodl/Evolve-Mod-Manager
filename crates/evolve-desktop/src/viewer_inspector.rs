@@ -200,14 +200,44 @@ pub(super) fn sidebar_inspector(state: &State) -> Element<'_, Message> {
             );
         }
         if let Some(surfaces) = &state.cdf_surfaces {
-            let textured = surfaces.iter().filter(|s| s.diffuse.is_some()).count();
+            let visible = surfaces.iter().filter(|surface| surface.visible).count();
+            let textured = surfaces
+                .iter()
+                .filter(|surface| surface.visible && surface.diffuse.is_some())
+                .count();
             summary = summary.push(
                 text(format!(
-                    "GPU material assignments: {textured}/{} model sections have color maps",
-                    surfaces.len()
+                    "GPU diffuse maps: {textured}/{visible} visible mesh sections"
                 ))
-                .size(12),
+                .size(12)
+                .color(if textured == visible { OK } else { WARN }),
             );
+            let missing = surfaces
+                .iter()
+                .enumerate()
+                .filter(|(_, surface)| surface.visible && surface.diffuse.is_none())
+                .take(4)
+                .map(|(index, _)| {
+                    state
+                        .cdf_report
+                        .as_ref()
+                        .and_then(|cdf| cdf.source_parts.get(index))
+                        .map_or_else(
+                            || format!("mesh section {}", index + 1),
+                            |part| format!("{} (source MTL slot {})", part.name, part.material_slot),
+                        )
+                })
+                .collect::<Vec<_>>();
+            if !missing.is_empty() {
+                summary = summary.push(
+                    text(format!(
+                        "Untextured visible sections: {}. Texture files can exist without a verified per-section binding.",
+                        missing.join("; ")
+                    ))
+                    .size(12)
+                    .color(WARN),
+                );
+            }
         } else if report.slots > 1 {
             summary = summary.push(
                 text("Several material slots exist, but verified mesh-to-material mapping is still needed.")
