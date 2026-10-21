@@ -14,8 +14,9 @@ struct Output {
 // Explicit authored opacity map. Diffuse alpha may hold CryEngine gloss/mask
 // data, so it is never reused for a separate opacity-reference material.
 @group(0) @binding(6) var opacity_map: texture_2d<f32>;
-// x is authored GlowAmount for this material leaf (3 != 100%).
-// y is the viewport-only Emissive strength slider, default 1x.
+// x is original GlowAmount, y is the viewport-only slider.
+// z is 100/3 for source-verified Kala tubing, 1 for every other material.
+// The Qt preview used GlowAmount 3 -> 100; the authored value stays 3.
 @group(0) @binding(7) var<uniform> emission_params: vec4<f32>;
 // Separate, optional armor overlay: this channel is black when unchecked,
 // independently of any source-authored Emittance/GlowAmount texture.
@@ -119,8 +120,19 @@ fn shade(input: Output) -> vec4<f32> {
                   + 0.16 * pow(abs(dot(surface, half_fill)), exponent);
     let specular_light = specular_color * highlight * exposure;
     // Emissive is independent of incident light, as in the game material.
+    // Match the earlier public Qt preview's GlowAmount 3 -> 100 calibration
+    // only for verified Kala tubing. Its 8-bit viewport would otherwise clip
+    // the high-range RGB toward white, so roll off all RGB by the SAME peak
+    // to preserve the original blue/red tint and the animated light mask.
+    let source_glow = glow * emission_params.x * emission_params.y;
+    let calibrated_glow = source_glow * emission_params.z;
+    var viewport_glow = source_glow;
+    if emission_params.z > 1.0 {
+        let peak = max(max(calibrated_glow.r, calibrated_glow.g), calibrated_glow.b);
+        viewport_glow = calibrated_glow / (1.0 + peak);
+    }
     return vec4<f32>(base.rgb * irradiance * exposure
-        + glow * emission_params.x * emission_params.y
+        + viewport_glow
         + armor_glow * emission_params.y + specular_light, base.a);
 }
 

@@ -54,6 +54,9 @@ pub struct Surface {
     pub armor_emissive: Option<Arc<image::RgbaImage>>,
     /// Exact per-leaf authored GlowAmount, not a guessed percentage.
     pub emission_strength: f32,
+    /// Use the earlier public manager's GlowAmount 3 -> 100 visual calibration
+    /// for source-verified Kala tubing only; never modify exported materials.
+    pub kala_emission_calibrated: bool,
     /// Authored moving Decal UVs used only for this material's emission.
     pub emissive_uv: Option<evolve_core::DecalTexMod>,
     pub specular: Option<Arc<image::RgbaImage>>,
@@ -292,6 +295,7 @@ struct GpuSurface {
     _emission_uniform: wgpu::Buffer,
     _uv_uniform: wgpu::Buffer,
     source_emission_strength: f32,
+    kala_emission_calibrated: bool,
     emissive_uv: Option<evolve_core::DecalTexMod>,
 }
 
@@ -351,10 +355,15 @@ pub struct Pipeline {
 // helper for initialization, CDF attachment ranges and texture reloads.
 const MATERIAL_BINDINGS: [u32; 10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 
-/// Keep the two gains separate: the CryEngine authored strength (3 != 100%)
-/// and the user's optional viewport setting. Shader multiplies x*y, never
-/// scales diffuse color, normals or UVs.
-fn emission_uniform_values(source_strength: f32, preview_gain: f32) -> [f32; 4] {
+/// Preserve authored GlowAmount and the separate user slider. For the
+/// source-verified Kala tubing Decal ONLY, adopt the former Qt viewer's
+/// preview calibration (GlowAmount=3 -> 100 units); the shader tone-maps
+/// that high-range emission before the 8-bit viewport clips to white.
+fn emission_uniform_values(
+    source_strength: f32,
+    preview_gain: f32,
+    kala_emission_calibrated: bool,
+) -> [f32; 4] {
     let source = if source_strength.is_finite() {
         source_strength.clamp(0.0, 100.0)
     } else {
@@ -365,7 +374,12 @@ fn emission_uniform_values(source_strength: f32, preview_gain: f32) -> [f32; 4] 
     } else {
         1.0
     };
-    [source, gain, 0.0, 0.0]
+    let calibration = if kala_emission_calibrated {
+        100.0 / 3.0
+    } else {
+        1.0
+    };
+    [source, gain, calibration, 0.0]
 }
 
 /// Source UV tiles and one texture-coordinate translation per axis.
@@ -408,10 +422,15 @@ fn material_entries<'a>(
 }
 
 impl Pipeline {
-    fn emission_uniform(device: &wgpu::Device, queue: &wgpu::Queue, strength: f32) -> wgpu::Buffer {
+    fn emission_uniform(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        strength: f32,
+        kala_emission_calibrated: bool,
+    ) -> wgpu::Buffer {
         // Keep source-relative gain. Guard against nonfinite/pathological
         // values but never silently reinterpret source GlowAmount 3 as 100%.
-        let values = emission_uniform_values(strength, 1.0);
+        let values = emission_uniform_values(strength, 1.0, kala_emission_calibrated);
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Source material emission amount"),
             size: 16,
@@ -864,7 +883,7 @@ impl Pipeline {
             wgpu::TextureFormat::Rgba8Unorm,
             "Neutral authored opacity",
         );
-        let emission_uniform = Self::emission_uniform(device, queue, 1.0);
+        let emission_uniform = Self::emission_uniform(device, queue, 1.0, false);
         let uv_uniform = Self::emissive_uv_uniform(device, queue, None);
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Evolve actual texture sampler group"),
@@ -1102,7 +1121,12 @@ impl Pipeline {
                     opacity_uploaded = true;
                 }
             }
-            let emission_uniform = Self::emission_uniform(device, queue, part.emission_strength);
+            let emission_uniform = Self::emission_uniform(
+                device,
+                queue,
+                part.emission_strength,
+                part.kala_emission_calibrated,
+            );
             let uv_uniform = Self::emissive_uv_uniform(device, queue, part.emissive_uv);
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Exact CDF attachment material"),
@@ -1125,6 +1149,7 @@ impl Pipeline {
                 _emission_uniform: emission_uniform,
                 _uv_uniform: uv_uniform,
                 source_emission_strength: part.emission_strength,
+                kala_emission_calibrated: part.kala_emission_calibrated,
                 emissive_uv: part.emissive_uv,
             });
         }
@@ -1185,12 +1210,13 @@ impl Pipeline {
             self.last_emissive_gain = primitive.emissive_gain;
             // Buffers already exist on each material: update only 16 bytes
             // per visible material, not CDF geometry or source DDS textures.
-            let default = emission_uniform_values(1.0, primitive.emissive_gain);
+            let default = emission_uniform_values(1.0, primitive.emissive_gain, false);
             queue.write_buffer(&self._emission_uniform, 0, bytemuck::bytes_of(&default));
             for surface in &self.gpu_surfaces {
                 let values = emission_uniform_values(
                     surface.source_emission_strength,
                     primitive.emissive_gain,
+                    surface.kala_emission_calibrated,
                 );
                 queue.write_buffer(&surface._emission_uniform, 0, bytemuck::bytes_of(&values));
             }
@@ -1464,7 +1490,7 @@ mod tests {
 
     #[test]
     fn independent_armor_emission_does_not_inherit_authored_source_strength() {
-        let authored = super::emission_uniform_values(0.0, 2.5);
+        let authored = super::emission_uniform_values(0.0, 2.5, false);
         assert_eq!(authored[0], 0.0);
         assert_eq!(authored[1], 2.5);
         // WGSL uses the authored multiplier only for original emission:
@@ -1476,14 +1502,50 @@ mod tests {
 
     #[test]
     fn emissive_slider_multiplies_source_relative_glow_without_replacing_it() {
-        assert_eq!(super::emission_uniform_values(3.0, 1.0)[..2], [3.0, 1.0]);
-        assert_eq!(super::emission_uniform_values(3.0, 2.5)[..2], [3.0, 2.5]);
-        assert_eq!(super::emission_uniform_values(0.0, 4.0)[..2], [0.0, 4.0]);
-        assert_eq!(super::emission_uniform_values(3.0, 0.0)[..2], [3.0, 0.0]);
         assert_eq!(
-            super::emission_uniform_values(f32::NAN, f32::NAN)[..2],
+            super::emission_uniform_values(3.0, 1.0, false)[..2],
+            [3.0, 1.0]
+        );
+        assert_eq!(
+            super::emission_uniform_values(3.0, 2.5, false)[..2],
+            [3.0, 2.5]
+        );
+        assert_eq!(
+            super::emission_uniform_values(0.0, 4.0, false)[..2],
+            [0.0, 4.0]
+        );
+        assert_eq!(
+            super::emission_uniform_values(3.0, 0.0, false)[..2],
+            [3.0, 0.0]
+        );
+        assert_eq!(
+            super::emission_uniform_values(f32::NAN, f32::NAN, false)[..2],
             [0.0, 1.0]
         );
+    }
+
+    #[test]
+    fn kala_emission_matches_prior_public_viewer_calibration_without_global_changes() {
+        // Original Qt source: PREVIEW_EMISSION_REFERENCE=100,
+        // SOURCE_GLOW_REFERENCE=3. Original strength stays 3.
+        let blue = super::emission_uniform_values(3.0, 1.0, true);
+        assert_eq!(blue[0], 3.0);
+        assert_eq!(blue[1], 1.0);
+        assert!((blue[0] * blue[2] - 100.0).abs() < 0.0001);
+        let half = super::emission_uniform_values(1.5, 1.0, true);
+        assert!((half[0] * half[2] - 50.0).abs() < 0.0001);
+        let zero = super::emission_uniform_values(0.0, 1.0, true);
+        assert_eq!(zero[0] * zero[2], 0.0);
+        let disabled = super::emission_uniform_values(3.0, 0.0, true);
+        assert_eq!(disabled[0] * disabled[1] * disabled[2], 0.0);
+        // Other characters, optional monster overlays, and standalone DDS
+        // retain the preexisting source-relative 3x behavior.
+        let ordinary = super::emission_uniform_values(3.0, 1.0, false);
+        assert_eq!(ordinary[0] * ordinary[1] * ordinary[2], 3.0);
+        let shader = include_str!("textured.wgsl");
+        assert!(shader.contains("emission_params.z > 1.0"));
+        assert!(shader.contains("calibrated_glow / (1.0 + peak)"));
+        assert!(shader.contains("armor_glow * emission_params.y"));
     }
 
     #[test]
