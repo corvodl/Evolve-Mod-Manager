@@ -255,12 +255,14 @@ impl shader::Program<super::Message> for Scene {
 struct GpuSurface {
     range: std::ops::Range<u32>,
     transparent: bool,
+    masked: bool,
     opacity_map: bool,
     bind_group: wgpu::BindGroup,
 }
 
 pub struct Pipeline {
     render_pipeline: wgpu::RenderPipeline,
+    masked_pipeline: wgpu::RenderPipeline,
     translucent_pipeline: wgpu::RenderPipeline,
     opacity_pipeline: wgpu::RenderPipeline,
     ground_pipeline: wgpu::RenderPipeline,
@@ -499,6 +501,43 @@ impl Pipeline {
             multiview: None,
             cache: None,
         });
+        // Alpha-tested solid body surfaces participate in the depth pass.
+        // The authored opacity texture clips actual holes, without blending
+        // intermediate mask values with the background/grid.
+        let masked_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Evolve solid character cutout material"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &program,
+                entry_point: Some("vs_main"),
+                buffers: &[Vertex::descriptor()],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &program,
+                entry_point: Some("fs_masked"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
         let translucent_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Evolve authored transparent material"),
             layout: Some(&pipeline_layout),
@@ -713,6 +752,7 @@ impl Pipeline {
         let depth = Self::depth_view(device, (1, 1));
         Self {
             render_pipeline,
+            masked_pipeline,
             translucent_pipeline,
             opacity_pipeline,
             ground_pipeline,
@@ -892,6 +932,7 @@ impl Pipeline {
             self.gpu_surfaces.push(GpuSurface {
                 range: part.first_index..part.first_index + part.index_count,
                 transparent: part.transparent && (part.opacity.is_none() || opacity_uploaded),
+                masked: !part.transparent && opacity_uploaded,
                 opacity_map: opacity_uploaded,
                 bind_group: group,
             });
@@ -1112,7 +1153,11 @@ impl Pipeline {
             // Write the depth of every opaque original face before any
             // transparent section; authoring order is not render order.
             for surface in self.gpu_surfaces.iter().filter(|part| !part.transparent) {
-                pass.set_pipeline(&self.render_pipeline);
+                pass.set_pipeline(if surface.masked {
+                    &self.masked_pipeline
+                } else {
+                    &self.render_pipeline
+                });
                 pass.set_bind_group(0, &surface.bind_group, &[]);
                 pass.draw_indexed(surface.range.clone(), 0, 0..1);
             }
@@ -1219,6 +1264,12 @@ mod tests {
                 .entry_points
                 .iter()
                 .any(|entry| entry.name == "fs_opacity")
+        );
+        assert!(
+            module
+                .entry_points
+                .iter()
+                .any(|entry| entry.name == "fs_masked")
         );
         assert!(
             module
