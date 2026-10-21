@@ -643,21 +643,37 @@ pub fn apply_damage_blend(
     let mut used = 0usize;
     let mut previous = std::collections::HashMap::new();
     for (part, surface) in report.source_parts.iter().zip(surfaces.iter_mut()) {
-        let Some(base) = surface.diffuse.as_ref() else { continue };
+        let Some(base) = surface.diffuse.as_ref() else {
+            continue;
+        };
         if !surface.visible || surface.transparent {
             continue;
         }
         let Some(material) = material_for_part(
-            &part.binding, part.material_hint.as_deref(), inventory, imported, build,
-        )? else { continue };
+            &part.binding,
+            part.material_hint.as_deref(),
+            inventory,
+            imported,
+            build,
+        )?
+        else {
+            continue;
+        };
         let doc = read_material(&material).map_err(|e| e.to_string())?;
-        let Some(leaf) = doc.slots.get(part.material_slot as usize) else { continue };
+        let Some(leaf) = doc.slots.get(part.material_slot as usize) else {
+            continue;
+        };
         let Some((damage_ref, mask_ref)) = evolve_core::authored_damage_layer(leaf) else {
             continue;
         };
         let resolve = |reference: &str| -> Result<Arc<image::RgbaImage>, String> {
             let (source, virtual_path) = authored_texture(
-                reference, &material, &part.binding, inventory, imported, build,
+                reference,
+                &material,
+                &part.binding,
+                inventory,
+                imported,
+                build,
             )?;
             let canonical = std::fs::canonicalize(source).map_err(|e| e.to_string())?;
             decoded_dds_indexed(cache, &canonical, &virtual_path, inventory, imported, build)
