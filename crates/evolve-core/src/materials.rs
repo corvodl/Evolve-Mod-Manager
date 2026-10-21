@@ -149,6 +149,11 @@ fn append_texture(
             | "emissive"
             | "emission"
             | "glow"
+            | "emissivecolor"
+            | "emissionmap"
+            | "glowmap"
+            | "selfillum"
+            | "selfillumination"
             | "decal"
             | "specular"
             | "specularcolor"
@@ -575,6 +580,22 @@ mod tests {
         assert!(normalize_texture("textures//../secret.tif").is_err());
         assert!(normalize_texture("C:\\secret.tif").is_err());
     }
+    #[test]
+    fn kala_equipment_emissive_aliases_keep_authored_texture_paths() {
+        // Equipment meshes may use alternate CryEngine material-map names.
+        // These are explicitly authored slots, NOT inferred from a filename.
+        let material = parse_material(br#"<Material Name="BansheeGun" Shader="Illum"><Textures>
+            <Texture Map="Diffuse" File="characters/hunters/tech/banshee_diff.tif"/>
+            <Texture Map="EmissiveColor" File="characters/hunters/tech/banshee_glow.tif"/>
+            <Texture Map="GlowMap" File="characters/hunters/tech/banshee_secondary.tif"/>
+        </Textures></Material>"#).unwrap();
+        assert_eq!(material.slots[0].maps.len(), 3);
+        assert_eq!(material.slots[0].maps[1].role, "emissivecolor");
+        assert_eq!(material.slots[0].maps[1].path,
+                   "characters/hunters/tech/banshee_glow.tif");
+        assert_eq!(material.slots[0].maps[2].role, "glowmap");
+    }
+
     #[test]
     fn imported_texture_candidates_prefer_highest_authored_mip_and_keep_spec_roles() {
         assert_eq!(
