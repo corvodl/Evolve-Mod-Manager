@@ -298,7 +298,8 @@ pub fn run(
                 .info
                 .resources
                 .get(index)
-                .ok_or("Select an existing movie resource")?;
+                .ok_or("Select an existing movie resource")?
+                .clone();
             let ext = replacement
                 .extension()
                 .and_then(|e| e.to_str())
