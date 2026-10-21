@@ -134,6 +134,12 @@ pub fn validated_equipment_overrides(
     let slots = discover_equipment(cdf, inventory);
     let mut result = BTreeMap::new();
     for (slot, binding) in requested {
+        // Emet face/beacon choices are checked against the source CDF
+        // by character_emet::choose in preview and export. They are not
+        // equipment swaps and must never be used as alternate mesh paths.
+        if matches!(slot.as_str(), crate::character_emet::FACE | crate::character_emet::BEACON) {
+            continue;
+        }
         let matches = slots
             .iter()
             .filter(|candidate| candidate.name == *slot)
