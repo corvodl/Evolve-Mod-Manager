@@ -85,6 +85,9 @@ jobs:
             "Evolve Mod Manager Nightly 0.1.0 (build $env:VERSION)",
             "",
             "Experimental Windows preview. The manager is not yet feature-complete.",
+            "Changes: Grounder/Kraken opaque body materials, Kala Banshee Gun animated blue Decal emission and authored UV movement.",
+            "Original emission remains separate from the optional monster armor glow.",
+            "Game-exact HDR bloom is not yet reproduced.",
             "Installer options: desktop shortcut, Start Menu shortcut, launch when finished.",
             "Only the Windows installer and portable ZIP are published.",
             ""
