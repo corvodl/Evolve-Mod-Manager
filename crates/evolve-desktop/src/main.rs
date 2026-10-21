@@ -6717,6 +6717,14 @@ fn initial_state() -> State {
         }
     }
     if let Ok(file) = settings_path() {
+        if let Some(root) = file.parent()
+            && let Some(error) = updater_apply::previous_update_failure(root)
+        {
+            result.update_status = format!(
+                "Previous update failed: {error}. Details: {}",
+                root.join("Updates").join("last-update-error.txt").display()
+            );
+        }
         if let Ok(location) =
             settings::library_directory(&file, &result.preferences.asset_library_root)
         {
