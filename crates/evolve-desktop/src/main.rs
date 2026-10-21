@@ -1063,8 +1063,33 @@ impl Operation {
                 progress.store(90, Ordering::Relaxed);
                 if glow {
                     match evolve_core::monster_glow_path(&source, &inventory)? {
-                        Some(texture) => match decode_dds_rgba(&texture) {
-                            Ok((_, rgba)) => {
+                        Some(texture) => {
+                            // A monster glow from dds_low.pak may need its
+                            // original highest mip in the matching dds_high.pak.
+                            // Resolve the actual indexed virtual path and let
+                            // the same verified cross-archive decoder used for
+                            // the body materials assemble every required mip.
+                            let virtual_glow = texture
+                                .strip_prefix(&inventory.root)
+                                .ok()
+                                .or_else(|| {
+                                    texture
+                                        .ancestors()
+                                        .find(|parent| parent.file_name().is_some_and(|name| name == "files"))
+                                        .and_then(|folder| texture.strip_prefix(folder).ok())
+                                })
+                                .map(|relative| relative.to_string_lossy().replace('\\', "/"));
+                            let decoded = virtual_glow
+                                .as_deref()
+                                .ok_or_else(|| "Glow DDS outside the indexed Asset Library".to_owned())
+                                .and_then(|virtual_name| {
+                                    decoded_dds_indexed(
+                                        &cache, &texture, virtual_name, &inventory,
+                                        imported.as_deref(), build.as_deref()
+                                    ).map(|(_, image)| image)
+                                });
+                            match decoded {
+                            Ok(rgba) => {
                                 let cdf_dir = source
                                     .strip_prefix(&inventory.root)
                                     .map_err(|_| "Monster CDF outside indexed source root")?
@@ -1095,7 +1120,8 @@ impl Operation {
                             Err(error) => warnings.push(format!(
                                 "Full armor glow unavailable for this monster: {error}; original diffuse preserved"
                             )),
-                        },
+                            }
+                        }
                         None => warnings.push(
                             "Full armor glow enabled, but this variant has no verified original glow DDS; previewing base materials".into(),
                         ),
