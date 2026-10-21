@@ -784,6 +784,35 @@ pub fn export_unified_cdf_fbx_with_equipment(
     )
 }
 
+/// A rigged FBX with "Embedded textures" selected must include every
+/// visible, original CryEngine material's diffuse. An FBX can carry valid
+/// geometry, UV0 and a single material while containing *zero* image/video
+/// objects (observed on original 2012 Scorpid 3 exports).
+fn verify_embedded_source_diffuse(
+    part: &str,
+    subsets: &[(u32, u32, u32)],
+    slots: &[OriginalMaterialPng],
+) -> Result<(), String> {
+    if subsets.is_empty() {
+        return Err(format!("{part}: no original material subsets"));
+    }
+    for &(first, count, index) in subsets {
+        if count == 0 {
+            return Err(format!("{part}: empty original mesh subset at {first}"));
+        }
+        let material = slots
+            .get(index as usize)
+            .ok_or_else(|| format!("{part}: original material slot {index} is missing"))?;
+        if !material.no_draw && material.diffuse.is_none() {
+            return Err(format!(
+                "{part}: original material slot {index} ({}) has no verified diffuse DDS. Embedded-texture export would produce an untextured 2012 mesh. Index its matching source DDS and retry.",
+                material.name
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Preserve authored source geometry, material slots, bone weights and UV0.
 /// Toggle embedding independently of separate PNG dependency export.
 pub fn export_unified_cdf_fbx_options(
@@ -1009,6 +1038,9 @@ pub fn export_unified_cdf_fbx_options_with_glow(
             if source_subsets.iter().any(|(_, _, index)| *index == 255) {
                 return Err(format!("CDF part {name} has an unresolved material subset"));
             }
+            if embed_textures {
+                verify_embedded_source_diffuse(name, &source_subsets, &slots)?;
+            }
             if slots.iter().any(|slot| slot.diffuse.is_some()) {
                 diffuse_textured_parts += 1;
             }
@@ -1142,6 +1174,11 @@ pub fn export_unified_cdf_fbx_options_with_glow(
                     roughness.as_deref(),
                 )
                 .map_err(|e| format!("CDF part {name} original maps: {e}"))?;
+            }
+            if embed_textures && diffuse.is_none() {
+                return Err(format!(
+                    "CDF part {name}: no original diffuse DDS resolved from its authored 2012 material. Embedded-texture export would lose the part's color map; import the matching DDS archive and retry."
+                ));
             }
             if diffuse.is_some() {
                 diffuse_textured_parts += 1;
@@ -1581,6 +1618,36 @@ mod tests {
         let (info, image) = decode_original_mip(&low_file, Some(&scope)).unwrap();
         assert_eq!(info.streaming_parts, 3);
         assert_eq!(image.get_pixel(7, 7).0, [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn missing_original_2012_part_diffuse_must_not_be_called_textured() {
+        let slots = vec![
+            OriginalMaterialPng {
+                name: "2012 skeleton".into(),
+                no_draw: true,
+                ..Default::default()
+            },
+            OriginalMaterialPng {
+                name: "Scorpid_Body".into(),
+                ..Default::default()
+            },
+        ];
+        assert!(verify_embedded_source_diffuse(
+            "torso", &[(0, 3, 1)], &slots
+        ).unwrap_err().contains("Scorpid_Body"));
+        // An unused skeleton leaf must not replace the actual body map.
+        assert!(verify_embedded_source_diffuse(
+            "torso", &[(0, 3, 0), (3, 3, 1)], &slots
+        ).is_err());
+        let mut textured = slots;
+        textured[1].diffuse = Some(b"original diffuse PNG".to_vec());
+        assert!(verify_embedded_source_diffuse(
+            "torso", &[(0, 3, 0), (3, 3, 1)], &textured
+        ).is_ok());
+        assert!(verify_embedded_source_diffuse(
+            "torso", &[(0, 3, 2)], &textured
+        ).is_err());
     }
 
     #[test]
