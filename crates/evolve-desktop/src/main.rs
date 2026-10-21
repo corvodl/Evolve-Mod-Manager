@@ -46,7 +46,8 @@ use evolve_core::{
     create_mod_profile, decode_dds_rgba, discover_equipment, export_dds_png,
     export_level_scene_glb, export_rigged_character_fbx_textured_animated,
     export_rigged_character_glb, extract_legacy_pak, extract_signed_pak,
-    import_signed_library_selection, import_stage_pak, imported_archive_files, imported_library,
+    import_signed_library_selection_with_keys, import_stage_pak, imported_archive_files,
+    imported_library,
     initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_pak_hook_pair,
     inspect_signed_pak, list_mod_profiles, load_level_scene, material_texture_candidates,
     plan_mod_profile, prepare_client_hook, read_cdf, read_material, read_model, read_native_caf,
@@ -616,12 +617,14 @@ impl Operation {
             Self::LoadImportedLibrary(root) => imported_library(&root)
                 .map(Completed::ImportedLibrary)
                 .map_err(|e| e.to_string()),
-            Self::ImportSignedLibrary(root, source, key) => {
-                // Import is explicitly requested; don't create any directory while browsing.
+            Self::ImportSignedLibrary(root, source, stage) => {
+                // Resolve all known public keys for each archive; the included
+                // original RSA verifier also works without an existing stage.
+                let keys = modding_keys::archive_verification_keys(&stage)?;
                 if !root.exists() {
                     std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
                 }
-                let report = import_signed_library_selection(&root, &source, &key)?;
+                let report = import_signed_library_selection_with_keys(&root, &source, &keys.paths)?;
                 let catalog = imported_library(&root).map_err(|e| e.to_string())?;
                 Ok(Completed::ImportedSignedLibrary(report, catalog))
             }
@@ -2472,20 +2475,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.library_show_configuration = true;
                 return Task::none();
             }
-            let key =
-                match modding_keys::public_key(PathBuf::from(&state.preferences.stage).as_path()) {
-                    Ok(key) => key,
-                    Err(error) => {
-                        state.status = error;
-                        return Task::none();
-                    }
-                };
             return launch(
                 state,
                 Operation::ImportSignedLibrary(
                     PathBuf::from(&state.library_root),
                     PathBuf::from(&state.library_import_source),
-                    key,
+                    PathBuf::from(&state.preferences.stage),
                 ),
             );
         }
