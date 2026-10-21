@@ -640,18 +640,15 @@ fn viewport(state: &State) -> Element<'_, Message> {
             .into()
         }
     } else {
-        panel(container(timeline).padding(5)).height(Length::Fixed(43.0)).into()
+        panel(container(timeline).padding(5))
+            .height(Length::Fixed(43.0))
+            .into()
     };
-    column![
-        header,
-        toolbar,
-        preview,
-        footer
-    ]
-    .spacing(8)
-    .height(Fill)
-    .width(Length::FillPortion(2))
-    .into()
+    column![header, toolbar, preview, footer]
+        .spacing(8)
+        .height(Fill)
+        .width(Length::FillPortion(2))
+        .into()
 }
 
 /// Keep the full archive location available on hover, but prevent very
