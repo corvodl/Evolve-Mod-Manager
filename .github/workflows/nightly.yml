@@ -34,10 +34,11 @@ jobs:
         shell: pwsh
         run: |
           $manifest = Get-Content "Cargo.toml" -Raw
-          if ($manifest -notmatch '(?m)^version = "0\.1\.0"$') {
+          $original = 'version = "0.1.0"'
+          if (!$manifest.Contains($original)) {
             throw "Expected Nightly 0.1.0 base version in workspace Cargo.toml"
           }
-          $manifest = $manifest -replace '(?m)^version = "0\.1\.0"$', ('version = "' + $env:VERSION + '"')
+          $manifest = $manifest.Replace($original, ('version = "' + $env:VERSION + '"'))
           Set-Content "Cargo.toml" -Value $manifest -Encoding utf8
           Write-Host "Building Nightly $env:VERSION"
 
