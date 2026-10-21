@@ -1483,8 +1483,8 @@ mod tests {
         // If all diffuse assets exceed the fixed budget, omit optional
         // maps first while still allowing each original diffuse to compete
         // for the remaining protected budget.
-        assert!(!super::allows_cdf_role(0, 4 * mib, 300 * mib, 2 , None));
-        assert!(super::allows_cdf_role(0, 4 * mib, 300 * mib, 0 , None));
+        assert!(!super::allows_cdf_role(0, 4 * mib, 300 * mib, 2, false));
+        assert!(super::allows_cdf_role(0, 4 * mib, 300 * mib, 0, false));
     }
 
     #[test]
