@@ -727,6 +727,43 @@ mod tests {
         assert!(normalize_texture("C:\\secret.tif").is_err());
     }
     #[test]
+    fn original_kala_arm_diffuse_is_banshee_dxt_not_red_armor_reducer_glow() {
+        // Source from merc_tech.7z and bansheegun.zip:
+        // tech_3p.mtl slot Arm and techbansheegun_3p.mtl slot monster arm
+        // refer to the SAME authored Banshee 3P diffuse. The latter also
+        // contains distinct optional blue Banshee/red Armor Reducer glow
+        // leaves, but selecting the blue gun must not repaint the red tool.
+        let authored = "characters/hunters/merc_tech/weapons/bansheegun/techbansheegun_3p_diff.tif";
+        let body = format!(
+            r#"<Material><SubMaterials><Material Name="Arm" Shader="Illum"><Textures><Texture Map="Diffuse" File="{authored}"/></Textures></Material></SubMaterials></Material>"#
+        );
+        let equipment = format!(
+            r#"<Material><SubMaterials>
+            <Material Name="monster arm" Shader="Illum"><Textures><Texture Map="Diffuse" File="{authored}"/></Textures></Material>
+            <Material Name="bansheegun glow" Shader="Illum" GlowAmount="3" Diffuse="0.072271854,0.1470273,0.42326769">
+                <Textures><Texture Map="Decal" File="textures/particle/light/chroma_fan320tiled_01b.tif"/></Textures></Material>
+            <Material Name="armorreducer glow" Shader="Illum" GlowAmount="3" Diffuse="0.17788844,0.0074990322,0.0043914425">
+                <Textures><Texture Map="Decal" File="textures/particle/light/chroma_fan320tiled_01b.tif"/></Textures></Material>
+            </SubMaterials></Material>"#
+        );
+        let arm = parse_material(body.as_bytes()).unwrap();
+        let gun = parse_material(equipment.as_bytes()).unwrap();
+        assert_eq!(arm.slots[0].maps[0].path, authored);
+        assert_eq!(gun.slots[0].maps[0].path, authored);
+        assert_eq!(
+            material_texture_candidates(authored),
+            vec![
+                "characters/hunters/merc_tech/weapons/bansheegun/techbansheegun_3p_diff.dds.0",
+                "characters/hunters/merc_tech/weapons/bansheegun/techbansheegun_3p_diff.dds"
+            ]
+        );
+        let blue = gun.slots[1].diffuse_tint.unwrap();
+        let red = gun.slots[2].diffuse_tint.unwrap();
+        assert!(blue[2] > blue[0] && blue[2] > blue[1]);
+        assert!(red[0] > red[2] && red[0] > red[1]);
+    }
+
+    #[test]
     fn real_kala_glow_material_semantics_are_distinct_from_body_alpha_glow() {
         // Synthetic MTL fixture based on the user's 2012+ Stage 2 material
         // properties. Original game files are never included in the repository.
