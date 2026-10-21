@@ -16,6 +16,7 @@ mod explorer_tree;
 mod gfx_dependencies;
 mod gfx_editor;
 mod gfx_layout_canvas;
+mod gfx_live_inspector;
 mod launcher_bridge;
 mod level_workspace;
 mod menu_popup;
@@ -185,6 +186,9 @@ struct State {
     gfx_layout_sy: String,
     gfx_layout_rotation: String,
     gfx_layout_visible: bool,
+    gfx_live_open: bool,
+    gfx_live_status: String,
+    gfx_live_snapshot: Option<gfx_live_inspector::UiSnapshot>,
 
     diffuse_status: String,
     normal_input: String,
@@ -1432,6 +1436,10 @@ enum Message {
     GfxLayoutValue(&'static str, String),
     GfxLayoutVisible(bool),
     GfxStageLayout,
+    GfxToggleLiveInspector,
+    GfxImportUiSnapshot,
+    GfxUiSnapshotPicked(Option<PathBuf>),
+    GfxUiSnapshotLoaded(Result<gfx_live_inspector::UiSnapshot, String>),
     GfxAction(gfx_editor::Action),
     GfxApply,
     GfxPickReplacement,
@@ -4100,6 +4108,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .into();
                     state.gfx_session = Some(session);
                     state.gfx_resource = 0;
+                    state.gfx_live_snapshot = None;
                     state.gfx_layout_selected = None;
                     state.gfx_active = true;
                 }
@@ -4110,6 +4119,37 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
             }
         }
+        Message::GfxToggleLiveInspector => {
+            state.gfx_live_open = !state.gfx_live_open;
+            state.gfx_live_status = "Read-only hierarchy inspector. A verified native Evolve GFx snapshot provider is not yet available; imported JSON is external data, not a live capture.".into();
+        }
+        Message::GfxImportUiSnapshot => {
+            return Task::perform(async {
+                tokio::task::spawn_blocking(|| native_export_picker("file"))
+                    .await.ok().flatten()
+            },Message::GfxUiSnapshotPicked);
+        }
+        Message::GfxUiSnapshotPicked(selected) => {
+            let Some(source)=selected else {return Task::none();};
+            return Task::perform(async move {
+                tokio::task::spawn_blocking(move ||
+                    gfx_live_inspector::from_file(&source))
+                    .await.unwrap_or_else(|e|Err(e.to_string()))
+            },Message::GfxUiSnapshotLoaded);
+        }
+        Message::GfxUiSnapshotLoaded(result) => match result {
+            Ok(snapshot) => {
+                state.gfx_live_status = format!(
+                    "Loaded {} read-only nodes from imported snapshot; not captured live by this manager.",
+                    snapshot.nodes.len()
+                );
+                state.gfx_live_snapshot = Some(snapshot);
+                state.gfx_live_open = true;
+            }
+            Err(error) => {
+                state.gfx_live_status = format!("Cannot inspect UI hierarchy: {error}");
+            }
+        },
         Message::GfxToggleLayout => {
             state.gfx_layout_open = !state.gfx_layout_open;
             if state.gfx_layout_open && state.gfx_layout_selected.is_none() {
