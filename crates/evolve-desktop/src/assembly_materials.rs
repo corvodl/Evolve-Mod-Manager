@@ -382,12 +382,56 @@ fn kala_banshee_brightness_mask(slot: &evolve_core::MaterialSlot) -> bool {
         })
 }
 
+// Original blue/red Glow leaf tints from Kala's uploaded tech MTLs.
+// These are only applied to the exact verified tech_3p CDF material; every
+// other actor/material continues using its own source color.
+const KALA_ARMOR_REDUCER_TINT: [f32; 3] = [0.17788844, 0.007_499_032, 0.0043914425];
+
+fn kala_tubing_leaf(
+    material_source: &Path,
+    binding: &str,
+    slot: &evolve_core::MaterialSlot,
+) -> bool {
+    let path = material_source
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    let source = binding.replace('\\', "/").to_ascii_lowercase();
+    let authored_decal = slot.maps.iter().any(|map| {
+        map.role == "decal"
+            && map
+                .path
+                .rsplit('/')
+                .next()
+                .is_some_and(|name| name.eq_ignore_ascii_case("chroma_fan320tiled_01b.tif"))
+    });
+    authored_decal
+        && ((path.ends_with("/merc_tech/tech_3p.mtl")
+            && source.ends_with("/merc_tech/tech_3p.skin")
+            && slot.name.eq_ignore_ascii_case("Glow"))
+            || (path.ends_with("/merc_tech/weapons/bansheegun/techbansheegun_3p.mtl")
+                && source.ends_with("/merc_tech/techbansheegun_3p.skin")
+                && (slot.name.eq_ignore_ascii_case("bansheegun glow")
+                    || slot.name.eq_ignore_ascii_case("armorreducer glow"))))
+}
+
 fn tint_legacy_decal(
     slot: &evolve_core::MaterialSlot,
     decal: &image::RgbaImage,
 ) -> image::RgbaImage {
-    let tint = slot.diffuse_tint.unwrap_or([1.0, 1.0, 1.0]);
-    let use_brightness_mask = kala_banshee_brightness_mask(slot);
+    tint_legacy_decal_for_state(slot, decal, None, false)
+}
+
+fn tint_legacy_decal_for_state(
+    slot: &evolve_core::MaterialSlot,
+    decal: &image::RgbaImage,
+    override_tint: Option<[f32; 3]>,
+    kala_tubing: bool,
+) -> image::RgbaImage {
+    let tint = override_tint
+        .or(slot.diffuse_tint)
+        .unwrap_or([1.0, 1.0, 1.0]);
+    let use_brightness_mask = kala_tubing || kala_banshee_brightness_mask(slot);
     let mut result = decal.clone();
     for pixel in result.pixels_mut() {
         let alpha = f32::from(pixel[3]) / 255.0;
@@ -517,6 +561,9 @@ struct MaterialLookup<'a> {
     build: Option<&'a str>,
 }
 
+// The original material provenance, texture budget, and Kala-only viewer
+// state are intentionally explicit: never resolve a texture by filename alone.
+#[allow(clippy::too_many_arguments)]
 fn authored_maps(
     document: &MaterialDocument,
     material_source: &Path,
@@ -525,6 +572,7 @@ fn authored_maps(
     lookup: MaterialLookup<'_>,
     cache: &SharedCache,
     budget: &mut TextureBudget,
+    kala_state: Option<evolve_core::KalaTubingState>,
 ) -> Result<ResolvedMaterialMaps, String> {
     let MaterialLookup {
         inventory,
@@ -628,9 +676,19 @@ fn authored_maps(
             budget.decoded.insert(canonical);
         }
         if index == 2 && map.role == "decal" {
-            result[index] = Some(Arc::new(tint_legacy_decal(slot, &image)));
+            let verified_kala =
+                kala_state.is_some() && kala_tubing_leaf(material_source, material_binding, slot);
+            let alternate_tint = (verified_kala
+                && kala_state == Some(evolve_core::KalaTubingState::ArmorReducer)
+                && slot.name.eq_ignore_ascii_case("Glow"))
+            .then_some(KALA_ARMOR_REDUCER_TINT);
+            result[index] = Some(Arc::new(if verified_kala {
+                tint_legacy_decal_for_state(slot, &image, alternate_tint, true)
+            } else {
+                tint_legacy_decal(slot, &image)
+            }));
             warnings.push(format!(
-                "{}: legacy Illum Decal uses authored GlowAmount and blue Diffuse tint, without diffuse-alpha masking; the viewer animates the Decal's independent TexMod (FBX stores its original map without baked motion)",
+                "{}: legacy Illum Decal uses authored GlowAmount and Diffuse tint, without diffuse-alpha masking; the viewer animates the Decal's independent TexMod (FBX stores its original map without baked motion)",
                 slot.name
             ));
         } else {
@@ -780,6 +838,7 @@ pub fn load_model(
                     },
                     cache,
                     &mut budget,
+                    None,
                 ) {
                     Ok(([diffuse, normal, emissive, specular, gloss, opacity], map_warnings)) => {
                         warnings.extend(map_warnings.into_iter().map(|w| {
@@ -1026,6 +1085,7 @@ pub fn load_with_progress(
     build: Option<&str>,
     cache: &SharedCache,
     progress: Option<&std::sync::atomic::AtomicUsize>,
+    kala_state: evolve_core::KalaTubingState,
 ) -> (Vec<Surface>, Vec<String>) {
     let mut warnings = Vec::new();
     let mut surfaces = Vec::with_capacity(report.source_parts.len());
@@ -1108,6 +1168,7 @@ pub fn load_with_progress(
                     },
                     cache,
                     &mut budget,
+                    Some(kala_state),
                 )
             });
             let ([diffuse, normal, emissive, specular, gloss, opacity], map_warnings) =
@@ -1122,6 +1183,19 @@ pub fn load_with_progress(
             surface.emissive = emissive;
             surface.emission_strength = leaf.glow_amount.unwrap_or(1.0).max(0.0);
             surface.emissive_uv = source_decal_motion(leaf);
+            // A single mesh MTL contains BOTH original Banshee blue and
+            // Armor Reducer red leaves. Render only the active mode's
+            // emissive tube; do not alter its normal/diffuse/UV0 sources.
+            if kala_tubing_leaf(&path, &part.binding, leaf)
+                && ((leaf.name.eq_ignore_ascii_case("armorreducer glow")
+                    && kala_state == evolve_core::KalaTubingState::Banshee)
+                    || (leaf.name.eq_ignore_ascii_case("bansheegun glow")
+                        && kala_state == evolve_core::KalaTubingState::ArmorReducer))
+            {
+                surface.emissive = None;
+                surface.emission_strength = 0.0;
+                surface.emissive_uv = None;
+            }
             surface.specular = specular;
             surface.gloss = gloss;
             surface.opacity = verified_opacity(leaf, opacity);
@@ -1321,6 +1395,43 @@ mod tests {
     }
 
     #[test]
+    fn kala_tubing_uses_3x_original_glow_and_active_state_tint_only() {
+        let blue = evolve_core::parse_material(
+            br#"<Material Name="Glow" Shader="Illum" GlowAmount="3"
+                Diffuse="0.072271854,0.1470273,0.42326769"><Textures>
+                <Texture Map="Decal" File="textures/particle/light/chroma_fan320tiled_01b.tif"/>
+                </Textures></Material>"#,
+        )
+        .unwrap();
+        let leaf = &blue.slots[0];
+        let source = Path::new("characters/hunters/merc_tech/tech_3p.mtl");
+        let binding = "characters/hunters/merc_tech/tech_3p.skin";
+        assert!(kala_tubing_leaf(source, binding, leaf));
+        assert_eq!(leaf.glow_amount, Some(3.0));
+        let red_atlas_frame = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]));
+        let banshee = tint_legacy_decal_for_state(leaf, &red_atlas_frame, None, true);
+        let armor = tint_legacy_decal_for_state(
+            leaf,
+            &red_atlas_frame,
+            Some(KALA_ARMOR_REDUCER_TINT),
+            true,
+        );
+        let b = banshee.get_pixel(0, 0);
+        let r = armor.get_pixel(0, 0);
+        assert!(b[2] > b[1] && b[1] > b[0], "Banshee tube should be blue");
+        assert!(
+            r[0] > r[1] && r[0] > r[2],
+            "Armor Reducer tube should be red"
+        );
+        assert_eq!(red_atlas_frame.get_pixel(0, 0).0, [255, 0, 0, 255]);
+        assert!(!kala_tubing_leaf(
+            Path::new("characters/hunters/other/tech_3p.mtl"),
+            binding,
+            leaf
+        ));
+    }
+
+    #[test]
     fn kala_real_banshee_glow_decal_is_not_zeroed_by_body_alpha() {
         let document = evolve_core::parse_material(
             br#"<Material Name="bansheegun glow" Shader="Illum"
@@ -1509,6 +1620,7 @@ mod tests {
             },
             &SharedCache::default(),
             &mut budget,
+            None,
         )
         .unwrap();
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
@@ -1866,6 +1978,7 @@ mod tests {
             },
             &SharedCache::default(),
             &mut budget,
+            None,
         )
         .unwrap();
         assert!(

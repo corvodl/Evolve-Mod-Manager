@@ -80,13 +80,60 @@ pub struct AssemblyPart {
     pub verified_skin_weights: bool,
 }
 
+/// Kala's original 3P CDF supplies mutually exclusive weapon visibility groups.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum KalaTubingState {
+    #[default]
+    Banshee,
+    ArmorReducer,
+}
+
+/// Original CDF verification shared by attachment selection and desktop options.
+pub fn is_original_kala_3p(cdf: &CdfDefinition) -> bool {
+    cdf.skeleton
+        .eq_ignore_ascii_case("characters/hunters/merc_tech/tech_3p_skeleton.chr")
+        && cdf.attachments.iter().any(|part| {
+            part.name.eq_ignore_ascii_case("bansheegun")
+                && part
+                    .binding
+                    .eq_ignore_ascii_case("characters/hunters/merc_tech/techbansheegun_3p.skin")
+        })
+        && cdf.attachments.iter().any(|part| {
+            part.name.eq_ignore_ascii_case("armorreducer")
+                && part
+                    .binding
+                    .eq_ignore_ascii_case("characters/hunters/merc_tech/techarmorreducer_3p.skin")
+        })
+        && [
+            "hiddenwhenbansheegunselected",
+            "hiddenwhenarmorreducerselected",
+        ]
+        .iter()
+        .all(|name| cdf.skin_sets.contains_key(*name))
+}
+
 pub fn select_attachments(
     cdf: &CdfDefinition,
+) -> Result<(Option<String>, Vec<&str>), AssemblyError> {
+    select_attachments_with_kala_state(cdf, KalaTubingState::Banshee)
+}
+
+pub fn select_attachments_with_kala_state(
+    cdf: &CdfDefinition,
+    kala_state: KalaTubingState,
 ) -> Result<(Option<String>, Vec<&str>), AssemblyError> {
     let chosen = if cdf.skin_sets.is_empty() {
         None
     } else if cdf.skin_sets.contains_key("default") {
         Some("default".to_owned())
+    } else if is_original_kala_3p(cdf) {
+        Some(
+            match kala_state {
+                KalaTubingState::Banshee => "hiddenwhenbansheegunselected",
+                KalaTubingState::ArmorReducer => "hiddenwhenarmorreducerselected",
+            }
+            .to_owned(),
+        )
     } else {
         // Stage 2 CDFs often use SkinSets named HiddenWhen*Selected as
         // equipment exclusion metadata, not actual renderable variants.
@@ -114,8 +161,19 @@ pub fn select_attachments(
                     .chars()
                     .filter(char::is_ascii_alphanumeric)
                     .collect();
-                keys.contains(&normalized)
-                    || !cdf.skin_sets.values().any(|set| set.contains(&normalized))
+                if is_original_kala_3p(cdf)
+                    && matches!(
+                        chosen.as_deref(),
+                        Some("hiddenwhenbansheegunselected" | "hiddenwhenarmorreducerselected")
+                    )
+                {
+                    // This Kala SkinSet is an exclusion list, not a list
+                    // of meshes to render. Keep the body and active gun.
+                    !keys.contains(&normalized)
+                } else {
+                    keys.contains(&normalized)
+                        || !cdf.skin_sets.values().any(|set| set.contains(&normalized))
+                }
             })
         })
         .map(|part| part.name.as_str())
@@ -397,6 +455,26 @@ pub fn read_static_cdf_assembly_with_equipment(
     build: Option<&str>,
     requested: &EquipmentOverrides,
 ) -> Result<(RenderMesh, AssemblyReport), AssemblyError> {
+    read_static_cdf_assembly_with_kala_state(
+        cdf_file,
+        library,
+        imported,
+        build,
+        requested,
+        KalaTubingState::Banshee,
+    )
+}
+
+/// Preserve all source geometry and select only the original authored
+/// active-weapon exclusions for the requested Kala preview state.
+pub fn read_static_cdf_assembly_with_kala_state(
+    cdf_file: &Path,
+    library: &Inventory,
+    imported: Option<&Path>,
+    build: Option<&str>,
+    requested: &EquipmentOverrides,
+    kala_state: KalaTubingState,
+) -> Result<(RenderMesh, AssemblyReport), AssemblyError> {
     let root = fs::canonicalize(&library.root)?;
     let cdf_metadata = fs::symlink_metadata(cdf_file)?;
     let cdf_location = fs::canonicalize(cdf_file)?;
@@ -408,7 +486,7 @@ pub fn read_static_cdf_assembly_with_equipment(
     let definition = read_cdf(&cdf_location)?;
     let overrides = validated_equipment_overrides(&definition, library, requested)
         .map_err(AssemblyError::Incomplete)?;
-    let (skin_set, selected) = select_attachments(&definition)?;
+    let (skin_set, selected) = select_attachments_with_kala_state(&definition, kala_state)?;
     let mut notes = Vec::new();
     // Static skinned mesh geometry can be rendered without a .chr skeleton.
     // Lack of a verified bind pose must only disable rigid bone sockets and
@@ -689,6 +767,63 @@ mod tests {
                 .source
                 .ends_with("ParasiteHost3.chr")
         );
+    }
+
+    #[test]
+    fn original_kala_banshee_selection_hides_red_armor_reducer_and_other_weapons() {
+        // Synthetic fixture with the names and exclusive SkinSets from
+        // merc_tech.7z/tech_3p.cdf; no game asset bytes are committed.
+        let source = br#"<CharacterDefinition>
+            <Model File="characters/hunters/merc_tech/tech_3p_skeleton.chr"/>
+            <AttachmentList>
+                <Attachment Type="CA_SKIN" AName="body"
+                    Binding="characters/hunters/merc_tech/tech_3p.skin"/>
+                <Attachment Type="CA_SKIN" AName="armorreducer"
+                    Binding="characters/hunters/merc_tech/techarmorreducer_3p.skin"/>
+                <Attachment Type="CA_SKIN" AName="bansheegun"
+                    Binding="characters/hunters/merc_tech/techbansheegun_3p.skin"/>
+                <Attachment Type="CA_SKIN" AName="pistoltech"
+                    Binding="characters/hunters/merc_tech/techpistol_3p.skin"/>
+                <Attachment Type="CA_SKIN" AName="riftdevice"
+                    Binding="characters/hunters/merc_tech/techriftdevice_3p.skin"/>
+                <Attachment Type="CA_SKIN" AName="riftdevicearm"
+                    Binding="characters/hunters/merc_tech/techriftdevice_3p_arm.skin"/>
+            </AttachmentList>
+            <SkinSets>
+                <SkinSet name="HiddenWhenBansheeGunSelected">
+                    <skin name="armorreducer"/><skin name="pistoltech"/>
+                    <skin name="riftdevice"/><skin name="riftdevicearm"/>
+                </SkinSet>
+                <SkinSet name="HiddenWhenRiftDeviceSelected">
+                    <skin name="armorreducer"/><skin name="bansheegun"/>
+                    <skin name="pistoltech"/>
+                </SkinSet>
+                <SkinSet name="HiddenWhenArmorReducerSelected">
+                    <skin name="bansheegun"/><skin name="pistoltech"/>
+                    <skin name="riftdevice"/><skin name="riftdevicearm"/>
+                </SkinSet>
+            </SkinSets>
+        </CharacterDefinition>"#;
+        let cdf = crate::cdf::parse_cdf(source).unwrap();
+        let (selected_set, rendered) = select_attachments(&cdf).unwrap();
+        assert_eq!(
+            selected_set.as_deref(),
+            Some("hiddenwhenbansheegunselected")
+        );
+        assert_eq!(rendered, ["body", "bansheegun"]);
+        assert!(is_original_kala_3p(&cdf));
+        let (red_set, red_rendered) =
+            select_attachments_with_kala_state(&cdf, KalaTubingState::ArmorReducer).unwrap();
+        assert_eq!(red_set.as_deref(), Some("hiddenwhenarmorreducerselected"));
+        assert_eq!(red_rendered, ["body", "armorreducer"]);
+
+        // Don't impose Kala's exclusive-arm defaults on unrelated CDFs.
+        let mut unrelated = cdf.clone();
+        unrelated.skeleton = "objects/characters/monsters/scorpid_2/scorpid1.chr".into();
+        let (set, rendered) = select_attachments(&unrelated).unwrap();
+        assert!(set.is_none());
+        assert!(rendered.contains(&"armorreducer"));
+        assert!(rendered.contains(&"bansheegun"));
     }
 
     #[test]

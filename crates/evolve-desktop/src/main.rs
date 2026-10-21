@@ -39,9 +39,9 @@ use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph,
     EquipmentOverrides, EquipmentSlot, HookPairReport, ImportedLibrary, ImportedPak, Inventory,
-    LevelScene, LibraryBatchImportReport, LibraryReferenceStatus, MaterialReport, ModProfile,
-    ModelInfo, NativeCafMotion, PakHookPairReport, PakInventory, ProfileCatalog, ProfileMod,
-    ProfilePlan, RenderMesh, RigReport, SignedPakInfo, StageTransaction, TerrainInfo,
+    KalaTubingState, LevelScene, LibraryBatchImportReport, LibraryReferenceStatus, MaterialReport,
+    ModProfile, ModelInfo, NativeCafMotion, PakHookPairReport, PakInventory, ProfileCatalog,
+    ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo, StageTransaction, TerrainInfo,
     VerifiedCafAssembly, VerifiedCafSkin, add_mod_to_profile, apply_profile_stage, apply_stage_pak,
     batch_stage_status, compare_assets, convert_glb_to_fbx, convert_original_motion,
     create_mod_profile, decode_dds_rgba, discover_equipment, export_dds_png,
@@ -51,10 +51,10 @@ use evolve_core::{
     imported_library, initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak,
     inspect_pak_hook_pair, inspect_signed_pak, list_mod_profiles, load_level_scene,
     material_texture_candidates, plan_mod_profile, prepare_client_hook, read_cdf, read_material,
-    read_model, read_native_caf, read_static_cdf_assembly_with_equipment, read_terrain,
-    rebuild_legacy_pak, rebuild_signed_pak_entry, resign_signed_pak, resolve_cdf,
-    resolve_imported_reference, resolve_materials, restore_profile_stage, restore_stage,
-    scan_directory, scan_directory_with_progress, stage_status,
+    read_model, read_native_caf, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry,
+    resign_signed_pak, resolve_cdf, resolve_imported_reference, resolve_materials,
+    restore_profile_stage, restore_stage, scan_directory, scan_directory_with_progress,
+    stage_status,
 };
 use iced::widget::{
     canvas, column, container, image, row, scrollable, shader, slider, space, svg, text, tooltip,
@@ -267,6 +267,7 @@ struct State {
     equipment_source: Option<PathBuf>,
     equipment_slots: Vec<EquipmentSlot>,
     equipment_overrides: EquipmentOverrides,
+    kala_tubing: KalaTubingState,
     full_armor_glow: bool,
     /// Viewport-only gain over the original source material emission.
     emissive_strength: f32,
@@ -427,6 +428,7 @@ enum Operation {
         SharedCache,
         EquipmentOverrides,
         bool,
+        KalaTubingState,
         Arc<AtomicUsize>,
     ),
     PrepareCdfDamage(
@@ -1044,16 +1046,18 @@ impl Operation {
                 cache,
                 equipment,
                 glow,
+                kala_tubing,
                 progress,
             ) => {
                 progress.store(5, Ordering::Relaxed);
                 crash_diagnostics::record("cdf_worker_begin", "reading authored CDF attachments");
-                let (mesh, report) = read_static_cdf_assembly_with_equipment(
+                let (mesh, report) = evolve_core::read_static_cdf_assembly_with_kala_state(
                     &source,
                     &inventory,
                     imported.as_deref(),
                     build.as_deref(),
                     &equipment,
+                    kala_tubing,
                 )
                 .map_err(|e| e.to_string())?;
                 crash_diagnostics::record(
@@ -1074,6 +1078,7 @@ impl Operation {
                     build.as_deref(),
                     &cache,
                     Some(&progress),
+                    kala_tubing,
                 );
                 progress.store(90, Ordering::Relaxed);
                 // Historical CryTek 0x745 monster geometry is the 2012 build:
@@ -1358,6 +1363,7 @@ enum Message {
     ViewerSidebarSelect(ViewerSidebarTab),
     ViewerSidebarClose(ViewerSidebarTab),
     ViewerEquip(String, String),
+    ViewerKalaTubingState(KalaTubingState),
     ViewerToggleMonsterGlow,
     ViewerEmissiveStrengthChanged(f32),
     ViewerToggleDamageBlend,
@@ -1977,6 +1983,7 @@ fn clear_viewer_asset(state: &mut State) {
     state.equipment_source = None;
     state.equipment_slots.clear();
     state.equipment_overrides.clear();
+    state.kala_tubing = KalaTubingState::Banshee;
     state.full_armor_glow = false;
     state.emissive_strength = 1.0;
     state.damage_blend_percent = 0;
@@ -2937,6 +2944,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.emissive_strength = (value * 20.0).round().clamp(0.0, 80.0) / 20.0;
             }
         }
+        Message::ViewerKalaTubingState(choice) => {
+            if state.busy {
+                state.status = "Finish loading Kala before changing tubing state.".into();
+                return Task::none();
+            }
+            let Some(source) = state.equipment_source.as_ref() else {
+                return Task::none();
+            };
+            let Ok(definition) = read_cdf(source) else {
+                return Task::none();
+            };
+            if !evolve_core::is_original_kala_3p(&definition) {
+                state.status = "Tubing state is only available for original Kala (Tech) 3P.".into();
+                return Task::none();
+            }
+            if choice != state.kala_tubing {
+                state.kala_tubing = choice;
+                state.viewer_sidebar_active = ViewerSidebarTab::Equipment;
+                return update(state, Message::ViewerPreviewStaticCdf);
+            }
+        }
         Message::ViewerToggleMonsterGlow => {
             if state.busy {
                 state.status = "Finish the current preview before changing glow.".into();
@@ -3523,7 +3551,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             if state.equipment_source.as_ref() != Some(&source) {
                 state.equipment_overrides.clear();
-                state.emissive_strength = 1.0;
+                state.kala_tubing = KalaTubingState::Banshee;
+                // Preview-only boost makes this subdued authored tint easier to inspect
+                // without altering its GlowAmount=3, exported DDS or game materials.
+                state.emissive_strength =
+                    if read_cdf(&source).is_ok_and(|cdf| evolve_core::is_original_kala_3p(&cdf)) {
+                        1.25
+                    } else {
+                        1.0
+                    };
                 // Armor glow is the normal monster preview state. Missing
                 // original glow DDS must not block regular diffuse rendering.
                 let virtual_source = entry.relative_path.replace('\\', "/").to_ascii_lowercase();
@@ -3556,6 +3592,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.preview_cache.clone(),
                 state.equipment_overrides.clone(),
                 state.full_armor_glow,
+                state.kala_tubing,
                 progress,
             );
             return launch(state, operation);
