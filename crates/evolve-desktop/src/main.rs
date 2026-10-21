@@ -260,6 +260,7 @@ struct State {
     equipment_slots: Vec<EquipmentSlot>,
     equipment_overrides: EquipmentOverrides,
     full_armor_glow: bool,
+    damage_blend_percent: u8,
     viewer_from_library: bool,
     developer_password: String,
     developer_status: String,
@@ -413,6 +414,7 @@ enum Operation {
         SharedCache,
         EquipmentOverrides,
         bool,
+        u8,
     ),
     ResolveCdf(PathBuf, PathBuf),
     InspectModel(PathBuf),
@@ -1001,7 +1003,7 @@ impl Operation {
             Self::InspectCdf(source) => read_cdf(&source)
                 .map(Completed::Character)
                 .map_err(|e| e.to_string()),
-            Self::BuildStaticCdf(source, inventory, imported, build, cache, equipment, glow) => {
+            Self::BuildStaticCdf(source, inventory, imported, build, cache, equipment, glow, damage_percent) => {
                 crash_diagnostics::record("cdf_worker_begin", "reading authored CDF attachments");
                 let (mesh, report) = read_static_cdf_assembly_with_equipment(
                     &source,
@@ -1028,6 +1030,20 @@ impl Operation {
                     build.as_deref(),
                     &cache,
                 );
+                if damage_percent > 0 {
+                    let count = assembly_materials::apply_damage_blend(
+                        &report,
+                        &mut surfaces,
+                        damage_percent,
+                        &inventory,
+                        imported.as_deref(),
+                        build.as_deref(),
+                        &cache,
+                    )?;
+                    warnings.push(format!(
+                        "Original damage BLENDLAYER preview: {count} verified monster material ranges, {damage_percent}% intensity; no transparency changes"
+                    ));
+                }
                 if glow {
                     let texture = evolve_core::monster_glow_path(&source, &inventory)?
                         .ok_or("No original full-armor glow DDS found for this monster/stage")?;
@@ -1241,6 +1257,8 @@ enum Message {
     ViewerSidebarClose(ViewerSidebarTab),
     ViewerEquip(String, String),
     ViewerToggleMonsterGlow,
+    ViewerToggleDamageBlend,
+    ViewerDamageBlendChanged(u8),
     ViewerSplitDrag(f32),
     OpenInspectorWindow,
     InspectorOpened,
@@ -1834,6 +1852,7 @@ fn clear_viewer_asset(state: &mut State) {
     state.equipment_slots.clear();
     state.equipment_overrides.clear();
     state.full_armor_glow = false;
+    state.damage_blend_percent = 0;
     state.texture_preview = None;
     state.texture = None;
     state.material_report = None;
@@ -2695,6 +2714,28 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.viewer_explorer_visible = true;
             state.viewer_menu = None;
         }
+        Message::ViewerDamageBlendChanged(percent) => {
+            if percent <= 100 && state.equipment_source.is_some() && !state.busy {
+                state.damage_blend_percent = percent;
+            }
+        }
+        Message::ViewerToggleDamageBlend => {
+            if state.busy {
+                state.status = "Finish the current model preview before changing damage blend.".into();
+                return Task::none();
+            }
+            let Some(source) = &state.equipment_source else {
+                state.status = "Select a monster CDF to preview its authored damage layer.".into();
+                return Task::none();
+            };
+            if !source.to_string_lossy().replace('\\', "/").to_ascii_lowercase().contains("/monsters/") {
+                state.status = "Damage blend is only available for monster CDFs.".into();
+                return Task::none();
+            }
+            state.damage_blend_percent = if state.damage_blend_percent == 0 { 100 } else { 0 };
+            state.viewer_sidebar_active = ViewerSidebarTab::Equipment;
+            return update(state, Message::ViewerPreviewStaticCdf);
+        }
         Message::ViewerToggleMonsterGlow => {
             if state.busy {
                 state.status = "Finish the current preview before changing glow.".into();
@@ -3276,6 +3317,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if state.equipment_source.as_ref() != Some(&source) {
                 state.equipment_overrides.clear();
                 state.full_armor_glow = false;
+                state.damage_blend_percent = 0;
                 state.equipment_source = Some(source.clone());
                 state.equipment_slots = read_cdf(&source)
                     .map(|cdf| discover_equipment(&cdf, inventory))
@@ -3297,6 +3339,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.preview_cache.clone(),
                 state.equipment_overrides.clone(),
                 state.full_armor_glow,
+                state.damage_blend_percent,
             );
             return launch(state, operation);
         }
@@ -3444,16 +3487,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let export_matches_viewport = cdf_source
                 .as_ref()
                 .is_some_and(|source| state.equipment_source.as_ref() == Some(source));
-            if (!state.equipment_overrides.is_empty() || state.full_armor_glow)
+            if (!state.equipment_overrides.is_empty() || state.full_armor_glow || state.damage_blend_percent > 0)
                 && !export_matches_viewport
             {
                 state.status =
                     "To export current Model Options, select only the active CDF assembly.".into();
                 return Task::none();
             }
-            if state.full_armor_glow && (!state.export_rigged || !state.export_embed_textures) {
+            if (state.full_armor_glow || state.damage_blend_percent > 0)
+                && (!state.export_rigged || !state.export_embed_textures)
+            {
                 state.status =
-                    "Full-armor glow needs Rigged and Embedded textures enabled for FBX export."
+                    "Full-armor glow and damage blend need Rigged and Embedded textures enabled for FBX export."
                         .into();
                 return Task::none();
             }
@@ -3478,6 +3523,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 export_dependencies: state.export_dependencies,
                 equipment,
                 full_armor_glow: state.full_armor_glow && export_matches_viewport,
+                damage_blend_percent: if export_matches_viewport { state.damage_blend_percent } else { 0 },
             };
             state.export_dialog_open = false;
             return launch(state, Operation::ExportBundle(inventory, options));
