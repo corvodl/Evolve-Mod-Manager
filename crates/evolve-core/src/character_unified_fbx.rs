@@ -994,8 +994,16 @@ mod tests {
                     serde_json::json!({"path":format!("{character}/scorpid3.mtl"),"bytes":fs::metadata(&mtl).unwrap().len()}),
                 ],
             ),
-            (&high, "dds_high.pak", vec![serde_json::json!({"path":texture,"bytes":11})]),
-            (&legacy, "legacy_high.pak", vec![serde_json::json!({"path":texture,"bytes":11})]),
+            (
+                &high,
+                "dds_high.pak",
+                vec![serde_json::json!({"path":texture,"bytes":11})],
+            ),
+            (
+                &legacy,
+                "legacy_high.pak",
+                vec![serde_json::json!({"path":texture,"bytes":11})],
+            ),
         ] {
             fs::write(
                 archive.join("asset-library.json"),
