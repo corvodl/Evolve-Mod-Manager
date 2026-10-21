@@ -306,14 +306,8 @@ pub fn download_verified_asset(asset: &VerifiedAsset, root: &Path) -> Result<Pat
         // Retry interrupted or corrupted downloads without trusting stale bytes.
         fs::remove_file(&target)?;
     }
-    let mut response = client()?
-        .get(&asset.url)
-        .send()?
-        .error_for_status()?;
-    if response
-        .content_length()
-        .is_some_and(|v| v > asset.size)
-    {
+    let mut response = client()?.get(&asset.url).send()?.error_for_status()?;
+    if response.content_length().is_some_and(|v| v > asset.size) {
         return Err(UpdateError::TooLarge);
     }
     let mut temporary = tempfile::Builder::new()
@@ -336,9 +330,7 @@ pub fn download_verified_asset(asset: &VerifiedAsset, root: &Path) -> Result<Pat
         temporary.write_all(&buffer[..count])?;
         digest.update(&buffer[..count]);
     }
-    if size != asset.size
-        || format!("{:x}", digest.finalize()) != asset.sha256
-    {
+    if size != asset.size || format!("{:x}", digest.finalize()) != asset.sha256 {
         return Err(UpdateError::HashMismatch);
     }
     temporary.as_file_mut().sync_all()?;
