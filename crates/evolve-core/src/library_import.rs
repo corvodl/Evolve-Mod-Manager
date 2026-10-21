@@ -428,7 +428,11 @@ mod tests {
         assert!(import_signed_library_pak_with_keys(&library, &source, &[]).is_err());
         let missing_key = root.path().join("missing.der");
         let result = import_signed_library_pak_with_keys(&library, &source, &[missing_key]);
-        assert!(result.unwrap_err().contains("No matching RSA verification key"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("No matching RSA verification key")
+        );
         assert_eq!(fs::read_dir(&library).unwrap().count(), 0);
     }
 
