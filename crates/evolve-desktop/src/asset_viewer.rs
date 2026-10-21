@@ -936,11 +936,16 @@ pub(super) fn export_dialog(state: &State) -> Element<'_, Message> {
         scrollable(controls).height(Fill),
         row![
             design::button("Export").on_press_maybe(
-                (!state.busy && !state.export_selected.is_empty())
-                    .then_some(Message::ExportBegin)),
+                (!state.busy && !state.export_selected.is_empty()).then_some(Message::ExportBegin)
+            ),
             design::button("Cancel").on_press(Message::ExportClose),
-        ].spacing(10),
-    ].height(Fill).spacing(12).padding(20).into()
+        ]
+        .spacing(10),
+    ]
+    .height(Fill)
+    .spacing(12)
+    .padding(20)
+    .into()
 }
 
 pub(super) fn view(state: &State) -> Element<'_, Message> {
