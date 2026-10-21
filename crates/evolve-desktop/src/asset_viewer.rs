@@ -531,14 +531,14 @@ fn gfx_viewport(state: &State) -> Element<'_, Message> {
     }
     if let Some(session) = &state.gfx_session {
         let info = &session.info;
-        actions = actions
-            .push(
-                design::button(if state.gfx_layout_open {
-                    "Close visual GFX layout editor"
-                } else {
-                    "Visual GFX layout editor…"
-                }).on_press(Message::GfxToggleLayout)
-            );
+        actions = actions.push(
+            design::button(if state.gfx_layout_open {
+                "Close visual GFX layout editor"
+            } else {
+                "Visual GFX layout editor…"
+            })
+            .on_press(Message::GfxToggleLayout),
+        );
         actions = actions
             .push(
                 text(format!(
@@ -658,7 +658,8 @@ fn gfx_viewport(state: &State) -> Element<'_, Message> {
                     "Hide FFDec raster backdrop"
                 } else {
                     "Show FFDec raster backdrop (requires rendered frame)"
-                }).on_press(Message::GfxToggleLayoutRaster)
+                })
+                .on_press(Message::GfxToggleLayoutRaster),
             );
             actions = actions.push(text("ROOT FIRST-FRAME LAYERS").size(14))
                 .push(text("Only real DefineShape bounds are draggable. Unbounded sprites support numeric editing. Runtime-created elements cannot be inferred from the static GFX.")
@@ -667,66 +668,118 @@ fn gfx_viewport(state: &State) -> Element<'_, Message> {
                 actions = actions.push(
                     design::button(text(format!(
                         "Depth {} · {} [#{}] {}{}",
-                        layer.depth, layer.label, layer.character,
+                        layer.depth,
+                        layer.label,
+                        layer.character,
                         if layer.editable { "" } else { "· read-only " },
-                        if state.gfx_layout_selected == Some(i) { "✓" } else { "" }
-                    ))).on_press(Message::GfxLayoutSelect(i))
+                        if state.gfx_layout_selected == Some(i) {
+                            "✓"
+                        } else {
+                            ""
+                        }
+                    )))
+                    .on_press(Message::GfxLayoutSelect(i)),
                 );
             }
-            if let Some(layer) = state.gfx_layout_selected.and_then(|i| session.layers.get(i)) {
+            if let Some(layer) = state
+                .gfx_layout_selected
+                .and_then(|i| session.layers.get(i))
+            {
                 actions = actions
-                    .push(text(format!("Selected depth {} / symbol {} — {}",layer.depth,layer.character,layer.reason))
-                        .size(11).style(design::muted))
+                    .push(
+                        text(format!(
+                            "Selected depth {} / symbol {} — {}",
+                            layer.depth, layer.character, layer.reason
+                        ))
+                        .size(11)
+                        .style(design::muted),
+                    )
                     .push(text("X / Y (pixels)").size(12))
-                    .push(row![
-                        text_input("X", &state.gfx_layout_x)
-                            .on_input(|v| Message::GfxLayoutValue("x", v)),
-                        text_input("Y", &state.gfx_layout_y)
-                            .on_input(|v| Message::GfxLayoutValue("y", v))
-                    ].spacing(4))
+                    .push(
+                        row![
+                            text_input("X", &state.gfx_layout_x)
+                                .on_input(|v| Message::GfxLayoutValue("x", v)),
+                            text_input("Y", &state.gfx_layout_y)
+                                .on_input(|v| Message::GfxLayoutValue("y", v))
+                        ]
+                        .spacing(4),
+                    )
                     .push(text("X / Y scale (%)").size(12))
-                    .push(row![
-                        text_input("X scale", &state.gfx_layout_sx)
-                            .on_input(|v| Message::GfxLayoutValue("sx", v)),
-                        text_input("Y scale", &state.gfx_layout_sy)
-                            .on_input(|v| Message::GfxLayoutValue("sy", v))
-                    ].spacing(4))
+                    .push(
+                        row![
+                            text_input("X scale", &state.gfx_layout_sx)
+                                .on_input(|v| Message::GfxLayoutValue("sx", v)),
+                            text_input("Y scale", &state.gfx_layout_sy)
+                                .on_input(|v| Message::GfxLayoutValue("sy", v))
+                        ]
+                        .spacing(4),
+                    )
                     .push(text("Rotation (degrees)").size(12))
-                    .push(text_input("Rotation", &state.gfx_layout_rotation)
-                        .on_input(|v| Message::GfxLayoutValue("rotation",v)))
-                    .push(design::button(if state.gfx_layout_visible {
-                        "☑ Visible (click to hide)"
-                    } else {
-                        "☐ Hidden (click to show)"
-                    }).on_press(Message::GfxLayoutVisible(!state.gfx_layout_visible)))
-                    .push(design::button("Stage selected layout edit")
-                        .on_press_maybe((layer.editable && !state.gfx_busy)
-                            .then_some(Message::GfxStageLayout)));
+                    .push(
+                        text_input("Rotation", &state.gfx_layout_rotation)
+                            .on_input(|v| Message::GfxLayoutValue("rotation", v)),
+                    )
+                    .push(
+                        design::button(if state.gfx_layout_visible {
+                            "☑ Visible (click to hide)"
+                        } else {
+                            "☐ Hidden (click to show)"
+                        })
+                        .on_press(Message::GfxLayoutVisible(!state.gfx_layout_visible)),
+                    )
+                    .push(design::button("Stage selected layout edit").on_press_maybe(
+                        (layer.editable && !state.gfx_busy).then_some(Message::GfxStageLayout),
+                    ));
             }
         }
-        actions = actions
-            .push(design::button(if state.gfx_live_open {
+        actions = actions.push(
+            design::button(if state.gfx_live_open {
                 "Close Live UI Inspector (read-only)"
             } else {
                 "Live UI Inspector (read-only)…"
-            }).on_press(Message::GfxToggleLiveInspector));
+            })
+            .on_press(Message::GfxToggleLiveInspector),
+        );
         if state.gfx_live_open {
             actions = actions
                 .push(text("LIVE UI INSPECTOR · READ-ONLY").size(14))
-                .push(text(state.gfx_live_status.as_str()).size(11).style(design::muted))
-                .push(design::button("Load externally captured UI snapshot JSON…")
-                    .on_press(Message::GfxImportUiSnapshot));
+                .push(
+                    text(state.gfx_live_status.as_str())
+                        .size(11)
+                        .style(design::muted),
+                )
+                .push(
+                    design::button("Load externally captured UI snapshot JSON…")
+                        .on_press(Message::GfxImportUiSnapshot),
+                );
             if let Some(snapshot) = &state.gfx_live_snapshot {
-                actions = actions
-                    .push(text(format!("{} · frame {} · {} nodes",snapshot.movie,snapshot.frame,snapshot.nodes.len()))
-                        .size(12));
+                actions = actions.push(
+                    text(format!(
+                        "{} · frame {} · {} nodes",
+                        snapshot.movie,
+                        snapshot.frame,
+                        snapshot.nodes.len()
+                    ))
+                    .size(12),
+                );
                 for node in &snapshot.nodes {
-                    let indent = "  ".repeat(super::gfx_live_inspector::indent(snapshot,node).min(12));
-                    actions = actions.push(text(format!(
-                        "{}{} · {} · {}  at ({:.1},{:.1})  {}×{}  {}",
-                        indent,node.name,node.kind,node.text,node.x,node.y,
-                        node.width,node.height,if node.visible {"visible"}else{"hidden"},
-                    )).size(11));
+                    let indent =
+                        "  ".repeat(super::gfx_live_inspector::indent(snapshot, node).min(12));
+                    actions = actions.push(
+                        text(format!(
+                            "{}{} · {} · {}  at ({:.1},{:.1})  {}×{}  {}",
+                            indent,
+                            node.name,
+                            node.kind,
+                            node.text,
+                            node.x,
+                            node.y,
+                            node.width,
+                            node.height,
+                            if node.visible { "visible" } else { "hidden" },
+                        ))
+                        .size(11),
+                    );
                 }
             } else {
                 actions = actions.push(text(
@@ -737,8 +790,11 @@ fn gfx_viewport(state: &State) -> Element<'_, Message> {
         if !session.dependencies.is_empty() {
             actions = actions.push(text("SAME-BUILD GFX/SWF DEPENDENCIES").size(13));
             for dep in &session.dependencies {
-                actions=actions.push(text(format!("{} — {}",dep.reference,dep.outcome))
-                    .size(11).style(design::muted));
+                actions = actions.push(
+                    text(format!("{} — {}", dep.reference, dep.outcome))
+                        .size(11)
+                        .style(design::muted),
+                );
             }
         }
         if !info.resources.is_empty() {
@@ -793,14 +849,21 @@ fn gfx_viewport(state: &State) -> Element<'_, Message> {
                 selected: state.gfx_layout_selected,
                 stage,
                 raster_background: show_raster,
-            }).width(Fill).height(Fill);
+            })
+            .width(Fill)
+            .height(Fill);
             let surface: Element<'_, Message> =
                 if let (true, Some(handle)) = (show_raster, &state.gfx_preview) {
                     stack![
-                        image(handle.clone()).content_fit(iced::ContentFit::Contain)
-                            .width(Fill).height(Fill),
+                        image(handle.clone())
+                            .content_fit(iced::ContentFit::Contain)
+                            .width(Fill)
+                            .height(Fill),
                         canvas,
-                    ].width(Fill).height(Fill).into()
+                    ]
+                    .width(Fill)
+                    .height(Fill)
+                    .into()
                 } else {
                     canvas.into()
                 };
