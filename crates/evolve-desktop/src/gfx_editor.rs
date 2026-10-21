@@ -132,8 +132,14 @@ pub fn create(
         .map_err(|e| e.to_string())?;
     for name in &info.imports {
         if !valid_member(name)
-            || !["gfx", "swf"].contains(&Path::new(name).extension()
-                .and_then(|v| v.to_str()).unwrap_or_default().to_ascii_lowercase().as_str())
+            || !["gfx", "swf"].contains(
+                &Path::new(name)
+                    .extension()
+                    .and_then(|v| v.to_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase()
+                    .as_str(),
+            )
         {
             return Err("Unsafe imported GFX/SWF dependency path".into());
         }
@@ -146,8 +152,10 @@ pub fn create(
             return Err("An imported GFX movie resolves outside its source directory".into());
         }
         let content = fs::read(&verified).map_err(|e| e.to_string())?;
-        if content.len() < 16 || ![b"GFX", b"CFX", b"FWS", b"CWS"]
-            .iter().any(|prefix| content.starts_with(prefix.as_slice()))
+        if content.len() < 16
+            || ![b"GFX", b"CFX", b"FWS", b"CWS"]
+                .iter()
+                .any(|prefix| content.starts_with(prefix.as_slice()))
         {
             return Err("Referenced imported movie is not valid Scaleform content".into());
         }
@@ -291,8 +299,11 @@ fn validate_script_tree(root: &Path) -> Result<(), String> {
                     return Err("ActionScript directory nesting exceeds limit".into());
                 }
             } else if kind.is_file() {
-                if !path.extension().and_then(|x| x.to_str())
-                    .is_some_and(|x| x.eq_ignore_ascii_case("as")) {
+                if !path
+                    .extension()
+                    .and_then(|x| x.to_str())
+                    .is_some_and(|x| x.eq_ignore_ascii_case("as"))
+                {
                     return Err("Only ActionScript .as source files may be rebuilt".into());
                 }
                 count += 1;
@@ -305,7 +316,9 @@ fn validate_script_tree(root: &Path) -> Result<(), String> {
             }
         }
     }
-    if count == 0 { return Err("No ActionScript source files found".into()); }
+    if count == 0 {
+        return Err("No ActionScript source files found".into());
+    }
     Ok(())
 }
 
