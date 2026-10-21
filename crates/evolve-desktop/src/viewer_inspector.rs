@@ -273,6 +273,40 @@ pub(super) fn sidebar_inspector(state: &State) -> Element<'_, Message> {
                     .size(12).color(WARN)
             );
         }
+    } else if let (Some(report), Some(surfaces)) = (&state.cdf_report, &state.cdf_surfaces) {
+        // Full CDF assemblies don't pass through the single-MTL resolver:
+        // a missing MaterialReport does NOT mean their per-part source MTLs
+        // and DDS maps failed. Show the actual verified GPU bindings.
+        let visible = surfaces.iter().filter(|surface| surface.visible).count();
+        let textured = surfaces.iter().filter(|surface| surface.visible && surface.diffuse.is_some()).count();
+        let normal = surfaces.iter().filter(|surface| surface.visible && surface.normal.is_some()).count();
+        let emission = surfaces.iter().filter(|surface| surface.visible && surface.emissive.is_some()).count();
+        summary = summary.push(
+            text(format!(
+                "CDF original sections: {textured}/{visible} with decoded diffuse, {normal}/{visible} normal maps, {emission}/{visible} glow/emission maps"
+            ))
+            .size(12)
+            .color(if textured == visible { OK } else { WARN }),
+        );
+        for (part, surface) in report.source_parts.iter().zip(surfaces.iter()) {
+            if surface.visible && surface.diffuse.is_none() {
+                summary = summary.push(
+                    text(format!(
+                        "Missing verified color: {} · original MTL slot {}. No guessed diffuse is applied.",
+                        part.name, part.material_slot
+                    ))
+                    .size(11)
+                    .color(WARN),
+                );
+            }
+        }
+        if textured == visible {
+            summary = summary.push(
+                text("All visible ranges have decoded color maps. A pale region may instead indicate glow intensity, authored map contents or UVs.")
+                    .size(11)
+                    .style(design::muted),
+            );
+        }
     } else {
         summary = summary.push(
             text("No verified material report. Mesh geometry can load even when its texture files cannot be located.")
