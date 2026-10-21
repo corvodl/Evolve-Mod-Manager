@@ -1,13 +1,58 @@
 //! Placement overview and hierarchy inspector for verified CryEngine level
 //! scenes. Renders source locations only; does not invent geometry or changes.
 use super::{Message, State};
-use evolve_core::LevelScene;
+use evolve_core::{LevelScene, Transform};
 use iced::widget::canvas::{self, Path, Stroke};
 use iced::widget::{button, canvas as canvas_widget, column, row, scrollable, text, text_input};
 use iced::{Color, Element, Fill, Length, Point, Rectangle, Renderer, Theme, mouse};
 use std::sync::Arc;
 
 const MUTED: Color = Color::from_rgb(0.72, 0.76, 0.83);
+pub(super) fn format_transform(value: Transform) -> (String, String, String) {
+    let fields = |components: &[f32]| {
+        components
+            .iter()
+            .map(|component| component.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    (
+        fields(&value.position),
+        fields(&value.quaternion),
+        fields(&value.scale),
+    )
+}
+
+fn read_components<const N: usize>(source: &str, label: &str) -> Result<[f32; N], String> {
+    let values = source
+        .split(',')
+        .map(|value| value.trim().parse::<f32>())
+        .collect::<Vec<_>>();
+    if values.len() != N {
+        return Err(format!("{label} must contain {N} comma-separated numbers."));
+    }
+    let mut result = [0.0; N];
+    for (target, component) in result.iter_mut().zip(values) {
+        let parsed = component.map_err(|_| format!("Invalid {label} number"))?;
+        if !parsed.is_finite() || parsed.abs() > 1e8 {
+            return Err(format!("{label} values must be finite and bounded."));
+        }
+        *target = parsed;
+    }
+    Ok(result)
+}
+
+pub(super) fn parse_transform(
+    position: &str,
+    rotation: &str,
+    scale: &str,
+) -> Result<Transform, String> {
+    Ok(Transform {
+        position: read_components(position, "Position")?,
+        quaternion: read_components(rotation, "Rotation (wxyz)")?,
+        scale: read_components(scale, "Scale")?,
+    })
+}
 
 #[derive(Clone)]
 struct SceneOverview {
@@ -189,6 +234,14 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             text(format!("Status: {}", object.status))
                 .size(12)
                 .color(MUTED),
+            text("Edit local transform (position XYZ, rotation WXYZ, scale XYZ)").size(12),
+            text_input("Position: x, y, z", &state.level_edit_position)
+                .on_input(Message::LevelEditPositionChanged),
+            text_input("Rotation: w, x, y, z", &state.level_edit_rotation)
+                .on_input(Message::LevelEditRotationChanged),
+            text_input("Scale: x, y, z", &state.level_edit_scale)
+                .on_input(Message::LevelEditScaleChanged),
+            button("Apply to preview").on_press(Message::LevelApplyTransform),
         ]
         .spacing(6)
         .into()
@@ -238,10 +291,62 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             .size(12)
             .color(MUTED),
             details,
+            row![
+                button("Undo").on_press_maybe(
+                    (!state.level_undo.is_empty()).then_some(Message::LevelUndoTransform)
+                ),
+                button("Redo").on_press_maybe(
+                    (!state.level_redo.is_empty()).then_some(Message::LevelRedoTransform)
+                ),
+                text(format!("{} undo steps", state.level_undo.len()))
+                    .size(12)
+                    .color(MUTED),
+            ]
+            .spacing(8),
+            text(format!(
+                "Save {} changed placement(s) as a new level layer",
+                state.level_dirty_count
+            ))
+            .size(12),
+            text_input(
+                "New absolute .lyr or .xml output path",
+                &state.level_edit_output
+            )
+            .on_input(Message::LevelEditOutputChanged),
+            button("Export edited level copy")
+                .on_press_maybe((state.level_dirty_count > 0).then_some(Message::LevelExportEdits)),
+            text("Original level is read-only. Child world positions update in the preview.")
+                .size(12)
+                .color(MUTED),
         ]
         .spacing(7)
         .width(Length::FillPortion(2)),
     ]
     .spacing(12)
     .into()
+}
+
+#[cfg(test)]
+mod editing_tests {
+    use super::*;
+
+    #[test]
+    fn transform_fields_preserve_source_order_and_reject_nonfinite_values() {
+        let original = Transform {
+            position: [1.0, -2.0, 3.0],
+            quaternion: [1.0, 0.0, 0.0, 0.0],
+            scale: [1.0, 2.0, 3.0],
+        };
+        let (p, q, scale) = format_transform(original);
+        assert_eq!(parse_transform(&p, &q, &scale).unwrap(), original);
+        assert!(parse_transform("1, 2", &q, &scale).is_err());
+        assert!(parse_transform("NaN, 2, 3", &q, &scale).is_err());
+        assert!(parse_transform("1, Infinity, 3", &q, &scale).is_err());
+        assert!(parse_transform(&p, "1, NaN, 0, 0", &scale).is_err());
+        assert!(parse_transform(&p, &q, "1, 1, -inf").is_err());
+        assert!(parse_transform(&p, "1,0,0", &scale).is_err());
+        let local = parse_transform("1, 2, 3", "0.70710677, 0.70710677, 0, 0", "2, 3, 4").unwrap();
+        assert_eq!(local.quaternion[0], local.quaternion[1]);
+        assert_eq!(local.position, [1., 2., 3.]);
+    }
 }

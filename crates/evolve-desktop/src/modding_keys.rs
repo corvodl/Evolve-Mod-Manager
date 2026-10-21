@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
 pub struct KeyContext {
+    pub original_public: PathBuf,
     pub public: PathBuf,
     pub private: PathBuf,
 }
@@ -12,6 +13,40 @@ pub struct KeyContext {
 fn regular(path: &Path) -> bool {
     fs::symlink_metadata(path)
         .is_ok_and(|m| m.file_type().is_file() && m.len() > 0 && m.len() <= 64 * 1024)
+}
+
+/// Public-only original Stage 2 verification key; no private signing material.
+const ORIGINAL_PUBLIC_RSA: &[u8; 140] = include_bytes!("../../../assets/reference/RSAKeyData.bin");
+
+pub struct ArchiveVerificationKeys {
+    pub paths: Vec<PathBuf>,
+    _bundled_key_directory: tempfile::TempDir,
+}
+
+/// Each archive's decrypted CDR and signature determine which key is valid.
+/// The temporary embedded public-key file remains alive until import completes.
+pub fn archive_verification_keys(stage: &Path) -> Result<ArchiveVerificationKeys, String> {
+    let mut paths = Vec::new();
+    for candidate in [original_public_key(stage).ok(), public_key(stage).ok()]
+        .into_iter()
+        .flatten()
+    {
+        if !paths.contains(&candidate) {
+            paths.push(candidate);
+        }
+    }
+    let directory = tempfile::Builder::new()
+        .prefix("evolve-original-public-rsa-")
+        .tempdir()
+        .map_err(|e| format!("Cannot prepare bundled RSA verification key: {e}"))?;
+    let bundled = directory.path().join("RSAKeyData.bin");
+    fs::write(&bundled, ORIGINAL_PUBLIC_RSA)
+        .map_err(|e| format!("Cannot write bundled RSA verification key: {e}"))?;
+    paths.push(bundled);
+    Ok(ArchiveVerificationKeys {
+        paths,
+        _bundled_key_directory: directory,
+    })
 }
 
 pub fn public_key(stage: &Path) -> Result<PathBuf, String> {
@@ -26,7 +61,43 @@ pub fn public_key(stage: &Path) -> Result<PathBuf, String> {
     Ok(key)
 }
 
+/// Exact original Stage 2 signing key used by the private manager's
+/// CustomSigning stage. Never substitute a custom signing key when an original
+/// game PAK has not been cryptographically verified.
+pub fn original_public_key(stage: &Path) -> Result<PathBuf, String> {
+    let parent = stage
+        .parent()
+        .ok_or("Configured signing stage has no parent directory")?;
+    let key = parent.join("RSAKeyData.bin");
+    if !fs::symlink_metadata(&key).is_ok_and(|m| m.file_type().is_file() && m.len() == 140) {
+        return Err(format!(
+            "Original 140-byte RSAKeyData.bin missing from {}.              The original Stage 2 PAK cannot be re-signed safely without its exact public key.",
+            parent.display()
+        ));
+    }
+    Ok(key)
+}
+
+/// Select either the verified original or the stage's custom key from the
+/// authenticated archive signature, never from its filename or folder.
+/// Original archives and already-custom-signed archives use different keys.
+pub fn verified_archive_key(
+    stage: &Path,
+    source: &Path,
+    signed_basename: &str,
+) -> Result<PathBuf, String> {
+    let original = original_public_key(stage).ok();
+    let custom = public_key(stage).ok();
+    for candidate in [original, custom].into_iter().flatten() {
+        if evolve_core::inspect_signed_pak(source, &candidate, signed_basename).is_ok() {
+            return Ok(candidate);
+        }
+    }
+    Err("Archive cannot be authenticated with the original or configured custom Stage 2 RSA key; source/key/basename mismatch.".into())
+}
+
 pub fn signing_keys(stage: &Path) -> Result<KeyContext, String> {
+    let original_public = original_public_key(stage)?;
     let public = public_key(stage)?;
     let private = stage.join("mykeys").join("private_key.pem");
     if !regular(&private) {
@@ -36,7 +107,11 @@ pub fn signing_keys(stage: &Path) -> Result<KeyContext, String> {
             private.display()
         ));
     }
-    Ok(KeyContext { public, private })
+    Ok(KeyContext {
+        original_public,
+        public,
+        private,
+    })
 }
 
 /// Signed CryPAK basename is the actual file name; never a user-entered guess.
@@ -87,21 +162,56 @@ pub fn staged_target(stage: &Path, source: &Path) -> Result<String, String> {
 mod tests {
     use super::*;
     #[test]
+    fn bundled_original_key_is_tried_even_after_mismatched_local_keys() {
+        let root = tempfile::tempdir().unwrap();
+        let stage = root.path().join("stage");
+        let key_folder = stage.join("mykeys");
+        fs::create_dir_all(&key_folder).unwrap();
+        let custom = key_folder.join("public_key.bin");
+        fs::write(&custom, b"custom key").unwrap();
+        let misleading_original = root.path().join("RSAKeyData.bin");
+        fs::write(&misleading_original, [0u8; 140]).unwrap();
+        let candidates = archive_verification_keys(&stage).unwrap();
+        assert_eq!(candidates.paths.len(), 3);
+        assert_eq!(candidates.paths[0], misleading_original);
+        assert_eq!(candidates.paths[1], custom);
+        assert_eq!(
+            fs::read(candidates.paths.last().unwrap()).unwrap(),
+            ORIGINAL_PUBLIC_RSA
+        );
+    }
+
+    #[test]
+    fn bundled_original_key_requires_no_existing_stage() {
+        let root = tempfile::tempdir().unwrap();
+        let candidates = archive_verification_keys(&root.path().join("missing")).unwrap();
+        assert_eq!(candidates.paths.len(), 1);
+        assert_eq!(fs::read(&candidates.paths[0]).unwrap().len(), 140);
+    }
+
+    #[test]
     fn derives_keys_from_selected_stage_without_keys_in_settings() {
         let root = tempfile::tempdir().unwrap();
-        let keys = root.path().join("mykeys");
+        let stage = root.path().join("staged");
+        fs::create_dir(&stage).unwrap();
+        let keys = stage.join("mykeys");
         fs::create_dir(&keys).unwrap();
         fs::write(keys.join("public_key.bin"), b"test-public-only").unwrap();
-        assert!(public_key(root.path()).is_ok());
-        assert!(signing_keys(root.path()).is_err());
+        assert!(public_key(&stage).is_ok());
+        assert!(signing_keys(&stage).is_err());
         fs::write(keys.join("private_key.pem"), b"test-key").unwrap();
-        assert!(signing_keys(root.path()).is_ok());
-        fs::create_dir(root.path().join("paks")).unwrap();
-        fs::write(root.path().join("paks").join("libs.pak"), b"fake").unwrap();
+        assert!(
+            signing_keys(&stage).is_err(),
+            "original RSA key cannot default to custom"
+        );
+        fs::write(root.path().join("RSAKeyData.bin"), [0u8; 140]).unwrap();
+        assert!(signing_keys(&stage).is_ok());
+        fs::create_dir(stage.join("paks")).unwrap();
+        fs::write(stage.join("paks").join("libs.pak"), b"fake").unwrap();
         assert_eq!(
-            staged_target(root.path(), &root.path().join("paks/libs.pak")).unwrap(),
+            staged_target(&stage, &stage.join("paks/libs.pak")).unwrap(),
             "libs.pak"
         );
-        assert!(staged_target(root.path(), &keys.join("public_key.bin")).is_err());
+        assert!(staged_target(&stage, &keys.join("public_key.bin")).is_err());
     }
 }

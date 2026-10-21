@@ -81,6 +81,41 @@ impl canvas::Program<super::Message> for MeshViewport {
                 None
             }
         };
+        // Ground plane for the historical 2012 wireframe fallback uses
+        // the same source-space feet as the textured GPU viewport.
+        let floor = super::viewer_grid::floor_lines(&self.mesh.positions);
+        for kind in 0..4 {
+            let plane = Path::new(|path| {
+                for (i, line) in floor.iter().enumerate() {
+                    let category = if i == 40 {
+                        2
+                    } else if i == 41 {
+                        3
+                    } else if (i / 2) % 5 == 0 {
+                        1
+                    } else {
+                        0
+                    };
+                    if category != kind {
+                        continue;
+                    }
+                    if let (Some(a), Some(b)) = (project(line.start), project(line.end)) {
+                        path.move_to(a);
+                        path.line_to(b);
+                    }
+                }
+            });
+            let (color, width) = match kind {
+                0 => (Color::from_rgba(0.42, 0.46, 0.51, 0.22), 0.65),
+                1 => (Color::from_rgba(0.52, 0.56, 0.61, 0.4), 0.9),
+                2 => (Color::from_rgba(0.79, 0.30, 0.34, 0.75), 1.2),
+                _ => (Color::from_rgba(0.35, 0.73, 0.46, 0.75), 1.2),
+            };
+            frame.stroke(
+                &plane,
+                Stroke::default().with_color(color).with_width(width),
+            );
+        }
         // Cap the displayed triangles to keep UI responsive even when real
         // Stage 2 character meshes contain hundreds of thousands of faces.
         let count = self.mesh.indices.len() / 3;

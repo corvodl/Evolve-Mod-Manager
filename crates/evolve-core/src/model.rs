@@ -53,8 +53,12 @@ fn u32at(data: &[u8], at: usize) -> Result<u32, ModelError> {
         .ok_or_else(|| ModelError::Format("truncated chunk data".into()))?;
     Ok(u32::from_le_bytes([row[0], row[1], row[2], row[3]]))
 }
-fn read_f32(data: &[u8], at: usize) -> Result<f32, ModelError> {
-    Ok(f32::from_bits(u32at(data, at)?))
+fn endian_u32(data: &[u8], at: usize, big: bool) -> Result<u32, ModelError> {
+    let v = u32at(data, at)?;
+    Ok(if big { v.swap_bytes() } else { v })
+}
+fn endian_f32(data: &[u8], at: usize, big: bool) -> Result<f32, ModelError> {
+    Ok(f32::from_bits(endian_u32(data, at, big)?))
 }
 
 #[derive(Clone, Copy)]
@@ -62,6 +66,7 @@ struct Stream {
     offset: usize,
     count: usize,
     stride: usize,
+    big_endian: bool,
 }
 type ModelChunks = (String, u32, Vec<(u32, usize, usize, bool)>);
 fn validate_chunks(data: &[u8]) -> Result<ModelChunks, ModelError> {
@@ -125,10 +130,18 @@ fn validate_chunks(data: &[u8]) -> Result<ModelChunks, ModelError> {
         let end20 = start
             .checked_add(count.checked_mul(20).ok_or(ModelError::Limits)?)
             .ok_or(ModelError::Limits)?;
-        if count == 0 || count > MAX_CHUNKS || table < 20 || end20 > data.len() {
+        // 2012 CryTek releases commonly store a 16-byte chunk directory
+        // after the payloads. Checking its bounds as a 20-byte table first
+        // rejected valid historical meshes before the legacy branch ran.
+        let legacy_terminal =
+            start.checked_add(count.checked_mul(16).ok_or(ModelError::Limits)?) == Some(data.len());
+        if count == 0
+            || count > MAX_CHUNKS
+            || table < 20
+            || (!legacy_terminal && end20 > data.len())
+        {
             return Err(ModelError::Limits);
         }
-        let legacy_terminal = start.checked_add(count * 16) == Some(data.len());
         end = if legacy_terminal {
             start + count * 16
         } else {
@@ -206,9 +219,10 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
         if *size < header_size {
             return Err(ModelError::Format("truncated stream header".into()));
         }
+        let swapped = legacy && u32at(data, *offset + 4)? == 0x80000800;
         if legacy
             && (u32at(data, *offset)? != *ty
-                || u32at(data, *offset + 4)? != 0x800
+                || !matches!(u32at(data, *offset + 4)?, 0x800 | 0x80000800)
                 || u32at(data, *offset + 8)? as usize != *offset)
         {
             return Err(ModelError::Format(
@@ -216,17 +230,17 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
             ));
         }
         let base = offset + if legacy { 16 } else { 0 };
-        let stream_type = u32at(data, base + 4)?;
+        let stream_type = endian_u32(data, base + 4, swapped)?;
         if !matches!(stream_type, 0 | 1 | 2 | 5 | 15) {
             continue;
         }
-        let count = u32at(data, base + 8)? as usize;
-        let stride = u32at(data, base + 12)? as usize;
-        let a = u32at(data, base + 16)?;
-        let b = u32at(data, base + 20)?;
+        let count = endian_u32(data, base + 8, swapped)? as usize;
+        let stride = endian_u32(data, base + 12, swapped)? as usize;
+        let a = endian_u32(data, base + 16, swapped)?;
+        let b = endian_u32(data, base + 20, swapped)?;
         if count == 0
             || stride == 0
-            || (legacy && (u32at(data, base)? != 0 || a != 0 || b != 0))
+            || (legacy && (endian_u32(data, base, swapped)? != 0 || a != 0 || b != 0))
             || count
                 .checked_mul(stride)
                 .and_then(|v| v.checked_add(header_size))
@@ -243,6 +257,7 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
                     offset: offset + header_size,
                     count,
                     stride,
+                    big_endian: swapped,
                 },
             )
             .is_some()
@@ -329,9 +344,9 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
             [v[0], v[1], v[2]]
         } else {
             [
-                read_f32(data, at)?,
-                read_f32(data, at + 4)?,
-                read_f32(data, at + 8)?,
+                endian_f32(data, at, positions_stream.big_endian)?,
+                endian_f32(data, at + 4, positions_stream.big_endian)?,
+                endian_f32(data, at + 8, positions_stream.big_endian)?,
             ]
         };
         if v.iter()
@@ -344,7 +359,11 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
     let indices = (0..ni)
         .map(|i| {
             let at = indices_stream.offset + i * 2;
-            u16::from_le_bytes([data[at], data[at + 1]]) as u32
+            if indices_stream.big_endian {
+                u16::from_be_bytes([data[at], data[at + 1]]) as u32
+            } else {
+                u16::from_le_bytes([data[at], data[at + 1]]) as u32
+            }
         })
         .collect::<Vec<_>>();
     if indices.iter().any(|v| *v >= nv as u32) {
@@ -361,8 +380,8 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
                 .map(|i| {
                     let at = stream.offset + i * 8;
                     [
-                        read_f32(data, at).unwrap_or(f32::NAN),
-                        read_f32(data, at + 4).unwrap_or(f32::NAN),
+                        endian_f32(data, at, stream.big_endian).unwrap_or(f32::NAN),
+                        endian_f32(data, at + 4, stream.big_endian).unwrap_or(f32::NAN),
                     ]
                 })
                 .collect::<Vec<_>>(),
@@ -384,9 +403,9 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
                 .map(|i| {
                     let at = stream.offset + i * 12;
                     [
-                        read_f32(data, at).unwrap_or(f32::NAN),
-                        read_f32(data, at + 4).unwrap_or(f32::NAN),
-                        read_f32(data, at + 8).unwrap_or(f32::NAN),
+                        endian_f32(data, at, stream.big_endian).unwrap_or(f32::NAN),
+                        endian_f32(data, at + 4, stream.big_endian).unwrap_or(f32::NAN),
+                        endian_f32(data, at + 8, stream.big_endian).unwrap_or(f32::NAN),
                     ]
                 })
                 .collect::<Vec<_>>();
@@ -433,6 +452,118 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
         uv0,
         normals,
     })
+}
+
+/// Whether a verified original CryEngine SUBSETS table was provided.
+/// A standalone mesh with multiple MTL leaves but no source table must not
+/// paint every triangle with slot zero or guess equipment material IDs.
+pub fn has_original_mesh_subset_table(data: &[u8]) -> Result<bool, ModelError> {
+    let (_format, _version, chunks) = validate_chunks(data)?;
+    Ok(chunks
+        .iter()
+        .any(|(kind, _, _, _)| matches!(*kind, 0x08001017 | 0xCCCC0017)))
+}
+
+/// Verified CryEngine CrChF v7 triangle ranges and the source MTL leaf ID.
+/// Each range retains original index ordering, including sparse IDs such as
+/// Kala's 11th equipment/emission slot. The sentinel 255 is untextured.
+/// Legacy meshes without an original subset table keep slot zero.
+pub fn original_mesh_subsets(
+    data: &[u8],
+    index_count: usize,
+) -> Result<Vec<(u32, u32, u32)>, ModelError> {
+    if index_count == 0 || index_count > MAX_INDICES || !index_count.is_multiple_of(3) {
+        return Err(ModelError::Limits);
+    }
+    let (format, _, chunks) = validate_chunks(data)?;
+    let legacy = format.starts_with("CryTek");
+    let subset_kind = if legacy { 0xCCCC0017 } else { 0x08001017 };
+    let mut sources = chunks.iter().filter(|(kind, _, _, _)| *kind == subset_kind);
+    let Some((_, offset, size, _)) = sources.next() else {
+        return Ok(vec![(0, index_count as u32, 0)]);
+    };
+    if sources.next().is_some() {
+        return Err(ModelError::Format("ambiguous original subset table".into()));
+    }
+    // Historical CryTek 0x745 sections carry their own kind/version/offset/id
+    // header, then flags and count at +16/+20 and 36-byte subset records
+    // starting at +32. CrChF v7 has a different 16-byte table layout.
+    let swapped = legacy && u32at(data, *offset + 4)? == 0x80000800;
+    let (count, row_offset) = if legacy {
+        if *size < 68
+            || u32at(data, *offset)? != subset_kind
+            || !matches!(u32at(data, *offset + 4)?, 0x800 | 0x80000800)
+            || u32at(data, *offset + 8)? as usize != *offset
+        {
+            return Err(ModelError::Format(
+                "unsupported historical CryTek subset header".into(),
+            ));
+        }
+        let flags = endian_u32(data, *offset + 16, swapped)?;
+        if !matches!(flags, 0 | 2)
+            || endian_u32(data, *offset + 24, swapped)? != 0
+            || endian_u32(data, *offset + 28, swapped)? != 0
+        {
+            return Err(ModelError::Format("unknown historical subset flags".into()));
+        }
+        (endian_u32(data, *offset + 20, swapped)? as usize, 32usize)
+    } else {
+        if *size < 16 {
+            return Err(ModelError::Format("truncated CrChF subset table".into()));
+        }
+        (u32at(data, *offset + 4)? as usize, 16usize)
+    };
+    if !(1..=128).contains(&count) || row_offset.checked_add(count * 36).is_none_or(|n| n > *size) {
+        return Err(ModelError::Limits);
+    }
+    let legacy_vertex_count = if legacy {
+        Some(parse_model_bytes(data)?.positions.len())
+    } else {
+        None
+    };
+    let mut result = Vec::with_capacity(count + 1);
+    let mut cursor = 0usize;
+    for row in 0..count {
+        let at = *offset + row_offset + row * 36;
+        let first = endian_u32(data, at, swapped)? as usize;
+        let n = endian_u32(data, at + 4, swapped)? as usize;
+        let material = endian_u32(data, at + 16, swapped)?;
+        if first != cursor
+            || n == 0
+            || !first.is_multiple_of(3)
+            || !n.is_multiple_of(3)
+            || first.checked_add(n).is_none_or(|end| end > index_count)
+            || material >= 128
+        {
+            return Err(ModelError::Format(
+                "source mesh subset geometry/material ranges are invalid".into(),
+            ));
+        }
+        if legacy {
+            let first_vertex = endian_u32(data, at + 8, swapped)? as usize;
+            let vertex_count = endian_u32(data, at + 12, swapped)? as usize;
+            let nv = legacy_vertex_count.unwrap_or_default();
+            if first_vertex
+                .checked_add(vertex_count)
+                .is_none_or(|end| end > nv)
+            {
+                return Err(ModelError::Format(
+                    "historical material subset has invalid vertex range".into(),
+                ));
+            }
+        }
+        result.push((first as u32, n as u32, material));
+        cursor += n;
+    }
+    if legacy && cursor != index_count {
+        return Err(ModelError::Format(
+            "historical subset index coverage is incomplete".into(),
+        ));
+    }
+    if cursor < index_count {
+        result.push((cursor as u32, (index_count - cursor) as u32, 255));
+    }
+    Ok(result)
 }
 
 pub fn read_model(path: &Path) -> Result<RenderMesh, ModelError> {
@@ -532,6 +663,184 @@ pub(crate) mod tests {
         }
         data
     }
+    // The pre-Stage-2 2012 client uses CryTek 0x745 and legacy 16-byte
+    // terminal chunk records, not the CrChF v7 chunk table.
+    fn legacy_2012_fixture() -> Vec<u8> {
+        let positions = [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+            .iter()
+            .flatten()
+            .flat_map(|f| f.to_le_bytes())
+            .collect::<Vec<_>>();
+        let indices = [0u16, 1, 2]
+            .iter()
+            .flat_map(|index| index.to_le_bytes())
+            .collect::<Vec<_>>();
+        let uv = [[0.0f32, 0.0], [1.0, 0.0], [0.0, 1.0]]
+            .iter()
+            .flatten()
+            .flat_map(|f| f.to_le_bytes())
+            .collect::<Vec<_>>();
+        let streams = [(0u32, 12u32, positions), (5, 2, indices), (2, 8, uv)];
+        let mut data = vec![0u8; 20];
+        data[..8].copy_from_slice(b"CryTek\0\0");
+        data[8..12].copy_from_slice(&0xffff0000u32.to_le_bytes());
+        data[12..16].copy_from_slice(&0x745u32.to_le_bytes());
+        let mut records = Vec::new();
+        for (id, (stream_type, stride, values)) in streams.into_iter().enumerate() {
+            let offset = data.len();
+            let mut chunk = vec![0u8; 40];
+            chunk[0..4].copy_from_slice(&CRYTEK_STREAM.to_le_bytes());
+            chunk[4..8].copy_from_slice(&0x800u32.to_le_bytes());
+            chunk[8..12].copy_from_slice(&(offset as u32).to_le_bytes());
+            chunk[20..24].copy_from_slice(&stream_type.to_le_bytes());
+            chunk[24..28].copy_from_slice(&3u32.to_le_bytes());
+            chunk[28..32].copy_from_slice(&stride.to_le_bytes());
+            data.extend_from_slice(&chunk);
+            data.extend_from_slice(&values);
+            records.push((offset, id));
+        }
+        let table = data.len();
+        data[16..20].copy_from_slice(&(table as u32).to_le_bytes());
+        data.extend_from_slice(&(records.len() as u32).to_le_bytes());
+        for (offset, id) in records {
+            data.extend_from_slice(&CRYTEK_STREAM.to_le_bytes());
+            data.extend_from_slice(&0x800u32.to_le_bytes());
+            data.extend_from_slice(&(offset as u32).to_le_bytes());
+            data.extend_from_slice(&(id as u32).to_le_bytes());
+        }
+        data
+    }
+
+    #[test]
+    fn historical_crytek_subsets_preserve_nonzero_material_slots() {
+        // Synthetic 0x745 geometry with authored legacy material index 10,
+        // mirroring old NoDraw skeleton leaves before a visible body.
+        let mut bytes = legacy_2012_fixture();
+        let old_table = u32::from_le_bytes(bytes[16..20].try_into().unwrap()) as usize;
+        bytes.truncate(old_table);
+        let offset = bytes.len();
+        let mut subset = vec![0u8; 68];
+        subset[..4].copy_from_slice(&0xCCCC0017u32.to_le_bytes());
+        subset[4..8].copy_from_slice(&0x800u32.to_le_bytes());
+        subset[8..12].copy_from_slice(&(offset as u32).to_le_bytes());
+        subset[12..16].copy_from_slice(&99u32.to_le_bytes());
+        subset[16..20].copy_from_slice(&2u32.to_le_bytes());
+        subset[20..24].copy_from_slice(&1u32.to_le_bytes());
+        subset[36..40].copy_from_slice(&3u32.to_le_bytes());
+        subset[44..48].copy_from_slice(&3u32.to_le_bytes());
+        subset[48..52].copy_from_slice(&10u32.to_le_bytes());
+        bytes.extend_from_slice(&subset);
+        let table = bytes.len();
+        bytes[16..20].copy_from_slice(&(table as u32).to_le_bytes());
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        let mut old = legacy_2012_fixture();
+        old.drain(..old_table + 4);
+        bytes.extend_from_slice(&old[..3 * 16]);
+        bytes.extend_from_slice(&0xCCCC0017u32.to_le_bytes());
+        bytes.extend_from_slice(&0x800u32.to_le_bytes());
+        bytes.extend_from_slice(&(offset as u32).to_le_bytes());
+        bytes.extend_from_slice(&99u32.to_le_bytes());
+        assert!(has_original_mesh_subset_table(&bytes).unwrap());
+        assert_eq!(original_mesh_subsets(&bytes, 3).unwrap(), vec![(0, 3, 10)]);
+        let mut console = bytes.clone();
+        // The historical CGF subset table shares the same original material
+        // index semantics with the old CHR table but uses big-endian fields.
+        convert_2012_streams_to_console(&mut console);
+        console[offset + 4..offset + 8].copy_from_slice(&0x80000800u32.to_le_bytes());
+        for at in (offset + 16..offset + 32).step_by(4) {
+            let value = u32at(&console, at).unwrap();
+            console[at..at + 4].copy_from_slice(&value.to_be_bytes());
+        }
+        for at in (offset + 32..offset + 32 + 20).step_by(4) {
+            let value = u32at(&console, at).unwrap();
+            console[at..at + 4].copy_from_slice(&value.to_be_bytes());
+        }
+        assert_eq!(
+            original_mesh_subsets(&console, 3).unwrap(),
+            vec![(0, 3, 10)]
+        );
+        bytes[offset + 48] = 200;
+        assert!(original_mesh_subsets(&bytes, 3).is_err());
+    }
+
+    // Synthetic copy of the stream endian variant used by historical 2012
+    // CGFs; the 20-byte outer chunk directory remains little-endian while
+    // the geometry stream payload and dimensions are big-endian.
+    fn convert_2012_streams_to_console(data: &mut [u8]) {
+        let table = u32at(data, 16).unwrap() as usize;
+        let count = u32at(data, table).unwrap() as usize;
+        let record_size = if table + 4 + count * 16 == data.len() {
+            16
+        } else {
+            20
+        };
+        for row in 0..count {
+            let at = table + 4 + row * record_size;
+            if u32at(data, at).unwrap() != CRYTEK_STREAM {
+                continue;
+            }
+            let offset = u32at(data, at + 8).unwrap() as usize;
+            let kind = u32at(data, offset + 20).unwrap();
+            let n = u32at(data, offset + 24).unwrap() as usize;
+            let stride = u32at(data, offset + 28).unwrap() as usize;
+            for field in 0..6 {
+                let pos = offset + 16 + field * 4;
+                let original = u32at(data, pos).unwrap();
+                data[pos..pos + 4].copy_from_slice(&original.to_be_bytes());
+            }
+            match kind {
+                0..=2 => {
+                    for pos in (offset + 40..offset + 40 + n * stride).step_by(4) {
+                        let original = u32at(data, pos).unwrap();
+                        data[pos..pos + 4].copy_from_slice(&original.to_be_bytes());
+                    }
+                }
+                5 => {
+                    for pos in (offset + 40..offset + 40 + n * stride).step_by(2) {
+                        data.swap(pos, pos + 1);
+                    }
+                }
+                _ => {}
+            }
+            data[offset + 4..offset + 8].copy_from_slice(&0x80000800u32.to_le_bytes());
+        }
+    }
+
+    #[test]
+    fn historical_console_2012_cgf_coordinates_indices_and_uvs_decode() {
+        let mut raw = legacy_2012_fixture();
+        convert_2012_streams_to_console(&mut raw);
+        let mesh = parse_model_bytes(&raw).unwrap();
+        assert_eq!(mesh.info.format, "CryTek 0x745");
+        assert_eq!(
+            mesh.positions,
+            vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]]
+        );
+        assert_eq!(mesh.indices, vec![0, 1, 2]);
+        assert_eq!(mesh.uv0.unwrap()[2], [0., 1.]);
+        assert_eq!(original_mesh_subsets(&raw, 3).unwrap(), vec![(0, 3, 0)]);
+        // A malformed console stream must still fail instead of displaying
+        // plausibly shaped but incorrect geometry.
+        let table = u32at(&raw, 16).unwrap() as usize;
+        let position = u32at(&raw, table + 4 + 8).unwrap() as usize;
+        raw[position + 40..position + 44].copy_from_slice(&f32::NAN.to_be_bytes());
+        assert!(parse_model_bytes(&raw).is_err());
+    }
+
+    #[test]
+    fn historical_2012_crytek_geometry_remains_previewable() {
+        let source = legacy_2012_fixture();
+        let mesh = parse_model_bytes(&source).unwrap();
+        assert_eq!(mesh.info.format, "CryTek 0x745");
+        assert_eq!(mesh.info.version, 0x745);
+        assert_eq!(mesh.info.vertex_count, 3);
+        assert_eq!(mesh.indices, [0, 1, 2]);
+        assert_eq!(mesh.uv0.as_ref().unwrap()[2], [0.0, 1.0]);
+        // A 2012 mesh lacking modern material-subset data must not be
+        // rejected by the CDF viewport's per-material draw-range path.
+        assert_eq!(original_mesh_subsets(&source, 3).unwrap(), vec![(0, 3, 0)]);
+    }
+
     #[test]
     fn decodes_original_triangle_uvs() {
         let mesh = parse_model_bytes(&fixture()).unwrap();

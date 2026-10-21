@@ -94,28 +94,52 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             .style(design::text_button),
     ]
     .spacing(8);
-    let menu_details: Element<'_, Message> = match state.library_menu {
-        Some("File") => row![
-            design::button("Refresh catalog").on_press(Message::LibraryRefresh),
-            design::button("Import signed PAK…").on_press(Message::LibraryToggleConfiguration),
-            design::button("Storage settings").on_press(Message::Navigate(Page::Settings)),
-        ]
-        .spacing(8)
-        .into(),
-        Some("View") => row![
-            design::button("All Assets").on_press(Message::LibrarySetByBuild(false)),
-            design::button("By Build").on_press(Message::LibrarySetByBuild(true)),
-        ]
-        .spacing(8)
-        .into(),
-        Some("Tools") => row![
-            design::button("Preview selected PAK").on_press(Message::LibraryPreview),
-            design::button("Create editable project").on_press(Message::LibraryMakeModProject),
-            design::button("Open Modding").on_press(Message::Navigate(Page::Files)),
-        ]
-        .spacing(8)
-        .into(),
-        _ => text("").into(),
+    let menu_details: Option<Element<'_, Message>> = match state.library_menu {
+        Some("File") => Some(
+            column![
+                design::button("Refresh catalog")
+                    .on_press(Message::MenuCommand(Box::new(Message::LibraryRefresh))),
+                design::button("Export files and assemblies…")
+                    .on_press(Message::MenuCommand(Box::new(Message::LibraryExport))),
+                design::button("Open Asset Library Folder in Explorer")
+                    .on_press(Message::MenuCommand(Box::new(Message::LibraryOpenFolder)),),
+                design::button("Import signed PAK…").on_press(Message::MenuCommand(Box::new(
+                    Message::LibraryToggleConfiguration
+                ))),
+                design::button("Storage settings").on_press(Message::MenuCommand(Box::new(
+                    Message::Navigate(Page::Settings)
+                ))),
+            ]
+            .spacing(3)
+            .into(),
+        ),
+        Some("View") => Some(
+            column![
+                design::button("All Assets").on_press(Message::MenuCommand(Box::new(
+                    Message::LibrarySetByBuild(false)
+                ))),
+                design::button("By Build").on_press(Message::MenuCommand(Box::new(
+                    Message::LibrarySetByBuild(true)
+                ))),
+            ]
+            .spacing(3)
+            .into(),
+        ),
+        Some("Tools") => Some(
+            column![
+                design::button("Preview selected PAK")
+                    .on_press(Message::MenuCommand(Box::new(Message::LibraryPreview))),
+                design::button("Create editable project").on_press(Message::MenuCommand(Box::new(
+                    Message::LibraryMakeModProject
+                ))),
+                design::button("Open Modding").on_press(Message::MenuCommand(Box::new(
+                    Message::Navigate(Page::Files)
+                ))),
+            ]
+            .spacing(3)
+            .into(),
+        ),
+        _ => None,
     };
 
     let mut layout = column![
@@ -126,7 +150,6 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             background: Some(Background::Color(design::field(theme))),
             ..container::Style::default()
         }),
-        menu_details,
         row![
             design::button("Import PAKs").style(design::primary)
                 .on_press(Message::LibraryToggleConfiguration),
@@ -141,16 +164,16 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     if state.library_show_configuration {
         layout = layout.push(panel(container(column![
             row![
-                text("IMPORT SIGNED STAGE 2 PAK").size(14),
+                text("IMPORT SIGNED STAGE 2 PAKS").size(14),
                 space().width(Fill),
                 design::button("Close").on_press(Message::LibraryToggleConfiguration).style(design::text_button),
             ].spacing(8),
-            text("The Asset Library location is detected automatically. Imports use the configured setup's local verification key; original PAK files are not modified.")
+            text("The Asset Library location is detected automatically. Select one signed .pak or a directory containing up to 64 .pak files. Imports authenticate each PAK using the bundled original public RSA key and any configured original/custom public keys. Original archives are not modified.")
                 .size(12).style(design::muted),
             row![
-                design::text_input("Full path to a local Stage 2 .pak...", &state.library_import_source)
+                design::text_input("Stage 2 .pak file or folder path...", &state.library_import_source)
                     .on_input(Message::LibraryImportSourceChanged).width(Fill),
-                design::button("Import signed PAK").style(design::primary)
+                design::button("Import selected PAK(s)").style(design::primary)
                     .on_press(Message::LibraryImportStart),
             ].spacing(8),
             row![
@@ -294,5 +317,17 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             "Select an imported archive to preview its extracted files."
         }).size(12).style(design::muted),
     ].spacing(9).align_y(iced::Center));
-    layout.width(Fill).height(Fill).into()
+    let x = match state.library_menu {
+        Some("File") => 16.0,
+        Some("View") => 80.0,
+        Some("Tools") => 142.0,
+        _ => 16.0,
+    };
+    crate::menu_popup::overlay(
+        layout.width(Fill).height(Fill),
+        menu_details,
+        x,
+        127.0,
+        280.0,
+    )
 }

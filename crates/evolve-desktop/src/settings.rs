@@ -29,6 +29,8 @@ pub struct Preferences {
     pub reduce_motion: bool,
     pub keep_original_snapshots: bool,
     pub show_activity_on_tasks: bool,
+    /// On by default for both portable and installed builds. Can be disabled in Advanced.
+    pub crash_logging_enabled: bool,
     pub stage: String,
     pub swap: String,
     pub projects: String,
@@ -40,6 +42,8 @@ pub struct Preferences {
     pub asset_library_root: String,
     pub blender_executable: String,
     pub experimental_updates: bool,
+    /// Separate opt-in for prerelease Nightly builds.
+    pub nightly_updates: bool,
     pub automatic_update_checks: bool,
     pub create_desktop_shortcut: bool,
     /// Retain older application settings that the Rust interface does not
@@ -52,10 +56,10 @@ impl Default for Preferences {
     fn default() -> Self {
         Self {
             ui_density: "Comfortable".into(),
-            file_explorer_side: "Right".into(),
+            file_explorer_side: "Left".into(),
             viewer_explorer_visible: true,
             viewer_split: 0.67,
-            light_strength: 1.0,
+            light_strength: 1.6,
             viewer_show_inspector: false,
             viewer_wireframe: false,
             animation_speed: 1.0,
@@ -70,6 +74,7 @@ impl Default for Preferences {
             reduce_motion: false,
             keep_original_snapshots: true,
             show_activity_on_tasks: true,
+            crash_logging_enabled: true,
             stage: String::new(),
             swap: String::new(),
             projects: String::new(),
@@ -81,6 +86,7 @@ impl Default for Preferences {
             asset_library_root: String::new(),
             blender_executable: String::new(),
             experimental_updates: false,
+            nightly_updates: env!("CARGO_PKG_VERSION").contains("-nightly."),
             automatic_update_checks: true,
             create_desktop_shortcut: false,
             previous_options: BTreeMap::new(),
@@ -166,13 +172,13 @@ impl Preferences {
             self.ui_density = "Comfortable".into();
         }
         if !["Right", "Left"].contains(&self.file_explorer_side.as_str()) {
-            self.file_explorer_side = "Right".into();
+            self.file_explorer_side = "Left".into();
         }
         if !self.viewer_split.is_finite() || !(0.25..=0.8).contains(&self.viewer_split) {
             self.viewer_split = 0.67;
         }
-        if !self.light_strength.is_finite() || !(0.1..=2.0).contains(&self.light_strength) {
-            self.light_strength = 1.0;
+        if !self.light_strength.is_finite() || !(0.2..=4.0).contains(&self.light_strength) {
+            self.light_strength = 1.6;
         }
         if !self.animation_speed.is_finite() || !(0.1..=3.0).contains(&self.animation_speed) {
             self.animation_speed = 1.0;
@@ -382,6 +388,7 @@ mod tests {
         assert_eq!(prefs.file_explorer_side, "Left");
         assert!(!prefs.keep_original_snapshots);
         assert!(!prefs.experimental_updates);
+        assert_eq!(prefs.nightly_updates, env!("CARGO_PKG_VERSION").contains("-nightly."));
         assert_eq!(
             prefs.previous_options.get("another_old_option"),
             Some(&serde_json::json!(true))
@@ -434,5 +441,16 @@ mod tests {
             .insert("primary".into(), "invalid".into());
         assert!(save_to(&path, &invalid).is_err());
         assert_eq!(fs::read(&path).unwrap(), original);
+    }
+    #[test]
+    fn crash_diagnostics_default_enabled_even_with_old_preferences() {
+        let json = r#"{"show_activity_on_tasks":false}"#;
+        let prefs: Preferences = serde_json::from_str(json).unwrap();
+        assert!(prefs.crash_logging_enabled);
+        let mut off = prefs;
+        off.crash_logging_enabled = false;
+        let saved = serde_json::to_string(&off).unwrap();
+        let restored: Preferences = serde_json::from_str(&saved).unwrap();
+        assert!(!restored.crash_logging_enabled);
     }
 }

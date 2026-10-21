@@ -25,6 +25,7 @@ const USER_AGENT: &str = "EvolveModManager-Updater/1.0";
 pub enum UpdateChannel {
     Stable,
     Beta,
+    Nightly,
 }
 
 #[derive(Clone, Debug)]
@@ -159,11 +160,15 @@ fn parse_release(release: ApiRelease) -> Result<ReleaseUpdate, UpdateError> {
             "draft or inconsistent release metadata".into(),
         ));
     }
-    let is_beta = !semver.pre.is_empty();
-    let channel = if is_beta {
+    let prerelease = semver.pre.as_str();
+    let channel = if prerelease.is_empty() {
+        UpdateChannel::Stable
+    } else if prerelease.starts_with("nightly.") {
+        UpdateChannel::Nightly
+    } else if prerelease.starts_with("beta.") || prerelease.starts_with("rc.") {
         UpdateChannel::Beta
     } else {
-        UpdateChannel::Stable
+        return Err(UpdateError::Invalid("unsupported release channel".into()));
     };
     let prefix = "EvolveModManager-";
     let portable = parse_asset(
@@ -209,7 +214,7 @@ pub fn discover_update(
         .map_err(|_| UpdateError::Invalid("current version is not semver".into()))?;
     let url = match channel {
         UpdateChannel::Stable => format!("{API}/releases/latest"),
-        UpdateChannel::Beta => format!("{API}/releases?per_page=25"),
+        UpdateChannel::Beta | UpdateChannel::Nightly => format!("{API}/releases?per_page=50"),
     };
     let response = client()?
         .get(url)
@@ -225,12 +230,14 @@ pub fn discover_update(
             serde_json::from_slice::<ApiRelease>(&bytes)
                 .map_err(|e| UpdateError::Invalid(e.to_string()))?,
         ],
-        UpdateChannel::Beta => serde_json::from_slice::<Vec<ApiRelease>>(&bytes)
-            .map_err(|e| UpdateError::Invalid(e.to_string()))?,
+        UpdateChannel::Beta | UpdateChannel::Nightly => {
+            serde_json::from_slice::<Vec<ApiRelease>>(&bytes)
+                .map_err(|e| UpdateError::Invalid(e.to_string()))?
+        },
     };
     let mut available = Vec::new();
     for candidate in candidates {
-        if candidate.draft || (channel == UpdateChannel::Beta && !candidate.prerelease) {
+        if candidate.draft || (channel != UpdateChannel::Stable && !candidate.prerelease) {
             continue;
         }
         let Ok(parsed) = parse_release(candidate) else {
@@ -242,7 +249,15 @@ pub fn discover_update(
         let Ok(version) = Version::parse(&parsed.version) else {
             continue;
         };
-        if version > installed {
+        // An explicit Stable -> Nightly opt-in at the same base version
+        // may cross from 0.1.0 into 0.1.0-nightly.N. Once installed, the
+        // prerelease revision comparison prevents repetitive prompts.
+        let opted_into_same_version_nightly = channel == UpdateChannel::Nightly
+            && installed.pre.is_empty()
+            && version.major == installed.major
+            && version.minor == installed.minor
+            && version.patch == installed.patch;
+        if version > installed || opted_into_same_version_nightly {
             available.push((version, parsed));
         }
     }
@@ -395,6 +410,27 @@ mod tests {
         assert_eq!(parsed.channel, UpdateChannel::Stable);
         assert_eq!(parsed.version, "1.0.2");
     }
+    #[test]
+    fn recognizes_nightly_as_separate_prerelease_channel() {
+        let mut data = release();
+        let version = "0.1.0-nightly.1";
+        let prefix = github_release_prefix(version);
+        data.tag_name = format!("v{version}");
+        data.html_url = format!("https://github.com/{OWNER}/{REPOSITORY}/releases/tag/v{version}");
+        data.prerelease = true;
+        for asset in &mut data.assets {
+            asset.name = asset.name.replace("1.0.2", version);
+            asset.browser_download_url = format!("{prefix}{}", asset.name);
+        }
+        let digest = "a".repeat(64);
+        data.body = Some(data.assets.iter()
+            .map(|asset| format!("SHA256 {} {digest}", asset.name))
+            .collect::<Vec<_>>().join("\n"));
+        let parsed = parse_release(data).unwrap();
+        assert_eq!(parsed.channel, UpdateChannel::Nightly);
+        assert_eq!(parsed.version, version);
+    }
+
     #[test]
     fn refuses_release_with_missing_checksum_or_extra_asset() {
         let mut data = release();

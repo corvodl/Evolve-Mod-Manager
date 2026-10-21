@@ -52,7 +52,12 @@ pub fn classify_path(path: &Path) -> AssetKind {
         .unwrap_or_default()
         .to_string_lossy()
         .to_ascii_lowercase();
-    if name.ends_with(".dds") || name.ends_with(".dds.0") {
+    if name.ends_with(".dds")
+        || name.rsplit_once(".dds.").is_some_and(|(_, suffix)| {
+            let part = suffix.strip_suffix('a').unwrap_or(suffix);
+            part.parse::<usize>().is_ok_and(|n| n < 20)
+        })
+    {
         return AssetKind::Dds;
     }
     let ext = path
@@ -234,6 +239,15 @@ mod tests {
         assert_eq!(
             classify_path(Path::new("Tech_3p.DBA")),
             AssetKind::AnimationDba
+        );
+        assert_eq!(
+            classify_path(Path::new("Scorpid_body.DDS.5")),
+            AssetKind::Dds
+        );
+        assert_eq!(classify_path(Path::new("scope_ddn.dds.0a")), AssetKind::Dds);
+        assert_eq!(
+            classify_path(Path::new("Scorpid_body.dds.99")),
+            AssetKind::Other
         );
         assert_eq!(classify_path(Path::new("UI_Data.PAK")), AssetKind::Pak);
     }

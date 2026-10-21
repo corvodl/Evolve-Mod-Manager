@@ -20,15 +20,30 @@ pub enum DdsFormat {
     Bc3,
     Bc4,
     Bc5,
+    Ctx1,
+    Alpha8,
+    Luminance8,
+    Rgb24,
     Rgba32,
+}
+
+/// GPU layout of the source DDS payload. A CryTek 2012 console texture is
+/// not byte-compatible with a PC DDS even when its FourCC is DXT1/DXT5.
+/// The caller selects this from verified model/build provenance, not from
+/// the filename or a color-based guess that could damage Stage 2 maps.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DdsLayout {
+    Linear,
+    Xbox360Tiled,
 }
 
 impl DdsFormat {
     fn bytes_per_block(self) -> Option<usize> {
         match self {
-            Self::Bc1 | Self::Bc4 => Some(8),
+            Self::Bc1 | Self::Bc4 | Self::Ctx1 => Some(8),
             Self::Bc2 | Self::Bc3 | Self::Bc5 => Some(16),
-            Self::Rgba32 => None,
+            Self::Rgba32 | Self::Rgb24 | Self::Alpha8 | Self::Luminance8 => None,
         }
     }
 }
@@ -118,6 +133,7 @@ fn parse_header(bytes: &[u8]) -> Result<(DdsInfo, usize, Option<[u32; 4]>), DdsE
     let format = if format_flags & 4 != 0 {
         match fourcc {
             b"DXT1" => DdsFormat::Bc1,
+            b"CTX1" => DdsFormat::Ctx1,
             b"DXT3" => DdsFormat::Bc2,
             b"DXT5" => DdsFormat::Bc3,
             b"ATI1" | b"BC4U" => DdsFormat::Bc4,
@@ -139,6 +155,7 @@ fn parse_header(bytes: &[u8]) -> Result<(DdsInfo, usize, Option<[u32; 4]>), DdsE
                     77 | 78 => DdsFormat::Bc3,
                     80 | 81 => DdsFormat::Bc4,
                     83 | 84 => DdsFormat::Bc5,
+                    65 => DdsFormat::Alpha8,
                     28 | 29 | 87 | 91 => {
                         masks = Some(if matches!(u32_at(bytes, 128)?, 87 | 91) {
                             [0x00ff0000, 0x0000ff00, 0x000000ff, 0xff000000]
@@ -153,18 +170,40 @@ fn parse_header(bytes: &[u8]) -> Result<(DdsInfo, usize, Option<[u32; 4]>), DdsE
             _ => return Err(DdsError::Unsupported(format!("FourCC {:?}", fourcc))),
         }
     } else {
-        if format_flags & 0x40 == 0 || u32_at(bytes, 88)? != 32 {
-            return Err(DdsError::Unsupported(
-                "only 32-bit RGB DDS is supported".into(),
+        if format_flags & 1 != 0 && u32_at(bytes, 88)? == 8 && u32_at(bytes, 104)? == 0xff {
+            return Ok((
+                DdsInfo {
+                    schema: 1,
+                    width,
+                    height,
+                    mipmaps,
+                    format: DdsFormat::Alpha8,
+                    streaming_parts: 1,
+                    top_mip_bytes: 0,
+                },
+                payload_offset,
+                None,
             ));
         }
-        masks = Some([
-            u32_at(bytes, 92)?,
-            u32_at(bytes, 96)?,
-            u32_at(bytes, 100)?,
-            u32_at(bytes, 104)?,
-        ]);
-        DdsFormat::Rgba32
+        if format_flags & 0x20000 != 0 && u32_at(bytes, 88)? == 8 {
+            DdsFormat::Luminance8
+        } else if format_flags & 0x40 != 0 && matches!(u32_at(bytes, 88)?, 24 | 32) {
+            masks = Some([
+                u32_at(bytes, 92)?,
+                u32_at(bytes, 96)?,
+                u32_at(bytes, 100)?,
+                u32_at(bytes, 104)?,
+            ]);
+            if u32_at(bytes, 88)? == 24 {
+                DdsFormat::Rgb24
+            } else {
+                DdsFormat::Rgba32
+            }
+        } else {
+            return Err(DdsError::Unsupported(
+                "Unsupported uncompressed DDS depth or channel flags".into(),
+            ));
+        }
     };
     Ok((
         DdsInfo {
@@ -191,7 +230,13 @@ fn mip_sizes(info: &DdsInfo) -> Result<Vec<usize>, DdsError> {
                     .checked_mul(h.div_ceil(4))
                     .and_then(|n| n.checked_mul(block_bytes as u64))
             } else {
-                w.checked_mul(h).and_then(|n| n.checked_mul(4))
+                w.checked_mul(h).and_then(|n| {
+                    n.checked_mul(match info.format {
+                        DdsFormat::Alpha8 | DdsFormat::Luminance8 => 1,
+                        DdsFormat::Rgb24 => 3,
+                        _ => 4,
+                    })
+                })
             }
             .ok_or(DdsError::LimitsExceeded)?;
             usize::try_from(size).map_err(|_| DdsError::LimitsExceeded)
@@ -221,6 +266,16 @@ fn parse_part_name(path: &Path) -> Result<(String, Option<usize>), DdsError> {
 type LoadedDds = (DdsInfo, Vec<u8>, usize, Option<[u32; 4]>);
 
 fn load_dds(source: &Path) -> Result<LoadedDds, DdsError> {
+    load_dds_with_parts(source, &[])
+}
+
+/// Combine verified externally-supplied streaming fragments with a local
+/// .dds.0 mip tail. Each numbered part is still required exactly once;
+/// callers must validate cross-archive source/build provenance separately.
+fn load_dds_with_parts(source: &Path, additional: &[PathBuf]) -> Result<LoadedDds, DdsError> {
+    if additional.len() >= MAX_PARTS {
+        return Err(DdsError::LimitsExceeded);
+    }
     let (base, index) = parse_part_name(source)?;
     let header_path = if index.is_some_and(|i| i != 0) {
         source.with_file_name(format!("{base}.0"))
@@ -254,6 +309,17 @@ fn load_dds(source: &Path) -> Result<LoadedDds, DdsError> {
         {
             return Err(DdsError::Unsupported(
                 "duplicate numbered DDS fragment".into(),
+            ));
+        }
+    }
+    for path in additional {
+        let (name, index) = parse_part_name(path)?;
+        let Some(number) = index else {
+            return Err(DdsError::InvalidFile);
+        };
+        if name != base || number == 0 || parts.insert(number, path.clone()).is_some() {
+            return Err(DdsError::Unsupported(
+                "external streaming DDS fragments mismatch or duplicate local mip".into(),
             ));
         }
     }
@@ -411,7 +477,44 @@ fn decode_block(format: DdsFormat, bytes: &[u8]) -> [[u8; 4]; 16] {
             }
             pixels
         }
-        DdsFormat::Rgba32 => [[0u8; 4]; 16],
+        DdsFormat::Ctx1 => {
+            // Xbox 360 CTX1 encodes two 8-bit channels with two RG
+            // endpoints and 2-bit indices, interpolated like opaque BC1.
+            let c0 = [bytes[0], bytes[1]];
+            let c1 = [bytes[2], bytes[3]];
+            let palette = [
+                c0,
+                c1,
+                [
+                    ((u16::from(c0[0]) * 2 + u16::from(c1[0]) + 1) / 3) as u8,
+                    ((u16::from(c0[1]) * 2 + u16::from(c1[1]) + 1) / 3) as u8,
+                ],
+                [
+                    ((u16::from(c0[0]) + u16::from(c1[0]) * 2 + 1) / 3) as u8,
+                    ((u16::from(c0[1]) + u16::from(c1[1]) * 2 + 1) / 3) as u8,
+                ],
+            ];
+            let indices = u32::from_le_bytes(bytes[4..8].try_into().unwrap_or([0; 4]));
+            let mut pixels = [[0u8; 4]; 16];
+            for (i, pixel) in pixels.iter_mut().enumerate() {
+                let rg = palette[((indices >> (2 * i)) & 3) as usize];
+                // CTX1 is a two-channel Xenos normal-map format. Mirror
+                // the private manager's RG-to-XYZ reconstruction so direct
+                // image preview and PNG/FBX texture exports don't have a
+                // black/blue-zero B channel. The GPU still samples exact RG
+                // and independently reconstructs tangent-space Z.
+                let x = f32::from(rg[0]) / 127.5 - 1.0;
+                let y = f32::from(rg[1]) / 127.5 - 1.0;
+                let z = (1.0 - x * x - y * y).max(0.0).sqrt();
+                let length = (x * x + y * y + z * z).sqrt().max(f32::EPSILON);
+                let blue = (((z / length + 1.0) * 127.5).round() as i32).clamp(0, 255) as u8;
+                *pixel = [rg[0], rg[1], blue, 255];
+            }
+            pixels
+        }
+        DdsFormat::Rgba32 | DdsFormat::Rgb24 | DdsFormat::Alpha8 | DdsFormat::Luminance8 => {
+            [[0u8; 4]; 16]
+        }
     }
 }
 
@@ -444,24 +547,131 @@ fn validate_masks(m: [u32; 4]) -> Result<(), DdsError> {
     Ok(())
 }
 
-/// Decode exactly the highest-quality full-resolution mipmap.
+/// Address one GPU-compressed tile block in an Xbox 360 tiled surface.
+/// All address arithmetic is bounded to the source's validated top mip.
+fn xbox360_tiled_xy(offset: usize, width: usize, pitch: usize) -> (usize, usize) {
+    let aligned_width = (width + 31) & !31;
+    let log_bpp = (pitch >> 2) + ((pitch >> 1) >> (pitch >> 2));
+    let offset_b = offset << log_bpp;
+    let offset_t = ((offset_b & !4095) >> 3) + ((offset_b & 1792) >> 2) + (offset_b & 63);
+    let offset_m = offset_t >> (7 + log_bpp);
+    let macro_x = (offset_m % (aligned_width >> 5)) << 2;
+    let tile_x = (((offset_t >> (5 + log_bpp)) & 2) + (offset_b >> 6)) & 3;
+    let micro_x = ((((offset_t >> 1) & !15) + (offset_t & 15)) & ((pitch << 3) - 1)) >> log_bpp;
+    let x = ((macro_x + tile_x) << 3) + micro_x;
+    let macro_y = (offset_m / (aligned_width >> 5)) << 2;
+    let tile_y = ((offset_t >> (6 + log_bpp)) & 1) + ((offset_b & 2048) >> 10);
+    let micro_y =
+        (((offset_t & (((pitch << 6) - 1) & !31)) + ((offset_t & 15) << 1)) >> (3 + log_bpp)) & !1;
+    let y = ((macro_y + tile_y) << 3) + micro_y + ((offset_t & 16) >> 4);
+    (x, y)
+}
+
+/// Convert a console top mip into the ordinary linear, little-endian block
+/// order expected by our BC1/2/3/4/5/CTX1 CPU decoders.
+fn untile_xbox360(
+    tiled: &[u8],
+    width: u32,
+    height: u32,
+    pitch: usize,
+) -> Result<Vec<u8>, DdsError> {
+    let bw = width.div_ceil(4) as usize;
+    let bh = height.div_ceil(4) as usize;
+    if bw == 0
+        || bh == 0
+        || !bw.is_multiple_of(32)
+        || !bh.is_multiple_of(32)
+        || bw.checked_mul(bh).and_then(|v| v.checked_mul(pitch)) != Some(tiled.len())
+    {
+        return Err(DdsError::Unsupported(
+            "Xbox 360 tiled surface has a non-macro-aligned or incomplete top mip".into(),
+        ));
+    }
+    let mut linear = vec![0u8; tiled.len()];
+    for offset in 0..bw * bh {
+        let (x, y) = xbox360_tiled_xy(offset, bw, pitch);
+        if x >= bw || y >= bh {
+            return Err(DdsError::Unsupported(
+                "Xbox 360 block address out of bounds".into(),
+            ));
+        }
+        let from = offset * pitch;
+        let to = (y * bw + x) * pitch;
+        linear[to..to + pitch].copy_from_slice(&tiled[from..from + pitch]);
+    }
+    for word in linear.as_chunks_mut::<2>().0 {
+        word.swap(0, 1);
+    }
+    Ok(linear)
+}
+
+/// Decode the top mip using the verified source header platform layout.
+/// This shared path also feeds embedded FBX materials, not just PNG export.
 pub fn decode_dds_rgba(source: &Path) -> Result<(DdsInfo, RgbaImage), DdsError> {
-    let (info, bytes, offset, masks) = load_dds(source)?;
+    decode_dds_rgba_with_layout(source, source_layout_for_png(source)?)
+}
+
+/// Decode using the verified source platform, without modifying the game DDS.
+pub fn decode_dds_rgba_with_layout(
+    source: &Path,
+    layout: DdsLayout,
+) -> Result<(DdsInfo, RgbaImage), DdsError> {
+    decode_dds_rgba_with_layout_parts(source, layout, &[])
+}
+
+/// Decode a complete cross-archive mip chain without modifying or copying
+/// any original DDS. Extra numbered fragments are validated by the same
+/// dimensions, exact mip lengths and contiguous set checks as local parts.
+pub fn decode_dds_rgba_with_parts(
+    source: &Path,
+    additional: &[PathBuf],
+) -> Result<(DdsInfo, RgbaImage), DdsError> {
+    decode_dds_rgba_with_layout_parts(source, source_layout_for_png(source)?, additional)
+}
+
+fn decode_dds_rgba_with_layout_parts(
+    source: &Path,
+    layout: DdsLayout,
+    additional: &[PathBuf],
+) -> Result<(DdsInfo, RgbaImage), DdsError> {
+    let (info, bytes, offset, masks) = load_dds_with_parts(source, additional)?;
     let pixels_len = u64::from(info.width) * u64::from(info.height) * 4;
     let capacity = usize::try_from(pixels_len).map_err(|_| DdsError::LimitsExceeded)?;
     let mut rgba = vec![0u8; capacity];
-    let payload = &bytes[offset..offset + info.top_mip_bytes];
-    if info.format == DdsFormat::Rgba32 {
+    let original = &bytes[offset..offset + info.top_mip_bytes];
+    let converted = if layout == DdsLayout::Xbox360Tiled {
+        let pitch = info.format.bytes_per_block().ok_or_else(|| {
+            DdsError::Unsupported("Console uncompressed surface decoding is not verified".into())
+        })?;
+        Some(untile_xbox360(original, info.width, info.height, pitch)?)
+    } else {
+        None
+    };
+    let payload = converted.as_deref().unwrap_or(original);
+    if matches!(info.format, DdsFormat::Alpha8 | DdsFormat::Luminance8) {
+        for (sample, pixel) in payload.iter().zip(rgba.as_chunks_mut::<4>().0.iter_mut()) {
+            // The extracted .dds.0a alpha/normal auxiliaries are best
+            // inspected as grayscale images rather than invisible RGBA alpha.
+            pixel.copy_from_slice(&[*sample, *sample, *sample, 255]);
+        }
+    } else if matches!(info.format, DdsFormat::Rgba32 | DdsFormat::Rgb24) {
         let masks = masks.ok_or_else(|| DdsError::Unsupported("missing channel masks".into()))?;
         validate_masks(masks)?;
         let (destination_pixels, _) = rgba.as_chunks_mut::<4>();
+        let pixel_stride = if info.format == DdsFormat::Rgb24 {
+            3
+        } else {
+            4
+        };
         for (src, dest) in payload
-            .as_chunks::<4>()
-            .0
-            .iter()
+            .chunks_exact(pixel_stride)
             .zip(destination_pixels.iter_mut())
         {
-            let pixel = u32::from_le_bytes(*src);
+            let pixel = if pixel_stride == 3 {
+                u32::from_le_bytes([src[0], src[1], src[2], 0])
+            } else {
+                u32::from_le_bytes([src[0], src[1], src[2], src[3]])
+            };
             dest.copy_from_slice(&[
                 channel(pixel, masks[0], 0),
                 channel(pixel, masks[1], 0),
@@ -498,9 +708,46 @@ pub fn decode_dds_rgba(source: &Path) -> Result<(DdsInfo, RgbaImage), DdsError> 
     Ok((info, image))
 }
 
+/// Platform selection shared by image decoding and PNG/FBX export, using the
+/// historical Xbox DDS header marker and flags, never filename guesses.
+fn source_layout_for_png(source: &Path) -> Result<DdsLayout, DdsError> {
+    use std::io::Read;
+    let mut bytes = [0u8; 128];
+    let (base, index) = parse_part_name(source)?;
+    let header = if index.is_some_and(|n| n != 0) {
+        source.with_file_name(format!("{base}.0"))
+    } else {
+        source.to_path_buf()
+    };
+    let mut input = fs::File::open(header)?;
+    if input.read_exact(&mut bytes).is_ok()
+        && &bytes[..4] == b"DDS "
+        && &bytes[124..128] == b"FYRC"
+        && u32::from_le_bytes(bytes[80..84].try_into().unwrap()) & 4 != 0
+        && matches!(
+            u32::from_le_bytes(bytes[36..40].try_into().unwrap()),
+            0x1800 | 0x1040 | 0x1840 | 0x1000 | 0x1440 | 0x1010
+        )
+        && matches!(
+            u32::from_le_bytes(bytes[108..112].try_into().unwrap()),
+            0x1000 | 0x401008
+        )
+    {
+        Ok(DdsLayout::Xbox360Tiled)
+    } else {
+        Ok(DdsLayout::Linear)
+    }
+}
+
 /// Explicit opt-in PNG export. Never overwrites an existing PNG.
 pub fn export_dds_png(source: &Path, destination: &Path) -> Result<DdsInfo, DdsError> {
-    let (info, rgba) = decode_dds_rgba(source)?;
+    if !destination
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+    {
+        return Err(DdsError::Unsupported("Output texture must be a PNG".into()));
+    }
+    let (info, rgba) = decode_dds_rgba_with_layout(source, source_layout_for_png(source)?)?;
     let mut file = match fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -523,6 +770,65 @@ pub fn export_dds_png(source: &Path, destination: &Path) -> Result<DdsInfo, DdsE
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        DdsFormat, DdsLayout, decode_block, source_layout_for_png, untile_xbox360, xbox360_tiled_xy,
+    };
+
+    #[test]
+    fn png_export_layout_is_strictly_header_selected() {
+        let dir = tempfile::tempdir().unwrap();
+        let texture = dir.path().join("sample.dds.0");
+        let mut header = [0u8; 128];
+        header[..4].copy_from_slice(b"DDS ");
+        header[124..128].copy_from_slice(b"FYRC");
+        header[80..84].copy_from_slice(&4u32.to_le_bytes());
+        header[36..40].copy_from_slice(&0x1800u32.to_le_bytes());
+        header[108..112].copy_from_slice(&0x1000u32.to_le_bytes());
+        std::fs::write(&texture, header).unwrap();
+        assert_eq!(
+            source_layout_for_png(&texture).unwrap(),
+            DdsLayout::Xbox360Tiled
+        );
+        header[124..128].copy_from_slice(b"GAME");
+        std::fs::write(&texture, header).unwrap();
+        assert_eq!(source_layout_for_png(&texture).unwrap(), DdsLayout::Linear);
+    }
+
+    #[test]
+    fn xbox360_untile_reverses_block_order_and_16_bit_endian() {
+        // A complete 128x128 DXT1 surface occupies one 32x32-block tile.
+        let mut linear = vec![0u8; 32 * 32 * 8];
+        for i in 0..32 * 32 {
+            linear[i * 8..i * 8 + 2].copy_from_slice(&(i as u16).to_le_bytes());
+        }
+        let mut console = vec![0u8; linear.len()];
+        for i in 0..32 * 32 {
+            let (x, y) = xbox360_tiled_xy(i, 32, 8);
+            let source = (y * 32 + x) * 8;
+            let target = i * 8;
+            console[target..target + 8].copy_from_slice(&linear[source..source + 8]);
+        }
+        for pair in console.as_chunks_mut::<2>().0 {
+            pair.swap(0, 1);
+        }
+        assert_eq!(untile_xbox360(&console, 128, 128, 8).unwrap(), linear);
+        assert!(untile_xbox360(&console, 124, 128, 8).is_err());
+    }
+
+    #[test]
+    fn ctx1_preserves_interpolated_original_rg_channels() {
+        let pixels = decode_block(DdsFormat::Ctx1, &[255, 0, 0, 255, 0xe4, 0, 0, 0]);
+        assert_eq!(&pixels[0][..2], &[255, 0]);
+        assert_eq!(&pixels[1][..2], &[0, 255]);
+        assert_eq!(&pixels[2][..2], &[170, 85]);
+        assert_eq!(&pixels[3][..2], &[85, 170]);
+        // Original RG is not modified by the private-format Z reconstruction.
+        assert!(pixels[2][2] > 200);
+        assert!(pixels.iter().all(|pixel| pixel[3] == 255));
+        let neutral = decode_block(DdsFormat::Ctx1, &[128, 128, 128, 128, 0, 0, 0, 0]);
+        assert!(neutral.iter().all(|pixel| pixel[2] >= 254));
+    }
+
     use super::*;
 
     fn header(w: u32, h: u32, mipmaps: u32, format: &[u8; 4]) -> Vec<u8> {
@@ -545,6 +851,68 @@ mod tests {
         } else {
             [224, 7, 0, 248, 0, 0, 0, 0]
         }
+    }
+
+    #[test]
+    fn shared_fbx_decoder_uses_native_layout_for_local_and_cross_pak_mips() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("native.dds");
+        let mut bytes = header(128, 128, 1, b"DXT1");
+        bytes[124..128].copy_from_slice(b"FYRC");
+        bytes[36..40].copy_from_slice(&0x1800u32.to_le_bytes());
+        bytes[108..112].copy_from_slice(&0x1000u32.to_le_bytes());
+        // Big-endian RGB565 red endpoint, repeated over one native tile.
+        let native = [248, 0, 7, 224, 0, 0, 0, 0].repeat(32 * 32);
+        bytes.extend(&native);
+        std::fs::write(&source, &bytes).unwrap();
+        let (_, decoded) = decode_dds_rgba(&source).unwrap();
+        assert!(decoded.pixels().all(|p| p.0 == [255, 0, 0, 255]));
+        let (_, forced_linear) = decode_dds_rgba_with_layout(&source, DdsLayout::Linear).unwrap();
+        assert_ne!(decoded, forced_linear);
+        bytes.truncate(128);
+        bytes[28..32].copy_from_slice(&2u32.to_le_bytes());
+        bytes.extend([0u8; 2048]);
+        let low = dir.path().join("native.dds.0");
+        std::fs::write(&low, bytes).unwrap();
+        let high_dir = dir.path().join("high");
+        std::fs::create_dir(&high_dir).unwrap();
+        let high = high_dir.join("native.dds.1");
+        std::fs::write(&high, native).unwrap();
+        let (_, cross) = decode_dds_rgba_with_parts(&low, &[high]).unwrap();
+        assert_eq!(cross, decoded);
+        // Ordinary PC headers retain their original linear interpretation.
+        let mut pc = std::fs::read(&source).unwrap();
+        pc[124..128].copy_from_slice(b"GAME");
+        std::fs::write(&source, pc).unwrap();
+        assert_eq!(decode_dds_rgba(&source).unwrap().1, forced_linear);
+    }
+
+    #[test]
+    fn decodes_historical_luminance_and_24bit_rgb_without_fake_color_channels() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("uncompressed.dds");
+        let mut lum = header(4, 4, 1, b"\0\0\0\0");
+        lum[8..12].copy_from_slice(&0x1007u32.to_le_bytes());
+        lum[80..84].copy_from_slice(&0x20000u32.to_le_bytes());
+        lum[88..92].copy_from_slice(&8u32.to_le_bytes());
+        lum.extend_from_slice(&[90u8; 16]);
+        fs::write(&source, lum).unwrap();
+        let (info, image) = decode_dds_rgba(&source).unwrap();
+        assert_eq!(info.format, DdsFormat::Luminance8);
+        assert_eq!(image.get_pixel(2, 2).0, [90, 90, 90, 255]);
+
+        let mut rgb = header(4, 4, 1, b"\0\0\0\0");
+        rgb[8..12].copy_from_slice(&0x1007u32.to_le_bytes());
+        rgb[80..84].copy_from_slice(&0x40u32.to_le_bytes());
+        rgb[88..92].copy_from_slice(&24u32.to_le_bytes());
+        rgb[92..96].copy_from_slice(&0xff0000u32.to_le_bytes());
+        rgb[96..100].copy_from_slice(&0x00ff00u32.to_le_bytes());
+        rgb[100..104].copy_from_slice(&0x0000ffu32.to_le_bytes());
+        rgb.extend_from_slice(&[17, 33, 240].repeat(16));
+        fs::write(&source, rgb).unwrap();
+        let (info, image) = decode_dds_rgba(&source).unwrap();
+        assert_eq!(info.format, DdsFormat::Rgb24);
+        assert_eq!(image.get_pixel(1, 3).0, [240, 33, 17, 255]);
     }
 
     #[test]
@@ -580,6 +948,31 @@ mod tests {
         assert_eq!(info.streaming_parts, 3);
         assert_eq!(info.width, 8);
         assert_eq!(rgba.get_pixel(7, 7).0, [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn split_low_mips_and_external_high_mip_reconstruct_exact_original_pixels() {
+        let dir = tempfile::tempdir().unwrap();
+        let low = dir.path().join("dds_low");
+        let high = dir.path().join("dds_high");
+        fs::create_dir(&low).unwrap();
+        fs::create_dir(&high).unwrap();
+        let source = low.join("scorpid_body.dds.0");
+        let mut tail = header(8, 8, 3, b"DXT1");
+        tail.extend_from_slice(&solid_bc1(false));
+        fs::write(&source, tail).unwrap();
+        fs::write(low.join("scorpid_body.dds.1"), solid_bc1(false)).unwrap();
+        let high_mip = high.join("scorpid_body.dds.2");
+        fs::write(&high_mip, solid_bc1(true).repeat(4)).unwrap();
+        assert!(decode_dds_rgba(&source).is_err());
+        let (info, rgba) =
+            decode_dds_rgba_with_parts(&source, std::slice::from_ref(&high_mip)).unwrap();
+        assert_eq!(info.streaming_parts, 3);
+        assert_eq!(rgba.get_pixel(7, 7).0, [255, 0, 0, 255]);
+        let wrong = high.join("another_monster.dds.2");
+        fs::write(&wrong, solid_bc1(false).repeat(4)).unwrap();
+        assert!(decode_dds_rgba_with_parts(&source, &[wrong]).is_err());
+        assert!(decode_dds_rgba_with_parts(&source, &[high_mip.clone(), high_mip]).is_err());
     }
 
     #[test]
