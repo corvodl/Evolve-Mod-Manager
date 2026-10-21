@@ -965,8 +965,8 @@ pub fn export_unified_cdf_fbx_options_with_glow(
         // a duplicate CAF for every part would create competing Blender
         // actions and make the exported animation ambiguous.
         let (mut glb, verified) = match (&motion, index) {
-            (Some(clip), 0) => rigged_glb_bytes_with_caf(&mesh, &raw, &skeleton_bytes, clip),
-            _ => rigged_glb_bytes(&mesh, &raw, &skeleton_bytes),
+            (Some(clip), 0) => rigged_glb_bytes_with_caf(&mesh, &raw, skeleton_bytes, clip),
+            _ => rigged_glb_bytes(&mesh, &raw, skeleton_bytes),
         }
         .map_err(|e| format!("CDF part {name} cannot be rigged: {e}"))?;
         if let Some(previous) = bone_count
