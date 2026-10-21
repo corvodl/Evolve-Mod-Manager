@@ -4,8 +4,8 @@ use crate::character_unified_fbx::standalone_authored_diffuse;
 use crate::{
     AnimationPolicy, DependencyStatus, EquipmentOverrides, Inventory,
     convert_glb_to_fbx_with_options, export_dds_png, export_model_glb,
-    export_rigged_character_fbx_options, export_unified_cdf_fbx_options, inspect_dependencies,
-    read_model, read_static_cdf_assembly,
+    export_rigged_character_fbx_options, export_unified_cdf_fbx_options_with_glow, inspect_dependencies,
+    read_model, read_static_cdf_assembly_with_equipment,
 };
 use std::collections::{HashSet, VecDeque};
 use std::fs;
@@ -27,6 +27,8 @@ pub struct ExportBundleOptions {
     pub embed_textures: bool,
     pub export_dependencies: bool,
     pub equipment: EquipmentOverrides,
+    /// Source-verified full-armor monster glow, enabled in Model Options.
+    pub full_armor_glow: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -378,7 +380,7 @@ pub fn export_bundle(
             continue;
         }
         if options.rigged && relative.to_ascii_lowercase().ends_with(".cdf") {
-            export_unified_cdf_fbx_options(
+            export_unified_cdf_fbx_options_with_glow(
                 &source,
                 inventory,
                 &options.blender,
@@ -386,9 +388,13 @@ pub fn export_bundle(
                 options.caf.as_deref(),
                 &options.equipment,
                 options.embed_textures,
+                options.full_armor_glow,
             )
             .map_err(|e| format!("{relative}: {e}"))?;
         } else if options.rigged {
+            if !options.equipment.is_empty() || options.full_armor_glow {
+                return Err("Model Options equipment and full-armor glow apply only to the selected CDF assembly".into());
+            }
             let skeleton = options
                 .skeleton
                 .as_ref()
@@ -430,11 +436,25 @@ pub fn export_bundle(
             )
             .map_err(|e| format!("{relative}: {e}"))?;
         } else {
+            if options.full_armor_glow {
+                return Err("Full-armor glow requires a rigged textured character export".into());
+            }
             let mesh = if relative.to_ascii_lowercase().ends_with(".cdf") {
-                read_static_cdf_assembly(&source, inventory)
-                    .map_err(|e| e.to_string())?
-                    .0
+                // Static character export honors exactly the same verified
+                // equipment changes as the live Model Options viewport.
+                read_static_cdf_assembly_with_equipment(
+                    &source,
+                    inventory,
+                    None,
+                    None,
+                    &options.equipment,
+                )
+                .map_err(|e| e.to_string())?
+                .0
             } else {
+                if !options.equipment.is_empty() {
+                    return Err("Equipment overrides require the selected CDF assembly".into());
+                }
                 read_model(&source).map_err(|e| e.to_string())?
             };
             let glb = stage
@@ -523,6 +543,7 @@ mod tests {
             embed_textures: false,
             export_dependencies: false,
             equipment: EquipmentOverrides::new(),
+            full_armor_glow: false,
         };
         let report = export_bundle(&inventory, &options).unwrap();
         assert_eq!(report.png_textures, 1);
