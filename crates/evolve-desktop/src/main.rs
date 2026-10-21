@@ -14,9 +14,9 @@ mod design;
 mod developer_auth;
 mod explorer_tree;
 mod gfx_dependencies;
+mod gfx_editor;
 mod gfx_external_textures;
 mod gfx_interactive;
-mod gfx_editor;
 mod gfx_layout_canvas;
 mod gfx_live_inspector;
 mod launcher_bridge;
@@ -4059,7 +4059,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::GfxRunInteractive => {
             if state.gfx_busy || state.busy {
-                state.gfx_interactive_status = "Wait for the current GFX operation to finish.".into();
+                state.gfx_interactive_status =
+                    "Wait for the current GFX operation to finish.".into();
                 return Task::none();
             }
             let Some(session) = state.gfx_session.clone() else {
@@ -4068,7 +4069,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
             state.gfx_interactive_running = None; // Kill an old preview before replacing files.
             state.gfx_busy = true;
-            state.gfx_interactive_status = "Preparing isolated UI_Assets and ActionScript preview...".into();
+            state.gfx_interactive_status =
+                "Preparing isolated UI_Assets and ActionScript preview...".into();
             let executable = state.preferences.ruffle_executable.clone();
             return Task::perform(
                 async move {
@@ -4091,12 +4093,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                     state.gfx_interactive_running = Some(preview);
                 }
-                Err(error) => state.gfx_interactive_status = format!("Interactive preview failed: {error}"),
+                Err(error) => {
+                    state.gfx_interactive_status = format!("Interactive preview failed: {error}")
+                }
             }
         }
         Message::GfxStopInteractive => {
             state.gfx_interactive_running = None;
-            state.gfx_interactive_status = "Stopped external Ruffle preview; no GFX project changes.".into();
+            state.gfx_interactive_status =
+                "Stopped external Ruffle preview; no GFX project changes.".into();
         }
         Message::GfxSelectResource(index) => {
             if state
@@ -4429,7 +4434,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     | gfx_editor::Action::ExportScripts
             ) {
                 state.gfx_interactive_running = None;
-                state.gfx_interactive_status = "Staged movie changed; interactive preview closed.".into();
+                state.gfx_interactive_status =
+                    "Staged movie changed; interactive preview closed.".into();
             }
             // Any edit/undo/FFDec GUI handoff invalidates the old raster. Do
             // not paint a stale frame behind newly moved GFX placements.
