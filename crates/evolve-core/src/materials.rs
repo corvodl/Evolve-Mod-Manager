@@ -60,7 +60,11 @@ impl DecalTexMod {
     /// (U tile, V tile, U offset, V offset). Called each render tick without
     /// re-decoding the source DDS or changing the actual mesh UVs.
     pub fn sample(self, seconds: f32) -> [f32; 4] {
-        let t = if seconds.is_finite() { seconds.rem_euclid(3600.0) } else { 0.0 };
+        let t = if seconds.is_finite() {
+            seconds.rem_euclid(3600.0)
+        } else {
+            0.0
+        };
         [
             self.tile_u,
             self.tile_v,
@@ -188,25 +192,25 @@ fn source_diffuse_tint(node: &BytesStart<'_>) -> Result<Option<[f32; 3]>, Materi
 }
 
 fn parse_decal_tex_mod(node: &BytesStart<'_>) -> Result<DecalTexMod, MaterialError> {
-    fn scalar(
-        node: &BytesStart<'_>,
-        field: &[u8],
-        default: f32,
-    ) -> Result<f32, MaterialError> {
+    fn scalar(node: &BytesStart<'_>, field: &[u8], default: f32) -> Result<f32, MaterialError> {
         let value = attr(node, field)?
             .map(|v| v.parse::<f32>())
             .transpose()
             .map_err(|_| MaterialError::Xml("Invalid Decal TexMod scalar".into()))?
             .unwrap_or(default);
         if !value.is_finite() || value.abs() > 64.0 {
-            return Err(MaterialError::Xml("Decal TexMod scalar out of bounds".into()));
+            return Err(MaterialError::Xml(
+                "Decal TexMod scalar out of bounds".into(),
+            ));
         }
         Ok(value)
     }
     fn oscillator(node: &BytesStart<'_>, field: &[u8]) -> Result<i32, MaterialError> {
         attr(node, field)?
-            .map(|v| v.parse::<i32>()
-                .map_err(|_| MaterialError::Xml("Invalid Decal oscillator type".into())))
+            .map(|v| {
+                v.parse::<i32>()
+                    .map_err(|_| MaterialError::Xml("Invalid Decal oscillator type".into()))
+            })
             .transpose()
             .map(|v| v.unwrap_or(0))
     }
@@ -427,9 +431,14 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                 {
                     append_texture(&node, &mut slots, *index)?;
                 } else if tag.eq_ignore_ascii_case(b"TexMod")
-                    && parents.last().is_some_and(|parent| parent.eq_ignore_ascii_case(b"Texture"))
+                    && parents
+                        .last()
+                        .is_some_and(|parent| parent.eq_ignore_ascii_case(b"Texture"))
                     && let Some((_, index)) = material_indices.last()
-                    && slots[*index].maps.last().is_some_and(|map| map.role == "decal")
+                    && slots[*index]
+                        .maps
+                        .last()
+                        .is_some_and(|map| map.role == "decal")
                 {
                     slots[*index].decal_tex_mod = Some(parse_decal_tex_mod(&node)?);
                 } else if (tag.eq_ignore_ascii_case(b"PublicParams")
@@ -487,9 +496,14 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                 {
                     append_texture(&node, &mut slots, *index)?;
                 } else if tag.eq_ignore_ascii_case(b"TexMod")
-                    && parents.last().is_some_and(|parent| parent.eq_ignore_ascii_case(b"Texture"))
+                    && parents
+                        .last()
+                        .is_some_and(|parent| parent.eq_ignore_ascii_case(b"Texture"))
                     && let Some((_, index)) = material_indices.last()
-                    && slots[*index].maps.last().is_some_and(|map| map.role == "decal")
+                    && slots[*index]
+                        .maps
+                        .last()
+                        .is_some_and(|map| map.role == "decal")
                 {
                     slots[*index].decal_tex_mod = Some(parse_decal_tex_mod(&node)?);
                 } else if (tag.eq_ignore_ascii_case(b"PublicParams")
@@ -757,8 +771,13 @@ mod tests {
         assert_eq!(modulator.sample(0.0), [3.0, 4.0, 0.0, 0.0]);
         assert_eq!(modulator.sample(2.0), [3.0, 4.0, 0.4, 0.0]);
         assert_eq!(modulator.v_amplitude, 0.1);
-        assert!(parse_material(br#"<Material><Textures><Texture Map="Decal" File="a.tif">
-            <TexMod TileU="NaN"/></Texture></Textures></Material>"#).is_err());
+        assert!(
+            parse_material(
+                br#"<Material><Textures><Texture Map="Decal" File="a.tif">
+            <TexMod TileU="NaN"/></Texture></Textures></Material>"#
+            )
+            .is_err()
+        );
     }
 
     #[test]
