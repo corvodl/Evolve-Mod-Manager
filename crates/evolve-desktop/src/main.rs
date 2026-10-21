@@ -267,6 +267,7 @@ struct State {
     equipment_overrides: EquipmentOverrides,
     full_armor_glow: bool,
     damage_blend_percent: u8,
+    damage_blend_enabled: bool,
     /// CDF source-part completion tracked by the loading worker.
     viewer_load_progress: Option<Arc<AtomicUsize>>,
     viewer_from_library: bool,
@@ -1959,6 +1960,7 @@ fn clear_viewer_asset(state: &mut State) {
     state.equipment_overrides.clear();
     state.full_armor_glow = false;
     state.damage_blend_percent = 0;
+    state.damage_blend_enabled = false;
     state.viewer_load_progress = None;
     state.texture_preview = None;
     state.texture = None;
@@ -2895,11 +2897,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Damage blend is a Stage 2 feature, unavailable for original 2012 monsters.".into();
                 return Task::none();
             }
-            state.damage_blend_percent = if state.damage_blend_percent == 0 {
-                100
-            } else {
-                0
-            };
+            state.damage_blend_enabled = !state.damage_blend_enabled;
+            state.damage_blend_percent = if state.damage_blend_enabled { 100 } else { 0 };
             state.viewer_sidebar_active = ViewerSidebarTab::Equipment;
             return update(state, Message::ViewerDamageBlendCommit);
         }
@@ -3492,6 +3491,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 let virtual_source = entry.relative_path.replace('\\', "/").to_ascii_lowercase();
                 state.full_armor_glow = virtual_source.contains("characters/monsters/");
                 state.damage_blend_percent = 0;
+                state.damage_blend_enabled = false;
                 state.equipment_source = Some(source.clone());
                 state.equipment_slots = read_cdf(&source)
                     .map(|cdf| discover_equipment(&cdf, inventory))
@@ -5585,6 +5585,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     if state.cdf_legacy_2012 {
                         state.full_armor_glow = false;
                         state.damage_blend_percent = 0;
+                        state.damage_blend_enabled = false;
                     }
                     state.cdf_full_damage_surfaces = None;
                     state.cdf_damage_preparing = false;
@@ -6041,6 +6042,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     if state.cdf_damage_preparing {
                         state.cdf_damage_preparing = false;
                         state.damage_blend_percent = 0;
+                        state.damage_blend_enabled = false;
                         if let Some(base) = &state.cdf_base_surfaces {
                             state.cdf_surfaces = Some(Arc::clone(base));
                         }
