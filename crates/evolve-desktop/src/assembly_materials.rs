@@ -751,10 +751,23 @@ pub fn load(
     build: Option<&str>,
     cache: &SharedCache,
 ) -> (Vec<Surface>, Vec<String>) {
+    load_with_progress(report, inventory, imported, build, cache, None)
+}
+
+/// Per-material-range progress reports completed source work, not elapsed time.
+/// The source CDF is read only; this never synthesizes texture assignments.
+pub fn load_with_progress(
+    report: &AssemblyReport,
+    inventory: &Inventory,
+    imported: Option<&Path>,
+    build: Option<&str>,
+    cache: &SharedCache,
+    progress: Option<&std::sync::atomic::AtomicUsize>,
+) -> (Vec<Surface>, Vec<String>) {
     let mut warnings = Vec::new();
     let mut surfaces = Vec::with_capacity(report.source_parts.len());
     let mut budget = TextureBudget::default();
-    for part in &report.source_parts {
+    for (index, part) in report.source_parts.iter().enumerate() {
         let mut surface = Surface {
             first_index: part.first_index,
             index_count: part.index_count,
@@ -824,14 +837,69 @@ pub fn load(
             warnings.push(format!("{} material: {}", part.name, error));
         }
         surfaces.push(surface);
+        if let Some(progress) = progress {
+            progress.store(
+                35 + 50 * (index + 1) / report.source_parts.len(),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
     }
+    // Goliath repeats one authored damage-blend warning across multiple
+    // mesh ranges. Report each diagnostic once without truncating distinct
+    // missing textures or unsafe MTL associations.
+    let mut unique = HashSet::new();
+    warnings.retain(|message| unique.insert(message.clone()));
     warn_gpu_material_limit(&surfaces, &mut warnings);
     (surfaces, warnings)
+}
+
+/// CryEngine's *_glow_diff contains alternate armor colors as well as
+/// bright regions. Feeding the entire image to an ADDITIVE emissive channel
+/// washes colored source diffuse (head/hands) white. Keep only verified
+/// positive color differences and cap their emission. This is a preview
+/// approximation; it does not alter source DDS, UVs or FBX data.
+pub fn armor_emission(
+    base: &image::RgbaImage,
+    glow: &image::RgbaImage,
+) -> Result<image::RgbaImage, String> {
+    if base.width() == 0
+        || base.height() == 0
+        || glow.width() == 0
+        || glow.height() == 0
+        || u64::from(base.width()) * u64::from(base.height()) > 32_000_000
+    {
+        return Err("Invalid armor glow/source diffuse dimensions".into());
+    }
+    let mut result = image::RgbaImage::new(base.width(), base.height());
+    for (x, y, pixel) in result.enumerate_pixels_mut() {
+        let sample = glow.get_pixel(
+            (u64::from(x) * u64::from(glow.width()) / u64::from(base.width())) as u32,
+            (u64::from(y) * u64::from(glow.height()) / u64::from(base.height())) as u32,
+        );
+        let normal = base.get_pixel(x, y);
+        for c in 0..3 {
+            pixel[c] = sample[c].saturating_sub(normal[c]).min(80);
+        }
+        pixel[3] = 255;
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn alternate_armor_diffuse_emission_preserves_base_color_and_caps_blowout() {
+        let base = image::RgbaImage::from_pixel(2, 1, image::Rgba([70, 45, 30, 255]));
+        let glow = image::RgbaImage::from_raw(
+            2, 1, vec![250, 200, 150, 255, 50, 30, 20, 255],
+        ).unwrap();
+        let emission = armor_emission(&base, &glow).unwrap();
+        assert_eq!(emission.get_pixel(0, 0).0, [80, 80, 80, 255]);
+        assert_eq!(emission.get_pixel(1, 0).0, [0, 0, 0, 255]);
+        assert_eq!(base.get_pixel(0, 0).0, [70, 45, 30, 255]);
+    }
+
     #[test]
     fn solid_character_opacity_mask_is_depth_opaque_not_alpha_blended() {
         let make = |shader: &str, scalar: Option<f32>, with_mask: bool| evolve_core::MaterialSlot {
