@@ -247,6 +247,7 @@ struct State {
     storage_analyzing: bool,
     storage_usage: Option<storage_usage::StorageUsage>,
     update_status: String,
+    update_worker_failure: Option<String>,
     available_update: Option<ReleaseUpdate>,
     startup_update_checked: bool,
     viewer_search: String,
@@ -6720,6 +6721,7 @@ fn initial_state() -> State {
         if let Some(root) = file.parent()
             && let Some(error) = updater_apply::previous_update_failure(root)
         {
+            result.update_worker_failure = Some(error.clone());
             result.update_status = format!(
                 "Previous update failed: {error}. Details: {}",
                 root.join("Updates").join("last-update-error.txt").display()
