@@ -350,10 +350,14 @@ fn legacy_decal_role(slot: &evolve_core::MaterialSlot, role: &str) -> Option<usi
 /// Animated Decal TexMod coordinates require a separate renderer feature.
 fn source_decal_motion(slot: &evolve_core::MaterialSlot) -> Option<evolve_core::DecalTexMod> {
     let source = slot.decal_tex_mod?;
-    let emitted = slot.maps.iter().any(|map| map.role == "decal"
-        && legacy_decal_role(slot, &map.role) == Some(2));
-    let other_emission = slot.maps.iter().any(|map| map.role != "decal"
-        && role_channel(&map.role) == Some(2));
+    let emitted = slot
+        .maps
+        .iter()
+        .any(|map| map.role == "decal" && legacy_decal_role(slot, &map.role) == Some(2));
+    let other_emission = slot
+        .maps
+        .iter()
+        .any(|map| map.role != "decal" && role_channel(&map.role) == Some(2));
     if emitted && !other_emission {
         Some(source)
     } else {
@@ -760,7 +764,7 @@ pub fn load_model(
                         surface.normal = normal;
                         surface.emissive = emissive;
                         surface.emission_strength = leaf.glow_amount.unwrap_or(1.0).max(0.0);
-            surface.emissive_uv = source_decal_motion(leaf);
+                        surface.emissive_uv = source_decal_motion(leaf);
                         surface.specular = specular;
                         surface.gloss = gloss;
                         // Original scalar opacity, when present, is independent
