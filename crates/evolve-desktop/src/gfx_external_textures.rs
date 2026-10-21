@@ -75,7 +75,7 @@ fn raw_movie(data: &[u8]) -> Result<Vec<u8>, String> {
         return Ok(data.to_vec());
     }
     let declared = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
-    let mut decoder = ZlibDecoder::new(&data[8..]);
+    let decoder = ZlibDecoder::new(&data[8..]);
     let mut uncompressed = Vec::new();
     decoder
         .take((MAX_DECOMPRESSED + 1) as u64)
