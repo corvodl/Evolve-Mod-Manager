@@ -602,4 +602,28 @@ mod tests {
         );
         assert!(edit_first_frame(&raw, LayoutEdit { depth: 8, ..edit }).is_err());
     }
+    #[test]
+    fn ambiguous_depth_is_not_editable_and_script_tags_survive() {
+        let original = movie();
+        let (header, mut tags) = root_tags(&original).unwrap();
+        let placement = tags.iter().find(|tag| tag.code == 4).unwrap().clone();
+        tags.insert(tags.len() - 1, placement);
+        let duplicate = rebuild(&header, &tags, false).unwrap();
+        assert!(static_layers(&duplicate).unwrap().is_empty());
+        let edit = LayoutEdit {
+            depth: 3, character: 7, x: 1., y: 2.,
+            scale_x: 1., scale_y: 1., rotation: 0., visible: true,
+        };
+        assert!(edit_first_frame(&duplicate, edit).is_err());
+
+        let (head, mut tags) = root_tags(&original).unwrap();
+        let script = Tag { code: 12, payload: b"safe-original-script".to_vec() };
+        tags.insert(tags.len() - 1, script);
+        let source = rebuild(&head, &tags, false).unwrap();
+        let changed = edit_first_frame(&source, edit).unwrap();
+        assert!(changed.windows(b"safe-original-script".len())
+            .any(|window| window == b"safe-original-script"));
+        assert!(inspect_gfx(&changed).unwrap().script_present);
+    }
+
 }
