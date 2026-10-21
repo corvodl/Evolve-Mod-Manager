@@ -46,8 +46,8 @@ fn panel<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Containe
         })
 }
 
-fn menu<'a>(state: &'a State) -> Element<'a, Message> {
-    let items = row![
+fn menu(_state: &State) -> Element<'_, Message> {
+    row![
         design::button("File")
             .style(design::text_button)
             .on_press(Message::ModdingMenu("File")),
@@ -64,90 +64,95 @@ fn menu<'a>(state: &'a State) -> Element<'a, Message> {
         text("Workspace actions").size(12).style(design::muted)
     ]
     .spacing(15)
-    .align_y(iced::Center);
-    let commands: Element<'a, Message> = match state.modding_menu {
-        Some("File") => row![
-            design::button("Refresh Projects").on_press(Message::ModdingRefresh),
-            design::button("Browse staged PAKs").on_press(Message::ModdingBrowsePaks),
-            design::button("Installed Mods / Profiles").on_press(Message::ModdingToggleProfiles),
+    .align_y(iced::Center)
+    .into()
+}
+
+fn dropdown(state: &State) -> Option<Element<'_, Message>> {
+    let commands: Element<'_, Message> = match state.modding_menu? {
+        "File" => column![
+            design::button("Refresh Projects")
+                .on_press(Message::MenuCommand(Box::new(Message::ModdingRefresh))),
+            design::button("Browse staged PAKs")
+                .on_press(Message::MenuCommand(Box::new(Message::ModdingBrowsePaks))),
+            design::button("Installed Mods / Profiles").on_press(Message::MenuCommand(Box::new(
+                Message::ModdingToggleProfiles
+            ))),
         ]
-        .spacing(8)
+        .spacing(3)
         .into(),
-        Some("Edit") => row![
-            design::button("Continue Editing").on_press(Message::ModdingOpenProject),
-            design::button("Review Changes").on_press(Message::ModdingReviewChanges),
+        "Edit" => column![
+            design::button("Continue Editing")
+                .on_press(Message::MenuCommand(Box::new(Message::ModdingOpenProject))),
+            design::button("Review Changes").on_press(Message::MenuCommand(Box::new(
+                Message::ModdingReviewChanges
+            ))),
             design::button("Build Mod")
-                .style(design::primary)
-                .on_press(Message::ModdingBuild),
+                .on_press(Message::MenuCommand(Box::new(Message::ModdingBuild))),
         ]
-        .spacing(8)
+        .spacing(3)
         .into(),
-        Some("View") => row![
+        "View" => column![
             design::button(if state.modding_advanced {
                 "Hide archive browser"
             } else {
                 "Show archive browser"
             })
-            .on_press(Message::ModdingToggleAdvanced),
-            design::button("Open Asset Viewer").on_press(Message::OpenViewer),
+            .on_press(Message::MenuCommand(Box::new(
+                Message::ModdingToggleAdvanced
+            ))),
+            design::button("Open Asset Viewer")
+                .on_press(Message::MenuCommand(Box::new(Message::OpenViewer))),
         ]
-        .spacing(8)
+        .spacing(3)
         .into(),
-        Some("Tools") => column![
-            row![
-                design::button("Verify selected signed PAK")
-                    .style(design::secondary)
-                    .on_press(Message::StartSignedInspection),
-                design::button("Initialize isolated stage")
-                    .style(design::secondary)
-                    .on_press(Message::StartStageInit),
-                design::button("Check stage")
-                    .style(design::secondary)
-                    .on_press(Message::StartStageStatus),
-                design::button("Restore backup")
-                    .style(design::secondary)
-                    .on_press(Message::StartStageRestore),
-            ]
-            .spacing(7),
-            row![
-                design::button("Import signed original")
-                    .style(design::secondary)
-                    .on_press(Message::StartStageImport),
-                design::button("Apply signed replacement")
-                    .style(design::secondary)
-                    .on_press(Message::StartStageApply),
-                design::button("Installed Mods / Profiles")
-                    .style(design::secondary)
-                    .on_press(Message::ModdingToggleProfiles),
-                design::button("Asset Library")
-                    .style(design::secondary)
-                    .on_press(Message::Navigate(super::Page::AssetLibrary)),
-            ]
-            .spacing(7),
-            row![
-                design::button("Verify offline launcher + signed PAKs")
-                    .style(design::secondary)
-                    .on_press(Message::StartOfflineLauncherCheck),
-                design::button("Play with mods (existing private helper)")
-                    .style(design::primary)
-                    .on_press(Message::StartOfflineLauncherLaunch),
-                design::button("Restore original PAKs + hook")
-                    .style(design::secondary)
-                    .on_press(Message::StartOfflineLauncherRestore),
-            ]
-            .spacing(7),
-            text("Requires the existing private controlled-swap helpers and Python 3.11/Frida for launch. Restore uses the verified private journal after both game processes close. Offline only.")
-                .size(12)
+        "Tools" => column![
+            design::button("Verify selected signed PAK").on_press(Message::MenuCommand(Box::new(
+                Message::StartSignedInspection
+            ))),
+            design::button("Initialize isolated stage")
+                .on_press(Message::MenuCommand(Box::new(Message::StartStageInit))),
+            design::button("Check stage")
+                .on_press(Message::MenuCommand(Box::new(Message::StartStageStatus))),
+            design::button("Restore backup")
+                .on_press(Message::MenuCommand(Box::new(Message::StartStageRestore))),
+            design::button("Import signed original")
+                .on_press(Message::MenuCommand(Box::new(Message::StartStageImport))),
+            design::button("Apply signed replacement")
+                .on_press(Message::MenuCommand(Box::new(Message::StartStageApply))),
+            design::button("Installed Mods / Profiles").on_press(Message::MenuCommand(Box::new(
+                Message::ModdingToggleProfiles
+            ))),
+            design::button("Asset Library").on_press(Message::MenuCommand(Box::new(
+                Message::Navigate(super::Page::AssetLibrary)
+            ))),
+            design::button("Verify offline launcher + signed PAKs").on_press(Message::MenuCommand(
+                Box::new(Message::StartOfflineLauncherCheck)
+            )),
+            design::button("Play with mods (existing private helper)").on_press(
+                Message::MenuCommand(Box::new(Message::StartOfflineLauncherLaunch))
+            ),
+            design::button("Restore original PAKs + hook").on_press(Message::MenuCommand(
+                Box::new(Message::StartOfflineLauncherRestore)
+            )),
+            text("Offline only. Launcher and backup checks are verified before use.")
+                .size(11)
                 .style(design::muted),
         ]
-        .spacing(7)
+        .spacing(3)
         .into(),
-        _ => text("").into(),
+        _ => return None,
     };
-    if state.modding_menu.is_some() {
-        column![items, commands].spacing(7).into()
-    } else {
-        items.into()
+    Some(commands)
+}
+
+fn dropdown_left(name: Option<&str>) -> f32 {
+    match name {
+        Some("File") => 8.0,
+        Some("Edit") => 72.0,
+        Some("View") => 138.0,
+        Some("Tools") => 203.0,
+        _ => 8.0,
     }
 }
 
@@ -543,5 +548,11 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     if state.modding_profiles {
         main = main.push(profiles(state));
     }
-    main.into()
+    crate::menu_popup::overlay(
+        main,
+        dropdown(state),
+        dropdown_left(state.modding_menu),
+        115.0,
+        310.0,
+    )
 }

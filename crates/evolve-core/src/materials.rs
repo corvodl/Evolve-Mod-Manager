@@ -36,6 +36,13 @@ pub struct MaterialSlot {
     pub name: String,
     pub shader: String,
     pub maps: Vec<TextureReference>,
+    /// Source MTL scalar Opacity attribute. Separate from diffuse DDS alpha
+    /// (CryEngine may use that alpha for gloss, masking or emission).
+    #[serde(default)]
+    pub opacity: Option<f32>,
+    /// Original material GlowAmount (e.g. 3.0 is not "100%" by assumption).
+    #[serde(default)]
+    pub glow_amount: Option<f32>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MaterialDocument {
@@ -67,6 +74,43 @@ fn attr(node: &BytesStart<'_>, wanted: &[u8]) -> Result<Option<String>, Material
         }
     }
     Ok(None)
+}
+
+/// Parse the authored scalar as a normalized material factor. It is never
+/// inferred from diffuse DDS alpha or a shader name.
+fn material_opacity(node: &BytesStart<'_>) -> Result<Option<f32>, MaterialError> {
+    let Some(text) = attr(node, b"Opacity")? else {
+        return Ok(None);
+    };
+    let value = text
+        .trim()
+        .parse::<f32>()
+        .map_err(|_| MaterialError::Xml("Invalid material Opacity scalar".into()))?;
+    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        return Err(MaterialError::Xml(
+            "Material Opacity must be a finite value from 0 to 1".into(),
+        ));
+    }
+    Ok(Some(value))
+}
+
+fn authored_glow_amount(node: &BytesStart<'_>) -> Result<Option<f32>, MaterialError> {
+    let raw = if let Some(amount) = attr(node, b"GlowAmount")? {
+        Some(amount)
+    } else if attr(node, b"Name")?.is_some_and(|name| name.eq_ignore_ascii_case("GlowAmount")) {
+        attr(node, b"Value")?
+    } else {
+        None
+    };
+    let Some(raw) = raw else { return Ok(None) };
+    let amount = raw
+        .trim()
+        .parse::<f32>()
+        .map_err(|_| MaterialError::Xml("Invalid authored GlowAmount".into()))?;
+    if !amount.is_finite() {
+        return Err(MaterialError::Xml("GlowAmount must be finite".into()));
+    }
+    Ok(Some(amount))
 }
 
 fn normalize_texture(raw: &str) -> Result<String, MaterialError> {
@@ -115,6 +159,8 @@ fn append_texture(
             | "detail"
             | "height"
             | "environment"
+            | "custom"
+            | "[1] custom"
     ) {
         // Keep unknown semantics out of a guessed GPU slot.
         return Ok(());
@@ -124,6 +170,67 @@ fn append_texture(
     }
     slots[index].maps.push(TextureReference { role, path });
     Ok(())
+}
+
+/// CryEngine Illum BLENDLAYER authored damage pair. The Opacity-named
+/// damage_blend_diff file is a grayscale blend weight, *not* coverage.
+/// "Custom" stores the alternate damaged diffuse. Other opacity and custom
+/// channels are not repurposed as a damage blend.
+pub fn authored_damage_layer(slot: &MaterialSlot) -> Option<(&str, &str)> {
+    if !slot.shader.eq_ignore_ascii_case("Illum") {
+        return None;
+    }
+    let mask = slot.maps.iter().find(|map| {
+        map.role == "opacity"
+            && map
+                .path
+                .to_ascii_lowercase()
+                .contains("_damage_blend_diff.")
+    })?;
+    let alternate = slot.maps.iter().find(|map| {
+        map.role == "custom" && map.path.to_ascii_lowercase().contains("_damage_diff.")
+    })?;
+    Some((alternate.path.as_str(), mask.path.as_str()))
+}
+
+/// Deterministic approximation of CryEngine's authored damage BLENDLAYER.
+/// The existing diffuse and source UV0 stay unchanged, alpha is opaque for
+/// Illum body materials, and a distinct authored mask drives the blend.
+/// This is a viewport/FBX preview, not a recreation of every game shader knob.
+pub fn blend_damage_rgba(
+    base: &image::RgbaImage,
+    damaged: &image::RgbaImage,
+    mask: &image::RgbaImage,
+    percent: u8,
+) -> Result<image::RgbaImage, String> {
+    if percent > 100
+        || base.width() == 0
+        || base.height() == 0
+        || damaged.width() == 0
+        || damaged.height() == 0
+        || mask.width() == 0
+        || mask.height() == 0
+        || u64::from(base.width()) * u64::from(base.height()) > 32 * 1024 * 1024
+    {
+        return Err("Invalid or oversized damage-blend source image".into());
+    }
+    let mut blended = base.clone();
+    for (x, y, pixel) in blended.enumerate_pixels_mut() {
+        let dx = u64::from(x) * u64::from(damaged.width()) / u64::from(base.width());
+        let dy = u64::from(y) * u64::from(damaged.height()) / u64::from(base.height());
+        let mx = u64::from(x) * u64::from(mask.width()) / u64::from(base.width());
+        let my = u64::from(y) * u64::from(mask.height()) / u64::from(base.height());
+        let alt = damaged.get_pixel(dx as u32, dy as u32);
+        let weight = u32::from(mask.get_pixel(mx as u32, my as u32)[0]) * u32::from(percent) / 100;
+        for channel in 0..3 {
+            pixel[channel] = ((u32::from(pixel[channel]) * (255 - weight)
+                + u32::from(alt[channel]) * weight
+                + 127)
+                / 255) as u8;
+        }
+        pixel[3] = 255;
+    }
+    Ok(blended)
 }
 
 /// Parse explicit root/submaterial texture references, without XXE, DTD or
@@ -147,6 +254,7 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
     reader.config_mut().trim_text(true);
     let mut parents: Vec<Vec<u8>> = Vec::new();
     let mut slots: Vec<MaterialSlot> = Vec::new();
+    let mut nonleaf: Vec<bool> = Vec::new();
     let mut material_indices: Vec<(usize, usize)> = Vec::new();
     let mut root_seen = false;
     loop {
@@ -175,11 +283,19 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                     let name =
                         attr(&node, b"Name")?.unwrap_or_else(|| format!("Material{}", slots.len()));
                     let shader = attr(&node, b"Shader")?.unwrap_or_default();
+                    let opacity = material_opacity(&node)?;
+                    let glow_amount = authored_glow_amount(&node)?;
+                    if let Some((_, parent)) = material_indices.last() {
+                        nonleaf[*parent] = true;
+                    }
                     slots.push(MaterialSlot {
                         name,
                         shader,
                         maps: Vec::new(),
+                        opacity,
+                        glow_amount,
                     });
+                    nonleaf.push(false);
                     material_indices.push((parents.len() + 1, slots.len() - 1));
                 } else if tag.eq_ignore_ascii_case(b"Texture")
                     && parents
@@ -188,22 +304,70 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
                     && let Some((_, index)) = material_indices.last()
                 {
                     append_texture(&node, &mut slots, *index)?;
+                } else if (tag.eq_ignore_ascii_case(b"PublicParams")
+                    || tag.eq_ignore_ascii_case(b"ShaderParams")
+                    || (tag.eq_ignore_ascii_case(b"Param")
+                        && parents.last().is_some_and(|p| {
+                            p.eq_ignore_ascii_case(b"ShaderParams")
+                                || p.eq_ignore_ascii_case(b"PublicParams")
+                        })))
+                    && let Some((_, index)) = material_indices.last()
+                    && let Some(amount) = authored_glow_amount(&node)?
+                {
+                    slots[*index].glow_amount = Some(amount);
                 }
                 parents.push(tag.to_vec());
             }
             Event::Empty(node) => {
                 let tag = node.name();
                 let tag = tag.as_ref();
-                if parents.is_empty() {
-                    return Err(MaterialError::Xml("Empty XML root".into()));
-                }
-                if tag.eq_ignore_ascii_case(b"Texture")
+                if tag.eq_ignore_ascii_case(b"Material")
+                    && (parents.is_empty()
+                        || parents
+                            .last()
+                            .is_some_and(|p| p.eq_ignore_ascii_case(b"SubMaterials")))
+                {
+                    // CryEngine character MTLs contain self-closing NoDraw
+                    // and otherwise empty leaves. They still occupy an
+                    // original material-subset ID. Dropping them shifts all
+                    // subsequent equipment and emissive material slots.
+                    if slots.len() >= MAX_SLOTS || (parents.is_empty() && root_seen) {
+                        return Err(MaterialError::Unsafe);
+                    }
+                    if parents.is_empty() {
+                        root_seen = true;
+                    } else if let Some((_, parent)) = material_indices.last() {
+                        nonleaf[*parent] = true;
+                    }
+                    slots.push(MaterialSlot {
+                        name: attr(&node, b"Name")?
+                            .unwrap_or_else(|| format!("Material{}", slots.len())),
+                        shader: attr(&node, b"Shader")?.unwrap_or_default(),
+                        maps: Vec::new(),
+                        opacity: material_opacity(&node)?,
+                        glow_amount: authored_glow_amount(&node)?,
+                    });
+                    nonleaf.push(false);
+                } else if tag.eq_ignore_ascii_case(b"Texture")
                     && parents
                         .last()
                         .is_some_and(|p| p.eq_ignore_ascii_case(b"Textures"))
                     && let Some((_, index)) = material_indices.last()
                 {
                     append_texture(&node, &mut slots, *index)?;
+                } else if (tag.eq_ignore_ascii_case(b"PublicParams")
+                    || tag.eq_ignore_ascii_case(b"ShaderParams")
+                    || (tag.eq_ignore_ascii_case(b"Param")
+                        && parents.last().is_some_and(|p| {
+                            p.eq_ignore_ascii_case(b"ShaderParams")
+                                || p.eq_ignore_ascii_case(b"PublicParams")
+                        })))
+                    && let Some((_, index)) = material_indices.last()
+                    && let Some(amount) = authored_glow_amount(&node)?
+                {
+                    slots[*index].glow_amount = Some(amount);
+                } else if parents.is_empty() {
+                    return Err(MaterialError::Xml("Empty XML root".into()));
                 }
             }
             Event::End(node) => {
@@ -222,6 +386,17 @@ pub fn parse_material(bytes: &[u8]) -> Result<MaterialDocument, MaterialError> {
     }
     if !root_seen || !parents.is_empty() || slots.is_empty() {
         return Err(MaterialError::Xml("No complete CryEngine materials".into()));
+    }
+    // Source subset IDs address the flattened material leaves, not their
+    // parent multi-material container. Keeping the container in slot zero
+    // previously shifted every character equipment/emission map by one.
+    let slots = slots
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, slot)| (!nonleaf[index]).then_some(slot))
+        .collect::<Vec<_>>();
+    if slots.is_empty() {
+        return Err(MaterialError::Xml("Material has no leaf slots".into()));
     }
     Ok(MaterialDocument { schema: 1, slots })
 }
@@ -247,6 +422,97 @@ pub fn material_texture_candidates(source: &str) -> Vec<String> {
         return vec![format!("{base}.dds.0"), format!("{base}.dds")];
     }
     vec![source.to_owned()]
+}
+
+/// Port of the private manager's owner-qualified MTL lookup. Resolve each
+/// cooked DDS0 before its lower-resolution DDS companion, searching the
+/// material folder, its actual character, then the correct category's Shared
+/// texture namespace. An explicitly global textures/ reference comes last.
+/// Never match a DDS based on another actor's filename.
+pub fn scoped_texture_candidates(
+    authored: &str,
+    material_virtual: &str,
+) -> Result<Vec<String>, String> {
+    let raw = authored.trim().replace('\\', "/");
+    if raw.is_empty()
+        || raw.starts_with('/')
+        || raw.contains(':')
+        || raw.split('/').any(|part| matches!(part, "." | ".."))
+    {
+        return Err(format!("Unsafe original MTL texture reference: {authored}"));
+    }
+    let reference = raw
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("/");
+    if reference.is_empty() {
+        return Err("Empty original material texture reference".into());
+    }
+    let owner = material_virtual.replace('\\', "/");
+    let parents = owner.split('/').collect::<Vec<_>>();
+    let folder = &parents[..parents.len().saturating_sub(1)];
+    let is_character = folder.len() >= 3
+        && folder[0].eq_ignore_ascii_case("characters")
+        && ["hunters", "monsters", "creatures"]
+            .iter()
+            .any(|value| folder[1].eq_ignore_ascii_case(value));
+    let is_legacy_character = folder.len() >= 4
+        && folder[0].eq_ignore_ascii_case("objects")
+        && folder[1].eq_ignore_ascii_case("characters")
+        && ["hunters", "monsters", "creatures"]
+            .iter()
+            .any(|value| folder[2].eq_ignore_ascii_case(value));
+    let category_length = if is_character {
+        2
+    } else if is_legacy_character {
+        3
+    } else {
+        0
+    };
+    let minimum = if category_length > 0 {
+        category_length + 1
+    } else {
+        1
+    };
+    let lower = reference.to_ascii_lowercase();
+    let rooted = ["characters/", "objects/", "materials/", "levels/", "libs/"]
+        .iter()
+        .any(|prefix| lower.starts_with(prefix));
+    let mut paths = Vec::new();
+    for cooked in material_texture_candidates(&reference) {
+        if rooted {
+            paths.push(cooked);
+            continue;
+        }
+        if folder.len() >= minimum {
+            for count in (minimum..=folder.len()).rev() {
+                let parent = folder[..count].join("/");
+                paths.push(format!("{parent}/{cooked}"));
+                if !cooked.contains('/') {
+                    paths.push(format!("{parent}/textures/{cooked}"));
+                }
+            }
+        }
+        if category_length > 0 {
+            let category = folder[..category_length].join("/");
+            let lower_cooked = cooked.to_ascii_lowercase();
+            if lower_cooked.starts_with("shared/") {
+                paths.push(format!("{category}/{cooked}"));
+            } else if lower_cooked.starts_with("textures/") {
+                paths.push(format!("{category}/shared/{cooked}"));
+            } else if !cooked.contains('/') {
+                paths.push(format!("{category}/shared/textures/{cooked}"));
+            }
+            if lower_cooked.starts_with("textures/") {
+                paths.push(cooked);
+            }
+        } else {
+            paths.push(cooked);
+        }
+    }
+    paths.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    Ok(paths)
 }
 
 /// Prefer highest-resolution cooked .dds.0 over .dds for author-provided .tif
@@ -283,6 +549,22 @@ pub fn resolve_materials(inventory: &Inventory, document: &MaterialDocument) -> 
 mod tests {
     use super::*;
     use crate::inventory::{AssetEntry, AssetKind};
+
+    #[test]
+    fn glow_amount_is_preserved_per_leaf_without_invented_percent_calibration() {
+        let parsed = parse_material(br#"<Material><SubMaterials>
+            <Material Name="goliath" Shader="Illum"><PublicParams GlowAmount="3"/></Material>
+            <Material Name="zero" Shader="Illum" GlowAmount="0"/>
+            <Material Name="named" Shader="Illum"><ShaderParams><Param Name="GlowAmount" Value="0.75"/></ShaderParams></Material>
+            <Material Name="absent" Shader="Illum"/>
+        </SubMaterials></Material>"#).unwrap();
+        assert_eq!(parsed.slots.len(), 4);
+        assert_eq!(parsed.slots[0].glow_amount, Some(3.0));
+        assert_eq!(parsed.slots[1].glow_amount, Some(0.0));
+        assert_eq!(parsed.slots[2].glow_amount, Some(0.75));
+        assert_eq!(parsed.slots[3].glow_amount, None);
+        assert!(parse_material(br#"<Material GlowAmount="NaN"/>"#).is_err());
+    }
     #[test]
     fn repeated_interior_separators_preserve_virtual_texture_identity() {
         assert_eq!(
@@ -317,6 +599,25 @@ mod tests {
         assert_eq!(authored.slots[0].maps.len(), 3);
         assert_eq!(authored.slots[0].maps[0].role, "specularcolor");
         assert_eq!(authored.slots[0].maps[1].role, "glossiness");
+    }
+
+    #[test]
+    fn historical_mtl_scalar_opacity_is_not_a_diffuse_dds_alpha_channel() {
+        let doc = parse_material(
+            br#"<Material Name="Goliath"><SubMaterials>
+            <Material Name="body" Shader="Illum" Opacity="1"><Textures>
+                <Texture Map="Diffuse" File="characters/goliath.dds"/>
+            </Textures></Material>
+            <Material Name="saliva" Shader="Illum" Opacity="0.11"/>
+        </SubMaterials></Material>"#,
+        )
+        .unwrap();
+        assert_eq!(doc.slots.len(), 2);
+        assert_eq!(doc.slots[0].opacity, Some(1.0));
+        assert_eq!(doc.slots[1].opacity, Some(0.11));
+        assert!(parse_material(br#"<Material Opacity="NaN"/>"#).is_err());
+        assert!(parse_material(br#"<Material Opacity="-1"/>"#).is_err());
+        assert!(parse_material(br#"<Material Opacity="99"/>"#).is_err());
     }
 
     #[test]
@@ -364,5 +665,92 @@ mod tests {
             report.textures[0].resolution,
             AssetResolution::Ambiguous(_)
         ));
+    }
+}
+
+#[cfg(test)]
+mod damage_layer_tests {
+    use super::*;
+
+    #[test]
+    fn authored_illum_damage_pair_is_preserved_without_becoming_opacity() {
+        let doc = parse_material(
+            br#"<Material Name="Goliath3"><SubMaterials>
+                <Material Name="mesh" Shader="Illum"><Textures>
+                    <Texture Map="Diffuse" File="characters/monsters/goliath/textures/goliath3_diff.tif"/>
+                    <Texture Map="Opacity" File="characters/monsters/goliath/textures/goliath1_damage_blend_diff.tif"/>
+                    <Texture Map="Custom" File="characters/monsters/goliath/textures/goliath3_damage_diff.tif"/>
+                    <Texture Map="[1] Custom" File="characters/monsters/goliath/textures/goliath3_damage_ddn.tif"/>
+                </Textures></Material>
+                <Material Name="eyes" Shader="Illum"/>
+            </SubMaterials></Material>"#,
+        ).unwrap();
+        let (damage, mask) = authored_damage_layer(&doc.slots[0]).unwrap();
+        assert!(damage.ends_with("goliath3_damage_diff.tif"));
+        assert!(mask.ends_with("goliath1_damage_blend_diff.tif"));
+        assert_eq!(doc.slots[0].maps.len(), 4);
+        assert!(authored_damage_layer(&doc.slots[1]).is_none());
+    }
+
+    #[test]
+    fn damage_blending_changes_rgb_without_cutting_out_character() {
+        let base = image::RgbaImage::from_pixel(2, 1, image::Rgba([200, 100, 50, 3]));
+        let damaged = image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 100, 200, 4]));
+        let mask = image::RgbaImage::from_raw(2, 1, vec![0, 0, 0, 0, 255, 255, 255, 255]).unwrap();
+        let mixed = blend_damage_rgba(&base, &damaged, &mask, 50).unwrap();
+        assert_eq!(mixed.get_pixel(0, 0).0, [200, 100, 50, 255]);
+        assert_eq!(mixed.get_pixel(1, 0).0, [100, 100, 125, 255]);
+        assert_eq!(
+            blend_damage_rgba(&base, &damaged, &mask, 100)
+                .unwrap()
+                .get_pixel(1, 0)
+                .0,
+            [0, 100, 200, 255]
+        );
+        assert!(blend_damage_rgba(&base, &damaged, &mask, 101).is_err());
+    }
+}
+
+#[cfg(test)]
+mod leaf_slot_tests {
+    use super::*;
+    #[test]
+    fn empty_nodraw_leaves_retain_original_subset_positions() {
+        let parsed = parse_material(
+            br#"<Material Name="root"><SubMaterials>
+                <Material Name="hidden" Shader="NoDraw"/>
+                <Material Name="body"><Textures><Texture Map="Diffuse" File="characters/body.dds"/></Textures></Material>
+                <Material Name="unused"/>
+                <Material Name="equipment"><Textures><Texture Map="Emittance" File="characters/equipment_glow.dds"/></Textures></Material>
+            </SubMaterials></Material>"#,
+        ).unwrap();
+        assert_eq!(parsed.slots.len(), 4);
+        assert_eq!(parsed.slots[0].name, "hidden");
+        assert_eq!(parsed.slots[0].shader, "NoDraw");
+        assert!(parsed.slots[0].maps.is_empty());
+        assert_eq!(parsed.slots[1].name, "body");
+        assert_eq!(parsed.slots[2].name, "unused");
+        assert_eq!(parsed.slots[3].name, "equipment");
+        assert_eq!(parsed.slots[3].maps[0].role, "emittance");
+        assert_eq!(
+            parse_material(br#"<Material Name="empty"/>"#)
+                .unwrap()
+                .slots
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn original_multi_material_leaf_order_matches_subset_indices() {
+        let xml = br#"<Material Name="root"><SubMaterials>
+            <Material Name="body"><Textures><Texture Map="Diffuse" File="characters/body.dds"/></Textures></Material>
+            <Material Name="equipment"><Textures><Texture Map="Emittance" File="characters/glow.dds"/></Textures></Material>
+            </SubMaterials></Material>"#;
+        let parsed = parse_material(xml).unwrap();
+        assert_eq!(parsed.slots.len(), 2);
+        assert_eq!(parsed.slots[0].name, "body");
+        assert_eq!(parsed.slots[1].name, "equipment");
+        assert_eq!(parsed.slots[1].maps[0].role, "emittance");
     }
 }

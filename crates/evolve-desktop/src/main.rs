@@ -1,15 +1,21 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 //! Native wgpu-backed desktop shell. Asset operations use blocking workers, so
 //! file I/O/decompression never runs in the interactive Iced view/update path.
 mod activity_window;
+mod assembly_materials;
 mod asset_cache;
 mod asset_library_page;
 mod asset_viewer;
 mod auto_resources;
+mod blender_install;
+mod crash_diagnostics;
 mod design;
 mod developer_auth;
 mod explorer_tree;
 mod launcher_bridge;
 mod level_workspace;
+mod menu_popup;
 mod modding_keys;
 mod modding_page;
 mod modding_projects;
@@ -24,29 +30,30 @@ mod textured;
 mod updater;
 mod uv_preview;
 mod view_navigation;
+mod viewer_grid;
 mod viewer_inspector;
 mod viewport;
-use asset_cache::{SharedCache, decoded_dds};
+use asset_cache::{SharedCache, decoded_dds, decoded_dds_indexed};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph,
-    FlatCdfFbxReport, HookPairReport, ImportedLibrary, ImportedPak, Inventory, LevelScene,
-    LibraryBatchImportReport, LibraryReferenceStatus, MaterialReport, ModProfile, ModelInfo,
-    NativeCafMotion, PakHookPairReport, PakInventory, ProfileCatalog, ProfileMod, ProfilePlan,
-    RenderMesh, RigReport, SignedPakInfo, StageTransaction, TerrainInfo, UnifiedCdfFbxReport,
-    VerifiedCafSkin, add_mod_to_profile, apply_profile_stage, apply_stage_pak, batch_stage_status,
-    compare_assets, convert_glb_to_fbx, convert_original_motion, create_mod_profile,
-    decode_dds_rgba, export_dds_png, export_flat_cdf_parts_fbx, export_level_scene_glb,
-    export_rigged_character_fbx_textured_animated, export_rigged_character_glb,
-    export_unified_cdf_fbx, extract_legacy_pak, extract_signed_pak,
-    import_signed_library_selection, import_stage_pak, imported_archive_files, imported_library,
-    initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_pak_hook_pair,
-    inspect_signed_pak, list_mod_profiles, load_level_scene, material_texture_candidates,
-    plan_mod_profile, prepare_client_hook, read_cdf, read_material, read_model, read_native_caf,
-    read_static_cdf_assembly, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry,
-    resign_signed_pak, resolve_cdf, resolve_imported_reference, resolve_materials,
-    restore_profile_stage, restore_stage, scan_directory, scan_directory_with_progress,
-    stage_status,
+    EquipmentOverrides, EquipmentSlot, HookPairReport, ImportedLibrary, ImportedPak, Inventory,
+    LevelScene, LibraryBatchImportReport, LibraryReferenceStatus, MaterialReport, ModProfile,
+    ModelInfo, NativeCafMotion, PakHookPairReport, PakInventory, ProfileCatalog, ProfileMod,
+    ProfilePlan, RenderMesh, RigReport, SignedPakInfo, StageTransaction, TerrainInfo,
+    VerifiedCafAssembly, VerifiedCafSkin, add_mod_to_profile, apply_profile_stage, apply_stage_pak,
+    batch_stage_status, compare_assets, convert_glb_to_fbx, convert_original_motion,
+    create_mod_profile, decode_dds_rgba, discover_equipment, export_dds_png,
+    export_level_scene_glb, export_rigged_character_fbx_textured_animated,
+    export_rigged_character_glb, extract_legacy_pak, extract_signed_pak,
+    import_signed_library_selection_with_keys, import_stage_pak, imported_archive_files,
+    imported_library, initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak,
+    inspect_pak_hook_pair, inspect_signed_pak, list_mod_profiles, load_level_scene,
+    material_texture_candidates, plan_mod_profile, prepare_client_hook, read_cdf, read_material,
+    read_model, read_native_caf, read_static_cdf_assembly_with_equipment, read_terrain,
+    rebuild_legacy_pak, rebuild_signed_pak_entry, resign_signed_pak, resolve_cdf,
+    resolve_imported_reference, resolve_materials, restore_profile_stage, restore_stage,
+    scan_directory, scan_directory_with_progress, stage_status,
 };
 use iced::widget::{
     canvas, column, container, image, row, scrollable, shader, slider, space, svg, text, tooltip,
@@ -153,6 +160,13 @@ struct State {
     profile_feedback: String,
     diffuse_input: String,
     diffuse: Option<Arc<::image::RgbaImage>>,
+    cdf_surfaces: Option<Arc<Vec<textured::Surface>>>,
+    /// The immutable decoded CDF appearance: slider changes never read a CDF again.
+    cdf_base_surfaces: Option<Arc<Vec<textured::Surface>>>,
+    /// Once-only resolved 100% damage layer, reused for every slider position.
+    cdf_full_damage_surfaces: Option<Arc<Vec<textured::Surface>>>,
+    cdf_damage_preparing: bool,
+    cdf_legacy_2012: bool,
     texture_preview: Option<image::Handle>,
     diffuse_status: String,
     normal_input: String,
@@ -167,6 +181,14 @@ struct State {
     auto_resource_note: String,
     auto_clip_filter: String,
     export_include_animation: bool,
+    export_dialog_open: bool,
+    export_selected: HashSet<usize>,
+    export_filter: String,
+    export_parent: String,
+    export_folder_name: String,
+    export_rigged: bool,
+    export_embed_textures: bool,
+    export_dependencies: bool,
     auto_idle_pending: Option<PathBuf>,
     auto_play_native_caf: bool,
     auto_material_pending: bool,
@@ -180,7 +202,13 @@ struct State {
     glb_motion: Option<Arc<AnimatedGlb>>,
     selected_motion_clip: usize,
     native_caf: Option<Arc<NativeCafMotion>>,
+    caf_layer: Option<Arc<NativeCafMotion>>,
+    caf_layer_label: String,
+    caf_layer_weight: f32,
     skin_preview: Option<Arc<VerifiedCafSkin>>,
+    cdf_caf_preview: Option<Arc<VerifiedCafAssembly>>,
+    cdf_report: Option<Arc<AssemblyReport>>,
+    cdf_rest_mesh: Option<Arc<RenderMesh>>,
     motion_time: f32,
     playing: bool,
     assets_root: String,
@@ -199,6 +227,9 @@ struct State {
     character: Option<CdfDefinition>,
     cdf_dependencies: Option<CdfDependencyReport>,
     model: Option<Arc<RenderMesh>>,
+    /// Exact render file (possibly .skinm from an imported PAK), not the
+    /// selected authored .skin metadata path.
+    render_source: Option<PathBuf>,
     level_scene: Option<Arc<LevelScene>>,
     terrain: Option<TerrainInfo>,
     selected: Option<usize>,
@@ -228,6 +259,19 @@ struct State {
     viewer_collapsed: HashSet<String>,
     viewer_menu: Option<&'static str>,
     viewer_explorer_visible: bool,
+    viewer_sidebar_animations: bool,
+    viewer_sidebar_dependencies: bool,
+    viewer_sidebar_active: ViewerSidebarTab,
+    equipment_source: Option<PathBuf>,
+    equipment_slots: Vec<EquipmentSlot>,
+    equipment_overrides: EquipmentOverrides,
+    full_armor_glow: bool,
+    /// Viewport-only gain over the original source material emission.
+    emissive_strength: f32,
+    damage_blend_percent: u8,
+    damage_blend_enabled: bool,
+    /// CDF source-part completion tracked by the loading worker.
+    viewer_load_progress: Option<Arc<AtomicUsize>>,
     viewer_from_library: bool,
     developer_password: String,
     developer_status: String,
@@ -293,6 +337,18 @@ struct State {
     modding_pending_focus: Option<PathBuf>,
 }
 
+/// Docked tools all share the same resizable sidebar. Files is permanent;
+/// the other three tabs can be opened and dismissed independently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ViewerSidebarTab {
+    #[default]
+    Files,
+    Animations,
+    Inspector,
+    Dependencies,
+    Equipment,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum ViewerTab {
     #[default]
@@ -319,16 +375,37 @@ enum Operation {
     InspectPak(PathBuf),
     AnalyzeStorage(PathBuf, PathBuf, PathBuf, PathBuf, PathBuf),
     InspectDds(PathBuf),
-    PreviewDds(PathBuf, SharedCache),
+    PreviewDds(
+        PathBuf,
+        String,
+        Inventory,
+        Option<PathBuf>,
+        Option<String>,
+        SharedCache,
+    ),
     LoadDiffuse(PathBuf, SharedCache),
     LoadNormal(PathBuf, SharedCache),
     LoadEmissive(PathBuf, SharedCache),
     ResolveMaterial(PathBuf, PathBuf, Option<PathBuf>, Option<String>),
+    LoadModelSurfaces(
+        PathBuf,
+        PathBuf,
+        Inventory,
+        Option<PathBuf>,
+        Option<String>,
+        SharedCache,
+    ),
     LoadCaf(PathBuf),
+    LoadCafLayer(String, Arc<NativeCafMotion>, String, PathBuf),
     BindCafPreview(PathBuf, PathBuf, NativeCafMotion),
+    BindCdfCafPreview(
+        PathBuf,
+        Arc<RenderMesh>,
+        Arc<AssemblyReport>,
+        NativeCafMotion,
+    ),
     RiggedGlb(PathBuf, PathBuf, PathBuf),
-    FlatCdfFbx(PathBuf, Inventory, PathBuf, PathBuf, Option<PathBuf>),
-    UnifiedCdfFbx(PathBuf, Inventory, PathBuf, PathBuf, Option<PathBuf>),
+    ExportBundle(Inventory, evolve_core::ExportBundleOptions),
     RiggedFbx(
         PathBuf,
         PathBuf,
@@ -340,10 +417,34 @@ enum Operation {
     ConvertMotion(PathBuf, PathBuf, PathBuf, PathBuf),
     LoadGlbMotion(PathBuf),
     InspectCdf(PathBuf),
-    InspectCdfResolved(PathBuf, Inventory),
-    BuildStaticCdf(PathBuf, Inventory),
+    BuildStaticCdf(
+        PathBuf,
+        Inventory,
+        Option<PathBuf>,
+        Option<String>,
+        SharedCache,
+        EquipmentOverrides,
+        bool,
+        Arc<AtomicUsize>,
+    ),
+    PrepareCdfDamage(
+        PathBuf,
+        Arc<AssemblyReport>,
+        Arc<Vec<textured::Surface>>,
+        Inventory,
+        Option<PathBuf>,
+        Option<String>,
+        SharedCache,
+    ),
+    ReblendCdfDamage(
+        PathBuf,
+        Arc<Vec<textured::Surface>>,
+        Arc<Vec<textured::Surface>>,
+        u8,
+    ),
     ResolveCdf(PathBuf, PathBuf),
     InspectModel(PathBuf),
+    InspectIndexedModel(PathBuf, String, Inventory, Option<PathBuf>, Option<String>),
     DiscoverModelResources(String, Inventory, Option<PathBuf>, Option<String>),
     LoadDeclaredClip(usize, String, Inventory, Option<PathBuf>, Option<String>),
     LoadDeclaredDba(String, Inventory, Option<PathBuf>, Option<String>, PathBuf),
@@ -413,6 +514,7 @@ enum Completed {
     Normal(DdsInfo, Arc<::image::RgbaImage>),
     Emissive(DdsInfo, Arc<::image::RgbaImage>),
     MaterialResolved(
+        PathBuf,
         MaterialReport,
         Option<::image::RgbaImage>,
         Option<::image::RgbaImage>,
@@ -421,19 +523,27 @@ enum Completed {
         Option<::image::RgbaImage>,
         Vec<String>,
     ),
+    ModelSurfaces(PathBuf, Vec<textured::Surface>, Vec<String>),
     Caf(NativeCafMotion),
+    CafLayer(String, Arc<NativeCafMotion>, String, NativeCafMotion),
     BoundCafPreview(PathBuf, Box<VerifiedCafSkin>),
+    BoundCdfCafPreview(PathBuf, Box<VerifiedCafAssembly>),
     RiggedExport(RigReport, PathBuf),
-    FlatCdfFbxExport(FlatCdfFbxReport, PathBuf),
-    UnifiedCdfFbxExport(UnifiedCdfFbxReport, PathBuf),
+    BundleExported(evolve_core::ExportBundleReport),
     MotionConverted(ConvertedMotion, PathBuf),
     DbaConverted(ConvertedMotion, PathBuf, Arc<tempfile::TempDir>),
     MotionGlb(AnimatedGlb),
     Character(CdfDefinition),
-    CharacterResolved(CdfDefinition, CdfDependencyReport),
-    StaticCharacter(RenderMesh, AssemblyReport),
+    StaticCharacter(
+        RenderMesh,
+        AssemblyReport,
+        Vec<textured::Surface>,
+        Vec<String>,
+    ),
+    PreparedCdfDamage(PathBuf, Vec<textured::Surface>),
+    ReblendedCdfDamage(PathBuf, u8, Vec<textured::Surface>),
     CharacterDependencies(CdfDependencyReport),
-    Model(RenderMesh),
+    Model(RenderMesh, PathBuf),
     ModelResources(String, auto_resources::AutoDiscovery),
     DeclaredClip(usize, String, NativeCafMotion),
     Level(LevelScene, PathBuf, String),
@@ -506,12 +616,15 @@ impl Operation {
             Self::LoadImportedLibrary(root) => imported_library(&root)
                 .map(Completed::ImportedLibrary)
                 .map_err(|e| e.to_string()),
-            Self::ImportSignedLibrary(root, source, key) => {
-                // Import is explicitly requested; don't create any directory while browsing.
+            Self::ImportSignedLibrary(root, source, stage) => {
+                // Resolve all known public keys for each archive; the included
+                // original RSA verifier also works without an existing stage.
+                let keys = modding_keys::archive_verification_keys(&stage)?;
                 if !root.exists() {
                     std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
                 }
-                let report = import_signed_library_selection(&root, &source, &key)?;
+                let report =
+                    import_signed_library_selection_with_keys(&root, &source, &keys.paths)?;
                 let catalog = imported_library(&root).map_err(|e| e.to_string())?;
                 Ok(Completed::ImportedSignedLibrary(report, catalog))
             }
@@ -542,6 +655,11 @@ impl Operation {
             Self::InspectPak(source) => inspect_legacy_pak(&source)
                 .map(Completed::Pak)
                 .map_err(|e| e.to_string()),
+            Self::BindCdfCafPreview(source, mesh, report, motion) => {
+                let preview = VerifiedCafAssembly::from_parts((*mesh).clone(), &report, motion)
+                    .map_err(|e| format!("Original multi-part CDF/CAF skin binding: {e}"))?;
+                Ok(Completed::BoundCdfCafPreview(source, Box::new(preview)))
+            }
             Self::BindCafPreview(mesh, skeleton, motion) => {
                 let skin = VerifiedCafSkin::from_originals(&mesh, &skeleton, motion)
                     .map_err(|e| format!("Original CAF skeleton binding: {e}"))?;
@@ -552,25 +670,8 @@ impl Operation {
                     .map(|r| Completed::RiggedExport(r, dest))
                     .map_err(|e| e.to_string())
             }
-            Self::FlatCdfFbx(source, inventory, blender, destination, caf) => {
-                let report = export_flat_cdf_parts_fbx(
-                    &source,
-                    &inventory,
-                    &blender,
-                    &destination,
-                    caf.as_deref(),
-                )?;
-                Ok(Completed::FlatCdfFbxExport(report, destination))
-            }
-            Self::UnifiedCdfFbx(source, inventory, blender, destination, caf) => {
-                let report = export_unified_cdf_fbx(
-                    &source,
-                    &inventory,
-                    &blender,
-                    &destination,
-                    caf.as_deref(),
-                )?;
-                Ok(Completed::UnifiedCdfFbxExport(report, destination))
+            Self::ExportBundle(inventory, options) => {
+                evolve_core::export_bundle(&inventory, &options).map(Completed::BundleExported)
             }
             Self::RiggedFbx(mesh, skeleton, blender, diffuse, caf, dest) => {
                 export_rigged_character_fbx_textured_animated(
@@ -592,6 +693,13 @@ impl Operation {
             Self::LoadGlbMotion(path) => AnimatedGlb::read(&path)
                 .map(Completed::MotionGlb)
                 .map_err(|e| e.to_string()),
+            Self::LoadCafLayer(source, base, label, path) => {
+                let layer = read_native_caf(&path).map_err(|e| e.to_string())?;
+                if layer.additive {
+                    return Err("Additive CAF layers require a verified additive convention; select a non-additive clip.".into());
+                }
+                Ok(Completed::CafLayer(source, base, label, layer))
+            }
             Self::LoadCaf(source) => read_native_caf(&source)
                 .map(Completed::Caf)
                 .map_err(|e| e.to_string()),
@@ -740,6 +848,7 @@ impl Operation {
                 let specular = try_map("Specular", &["specular", "specularcolor"]);
                 let gloss = try_map("Gloss", &["gloss", "glossiness", "smoothness"]);
                 Ok(Completed::MaterialResolved(
+                    source,
                     report,
                     diffuse,
                     normal,
@@ -748,6 +857,17 @@ impl Operation {
                     gloss,
                     diagnostics,
                 ))
+            }
+            Self::LoadModelSurfaces(model, material, inventory, imported, build, cache) => {
+                let (surfaces, warnings) = assembly_materials::load_model(
+                    &model,
+                    &material,
+                    &inventory,
+                    imported.as_deref(),
+                    build.as_deref(),
+                    &cache,
+                )?;
+                Ok(Completed::ModelSurfaces(model, surfaces, warnings))
             }
             Self::LoadNormal(source, cache) => {
                 decoded_dds(&cache, &source).map(|(info, image)| Completed::Normal(info, image))
@@ -761,8 +881,15 @@ impl Operation {
             Self::InspectDds(source) => inspect_dds(&source)
                 .map(Completed::Texture)
                 .map_err(|e| e.to_string()),
-            Self::PreviewDds(source, cache) => {
-                let (info, pixels) = decoded_dds(&cache, &source)?;
+            Self::PreviewDds(source, relative, inventory, library, build, cache) => {
+                let (info, pixels) = decoded_dds_indexed(
+                    &cache,
+                    &source,
+                    &relative,
+                    &inventory,
+                    library.as_deref(),
+                    build.as_deref(),
+                )?;
                 Ok(Completed::DdsPreview(source, info, pixels))
             }
             Self::DiscoverModelResources(relative, inventory, library_root, build) => {
@@ -788,8 +915,23 @@ impl Operation {
             Self::InspectModel(source) => {
                 let render_source = preferred_render_source(&source);
                 read_model(&render_source)
-                    .map(Completed::Model)
+                    .map(|mesh| Completed::Model(mesh, render_source.clone()))
                     .map_err(|e| format!("{}: {e}", render_source.display()))
+            }
+            Self::InspectIndexedModel(source, virtual_path, inventory, imported, build) => {
+                let render_source = auto_resources::exact_render_companion(
+                    &virtual_path,
+                    &inventory,
+                    imported.as_deref(),
+                    build.as_deref(),
+                )?
+                .unwrap_or(source);
+                read_model(&render_source)
+                    .map(|mesh| Completed::Model(mesh, render_source.clone()))
+                    .map_err(|e| format!(
+                        "Unable to preview original model {}: {e}. For a .skin, index its exact .skinm compiled render companion in the same build.",
+                        render_source.display(),
+                    ))
             }
             Self::InspectLevel(source) => {
                 let checksum = level_source_hash(&source)?;
@@ -892,15 +1034,159 @@ impl Operation {
             Self::InspectCdf(source) => read_cdf(&source)
                 .map(Completed::Character)
                 .map_err(|e| e.to_string()),
-            Self::InspectCdfResolved(source, inventory) => {
-                let cdf = read_cdf(&source).map_err(|e| e.to_string())?;
-                let resolved = resolve_cdf(&inventory, &cdf);
-                Ok(Completed::CharacterResolved(cdf, resolved))
+            Self::BuildStaticCdf(
+                source,
+                inventory,
+                imported,
+                build,
+                cache,
+                equipment,
+                glow,
+                progress,
+            ) => {
+                progress.store(5, Ordering::Relaxed);
+                crash_diagnostics::record("cdf_worker_begin", "reading authored CDF attachments");
+                let (mesh, report) = read_static_cdf_assembly_with_equipment(
+                    &source,
+                    &inventory,
+                    imported.as_deref(),
+                    build.as_deref(),
+                    &equipment,
+                )
+                .map_err(|e| e.to_string())?;
+                crash_diagnostics::record(
+                    "cdf_geometry_ready",
+                    &format!(
+                        "{} parts, {} vertices, {} triangles",
+                        report.original_parts.len(),
+                        report.vertices,
+                        report.triangles
+                    ),
+                );
+                progress.store(35, Ordering::Relaxed);
+                crash_diagnostics::record("cdf_materials_begin", "loading authored material maps");
+                let (mut surfaces, mut warnings) = assembly_materials::load_with_progress(
+                    &report,
+                    &inventory,
+                    imported.as_deref(),
+                    build.as_deref(),
+                    &cache,
+                    Some(&progress),
+                );
+                progress.store(90, Ordering::Relaxed);
+                // Historical CryTek 0x745 monster geometry is the 2012 build:
+                // it has no Stage 2 armor-glow/damage toggles.
+                // Full armor glow is *only* the optional monster
+                // *_glow_diff overlay. Other authored emissive textures,
+                // GlowAmount and legacy alpha emission remain unchanged when
+                // the overlay checkbox is off.
+                if glow && !historical_2012_cdf(&report) {
+                    match evolve_core::monster_glow_path(&source, &inventory) {
+                        Ok(Some(texture)) => {
+                            // A monster glow from dds_low.pak may need its
+                            // original highest mip in the matching dds_high.pak.
+                            // Resolve the actual indexed virtual path and let
+                            // the same verified cross-archive decoder used for
+                            // the body materials assemble every required mip.
+                            let virtual_glow = texture
+                                .strip_prefix(&inventory.root)
+                                .ok()
+                                .or_else(|| {
+                                    texture
+                                        .ancestors()
+                                        .find(|parent| parent.file_name().is_some_and(|name| name == "files"))
+                                        .and_then(|folder| texture.strip_prefix(folder).ok())
+                                })
+                                .map(|relative| relative.to_string_lossy().replace('\\', "/"));
+                            let decoded = virtual_glow
+                                .as_deref()
+                                .ok_or_else(|| "Glow DDS outside the indexed Asset Library".to_owned())
+                                .and_then(|virtual_name| {
+                                    decoded_dds_indexed(
+                                        &cache, &texture, virtual_name, &inventory,
+                                        imported.as_deref(), build.as_deref()
+                                    ).map(|(_, image)| image)
+                                });
+                            match decoded {
+                            Ok(rgba) => {
+                                let cdf_dir = source
+                                    .strip_prefix(&inventory.root)
+                                    .map_err(|_| "Monster CDF outside indexed source root")?
+                                    .parent()
+                                    .ok_or("Selected CDF lacks a character folder")?
+                                    .to_string_lossy()
+                                    .replace('\\', "/")
+                                    .to_ascii_lowercase();
+                                let owner = cdf_dir
+                                    .find("characters/monsters/")
+                                    .map(|position| &cdf_dir[position..])
+                                    .ok_or("Selected CDF is not a monster")?;
+                                let mut mapped = 0usize;
+                                let mut derived = HashMap::<usize, Arc<::image::RgbaImage>>::new();
+                                for (part, surface) in report.source_parts.iter().zip(surfaces.iter_mut()) {
+                                    let binding = part.binding.replace('\\', "/").to_ascii_lowercase();
+                                    if surface.visible && binding.contains(owner)
+                                        && let Some(base) = surface.diffuse.as_ref()
+                                    {
+                                        let key = Arc::as_ptr(base) as usize;
+                                        let image = if let Some(existing) = derived.get(&key) {
+                                            Arc::clone(existing)
+                                        } else {
+                                            let pixels = Arc::new(assembly_materials::armor_emission(base, &rgba)?);
+                                            derived.insert(key, Arc::clone(&pixels));
+                                            pixels
+                                        };
+                                        // Separate armor-overlay channel: do not
+                                        // replace the material's existing Emittance
+                                        // or original per-slot GlowAmount.
+                                        surface.armor_emissive = Some(image);
+                                        mapped += 1;
+                                    }
+                                }
+                                warnings.push(format!(
+                                    "Full armor glow: {mapped} optional armor-overlay sections, composed beside original Emittance and GlowAmount"
+                                ));
+                            }
+                            Err(error) => warnings.push(format!(
+                                "Full armor glow unavailable for this monster: {error}; original diffuse preserved"
+                            )),
+                            }
+                        }
+                        Ok(None) => warnings.push(
+                            "Full armor glow enabled, but this variant has no verified original glow DDS; previewing base materials".into(),
+                        ),
+                        Err(error) => warnings.push(format!(
+                            "Original armor glow could not be uniquely resolved: {error}; preserving base materials"
+                        )),
+                    }
+                }
+                progress.store(98, Ordering::Relaxed);
+                crash_diagnostics::record(
+                    "cdf_worker_ready",
+                    &format!(
+                        "{} GPU material ranges, {} diagnostics",
+                        surfaces.len(),
+                        warnings.len()
+                    ),
+                );
+                Ok(Completed::StaticCharacter(mesh, report, surfaces, warnings))
             }
-            Self::BuildStaticCdf(source, inventory) => {
-                read_static_cdf_assembly(&source, &inventory)
-                    .map(|(mesh, report)| Completed::StaticCharacter(mesh, report))
-                    .map_err(|e| e.to_string())
+            Self::PrepareCdfDamage(source, report, base, inventory, imported, build, cache) => {
+                let mut full = base.as_ref().clone();
+                let _ = assembly_materials::apply_damage_blend(
+                    &report,
+                    &mut full,
+                    100,
+                    &inventory,
+                    imported.as_deref(),
+                    build.as_deref(),
+                    &cache,
+                )?;
+                Ok(Completed::PreparedCdfDamage(source, full))
+            }
+            Self::ReblendCdfDamage(source, base, full, percent) => {
+                let blend = assembly_materials::blend_prepared_damage(&base, &full, percent)?;
+                Ok(Completed::ReblendedCdfDamage(source, percent, blend))
             }
             Self::RebuildSignedPak(
                 src,
@@ -1033,6 +1319,8 @@ enum Message {
     LibrarySearchChanged(String),
     LibraryMenu(&'static str),
     ModdingMenu(&'static str),
+    DismissMenus,
+    MenuCommand(Box<Message>),
     ModdingFilterChanged(String),
     ModdingPage(bool),
     ModdingChangesPage(bool),
@@ -1052,6 +1340,8 @@ enum Message {
     OpenLibrarySettings,
     LibraryToggleConfiguration,
     LibraryRefresh,
+    LibraryOpenFolder,
+    LibraryExport,
     StartupLibraryIndexed(PathBuf, Result<ImportedLibrary, String>),
     LibrarySetByBuild(bool),
     LibraryNextBuild,
@@ -1061,6 +1351,17 @@ enum Message {
     LibraryPreviousPage,
     LibraryNextPage,
     OpenViewer,
+    OpenViewerPreferences,
+    ViewerSidebarAnimations(bool),
+    ViewerSidebarSelect(ViewerSidebarTab),
+    ViewerSidebarClose(ViewerSidebarTab),
+    ViewerEquip(String, String),
+    ViewerToggleMonsterGlow,
+    ViewerEmissiveStrengthChanged(f32),
+    ViewerToggleDamageBlend,
+    ViewerDamageBlendChanged(u8),
+    ViewerDamageBlendCommit,
+    ViewerSplitDrag(f32),
     OpenInspectorWindow,
     InspectorOpened,
     ViewerOpened,
@@ -1091,6 +1392,17 @@ enum Message {
     ViewerAutoClip(usize),
     ViewerAutoClipFilter(String),
     ViewerToggleExportAnimations,
+    ExportOpen,
+    ExportClose,
+    ExportFilterChanged(String),
+    ExportFolderChanged(String),
+    ExportToggleFile(usize),
+    ExportToggleRigged,
+    ExportToggleEmbedded,
+    ExportToggleDependencies,
+    ExportBegin,
+    ExportBrowse(&'static str),
+    ExportPicked(&'static str, Option<PathBuf>),
     ViewerPreviewStaticCdf,
     ViewerOpenStaticCdf(usize),
     StartDependencyInspection,
@@ -1098,7 +1410,6 @@ enum Message {
     CompareModifiedChanged(String),
     StartAssetCompare,
     ViewerToggleInspector,
-    ViewerSplitChanged(f32),
     ViewerSelectTab(ViewerTab),
     ViewerSaveLayout,
     PlaybackSpeedChanged(f32),
@@ -1169,7 +1480,11 @@ enum Message {
     PreferenceReduceMotion,
     PreferenceSnapshots,
     PreferenceActivity,
+    PreferenceCrashLogging,
+    OpenCrashLogs,
+    OpenCrashLogsFolder,
     PreferenceExperimental,
+    PreferenceUpdateChannel,
     PreferenceAutoUpdates,
     PreferenceStage(String),
     PreferenceGameStorage(String),
@@ -1199,10 +1514,11 @@ enum Message {
     StartNormalLoad,
     StartEmissiveLoad,
     StartCafLoad,
+    ViewerLayerClip(usize),
+    ViewerLayerWeight(f32),
+    ViewerClearLayer,
     StartRigGlb,
     StartRigFbx,
-    ViewerExportFlatCdf,
-    ViewerExportUnifiedCdf,
     StartMotionConversion,
     StartCdfInspection,
     StartCdfResolve,
@@ -1250,13 +1566,25 @@ fn bind_current_native_caf(state: &mut State) -> Option<Task<Message>> {
     }
     let source = PathBuf::from(&state.input);
     let extension = source.extension().and_then(|ext| ext.to_str())?;
+    if extension.eq_ignore_ascii_case("cdf") {
+        let report = state.cdf_report.as_ref()?.clone();
+        let rest = state.cdf_rest_mesh.as_ref()?.clone();
+        let clip = (**motion).clone();
+        return Some(launch(
+            state,
+            Operation::BindCdfCafPreview(source, rest, report, clip),
+        ));
+    }
     if !["skin", "skinm", "chr", "chrm"]
         .iter()
         .any(|candidate| extension.eq_ignore_ascii_case(candidate))
     {
         return None;
     }
-    let compiled = preferred_render_source(&source);
+    let compiled = state
+        .render_source
+        .clone()
+        .unwrap_or_else(|| preferred_render_source(&source));
     let skeleton = PathBuf::from(&state.skeleton_path);
     let clip = (**motion).clone();
     Some(launch(
@@ -1269,8 +1597,26 @@ fn bind_current_native_caf(state: &mut State) -> Option<Task<Message>> {
 /// viewport continues rendering textured geometry. Source geometry, UVs and
 /// on-disk assets are never modified by the animation preview.
 fn apply_current_skin_frame(state: &mut State) {
-    if let Some(skin) = &state.skin_preview {
-        match skin.mesh_at(state.motion_time) {
+    let layers = state
+        .caf_layer
+        .as_ref()
+        .map(|motion| evolve_core::CafLayer {
+            motion,
+            seconds: state.motion_time,
+            weight: state.caf_layer_weight,
+        })
+        .into_iter()
+        .collect::<Vec<_>>();
+    if let Some(assembly) = &state.cdf_caf_preview {
+        match assembly.mesh_at_layers(state.motion_time, &layers) {
+            Ok(mesh) => state.model = Some(Arc::new(mesh)),
+            Err(error) => {
+                state.playing = false;
+                state.status = format!("Whole-character CAF playback stopped: {error}");
+            }
+        }
+    } else if let Some(skin) = &state.skin_preview {
+        match skin.mesh_at_layers(state.motion_time, &layers) {
             Ok(mesh) => state.model = Some(Arc::new(mesh)),
             Err(error) => {
                 state.playing = false;
@@ -1330,9 +1676,13 @@ fn is_viewer_model_source(path: &str) -> bool {
 fn is_viewer_preview_source(path: &str) -> bool {
     let name = path.to_ascii_lowercase();
     is_viewer_model_source(&name)
-        || [".cdf", ".dds", ".dds.0", ".caf", ".mtl"]
+        || [".cdf", ".dds", ".caf", ".mtl"]
             .iter()
             .any(|suffix| name.ends_with(suffix))
+        || name.rsplit_once(".dds.").is_some_and(|(_, suffix)| {
+            let mip = suffix.strip_suffix('a').unwrap_or(suffix);
+            mip.parse::<u8>().is_ok_and(|n| n < 20)
+        })
 }
 
 fn sync_level_fields(state: &mut State) {
@@ -1401,11 +1751,90 @@ fn restore_level_history(state: &mut State, undo: bool) {
     }
 }
 
+fn resolved_blender(state: &mut State) -> Result<PathBuf, String> {
+    let path = blender_install::resolve_blender(&state.blender_path)?;
+    state.blender_path = path.to_string_lossy().into_owned();
+    Ok(path)
+}
+
+/// Native OS picker. Never use a freeform source-path field for export choices.
+/// Executed off the UI thread. A canceled dialog is intentionally a no-op.
+fn native_export_picker(kind: &str) -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        let script = if kind == "folder" {
+            r#"Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description='Choose export parent folder'; if($d.ShowDialog() -eq 'OK') { [Console]::Write($d.SelectedPath) }"#
+        } else {
+            r#"Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.OpenFileDialog; $d.Title='Select existing source file'; if($d.ShowDialog() -eq 'OK') { [Console]::Write($d.FileName) }"#
+        };
+        let output = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-STA", "-Command", script])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let path = PathBuf::from(String::from_utf8(output.stdout).ok()?.trim());
+        if (kind == "folder" && path.is_dir()) || (kind != "folder" && path.is_file()) {
+            Some(path)
+        } else {
+            None
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let script = if kind == "folder" {
+            "POSIX path of (choose folder)"
+        } else {
+            "POSIX path of (choose file)"
+        };
+        let output = std::process::Command::new("osascript")
+            .args(["-e", script])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        return Some(PathBuf::from(String::from_utf8(output.stdout).ok()?.trim()));
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let arg = if kind == "folder" {
+            "--directory"
+        } else {
+            "--file-selection"
+        };
+        let output = std::process::Command::new("zenity")
+            .args(["--file-selection", arg])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        Some(PathBuf::from(String::from_utf8(output.stdout).ok()?.trim()))
+    }
+}
+
+fn exportable_asset(relative: &str) -> bool {
+    let lower = relative.to_ascii_lowercase();
+    lower.ends_with(".dds")
+        || lower.ends_with(".dds.0")
+        || lower.ends_with(".cdf")
+        || [
+            ".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cgfm", ".cga", ".cgam",
+        ]
+        .iter()
+        .any(|ext| lower.ends_with(ext))
+}
+
 fn launch(state: &mut State, operation: Operation) -> Task<Message> {
     if state.busy {
         return Task::none();
     }
     state.busy = true;
+    if !matches!(&operation, Operation::BuildStaticCdf(..)) {
+        state.viewer_load_progress = None;
+    }
     state.status = "Working on explicitly selected local files...".into();
     Task::perform(
         async move {
@@ -1516,12 +1945,81 @@ fn selected_stage_target(state: &State) -> Result<String, String> {
     modding_keys::staged_target(&stage, PathBuf::from(&state.input).as_path())
 }
 
+/// Identify original historical 2012 geometry by its verified CryTek
+/// 0x745 render headers, not a directory name (Goliath and Rocky exist in
+/// multiple builds). Read only 16 bytes from each already-verified source.
+fn historical_2012_cdf(report: &AssemblyReport) -> bool {
+    use std::io::Read;
+    !report.geometry_parts.is_empty()
+        && report.geometry_parts.iter().all(|part| {
+            let mut header = [0u8; 16];
+            std::fs::File::open(&part.source)
+                .and_then(|mut file| file.read_exact(&mut header))
+                .is_ok()
+                && &header[..8] == b"CryTek\0\0"
+                && u32::from_le_bytes(header[12..16].try_into().unwrap_or_default()) == 0x745
+        })
+}
+
+/// A file or window transition must never retain the previous character's
+/// surfaces, textures, animation or CDF report in a new preview.
+fn clear_viewer_asset(state: &mut State) {
+    state.model = None;
+    state.render_source = None;
+    state.cdf_surfaces = None;
+    state.cdf_base_surfaces = None;
+    state.cdf_full_damage_surfaces = None;
+    state.cdf_damage_preparing = false;
+    state.cdf_legacy_2012 = false;
+    state.cdf_rest_mesh = None;
+    state.cdf_caf_preview = None;
+    state.cdf_report = None;
+    state.equipment_source = None;
+    state.equipment_slots.clear();
+    state.equipment_overrides.clear();
+    state.full_armor_glow = false;
+    state.emissive_strength = 1.0;
+    state.damage_blend_percent = 0;
+    state.damage_blend_enabled = false;
+    state.viewer_load_progress = None;
+    state.texture_preview = None;
+    state.texture = None;
+    state.material_report = None;
+    state.dependency_graph = None;
+    state.comparison = None;
+    state.character = None;
+    state.cdf_dependencies = None;
+    state.diffuse = None;
+    state.normal_map = None;
+    state.emissive_map = None;
+    state.specular_map = None;
+    state.gloss_map = None;
+    state.native_caf = None;
+    state.skin_preview = None;
+    state.caf_layer = None;
+    state.caf_layer_label.clear();
+    state.glb_motion = None;
+    state.converted_glbs.clear();
+    state.converted_dba_cache = None;
+    state.auto_clips.clear();
+    state.auto_idle_pending = None;
+    state.auto_play_native_caf = false;
+    state.auto_material_pending = false;
+    state.auto_resource_note.clear();
+    state.diffuse_status.clear();
+    state.playing = false;
+    state.motion_time = 0.0;
+    state.viewer_context_index = None;
+    state.viewer_queued_preview = None;
+}
+
 fn begin_scan(state: &mut State, source: PathBuf) -> Task<Message> {
     if state.busy {
         return Task::none();
     }
-    state.viewer_queued_preview = None;
-    state.viewer_context_index = None;
+    clear_viewer_asset(state);
+    state.selected = None;
+    state.file_selection.clear();
     let cancelled = Arc::new(AtomicBool::new(false));
     let indexed = Arc::new(AtomicUsize::new(0));
     let task = launch(
@@ -1574,6 +2072,30 @@ fn check_updates_task(channel: UpdateChannel) -> Task<Message> {
 }
 
 /// Rebuild filtering only when the catalog, query or selected snapshot changes.
+/// Validates the currently configured Asset Library directory before shell
+/// navigation. Never treat a non-directory, missing or relative path as the
+/// library (and never create a directory on a mere File menu action).
+fn verified_library_directory(configured: &str) -> Result<PathBuf, String> {
+    if configured.trim().is_empty() {
+        return Err(
+            "Asset Library location is not configured. Select it under Settings → Storage.".into(),
+        );
+    }
+    let path = Path::new(configured);
+    if !path.is_absolute() {
+        return Err("Configured Asset Library location is not an absolute path.".into());
+    }
+    let canonical = std::fs::canonicalize(path).map_err(|error| {
+        format!("Asset Library folder does not exist or cannot be opened: {error}")
+    })?;
+    if !canonical.is_dir() {
+        return Err("Configured Asset Library location is not a directory.".into());
+    }
+    // Explorer handles the ordinary configured Windows path more reliably
+    // than the \\?\\ long-path prefix returned by canonicalize on Windows.
+    Ok(path.to_path_buf())
+}
+
 fn refresh_library_matches(state: &mut State) {
     let Some(catalog) = &state.library_catalog else {
         state.library_matches.clear();
@@ -1669,7 +2191,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Asset Library is ready at the detected manager data location. Import a local signed PAK to populate it.".into();
             }
         }
+        Message::DismissMenus | Message::MenuCommand(_) => {
+            state.viewer_menu = None;
+            state.modding_menu = None;
+            state.library_menu = None;
+        }
         Message::ModdingMenu(menu) => {
+            state.library_menu = None;
+            state.viewer_menu = None;
             state.modding_menu = if state.modding_menu == Some(menu) {
                 None
             } else {
@@ -1947,20 +2476,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.library_show_configuration = true;
                 return Task::none();
             }
-            let key =
-                match modding_keys::public_key(PathBuf::from(&state.preferences.stage).as_path()) {
-                    Ok(key) => key,
-                    Err(error) => {
-                        state.status = error;
-                        return Task::none();
-                    }
-                };
             return launch(
                 state,
                 Operation::ImportSignedLibrary(
                     PathBuf::from(&state.library_root),
                     PathBuf::from(&state.library_import_source),
-                    key,
+                    PathBuf::from(&state.preferences.stage),
                 ),
             );
         }
@@ -1971,6 +2492,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             refresh_library_matches(state);
         }
         Message::LibraryMenu(menu) => {
+            state.modding_menu = None;
+            state.viewer_menu = None;
             state.library_menu = if state.library_menu == Some(menu) {
                 None
             } else {
@@ -2011,6 +2534,34 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Err(error) => {
                     state.status = format!("Could not index saved Asset Library: {error}")
                 }
+            }
+        }
+        Message::LibraryOpenFolder => {
+            // Open the configured Asset Library root, not an arbitrarily
+            // selected imported archive, stale inventory or game directory.
+            // File is a shell navigation action: never edit a source PAK.
+            match verified_library_directory(&state.library_root) {
+                Ok(directory) => {
+                    #[cfg(target_os = "windows")]
+                    {
+                        state.status = match std::process::Command::new("explorer.exe")
+                            .arg(directory)
+                            .spawn()
+                        {
+                            Ok(_) => "Opened the Asset Library folder in Windows Explorer.".into(),
+                            Err(error) => {
+                                format!("Could not open Asset Library in Explorer: {error}")
+                            }
+                        };
+                    }
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        let _ = directory;
+                        state.status =
+                            "Open Asset Library Folder is available in Windows builds.".into();
+                    }
+                }
+                Err(error) => state.status = error,
             }
         }
         Message::LibraryRefresh => {
@@ -2202,8 +2753,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 };
             }
         }
-        Message::OpenViewer
+        Message::LibraryExport
+        | Message::OpenViewer
         | Message::OpenInspectorWindow
+        | Message::OpenViewerPreferences
         | Message::InspectorOpened
         | Message::ViewerOpened
         | Message::ActivityOpened
@@ -2260,6 +2813,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 "Source path selected. Choose the relevant safe inspector in Modding.".into();
         }
         Message::ViewerMenu(section) => {
+            state.modding_menu = None;
+            state.library_menu = None;
             state.viewer_menu = if section.is_empty() || state.viewer_menu == Some(section) {
                 None
             } else {
@@ -2269,15 +2824,233 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ViewerToggleExplorer => {
             state.viewer_explorer_visible = !state.viewer_explorer_visible;
         }
-        Message::ViewerToggleInspector => {
-            state.viewer_show_inspector = !state.viewer_show_inspector
+        Message::ViewerSidebarAnimations(value) => {
+            // Legacy menu action: selecting Files does not close Animations.
+            if value {
+                state.viewer_sidebar_animations = true;
+                state.viewer_sidebar_active = ViewerSidebarTab::Animations;
+            } else {
+                state.viewer_sidebar_active = ViewerSidebarTab::Files;
+            }
+            state.viewer_explorer_visible = true;
+            state.viewer_menu = None;
         }
-        Message::ViewerSplitChanged(value) => state.viewer_split = value.clamp(0.25, 0.8),
-        Message::ViewerSelectTab(tab) => state.viewer_tab = tab,
+        Message::ViewerDamageBlendChanged(percent) => {
+            if percent <= 100
+                && state.equipment_source.is_some()
+                && !state.busy
+                && !state.cdf_legacy_2012
+            {
+                state.damage_blend_percent = percent;
+            }
+        }
+        Message::ViewerDamageBlendCommit => {
+            if state.busy || state.cdf_legacy_2012 {
+                return Task::none();
+            }
+            let (Some(source), Some(base)) = (&state.equipment_source, &state.cdf_base_surfaces)
+            else {
+                return Task::none();
+            };
+            if state.damage_blend_percent == 0 {
+                state.cdf_surfaces = Some(Arc::clone(base));
+                state.status =
+                    "Original character diffuse restored from memory (no reload).".into();
+                return Task::none();
+            }
+            if let Some(full) = &state.cdf_full_damage_surfaces {
+                if state.damage_blend_percent == 100 {
+                    state.cdf_surfaces = Some(Arc::clone(full));
+                    state.status = "100% damage applied from cached original maps.".into();
+                    return Task::none();
+                }
+                return launch(
+                    state,
+                    Operation::ReblendCdfDamage(
+                        source.clone(),
+                        Arc::clone(base),
+                        Arc::clone(full),
+                        state.damage_blend_percent,
+                    ),
+                );
+            }
+            let (Some(report), Some(inventory)) = (&state.cdf_report, &state.inventory) else {
+                return Task::none();
+            };
+            let operation = Operation::PrepareCdfDamage(
+                source.clone(),
+                Arc::clone(report),
+                Arc::clone(base),
+                inventory.clone(),
+                state
+                    .library_catalog
+                    .as_ref()
+                    .map(|c| PathBuf::from(&c.root)),
+                resource_build(state),
+                state.preview_cache.clone(),
+            );
+            state.cdf_damage_preparing = true;
+            return launch(state, operation);
+        }
+        Message::ViewerToggleDamageBlend => {
+            if state.busy {
+                state.status =
+                    "Finish the current model preview before changing damage blend.".into();
+                return Task::none();
+            }
+            let Some(source) = &state.equipment_source else {
+                state.status = "Select a monster CDF to preview its authored damage layer.".into();
+                return Task::none();
+            };
+            if !source
+                .to_string_lossy()
+                .replace('\\', "/")
+                .to_ascii_lowercase()
+                .contains("/monsters/")
+            {
+                state.status = "Damage blend is only available for monster CDFs.".into();
+                return Task::none();
+            }
+            if state.cdf_legacy_2012 {
+                state.status =
+                    "Damage blend is a Stage 2 feature, unavailable for original 2012 monsters."
+                        .into();
+                return Task::none();
+            }
+            state.damage_blend_enabled = !state.damage_blend_enabled;
+            state.damage_blend_percent = if state.damage_blend_enabled { 100 } else { 0 };
+            state.viewer_sidebar_active = ViewerSidebarTab::Equipment;
+            return update(state, Message::ViewerDamageBlendCommit);
+        }
+        Message::ViewerEmissiveStrengthChanged(value) => {
+            if value.is_finite()
+                && state.model.is_some()
+                && (state.emissive_map.is_some()
+                    || state.cdf_surfaces.as_ref().is_some_and(|surfaces| {
+                        surfaces.iter().any(|part| {
+                            part.visible
+                                && (part.armor_emissive.is_some()
+                                    || (part.emissive.is_some() && part.emission_strength > 0.0))
+                        })
+                    }))
+            {
+                state.emissive_strength = (value * 20.0).round().clamp(0.0, 80.0) / 20.0;
+            }
+        }
+        Message::ViewerToggleMonsterGlow => {
+            if state.busy {
+                state.status = "Finish the current preview before changing glow.".into();
+                return Task::none();
+            }
+            let Some(source) = &state.equipment_source else {
+                state.status = "Select a monster CDF to enable full-armor glow.".into();
+                return Task::none();
+            };
+            if !source
+                .to_string_lossy()
+                .replace('\\', "/")
+                .to_ascii_lowercase()
+                .contains("/monsters/")
+            {
+                state.status = "Full-armor glow is only available for monster CDFs.".into();
+                return Task::none();
+            }
+            if state.cdf_legacy_2012 {
+                state.status =
+                    "Armor glow is a Stage 2 feature, unavailable for original 2012 monsters."
+                        .into();
+                return Task::none();
+            }
+            state.full_armor_glow = !state.full_armor_glow;
+            state.viewer_sidebar_active = ViewerSidebarTab::Equipment;
+            return update(state, Message::ViewerPreviewStaticCdf);
+        }
+        Message::ViewerEquip(slot, binding) => {
+            if state.busy {
+                state.status =
+                    "Finish the current character preview before swapping equipment.".into();
+                return Task::none();
+            }
+            let Some(existing) = state
+                .equipment_slots
+                .iter()
+                .find(|entry| entry.name == slot)
+            else {
+                state.status = "Equipment attachment was not verified for this character.".into();
+                return Task::none();
+            };
+            if !existing
+                .choices
+                .iter()
+                .any(|c| c.binding.eq_ignore_ascii_case(&binding))
+            {
+                state.status =
+                    "Equipment file is not a verified option for this exact slot.".into();
+                return Task::none();
+            }
+            if binding.eq_ignore_ascii_case(&existing.original) {
+                state.equipment_overrides.remove(&slot);
+            } else {
+                state
+                    .equipment_overrides
+                    .insert(slot.clone(), binding.clone());
+            }
+            state.viewer_sidebar_active = ViewerSidebarTab::Equipment;
+            return update(state, Message::ViewerPreviewStaticCdf);
+        }
+        Message::ViewerSidebarSelect(tab) => {
+            state.viewer_sidebar_active = tab;
+            if tab == ViewerSidebarTab::Animations {
+                state.viewer_sidebar_animations = true;
+            } else if tab == ViewerSidebarTab::Inspector {
+                state.viewer_show_inspector = true;
+            } else if tab == ViewerSidebarTab::Dependencies {
+                state.viewer_sidebar_dependencies = true;
+            }
+            state.viewer_explorer_visible = true;
+            state.viewer_menu = None;
+        }
+        Message::ViewerSidebarClose(tab) => {
+            match tab {
+                ViewerSidebarTab::Files | ViewerSidebarTab::Equipment => {} // Permanent tool tabs.
+                ViewerSidebarTab::Animations => state.viewer_sidebar_animations = false,
+                ViewerSidebarTab::Inspector => state.viewer_show_inspector = false,
+                ViewerSidebarTab::Dependencies => state.viewer_sidebar_dependencies = false,
+            }
+            if state.viewer_sidebar_active == tab {
+                state.viewer_sidebar_active = ViewerSidebarTab::Files;
+            }
+        }
+        Message::ViewerSplitDrag(delta) => {
+            if delta.is_finite() {
+                // Dragging a 12px grip changes the relative file-pane width.
+                state.viewer_split = (state.viewer_split + delta).clamp(0.25, 0.85);
+            }
+        }
+        Message::ViewerToggleInspector => {
+            if state.viewer_show_inspector {
+                state.viewer_show_inspector = false;
+                if state.viewer_sidebar_active == ViewerSidebarTab::Inspector {
+                    state.viewer_sidebar_active = ViewerSidebarTab::Files;
+                }
+            } else {
+                state.viewer_show_inspector = true;
+                state.viewer_sidebar_active = ViewerSidebarTab::Inspector;
+                state.viewer_explorer_visible = true;
+            }
+        }
+        Message::ViewerSelectTab(tab) => {
+            state.viewer_tab = tab;
+            if tab == ViewerTab::Dependencies {
+                state.viewer_sidebar_dependencies = true;
+                state.viewer_sidebar_active = ViewerSidebarTab::Dependencies;
+                state.viewer_explorer_visible = true;
+            }
+        }
         Message::PlaybackSpeedChanged(value) => state.playback_speed = value.clamp(0.1, 3.0),
         Message::PlaybackLoopChanged => state.playback_loop = !state.playback_loop,
         Message::ViewerToggleWireframe => state.viewer_wireframe = !state.viewer_wireframe,
-        Message::LightStrengthChanged(value) => state.light_strength = value.clamp(0.1, 2.0),
+        Message::LightStrengthChanged(value) => state.light_strength = value.clamp(0.2, 4.0),
         Message::LevelSelect(index) => {
             if let Some(scene) = &state.level_scene
                 && index < scene.objects.len()
@@ -2508,6 +3281,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::StartDependencyInspection => {
+            state.viewer_sidebar_dependencies = true;
+            state.viewer_sidebar_active = ViewerSidebarTab::Dependencies;
+            state.viewer_explorer_visible = true;
+            state.viewer_menu = None;
             let Some(inventory) = &state.inventory else {
                 state.status = "Index extracted assets before inspecting dependencies.".into();
                 return Task::none();
@@ -2583,6 +3360,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ViewerSelectFile(index) => {
             state.viewer_context_index = None;
+            // An old dependency diagram must not describe a newly selected file.
+            state.dependency_graph = None;
             let visible: Vec<usize> = state
                 .viewer_rows
                 .iter()
@@ -2742,15 +3521,235 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "CDF source changed or escaped the indexed Asset Library.".into();
                 return Task::none();
             }
+            if state.equipment_source.as_ref() != Some(&source) {
+                state.equipment_overrides.clear();
+                state.emissive_strength = 1.0;
+                // Armor glow is the normal monster preview state. Missing
+                // original glow DDS must not block regular diffuse rendering.
+                let virtual_source = entry.relative_path.replace('\\', "/").to_ascii_lowercase();
+                state.full_armor_glow = virtual_source.contains("characters/monsters/");
+                state.damage_blend_percent = 0;
+                state.damage_blend_enabled = false;
+                state.equipment_source = Some(source.clone());
+                state.equipment_slots = read_cdf(&source)
+                    .map(|cdf| discover_equipment(&cdf, inventory))
+                    .unwrap_or_default();
+            }
+            crash_diagnostics::record("cdf_preview_selected", &entry.relative_path);
+            state.cdf_base_surfaces = None;
+            state.cdf_full_damage_surfaces = None;
+            state.cdf_damage_preparing = false;
+            let progress = Arc::new(AtomicUsize::new(0));
+            state.viewer_load_progress = Some(progress.clone());
             state.input = source.to_string_lossy().into_owned();
             state.texture_preview = None;
             state.status =
                 "Validating exact CDF parts for a static preview (not a rigged export)...".into();
-            return launch(state, Operation::BuildStaticCdf(source, inventory.clone()));
+            let operation = Operation::BuildStaticCdf(
+                source,
+                inventory.clone(),
+                state
+                    .library_catalog
+                    .as_ref()
+                    .map(|c| PathBuf::from(&c.root)),
+                resource_build(state),
+                state.preview_cache.clone(),
+                state.equipment_overrides.clone(),
+                state.full_armor_glow,
+                progress,
+            );
+            return launch(state, operation);
         }
         Message::ViewerAutoClipFilter(value) => state.auto_clip_filter = value,
         Message::ViewerToggleExportAnimations => {
             state.export_include_animation = !state.export_include_animation;
+        }
+        Message::ExportOpen => {
+            if let Ok(path) = blender_install::resolve_blender(&state.blender_path) {
+                state.blender_path = path.to_string_lossy().into_owned();
+            }
+            state.viewer_menu = None;
+            state.export_dialog_open = true;
+            state.export_selected = state
+                .file_selection
+                .indices
+                .iter()
+                .copied()
+                .filter(|index| {
+                    state
+                        .inventory
+                        .as_ref()
+                        .and_then(|inv| inv.entries.get(*index))
+                        .is_some_and(|item| exportable_asset(&item.relative_path))
+                })
+                .collect();
+            if state.export_selected.is_empty()
+                && let Some(index) = state.selected
+                && state
+                    .inventory
+                    .as_ref()
+                    .and_then(|inv| inv.entries.get(index))
+                    .is_some_and(|item| exportable_asset(&item.relative_path))
+            {
+                state.export_selected.insert(index);
+            }
+            state.status =
+                "Select models/assemblies and export settings. Originals remain read-only.".into();
+        }
+        Message::ExportClose => {
+            state.export_dialog_open = false;
+        }
+        Message::ExportFilterChanged(value) => state.export_filter = value,
+        Message::ExportBrowse(kind) => {
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || native_export_picker(kind))
+                        .await
+                        .ok()
+                        .flatten()
+                },
+                move |path| Message::ExportPicked(kind, path),
+            );
+        }
+        Message::ExportPicked(kind, Some(path)) => {
+            let value = path.to_string_lossy().into_owned();
+            match kind {
+                "folder" => state.export_parent = value,
+                "blender" => state.blender_path = value,
+                "skeleton" => state.skeleton_path = value,
+                "caf" => state.caf_path = value,
+                "diffuse" => state.diffuse_input = value,
+                _ => {}
+            }
+        }
+        Message::ExportPicked(_, None) => {}
+
+        Message::ExportFolderChanged(value) => state.export_folder_name = value,
+        Message::ExportToggleFile(index) => {
+            let eligible = state
+                .inventory
+                .as_ref()
+                .and_then(|inv| inv.entries.get(index))
+                .is_some_and(|item| exportable_asset(&item.relative_path));
+            if eligible && !state.export_selected.remove(&index) && state.export_selected.len() < 64
+            {
+                state.export_selected.insert(index);
+            }
+        }
+        Message::ExportToggleRigged => state.export_rigged = !state.export_rigged,
+        Message::ExportToggleEmbedded => state.export_embed_textures = !state.export_embed_textures,
+        Message::ExportToggleDependencies => {
+            state.export_dependencies = !state.export_dependencies;
+        }
+        Message::ExportBegin => {
+            if state.busy {
+                state.status = "Finish the current operation before exporting.".into();
+                return Task::none();
+            }
+            let Some(inventory) = state.inventory.clone() else {
+                state.status = "Index a character/asset folder before exporting.".into();
+                return Task::none();
+            };
+            // Own the folder name before Blender resolution updates state.
+            let name = state.export_folder_name.trim().to_owned();
+            if name.is_empty()
+                || name == "."
+                || name == ".."
+                || name
+                    .chars()
+                    .any(|ch| ch.is_control() || r#"<>:"/\\|?*"#.contains(ch))
+                || name.ends_with('.')
+                || name.ends_with(' ')
+            {
+                state.status = "Use a single valid Windows export-folder name.".into();
+                return Task::none();
+            }
+            let parent = PathBuf::from(state.export_parent.trim());
+            if !parent.is_absolute() || !parent.is_dir() {
+                state.status = "Choose an existing absolute parent folder for exports.".into();
+                return Task::none();
+            }
+            let mut indices = state.export_selected.iter().copied().collect::<Vec<_>>();
+            indices.sort_unstable();
+            let selected = indices
+                .into_iter()
+                .filter_map(|i| inventory.entries.get(i).map(|e| e.relative_path.clone()))
+                .filter(|p| exportable_asset(p))
+                .collect::<Vec<_>>();
+            if selected.is_empty() || selected.len() > 64 {
+                state.status = "Select 1 to 64 source models, CDFs, or DDS textures.".into();
+                return Task::none();
+            }
+            // Images export as PNG directly. Model/assembly FBX exports
+            // auto-discover Blender; only a genuinely missing installation
+            // requires the user to select their own blender.exe.
+            let needs_blender = selected.iter().any(|path| {
+                let lower = path.to_ascii_lowercase();
+                !lower.ends_with(".dds") && !lower.ends_with(".dds.0")
+            });
+            let blender = if needs_blender {
+                match resolved_blender(state) {
+                    Ok(path) => path,
+                    Err(message) => {
+                        state.status = message;
+                        return Task::none();
+                    }
+                }
+            } else {
+                PathBuf::new()
+            };
+            let cdf_source = (selected.len() == 1
+                && selected[0].to_ascii_lowercase().ends_with(".cdf"))
+            .then(|| PathBuf::from(&inventory.root).join(&selected[0]));
+            let export_matches_viewport = cdf_source
+                .as_ref()
+                .is_some_and(|source| state.equipment_source.as_ref() == Some(source));
+            if (!state.equipment_overrides.is_empty()
+                || state.full_armor_glow
+                || state.damage_blend_percent > 0)
+                && !export_matches_viewport
+            {
+                state.status =
+                    "To export current Model Options, select only the active CDF assembly.".into();
+                return Task::none();
+            }
+            if (state.full_armor_glow || state.damage_blend_percent > 0)
+                && (!state.export_rigged || !state.export_embed_textures)
+            {
+                state.status =
+                    "Full-armor glow and damage blend need Rigged and Embedded textures enabled for FBX export."
+                        .into();
+                return Task::none();
+            }
+            let equipment = if export_matches_viewport {
+                state.equipment_overrides.clone()
+            } else {
+                EquipmentOverrides::new()
+            };
+            let original = parent.join(name);
+            let options = evolve_core::ExportBundleOptions {
+                destination: original,
+                selected,
+                blender,
+                skeleton: (!state.skeleton_path.trim().is_empty())
+                    .then(|| PathBuf::from(&state.skeleton_path)),
+                diffuse: (!state.diffuse_input.trim().is_empty())
+                    .then(|| PathBuf::from(&state.diffuse_input)),
+                caf: (state.export_include_animation && !state.caf_path.trim().is_empty())
+                    .then(|| PathBuf::from(&state.caf_path)),
+                rigged: state.export_rigged,
+                embed_textures: state.export_embed_textures,
+                export_dependencies: state.export_dependencies,
+                equipment,
+                full_armor_glow: state.full_armor_glow && export_matches_viewport,
+                damage_blend_percent: if export_matches_viewport {
+                    state.damage_blend_percent
+                } else {
+                    0
+                },
+            };
+            state.export_dialog_open = false;
+            return launch(state, Operation::ExportBundle(inventory, options));
         }
         Message::ViewerAutoClip(index) => {
             let Some(clip) = state.auto_clips.get(index) else {
@@ -2835,12 +3834,40 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.input = source.to_string_lossy().to_string();
             state.texture_preview = None;
             let filename = relative.relative_path.to_ascii_lowercase();
+            // The explicit Preview button must use the same complete CDF
+            // assembly pipeline as single-click auto-preview. Parsing only
+            // dependency metadata here left the viewer with no geometry.
+            if filename.ends_with(".cdf") {
+                return update(state, Message::ViewerPreviewStaticCdf);
+            }
             let operation = if is_viewer_model_source(&filename) {
-                Operation::InspectModel(source)
-            } else if filename.ends_with(".cdf") {
-                Operation::InspectCdfResolved(source, inventory.clone())
-            } else if filename.ends_with(".dds") || filename.ends_with(".dds.0") {
-                Operation::PreviewDds(source, state.preview_cache.clone())
+                Operation::InspectIndexedModel(
+                    source,
+                    relative.relative_path.clone(),
+                    inventory.clone(),
+                    state
+                        .library_catalog
+                        .as_ref()
+                        .map(|c| PathBuf::from(&c.root)),
+                    resource_build(state),
+                )
+            } else if filename.ends_with(".dds")
+                || filename.rsplit_once(".dds.").is_some_and(|(_, suffix)| {
+                    let mip = suffix.strip_suffix('a').unwrap_or(suffix);
+                    mip.parse::<u8>().is_ok_and(|n| n < 20)
+                })
+            {
+                Operation::PreviewDds(
+                    source,
+                    relative.relative_path.clone(),
+                    inventory.clone(),
+                    state
+                        .library_catalog
+                        .as_ref()
+                        .map(|c| PathBuf::from(&c.root)),
+                    resource_build(state),
+                    state.preview_cache.clone(),
+                )
             } else if filename.ends_with(".caf") {
                 Operation::LoadCaf(source)
             } else if filename.ends_with(".mtl") {
@@ -2903,8 +3930,79 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.preferences.show_activity_on_tasks = !state.preferences.show_activity_on_tasks;
             persist_preferences(state);
         }
+        Message::PreferenceCrashLogging => {
+            state.preferences.crash_logging_enabled = !state.preferences.crash_logging_enabled;
+            crash_diagnostics::set_enabled(state.preferences.crash_logging_enabled);
+            persist_preferences(state);
+            if !state
+                .settings_status
+                .starts_with("Preferences could not be saved")
+            {
+                state.settings_status = if state.preferences.crash_logging_enabled {
+                    "Crash logs enabled. New preview events and Rust panics are recorded locally."
+                        .into()
+                } else {
+                    "Crash logs disabled. Existing log files were left untouched.".into()
+                };
+            }
+        }
+        Message::OpenCrashLogs | Message::OpenCrashLogsFolder => {
+            match crash_diagnostics::log_path() {
+                Ok(path) => {
+                    let opening_folder = matches!(&message, Message::OpenCrashLogsFolder);
+                    let log_folder = path.parent().map(Path::to_path_buf);
+                    let target = if opening_folder {
+                        log_folder.clone()
+                    } else if path.exists() {
+                        Some(path)
+                    } else {
+                        log_folder.clone()
+                    };
+                    if let Some(target) = target {
+                        if let Some(folder) = log_folder {
+                            let _ = std::fs::create_dir_all(folder);
+                        }
+                        #[cfg(windows)]
+                        let result = if opening_folder || target.is_dir() {
+                            std::process::Command::new("explorer.exe")
+                                .arg(&target)
+                                .spawn()
+                        } else {
+                            std::process::Command::new("notepad.exe")
+                                .arg(&target)
+                                .spawn()
+                        };
+                        #[cfg(not(windows))]
+                        let result = std::process::Command::new("xdg-open").arg(&target).spawn();
+                        state.settings_status = match result {
+                            Ok(_) => format!("Opening {}", target.display()),
+                            Err(error) => format!("Could not open crash log: {error}"),
+                        };
+                    }
+                }
+                Err(error) => {
+                    state.settings_status = format!("Crash log path unavailable: {error}")
+                }
+            }
+        }
         Message::PreferenceExperimental => {
             state.preferences.experimental_updates = !state.preferences.experimental_updates;
+            state.preferences.nightly_updates = false;
+            persist_preferences(state);
+        }
+        Message::PreferenceUpdateChannel => {
+            if state.preferences.nightly_updates {
+                state.preferences.nightly_updates = false;
+                state.preferences.experimental_updates = false;
+            } else if state.preferences.experimental_updates {
+                state.preferences.nightly_updates = true;
+                state.preferences.experimental_updates = false;
+            } else {
+                state.preferences.nightly_updates = false;
+                state.preferences.experimental_updates = true;
+            }
+            state.available_update = None;
+            state.staged_installer = None;
             persist_preferences(state);
         }
         Message::PreferenceAutoUpdates => {
@@ -2966,7 +4064,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.update_status = "Checking public GitHub Releases for verified updates...".into();
             state.available_update = None;
             state.staged_installer = None;
-            let channel = if state.preferences.experimental_updates {
+            let channel = if state.preferences.nightly_updates {
+                UpdateChannel::Nightly
+            } else if state.preferences.experimental_updates {
                 UpdateChannel::Beta
             } else {
                 UpdateChannel::Stable
@@ -3338,13 +4438,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             apply_current_skin_frame(state);
         }
         Message::ToggleMotion => {
-            if state.native_caf.is_some() && state.skin_preview.is_none() {
+            if state.native_caf.is_some()
+                && state.skin_preview.is_none()
+                && state.cdf_caf_preview.is_none()
+            {
                 state.playing = false;
                 state.status =
                     "CAF controller keys decoded, but selected mesh has no verified matching skin; cannot animate an unbound model.".into();
             } else {
                 state.playing = !state.playing
                     && (state.skin_preview.is_some()
+                        || state.cdf_caf_preview.is_some()
                         || state.glb_motion.as_ref().is_some_and(|m| {
                             m.list_clips().get(state.selected_motion_clip).is_some()
                         }));
@@ -3410,66 +4514,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 ),
             );
         }
-        Message::ViewerExportFlatCdf => {
-            let Some(inventory) = state.inventory.clone() else {
-                state.status = "Index an extracted CDF character folder before exporting.".into();
-                return Task::none();
-            };
-            let Some(entry) = state.selected.and_then(|i| inventory.entries.get(i)) else {
-                state.status = "Select a CDF character definition in the file explorer.".into();
-                return Task::none();
-            };
-            if !entry.relative_path.to_ascii_lowercase().ends_with(".cdf")
-                || state.blender_path.trim().is_empty()
-                || state.output.trim().is_empty()
-            {
-                state.status =
-                    "Choose a CDF, installed Blender executable and NEW flat export folder.".into();
-                return Task::none();
-            }
-            return launch(
-                state,
-                Operation::FlatCdfFbx(
-                    PathBuf::from(&inventory.root).join(&entry.relative_path),
-                    inventory.clone(),
-                    PathBuf::from(&state.blender_path),
-                    PathBuf::from(&state.output),
-                    (state.export_include_animation && !state.caf_path.trim().is_empty())
-                        .then(|| PathBuf::from(&state.caf_path)),
-                ),
-            );
-        }
-        Message::ViewerExportUnifiedCdf => {
-            let Some(inventory) = state.inventory.clone() else {
-                state.status = "Index an extracted CDF character folder first.".into();
-                return Task::none();
-            };
-            let Some(entry) = state.selected.and_then(|i| inventory.entries.get(i)) else {
-                state.status = "Select a CDF character definition for unified FBX.".into();
-                return Task::none();
-            };
-            if !entry.relative_path.to_ascii_lowercase().ends_with(".cdf")
-                || state.blender_path.trim().is_empty()
-                || !state.output.to_ascii_lowercase().ends_with(".fbx")
-            {
-                state.status =
-                    "Select a CDF, installed Blender, and NEW absolute .fbx destination.".into();
-                return Task::none();
-            }
-            let source = PathBuf::from(&inventory.root).join(&entry.relative_path);
-            let blender = PathBuf::from(&state.blender_path);
-            let destination = PathBuf::from(&state.output);
-            let caf = (state.export_include_animation && !state.caf_path.trim().is_empty())
-                .then(|| PathBuf::from(&state.caf_path));
-            return launch(
-                state,
-                Operation::UnifiedCdfFbx(source, inventory, blender, destination, caf),
-            );
-        }
         Message::StartRigFbx => {
+            let blender = match resolved_blender(state) {
+                Ok(path) => path,
+                Err(message) => {
+                    state.status = message;
+                    return Task::none();
+                }
+            };
             if state.input.trim().is_empty()
                 || state.skeleton_path.trim().is_empty()
-                || state.blender_path.trim().is_empty()
                 || state.output.trim().is_empty()
             {
                 state.status="Choose original skin mesh, matching skeleton, Blender executable and NEW .fbx output.".into();
@@ -3480,7 +4534,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Operation::RiggedFbx(
                     PathBuf::from(&state.input),
                     PathBuf::from(&state.skeleton_path),
-                    PathBuf::from(&state.blender_path),
+                    blender,
                     (!state.diffuse_input.trim().is_empty())
                         .then(|| PathBuf::from(&state.diffuse_input)),
                     (state.export_include_animation && !state.caf_path.trim().is_empty())
@@ -3507,6 +4561,40 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     PathBuf::from(&state.output),
                 ),
             );
+        }
+        Message::ViewerLayerClip(index) => {
+            if state.busy || (state.skin_preview.is_none() && state.cdf_caf_preview.is_none()) {
+                return Task::none();
+            }
+            let Some(base) = state.native_caf.clone() else {
+                return Task::none();
+            };
+            let Some(clip) = state.auto_clips.get(index) else {
+                return Task::none();
+            };
+            let Some(path) = clip
+                .source
+                .clone()
+                .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("caf")))
+            else {
+                state.status = "Layer playback requires an extracted native CAF.".into();
+                return Task::none();
+            };
+            return launch(
+                state,
+                Operation::LoadCafLayer(state.input.clone(), base, clip.label.clone(), path),
+            );
+        }
+        Message::ViewerLayerWeight(weight) => {
+            if weight.is_finite() && (0.0..=1.0).contains(&weight) {
+                state.caf_layer_weight = weight;
+                apply_current_skin_frame(state);
+            }
+        }
+        Message::ViewerClearLayer => {
+            state.caf_layer = None;
+            state.caf_layer_label.clear();
+            apply_current_skin_frame(state);
         }
         Message::StartCafLoad => {
             state.auto_play_native_caf = false;
@@ -3765,14 +4853,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::StartLevelFbxExport => {
-            if [
-                &state.input,
-                &state.assets_root,
-                &state.output,
-                &state.blender_path,
-            ]
-            .iter()
-            .any(|x| x.trim().is_empty())
+            let blender = match resolved_blender(state) {
+                Ok(path) => path,
+                Err(message) => {
+                    state.status = message;
+                    return Task::none();
+                }
+            };
+            if [&state.input, &state.assets_root, &state.output]
+                .iter()
+                .any(|x| x.trim().is_empty())
                 || !state.output.to_ascii_lowercase().ends_with(".fbx")
             {
                 state.status = "Select level XML/LYR, extracted asset root, Blender executable and NEW .fbx output.".into();
@@ -3789,7 +4879,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     PathBuf::from(&state.input),
                     PathBuf::from(&state.assets_root),
                     terrain,
-                    PathBuf::from(&state.blender_path),
+                    blender,
                     PathBuf::from(&state.output),
                 ),
             );
@@ -4007,6 +5097,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         "Read-only preview: {} manifest-listed files checked for size and location.",
                         inventory.entries.len()
                     );
+                    clear_viewer_asset(state);
                     state.input = inventory.root.clone();
                     state.viewer_search.clear();
                     state.inventory = Some(inventory);
@@ -4018,7 +5109,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::AssetLibrary);
                 }
                 Ok(Completed::Inventory(inventory)) => {
-                    state.viewer_queued_preview = None;
+                    clear_viewer_asset(state);
                     state.viewer_page = 0;
                     state.file_selection.clear();
                     state.status = format!(
@@ -4052,23 +5143,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     refresh_viewer_rows(state);
                     state.page = Some(Page::Files);
                 }
-                Ok(Completed::FlatCdfFbxExport(report, destination)) => {
+                Ok(Completed::BundleExported(result)) => {
                     state.status = format!(
-                        "Exported {} verified CDF part FBXs into one flat folder: {}. Separate FBXs remain experimental, not a unified character rig.",
-                        report.files.len(),
-                        destination.display()
+                        "Exported {} FBX files, {} PNG textures and {} other dependencies into {}. {}",
+                        result.exported.len(),
+                        result.png_textures,
+                        result.other_dependencies,
+                        result.destination.display(),
+                        result.warnings.join(" | ")
                     );
-                    state.page = Some(Page::Models);
-                }
-                Ok(Completed::UnifiedCdfFbxExport(report, destination)) => {
-                    state.status = format!(
-                        "Exported {} source-rigged CDF parts under one {}-bone armature; {} part(s) have a verified authored diffuse. Normal/emissive maps are included only when exact; full multi-slot shading remains incomplete. {}",
-                        report.parts.len(),
-                        report.bones,
-                        report.diffuse_textured_parts,
-                        destination.display()
-                    );
-                    state.page = Some(Page::Models);
                 }
                 Ok(Completed::RiggedExport(info, target)) => {
                     state.status = format!(
@@ -4082,6 +5165,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::Models);
                 }
                 Ok(Completed::DbaConverted(result, dir, temp)) => {
+                    state.cdf_caf_preview = None;
                     let count = result.clips.len();
                     state.converted_dba_cache = Some(temp);
                     state.converted_glbs = result
@@ -4089,6 +5173,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .iter()
                         .map(|relative| dir.join(relative))
                         .collect();
+                    state.caf_layer = None;
+                    state.caf_layer_label.clear();
                     state.native_caf = None;
                     state.glb_motion = None;
                     state.playing = false;
@@ -4105,6 +5191,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                 }
                 Ok(Completed::MotionConverted(result, dir)) => {
+                    state.cdf_caf_preview = None;
                     state.status = format!(
                         "Converter produced {} validated GLB animation files, {} source clips from {}.",
                         result.glb_files.len(),
@@ -4113,6 +5200,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                     state.converted_glbs =
                         result.glb_files.iter().map(|rel| dir.join(rel)).collect();
+                    state.caf_layer = None;
+                    state.caf_layer_label.clear();
                     state.native_caf = None;
                     state.skin_preview = None;
                     state.glb_motion = None;
@@ -4126,6 +5215,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                 }
                 Ok(Completed::MotionGlb(motion)) => {
+                    state.cdf_caf_preview = None;
                     let clips = motion.list_clips();
                     state.status = format!(
                         "Loaded {} real glTF animation clip(s), {} source nodes.",
@@ -4135,10 +5225,45 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.motion_time = 0.0;
                     state.playing = false;
                     state.selected_motion_clip = 0;
+                    state.caf_layer = None;
+                    state.caf_layer_label.clear();
                     state.native_caf = None;
                     state.skin_preview = None;
                     state.glb_motion = Some(Arc::new(motion));
                     state.page = Some(Page::Models);
+                }
+                Ok(Completed::CafLayer(source, base, label, motion)) => {
+                    if source != state.input
+                        || !state
+                            .native_caf
+                            .as_ref()
+                            .is_some_and(|current| Arc::ptr_eq(current, &base))
+                    {
+                        return Task::none();
+                    }
+                    let layers = [evolve_core::CafLayer {
+                        motion: &motion,
+                        seconds: state.motion_time,
+                        weight: 0.5,
+                    }];
+                    let verified = if let Some(assembly) = &state.cdf_caf_preview {
+                        assembly.mesh_at_layers(state.motion_time, &layers)
+                    } else if let Some(skin) = &state.skin_preview {
+                        skin.mesh_at_layers(state.motion_time, &layers)
+                    } else {
+                        return Task::none();
+                    };
+                    match verified {
+                        Ok(mesh) => {
+                            state.model = Some(Arc::new(mesh));
+                            state.caf_layer = Some(Arc::new(motion));
+                            state.caf_layer_label = label;
+                            state.caf_layer_weight = 0.5;
+                            state.status =
+                                "Native CAF layer bound to the original skeleton.".into();
+                        }
+                        Err(error) => state.status = format!("Cannot bind CAF layer: {error}"),
+                    }
                 }
                 Ok(Completed::Caf(motion)) => {
                     state.status = format!(
@@ -4150,6 +5275,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.motion_time = 0.0;
                     state.playing = false;
                     state.skin_preview = None;
+                    state.cdf_caf_preview = None;
+                    if let Some(rest) = &state.cdf_rest_mesh {
+                        state.model = Some(rest.clone());
+                    }
+                    state.caf_layer = None;
+                    state.caf_layer_label.clear();
                     state.native_caf = Some(Arc::new(motion));
                     state.glb_motion = None;
                     state.page = Some(Page::Models);
@@ -4212,6 +5343,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         });
                     if selected && !motion.additive {
                         state.skin_preview = None;
+                        state.cdf_caf_preview = None;
+                        if let Some(rest) = &state.cdf_rest_mesh {
+                            state.model = Some(rest.clone());
+                        }
+                        state.caf_layer = None;
+                        state.caf_layer_label.clear();
                         state.native_caf = Some(Arc::new(motion));
                         state.glb_motion = None;
                         state.motion_time = 0.0;
@@ -4227,8 +5364,35 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             "Additive CAF cannot play alone without a compatible base pose.".into();
                     }
                 }
+                Ok(Completed::BoundCdfCafPreview(source, assembly)) => {
+                    if state.viewer_queued_preview.is_none()
+                        && Path::new(&state.input) == source
+                        && state.native_caf.is_some()
+                        && state.cdf_report.is_some()
+                    {
+                        let part_count = assembly.part_count();
+                        let bones = assembly.original_bones();
+                        let cyclic = assembly.source_motion().cyclic;
+                        state.skin_preview = None;
+                        state.cdf_caf_preview = Some(Arc::new(*assembly));
+                        state.motion_time = 0.0;
+                        apply_current_skin_frame(state);
+                        if state.auto_play_native_caf {
+                            state.playback_loop = true;
+                        }
+                        state.playing = cyclic || state.auto_play_native_caf;
+                        state.auto_play_native_caf = false;
+                        state.status = format!(
+                            "Native CAF bound to {part_count} original CDF skin/equipment parts and {bones} source bones. Scrubbing deforms the assembled GPU viewport with verified CPU pose evaluation."
+                        );
+                        state.page = Some(Page::Models);
+                    }
+                }
                 Ok(Completed::BoundCafPreview(source, skin)) => {
-                    let expected = preferred_render_source(Path::new(&state.input));
+                    let expected = state
+                        .render_source
+                        .clone()
+                        .unwrap_or_else(|| preferred_render_source(Path::new(&state.input)));
                     if state.viewer_queued_preview.is_none()
                         && expected == source
                         && state.native_caf.is_some()
@@ -4236,6 +5400,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         let count = skin.original_vertices();
                         let bones = skin.original_bones();
                         let cyclic = skin.source_motion().cyclic;
+                        state.cdf_caf_preview = None;
                         state.skin_preview = Some(Arc::new(*skin));
                         state.motion_time = 0.0;
                         apply_current_skin_frame(state);
@@ -4251,6 +5416,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                 }
                 Ok(Completed::MaterialResolved(
+                    material_source,
                     report,
                     diffuse,
                     normal,
@@ -4259,6 +5425,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     gloss,
                     diagnostics,
                 )) => {
+                    let automatic_model_material = state.auto_material_pending
+                        && state.render_source.is_some()
+                        && state.model.is_some()
+                        && state.viewer_queued_preview.is_none();
                     state.auto_material_pending = false;
                     let found = report
                         .textures
@@ -4270,21 +5440,53 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .iter()
                         .filter(|t| matches!(t.resolution, AssetResolution::Ambiguous(_)))
                         .count();
-                    state.status = format!(
-                        "MTL: {} slot(s), {} authored references, {} uniquely resolved, {} ambiguous.{}",
-                        report.slots,
-                        report.textures.len(),
-                        found,
-                        ambiguous,
-                        if diagnostics.is_empty() {
-                            " No guessing.".to_string()
-                        } else {
-                            format!(" Unavailable maps: {}.", diagnostics.join(" | "))
+                    if state.cdf_report.is_some() {
+                        // A separately validated CDF already has original
+                        // per-subset GPU material bindings. The generic MTL
+                        // resolver does NOT perform cross-slot assignment,
+                        // so its informational diagnostic must not replace
+                        // the CDF renderer's actual assignment status.
+                        let (visible, mapped) =
+                            state.cdf_surfaces.as_ref().map_or((0, 0), |parts| {
+                                let visible = parts.iter().filter(|part| part.visible).count();
+                                let mapped = parts
+                                    .iter()
+                                    .filter(|part| part.visible && part.diffuse.is_some())
+                                    .count();
+                                (visible, mapped)
+                            });
+                        state.status = format!(
+                            "CDF GPU: {mapped}/{visible} visible mesh ranges with original diffuse maps; {found}/{} authored DDS references located, {ambiguous} ambiguous.",
+                            report.textures.len()
+                        );
+                        let unresolved = diagnostics
+                            .iter()
+                            .filter(|note| {
+                                !note.contains("require verified CryEngine mesh-subset assignments")
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        if !unresolved.is_empty() {
+                            state.auto_resource_note =
+                                format!("CDF material diagnostics: {}", unresolved.join(" | "));
                         }
-                    );
-                    if !diagnostics.is_empty() {
-                        state.auto_resource_note =
-                            format!("Material partially loaded: {}", diagnostics.join(" | "));
+                    } else {
+                        state.status = format!(
+                            "MTL: {} slot(s), {} authored references, {} uniquely resolved, {} ambiguous.{}",
+                            report.slots,
+                            report.textures.len(),
+                            found,
+                            ambiguous,
+                            if diagnostics.is_empty() {
+                                " No guessing.".to_string()
+                            } else {
+                                format!(" Unavailable maps: {}.", diagnostics.join(" | "))
+                            }
+                        );
+                        if !diagnostics.is_empty() {
+                            state.auto_resource_note =
+                                format!("Material partially loaded: {}", diagnostics.join(" | "));
+                        }
                     }
                     // A new authored material must not inherit a previous
                     // character's maps when the reference is missing/ambiguous.
@@ -4298,9 +5500,52 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.gloss_map = gloss.map(Arc::new);
                     state.material_report = Some(report);
                     state.page = Some(Page::Models);
+                    if automatic_model_material
+                        && let (Some(inventory), Some(model)) =
+                            (state.inventory.clone(), state.render_source.clone())
+                    {
+                        return launch(
+                            state,
+                            Operation::LoadModelSurfaces(
+                                model,
+                                material_source,
+                                inventory,
+                                state
+                                    .library_catalog
+                                    .as_ref()
+                                    .map(|c| PathBuf::from(&c.root)),
+                                resource_build(state),
+                                state.preview_cache.clone(),
+                            ),
+                        );
+                    }
                     if let Some(idle) = state.auto_idle_pending.take() {
                         state.auto_play_native_caf = true;
                         return launch(state, Operation::LoadCaf(idle));
+                    }
+                }
+                Ok(Completed::ModelSurfaces(source, surfaces, warnings)) => {
+                    if state.viewer_queued_preview.is_none()
+                        && state.render_source.as_ref() == Some(&source)
+                        && state.model.is_some()
+                    {
+                        let textured = surfaces.iter().filter(|s| s.diffuse.is_some()).count();
+                        state.cdf_surfaces = Some(Arc::new(surfaces));
+                        state.auto_resource_note = format!(
+                            "Original CryEngine GPU mesh subsets: {textured} textured; {} material warnings. {}",
+                            warnings.len(),
+                            warnings
+                                .iter()
+                                .take(3)
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join(" | "),
+                        );
+                        state.status = state.auto_resource_note.clone();
+                        if let Some(idle) = state.auto_idle_pending.take() {
+                            state.auto_play_native_caf = true;
+                            return launch(state, Operation::LoadCaf(idle));
+                        }
                     }
                 }
                 Ok(Completed::Normal(info, pixels)) => {
@@ -4340,7 +5585,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.texture_preview = Some(handle);
                         state.material_report = None;
                         state.model = None;
+                        state.render_source = None;
+                        state.cdf_surfaces = None;
+                        state.cdf_report = None;
+                        state.cdf_rest_mesh = None;
+                        state.cdf_caf_preview = None;
                         state.skin_preview = None;
+                        state.caf_layer = None;
+                        state.caf_layer_label.clear();
                         state.native_caf = None;
                         state.glb_motion = None;
                         state.playing = false;
@@ -4384,22 +5636,65 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.cdf_dependencies = Some(report);
                     state.page = Some(Page::Models);
                 }
-                Ok(Completed::StaticCharacter(mesh, report)) => {
+                Ok(Completed::StaticCharacter(mesh, report, surfaces, material_warnings)) => {
+                    state.cdf_legacy_2012 = historical_2012_cdf(&report);
+                    if state.cdf_legacy_2012 {
+                        state.full_armor_glow = false;
+                        state.damage_blend_percent = 0;
+                        state.damage_blend_enabled = false;
+                    }
+                    state.cdf_full_damage_surfaces = None;
+                    state.cdf_damage_preparing = false;
+                    crash_diagnostics::record(
+                        "cdf_ui_complete",
+                        &format!(
+                            "{} sections, {} triangles",
+                            surfaces.len(),
+                            report.triangles
+                        ),
+                    );
+                    state.render_source = None;
+                    state.cdf_rest_mesh = Some(Arc::new(mesh.clone()));
+                    state.cdf_report = Some(Arc::new(report.clone()));
+                    state.cdf_caf_preview = None;
                     state.texture_preview = None;
                     state.material_report = None;
                     state.status = format!(
-                        "Static CDF preview: {} exact parts, {} vertices, {} triangles, skin set {:?}. Rigged animation and multi-slot materials not enabled.",
+                        "CDF preview: {} attached parts, {} triangles; {} compiled bones verified, {} parts with original skin weights, {} material warnings.",
                         report.original_parts.len(),
-                        report.vertices,
                         report.triangles,
-                        report.selected_skin_set,
+                        report.verified_bones.unwrap_or(0),
+                        report
+                            .source_parts
+                            .iter()
+                            .filter(|p| p.verified_skin_weights)
+                            .count(),
+                        material_warnings.len(),
                     );
+                    state.auto_resource_note = report
+                        .warnings
+                        .iter()
+                        .chain(&material_warnings)
+                        .take(3)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" | ");
+                    state.skeleton_path = report
+                        .skeleton_source
+                        .as_ref()
+                        .map(|path| path.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let original = Arc::new(surfaces);
+                    state.cdf_base_surfaces = Some(Arc::clone(&original));
+                    state.cdf_surfaces = Some(original);
                     state.model = Some(Arc::new(mesh));
                     state.diffuse = None;
                     state.normal_map = None;
                     state.emissive_map = None;
                     state.specular_map = None;
                     state.gloss_map = None;
+                    state.caf_layer = None;
+                    state.caf_layer_label.clear();
                     state.native_caf = None;
                     state.skin_preview = None;
                     state.glb_motion = None;
@@ -4409,27 +5704,49 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.pan_x = 0.0;
                     state.pan_y = 0.0;
                     state.page = Some(Page::Models);
-                }
-                Ok(Completed::CharacterResolved(character, report)) => {
-                    let mut found = 0usize;
-                    let mut missing = 0usize;
-                    let mut ambiguous = 0usize;
-                    for dependency in std::iter::once(&report.skeleton)
-                        .chain(report.attachments.iter().map(|(_, status)| status))
-                    {
-                        match dependency {
-                            AssetResolution::Found(_) => found += 1,
-                            AssetResolution::Missing => missing += 1,
-                            AssetResolution::Ambiguous(_) => ambiguous += 1,
+                    // A CDF selection does not visit the regular single-model
+                    // completion path. Discover its explicitly associated
+                    // material and animation references here as well, so the
+                    // assembly does not remain permanently untextured after
+                    // its geometry has been assembled. The existing resolver
+                    // refuses ambiguous, unsafe or unrelated resources.
+                    if let Some(inv) = &state.inventory {
+                        let root = PathBuf::from(&inv.root);
+                        let source = PathBuf::from(&state.input);
+                        if let Ok(relative) = source.strip_prefix(&root) {
+                            let operation = Operation::DiscoverModelResources(
+                                relative.to_string_lossy().replace('\\', "/"),
+                                inv.clone(),
+                                state
+                                    .library_catalog
+                                    .as_ref()
+                                    .map(|c| PathBuf::from(&c.root)),
+                                resource_build(state),
+                            );
+                            return launch(state, operation);
                         }
                     }
-                    state.status = format!(
-                        "Character definition: {found} exact dependencies, {missing} missing, {ambiguous} ambiguous. Assembly rendering still requires verified skeleton/weights."
-                    );
-                    state.character = Some(character);
-                    state.cdf_dependencies = Some(report);
-                    state.viewer_tab = ViewerTab::Dependencies;
-                    state.page = Some(Page::Models);
+                }
+                Ok(Completed::PreparedCdfDamage(source, full)) => {
+                    state.cdf_damage_preparing = false;
+                    if state.equipment_source.as_ref() == Some(&source)
+                        && !state.cdf_legacy_2012
+                        && state.cdf_base_surfaces.is_some()
+                    {
+                        state.cdf_full_damage_surfaces = Some(Arc::new(full));
+                        return update(state, Message::ViewerDamageBlendCommit);
+                    }
+                }
+                Ok(Completed::ReblendedCdfDamage(source, percent, surfaces)) => {
+                    if state.equipment_source.as_ref() == Some(&source)
+                        && !state.cdf_legacy_2012
+                        && percent == state.damage_blend_percent
+                    {
+                        state.cdf_surfaces = Some(Arc::new(surfaces));
+                        state.status = format!(
+                            "Damage blend {percent}%: updated cached GPU textures; CDF geometry and DDS sources unchanged."
+                        );
+                    }
                 }
                 Ok(Completed::Character(character)) => {
                     state.status = format!(
@@ -4441,8 +5758,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.cdf_dependencies = None;
                     state.page = Some(Page::Models);
                 }
-                Ok(Completed::Model(mesh)) => {
+                Ok(Completed::Model(mesh, render_source)) => {
+                    state.render_source = Some(render_source);
+                    state.cdf_report = None;
+                    state.cdf_rest_mesh = None;
+                    state.cdf_caf_preview = None;
                     state.texture_preview = None;
+                    state.cdf_surfaces = None;
                     state.material_report = None;
                     state.skin_preview = None;
                     state.status = format!(
@@ -4470,6 +5792,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.emissive_map = None;
                     state.specular_map = None;
                     state.gloss_map = None;
+                    state.caf_layer = None;
+                    state.caf_layer_label.clear();
                     state.native_caf = None;
                     state.glb_motion = None;
                     state.playing = false;
@@ -4496,6 +5820,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                 }
                 Ok(Completed::Terrain(mesh, info)) => {
+                    state.cdf_surfaces = None;
+                    state.cdf_report = None;
+                    state.cdf_rest_mesh = None;
+                    state.cdf_caf_preview = None;
                     state.status = format!(
                         "Decoded source terrain {}×{} (stride {}).",
                         info.width, info.height, info.stride
@@ -4767,6 +6095,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                 }
                 Err(e) => {
+                    if state.cdf_damage_preparing {
+                        state.cdf_damage_preparing = false;
+                        state.damage_blend_percent = 0;
+                        state.damage_blend_enabled = false;
+                        if let Some(base) = &state.cdf_base_surfaces {
+                            state.cdf_surfaces = Some(Arc::clone(base));
+                        }
+                    }
+                    crash_diagnostics::record("worker_refused", &e);
                     state.auto_play_native_caf = false;
                     state.status = format!("Operation refused: {e}");
                     if state.auto_material_pending && state.viewer_queued_preview.is_none() {
@@ -4794,6 +6131,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     },
                 );
             }
+            // After an equipment swap has rebuilt the geometry, restore the
+            // selected damage percentage from the NEW verified base materials,
+            // without repeating that geometry work for slider changes.
+            if state.damage_blend_percent > 0
+                && !state.cdf_legacy_2012
+                && !state.cdf_damage_preparing
+                && state.cdf_full_damage_surfaces.is_none()
+                && state.cdf_base_surfaces.is_some()
+                && !state.busy
+            {
+                return update(state, Message::ViewerDamageBlendCommit);
+            }
         }
     }
     Task::none()
@@ -4808,7 +6157,7 @@ fn download_action(state: &State) -> Element<'_, Message> {
         .on_press(Message::DownloadUpdate)
         .into()
     } else {
-        text("Stable updates appear after the public release is published.").into()
+        text("Choose Stable, Beta or Nightly to check available verified releases.").into()
     }
 }
 fn run_installer_action(state: &State) -> Element<'_, Message> {
@@ -5102,11 +6451,12 @@ fn view(state: &State) -> Element<'_, Message> {
                 if let Some(mesh)=&state.model {
                     let display:Element<'_,Message> = if mesh.uv0.is_some(){
                         shader(TexturedScene{
-                            mesh:mesh.clone(),diffuse:state.diffuse.clone(),
+                            mesh:mesh.clone(),surfaces:state.cdf_surfaces.clone(),diffuse:state.diffuse.clone(),
                             normal_map:state.normal_map.clone(),emissive:state.emissive_map.clone(),
                             specular:state.specular_map.clone(),gloss:state.gloss_map.clone(),
                             yaw:state.yaw,pitch:state.pitch,zoom:state.zoom,
                             light_strength:state.light_strength,
+                            emissive_gain:state.emissive_strength,
                             pan_x:state.pan_x,pan_y:state.pan_y,shift:state.keyboard_modifiers.shift(),
                         }).width(Fill).height(Length::Fixed(400.)).into()
                     }else{
@@ -5123,8 +6473,12 @@ fn view(state: &State) -> Element<'_, Message> {
                 row![
                     design::text_input("Exact original .chr skeleton path...",&state.skeleton_path)
                         .on_input(Message::SkeletonChanged).width(Fill),
-                    design::text_input("Blender.exe path for FBX...",&state.blender_path)
-                        .on_input(Message::BlenderChanged).width(Fill),
+                    if blender_install::valid_blender(&state.blender_path).is_some() {
+                        Element::from(text("Blender detected automatically for FBX").size(12))
+                    } else {
+                        Element::from(design::text_input("Find Blender.exe for FBX…", &state.blender_path)
+                            .on_input(Message::BlenderChanged).width(Fill))
+                    },
                 ].spacing(8),
                 row![
                     design::button("Export rigged GLB").on_press(Message::StartRigGlb),
@@ -5234,11 +6588,12 @@ fn view(state: &State) -> Element<'_, Message> {
             if let Some(mesh)=&state.model {
                 let display:Element<'_,Message> = if mesh.uv0.is_some(){
                     shader(TexturedScene{
-                        mesh:mesh.clone(),diffuse:state.diffuse.clone(),
+                        mesh:mesh.clone(),surfaces:None,diffuse:state.diffuse.clone(),
                             normal_map:state.normal_map.clone(),emissive:state.emissive_map.clone(),
                             specular:state.specular_map.clone(),gloss:state.gloss_map.clone(),
                         yaw:state.yaw,pitch:state.pitch,zoom:state.zoom.max(0.2),
                             light_strength:state.light_strength,
+                            emissive_gain:state.emissive_strength,
                             pan_x:state.pan_x,pan_y:state.pan_y,shift:state.keyboard_modifiers.shift(),
                     }).width(Fill).height(Length::Fixed(400.)).into()
                 }else{
@@ -5258,8 +6613,12 @@ fn view(state: &State) -> Element<'_, Message> {
                 text("Pitch"),
                 slider(-85.0..=85.0,state.pitch,Message::PitchChanged).width(Fill),
             ].spacing(8),
-            design::text_input("Blender executable for scene FBX...", &state.blender_path)
-                .on_input(Message::BlenderChanged),
+            if blender_install::valid_blender(&state.blender_path).is_some() {
+                Element::from(text("Blender detected automatically for scene FBX").size(12))
+            } else {
+                Element::from(design::text_input("Find Blender.exe for scene FBX…", &state.blender_path)
+                    .on_input(Message::BlenderChanged))
+            },
             text("GLB/FBX includes verified mesh instances and optional terrain. Texture/material, compiled vegetation, scripting and full map fidelity remain gated."),
         ].spacing(14).into(),
         Page::Settings => settings_page::view(state),
@@ -5332,9 +6691,12 @@ fn initial_state() -> State {
     let mut result = State {
         zoom: 1.0,
         playback_speed: 1.0,
+        export_rigged: true,
+        export_embed_textures: true,
         viewer_split: 0.67,
         level_zoom: 1.0,
-        light_strength: 1.0,
+        light_strength: 1.6,
+        emissive_strength: 1.0,
         viewer_explorer_visible: true,
         ..State::default()
     };
@@ -5383,6 +6745,11 @@ fn initial_state() -> State {
                 .into_owned();
         }
     }
+    // Automatic Blender discovery is intentionally ephemeral: do not save a
+    // machine-specific detected path into user preferences.
+    if let Ok(path) = blender_install::resolve_blender(&result.blender_path) {
+        result.blender_path = path.to_string_lossy().into_owned();
+    }
     result.library_root = result.preferences.asset_library_root.clone();
     result.assets_root = result.library_root.clone();
     if let Ok(executable) = std::env::current_exe()
@@ -5398,7 +6765,7 @@ fn initial_state() -> State {
     }
     result
 }
-/// One native main window and one native model/asset editor window. All costly
+/// One native main window, model/asset editor, and separate export settings window. All costly
 /// asset operations stay in the existing worker queue, independent of either
 /// window's render loop.
 struct Desktop {
@@ -5406,7 +6773,9 @@ struct Desktop {
     main_id: window::Id,
     viewer_id: Option<window::Id>,
     inspector_id: Option<window::Id>,
+    preferences_id: Option<window::Id>,
     activity_id: Option<window::Id>,
+    export_id: Option<window::Id>,
 }
 
 impl Desktop {
@@ -5443,7 +6812,9 @@ impl Desktop {
                 main_id,
                 viewer_id: None,
                 inspector_id: None,
+                preferences_id: None,
                 activity_id: None,
+                export_id: None,
             },
             Task::batch([opened.map(|_| Message::ViewerOpened), startup]),
         )
@@ -5459,6 +6830,31 @@ impl Desktop {
             ..window::Settings::default()
         });
         self.viewer_id = Some(id);
+        opened.map(|_| Message::ViewerOpened)
+    }
+
+    fn open_viewer_preferences(&mut self) -> Task<Message> {
+        if self.preferences_id.is_some() {
+            return Task::none();
+        }
+        let (id, opened) = window::open(window::Settings {
+            size: iced::Size::new(700.0, 530.0),
+            ..window::Settings::default()
+        });
+        self.preferences_id = Some(id);
+        opened.map(|_| Message::InspectorOpened)
+    }
+
+    fn open_export(&mut self) -> Task<Message> {
+        if self.export_id.is_some() {
+            return Task::none();
+        }
+        let (id, opened) = window::open(window::Settings {
+            size: iced::Size::new(960.0, 740.0),
+            min_size: Some(iced::Size::new(720.0, 520.0)),
+            ..window::Settings::default()
+        });
+        self.export_id = Some(id);
         opened.map(|_| Message::ViewerOpened)
     }
 
@@ -5490,7 +6886,46 @@ impl Desktop {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::MenuCommand(inner) => {
+                self.state.viewer_menu = None;
+                self.state.modding_menu = None;
+                self.state.library_menu = None;
+                self.update(*inner)
+            }
             Message::OpenViewer => self.open_viewer(),
+            Message::ExportOpen => {
+                let prepare = update(&mut self.state, Message::ExportOpen);
+                Task::batch([prepare, self.open_export()])
+            }
+            Message::ExportClose => {
+                self.state.export_dialog_open = false;
+                self.export_id.take().map_or_else(Task::none, window::close)
+            }
+            Message::ExportBegin => {
+                let command = update(&mut self.state, Message::ExportBegin);
+                if !self.state.export_dialog_open
+                    && let Some(id) = self.export_id.take()
+                {
+                    return Task::batch([command, window::close(id)]);
+                }
+                command
+            }
+            Message::LibraryExport => {
+                // Never offer an old Modding inventory as if it were the
+                // currently selected imported Asset Library content.
+                let within_library = self.state.inventory.as_ref().is_some_and(|inventory| {
+                    let catalog_root = std::fs::canonicalize(&self.state.library_root);
+                    let indexed_root = std::fs::canonicalize(&inventory.root);
+                    matches!((catalog_root, indexed_root), (Ok(lib), Ok(index)) if index.starts_with(&lib))
+                });
+                if !within_library {
+                    self.state.status =
+                        "Preview an imported Asset Library PAK to index its original files before exporting.".into();
+                    return Task::none();
+                }
+                self.update(Message::ExportOpen)
+            }
+            Message::OpenViewerPreferences => self.open_viewer_preferences(),
             Message::OpenInspectorWindow => self.open_inspector(),
             Message::ToggleActivity => self.open_activity(),
             Message::ActivityOpened => Task::none(),
@@ -5510,12 +6945,30 @@ impl Desktop {
                 if id == self.main_id {
                     iced::exit()
                 } else {
+                    if self.export_id == Some(id) {
+                        self.export_id = None;
+                        self.state.export_dialog_open = false;
+                    }
                     if self.viewer_id == Some(id) {
                         self.viewer_id = None;
                         self.state.viewer_menu = None;
+                        clear_viewer_asset(&mut self.state);
+                        // The model editor is a separate window; closing it
+                        // must return to the originating workspace rather
+                        // than exposing the old inline Models tools tab.
+                        if self.state.page == Some(Page::Models) {
+                            self.state.page = Some(if self.state.viewer_from_library {
+                                Page::AssetLibrary
+                            } else {
+                                Page::Files
+                            });
+                        }
                     }
                     if self.inspector_id == Some(id) {
                         self.inspector_id = None;
+                    }
+                    if self.preferences_id == Some(id) {
+                        self.preferences_id = None;
                     }
                     if self.activity_id == Some(id) {
                         self.activity_id = None;
@@ -5529,8 +6982,8 @@ impl Desktop {
                 let finished = matches!(&message, Message::Finished(_));
                 let opens_model = matches!(
                     &message,
-                    Message::Finished(Ok(Completed::Model(_)
-                        | Completed::StaticCharacter(_, _)
+                    Message::Finished(Ok(Completed::Model(_, _)
+                        | Completed::StaticCharacter(_, _, _, _)
                         | Completed::ImportedPakFiles(_)))
                 ) || project_scan_done;
                 let launched_from_library = self.state.page == Some(Page::AssetLibrary);
@@ -5571,10 +7024,14 @@ impl Desktop {
     }
 
     fn view(&self, id: window::Id) -> Element<'_, Message> {
-        if self.activity_id == Some(id) {
+        if self.export_id == Some(id) {
+            asset_viewer::export_dialog(&self.state)
+        } else if self.activity_id == Some(id) {
             activity_window::view(&self.state)
         } else if self.viewer_id == Some(id) {
             asset_viewer::view(&self.state)
+        } else if self.preferences_id == Some(id) {
+            asset_viewer::preferences_view(&self.state)
         } else if self.inspector_id == Some(id) {
             container(viewer_inspector::view(&self.state))
                 .padding(12)
@@ -5589,8 +7046,12 @@ impl Desktop {
     }
 
     fn title(&self, id: window::Id) -> String {
-        if self.activity_id == Some(id) {
+        if self.export_id == Some(id) {
+            "Export Settings | Evolve Mod Manager".into()
+        } else if self.activity_id == Some(id) {
             "Activity | Evolve Mod Manager".into()
+        } else if self.preferences_id == Some(id) {
+            "Evolve Mod Manager — Viewer Preferences".into()
         } else if self.inspector_id == Some(id) {
             "Evolve Mod Manager — Detached Asset Inspector".into()
         } else if self.viewer_id == Some(id) {
@@ -5618,7 +7079,7 @@ impl Desktop {
         } else {
             Subscription::none()
         };
-        let scan_progress = if self.state.scan_indexed.is_some() {
+        let scan_progress = if self.state.scan_indexed.is_some() || self.state.busy {
             iced::time::every(Duration::from_millis(250)).map(|_| Message::ScanPulse)
         } else {
             Subscription::none()
@@ -5636,6 +7097,10 @@ impl Desktop {
             scan_progress,
             window::close_events().map(Message::WindowClosed),
             iced::event::listen_with(|event, _status, id| match event {
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                    ..
+                }) => Some(Message::DismissMenus),
                 iced::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers)) => {
                     Some(Message::ModifiersChanged(modifiers))
                 }
@@ -5649,6 +7114,11 @@ impl Desktop {
 }
 
 fn main() -> iced::Result {
+    let logging_enabled = settings_path()
+        .ok()
+        .and_then(|path| load_from(&path).ok())
+        .is_none_or(|settings| settings.crash_logging_enabled);
+    crash_diagnostics::install(logging_enabled);
     let _supported_backends = wgpu::Backends::PRIMARY;
     iced::daemon(Desktop::new, Desktop::update, Desktop::view)
         .subscription(Desktop::subscription)
@@ -5660,6 +7130,70 @@ fn main() -> iced::Result {
 #[cfg(test)]
 mod project_edit_tests {
     use super::*;
+
+    #[test]
+    fn open_library_folder_validates_configured_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            verified_library_directory(temp.path().to_str().unwrap()).unwrap(),
+            temp.path()
+        );
+        assert!(verified_library_directory("").is_err());
+        assert!(verified_library_directory("relative/folder").is_err());
+        let file = temp.path().join("not-a-folder");
+        std::fs::write(&file, b"test").unwrap();
+        assert!(verified_library_directory(file.to_str().unwrap()).is_err());
+        let missing = temp.path().join("missing");
+        assert!(verified_library_directory(missing.to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn layer_controls_ignore_invalid_weights_and_unbound_assets() {
+        let mut state = State {
+            caf_layer_weight: 0.4,
+            ..State::default()
+        };
+        for weight in [f32::NAN, f32::INFINITY, -0.1, 1.1] {
+            let _ = update(&mut state, Message::ViewerLayerWeight(weight));
+            assert_eq!(state.caf_layer_weight, 0.4);
+        }
+        let _ = update(&mut state, Message::ViewerLayerClip(0));
+        assert!(!state.busy);
+        assert!(state.caf_layer.is_none());
+    }
+
+    #[test]
+    fn late_layer_completion_cannot_replace_a_new_base_clip() {
+        let motion = NativeCafMotion {
+            schema: 1,
+            controllers: vec![],
+            start_frame: 0.0,
+            end_frame: 30.0,
+            fps: 30.0,
+            additive: false,
+            cyclic: false,
+        };
+        let old = Arc::new(motion.clone());
+        let current = Arc::new(motion.clone());
+        let mut state = State {
+            input: "new.cdf".into(),
+            native_caf: Some(current.clone()),
+            caf_layer: Some(current.clone()),
+            caf_layer_label: "keep".into(),
+            ..State::default()
+        };
+        let _ = update(
+            &mut state,
+            Message::Finished(Ok(Completed::CafLayer(
+                "new.cdf".into(),
+                old,
+                "stale".into(),
+                motion,
+            ))),
+        );
+        assert_eq!(state.caf_layer_label, "keep");
+        assert!(Arc::ptr_eq(state.caf_layer.as_ref().unwrap(), &current));
+    }
 
     #[test]
     fn plain_click_previews_model_without_second_button_press() {
@@ -5705,6 +7239,317 @@ mod project_edit_tests {
     }
 
     #[test]
+    fn docked_tools_can_open_switch_and_close_without_closing_files() {
+        let mut state = State::default();
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarSelect(ViewerSidebarTab::Animations),
+        );
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarSelect(ViewerSidebarTab::Inspector),
+        );
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarSelect(ViewerSidebarTab::Dependencies),
+        );
+        assert!(state.viewer_sidebar_animations);
+        assert!(state.viewer_show_inspector);
+        assert!(state.viewer_sidebar_dependencies);
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Dependencies);
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarClose(ViewerSidebarTab::Inspector),
+        );
+        assert!(!state.viewer_show_inspector);
+        assert!(state.viewer_sidebar_dependencies);
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Dependencies);
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarClose(ViewerSidebarTab::Dependencies),
+        );
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarClose(ViewerSidebarTab::Files),
+        );
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarSelect(ViewerSidebarTab::Animations),
+        );
+        assert!(state.viewer_sidebar_animations);
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarClose(ViewerSidebarTab::Animations),
+        );
+        assert!(!state.viewer_sidebar_animations);
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
+    }
+
+    #[test]
+    fn damage_slider_zero_and_full_reuse_loaded_materials_without_cdf_worker() {
+        let path = PathBuf::from("characters/monsters/goliath/goliath3.cdf");
+        let pixels = Arc::new(::image::RgbaImage::from_pixel(
+            1,
+            1,
+            ::image::Rgba([20, 50, 80, 255]),
+        ));
+        let full_pixels = Arc::new(::image::RgbaImage::from_pixel(
+            1,
+            1,
+            ::image::Rgba([230, 170, 80, 255]),
+        ));
+        let original = textured::Surface {
+            first_index: 0,
+            index_count: 3,
+            visible: true,
+            transparent: false,
+            diffuse: Some(Arc::clone(&pixels)),
+            normal: None,
+            emissive: None,
+            armor_emissive: None,
+            emission_strength: 1.0,
+            specular: None,
+            gloss: None,
+            opacity: None,
+        };
+        let mut damaged = original.clone();
+        damaged.diffuse = Some(Arc::clone(&full_pixels));
+        let mut state = State {
+            equipment_source: Some(path),
+            damage_blend_enabled: true,
+            damage_blend_percent: 100,
+            cdf_base_surfaces: Some(Arc::new(vec![original])),
+            cdf_full_damage_surfaces: Some(Arc::new(vec![damaged])),
+            ..State::default()
+        };
+        let _task = update(&mut state, Message::ViewerDamageBlendCommit);
+        assert!(!state.busy, "100% must not spawn a CDF worker");
+        assert!(Arc::ptr_eq(
+            state.cdf_surfaces.as_ref().unwrap()[0]
+                .diffuse
+                .as_ref()
+                .unwrap(),
+            &full_pixels,
+        ));
+        let _ = update(&mut state, Message::ViewerDamageBlendChanged(0));
+        let _ = update(&mut state, Message::ViewerDamageBlendCommit);
+        assert!(!state.busy, "0% must not spawn a CDF worker");
+        assert!(state.damage_blend_enabled, "slider must stay visible at 0%");
+        assert!(Arc::ptr_eq(
+            state.cdf_surfaces.as_ref().unwrap()[0]
+                .diffuse
+                .as_ref()
+                .unwrap(),
+            &pixels,
+        ));
+    }
+
+    #[test]
+    fn emissive_slider_preserves_original_source_and_requires_a_real_map() {
+        let pixels = Arc::new(::image::RgbaImage::from_pixel(
+            1,
+            1,
+            ::image::Rgba([180, 40, 20, 255]),
+        ));
+        let surface = textured::Surface {
+            first_index: 0,
+            index_count: 3,
+            visible: true,
+            transparent: false,
+            diffuse: None,
+            normal: None,
+            emissive: Some(Arc::clone(&pixels)),
+            armor_emissive: None,
+            emission_strength: 3.0,
+            specular: None,
+            gloss: None,
+            opacity: None,
+        };
+        let model = Arc::new(RenderMesh {
+            info: evolve_core::ModelInfo {
+                format: "test".into(),
+                version: 0,
+                chunk_count: 0,
+                vertex_count: 3,
+                triangle_count: 1,
+                original_uv0: false,
+                original_normals: false,
+            },
+            positions: vec![[0.0, 0.0, 0.0]; 3],
+            indices: vec![0, 1, 2],
+            uv0: None,
+            normals: None,
+        });
+        let mut state = State {
+            model: Some(model),
+            cdf_surfaces: Some(Arc::new(vec![surface.clone()])),
+            emissive_strength: 1.0,
+            ..State::default()
+        };
+        let before = state.cdf_surfaces.clone().unwrap();
+        let _ = update(&mut state, Message::ViewerEmissiveStrengthChanged(2.5));
+        assert_eq!(state.emissive_strength, 2.5);
+        assert!(Arc::ptr_eq(&before, state.cdf_surfaces.as_ref().unwrap()));
+        assert_eq!(
+            state.cdf_surfaces.as_ref().unwrap()[0].emission_strength,
+            3.0
+        );
+        assert_eq!(
+            state.cdf_surfaces.as_ref().unwrap()[0]
+                .emissive
+                .as_ref()
+                .unwrap()
+                .as_raw(),
+            pixels.as_raw()
+        );
+        state.cdf_surfaces = None;
+        let _ = update(&mut state, Message::ViewerEmissiveStrengthChanged(4.0));
+        assert_eq!(state.emissive_strength, 2.5);
+    }
+
+    #[test]
+    fn legacy_2012_header_removes_stage_two_damage_and_glow_actions() {
+        let dir = tempfile::tempdir().unwrap();
+        let model = dir.path().join("old.chr");
+        let mut original = [0u8; 16];
+        original[..8].copy_from_slice(b"CryTek\0\0");
+        original[12..16].copy_from_slice(&0x745u32.to_le_bytes());
+        std::fs::write(&model, original).unwrap();
+        let report = AssemblyReport {
+            cdf_skeleton: "old.chr".into(),
+            selected_skin_set: None,
+            original_parts: vec!["body".into()],
+            vertices: 3,
+            triangles: 1,
+            original_uv0_complete: true,
+            original_normals_complete: true,
+            skeletal_animation_enabled: false,
+            source_parts: vec![],
+            geometry_parts: vec![evolve_core::AssemblyGeometry {
+                name: "body".into(),
+                source: model.clone(),
+                vertex_first: 0,
+                vertex_count: 3,
+                bone_socket: None,
+                verified_skin_weights: false,
+            }],
+            verified_bones: None,
+            skeleton_source: None,
+            warnings: vec![],
+        };
+        assert!(historical_2012_cdf(&report));
+        let mut newer = original;
+        newer[12..16].copy_from_slice(&0x746u32.to_le_bytes());
+        std::fs::write(&model, newer).unwrap();
+        assert!(!historical_2012_cdf(&report));
+        let mut state = State {
+            equipment_source: Some(dir.path().join("characters/monsters/rocky/rocky3.cdf")),
+            cdf_legacy_2012: true,
+            ..State::default()
+        };
+        let _ = update(&mut state, Message::ViewerToggleDamageBlend);
+        let _ = update(&mut state, Message::ViewerToggleMonsterGlow);
+        assert!(!state.full_armor_glow);
+        assert!(!state.damage_blend_enabled);
+        assert_eq!(state.damage_blend_percent, 0);
+    }
+
+    #[test]
+    fn equipment_tab_rejects_unverified_cross_character_swaps() {
+        let mut state = State::default();
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarSelect(ViewerSidebarTab::Equipment),
+        );
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Equipment);
+        let _ = update(
+            &mut state,
+            Message::ViewerEquip(
+                "basher_l".into(),
+                "objects/characters/monsters/scorpid_2/scorpid3_r_shield.chr".into(),
+            ),
+        );
+        assert!(state.equipment_overrides.is_empty());
+        assert!(state.status.contains("not verified"));
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarClose(ViewerSidebarTab::Equipment),
+        );
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
+    }
+
+    #[test]
+    fn opening_dependency_inspection_docks_tab_even_without_a_source() {
+        let mut state = State::default();
+        let _ = update(&mut state, Message::StartDependencyInspection);
+        assert!(state.viewer_sidebar_dependencies);
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Dependencies);
+        assert!(state.status.contains("Index extracted assets"));
+    }
+
+    #[test]
+    fn viewer_sidebar_tabs_use_one_shared_explorer_location() {
+        let mut state = State::default();
+        let _ = update(&mut state, Message::ViewerSidebarAnimations(true));
+        assert!(state.viewer_sidebar_animations);
+        assert!(state.viewer_explorer_visible);
+        let _ = update(&mut state, Message::ViewerSidebarAnimations(false));
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
+        assert!(state.viewer_sidebar_animations);
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarClose(ViewerSidebarTab::Animations),
+        );
+        assert!(!state.viewer_sidebar_animations);
+    }
+
+    #[test]
+    fn dragging_explorer_grip_bounds_split_without_sliders() {
+        let mut state = State {
+            viewer_split: 0.67,
+            ..State::default()
+        };
+        let _ = update(&mut state, Message::ViewerSplitDrag(0.10));
+        assert!((state.viewer_split - 0.77).abs() < 0.0001);
+        let _ = update(&mut state, Message::ViewerSplitDrag(-2.0));
+        assert_eq!(state.viewer_split, 0.25);
+    }
+
+    #[test]
+    fn switching_source_folder_clears_all_previous_character_rendering() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = State {
+            inventory: Some(scan_directory(dir.path()).unwrap()),
+            model: Some(Arc::new(RenderMesh {
+                info: evolve_core::ModelInfo {
+                    format: "test".into(),
+                    version: 7,
+                    chunk_count: 1,
+                    vertex_count: 3,
+                    triangle_count: 1,
+                    original_uv0: false,
+                    original_normals: false,
+                },
+                positions: vec![[0.0, 0.0, 0.0]; 3],
+                indices: vec![0, 1, 2],
+                uv0: None,
+                normals: None,
+            })),
+            auto_resource_note: "Previous character".into(),
+            viewer_queued_preview: Some(0),
+            ..State::default()
+        };
+        let _ = begin_scan(&mut state, dir.path().to_path_buf());
+        assert!(state.model.is_none());
+        assert!(state.cdf_surfaces.is_none());
+        assert!(state.texture_preview.is_none());
+        assert!(state.auto_resource_note.is_empty());
+        assert!(state.viewer_queued_preview.is_none());
+    }
+
+    #[test]
     fn rescanning_discards_queued_preview_from_the_old_directory() {
         let first = tempfile::tempdir().unwrap();
         let second = tempfile::tempdir().unwrap();
@@ -5746,6 +7591,29 @@ mod project_edit_tests {
         let _task = update(&mut state, Message::ViewerSelectFile(2));
         assert!(!state.busy);
         assert_eq!(state.file_selection.indices.len(), 3);
+    }
+
+    #[test]
+    fn explicit_cdf_preview_uses_full_assembly_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("character.cdf");
+        std::fs::write(&source, b"<CharacterDefinition/>").unwrap();
+        let inventory = scan_directory(dir.path()).unwrap();
+        let mut state = State {
+            inventory: Some(inventory),
+            selected: Some(0),
+            ..State::default()
+        };
+        let _task = update(&mut state, Message::ViewerPreviewSelected);
+        assert!(state.busy, "CDF preview should start a background assembly");
+        assert_eq!(
+            std::fs::canonicalize(&state.input).unwrap(),
+            std::fs::canonicalize(&source).unwrap()
+        );
+        // A metadata-only CDF inspection used to leave the previously
+        // displayed character visible. The full-assembly route clears the
+        // previous DDS preview before starting its worker.
+        assert!(state.texture_preview.is_none());
     }
 
     #[test]
@@ -5921,7 +7789,14 @@ mod project_edit_tests {
             );
             assert!(is_viewer_preview_source(name));
         }
-        for name in ["Hunters/Kala.cdf", "models/body.mtl", "tex/body.dds.0"] {
+        for name in [
+            "Hunters/Kala.cdf",
+            "models/body.mtl",
+            "tex/body.dds.0",
+            "tex/body.dds.5",
+            "tex/body_ddn.dds.0a",
+            "tex/body_ddn.dds.3a",
+        ] {
             assert!(is_viewer_preview_source(name));
             assert!(!is_viewer_model_source(name));
         }
@@ -6094,5 +7969,25 @@ mod project_edit_tests {
         let _ = update(&mut state, Message::EditorRestoreRawMember);
         assert!(!state.busy);
         assert!(state.status.contains("do not belong"));
+    }
+    #[test]
+    fn popup_menus_are_mutually_exclusive_and_dismiss_without_removing_page() {
+        let mut state = State {
+            page: Some(Page::Files),
+            ..State::default()
+        };
+        let _ = update(&mut state, Message::ModdingMenu("File"));
+        assert_eq!(state.modding_menu, Some("File"));
+        let _ = update(&mut state, Message::LibraryMenu("View"));
+        assert_eq!(state.library_menu, Some("View"));
+        assert!(state.modding_menu.is_none());
+        let _ = update(&mut state, Message::ViewerMenu("Edit"));
+        assert_eq!(state.viewer_menu, Some("Edit"));
+        assert!(state.library_menu.is_none());
+        let _ = update(&mut state, Message::DismissMenus);
+        assert!(state.viewer_menu.is_none());
+        assert!(state.library_menu.is_none());
+        assert!(state.modding_menu.is_none());
+        assert_eq!(state.page, Some(Page::Files));
     }
 }

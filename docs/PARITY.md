@@ -1,3 +1,38 @@
+## Unified FBX exporter continuation (October 20)
+
+Detailed resumable status, current implementation files, exact remaining gates and
+Blender 5.2 real-asset acceptance steps live in [parity_handoff.md](parity_handoff.md).
+The unified character FBX binary publisher now shares the standard exporter’s
+atomic full-byte, signature-verified copy; the Blender bridge uses an explicit
+Python-failure exit code and excludes only bone-referenced display shapes
+from reimport mesh checks. UV0 and bone-weight checks are stricter, but live
+Wraith stages, Kala equipment and monster bone/action parity have **not** been
+revalidated against real assets in this working branch. Do not infer completion
+from older green synthetic CI runs.
+
+## October 20 — whole-CDF verified native CAF preview (experimental)
+
+- The CDF worker retains each successfully resolved attachment's canonical render source,
+  original contiguous vertex span, verified skin-weight status and authored rigid-bone socket.
+  Per-submaterial GPU draw ranges remain separate from these original geometry spans.
+- A native non-additive CAF selected or auto-discovered for the current CDF can now bind
+  all its **verified skinned attachments** against the exact compiled skeleton, rather
+  than only supporting individual .skin/.chr models. A single CAF time controls all
+  attached skinned parts; source UV0, triangle order and per-part materials remain unchanged.
+- Rigid CA_BONE equipment follows its original compiled socket's pose delta
+  (animated bone world transform multiplied by inverse bind). Invalid/missing sockets,
+  unequal source rest meshes, missing verified weights and unbound CAF controllers
+  fail explicitly instead of animating invented geometry.
+- Bind preparation runs in the background; scrubbing uses the existing bounded CPU
+  skeletal evaluator, and wgpu renders the assembled deformed mesh. Switching to
+  another model or converted DBA/GLB clears the previous assembly skin state.
+
+**Still blocking release:** Actual Stage 2 character assembly/CAF screenshot and bone
+deformation validation; performance on large CDFs; multi-CAF layering, additive clips,
+native DBA database bitstreams and character-wide multi-Action FBX; UV/material export
+subset equivalence; online/offline launch recovery and game mount verification. This
+change is not a claim of GPU compute skinning or full private-manager parity.
+
 # Evolve Mod Manager — Rust 1.0 feature-parity gate
 
 This table tracks **actual Rust implementation state**, not feature mockups. The existing production manager's behavior is the acceptance baseline. Real proprietary test assets must stay outside this public repository.
@@ -508,3 +543,36 @@ converter and verified extracted source. Skeleton retargeting, live wgpu
 skinning, full layered GPU animation, Action export for complete characters,
 and the private manager's native/on-demand archive handling are not at
 parity. They remain required before public 1.0.
+
+## Authored controller IDs and live CAF layer playback
+
+The compiled skeleton's stored controller IDs now drive native CAF binding in
+both the CPU viewport and the rigged GLB/FBX export path. Recomputing IDs from
+lowercased display names rejected valid assets (including every controller in
+the tested Wraith idle). Duplicate stored IDs and unmatched CAF tracks still
+fail rather than being assigned guessed bones.
+
+The Animation panel offers a non-additive **Blend layer** action, weight slider,
+and removal control for a bound native CAF character. Sparse base channels use
+the original local bind transforms. All skinned CDF parts and authored rigid
+bone sockets share a single sampled pose per frame. Selecting another base or
+asset clears the layer; late worker results cannot attach to a newer base.
+This is viewport blending; exported Actions do not yet bake the overlay.
+
+Read-only acceptance on the user's extracted Stage 2 Wraith CDFs validated all
+three evolution stages with idle plus stage-loop CAFs at five timeline samples.
+All base controllers matched (153, 153, 152); all vertices moved (20,313,
+20,987, 23,783 respectively); triangle indices and UV0 remained unchanged and
+positions remained finite. This is structural validation, not visual/game
+acceptance. Synthetic coverage also exercises two skinned parts plus equipment,
+zero-weight and removed layers, and rejection of foreign tracks.
+
+`cargo run -p evolve-core --example validate_character -- <extracted-root>
+<cdf> <base.caf> <layer.caf> <AssetLibrary> [build-label]` provides the repeatable
+read-only probe. No proprietary assets are included in this repository.
+
+Remaining release requirements still include native DBA and additive decoding,
+unified textured multi-stage/equipment FBX with Actions, complete level editing,
+mod/launcher recovery acceptance, library import/dependency workflows, GUI
+parity, media tools, and installer/updater rollback validation. This change does
+not mark the broader parity checklist complete.

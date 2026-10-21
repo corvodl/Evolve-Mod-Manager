@@ -31,7 +31,7 @@ The Windows desktop stores preferences under `%LOCALAPPDATA%\\EvolveModManager\\
 
 The Settings page offers the established dark/light appearance, compact density, file-explorer position, reduced motion, backups, activity log, workspace and data paths, Blender executable, and stable/experimental update options. Some controls persist their values while their dependent workflows remain under development.
 
-Automatic or manual checks use only public GitHub Releases. Newer releases must supply exactly a verified installer and portable ZIP, with SHA256 checksums in the release description. The manager verifies a downloaded installer and requires an additional user action to launch it. These features require final Windows integration testing.
+Automatic or manual checks use only public GitHub Releases. Settings offer separate Stable, Beta and Nightly channels (Nightly is selected automatically by a Nightly build). Each published prerelease uses a numbered `v0.1.0-nightly.N` tag under the **Nightly 0.1.0** name so the updater can recognize newer builds. Newer releases must supply exactly a verified installer and portable ZIP, with SHA256 checksums in the release description. The manager verifies a downloaded installer and requires an additional user action to launch it. These features require final Windows integration testing.
 
 An Inno Setup script installs per-user under LocalAppData with the original icon and optional desktop shortcut. `.github/workflows/release.yml` is manually triggered and **refuses to publish** while the 1.0 parity checklist contains unfinished capabilities. Any public release is restricted to these two download files:
 - `EvolveModManager-Setup-VERSION.exe`
@@ -91,7 +91,7 @@ Extraction output must be an **absent folder**; PNG and JSON outputs must be **n
 ## Public release policy
 
 - Windows is the primary target. The codebase has independent public Git history.
-- Do not commit original game PAKs, extracted game assets, keys, personal settings, DRM bypass material, or user-specific files.
+- Do not commit original game PAKs, extracted assets, **private** signing keys, personal settings, DRM bypass material, or user-specific files. The bundled 140-byte `RSAKeyData.bin` is a **public verification key only**, not a private signing key.
 - Preserve exact high-resolution textures, original UV0, skeleton and skin weight relationships. Missing/ambiguous references must be reported rather than guessed.
 - The planned complete-character FBX exporter must preserve hunter 1P/3P equipment and all three independently rigged monster stages. Verified animations must be **optional and OFF by default**, matching the existing manager's latest merged behavior.
 - Publish `1.0.0` only once every requirement in [docs/PARITY.md](docs/PARITY.md) is implemented and passes synthetic regression, real Windows build, and real-game compatibility testing.

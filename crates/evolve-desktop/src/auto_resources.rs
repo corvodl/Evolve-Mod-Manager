@@ -27,7 +27,7 @@ pub struct AutoDiscovery {
 
 /// Local entries have precedence only when the exact virtual path is unique.
 /// A saved library hit must still be manifest-verified by the core resolver.
-fn exact(
+pub(crate) fn exact(
     inv: &Inventory,
     virtual_name: &str,
     imported: Option<&Path>,
@@ -69,6 +69,91 @@ fn exact(
             }
         }
     }
+}
+
+/// CryEngine .skin/.chr are authored skeleton bindings. Their render
+/// companions may be in another imported shared PAK; resolve only the exact
+/// virtual companion path, never a similarly named mesh from another actor.
+pub fn exact_render_companion(
+    relative: &str,
+    inventory: &Inventory,
+    imported: Option<&Path>,
+    build: Option<&str>,
+) -> Result<Option<PathBuf>, String> {
+    let lower = relative.to_ascii_lowercase();
+    let target = [".skin", ".chr", ".cgf", ".cga"]
+        .iter()
+        .any(|extension| lower.ends_with(extension))
+        .then(|| format!("{relative}m"));
+    match target {
+        Some(name) => exact(inventory, &name, imported, build),
+        None => Ok(None),
+    }
+}
+
+/// Resolve an arbitrary compiled skin to its CDF by actual authored Binding,
+/// rather than assuming the CDF has the same filename as a torso or weapon.
+/// Only safely indexed local definitions are searched; imported archives
+/// require separately verified provenance and are never scanned by basename.
+fn declaring_local_cdf(
+    relative: &str,
+    inv: &Inventory,
+) -> Result<Option<evolve_core::CdfDefinition>, String> {
+    let lower = relative.replace('\\', "/").to_ascii_lowercase();
+    let binding = [(".skinm", ".skin"), (".chrm", ".chr")]
+        .iter()
+        .find_map(|(compiled, authored)| {
+            lower
+                .strip_suffix(compiled)
+                .map(|base| format!("{base}{authored}"))
+        })
+        .unwrap_or(lower);
+    let cdfs = inv
+        .entries
+        .iter()
+        .filter(|entry| entry.relative_path.to_ascii_lowercase().ends_with(".cdf"))
+        .collect::<Vec<_>>();
+    if cdfs.len() > 2048 {
+        return Err("Too many indexed CDFs for bounded ownership discovery".into());
+    }
+    let root = std::fs::canonicalize(&inv.root).map_err(|e| e.to_string())?;
+    let mut inspected_bytes = 0u64;
+    let mut owner = None;
+    for entry in cdfs {
+        let path = root.join(&entry.relative_path);
+        let meta = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if !meta.file_type().is_file() || meta.len() > 2 * 1024 * 1024 {
+            continue;
+        }
+        inspected_bytes = inspected_bytes
+            .checked_add(meta.len())
+            .ok_or("CDF ownership discovery byte budget overflow")?;
+        if inspected_bytes > 128 * 1024 * 1024 {
+            return Err("CDF ownership discovery exceeds the 128 MiB read budget".into());
+        }
+        let verified = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+        if !verified.starts_with(&root) {
+            return Err(format!("Unsafe indexed CDF: {}", entry.relative_path));
+        }
+        let Ok(cdf) = evolve_core::read_cdf(&verified) else {
+            continue;
+        };
+        let belongs = cdf.skeleton.eq_ignore_ascii_case(&binding)
+            || cdf
+                .attachments
+                .iter()
+                .any(|attachment| attachment.binding.eq_ignore_ascii_case(&binding));
+        if !belongs {
+            continue;
+        }
+        if owner.is_some() {
+            return Err(format!(
+                "Multiple authored CDFs reference {binding}; select the intended CDF assembly"
+            ));
+        }
+        owner = Some(cdf);
+    }
+    Ok(owner)
 }
 
 fn stems(name: &str) -> Vec<String> {
@@ -141,82 +226,127 @@ pub fn discover(
 ) -> AutoDiscovery {
     let mut found = AutoDiscovery::default();
     let canonical = relative.replace('\\', "/");
-    let parent = canonical.rsplit_once('/').map_or("", |(p, _)| p);
-    let bases = stems(&canonical);
-    // Same-folder material names are an explicit fallback, not a general
-    // basename search across characters or a random library texture.
-    for base in &bases {
-        let candidate = join(parent, base, "mtl");
-        match exact(inv, &candidate, imported, build) {
-            Ok(Some(path)) => {
-                found.material = Some(path);
-                found.material_note = format!("Exact material: {candidate}");
-                break;
-            }
-            Err(e) => {
-                found.warnings.push(e);
-                // A conflicted higher-priority reference cannot be bypassed.
-                break;
+    // A CDF is a character, not a renderable mesh. Follow its explicit Model
+    // File skeleton to discover the correct chrparams/idle instead of trying
+    // to find animation files named after the CDF itself.
+    let mut source = canonical.clone();
+    if canonical.to_ascii_lowercase().ends_with(".cdf") {
+        match exact(inv, &canonical, imported, build) {
+            Ok(Some(cdf_path)) => match evolve_core::read_cdf(&cdf_path) {
+                Ok(cdf) => {
+                    source = cdf.skeleton.clone();
+                    match exact(inv, &cdf.skeleton, imported, build) {
+                        Ok(Some(skeleton)) => found.skeleton = Some(skeleton),
+                        Ok(None) => found
+                            .warnings
+                            .push(format!("CDF compiled skeleton not found: {}", cdf.skeleton)),
+                        Err(error) => found.warnings.push(error),
+                    }
+                }
+                Err(error) => found
+                    .warnings
+                    .push(format!("Cannot read selected CDF: {error}")),
+            },
+            Ok(None) => found
+                .warnings
+                .push("CDF missing from indexed assets".into()),
+            Err(error) => found.warnings.push(error),
+        }
+    }
+    let mut animation_source = source.clone();
+    let mut animation_binding_ambiguous = false;
+    // Body, equipment, and compiled skin filenames often differ from the
+    // owning CDF. Use its exact Binding references for skeleton/CAF lookup.
+    // The selected mesh retains its own material discovery path.
+    if !canonical.to_ascii_lowercase().ends_with(".cdf")
+        && [".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cga"]
+            .iter()
+            .any(|ext| canonical.to_ascii_lowercase().ends_with(ext))
+    {
+        match declaring_local_cdf(&canonical, inv) {
+            Ok(Some(cdf)) => {
+                animation_source = cdf.skeleton.clone();
+                match exact(inv, &cdf.skeleton, imported, build) {
+                    Ok(Some(skeleton)) => found.skeleton = Some(skeleton),
+                    Ok(None) => found.warnings.push(format!(
+                        "Declaring CDF compiled skeleton not found: {}",
+                        cdf.skeleton
+                    )),
+                    Err(error) => found.warnings.push(error),
+                }
             }
             Ok(None) => {}
+            Err(error) => {
+                found.warnings.push(error);
+                animation_binding_ambiguous = true;
+            }
+        }
+    }
+    let parent = source.rsplit_once('/').map_or("", |(p, _)| p);
+    let bases = stems(&source);
+    // Original CrChF MtlName references take precedence over guessed same-stem
+    // MTLs. Reuse the CDF loader's exact source/build-checked resolver so a
+    // separately named material never silently becomes the wrong character.
+    let mut fallback_material = true;
+    if [".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cga"]
+        .iter()
+        .any(|ext| canonical.to_ascii_lowercase().ends_with(ext))
+    {
+        match crate::assembly_materials::material_for_part(&canonical, None, inv, imported, build) {
+            Ok(Some(path)) => {
+                found.material_note = "Verified original compiled MtlName or exact material".into();
+                found.material = Some(path);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                found.warnings.push(error);
+                fallback_material = false;
+            }
+        }
+    }
+    // Same-folder material names are an explicit fallback, not a general
+    // basename search across characters or a random library texture.
+    if found.material.is_none() && fallback_material {
+        for base in &bases {
+            let candidate = join(parent, base, "mtl");
+            match exact(inv, &candidate, imported, build) {
+                Ok(Some(path)) => {
+                    found.material = Some(path);
+                    found.material_note = format!("Exact material: {candidate}");
+                    break;
+                }
+                Err(e) => {
+                    found.warnings.push(e);
+                    // A conflicted higher-priority reference cannot be bypassed.
+                    break;
+                }
+                Ok(None) => {}
+            }
         }
     }
     if found.material.is_none() && found.warnings.is_empty() {
         found.material_note = "No verified material for this mesh".into();
     }
-    // A same-character CDF is allowed to identify a source skeleton only
-    // when the selected model really is that CDF's skeleton or attachment.
-    for base in &bases {
-        let name = join(parent, base, "cdf");
-        let Some(cdf_path) = (match exact(inv, &name, imported, build) {
-            Ok(value) => value,
-            Err(e) => {
-                found.warnings.push(e);
-                break;
-            }
-        }) else {
-            continue;
-        };
-        let cdf = match evolve_core::read_cdf(&cdf_path) {
-            Ok(value) => value,
-            Err(e) => {
-                found.warnings.push(format!("CDF metadata invalid: {e}"));
-                break;
-            }
-        };
-        let key = canonical.to_ascii_lowercase();
-        let key_without_m = key
-            .strip_suffix(".skinm")
-            .map(|prefix| format!("{prefix}.skin"));
-        let belongs = cdf.skeleton.eq_ignore_ascii_case(&canonical)
-            || cdf.attachments.iter().any(|a| {
-                a.binding.eq_ignore_ascii_case(&canonical)
-                    || key_without_m
-                        .as_ref()
-                        .is_some_and(|p| a.binding.eq_ignore_ascii_case(p))
-            });
-        if !belongs {
-            continue;
-        }
-        match exact(inv, &cdf.skeleton, imported, build) {
-            Ok(Some(path)) => found.skeleton = Some(path),
-            Ok(None) => found
-                .warnings
-                .push(format!("CDF skeleton not imported: {}", cdf.skeleton)),
-            Err(e) => found.warnings.push(e),
-        }
-        break;
+    // A shared skin claimed by multiple CDFs has no unique verified rig.
+    // Preserve independent mesh/MTL preview but never attach an arbitrary
+    // similarly named animation catalog to that ambiguous character.
+    if animation_binding_ambiguous {
+        return found;
     }
     // Only this character's matching skeleton animation configuration.
-    let mut configs = bases.clone();
-    for base in &bases {
+    let animation_parent = animation_source
+        .rsplit_once('/')
+        .map_or("", |(parent, _)| parent);
+    let animation_bases = stems(&animation_source);
+    let mut configs = animation_bases.clone();
+    for base in &animation_bases {
         if !base.to_ascii_lowercase().ends_with("_skeleton") {
             configs.push(format!("{base}_skeleton"));
         }
     }
     configs.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
     for stem in configs {
-        let name = join(parent, &stem, "chrparams");
+        let name = join(animation_parent, &stem, "chrparams");
         match exact(inv, &name, imported, build) {
             Ok(Some(path)) => {
                 found.config = Some(path);
@@ -339,6 +469,34 @@ mod tests {
     use evolve_core::scan_directory;
 
     #[test]
+    fn render_companion_never_falls_back_to_neighboring_character() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("characters")).unwrap();
+        std::fs::write(
+            dir.path().join("characters/hunter.skin"),
+            b"source skeleton",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("characters/monster.skinm"), b"wrong mesh").unwrap();
+        let inventory = scan_directory(dir.path()).unwrap();
+        assert!(
+            exact_render_companion("characters/hunter.skin", &inventory, None, None)
+                .unwrap()
+                .is_none()
+        );
+        std::fs::write(
+            dir.path().join("characters/hunter.skinm"),
+            b"same virtual source",
+        )
+        .unwrap();
+        let inventory = scan_directory(dir.path()).unwrap();
+        let chosen = exact_render_companion("characters/hunter.skin", &inventory, None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(chosen.file_name().unwrap(), "hunter.skinm");
+    }
+
+    #[test]
     fn dba_resolution_never_opens_a_non_database_or_neighboring_file() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("animations/kala")).unwrap();
@@ -375,6 +533,29 @@ mod tests {
     }
 
     #[test]
+    fn compiled_mtl_name_outweighs_neighboring_same_stem_material() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("characters/hunter");
+        std::fs::create_dir_all(&folder).unwrap();
+        let mut compiled = vec![0u8; 16 + 16 + 132];
+        compiled[..8].copy_from_slice(b"CrChF\x07\0\0");
+        compiled[8..12].copy_from_slice(&1u32.to_le_bytes());
+        compiled[12..16].copy_from_slice(&16u32.to_le_bytes());
+        compiled[16..20].copy_from_slice(&0x08021014u32.to_le_bytes());
+        compiled[24..28].copy_from_slice(&132u32.to_le_bytes());
+        compiled[28..32].copy_from_slice(&32u32.to_le_bytes());
+        let authored = b"characters/hunter/true_material";
+        compiled[32..32 + authored.len()].copy_from_slice(authored);
+        std::fs::write(folder.join("torso.skinm"), compiled).unwrap();
+        std::fs::write(folder.join("torso.mtl"), b"<Material/>").unwrap();
+        std::fs::write(folder.join("true_material.mtl"), b"<Material/>").unwrap();
+        let inventory = scan_directory(dir.path()).unwrap();
+        let found = discover("characters/hunter/torso.skinm", &inventory, None, None);
+        assert!(found.material.unwrap().ends_with("true_material.mtl"));
+        assert!(found.warnings.is_empty(), "{:?}", found.warnings);
+    }
+
+    #[test]
     fn missing_model_material_never_uses_unrelated_mtl() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("other.mtl"), b"<Material/>").unwrap();
@@ -407,6 +588,65 @@ mod tests {
         assert_eq!(found.clips[1].label, "stand_idle_loop");
         assert!(found.idle.unwrap().ends_with("stand_idle_loop.caf"));
         assert!(found.warnings.is_empty(), "{:?}", found.warnings);
+    }
+
+    #[test]
+    fn standalone_skin_finds_original_differently_named_cdf_skeleton_and_catalog() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("characters/hunter");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("torso.skinm"), b"compiled geometry").unwrap();
+        std::fs::write(folder.join("rig.chr"), b"compiled skeleton").unwrap();
+        std::fs::write(
+            folder.join("whole_hunter.cdf"),
+            br#"<CharacterDefinition><Model File="characters/hunter/rig.chr"/>
+                <AttachmentList><Attachment Type="CA_SKIN" AName="torso"
+                    Binding="characters/hunter/torso.skin"/></AttachmentList>
+                </CharacterDefinition>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            folder.join("rig.chrparams"),
+            br#"<Params><AnimationList></AnimationList></Params>"#,
+        )
+        .unwrap();
+        let inventory = scan_directory(dir.path()).unwrap();
+        let found = discover("characters/hunter/torso.skinm", &inventory, None, None);
+        assert!(found.skeleton.unwrap().ends_with("rig.chr"));
+        assert!(found.config.unwrap().ends_with("rig.chrparams"));
+        assert!(found.warnings.is_empty(), "{:?}", found.warnings);
+    }
+
+    #[test]
+    fn overlapping_cdfs_do_not_guess_a_character_skeleton() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("characters/hunter");
+        std::fs::create_dir_all(&folder).unwrap();
+        for name in ["alternate.cdf", "default.cdf"] {
+            std::fs::write(
+                folder.join(name),
+                br#"<CharacterDefinition><Model File="characters/hunter/rig.chr"/>
+                    <AttachmentList><Attachment Type="CA_SKIN" AName="torso"
+                        Binding="characters/hunter/torso.skin"/></AttachmentList>
+                    </CharacterDefinition>"#,
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            folder.join("torso.chrparams"),
+            br#"<Params><AnimationList></AnimationList></Params>"#,
+        )
+        .unwrap();
+        let inventory = scan_directory(dir.path()).unwrap();
+        let found = discover("characters/hunter/torso.skinm", &inventory, None, None);
+        assert!(found.skeleton.is_none());
+        assert!(found.config.is_none());
+        assert!(
+            found
+                .warnings
+                .iter()
+                .any(|w| w.contains("Multiple authored CDFs"))
+        );
     }
 
     #[test]

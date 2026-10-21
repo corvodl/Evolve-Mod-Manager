@@ -1,7 +1,7 @@
 //! Verified CryEngine Stage 2 CrChF compiled bone tables, subset-local
 //! bone palettes and Blender-compatible glTF skin export. Never substitute
 //! guessed indices/weights for missing native source data.
-use crate::fbx::{FbxError, FbxReport, convert_glb_to_fbx};
+use crate::fbx::{FbxError, FbxReport};
 use crate::glb::{GlbError, geometry_glb_bytes};
 use crate::model::{ModelError, RenderMesh, read_model};
 use crate::native_caf::NativeCafMotion;
@@ -51,6 +51,8 @@ pub struct RigReport {
 }
 #[derive(Clone, Debug)]
 pub struct CompiledSkeleton {
+    /// Authored controller IDs from the compiled bone records.
+    pub controller_ids: Vec<u32>,
     pub names: Vec<String>,
     pub parents: Vec<Option<usize>>,
     pub world: Vec<[[f32; 4]; 4]>,
@@ -150,6 +152,8 @@ pub fn parse_compiled_skeleton(data: &[u8]) -> Result<CompiledSkeleton, RigError
         return Err(RigError::Limits);
     }
     let mut names = Vec::with_capacity(count);
+    let mut controller_ids = Vec::with_capacity(count);
+    let mut unique_ids = HashSet::new();
     let mut parents = Vec::with_capacity(count);
     let mut world = Vec::with_capacity(count);
     let mut inverse = Vec::with_capacity(count);
@@ -157,6 +161,11 @@ pub fn parse_compiled_skeleton(data: &[u8]) -> Result<CompiledSkeleton, RigError
     let mut roots = 0usize;
     for i in 0..count {
         let at = 32 + i * RECORD;
+        let controller_id = read_u32(raw, at)?;
+        if !unique_ids.insert(controller_id) {
+            return Err(RigError::Invalid("Duplicate compiled controller ID".into()));
+        }
+        controller_ids.push(controller_id);
         let raw_name = raw.get(at + 312..at + 568).ok_or(RigError::Limits)?;
         let end = raw_name
             .iter()
@@ -203,6 +212,7 @@ pub fn parse_compiled_skeleton(data: &[u8]) -> Result<CompiledSkeleton, RigError
         ));
     }
     Ok(CompiledSkeleton {
+        controller_ids,
         names,
         parents,
         world,
@@ -568,8 +578,7 @@ fn attach_native_caf(
         ));
     }
     let mut matching = HashMap::new();
-    for (i, name) in skeleton.names.iter().enumerate() {
-        let crc = crc32fast::hash(name.to_ascii_lowercase().as_bytes());
+    for (i, &crc) in skeleton.controller_ids.iter().enumerate() {
         if matching.insert(crc, i).is_some() {
             return Err(RigError::Invalid(
                 "Ambiguous original skeleton bone CRC".into(),
@@ -681,8 +690,20 @@ fn rigged_glb_bytes_internal(
     skeleton_source: &[u8],
     animation: Option<&NativeCafMotion>,
 ) -> Result<(Vec<u8>, RigReport), RigError> {
-    let skeleton = parse_compiled_skeleton(skeleton_source)?;
-    let mapped = remap_verified_weights(mesh_source, mesh.positions.len(), skeleton.names.len())?;
+    let historical = mesh_source.starts_with(b"CryTek\0\0");
+    if historical && animation.is_some() {
+        return Err(RigError::Invalid(
+            "2012 DBA/CAF requires verified historical controller conversion before animation export".into(),
+        ));
+    }
+    let (skeleton, mapped) = if historical {
+        crate::legacy_rig::read_legacy_skin(mesh_source, skeleton_source, mesh.positions.len())?
+    } else {
+        let skeleton = parse_compiled_skeleton(skeleton_source)?;
+        let mapped =
+            remap_verified_weights(mesh_source, mesh.positions.len(), skeleton.names.len())?;
+        (skeleton, mapped)
+    };
     let source = geometry_glb_bytes(mesh)?;
     let len = u32::from_le_bytes(source[12..16].try_into().map_err(|_| RigError::Limits)?) as usize;
     let mut document: Value =
@@ -756,7 +777,7 @@ fn rigged_glb_bytes_internal(
             .ok_or(RigError::Limits)?
             .push(node);
     }
-    let mut root = None;
+    let mut roots = Vec::new();
     for (i, p) in skeleton.parents.iter().enumerate() {
         if let Some(parent) = p {
             let index = first + parent;
@@ -768,15 +789,21 @@ fn rigged_glb_bytes_internal(
                 .ok_or(RigError::Limits)?
                 .push(json!(first + i));
         } else {
-            root = Some(first + i);
+            roots.push(first + i);
         }
     }
-    let root = root.ok_or(RigError::Limits)?;
-    document["skins"] = json!([{
+    if roots.is_empty() {
+        return Err(RigError::Limits);
+    }
+    let mut skin = json!({
         "name":"Original CryEngine bind pose",
         "joints":(0..skeleton.names.len()).map(|i|first+i).collect::<Vec<_>>(),
-        "inverseBindMatrices":bind_acc,"skeleton":root
-    }]);
+        "inverseBindMatrices":bind_acc
+    });
+    if roots.len() == 1 {
+        skin["skeleton"] = json!(roots[0]);
+    }
+    document["skins"] = json!([skin]);
     document["nodes"][0]["skin"] = json!(0);
     // Rotate BOTH skin source skeleton and mesh together, preserving
     // original CryEngine Z-up transforms rather than rotating only bones.
@@ -787,11 +814,15 @@ fn rigged_glb_bytes_internal(
         .push(json!({
             "name":"Source CryEngine Z-up to Blender Y-up",
             "rotation":[-std::f32::consts::FRAC_1_SQRT_2,0,0,std::f32::consts::FRAC_1_SQRT_2],
-            "children":[0,root]
+            "children":std::iter::once(0).chain(roots.iter().copied()).collect::<Vec<_>>()
         }));
     document["scenes"][0]["nodes"] = json!([basis_index]);
     document["extras"] = json!({
-        "rigging":"Original verified compiled bones, inverse bind matrices and subset-local bone palettes",
+        "rigging":if historical {
+            "Original verified 2012 CryTek bones, four influences, and per-subset palettes"
+        } else {
+            "Original verified compiled bones, inverse bind matrices and subset-local bone palettes"
+        },
         "animations_embedded":false
     });
     if let Some(motion) = animation {
@@ -1016,6 +1047,211 @@ pub(crate) fn embed_verified_material_png_glb(
     Ok(output)
 }
 
+/// Exact source MTL leaf (including empty and NoDraw leaves). The caller
+/// resolves each DDS through the indexed asset library, never by basename.
+#[derive(Default)]
+pub(crate) struct OriginalMaterialPng {
+    pub name: String,
+    pub no_draw: bool,
+    pub diffuse: Option<Vec<u8>>,
+    pub normal: Option<Vec<u8>>,
+    pub emissive: Option<Vec<u8>>,
+    pub specular: Option<Vec<u8>>,
+    pub roughness: Option<Vec<u8>>,
+}
+
+/// Split ONE verified rigged GLB into original material-ID primitives, reusing
+/// the source index buffer, original UV0 and all skin joint/weight attributes.
+/// Each authored MTL leaf gets its own original texture set. A NoDraw leaf
+/// remains an identifiable, fully transparent material instead of moving
+/// subsequent CryEngine subset indices or deleting original geometry.
+pub(crate) fn embed_original_material_slots_glb(
+    source: &[u8],
+    subsets: &[(u32, u32, u32)],
+    slots: &[OriginalMaterialPng],
+) -> Result<Vec<u8>, RigError> {
+    if source.len() < 28
+        || source.get(..4) != Some(b"glTF")
+        || slots.is_empty()
+        || slots.len() > 128
+        || subsets.is_empty()
+        || subsets.len() > 128
+    {
+        return Err(RigError::Invalid(
+            "Invalid verified multi-slot FBX source".into(),
+        ));
+    }
+    let json_size =
+        u32::from_le_bytes(source[12..16].try_into().map_err(|_| RigError::Limits)?) as usize;
+    let json_end = 20usize.checked_add(json_size).ok_or(RigError::Limits)?;
+    let mut doc: Value = serde_json::from_slice(source.get(20..json_end).ok_or(RigError::Limits)?)?;
+    if source.get(json_end + 4..json_end + 8) != Some(b"BIN\0") {
+        return Err(RigError::Invalid(
+            "Rigged GLB has no valid BIN chunk".into(),
+        ));
+    }
+    let primitives = doc["meshes"][0]["primitives"]
+        .as_array()
+        .ok_or_else(|| RigError::Invalid("Rigged geometry has no primitives".into()))?;
+    if primitives.len() != 1 || doc["skins"].as_array().is_none_or(|v| v.len() != 1) {
+        return Err(RigError::Invalid(
+            "Expected one verified source skinned mesh".into(),
+        ));
+    }
+    let base = primitives[0].clone();
+    for attr in ["POSITION", "TEXCOORD_0", "JOINTS_0", "WEIGHTS_0"] {
+        if base["attributes"][attr].as_u64().is_none() {
+            return Err(RigError::Invalid(
+                "Rigged GLB has incomplete source attributes".into(),
+            ));
+        }
+    }
+    let accessor_id = base["indices"].as_u64().ok_or(RigError::Limits)? as usize;
+    let index_acc = doc["accessors"].get(accessor_id).ok_or(RigError::Limits)?;
+    let total = index_acc["count"].as_u64().ok_or(RigError::Limits)? as u32;
+    let view = index_acc["bufferView"].as_u64().ok_or(RigError::Limits)?;
+    if index_acc["componentType"] != 5125
+        || index_acc["type"] != "SCALAR"
+        || index_acc["byteOffset"].as_u64().unwrap_or(0) != 0
+    {
+        return Err(RigError::Invalid(
+            "Source index buffer is not UINT32 triangle data".into(),
+        ));
+    }
+    let mut offset = 0u32;
+    let mut rewritten = Vec::with_capacity(subsets.len());
+    for &(first, count, material) in subsets {
+        let last = first.checked_add(count).ok_or(RigError::Limits)?;
+        if first != offset
+            || count == 0
+            || !count.is_multiple_of(3)
+            || last > total
+            || material == 255
+            || material as usize >= slots.len()
+        {
+            return Err(RigError::Invalid(
+                "Unverified CryEngine subset material index".into(),
+            ));
+        }
+        let mut primitive = base.clone();
+        let accessors = doc["accessors"].as_array_mut().ok_or(RigError::Limits)?;
+        let sub = accessors.len();
+        accessors.push(json!({
+            "bufferView":view, "byteOffset":first as u64 * 4,
+            "componentType":5125, "count":count, "type":"SCALAR"
+        }));
+        primitive["indices"] = json!(sub);
+        primitive["material"] = json!(material);
+        rewritten.push(primitive);
+        offset = last;
+    }
+    if offset != total {
+        return Err(RigError::Invalid(
+            "CDF multi-material subsets do not cover mesh".into(),
+        ));
+    }
+
+    let mut binary = source.get(json_end + 8..).ok_or(RigError::Limits)?.to_vec();
+    let mut images = Vec::new();
+    let mut textures = Vec::new();
+    let mut materials = Vec::with_capacity(slots.len());
+    let mut any_specular = false;
+    for (slot_index, slot) in slots.iter().enumerate() {
+        if slot.name.is_empty() || slot.name.len() > 256 || slot.name.chars().any(char::is_control)
+        {
+            return Err(RigError::Invalid("Unsafe source MTL leaf name".into()));
+        }
+        let mut material = json!({
+            "name": format!("CryEngine slot {slot_index:03} - {}", slot.name),
+            "doubleSided":true,
+            "pbrMetallicRoughness":{"metallicFactor":0.0,"roughnessFactor":1.0}
+        });
+        if slot.no_draw {
+            material["alphaMode"] = json!("BLEND");
+            material["pbrMetallicRoughness"]["baseColorFactor"] = json!([1.0, 1.0, 1.0, 0.0]);
+        }
+        for (role, png) in [
+            ("diffuse", slot.diffuse.as_deref()),
+            ("normal", slot.normal.as_deref()),
+            ("emissive", slot.emissive.as_deref()),
+            ("specular", slot.specular.as_deref()),
+            ("roughness", slot.roughness.as_deref()),
+        ] {
+            let Some(bytes) = png else { continue };
+            if bytes.len() < 8 || bytes.get(..8) != Some(b"\x89PNG\r\n\x1a\n") {
+                return Err(RigError::Invalid(
+                    "Authored multi-slot map is not PNG".into(),
+                ));
+            }
+            let image_view = add_view(&mut binary, &mut doc, bytes, None)?;
+            let image_index = images.len();
+            images.push(json!({
+                "name": format!("CryEngine {slot_index} {role}"),
+                "mimeType":"image/png", "bufferView":image_view
+            }));
+            let texture_index = textures.len();
+            textures.push(json!({"source":image_index}));
+            match role {
+                "diffuse" => {
+                    material["pbrMetallicRoughness"]["baseColorTexture"] =
+                        json!({"index":texture_index})
+                }
+                "normal" => material["normalTexture"] = json!({"index":texture_index}),
+                "emissive" => {
+                    material["emissiveTexture"] = json!({"index":texture_index});
+                    material["emissiveFactor"] = json!([1., 1., 1.]);
+                }
+                "specular" => {
+                    any_specular = true;
+                    material["extensions"]["KHR_materials_specular"]["specularColorTexture"] =
+                        json!({"index":texture_index});
+                    material["extensions"]["KHR_materials_specular"]["specularColorFactor"] =
+                        json!([1., 1., 1.]);
+                }
+                "roughness" => {
+                    material["pbrMetallicRoughness"]["metallicRoughnessTexture"] =
+                        json!({"index":texture_index})
+                }
+                _ => unreachable!(),
+            }
+        }
+        materials.push(material);
+    }
+    if any_specular {
+        doc["extensionsUsed"] = json!(["KHR_materials_specular"]);
+    }
+    doc["meshes"][0]["primitives"] = json!(rewritten);
+    doc["materials"] = json!(materials);
+    doc["images"] = json!(images);
+    doc["textures"] = json!(textures);
+    while !binary.len().is_multiple_of(4) {
+        binary.push(0);
+    }
+    doc["buffers"][0]["byteLength"] = json!(binary.len());
+    let mut json_blob = serde_json::to_vec(&doc)?;
+    while !json_blob.len().is_multiple_of(4) {
+        json_blob.push(b' ');
+    }
+    let total = 28usize
+        .checked_add(json_blob.len())
+        .and_then(|n| n.checked_add(binary.len()))
+        .ok_or(RigError::Limits)?;
+    if total > MAX_BYTES * 4 || total > u32::MAX as usize {
+        return Err(RigError::Limits);
+    }
+    let mut out = Vec::with_capacity(total);
+    out.extend_from_slice(b"glTF");
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&(total as u32).to_le_bytes());
+    out.extend_from_slice(&(json_blob.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"JSON");
+    out.extend_from_slice(&json_blob);
+    out.extend_from_slice(&(binary.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"BIN\0");
+    out.extend_from_slice(&binary);
+    Ok(out)
+}
+
 fn embed_diffuse_png_glb(source: &[u8], png: &[u8]) -> Result<Vec<u8>, RigError> {
     embed_verified_maps_png_glb(source, Some(png), None, None)
 }
@@ -1050,6 +1286,26 @@ pub fn export_rigged_character_fbx_textured_animated(
     diffuse: Option<&Path>,
     native_caf: Option<&Path>,
     destination: &Path,
+) -> Result<(RigReport, FbxReport), RigError> {
+    export_rigged_character_fbx_options(
+        mesh_source,
+        skeleton_source,
+        blender,
+        diffuse,
+        native_caf,
+        destination,
+        true,
+    )
+}
+
+pub fn export_rigged_character_fbx_options(
+    mesh_source: &Path,
+    skeleton_source: &Path,
+    blender: &Path,
+    diffuse: Option<&Path>,
+    native_caf: Option<&Path>,
+    destination: &Path,
+    embed_textures: bool,
 ) -> Result<(RigReport, FbxReport), RigError> {
     for file in [mesh_source, skeleton_source] {
         let stat = fs::symlink_metadata(file)?;
@@ -1088,13 +1344,14 @@ pub fn export_rigged_character_fbx_textured_animated(
     let temp = tempfile::tempdir()?;
     let glb = temp.path().join("verified-textured-rig.glb");
     fs::write(&glb, &output)?;
-    let exported = convert_glb_to_fbx(
+    let exported = crate::fbx::convert_glb_to_fbx_with_options(
         blender,
         &glb,
         destination,
         AnimationPolicy {
             embed_verified_animations: motion.is_some(),
         },
+        embed_textures,
     )?;
     Ok((report, exported))
 }
@@ -1112,6 +1369,7 @@ mod tests {
     use super::*;
     fn identity_record(name: &str) -> Vec<u8> {
         let mut data = vec![0u8; RECORD];
+        data[..4].copy_from_slice(&crc32fast::hash(name.as_bytes()).to_le_bytes());
         for base in [216, 264] {
             for r in 0..3 {
                 data[base + (r * 4 + r) * 4..base + (r * 4 + r) * 4 + 4]
@@ -1136,6 +1394,23 @@ mod tests {
     }
 
     #[test]
+    fn compiled_controller_ids_are_preserved_and_duplicates_rejected() {
+        let mut raw = sample_skeleton();
+        raw[64..68].copy_from_slice(&0x12345678u32.to_le_bytes());
+        let skeleton = parse_compiled_skeleton(&raw).unwrap();
+        assert_eq!(skeleton.controller_ids, vec![0x12345678]);
+        assert_eq!(skeleton.names, vec!["Root"]);
+        let mut child = identity_record("Child");
+        child[..4].copy_from_slice(&0x12345678u32.to_le_bytes());
+        child[572..576].copy_from_slice(&(-1i32).to_le_bytes());
+        raw.extend(child);
+        raw[24..28].copy_from_slice(&(32 + 2 * RECORD as u32).to_le_bytes());
+        assert!(
+            matches!(parse_compiled_skeleton(&raw), Err(RigError::Invalid(message)) if message.contains("Duplicate compiled controller"))
+        );
+    }
+
+    #[test]
     fn verified_native_caf_becomes_original_skeleton_animation_channels() {
         use crate::native_caf::{CafController, NativeCafMotion};
         let skeleton = parse_compiled_skeleton(&sample_skeleton()).unwrap();
@@ -1149,7 +1424,7 @@ mod tests {
             "bufferViews":[], "accessors":[], "extras":{"animations_embedded":false}
         });
         let controller = CafController {
-            bone_crc32: crc32fast::hash(b"root"),
+            bone_crc32: crc32fast::hash(b"Root"),
             rotations: vec![[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0]],
             rotation_times: vec![0.0, 30.0],
             positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
@@ -1275,6 +1550,85 @@ mod tests {
             3
         );
     }
+    #[test]
+    fn original_submaterial_primitives_keep_exact_ids_and_skin_accessors() {
+        let mesh = RenderMesh {
+            info: crate::model::ModelInfo {
+                format: "synthetic".into(),
+                version: 7,
+                chunk_count: 0,
+                vertex_count: 3,
+                triangle_count: 2,
+                original_uv0: true,
+                original_normals: false,
+            },
+            positions: vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]],
+            indices: vec![0, 1, 2, 0, 2, 1],
+            uv0: Some(vec![[0., 0.], [1., 0.], [0., 1.]]),
+            normals: None,
+        };
+        let geometry = crate::glb::geometry_glb_bytes(&mesh).unwrap();
+        let json_len = u32::from_le_bytes(geometry[12..16].try_into().unwrap()) as usize;
+        let mut doc: Value = serde_json::from_slice(&geometry[20..20 + json_len]).unwrap();
+        // Structural fixture only. This is not an actual native weighted rig:
+        // the production exporter generates real JOINTS/WEIGHTS from CrChF.
+        doc["skins"] = json!([{"joints":[0]}]);
+        doc["meshes"][0]["primitives"][0]["attributes"]["JOINTS_0"] = json!(0);
+        doc["meshes"][0]["primitives"][0]["attributes"]["WEIGHTS_0"] = json!(0);
+        let binary = &geometry[20 + json_len + 8..];
+        let mut json_bytes = serde_json::to_vec(&doc).unwrap();
+        while !json_bytes.len().is_multiple_of(4) {
+            json_bytes.push(b' ');
+        }
+        let mut source = Vec::new();
+        source.extend_from_slice(b"glTF");
+        source.extend_from_slice(&2u32.to_le_bytes());
+        source.extend_from_slice(&((28 + json_bytes.len() + binary.len()) as u32).to_le_bytes());
+        source.extend_from_slice(&(json_bytes.len() as u32).to_le_bytes());
+        source.extend_from_slice(b"JSON");
+        source.extend_from_slice(&json_bytes);
+        source.extend_from_slice(&(binary.len() as u32).to_le_bytes());
+        source.extend_from_slice(b"BIN\0");
+        source.extend_from_slice(binary);
+        let slots = vec![
+            OriginalMaterialPng {
+                name: "hidden".into(),
+                no_draw: true,
+                ..Default::default()
+            },
+            OriginalMaterialPng {
+                name: "armor".into(),
+                diffuse: Some(b"\x89PNG\r\n\x1a\n".to_vec()),
+                ..Default::default()
+            },
+        ];
+        let out =
+            embed_original_material_slots_glb(&source, &[(0, 3, 0), (3, 3, 1)], &slots).unwrap();
+        let len = u32::from_le_bytes(out[12..16].try_into().unwrap()) as usize;
+        let result: Value = serde_json::from_slice(&out[20..20 + len]).unwrap();
+        let primitives = result["meshes"][0]["primitives"].as_array().unwrap();
+        assert_eq!(primitives.len(), 2);
+        assert_eq!(primitives[0]["material"], 0);
+        assert_eq!(primitives[1]["material"], 1);
+        assert_eq!(primitives[0]["attributes"]["JOINTS_0"], 0);
+        assert_eq!(primitives[1]["attributes"]["TEXCOORD_0"], 1);
+        assert_eq!(result["materials"][0]["alphaMode"], "BLEND");
+        assert_eq!(
+            result["materials"][1]["pbrMetallicRoughness"]["baseColorTexture"]["index"],
+            0
+        );
+        assert_eq!(
+            result["accessors"][primitives[1]["indices"].as_u64().unwrap() as usize]["byteOffset"],
+            12
+        );
+        assert!(
+            embed_original_material_slots_glb(&source, &[(0, 3, 0), (6, 3, 1)], &slots).is_err()
+        );
+        assert!(
+            embed_original_material_slots_glb(&source, &[(0, 3, 0), (3, 3, 255)], &slots).is_err()
+        );
+    }
+
     #[test]
     fn verifies_inverse_bind_and_unchanged_hierarchy() {
         let raw = sample_skeleton();

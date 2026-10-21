@@ -7,11 +7,64 @@ use iced::wgpu::util::{DeviceExt, TextureDataOrder};
 use iced::widget::shader::{self, Viewport};
 use iced::{Event, Rectangle, mouse};
 use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+
+// A large CDF can reuse the same original DDS in dozens of material ranges.
+// Allocate each source/role only once per scene and bound unique GPU copies.
+pub(crate) const MAX_GPU_PREVIEW_TEXTURE_BYTES: usize = 256 * 1024 * 1024;
+
+fn texture_cache_key(image: Option<&Arc<image::RgbaImage>>, role: usize) -> (usize, usize) {
+    (image.map_or(0, |pixels| Arc::as_ptr(pixels) as usize), role)
+}
+
+fn gpu_budget_allows(used: usize, additional: usize) -> bool {
+    used.checked_add(additional)
+        .is_some_and(|total| total <= MAX_GPU_PREVIEW_TEXTURE_BYTES)
+}
+
+/// Reserve GPU space for ALL source diffuse maps before accepting optional
+/// normal/specular/glow uploads. Without this, early body sections consume
+/// the cap and later head/arm sections silently fall back to pale placeholders.
+fn allows_cdf_role(
+    used: usize,
+    additional: usize,
+    remaining_diffuse: usize,
+    role: usize,
+    can_fit_all_diffuse: bool,
+) -> bool {
+    if role != 0 && !can_fit_all_diffuse {
+        return false;
+    }
+    let reserve = if role == 0 { 0 } else { remaining_diffuse };
+    gpu_budget_allows(used.saturating_add(reserve), additional)
+}
+
+#[derive(Clone, Debug)]
+pub struct Surface {
+    pub first_index: u32,
+    pub index_count: u32,
+    /// Explicit CryEngine NoDraw subset. Preserve its index span, but do not render it.
+    pub visible: bool,
+    pub transparent: bool,
+    pub diffuse: Option<Arc<image::RgbaImage>>,
+    pub normal: Option<Arc<image::RgbaImage>>,
+    pub emissive: Option<Arc<image::RgbaImage>>,
+    /// Optional Stage 2 *_glow_diff overlay, never the source's Emittance.
+    pub armor_emissive: Option<Arc<image::RgbaImage>>,
+    /// Exact per-leaf authored GlowAmount, not a guessed percentage.
+    pub emission_strength: f32,
+    pub specular: Option<Arc<image::RgbaImage>>,
+    pub gloss: Option<Arc<image::RgbaImage>>,
+    /// Verified authored opacity DDS; not interchangeable with diffuse alpha.
+    pub opacity: Option<Arc<image::RgbaImage>>,
+}
 
 #[derive(Clone)]
 pub struct Scene {
     pub mesh: Arc<RenderMesh>,
+    /// Per-attachment material ranges for complete CDF previews.
+    pub surfaces: Option<Arc<Vec<Surface>>>,
     pub diffuse: Option<Arc<image::RgbaImage>>,
     pub normal_map: Option<Arc<image::RgbaImage>>,
     pub emissive: Option<Arc<image::RgbaImage>>,
@@ -21,9 +74,31 @@ pub struct Scene {
     pub pitch: f32,
     pub zoom: f32,
     pub light_strength: f32,
+    /// Viewport-only multiplier, independent of the original material strength.
+    pub emissive_gain: f32,
     pub pan_x: f32,
     pub pan_y: f32,
     pub shift: bool,
+}
+
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
+struct GroundVertex {
+    position: [f32; 3],
+    rgba: [f32; 4],
+}
+impl GroundVertex {
+    const ATTRS: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![
+        0 => Float32x3,
+        1 => Float32x4,
+    ];
+    fn descriptor<'a>() -> wgpu::VertexBufferLayout<'a> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Self>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &Self::ATTRS,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -54,7 +129,9 @@ impl Vertex {
 #[derive(Debug)]
 pub struct Primitive {
     points: Vec<Vertex>,
+    ground: Vec<GroundVertex>,
     indices: Vec<u32>,
+    surfaces: Option<Arc<Vec<Surface>>>,
     diffuse: Option<Arc<image::RgbaImage>>,
     normal_map: Option<Arc<image::RgbaImage>>,
     emissive: Option<Arc<image::RgbaImage>>,
@@ -66,6 +143,7 @@ pub struct Primitive {
     emissive_identity: usize,
     specular_identity: usize,
     gloss_identity: usize,
+    emissive_gain: f32,
 }
 impl shader::Program<super::Message> for Scene {
     type State = super::view_navigation::Navigation;
@@ -121,7 +199,7 @@ impl shader::Program<super::Message> for Scene {
             let projected = [
                 xr * scale / perspective / ratio + self.pan_x,
                 yr * scale / perspective + self.pan_y,
-                ((depth + 2.0) / 5.0).clamp(0., 1.),
+                ((2.5 - depth) / 5.0).clamp(0., 1.),
             ];
             let mut normal = data
                 .normals
@@ -142,12 +220,38 @@ impl shader::Program<super::Message> for Scene {
                     .unwrap_or([0., 0.]),
                 normal,
                 view_position: [xr, yr, depth],
-                light_strength: self.light_strength.clamp(0.1, 2.0),
+                light_strength: self.light_strength.clamp(0.2, 4.0),
             });
+        }
+        // Generate a perspective/depth-correct grid beneath the actual
+        // lowest vertex. CPU preview math is identical for 2012 and Stage 2.
+        let scale = self.zoom.clamp(0.2, 4.0) * 1.6;
+        let mut ground = Vec::with_capacity(164);
+        for line in super::viewer_grid::floor_lines(&data.positions) {
+            for raw in [line.start, line.end] {
+                let x = (raw[0] - center[0]) / extent;
+                let y = (raw[1] - center[1]) / extent;
+                let z = (raw[2] - center[2]) / extent;
+                let xr = x * cy - y * sy;
+                let back = x * sy + y * cy;
+                let yr = z * cp - back * sp;
+                let depth = z * sp + back * cp;
+                let perspective = (2.5 - depth).max(0.12);
+                ground.push(GroundVertex {
+                    position: [
+                        xr * scale / perspective / ratio + self.pan_x,
+                        yr * scale / perspective + self.pan_y,
+                        ((2.5 - depth) / 5.0).clamp(0., 1.),
+                    ],
+                    rgba: line.color,
+                });
+            }
         }
         Primitive {
             points,
+            ground,
             indices: data.indices.clone(),
+            surfaces: self.surfaces.clone(),
             diffuse: self.diffuse.clone(),
             normal_map: self.normal_map.clone(),
             emissive: self.emissive.clone(),
@@ -168,12 +272,30 @@ impl shader::Program<super::Message> for Scene {
                 .as_ref()
                 .map_or(0, |t| Arc::as_ptr(t) as usize),
             gloss_identity: self.gloss.as_ref().map_or(0, |t| Arc::as_ptr(t) as usize),
+            emissive_gain: self.emissive_gain,
         }
     }
 }
 
+struct GpuSurface {
+    range: std::ops::Range<u32>,
+    transparent: bool,
+    masked: bool,
+    opacity_map: bool,
+    bind_group: wgpu::BindGroup,
+    _emission_uniform: wgpu::Buffer,
+    source_emission_strength: f32,
+}
+
 pub struct Pipeline {
     render_pipeline: wgpu::RenderPipeline,
+    masked_pipeline: wgpu::RenderPipeline,
+    translucent_pipeline: wgpu::RenderPipeline,
+    opacity_pipeline: wgpu::RenderPipeline,
+    ground_pipeline: wgpu::RenderPipeline,
+    ground_vertex: wgpu::Buffer,
+    ground_capacity: usize,
+    ground_count: u32,
     layout: wgpu::BindGroupLayout,
     vertex: wgpu::Buffer,
     index: wgpu::Buffer,
@@ -186,23 +308,99 @@ pub struct Pipeline {
     last_emissive_identity: usize,
     last_specular_identity: usize,
     last_gloss_identity: usize,
+    last_surfaces_identity: usize,
+    last_emissive_gain: f32,
+    gpu_surfaces: Vec<GpuSurface>,
+    // Own every unique GPU source allocation while its bind groups exist.
+    _surface_textures: Vec<wgpu::Texture>,
+    surface_table_valid: bool,
     specular_texture: wgpu::Texture,
     specular_view: wgpu::TextureView,
     gloss_texture: wgpu::Texture,
     gloss_view: wgpu::TextureView,
+    // Keep the neutral opacity allocation alive for the lifetime of the bind group.
+    _opacity_texture: wgpu::Texture,
+    _opacity_view: wgpu::TextureView,
     normal_texture: wgpu::Texture,
     normal_view: wgpu::TextureView,
     emissive_texture: wgpu::Texture,
     emissive_view: wgpu::TextureView,
+    _armor_emissive_texture: wgpu::Texture,
+    _armor_emissive_view: wgpu::TextureView,
     texture: wgpu::Texture,
     view: wgpu::TextureView,
     sampler: wgpu::Sampler,
     group: wgpu::BindGroup,
+    _emission_uniform: wgpu::Buffer,
     depth: wgpu::TextureView,
     depth_dimensions: (u32, u32),
 }
 
+// Every runtime material bind group must follow the same schema used by
+// textured.wgsl, including the standalone DDS refresh path. Keep this single
+// helper for initialization, CDF attachment ranges and texture reloads.
+const MATERIAL_BINDINGS: [u32; 9] = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+
+/// Keep the two gains separate: the CryEngine authored strength (3 != 100%)
+/// and the user's optional viewport setting. Shader multiplies x*y, never
+/// scales diffuse color, normals or UVs.
+fn emission_uniform_values(source_strength: f32, preview_gain: f32) -> [f32; 4] {
+    let source = if source_strength.is_finite() {
+        source_strength.clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+    let gain = if preview_gain.is_finite() {
+        preview_gain.clamp(0.0, 4.0)
+    } else {
+        1.0
+    };
+    [source, gain, 0.0, 0.0]
+}
+
+fn material_entries<'a>(
+    views: [&'a wgpu::TextureView; 7],
+    sampler: &'a wgpu::Sampler,
+    emission_uniform: &'a wgpu::Buffer,
+) -> [wgpu::BindGroupEntry<'a>; MATERIAL_BINDINGS.len()] {
+    let texture = |binding: usize, channel: usize| wgpu::BindGroupEntry {
+        binding: MATERIAL_BINDINGS[binding],
+        resource: wgpu::BindingResource::TextureView(views[channel]),
+    };
+    [
+        texture(0, 0), // diffuse
+        wgpu::BindGroupEntry {
+            binding: MATERIAL_BINDINGS[1],
+            resource: wgpu::BindingResource::Sampler(sampler),
+        },
+        texture(2, 1), // normal
+        texture(3, 2), // emissive
+        texture(4, 3), // specular
+        texture(5, 4), // gloss
+        texture(6, 5), // authored opacity or neutral white
+        wgpu::BindGroupEntry {
+            binding: MATERIAL_BINDINGS[7],
+            resource: emission_uniform.as_entire_binding(),
+        },
+        texture(8, 6), // optional armor glow, not original Emittance
+    ]
+}
+
 impl Pipeline {
+    fn emission_uniform(device: &wgpu::Device, queue: &wgpu::Queue, strength: f32) -> wgpu::Buffer {
+        // Keep source-relative gain. Guard against nonfinite/pathological
+        // values but never silently reinterpret source GlowAmount 3 as 100%.
+        let values = emission_uniform_values(strength, 1.0);
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Source material emission amount"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&buffer, 0, bytemuck::bytes_of(&values));
+        buffer
+    }
+
     fn depth_view(device: &wgpu::Device, size: (u32, u32)) -> wgpu::TextureView {
         device
             .create_texture(&wgpu::TextureDescriptor {
@@ -316,6 +514,36 @@ impl Pipeline {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let program = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -329,6 +557,77 @@ impl Pipeline {
         });
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Evolve textured source geometry"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &program,
+                entry_point: Some("vs_main"),
+                buffers: &[Vertex::descriptor()],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &program,
+                entry_point: Some("fs_opaque"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        // Alpha-tested solid body surfaces participate in the depth pass.
+        // The authored opacity texture clips actual holes, without blending
+        // intermediate mask values with the background/grid.
+        let masked_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Evolve solid character cutout material"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &program,
+                entry_point: Some("vs_main"),
+                buffers: &[Vertex::descriptor()],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &program,
+                entry_point: Some("fs_masked"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let translucent_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Evolve authored transparent material"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &program,
@@ -352,7 +651,7 @@ impl Pipeline {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
+                depth_write_enabled: false,
                 depth_compare: wgpu::CompareFunction::Less,
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
@@ -360,6 +659,86 @@ impl Pipeline {
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
             cache: None,
+        });
+        let opacity_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Evolve explicit authored opacity DDS material"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &program,
+                entry_point: Some("vs_main"),
+                buffers: &[Vertex::descriptor()],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &program,
+                entry_point: Some("fs_opacity"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let ground_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Model-floor untextured line layout"),
+            bind_group_layouts: &[],
+            push_constant_ranges: &[],
+        });
+        let ground_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Blender-style source-relative ground grid"),
+            layout: Some(&ground_layout),
+            vertex: wgpu::VertexState {
+                module: &program,
+                entry_point: Some("vs_floor"),
+                buffers: &[GroundVertex::descriptor()],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &program,
+                entry_point: Some("fs_floor"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let ground_vertex = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Viewport model-floor vertices"),
+            size: 32,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("CryEngine filtered diffuse sampler"),
@@ -407,6 +786,14 @@ impl Pipeline {
             wgpu::TextureFormat::Rgba8UnormSrgb,
             "No source emission",
         );
+        let (armor_emissive_texture, armor_emissive_view) = Self::upload_map(
+            device,
+            queue,
+            None,
+            &[0, 0, 0, 255],
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            "No optional armor glow",
+        );
         let (specular_texture, specular_view) = Self::upload_map(
             device,
             queue,
@@ -423,35 +810,31 @@ impl Pipeline {
             wgpu::TextureFormat::Rgba8Unorm,
             "Neutral unverified gloss",
         );
+        let (opacity_texture, opacity_view) = Self::upload_map(
+            device,
+            queue,
+            None,
+            &[255, 255, 255, 255],
+            wgpu::TextureFormat::Rgba8Unorm,
+            "Neutral authored opacity",
+        );
+        let emission_uniform = Self::emission_uniform(device, queue, 1.0);
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Evolve actual texture sampler group"),
             layout: &layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&normal_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&emissive_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::TextureView(&specular_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::TextureView(&gloss_view),
-                },
-            ],
+            entries: &material_entries(
+                [
+                    &view,
+                    &normal_view,
+                    &emissive_view,
+                    &specular_view,
+                    &gloss_view,
+                    &opacity_view,
+                    &armor_emissive_view,
+                ],
+                &sampler,
+                &emission_uniform,
+            ),
         });
         let vertex = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Evolve source vertex buffer"),
@@ -468,6 +851,13 @@ impl Pipeline {
         let depth = Self::depth_view(device, (1, 1));
         Self {
             render_pipeline,
+            masked_pipeline,
+            translucent_pipeline,
+            opacity_pipeline,
+            ground_pipeline,
+            ground_vertex,
+            ground_capacity: 32,
+            ground_count: 0,
             layout,
             vertex,
             index,
@@ -480,22 +870,221 @@ impl Pipeline {
             last_emissive_identity: usize::MAX,
             last_specular_identity: usize::MAX,
             last_gloss_identity: usize::MAX,
+            last_surfaces_identity: usize::MAX,
+            last_emissive_gain: f32::NAN,
+            gpu_surfaces: Vec::new(),
+            _surface_textures: Vec::new(),
+            surface_table_valid: false,
             specular_texture,
             specular_view,
             gloss_texture,
             gloss_view,
+            _opacity_texture: opacity_texture,
+            _opacity_view: opacity_view,
             normal_texture,
             normal_view,
             emissive_texture,
             emissive_view,
+            _armor_emissive_texture: armor_emissive_texture,
+            _armor_emissive_view: armor_emissive_view,
             texture,
             view,
             sampler,
             group,
+            _emission_uniform: emission_uniform,
             depth,
             depth_dimensions: (1, 1),
         }
     }
+    fn upload_surfaces(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        surfaces: Option<&Arc<Vec<Surface>>>,
+        index_count: usize,
+    ) {
+        let identity = surfaces.map_or(0, |parts| Arc::as_ptr(parts) as usize);
+        if identity == self.last_surfaces_identity {
+            return;
+        }
+        self.last_surfaces_identity = identity;
+        // New bind groups require fresh gain uploads even if the slider did
+        // not move. Reuse the already-decoded images on subsequent slider drags.
+        self.last_emissive_gain = f32::NAN;
+        self.gpu_surfaces.clear();
+        self._surface_textures.clear();
+        self.surface_table_valid = false;
+        let Some(surfaces) = surfaces else { return };
+        super::crash_diagnostics::record(
+            "gpu_material_upload_begin",
+            &format!("{} sections, {} indices", surfaces.len(), index_count),
+        );
+        // Validate the complete contiguous index coverage before rendering;
+        // an incomplete table must never paint unknown faces with a random map.
+        let mut cursor = 0u32;
+        for surface in surfaces.iter() {
+            if surface.first_index != cursor
+                || surface.index_count == 0
+                || surface.index_count % 3 != 0
+            {
+                return;
+            }
+            let Some(end) = cursor.checked_add(surface.index_count) else {
+                return;
+            };
+            if usize::try_from(end)
+                .ok()
+                .is_none_or(|end| end > index_count)
+            {
+                return;
+            }
+            cursor = end;
+        }
+        if usize::try_from(cursor).ok() != Some(index_count) {
+            super::crash_diagnostics::record(
+                "gpu_material_coverage_invalid",
+                &format!("{} source indices, {} covered", index_count, cursor),
+            );
+            return;
+        }
+        self.surface_table_valid = true;
+        let mut uploaded: HashMap<(usize, usize), wgpu::TextureView> = HashMap::new();
+        let mut used_bytes = 0usize;
+        let mut omitted_count = 0usize;
+        let mut unique_diffuse = HashSet::new();
+        let mut remaining_diffuse = 0usize;
+        for part in surfaces.iter().filter(|part| part.visible) {
+            if let Some(diffuse) = part.diffuse.as_ref()
+                && unique_diffuse.insert(Arc::as_ptr(diffuse) as usize)
+            {
+                remaining_diffuse = remaining_diffuse.saturating_add(diffuse.as_raw().len());
+            }
+        }
+        let can_fit_all_diffuse = remaining_diffuse <= MAX_GPU_PREVIEW_TEXTURE_BYTES;
+        for part in surfaces.iter() {
+            if !part.visible {
+                continue;
+            }
+            let inputs = [
+                (
+                    part.diffuse.as_ref(),
+                    [210, 205, 205, 255],
+                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                    "CDF part diffuse",
+                ),
+                (
+                    part.normal.as_ref(),
+                    [128, 128, 255, 255],
+                    wgpu::TextureFormat::Rgba8Unorm,
+                    "CDF part normal",
+                ),
+                (
+                    part.emissive.as_ref(),
+                    [0, 0, 0, 255],
+                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                    "CDF part emission",
+                ),
+                (
+                    part.specular.as_ref(),
+                    [0, 0, 0, 255],
+                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                    "CDF part specular",
+                ),
+                (
+                    part.gloss.as_ref(),
+                    [128, 128, 128, 255],
+                    wgpu::TextureFormat::Rgba8Unorm,
+                    "CDF part gloss",
+                ),
+                (
+                    part.opacity.as_ref(),
+                    [255, 255, 255, 255],
+                    wgpu::TextureFormat::Rgba8Unorm,
+                    "CDF authored opacity",
+                ),
+                (
+                    part.armor_emissive.as_ref(),
+                    [0, 0, 0, 255],
+                    wgpu::TextureFormat::Rgba8UnormSrgb,
+                    "Optional monster armor emission",
+                ),
+            ];
+            let mut views = Vec::with_capacity(7);
+            let mut opacity_uploaded = false;
+            for (role, (image, fallback, format, label)) in inputs.into_iter().enumerate() {
+                // A DDS may be shared by many assembly sections. View/texture
+                // identities are source-arc + GPU role (color-space aware).
+                let size = image.map_or(4, |pixels| pixels.as_raw().len());
+                let key = texture_cache_key(image, role);
+                let already_uploaded = uploaded.contains_key(&key);
+                let allow_source = image.is_none()
+                    || already_uploaded
+                    || allows_cdf_role(
+                        used_bytes,
+                        size,
+                        remaining_diffuse,
+                        role,
+                        can_fit_all_diffuse,
+                    );
+                let selected = if allow_source { image } else { None };
+                if role == 0 && selected.is_some() && !already_uploaded {
+                    remaining_diffuse = remaining_diffuse.saturating_sub(size);
+                }
+                if !allow_source {
+                    omitted_count += 1;
+                }
+                let selected_key = texture_cache_key(selected, role);
+                if let Some(view) = uploaded.get(&selected_key) {
+                    views.push(view.clone());
+                } else {
+                    let (texture, view) =
+                        Self::upload_map(device, queue, selected, &fallback, format, label);
+                    // The fallback is a four-byte neutral placeholder; large
+                    // unverified maps are omitted instead of risking GPU OOM.
+                    used_bytes = used_bytes
+                        .saturating_add(selected.map_or(4, |pixels| pixels.as_raw().len()));
+                    uploaded.insert(selected_key, view.clone());
+                    self._surface_textures.push(texture);
+                    views.push(view);
+                }
+                if role == 5 && selected.is_some() {
+                    opacity_uploaded = true;
+                }
+            }
+            let emission_uniform = Self::emission_uniform(device, queue, part.emission_strength);
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Exact CDF attachment material"),
+                layout: &self.layout,
+                entries: &material_entries(
+                    [
+                        &views[0], &views[1], &views[2], &views[3], &views[4], &views[5], &views[6],
+                    ],
+                    &self.sampler,
+                    &emission_uniform,
+                ),
+            });
+            self.gpu_surfaces.push(GpuSurface {
+                range: part.first_index..part.first_index + part.index_count,
+                transparent: part.transparent && (part.opacity.is_none() || opacity_uploaded),
+                masked: !part.transparent && opacity_uploaded,
+                opacity_map: opacity_uploaded,
+                bind_group: group,
+                _emission_uniform: emission_uniform,
+                source_emission_strength: part.emission_strength,
+            });
+        }
+        super::crash_diagnostics::record(
+            "gpu_material_upload_complete",
+            &format!(
+                "{} visible sections, {} unique GPU maps, {} bytes, {} budget omissions",
+                self.gpu_surfaces.len(),
+                self._surface_textures.len(),
+                used_bytes,
+                omitted_count
+            ),
+        );
+    }
+
     fn prepare_scene(
         &mut self,
         device: &wgpu::Device,
@@ -506,6 +1095,40 @@ impl Pipeline {
         if self.depth_dimensions != size {
             self.depth = Self::depth_view(device, size);
             self.depth_dimensions = size;
+        }
+        let floor_bytes = bytemuck::cast_slice(&primitive.ground);
+        self.ground_count = primitive.ground.len() as u32;
+        if !floor_bytes.is_empty() {
+            if floor_bytes.len() > self.ground_capacity {
+                self.ground_vertex = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("CryEngine model-foot grid buffer"),
+                    size: floor_bytes.len() as u64,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                self.ground_capacity = floor_bytes.len();
+            }
+            queue.write_buffer(&self.ground_vertex, 0, floor_bytes);
+        }
+        self.upload_surfaces(
+            device,
+            queue,
+            primitive.surfaces.as_ref(),
+            primitive.indices.len(),
+        );
+        if self.last_emissive_gain.to_bits() != primitive.emissive_gain.to_bits() {
+            self.last_emissive_gain = primitive.emissive_gain;
+            // Buffers already exist on each material: update only 16 bytes
+            // per visible material, not CDF geometry or source DDS textures.
+            let default = emission_uniform_values(1.0, primitive.emissive_gain);
+            queue.write_buffer(&self._emission_uniform, 0, bytemuck::bytes_of(&default));
+            for surface in &self.gpu_surfaces {
+                let values = emission_uniform_values(
+                    surface.source_emission_strength,
+                    primitive.emissive_gain,
+                );
+                queue.write_buffer(&surface._emission_uniform, 0, bytemuck::bytes_of(&values));
+            }
         }
         if !primitive.points.is_empty() && !primitive.indices.is_empty() {
             let vertex_bytes = bytemuck::cast_slice(&primitive.points);
@@ -526,7 +1149,9 @@ impl Pipeline {
                     self.index = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                         label: Some("Unchanged CryEngine triangle index stream"),
                         contents: bytes,
-                        usage: wgpu::BufferUsages::INDEX,
+                        // Switching between a 2012 mesh and Stage 2 mesh
+                        // may reuse this buffer. Keep COPY_DST for uploads.
+                        usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
                     });
                     self.index_capacity = bytes.len();
                 } else {
@@ -605,32 +1230,19 @@ impl Pipeline {
             self.group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Exact CryEngine DDS texture sampler group"),
                 layout: &self.layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&self.view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&self.normal_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(&self.emissive_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::TextureView(&self.specular_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: wgpu::BindingResource::TextureView(&self.gloss_view),
-                    },
-                ],
+                entries: &material_entries(
+                    [
+                        &self.view,
+                        &self.normal_view,
+                        &self.emissive_view,
+                        &self.specular_view,
+                        &self.gloss_view,
+                        &self._opacity_view,
+                        &self._armor_emissive_view,
+                    ],
+                    &self.sampler,
+                    &self._emission_uniform,
+                ),
             });
             self.last_texture_identity = primitive.texture_identity;
             self.last_normal_identity = primitive.normal_identity;
@@ -679,11 +1291,41 @@ impl Pipeline {
             1.,
         );
         pass.set_scissor_rect(clip.x, clip.y, clip.width, clip.height);
+        if self.ground_count > 0 {
+            pass.set_pipeline(&self.ground_pipeline);
+            pass.set_vertex_buffer(0, self.ground_vertex.slice(..));
+            pass.draw(0..self.ground_count, 0..1);
+        }
         pass.set_pipeline(&self.render_pipeline);
-        pass.set_bind_group(0, &self.group, &[]);
         pass.set_vertex_buffer(0, self.vertex.slice(..));
         pass.set_index_buffer(self.index.slice(..), wgpu::IndexFormat::Uint32);
-        pass.draw_indexed(0..self.index_count, 0, 0..1);
+        if self.surface_table_valid {
+            // NoDraw-only characters intentionally have zero visible parts.
+            // Do not silently fall back to rendering the whole mesh.
+            // Write the depth of every opaque original face before any
+            // transparent section; authoring order is not render order.
+            for surface in self.gpu_surfaces.iter().filter(|part| !part.transparent) {
+                pass.set_pipeline(if surface.masked {
+                    &self.masked_pipeline
+                } else {
+                    &self.render_pipeline
+                });
+                pass.set_bind_group(0, &surface.bind_group, &[]);
+                pass.draw_indexed(surface.range.clone(), 0, 0..1);
+            }
+            for surface in self.gpu_surfaces.iter().filter(|part| part.transparent) {
+                pass.set_pipeline(if surface.opacity_map {
+                    &self.opacity_pipeline
+                } else {
+                    &self.translucent_pipeline
+                });
+                pass.set_bind_group(0, &surface.bind_group, &[]);
+                pass.draw_indexed(surface.range.clone(), 0, 0..1);
+            }
+        } else {
+            pass.set_bind_group(0, &self.group, &[]);
+            pass.draw_indexed(0..self.index_count, 0, 0..1);
+        }
     }
 }
 impl shader::Pipeline for Pipeline {
@@ -717,6 +1359,67 @@ impl shader::Primitive for Primitive {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    #[test]
+    fn shared_source_images_share_one_gpu_upload_key_per_role() {
+        let image = Arc::new(image::RgbaImage::new(8, 8));
+        let same = Arc::clone(&image);
+        assert_eq!(
+            super::texture_cache_key(Some(&image), 0),
+            super::texture_cache_key(Some(&same), 0)
+        );
+        assert_ne!(
+            super::texture_cache_key(Some(&image), 0),
+            super::texture_cache_key(Some(&image), 1)
+        );
+        assert_eq!(
+            super::texture_cache_key(None, 0),
+            super::texture_cache_key(None, 0)
+        );
+    }
+
+    #[test]
+    fn preview_upload_budget_rejects_oversized_unique_texture_without_overflow() {
+        assert!(super::gpu_budget_allows(0, 256 * 1024 * 1024));
+        assert!(!super::gpu_budget_allows(256 * 1024 * 1024, 4));
+        assert!(!super::gpu_budget_allows(usize::MAX, 64));
+        // With 180 MiB still owed to later original diffuse textures,
+        // a new 90 MiB optional specular must NOT crowd them out.
+        let mib = 1024 * 1024;
+        assert!(!super::allows_cdf_role(0, 90 * mib, 180 * mib, 3, true));
+        assert!(super::allows_cdf_role(0, 90 * mib, 180 * mib, 0, true));
+        // If all diffuse assets exceed the fixed budget, omit optional
+        // maps first while still allowing each original diffuse to compete
+        // for the remaining protected budget.
+        assert!(!super::allows_cdf_role(0, 4 * mib, 300 * mib, 2, false));
+        assert!(super::allows_cdf_role(0, 4 * mib, 300 * mib, 0, false));
+    }
+
+    #[test]
+    fn independent_armor_emission_does_not_inherit_authored_source_strength() {
+        let authored = super::emission_uniform_values(0.0, 2.5);
+        assert_eq!(authored[0], 0.0);
+        assert_eq!(authored[1], 2.5);
+        // WGSL uses the authored multiplier only for original emission:
+        // optional armor glow remains controlled by the preview gain alone.
+        let source = include_str!("textured.wgsl");
+        assert!(source.contains("glow * emission_params.x * emission_params.y"));
+        assert!(source.contains("armor_glow * emission_params.y"));
+    }
+
+    #[test]
+    fn emissive_slider_multiplies_source_relative_glow_without_replacing_it() {
+        assert_eq!(super::emission_uniform_values(3.0, 1.0)[..2], [3.0, 1.0]);
+        assert_eq!(super::emission_uniform_values(3.0, 2.5)[..2], [3.0, 2.5]);
+        assert_eq!(super::emission_uniform_values(0.0, 4.0)[..2], [0.0, 4.0]);
+        assert_eq!(super::emission_uniform_values(3.0, 0.0)[..2], [3.0, 0.0]);
+        assert_eq!(
+            super::emission_uniform_values(f32::NAN, f32::NAN)[..2],
+            [0.0, 1.0]
+        );
+    }
+
     #[test]
     fn cryengine_gpu_material_shader_parses_and_validates() {
         let module = naga::front::wgsl::parse_str(include_str!("textured.wgsl"))
@@ -727,5 +1430,44 @@ mod tests {
         )
         .validate(&module)
         .expect("GPU normal/emissive shader must pass Naga validation");
+        // Regression for Rocky3: all three GPU material group creation sites
+        // use material_entries, whose eight bindings must match source WGSL.
+        let mut shader_bindings: Vec<u32> = module
+            .global_variables
+            .iter()
+            .filter_map(|(_, variable)| {
+                variable
+                    .binding
+                    .as_ref()
+                    .filter(|binding| binding.group == 0)
+                    .map(|binding| binding.binding)
+            })
+            .collect();
+        shader_bindings.sort_unstable();
+        assert_eq!(shader_bindings, super::MATERIAL_BINDINGS);
+        assert!(
+            module
+                .entry_points
+                .iter()
+                .any(|entry| entry.name == "fs_opacity")
+        );
+        assert!(
+            module
+                .entry_points
+                .iter()
+                .any(|entry| entry.name == "fs_masked")
+        );
+        assert!(
+            module
+                .entry_points
+                .iter()
+                .any(|entry| entry.name == "fs_main")
+        );
+        assert!(
+            module
+                .entry_points
+                .iter()
+                .any(|entry| entry.name == "fs_opaque")
+        );
     }
 }

@@ -649,7 +649,7 @@ fn lock_restore_watchdog(swap: &Path) -> Result<Option<File>, String> {
         .write(true)
         .open(&path)
         .map_err(|e| format!("Cannot inspect offline restore watchdog lock: {e}"))?;
-    file.try_lock().map_err(|_| {
+    fs2::FileExt::try_lock_exclusive(&file).map_err(|_| {
         "The independent private restore watchdog is active. Allow it to finish before attempting manual recovery."
             .to_owned()
     })?;
@@ -885,15 +885,15 @@ mod tests {
     #[test]
     fn private_windows_journal_names_normalize_without_path_traversal() {
         assert_eq!(
-            normalized_swap_name("Game\\\\libs.pak").unwrap(),
+            normalized_swap_name("Game\\libs.pak").unwrap(),
             "Game/libs.pak"
         );
         assert_eq!(
-            normalized_pak_name("Game\\\\libs.pak").unwrap(),
+            normalized_pak_name("Game\\libs.pak").unwrap(),
             "Game/libs.pak"
         );
         assert_eq!(
-            normalized_swap_name("bin64_SteamRetail\\\\inject.dll").unwrap(),
+            normalized_swap_name("bin64_SteamRetail\\inject.dll").unwrap(),
             "bin64_SteamRetail/inject.dll"
         );
         for invalid in [
@@ -935,7 +935,7 @@ mod tests {
         }
         let mut state = serde_json::json!({"version":1,"phase":"prepared","files":rows});
         assert!(verify_prepared_journal(&state, &expected).is_ok());
-        state["files"][0]["name"] = serde_json::json!("Game\\\\first.pak");
+        state["files"][0]["name"] = serde_json::json!("Game\\first.pak");
         assert!(verify_prepared_journal(&state, &expected).is_ok());
         state["files"][0]["name"] = serde_json::json!("Game/first.pak");
         state["files"].as_array_mut().unwrap().reverse();

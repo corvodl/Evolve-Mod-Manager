@@ -25,6 +25,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Validate bundled Blender converter syntax
         run: python3 -c "import ast,pathlib; [ast.parse(p.read_text(encoding='utf-8'), filename=str(p)) for p in pathlib.Path('crates/evolve-core/src').glob('blender_*.py')]"
+      - name: Validate source-faithful UV seam/tile regressions
+        run: python3 -m unittest discover -s crates/evolve-core/tests -p 'test_blender_uv0.py'
       - run: cargo fmt --all -- --check
       - run: cargo test -p evolve-core --all-targets
       - run: cargo clippy -p evolve-core --all-targets -- -D warnings
@@ -46,7 +48,8 @@ jobs:
     needs: [core, desktop]
     runs-on: windows-2022
     timeout-minutes: 55
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    # Release-mode binaries are built by Nightly; avoid rebuilding them on every PR.
+    if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

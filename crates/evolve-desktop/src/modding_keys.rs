@@ -15,6 +15,40 @@ fn regular(path: &Path) -> bool {
         .is_ok_and(|m| m.file_type().is_file() && m.len() > 0 && m.len() <= 64 * 1024)
 }
 
+/// Public-only original Stage 2 verification key; no private signing material.
+const ORIGINAL_PUBLIC_RSA: &[u8; 140] = include_bytes!("../../../assets/reference/RSAKeyData.bin");
+
+pub struct ArchiveVerificationKeys {
+    pub paths: Vec<PathBuf>,
+    _bundled_key_directory: tempfile::TempDir,
+}
+
+/// Each archive's decrypted CDR and signature determine which key is valid.
+/// The temporary embedded public-key file remains alive until import completes.
+pub fn archive_verification_keys(stage: &Path) -> Result<ArchiveVerificationKeys, String> {
+    let mut paths = Vec::new();
+    for candidate in [original_public_key(stage).ok(), public_key(stage).ok()]
+        .into_iter()
+        .flatten()
+    {
+        if !paths.contains(&candidate) {
+            paths.push(candidate);
+        }
+    }
+    let directory = tempfile::Builder::new()
+        .prefix("evolve-original-public-rsa-")
+        .tempdir()
+        .map_err(|e| format!("Cannot prepare bundled RSA verification key: {e}"))?;
+    let bundled = directory.path().join("RSAKeyData.bin");
+    fs::write(&bundled, ORIGINAL_PUBLIC_RSA)
+        .map_err(|e| format!("Cannot write bundled RSA verification key: {e}"))?;
+    paths.push(bundled);
+    Ok(ArchiveVerificationKeys {
+        paths,
+        _bundled_key_directory: directory,
+    })
+}
+
 pub fn public_key(stage: &Path) -> Result<PathBuf, String> {
     let key = stage.join("mykeys").join("public_key.bin");
     if !regular(&key) {
@@ -127,6 +161,34 @@ pub fn staged_target(stage: &Path, source: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bundled_original_key_is_tried_even_after_mismatched_local_keys() {
+        let root = tempfile::tempdir().unwrap();
+        let stage = root.path().join("stage");
+        let key_folder = stage.join("mykeys");
+        fs::create_dir_all(&key_folder).unwrap();
+        let custom = key_folder.join("public_key.bin");
+        fs::write(&custom, b"custom key").unwrap();
+        let misleading_original = root.path().join("RSAKeyData.bin");
+        fs::write(&misleading_original, [0u8; 140]).unwrap();
+        let candidates = archive_verification_keys(&stage).unwrap();
+        assert_eq!(candidates.paths.len(), 3);
+        assert_eq!(candidates.paths[0], misleading_original);
+        assert_eq!(candidates.paths[1], custom);
+        assert_eq!(
+            fs::read(candidates.paths.last().unwrap()).unwrap(),
+            ORIGINAL_PUBLIC_RSA
+        );
+    }
+
+    #[test]
+    fn bundled_original_key_requires_no_existing_stage() {
+        let root = tempfile::tempdir().unwrap();
+        let candidates = archive_verification_keys(&root.path().join("missing")).unwrap();
+        assert_eq!(candidates.paths.len(), 1);
+        assert_eq!(fs::read(&candidates.paths[0]).unwrap().len(), 140);
+    }
+
     #[test]
     fn derives_keys_from_selected_stage_without_keys_in_settings() {
         let root = tempfile::tempdir().unwrap();

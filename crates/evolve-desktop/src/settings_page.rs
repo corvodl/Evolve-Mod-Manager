@@ -270,12 +270,12 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         ].spacing(8)),
         ].spacing(12).into(),
         Tab::Updates => column![
-        heading("UPDATES", "Stable by default, with a verified experimental channel available."),
+        heading("UPDATES", "Select Stable, Beta or Nightly. Nightly builds are prerelease versions."),
         panel(column![
             text(format!("Installed version: {}", env!("CARGO_PKG_VERSION"))).size(12),
             row![
                 design::button("Check for Updates").on_press(Message::CheckUpdates).style(design::primary),
-                design::button(text(format!("Experimental: {}", if state.preferences.experimental_updates { "On" } else { "Off" }))).on_press(Message::PreferenceExperimental).style(design::secondary),
+                design::button(text(format!("Channel: {}", if state.preferences.nightly_updates { "Nightly" } else if state.preferences.experimental_updates { "Beta" } else { "Stable" }))).on_press(Message::PreferenceUpdateChannel).style(design::secondary),
                 design::button(text(format!("Auto-check: {}", if state.preferences.automatic_update_checks { "On" } else { "Off" }))).on_press(Message::PreferenceAutoUpdates).style(design::secondary)
             ].spacing(8),
             text(state.update_status.as_str()).size(12).style(design::muted),
@@ -286,8 +286,16 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         Tab::Integration => column![
         heading("BLENDER INTEGRATION", "Blender is used for verified native FBX export."),
         panel(column![
-            text("Blender executable").size(12),
-            design::text_input("Path to Blender executable", &state.preferences.blender_executable).on_input(Message::PreferenceBlender),
+            if crate::blender_install::valid_blender(&state.blender_path).is_some() {
+                Element::from(text(format!("Blender is ready for FBX export: {}", state.blender_path))
+                    .size(12).style(design::muted))
+            } else {
+                Element::from(column![
+                    text("Blender was not found in its usual installation folders. Install Blender 4.2+ or select blender.exe manually.").size(12),
+                    design::text_input("Path to Blender executable", &state.preferences.blender_executable)
+                        .on_input(Message::PreferenceBlender),
+                ].spacing(6))
+            },
         ].spacing(7)),
         ].spacing(12).into(),
         Tab::Advanced => column![
@@ -295,6 +303,17 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         panel(column![
             design::button(text(format!("Keep permanent original snapshots: {}", if state.preferences.keep_original_snapshots { "On" } else { "Off" }))).on_press(Message::PreferenceSnapshots).style(design::secondary),
             design::button(text(format!("Show activity during tasks: {}", if state.preferences.show_activity_on_tasks { "On" } else { "Off" }))).on_press(Message::PreferenceActivity).style(design::secondary),
+            text("Crash reports").size(15),
+            text("Local diagnostics for model loading, GPU uploads, and Rust crashes. Enabled by default; logs may include local asset names and file paths.")
+                .size(12).style(design::muted),
+            design::button(text(format!("Crash logging: {}", if state.preferences.crash_logging_enabled { "On" } else { "Off" })))
+                .on_press(Message::PreferenceCrashLogging).style(design::secondary),
+            row![
+                design::button("Open crash log").on_press(Message::OpenCrashLogs).style(design::secondary),
+                design::button("Open logs folder").on_press(Message::OpenCrashLogsFolder).style(design::secondary),
+            ].spacing(8),
+            text("Disabling logging stops new entries but does not delete existing logs. A native Windows fail-fast may not produce a Rust panic entry.")
+                .size(11).style(design::muted),
             text("Recovery settings do not imply that every private-manager swap operation has been ported.").size(11).style(design::muted),
         ].spacing(8)),
         ].spacing(12).into(),
