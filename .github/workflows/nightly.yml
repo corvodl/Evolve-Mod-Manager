@@ -60,6 +60,10 @@ jobs:
           Copy-Item -LiteralPath "README.md" -Destination "$folder/README.md"
           Compress-Archive -Path (Join-Path $folder '*') -DestinationPath "dist/EvolveModManager-Portable-$env:VERSION.zip" -CompressionLevel Optimal -Force
 
+      - name: Fetch and verify optional GFX editor tools
+        shell: pwsh
+        run: ./scripts/package-gfx-tools.ps1
+
       - name: Build Windows installer
         shell: pwsh
         run: |
