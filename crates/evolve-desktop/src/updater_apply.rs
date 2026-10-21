@@ -509,7 +509,9 @@ mod tests {
     #[test]
     fn installer_arg_uses_regular_windows_paths() {
         assert_eq!(
-            installer_directory_arg(Path::new(r"\\?\C:\Users\demo\AppData\Local\EvolveModManager")),
+            installer_directory_arg(Path::new(
+                r"\\?\C:\Users\demo\AppData\Local\EvolveModManager"
+            )),
             r"C:\Users\demo\AppData\Local\EvolveModManager"
         );
         assert_eq!(
