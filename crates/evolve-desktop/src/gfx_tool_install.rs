@@ -26,8 +26,12 @@ impl Tool {
     }
     fn url(self) -> &'static str {
         match self {
-            Self::Ffdec => "https://github.com/jindrapetrik/jpexs-decompiler/releases/download/version26.3.0/ffdec_26.3.0.zip",
-            Self::Ruffle => "https://github.com/ruffle-rs/ruffle/releases/download/v0.7.1/ruffle-0.7.1-windows-x86_64.zip",
+            Self::Ffdec => {
+                "https://github.com/jindrapetrik/jpexs-decompiler/releases/download/version26.3.0/ffdec_26.3.0.zip"
+            }
+            Self::Ruffle => {
+                "https://github.com/ruffle-rs/ruffle/releases/download/v0.7.1/ruffle-0.7.1-windows-x86_64.zip"
+            }
         }
     }
     fn sha256(self) -> &'static str {
@@ -58,9 +62,13 @@ fn verified_archive(bytes: &[u8], expected: &str) -> Result<(), String> {
 }
 
 fn checked_member(name: &str) -> Result<PathBuf, String> {
-    if name.is_empty() || name.len() > 1024 || name.starts_with('/')
+    if name.is_empty()
+        || name.len() > 1024
+        || name.starts_with('/')
         || name.contains(['\\', ':', '\0'])
-        || name.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+        || name
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
     {
         return Err("GFX utility archive contains an unsafe member path".into());
     }
@@ -79,9 +87,16 @@ fn extract_bounded(zip_data: &[u8], output: &Path) -> Result<(), String> {
         let is_dir = item.is_dir();
         // ZIP directories legitimately have a trailing slash; no path segment
         // may escape the staging root.
-        let name = if is_dir { item.name().trim_end_matches('/') } else { item.name() };
+        let name = if is_dir {
+            item.name().trim_end_matches('/')
+        } else {
+            item.name()
+        };
         let relative = checked_member(name)?;
-        if item.unix_mode().is_some_and(|mode| mode & 0o170000 == 0o120000) {
+        if item
+            .unix_mode()
+            .is_some_and(|mode| mode & 0o170000 == 0o120000)
+        {
             return Err("Symlink in GFX utility archive is not allowed".into());
         }
         let dest = output.join(relative);
@@ -89,14 +104,19 @@ fn extract_bounded(zip_data: &[u8], output: &Path) -> Result<(), String> {
             fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
             continue;
         }
-        total = total.checked_add(item.size()).ok_or("GFX utility unpack size overflow")?;
+        total = total
+            .checked_add(item.size())
+            .ok_or("GFX utility unpack size overflow")?;
         if item.size() > MAX_EXTRACTED || total > MAX_EXTRACTED {
             return Err("GFX utility unpacked data exceeds 220 MiB".into());
         }
         let parent = dest.parent().ok_or("Invalid unpack destination")?;
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        let mut file = fs::OpenOptions::new().write(true).create_new(true)
-            .open(dest).map_err(|e| e.to_string())?;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dest)
+            .map_err(|e| e.to_string())?;
         let copied = io::copy(&mut item, &mut file).map_err(|e| e.to_string())?;
         if copied != item.size() {
             return Err("Truncated GFX utility archive member".into());
@@ -107,21 +127,34 @@ fn extract_bounded(zip_data: &[u8], output: &Path) -> Result<(), String> {
 
 fn validated_file(root: &Path, name: &str) -> Result<PathBuf, String> {
     let path = root.join(name);
-    let metadata = fs::symlink_metadata(&path).map_err(|_| format!("Required GFX tool file missing: {name}"))?;
+    let metadata = fs::symlink_metadata(&path)
+        .map_err(|_| format!("Required GFX tool file missing: {name}"))?;
     if !metadata.file_type().is_file() || metadata.len() == 0 {
         return Err(format!("Invalid GFX utility file: {name}"));
     }
     Ok(path)
 }
 
-fn fetch_limited(client: &reqwest::blocking::Client, url: &str, max: u64) -> Result<Vec<u8>, String> {
-    let mut response = client.get(url).send().map_err(|e| e.to_string())?
-        .error_for_status().map_err(|e| e.to_string())?;
+fn fetch_limited(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    max: u64,
+) -> Result<Vec<u8>, String> {
+    let mut response = client
+        .get(url)
+        .send()
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?;
     if response.content_length().is_some_and(|length| length > max) {
         return Err("GFX utility download was larger than expected".into());
     }
     let mut bytes = Vec::new();
-    response.by_ref().take(max + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    response
+        .by_ref()
+        .take(max + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
     if bytes.len() as u64 > max {
         return Err("GFX utility download exceeded its size budget".into());
     }
@@ -136,14 +169,20 @@ pub fn install(tool: Tool) -> Result<PathBuf, String> {
         return Err("In-app GFX tool installation is only supported on Windows".into());
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let folder = exe.parent().ok_or("Unable to locate the manager installation")?;
+    let folder = exe
+        .parent()
+        .ok_or("Unable to locate the manager installation")?;
     install_at(tool, folder)
 }
 
 fn install_at(tool: Tool, folder: &Path) -> Result<PathBuf, String> {
     let third_party = folder.join("third_party");
     fs::create_dir_all(&third_party).map_err(|e| e.to_string())?;
-    if !fs::symlink_metadata(&third_party).map_err(|e| e.to_string())?.file_type().is_dir() {
+    if !fs::symlink_metadata(&third_party)
+        .map_err(|e| e.to_string())?
+        .file_type()
+        .is_dir()
+    {
         return Err("Third-party destination is not a regular directory".into());
     }
     let destination = third_party.join(tool.name());
@@ -152,7 +191,8 @@ fn install_at(tool: Tool, folder: &Path) -> Result<PathBuf, String> {
     if destination.exists() || fs::symlink_metadata(&destination).is_ok() {
         if !fs::symlink_metadata(&destination)
             .map_err(|e| e.to_string())?
-            .file_type().is_dir()
+            .file_type()
+            .is_dir()
         {
             return Err("Existing GFX tool directory is not a regular directory".into());
         }
@@ -166,11 +206,14 @@ fn install_at(tool: Tool, folder: &Path) -> Result<PathBuf, String> {
         .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(180))
         .redirect(reqwest::redirect::Policy::limited(5))
-        .build().map_err(|e| e.to_string())?;
+        .build()
+        .map_err(|e| e.to_string())?;
     let archive_bytes = fetch_limited(&client, tool.url(), MAX_ARCHIVE)?;
     verified_archive(&archive_bytes, tool.sha256())?;
-    let scratch = tempfile::Builder::new().prefix(".gfx-tool-")
-        .tempdir_in(&third_party).map_err(|e| e.to_string())?;
+    let scratch = tempfile::Builder::new()
+        .prefix(".gfx-tool-")
+        .tempdir_in(&third_party)
+        .map_err(|e| e.to_string())?;
     let payload = scratch.path().join("payload");
     fs::create_dir(&payload).map_err(|e| e.to_string())?;
     extract_bounded(&archive_bytes, &payload)?;
@@ -193,8 +236,13 @@ fn install_at(tool: Tool, folder: &Path) -> Result<PathBuf, String> {
         let notice = payload.join("LICENSE.md");
         if fs::symlink_metadata(&notice).is_err() {
             let mut license_file = fs::OpenOptions::new()
-                .write(true).create_new(true).open(&notice).map_err(|e| e.to_string())?;
-            license_file.write_all(&license).map_err(|e| e.to_string())?;
+                .write(true)
+                .create_new(true)
+                .open(&notice)
+                .map_err(|e| e.to_string())?;
+            license_file
+                .write_all(&license)
+                .map_err(|e| e.to_string())?;
         } else {
             validated_file(&payload, "LICENSE.md")?;
         }
@@ -210,10 +258,21 @@ mod tests {
     use super::*;
     #[test]
     fn refuses_archive_traversal_and_drive_prefixes() {
-        for invalid in ["../evil.exe", "/tmp/a", "C:/evil", "folder//a", "folder/./a", "folder/../a", "x\\y"] {
+        for invalid in [
+            "../evil.exe",
+            "/tmp/a",
+            "C:/evil",
+            "folder//a",
+            "folder/./a",
+            "folder/../a",
+            "x\\y",
+        ] {
             assert!(checked_member(invalid).is_err(), "{invalid}");
         }
-        assert_eq!(checked_member("ffdec-cli.exe").unwrap(), PathBuf::from("ffdec-cli.exe"));
+        assert_eq!(
+            checked_member("ffdec-cli.exe").unwrap(),
+            PathBuf::from("ffdec-cli.exe")
+        );
         assert!(checked_member("lib/extension.jar").is_ok());
     }
     #[test]
