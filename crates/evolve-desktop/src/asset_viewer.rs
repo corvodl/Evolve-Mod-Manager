@@ -293,6 +293,92 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
                 .style(design::muted),
         );
     }
+    if let Some(emet) = state.emet_options.as_ref() {
+        entries = entries.push(text("E.M.E.T. · FACE / EQUIPMENT").size(13));
+        if !emet.faces.is_empty() {
+            entries = entries.push(
+                text("Face · only one original CDF expression is rendered at a time.")
+                    .size(11)
+                    .style(design::muted),
+            );
+            let current = state
+                .equipment_overrides
+                .get(evolve_core::character_emet::FACE)
+                .map(String::as_str)
+                .unwrap_or_else(|| {
+                    emet.faces
+                        .first()
+                        .map(String::as_str)
+                        .unwrap_or(evolve_core::character_emet::NO_FACE)
+                });
+            let mut faces = column![].spacing(4);
+            for face in &emet.faces {
+                let active = face == current;
+                faces = faces.push(
+                    design::button(text(format!(
+                        "{} {}",
+                        if active { "✓" } else { "○" },
+                        face.replace('_', " ")
+                    )))
+                    .style(if active {
+                        design::primary
+                    } else {
+                        design::secondary
+                    })
+                    .on_press_maybe(
+                        (!state.busy && !active).then_some(Message::ViewerEmetFace(face.clone())),
+                    ),
+                );
+            }
+            let none = current == evolve_core::character_emet::NO_FACE;
+            faces = faces.push(
+                design::button(if none {
+                    "✓ No expression"
+                } else {
+                    "○ No expression"
+                })
+                .style(if none {
+                    design::primary
+                } else {
+                    design::secondary
+                })
+                .on_press_maybe((!state.busy && !none).then_some(Message::ViewerEmetFace(
+                    evolve_core::character_emet::NO_FACE.into(),
+                ))),
+            );
+            entries = entries.push(faces);
+        } else {
+            entries = entries.push(
+                text("No separately authored face attachments were found in this Emet CDF.")
+                    .size(11)
+                    .style(design::muted),
+            );
+        }
+        if !emet.beacons.is_empty() {
+            let visible = state
+                .equipment_overrides
+                .get(evolve_core::character_emet::BEACON)
+                .is_none_or(|value| value == evolve_core::character_emet::BEACON_ON);
+            entries = entries.push(text("Respawn Beacon").size(12));
+            entries = entries.push(
+                design::button(if visible {
+                    "☑ Show Respawn Beacon"
+                } else {
+                    "☐ Show Respawn Beacon"
+                })
+                .on_press_maybe((!state.busy).then_some(Message::ViewerEmetBeacon(!visible))),
+            );
+        } else {
+            entries = entries.push(
+                text("No attached Respawn Beacon mesh is declared in this CDF; a beacon cannot be placed at a guessed position.")
+                    .size(11).style(design::muted),
+            );
+        }
+        entries = entries.push(
+            text("These changes rebuild Emet's source-authored CDF assembly and are included when exporting this active CDF. No other hunter is affected.")
+                .size(11).style(design::muted),
+        );
+    }
     // This is a local viewport-only choice for the original Kala 3P CDF.
     // No other character gets alternate colors or fabricated emissive maps.
     let kala_selected = state.cdf_report.as_ref().is_some_and(|report| {
@@ -508,7 +594,7 @@ fn browser(state: &State) -> Element<'_, Message> {
 
 fn gfx_viewport(state: &State) -> Element<'_, Message> {
     let mut actions = column![
-        text("SCALEFORM GFX · PRIVATE EDIT WORKSPACE").size(16),
+        text("SCALEFORM GFX · DESIGN / INTERACTIVE PREVIEW").size(16),
         text("FFDec 26.3.0 is an optional external editor; game callbacks and ActionScript are not executed in static preview.")
             .size(11).style(design::muted),
         text_input("Absolute ffdec-cli.exe or ffdec.jar path", &state.preferences.ffdec_executable)
@@ -532,13 +618,45 @@ fn gfx_viewport(state: &State) -> Element<'_, Message> {
     if let Some(session) = &state.gfx_session {
         let info = &session.info;
         actions = actions.push(
-            design::button(if state.gfx_layout_open {
-                "Close visual GFX layout editor"
-            } else {
-                "Visual GFX layout editor…"
-            })
-            .on_press(Message::GfxToggleLayout),
+            row![
+                design::button(if state.gfx_layout_open {
+                    "Close design mode"
+                } else {
+                    "Design / layout editor"
+                })
+                .on_press(Message::GfxToggleLayout),
+                design::button(if state.gfx_interactive_open {
+                    "Close interactive controls"
+                } else {
+                    "Interactive ActionScript preview"
+                })
+                .on_press(Message::GfxToggleInteractive),
+            ]
+            .spacing(6),
         );
+        if state.gfx_interactive_open {
+            actions = actions
+                .push(text("INTERACTIVE PREVIEW · EXTERNAL RUFFLE").size(14))
+                .push(text("Runs original Flash ActionScript, timelines and mouse input where supported. Evolve/CryEngine callbacks are unavailable; an empty ExternalInterface prevents game actions. Interactive content opens in a separate Ruffle window; no project or PAK files are changed.")
+                    .size(11).style(design::muted))
+                .push(text_input("Path to installed ruffle.exe", &state.preferences.ruffle_executable)
+                    .on_input(Message::GfxRuffleConfigChanged).padding(8))
+                .push(row![
+                    design::button("Choose Ruffle executable…").on_press(Message::GfxPickRuffle),
+                    design::button("Launch / restart interactive preview")
+                        .on_press_maybe((!state.gfx_busy).then_some(Message::GfxRunInteractive)),
+                    design::button("Stop preview").on_press_maybe(
+                        state.gfx_interactive_running.as_ref().map(|_| Message::GfxStopInteractive)),
+                ].spacing(6))
+                .push(text(if state.gfx_interactive_running.as_ref().is_some_and(|p| p.is_running()) {
+                    "Ruffle process: running (external window)"
+                } else {
+                    "Ruffle process: stopped / not launched"
+                }).size(11).style(design::muted))
+                .push(text(state.gfx_interactive_status.as_str()).size(11).style(design::muted))
+                .push(text("Only validated same-build UI_Assets imagery and imported GFX/SWF files are passed to the temporary player. Player can prompt for local imports; native UI data, localization, services and gameplay remain stubbed.")
+                    .size(11).style(design::muted));
+        }
         actions = actions
             .push(
                 text(format!(

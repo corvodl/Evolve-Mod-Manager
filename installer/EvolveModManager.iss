@@ -38,12 +38,18 @@ UsePreviousAppDir=no
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: unchecked
 Name: "startmenuicon"; Description: "Add to the Start Menu"; GroupDescription: "Shortcuts:"; Flags: checkedonce
+Name: "gfxeditors"; Description: "Include Ruffle and FFDec for GFX editing (about 40 MB additional download size)"; GroupDescription: "Optional GFX tools:"; Flags: checkedonce
 
 [Files]
 Source: "..\target\release\evolve-mod-manager.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\target\release\evolve-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\assets\hunt.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
+; Bundle verified upstream portable distributions, never game assets.
+; User can deselect the GFX tools task; only manager is required.
+Source: "..\dist\third_party\FFDec\*"; DestDir: "{app}\third_party\FFDec"; Flags: ignoreversion recursesubdirs createallsubdirs; Tasks: gfxeditors
+Source: "..\dist\third_party\Ruffle\*"; DestDir: "{app}\third_party\Ruffle"; Flags: ignoreversion recursesubdirs createallsubdirs; Tasks: gfxeditors
+Source: "..\dist\third_party\THIRD_PARTY_TOOLS.txt"; DestDir: "{app}\third_party"; Flags: ignoreversion; Tasks: gfxeditors
 
 [Icons]
 Name: "{group}\Evolve Mod Manager"; Filename: "{app}\evolve-mod-manager.exe"; IconFilename: "{app}\hunt.ico"; Tasks: startmenuicon

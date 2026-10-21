@@ -350,6 +350,31 @@ pub fn resolve_imported_reference(
     authored_path: &str,
     build_label: Option<&str>,
 ) -> Result<LibraryReferenceStatus, LibraryError> {
+    resolve_imported_reference_scoped(root, authored_path, build_label, None)
+}
+
+/// Search only one source PAK by its *exact* verified archive name, as well as
+/// the selected build. Stage 2 character _ts.pak files can store DDS fragments
+/// at their archive root rather than under the owning character directory.
+/// This narrow lookup must not degrade to a global basename match.
+pub fn resolve_imported_reference_in_archive(
+    root: &Path,
+    authored_path: &str,
+    build_label: &str,
+    archive_name: &str,
+) -> Result<LibraryReferenceStatus, LibraryError> {
+    if build_label.trim().is_empty() || archive_name.trim().is_empty() {
+        return Ok(LibraryReferenceStatus::Missing);
+    }
+    resolve_imported_reference_scoped(root, authored_path, Some(build_label), Some(archive_name))
+}
+
+fn resolve_imported_reference_scoped(
+    root: &Path,
+    authored_path: &str,
+    build_label: Option<&str>,
+    archive_name: Option<&str>,
+) -> Result<LibraryReferenceStatus, LibraryError> {
     let source = safe_member_name(&authored_path.replace('\\', "/"))
         .map_err(|_| LibraryError::UnsafeArchive)?;
     let source = source.to_ascii_lowercase();
@@ -364,6 +389,11 @@ pub fn resolve_imported_reference(
     let library = imported_library(root)?;
     let mut found: Vec<Vec<LibraryReference>> = vec![Vec::new(); candidates.len()];
     for archive in &library.archives {
+        if let Some(name) = archive_name
+            && !archive.name.eq_ignore_ascii_case(name)
+        {
+            continue;
+        }
         if let Some(label) = build_label
             && !archive.builds.iter().any(|build| build == label)
         {

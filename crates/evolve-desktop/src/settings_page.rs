@@ -290,21 +290,84 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             text("Updates are downloaded, SHA-256 verified and installed when you select Update and restart. Portable downloads remain portable; your game files and preferences are preserved.").size(12).style(design::muted),
         ].spacing(8)),
         ].spacing(12).into(),
-        Tab::Integration => column![
-        heading("BLENDER INTEGRATION", "Blender is used for verified native FBX export."),
-        panel(column![
-            if crate::blender_install::valid_blender(&state.blender_path).is_some() {
-                Element::from(text(format!("Blender is ready for FBX export: {}", state.blender_path))
-                    .size(12).style(design::muted))
-            } else {
-                Element::from(column![
-                    text("Blender was not found in its usual installation folders. Install Blender 4.2+ or select blender.exe manually.").size(12),
-                    design::text_input("Path to Blender executable", &state.preferences.blender_executable)
-                        .on_input(Message::PreferenceBlender),
-                ].spacing(6))
-            },
-        ].spacing(7)),
-        ].spacing(12).into(),
+        Tab::Integration => {
+            let ffdec = crate::gfx_bundled_tools::valid_ffdec(&state.preferences.ffdec_executable);
+            let ruffle = crate::gfx_bundled_tools::valid_ruffle(&state.preferences.ruffle_executable);
+            column![
+                heading("INTEGRATIONS", "Configure external tools for exporting models and editing game GFX."),
+                panel(column![
+                    text("BLENDER · FBX EXPORT").size(15),
+                    if crate::blender_install::valid_blender(&state.blender_path).is_some() {
+                        Element::from(text(format!("Installed: {}", state.blender_path))
+                            .size(12).style(design::muted))
+                    } else {
+                        Element::from(column![
+                            text("Not detected. Install Blender 4.2+ or choose an existing blender.exe.")
+                                .size(12).style(design::muted),
+                            design::text_input("Path to Blender executable", &state.preferences.blender_executable)
+                                .on_input(Message::PreferenceBlender),
+                        ].spacing(6))
+                    },
+                ].spacing(8)),
+                panel(column![
+                    text("FFDEC · GFX / ACTIONSCRIPT EDITOR").size(15),
+                    if let Some(path) = &ffdec {
+                        Element::from(text(format!("Installed: {}", path.display()))
+                            .size(12).style(design::muted))
+                    } else {
+                        Element::from(column![
+                            text("Not detected. Install the verified FFDec 26.3.0 portable distribution (~19 MiB download).")
+                                .size(12).style(design::muted),
+                            design::button("Install FFDec")
+                                .on_press_maybe((!state.gfx_install_busy)
+                                    .then_some(Message::GfxInstallTool(crate::gfx_tool_install::Tool::Ffdec))),
+                        ].spacing(6))
+                    },
+                    row![
+                        design::text_input("Absolute path to ffdec-cli.exe or ffdec.jar", &state.preferences.ffdec_executable)
+                            .on_input(Message::GfxConfigChanged),
+                        design::button("Select existing…")
+                            .on_press(Message::GfxPickBackend)
+                            .style(design::secondary),
+                    ].spacing(8).align_y(iced::Center),
+                    text("FFDec may require a compatible Java runtime. No Java installer is bundled.")
+                        .size(11).style(design::muted),
+                ].spacing(8)),
+                panel(column![
+                    text("RUFFLE · INTERACTIVE ACTIONSCRIPT PREVIEW").size(15),
+                    if let Some(path) = &ruffle {
+                        Element::from(text(format!("Installed: {}", path.display()))
+                            .size(12).style(design::muted))
+                    } else {
+                        Element::from(column![
+                            text("Not detected. Install the verified Ruffle 0.7.1 Windows x64 player (~20.5 MiB download).")
+                                .size(12).style(design::muted),
+                            design::button("Install Ruffle")
+                                .on_press_maybe((!state.gfx_install_busy)
+                                    .then_some(Message::GfxInstallTool(crate::gfx_tool_install::Tool::Ruffle))),
+                        ].spacing(6))
+                    },
+                    row![
+                        design::text_input("Absolute path to ruffle.exe", &state.preferences.ruffle_executable)
+                            .on_input(Message::GfxRuffleConfigChanged),
+                        design::button("Select existing…")
+                            .on_press(Message::GfxPickRuffle)
+                            .style(design::secondary),
+                    ].spacing(8).align_y(iced::Center),
+                    text("Runs supported ActionScript locally; it cannot recreate Evolve's native game callbacks.")
+                        .size(11).style(design::muted),
+                ].spacing(8)),
+                if state.gfx_install_busy {
+                    Element::from(text("Downloading and verifying GFX integration files…")
+                        .size(12).style(design::muted))
+                } else {
+                    Element::from(text(state.gfx_install_status.as_str())
+                        .size(12).style(design::muted))
+                },
+                text("Tools included with the optional Windows installer component are detected automatically. Existing custom paths take priority; the portable manager can install missing tools on demand.")
+                    .size(11).style(design::muted),
+            ].spacing(12).into()
+        },
         Tab::Advanced => column![
         heading("BACKUPS & RECOVERY", "Preserve source archives and restoration history."),
         panel(column![

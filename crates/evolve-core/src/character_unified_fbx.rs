@@ -8,6 +8,7 @@ use crate::fbx::publish_verified_binary_fbx;
 use crate::inventory::Inventory;
 use crate::library_catalog::{
     LibraryReferenceStatus, imported_library, resolve_imported_reference,
+    resolve_imported_reference_in_archive,
 };
 use crate::materials::{read_material, scoped_texture_candidates};
 use crate::model::{original_mesh_subsets, read_model};
@@ -34,6 +35,11 @@ pub struct UnifiedCdfFbxReport {
     pub selected_skin_set: Option<String>,
     pub parts: Vec<String>,
     pub bones: usize,
+    /// Number of verified original armatures in the FBX. A historical 2012
+    /// character can preserve several incompatible source rest skeletons
+    /// without silently dropping the extra joint or reassigning weights.
+    #[serde(default)]
+    pub armatures: usize,
     pub weighted_vertices: usize,
     pub diffuse_textured_parts: usize,
     pub animations_embedded: bool,
@@ -124,6 +130,8 @@ fn plan_parts(
     let definition = read_cdf(&actual).map_err(|e| e.to_string())?;
     let validated = validated_equipment_overrides(&definition, inventory, equipment)?;
     let (skin_set, selected) = select_attachments(&definition).map_err(|e| e.to_string())?;
+    let selected =
+        crate::character_emet::choose(&actual.to_string_lossy(), &definition, selected, equipment)?;
     let resolved = resolve_cdf(inventory, &definition);
     let AssetResolution::Found(skeleton_ref) = resolved.skeleton else {
         return Err("Original CDF skeleton is missing or ambiguous".into());
@@ -426,18 +434,203 @@ pub fn monster_glow_path_with_library(
             return Ok(Some(found));
         }
     }
+    // Stage 2's dedicated characters_monsters_<owner>_ts.pak often contains
+    // flat names, e.g. grounder_glow_diff.dds.0 through .7, whereas the
+    // selected CDF can be named grounder3.cdf. These are not global names:
+    // only the original monster folder determines <owner>, and the fallback
+    // searches that *exact* same-build monster texture archive.
+    let Some(scope) = imported else {
+        return Ok(None);
+    };
+    let Some(build) = scope.build.as_deref() else {
+        // Never use a root-level filename without a selected/unique build.
+        return Ok(None);
+    };
+    let Some((_, monster_relative)) = lower.split_once("characters/monsters/") else {
+        return Ok(None);
+    };
+    let Some(owner) = monster_relative.split('/').next() else {
+        return Ok(None);
+    };
+    if owner.is_empty()
+        || !owner
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        return Ok(None);
+    }
+    let archive = format!("characters_monsters_{owner}_ts.pak");
+    let mut stems = vec![stem.to_ascii_lowercase()];
+    if !stems.iter().any(|value| value == owner) {
+        stems.push(owner.to_owned());
+    }
+    for name in stems {
+        for suffix in ["_glow_diff.tif", "_glow.tif"] {
+            let authored = format!("{name}{suffix}");
+            match resolve_imported_reference_in_archive(&scope.root, &authored, build, &archive)
+                .map_err(|error| format!("Cannot search {archive} for {authored}: {error}"))?
+            {
+                LibraryReferenceStatus::Found(hit) => {
+                    let path = PathBuf::from(hit.absolute_path);
+                    let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+                    if !metadata.file_type().is_file()
+                        || metadata.len() == 0
+                        || metadata.len() > MAX_SOURCE
+                    {
+                        return Err(format!("Unsafe monster glow texture {authored}"));
+                    }
+                    return fs::canonicalize(path).map(Some).map_err(|e| e.to_string());
+                }
+                LibraryReferenceStatus::Missing => {}
+                LibraryReferenceStatus::Ambiguous(_) => {
+                    return Err(format!(
+                        "Ambiguous monster glow {authored} in the selected build's {archive}"
+                    ));
+                }
+            }
+        }
+    }
     Ok(None)
 }
 
+/// Read the authored CryEngine CrChF / MtlName (0x08021014) reference.
+/// The live GPU viewer already accepts this chunk, but CDF FBX export
+/// previously ignored it and rejected multi-subset parts such as Emet's
+/// `oh` attachment even with the original shared MTL present.
+fn compiled_material_names(source: &[u8]) -> Result<Vec<String>, String> {
+    if source.len() < 32 || source.get(..5) != Some(b"CrChF") {
+        return Ok(Vec::new());
+    }
+    let value = |offset: usize| -> Option<usize> {
+        Some(u32::from_le_bytes(source.get(offset..offset + 4)?.try_into().ok()?) as usize)
+    };
+    let (Some(count), Some(start)) = (value(8), value(12)) else {
+        return Ok(Vec::new());
+    };
+    if count == 0
+        || count > 10_000
+        || start < 16
+        || count
+            .checked_mul(16)
+            .and_then(|n| start.checked_add(n))
+            .is_none_or(|end| end > source.len())
+    {
+        return Ok(Vec::new());
+    }
+    let mut names = Vec::new();
+    for i in 0..count {
+        let at = start + i * 16;
+        if value(at) != Some(0x08021014) {
+            continue;
+        }
+        let (Some(len), Some(offset)) = (value(at + 8), value(at + 12)) else {
+            continue;
+        };
+        if len < 132
+            || offset < start + count * 16
+            || offset.checked_add(len).is_none_or(|end| end > source.len())
+        {
+            continue;
+        }
+        let Some(field) = source.get(offset..offset + 128) else {
+            continue;
+        };
+        let Some(end) = field.iter().position(|byte| *byte == 0) else {
+            continue;
+        };
+        let Ok(authored) = std::str::from_utf8(&field[..end]) else {
+            continue;
+        };
+        let authored = authored.trim().replace('\\', "/");
+        if authored.is_empty() {
+            continue;
+        }
+        let authored = if authored.to_ascii_lowercase().ends_with(".mtl") {
+            authored
+        } else {
+            format!("{authored}.mtl")
+        };
+        // Unlike a folder-wide filename search this is the exact authored
+        // reference inside this particular render mesh.
+        if !names
+            .iter()
+            .any(|name: &String| name.eq_ignore_ascii_case(&authored))
+        {
+            names.push(authored);
+        }
+    }
+    Ok(names)
+}
+
+/// Locate an exact MTL from this source or its verified same-build library.
+/// Never accept similarly named files outside the authored virtual path.
+fn exact_authored_mtl(
+    root: &Path,
+    inventory: &Inventory,
+    candidate: &str,
+    imported: Option<&ImportedTextureScope>,
+) -> Result<Option<(String, PathBuf)>, String> {
+    match resolve_virtual(inventory, candidate) {
+        AssetResolution::Found(relative) => {
+            let path = input_file(root, &relative)?;
+            return Ok(Some((relative, path)));
+        }
+        AssetResolution::Ambiguous(_) => {
+            return Err(format!("Ambiguous original material reference {candidate}"));
+        }
+        AssetResolution::Missing => {}
+    }
+    let Some(scope) = imported else {
+        return Ok(None);
+    };
+    // Cross-PAK reference only when the source archive is bound to a
+    // single build: do not mix Stage 2, 2012 or other PAKs.
+    let Some(build) = scope.build.as_deref() else {
+        return Ok(None);
+    };
+    match resolve_imported_reference(&scope.root, candidate, Some(build))
+        .map_err(|e| format!("Cannot resolve original MTL {candidate}: {e}"))?
+    {
+        LibraryReferenceStatus::Found(hit) => {
+            let path = PathBuf::from(hit.absolute_path);
+            let meta = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+            let real = fs::canonicalize(&path).map_err(|e| e.to_string())?;
+            let library = fs::canonicalize(&scope.root).map_err(|e| e.to_string())?;
+            if !meta.file_type().is_file()
+                || meta.len() == 0
+                || meta.len() > MAX_SOURCE
+                || !real.starts_with(library)
+            {
+                return Err(format!("Unsafe indexed material {candidate}"));
+            }
+            Ok(Some((candidate.to_owned(), real)))
+        }
+        LibraryReferenceStatus::Missing => Ok(None),
+        LibraryReferenceStatus::Ambiguous(_) => {
+            Err(format!("Ambiguous same-build original MTL {candidate}"))
+        }
+    }
+}
+
 /// A CDF can bind Scorpid3_Rig.chr while its original MTL is
-/// Scorpid3.mtl. Source attachment overrides outrank all fallbacks. For a
-/// true CryTek 0x745 source only, allow the historical owning variant and
-/// folder-specific material names; never search neighboring character MTLs.
+/// Scorpid3.mtl. Authored overrides outrank embedded MtlName, which outranks
+/// matching filenames. Never use a different character's material.
+#[cfg(test)]
 fn original_model_material(
     root: &Path,
     mesh: &Path,
     inventory: &Inventory,
     override_mtl: Option<&str>,
+) -> Result<Option<(String, PathBuf)>, String> {
+    original_model_material_with_scope(root, mesh, inventory, override_mtl, None)
+}
+
+fn original_model_material_with_scope(
+    root: &Path,
+    mesh: &Path,
+    inventory: &Inventory,
+    override_mtl: Option<&str>,
+    imported: Option<&ImportedTextureScope>,
 ) -> Result<Option<(String, PathBuf)>, String> {
     // Windows can spell an indexed temporary root with a \\?\\ prefix.
     // Compare canonical roots and meshes before producing virtual material paths.
@@ -455,6 +648,42 @@ fn original_model_material(
         .and_then(|name| name.to_str())
         .ok_or("Source mesh filename is not UTF-8")?;
     let mut paths = Vec::new();
+    if override_mtl.is_none() {
+        // Match the GPU viewer's MtlName precedence. These are original
+        // compiled references, not speculative adjacent-owner fallbacks.
+        let source = fs::symlink_metadata(&mesh).map_err(|e| e.to_string())?;
+        if source.file_type().is_file() && source.len() <= 16 * 1024 * 1024 {
+            let bytes = fs::read(&mesh).map_err(|e| e.to_string())?;
+            let authored = compiled_material_names(&bytes)?;
+            let mut hits = Vec::<(String, PathBuf)>::new();
+            for reference in authored {
+                let rooted = ["characters/", "objects/", "materials/", "levels/", "libs/"]
+                    .iter()
+                    .any(|prefix| reference.to_ascii_lowercase().starts_with(prefix));
+                let mut candidates = Vec::new();
+                if !rooted && !parent.is_empty() {
+                    candidates.push(format!("{parent}/{reference}"));
+                } else {
+                    candidates.push(reference);
+                }
+                for candidate in candidates {
+                    if let Some(found) = exact_authored_mtl(&root, inventory, &candidate, imported)?
+                        && !hits.iter().any(|(_, path)| path == &found.1)
+                    {
+                        hits.push(found);
+                    }
+                }
+            }
+            if hits.len() > 1 {
+                return Err(format!(
+                    "Several conflicting original compiled MtlName references for {virtual_mesh}"
+                ));
+            }
+            if let Some(hit) = hits.pop() {
+                return Ok(Some(hit));
+            }
+        }
+    }
     if let Some(authored) = override_mtl {
         let authored = authored.trim().replace('\\', "/");
         let rooted = ["characters/", "objects/", "materials/", "levels/", "libs/"]
@@ -462,8 +691,9 @@ fn original_model_material(
             .any(|prefix| authored.to_ascii_lowercase().starts_with(prefix));
         if !rooted && !parent.is_empty() {
             paths.push(format!("{parent}/{authored}"));
+        } else {
+            paths.push(authored);
         }
-        paths.push(authored);
     } else {
         paths.push(if parent.is_empty() {
             format!("{stem}.mtl")
@@ -500,17 +730,8 @@ fn original_model_material(
         if !tried.insert(candidate.to_ascii_lowercase()) {
             continue;
         }
-        match resolve_virtual(inventory, &candidate) {
-            AssetResolution::Found(relative) => {
-                let file = input_file(&root, &relative)?;
-                return Ok(Some((relative, file)));
-            }
-            AssetResolution::Missing => {}
-            AssetResolution::Ambiguous(_) => {
-                return Err(format!(
-                    "Conflicting original MTL for {virtual_mesh}: {candidate}"
-                ));
-            }
+        if let Some(found) = exact_authored_mtl(&root, inventory, &candidate, imported)? {
+            return Ok(Some(found));
         }
     }
     if let Some(authored) = override_mtl {
@@ -542,7 +763,7 @@ fn exact_single_slot_maps_with_scope(
 ) -> Result<AuthoredMaps, String> {
     let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
     let Some((candidate, material)) =
-        original_model_material(&root, mesh_path, inventory, override_mtl)?
+        original_model_material_with_scope(&root, mesh_path, inventory, override_mtl, imported)?
     else {
         return Ok(AuthoredMaps::default());
     };
@@ -616,7 +837,7 @@ fn exact_multi_slot_materials_with_scope(
 ) -> Result<Option<Vec<OriginalMaterialPng>>, String> {
     let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
     let Some((virtual_mtl, material)) =
-        original_model_material(&root, mesh_path, inventory, override_mtl)?
+        original_model_material_with_scope(&root, mesh_path, inventory, override_mtl, imported)?
     else {
         return Ok(None);
     };
@@ -697,7 +918,7 @@ fn apply_export_damage_layer(
         return Ok(0);
     }
     let Some((virtual_mtl, material)) =
-        original_model_material(root, original, inventory, material_hint)?
+        original_model_material_with_scope(root, original, inventory, material_hint, imported)?
     else {
         return Ok(0);
     };
@@ -983,12 +1204,12 @@ pub fn export_unified_cdf_fbx_options_with_glow(
     // rig all parts against that one original part-local skeleton instead
     // of allowing one part to use the 48-bone master and another 47.
     // No inference, fabricated joints or altered game file is involved.
-    let local_skeleton = if cdf_skeleton_bytes.starts_with(b"CryTek\\0\\0") {
+    let local_skeleton = if cdf_skeleton_bytes.starts_with(b"CryTek\0\0") {
         let mut candidate: Option<Vec<u8>> = None;
         let mut identical = true;
         for (_, path, _) in &parts {
             let raw = fs::read(path).map_err(|e| e.to_string())?;
-            if !raw.starts_with(b"CryTek\\0\\0") {
+            if !raw.starts_with(b"CryTek\0\0") {
                 identical = false;
                 break;
             }
@@ -1008,6 +1229,23 @@ pub fn export_unified_cdf_fbx_options_with_glow(
         None
     };
     let skeleton_bytes = local_skeleton.as_deref().unwrap_or(&cdf_skeleton_bytes);
+    // Real original 2012 Rocky attachments do not all share the same rest
+    // skeleton: two parts use 47 joints while the left arm has 48. Keep the
+    // per-part, verified local bind skeleton when shared retargeting fails.
+    // Blender will combine only identical rigs and retain distinct verified
+    // historical armatures within the same FBX. No joint is discarded, added
+    // or reassigned to make counts match.
+    let allow_distinct_historical_rigs = cdf_skeleton_bytes.starts_with(b"CryTek\0\0")
+        && parts.iter().all(|(_, path, _)| {
+            fs::File::open(path)
+                .and_then(|mut file| {
+                    use std::io::Read;
+                    let mut magic = [0u8; 8];
+                    file.read_exact(&mut magic)?;
+                    Ok(&magic == b"CryTek\0\0")
+                })
+                .unwrap_or(false)
+        });
     let motion = caf
         .map(|path| {
             let relative = path
@@ -1054,13 +1292,16 @@ pub fn export_unified_cdf_fbx_options_with_glow(
         .map_err(|e| format!("CDF part {name} cannot be rigged: {e}"))?;
         if let Some(previous) = bone_count
             && previous != verified.bone_count
+            && !allow_distinct_historical_rigs
         {
             return Err(format!(
                 "CDF part {name} has {} verified bones, but the preceding parts have {previous}; original rest skeletons are incompatible",
                 verified.bone_count
             ));
         }
-        bone_count = Some(verified.bone_count);
+        // For legitimate historical per-part rigs this represents the largest
+        // individual bone count, NOT an invented joint count for a new skeleton.
+        bone_count = Some(bone_count.unwrap_or(0).max(verified.bone_count));
         vertices = vertices
             .checked_add(verified.weighted_vertices)
             .ok_or("Vertex count overflow")?;
@@ -1268,7 +1509,8 @@ pub fn export_unified_cdf_fbx_options_with_glow(
         &manifest,
         serde_json::to_vec(&json!({
             "parts":entries, "include_animation":motion.is_some(),
-            "embed_textures":embed_textures
+            "embed_textures":embed_textures,
+            "allow_distinct_historical_armatures":allow_distinct_historical_rigs
         }))
         .map_err(|e| e.to_string())?,
     )
@@ -1308,6 +1550,35 @@ pub fn export_unified_cdf_fbx_options_with_glow(
             None => std::thread::sleep(Duration::from_millis(150)),
         }
     }
+    // Blender saves this only after importing the exported FBX back and
+    // revalidating every original armature, mesh binding, weight and UV.
+    // Never publish a success without this round-trip confirmation.
+    let verification: serde_json::Value = serde_json::from_slice(
+        &fs::read(work.path().join("verified-export.json"))
+            .map_err(|e| format!("Missing Blender original-rig validation: {e}"))?,
+    )
+    .map_err(|e| format!("Invalid Blender original-rig validation: {e}"))?;
+    let rig_count = verification["armatures"]
+        .as_u64()
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or("Missing verified FBX armature count")?;
+    let verified_bones = verification["bones"]
+        .as_u64()
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or("Missing verified FBX bone count")?;
+    let verified_parts = verification["parts"]
+        .as_u64()
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or("Missing verified FBX part count")?;
+    if rig_count == 0
+        || rig_count > parts.len()
+        || (!allow_distinct_historical_rigs && rig_count != 1)
+        || verified_bones < bone_count.unwrap_or(0)
+        || verified_bones > parts.len() * 1024
+        || verified_parts != parts.len()
+    {
+        return Err("Blender original-rig verification counts disagree with source parts".into());
+    }
     // Shares the same byte-for-byte, non-overwriting FBX publish path as
     // single-model exports. The old flow consumed the first 23 bytes while
     // verifying the signature and accidentally discarded them on copy.
@@ -1316,7 +1587,8 @@ pub fn export_unified_cdf_fbx_options_with_glow(
         original_skeleton: skeleton_ref,
         selected_skin_set: skin_set,
         parts: labels,
-        bones: bone_count.unwrap_or(0),
+        bones: verified_bones,
+        armatures: rig_count,
         weighted_vertices: vertices,
         diffuse_textured_parts,
         animations_embedded: motion.is_some(),
@@ -1362,6 +1634,189 @@ mod tests {
             Some(diffuse)
         );
         assert_eq!(fs::read(original).unwrap(), b"original binding");
+    }
+
+    /// Minimal validated CrChF MtlName record; uses the same compiled
+    /// material table structure recognized by the GPU viewer.
+    fn source_mesh_with_mtl_names(names: &[&str]) -> Vec<u8> {
+        let mut bytes = vec![0u8; 32 + names.len() * 16];
+        bytes[..5].copy_from_slice(b"CrChF");
+        bytes[8..12].copy_from_slice(&(names.len() as u32).to_le_bytes());
+        bytes[12..16].copy_from_slice(&32u32.to_le_bytes());
+        for (i, name) in names.iter().enumerate() {
+            assert!(name.len() < 127);
+            let at = 32 + i * 16;
+            let offset = bytes.len();
+            bytes[at..at + 4].copy_from_slice(&0x08021014u32.to_le_bytes());
+            bytes[at + 8..at + 12].copy_from_slice(&132u32.to_le_bytes());
+            bytes[at + 12..at + 16].copy_from_slice(&(offset as u32).to_le_bytes());
+            let mut name_record = vec![0u8; 132];
+            name_record[..name.len()].copy_from_slice(name.as_bytes());
+            bytes.extend_from_slice(&name_record);
+        }
+        bytes
+    }
+
+    #[test]
+    fn emet_offhand_part_uses_authored_mtl_name_before_same_stem() {
+        let source = tempfile::tempdir().unwrap();
+        let folder = source.path().join("characters/hunters/merc_emet");
+        fs::create_dir_all(&folder).unwrap();
+        // Emet's CDF attachment is named "oh", which is *not* the material
+        // filename. The original cooked mesh points at emet_3o.mtl.
+        let part = folder.join("oh.skinm");
+        fs::write(&part, source_mesh_with_mtl_names(&["emet_3o"])).unwrap();
+        fs::write(
+            folder.join("emet_3o.mtl"),
+            br#"<Material Name="Emet"><SubMaterials>
+               <Material Name="Body" Shader="Illum"/>
+               <Material Name="Equipment" Shader="Illum"/>
+               </SubMaterials></Material>"#,
+        )
+        .unwrap();
+        // This same-stem file is deliberately not the compiled source
+        // material; finding it first would silently assign wrong subset IDs.
+        fs::write(folder.join("oh.mtl"), br#"<Material Name="Wrong"/>"#).unwrap();
+        let inventory = crate::scan_directory(source.path()).unwrap();
+        let (virtual_name, file) = original_model_material(source.path(), &part, &inventory, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            virtual_name.to_ascii_lowercase(),
+            "characters/hunters/merc_emet/emet_3o.mtl"
+        );
+        assert_eq!(file, fs::canonicalize(folder.join("emet_3o.mtl")).unwrap());
+        let slots =
+            exact_multi_slot_materials_with_scope(source.path(), &part, &inventory, None, None)
+                .unwrap()
+                .unwrap();
+        assert_eq!(slots.len(), 2);
+        assert_eq!(slots[0].name, "Body");
+        assert_eq!(slots[1].name, "Equipment");
+        // Explicit per-attachment CDF material always wins over MtlName.
+        let (explicit, _) =
+            original_model_material(source.path(), &part, &inventory, Some("oh.mtl"))
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            explicit.to_ascii_lowercase(),
+            "characters/hunters/merc_emet/oh.mtl"
+        );
+    }
+
+    #[test]
+    fn emet_multi_slot_mtl_can_resolve_from_verified_same_build_pak() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("characters/hunters/merc_emet");
+        fs::create_dir_all(&folder).unwrap();
+        let part = folder.join("oh.skinm");
+        fs::write(&part, source_mesh_with_mtl_names(&["emet_3o"])).unwrap();
+        let inventory = crate::scan_directory(root.path()).unwrap();
+        let library = tempfile::tempdir().unwrap();
+        let archive_id = "11111111111111111111";
+        let archive = library
+            .path()
+            .join(format!("ui_characters.pak__{archive_id}"));
+        let virtual_mtl = "characters/hunters/merc_emet/emet_3o.mtl";
+        let mtl = archive.join("files").join(virtual_mtl);
+        fs::create_dir_all(mtl.parent().unwrap()).unwrap();
+        let xml = br#"<Material Name="Emet"><SubMaterials>
+            <Material Name="slot0" Shader="Illum"/>
+            <Material Name="slot1" Shader="Illum"/>
+            </SubMaterials></Material>"#;
+        fs::write(&mtl, xml).unwrap();
+        fs::write(
+            archive.join("asset-library.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version":1,"name":"ui_characters.pak",
+                "source":"C:/Game/ui_characters.pak",
+                "entries":[{"path":virtual_mtl,"bytes":xml.len()}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            library.path().join("build-collections.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version":1,
+                "builds":{"stage-two":{
+                    "label":"Stage 2",
+                    "members":{"11111111111111111111":{}}
+                }}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let scope = ImportedTextureScope {
+            root: library.path().to_path_buf(),
+            build: Some("Stage 2".into()),
+        };
+        let slots = exact_multi_slot_materials_with_scope(
+            root.path(),
+            &part,
+            &inventory,
+            None,
+            Some(&scope),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(slots.len(), 2);
+        assert_eq!(slots[0].name, "slot0");
+        assert_eq!(slots[1].name, "slot1");
+        let wrong_build = ImportedTextureScope {
+            root: library.path().to_path_buf(),
+            build: Some("Legacy 2012".into()),
+        };
+        assert!(
+            original_model_material_with_scope(
+                root.path(),
+                &part,
+                &inventory,
+                None,
+                Some(&wrong_build),
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn compiled_material_name_rejects_conflicts_without_borrowing_another_actor() {
+        let source = tempfile::tempdir().unwrap();
+        let folder = source.path().join("characters/hunters/merc_emet");
+        let other = source.path().join("characters/hunters/merc_other");
+        fs::create_dir_all(&folder).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        let part = folder.join("oh.skinm");
+        fs::write(&part, source_mesh_with_mtl_names(&["emet_3o"])).unwrap();
+        fs::write(other.join("emet_3o.mtl"), b"<Material/>").unwrap();
+        let inventory = crate::scan_directory(source.path()).unwrap();
+        assert!(
+            original_model_material(source.path(), &part, &inventory, None)
+                .unwrap()
+                .is_none()
+        );
+        fs::write(folder.join("emet_3o.mtl"), b"<Material/>").unwrap();
+        fs::write(folder.join("emet_alt.mtl"), b"<Material/>").unwrap();
+        fs::write(&part, source_mesh_with_mtl_names(&["emet_3o", "emet_alt"])).unwrap();
+        let inventory = crate::scan_directory(source.path()).unwrap();
+        assert!(
+            original_model_material(source.path(), &part, &inventory, None)
+                .unwrap_err()
+                .contains("conflicting")
+        );
+        assert!(
+            compiled_material_names(&source_mesh_with_mtl_names(&[
+                "characters\\hunters\\merc_emet\\emet_3o"
+            ]))
+            .unwrap()[0]
+                .ends_with("emet_3o.mtl")
+        );
+        assert!(
+            compiled_material_names(b"invalid legacy stream")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1569,6 +2024,132 @@ mod tests {
         assert_eq!(
             fs::canonicalize(selected).unwrap(),
             fs::canonicalize(stage_dds).unwrap()
+        );
+    }
+
+    #[test]
+    fn flat_monster_texture_paks_find_their_own_original_glow() {
+        // The real Grounder/Kraken TS PAK stores grounder_glow_diff.dds.0
+        // through .7 at its /files root, not in characters/monsters/grounder.
+        // The Grounder3 CDF stem therefore cannot serve as the sole prefix.
+        let temp = tempfile::tempdir().unwrap();
+        let source_root = temp.path().join("extracted");
+        let library = temp.path().join("library");
+        let foreign = library.join("characters_monsters_rocky_ts.pak__22222222222222222222");
+        let old = library.join("characters_monsters_grounder_ts.pak__33333333333333333333");
+        let cases = [
+            ("grounder", "grounder3", "grounder_glow_diff.dds.0"),
+            ("teleporter", "teleporter3", "teleporter_glow_diff.dds.0"),
+        ];
+        let mut stage_ids = serde_json::Map::new();
+        let mut legacy_ids = serde_json::Map::new();
+        for (index, (owner, cdf_name, texture)) in cases.iter().enumerate() {
+            let folder = source_root.join(format!("characters/monsters/{owner}"));
+            fs::create_dir_all(&folder).unwrap();
+            fs::write(folder.join(format!("{cdf_name}.cdf")), b"source cdf").unwrap();
+
+            let id = format!("{:020}", index + 1);
+            let archive = library.join(format!("characters_monsters_{owner}_ts.pak__{id}"));
+            let name = format!("characters_monsters_{owner}_ts.pak");
+            let image = archive.join("files").join(texture);
+            fs::create_dir_all(image.parent().unwrap()).unwrap();
+            fs::write(&image, b"low fragment").unwrap();
+            // High numbered fragments are part of the same source texture.
+            for mip in 1..=7 {
+                fs::write(
+                    image.with_file_name(format!("{owner}_glow_diff.dds.{mip}")),
+                    b"hi",
+                )
+                .unwrap();
+            }
+            let entries = (0..=7)
+                .map(|n| {
+                    serde_json::json!({
+                        "path": format!("{owner}_glow_diff.dds.{n}"),
+                        "bytes": if n == 0 { 12 } else { 2 }
+                    })
+                })
+                .collect::<Vec<_>>();
+            fs::write(
+                archive.join("asset-library.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version":1, "name":name, "source":"C:/test/game.pak", "entries":entries
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            stage_ids.insert(id, serde_json::json!({}));
+        }
+        // Same name from another actor's TS archive and a different build
+        // must NOT be silently used, even though the filename is identical.
+        for (directory, archive_name, id) in [
+            (
+                &foreign,
+                "characters_monsters_rocky_ts.pak",
+                "22222222222222222222",
+            ),
+            (
+                &old,
+                "characters_monsters_grounder_ts.pak",
+                "33333333333333333333",
+            ),
+        ] {
+            fs::create_dir_all(directory.join("files")).unwrap();
+            fs::write(directory.join("files/grounder_glow_diff.dds.0"), b"wrong").unwrap();
+            fs::write(
+                directory.join("asset-library.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version":1,"name":archive_name,"source":"C:/test/other.pak",
+                    "entries":[{"path":"grounder_glow_diff.dds.0","bytes":5}]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            if id == "33333333333333333333" {
+                legacy_ids.insert(id.into(), serde_json::json!({}));
+            } else {
+                stage_ids.insert(id.into(), serde_json::json!({}));
+            }
+        }
+        fs::write(
+            library.join("build-collections.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version":1,
+                "builds":{
+                    "stage-two":{"label":"Stage 2","members":stage_ids},
+                    "legacy":{"label":"Legacy","members":legacy_ids}
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let inventory = crate::scan_directory(&source_root).unwrap();
+        for (owner, stem, texture) in cases {
+            let cdf = source_root.join(format!("characters/monsters/{owner}/{stem}.cdf"));
+            assert!(monster_glow_path(&cdf, &inventory).unwrap().is_none());
+            let result =
+                monster_glow_path_with_library(&cdf, &inventory, Some(&library), Some("Stage 2"))
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(result.file_name().unwrap(), texture);
+            assert!(
+                result
+                    .to_string_lossy()
+                    .contains(&format!("characters_monsters_{owner}_ts.pak"))
+            );
+        }
+        let grounder = source_root.join("characters/monsters/grounder/grounder3.cdf");
+        // Legacy has an identically named path, but source-build selection
+        // keeps it distinct from Stage 2.
+        let legacy =
+            monster_glow_path_with_library(&grounder, &inventory, Some(&library), Some("Legacy"))
+                .unwrap()
+                .unwrap();
+        assert!(legacy.to_string_lossy().contains("33333333333333333333"));
+        assert!(
+            monster_glow_path_with_library(&grounder, &inventory, Some(&library), None)
+                .unwrap()
+                .is_none()
         );
     }
 

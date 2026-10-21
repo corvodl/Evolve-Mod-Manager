@@ -487,6 +487,13 @@ pub fn read_static_cdf_assembly_with_kala_state(
     let overrides = validated_equipment_overrides(&definition, library, requested)
         .map_err(AssemblyError::Incomplete)?;
     let (skin_set, selected) = select_attachments_with_kala_state(&definition, kala_state)?;
+    let selected = crate::character_emet::choose(
+        &cdf_location.to_string_lossy(),
+        &definition,
+        selected,
+        requested,
+    )
+    .map_err(AssemblyError::Incomplete)?;
     let mut notes = Vec::new();
     // Static skinned mesh geometry can be rendered without a .chr skeleton.
     // Lack of a verified bind pose must only disable rigid bone sockets and

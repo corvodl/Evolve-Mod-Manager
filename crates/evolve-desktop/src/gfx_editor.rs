@@ -1,6 +1,7 @@
 //! Isolated GFX editing sessions, following the private manager's FFDec flow.
 //! No operation modifies original PAKs, libraries or the game installation.
 use crate::gfx_dependencies::{self, Dependency};
+use crate::gfx_external_textures;
 use crate::modding_projects::{self, ProjectRow};
 use evolve_core::gfx::{GfxInfo, MAX_SOURCE, inspect_gfx};
 use evolve_core::gfx_layout::{LayoutEdit, StaticLayer, edit_first_frame, static_layers};
@@ -28,6 +29,8 @@ pub struct Session {
     pub info: GfxInfo,
     pub layers: Vec<StaticLayer>,
     pub dependencies: Vec<Dependency>,
+    pub library_root: Option<PathBuf>,
+    pub source_build: Option<String>,
     pub edits: usize,
     pub applied: bool,
 }
@@ -148,6 +151,8 @@ pub fn create(
         original_sha: digest(&bytes),
         layers: static_layers(&bytes).map_err(|e| e.to_string())?,
         dependencies,
+        library_root: imported_library,
+        source_build,
         info,
         edits: 0,
         applied: false,
@@ -505,6 +510,19 @@ pub fn run(
         Action::PreviewFrame => {
             let output = root.join("preview");
             fs::create_dir_all(&output).map_err(|e| e.to_string())?;
+            // FFDec cannot natively resolve CryEngine/Scaleform tag 1008/1009
+            // DDS atlas characters. Restore those characters only in a
+            // temporary render copy, using source-build-qualified UI_Assets.
+            let original = fs::read(&session.editable).map_err(|e| e.to_string())?;
+            let textures = gfx_external_textures::prepare_preview(
+                &original,
+                &session.relative,
+                &session.source,
+                session.library_root.as_deref(),
+                session.source_build.as_deref(),
+            )?;
+            let render_file = root.join("textured-preview.gfx");
+            fs::write(&render_file, &textures.movie).map_err(|e| e.to_string())?;
             let args = vec![
                 "-select".into(),
                 "1".into(),
@@ -515,7 +533,7 @@ pub fn run(
                 "-export".into(),
                 "frame".into(),
                 output.display().to_string(),
-                session.editable.display().to_string(),
+                render_file.display().to_string(),
             ];
             run_cli(configured, &root, &args)?;
             let pictures = fs::read_dir(&output)
@@ -532,8 +550,15 @@ pub fn run(
             }
             regular(&pictures[0], 70 * 1024 * 1024)?;
             preview = Some(fs::read(&pictures[0]).map_err(|e| e.to_string())?);
-            "FFDec rendered the first static frame. Runtime ActionScript is not executed."
-                .to_owned()
+            format!(
+                "FFDec static frame: {} verified UI_Assets bitmap tiles; {} unresolved/skipped. {} Runtime ActionScript is not executed.",
+                textures.converted,
+                textures.skipped,
+                textures
+                    .ui_data
+                    .as_deref()
+                    .unwrap_or("No associated same-build UI_Data element."),
+            )
         }
     };
     Ok((session, message, preview))

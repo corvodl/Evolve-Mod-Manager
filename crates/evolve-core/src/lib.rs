@@ -7,6 +7,7 @@ pub mod batch;
 pub mod caf_layers;
 pub mod cdf;
 pub mod character_assembly;
+pub mod character_emet;
 pub mod character_equipment;
 pub mod character_folder_fbx;
 pub mod character_unified_fbx;
@@ -59,6 +60,7 @@ pub use character_assembly::{
     read_static_cdf_assembly_with_equipment, read_static_cdf_assembly_with_imported,
     read_static_cdf_assembly_with_kala_state,
 };
+pub use character_emet::{EmetOptions, discover as discover_emet_options};
 pub use character_equipment::{
     EquipmentChoice, EquipmentOverrides, EquipmentSlot, discover_equipment,
     validated_equipment_overrides,

@@ -60,6 +60,10 @@ jobs:
           Copy-Item -LiteralPath "README.md" -Destination "$folder/README.md"
           Compress-Archive -Path (Join-Path $folder '*') -DestinationPath "dist/EvolveModManager-Portable-$env:VERSION.zip" -CompressionLevel Optimal -Force
 
+      - name: Fetch and verify optional GFX editor tools
+        shell: pwsh
+        run: ./scripts/package-gfx-tools.ps1
+
       - name: Build Windows installer
         shell: pwsh
         run: |
@@ -100,6 +104,11 @@ jobs:
             "Future in-app installer updates work from the new protected location; updater deliberately rejects reinstalling an elevated executable into the old user-writable folder.",
             "Stage 2 monster Full Armor Glow is now simply Glow. It searches the selected source-build Asset Library across PAKs for the original optional glow DDS; switching off removes only that overlay and retains authored Emittance and diffuse.",
             "Kala Armor Reducer extra emissive coefficient adjusted from 4x to 2x to match its previously verified 0.5x slider appearance at the new default 1x.",
+            "Nightly 15: includes PR #20 experimental GFX viewer and editing work: source-build UI_Assets DDS atlas reconstruction, native GFX layout editing, external Ruffle ActionScript preview, and FFDec integration.",
+            "Settings > Integrations now detects Ruffle and FFDec or offers explicit verified installation; installer adds optional preselected GFX tools. FFDec may require Java. Portable ZIP excludes bundled third-party tools.",
+            "Stage 2 monster Glow lookup includes exact owning _ts.pak split DDS files (including Kraken/Grounder); 2012 Rocky CDF FBX exporter preserves multiple original 47/48-bone armatures without inventing weights.",
+            "Emet CDF model options include authored face attachment selection and Respawn Beacon visibility where present, with options carried into CDF FBX export; original MtlName references are used for authored multi-subset materials.",
+            "These experimental features require source assets and some live-game verification. Ruffle cannot recreate CryEngine native Scaleform callbacks.",
             "Portable users remain portable; application updates never modify game files.",
             "Game-exact HDR bloom is not yet reproduced.",
             "Installer options: desktop shortcut, Start Menu shortcut, launch when finished.",

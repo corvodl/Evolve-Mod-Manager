@@ -1,5 +1,6 @@
-"""Merge individually verified rigged GLBs into one armature-bound FBX.
-Only exact duplicate rest skeletons may be combined. No inferred weights or UVs.
+"""Combine original rigged GLBs into one character FBX.
+Only identical rest skeletons are merged. Incompatible verified historical
+armatures remain separate in the same FBX, preserving every original joint.
 """
 import bpy
 import json
@@ -21,13 +22,18 @@ def same_matrix(a, b, tolerance=0.0002):
 def same_skeleton(first, second):
     a = {b.name: b for b in first.data.bones}
     c = {b.name: b for b in second.data.bones}
-    check(a.keys() == c.keys() and bool(a), "source bone names differ")
-    check(same_matrix(first.matrix_world, second.matrix_world), "armature basis differs")
+    if not a or a.keys() != c.keys():
+        return False
+    if not same_matrix(first.matrix_world, second.matrix_world):
+        return False
     for name, bone in a.items():
         other = c[name]
-        check((bone.parent.name if bone.parent else "") ==
-              (other.parent.name if other.parent else ""), "bone parent differs: " + name)
-        check(same_matrix(bone.matrix_local, other.matrix_local), "bind pose differs: " + name)
+        if ((bone.parent.name if bone.parent else "") !=
+                (other.parent.name if other.parent else "")):
+            return False
+        if not same_matrix(bone.matrix_local, other.matrix_local):
+            return False
+    return True
 
 def referenced_bone_display_shapes(armatures):
     """Only hide shapes actually referenced by pose bones, never a genuine mesh
@@ -155,13 +161,18 @@ def main():
     parts = manifest.get("parts")
     animate = manifest.get("include_animation")
     embed_textures = manifest.get("embed_textures", True)
-    check(type(embed_textures) is bool, "invalid embedded-texture option")
+    distinct_historical = manifest.get("allow_distinct_historical_armatures", False)
+    check(type(embed_textures) is bool and type(distinct_historical) is bool,
+          "invalid original rigged export options")
     check(isinstance(parts, list) and 1 <= len(parts) <= 128 and type(animate) is bool,
           "invalid or excessive verified parts")
+    check(not (distinct_historical and animate),
+          "unconverted historical CAF cannot be applied to separate 2012 skeletons")
 
     bpy.ops.wm.read_factory_settings(use_empty=True)
-    master = None
+    armatures = []
     meshes = []
+    mesh_armatures = {}
     source_uv_bounds = []
     source_uv_loops = [[], []]
     source_weighted_vertices = 0
@@ -180,38 +191,48 @@ def main():
         check(len(arms) == 1 and 1 <= len(imported) <= 128,
               "part has no original rig or too many material fragments")
         arm = arms[0]
-        if master is None:
-            master = arm
-        else:
-            same_skeleton(master, arm)
+        matching = next((rig for rig in armatures if same_skeleton(rig, arm)), None)
+        if matching is None:
+            check(not armatures or distinct_historical,
+                  "source bone identities, hierarchy or bind poses differ")
+            matching = arm
+            matching.name = f"EvolveRig_{len(armatures):03}"
+            armatures.append(matching)
         for sub, mesh in enumerate(sorted(imported, key=lambda item: item.name)):
             modifier, weighted, uv_bounds = verify_mesh(mesh, arm)
             source_weighted_vertices += weighted
             source_uv_bounds.append(uv_bounds)
             append_uv_loops(mesh, source_uv_loops)
-            if master != arm:
+            if matching != arm:
                 matrix = mesh.matrix_world.copy()
-                modifier.object = master
+                modifier.object = matching
                 if mesh.parent == arm:
-                    mesh.parent = master
+                    mesh.parent = matching
                     mesh.matrix_world = matrix
             # Multi-material glTF import may create multiple source fragments.
             # Keep all of them bound to the verified common original armature.
             mesh.name = name if len(imported) == 1 else f"{name}_material_{sub:03}"
             meshes.append(mesh)
-        if master != arm:
+            mesh_armatures[mesh] = matching
+        if matching != arm:
             bpy.data.objects.remove(arm, do_unlink=True)
 
-    check(master is not None and len(meshes) >= len(parts), "incomplete assembly")
+    check(bool(armatures) and len(meshes) >= len(parts), "incomplete assembly")
     if embed_textures:
         check(diffuse_image_count(meshes) > 0,
               "selected embedded textures but no original diffuse image reached Blender")
         verify_part_diffuse_coverage(meshes, parts, "GLB to Blender")
     check(len(meshes) <= 1024, "unbounded material fragment count")
-    bone_count = len(master.data.bones)
+    bone_count = sum(len(arm.data.bones) for arm in armatures)
+    # Keep primitive strings: read_factory_settings destroys the original
+    # Blender objects before validation of the re-imported FBX.
+    source_mesh_bindings = [(mesh.name, rig.name)
+                            for mesh, rig in mesh_armatures.items()]
     source_hierarchy = {
-        bone.name: (bone.parent.name if bone.parent else None)
-        for bone in master.data.bones
+        arm.name: {
+            bone.name: (bone.parent.name if bone.parent else None)
+            for bone in arm.data.bones
+        } for arm in armatures
     }
     if not animate:
         for obj in bpy.data.objects:
@@ -219,11 +240,12 @@ def main():
         for action in list(bpy.data.actions):
             bpy.data.actions.remove(action)
     bpy.ops.object.select_all(action="DESELECT")
-    master.select_set(True)
+    for rig in armatures:
+        rig.select_set(True)
     for mesh in meshes:
         mesh.select_set(True)
-        verify_mesh(mesh, master)
-    bpy.context.view_layer.objects.active = master
+        verify_mesh(mesh, mesh_armatures[mesh])
+    bpy.context.view_layer.objects.active = armatures[0]
     bpy.ops.export_scene.fbx(
         filepath=str(destination), use_selection=True,
         object_types={"ARMATURE", "MESH"}, add_leaf_bones=False,
@@ -238,14 +260,17 @@ def main():
     result_arms = [o for o in bpy.data.objects if o.type == "ARMATURE"]
     result_meshes = actual_meshes(bpy.data.objects, result_arms)
     display_shapes = referenced_bone_display_shapes(result_arms)
-    check(len(result_arms) == 1 and len(result_arms[0].data.bones) == bone_count,
-          "round-trip lost original skeleton")
+    check(len(result_arms) == len(armatures)
+          and sum(len(arm.data.bones) for arm in result_arms) == bone_count,
+          "FBX round-trip lost original historical armatures or their bones")
     target_hierarchy = {
-        bone.name: (bone.parent.name if bone.parent else None)
-        for bone in result_arms[0].data.bones
+        arm.name: {
+            bone.name: (bone.parent.name if bone.parent else None)
+            for bone in arm.data.bones
+        } for arm in result_arms
     }
     check(source_hierarchy == target_hierarchy,
-          "FBX round-trip changed the original bone hierarchy")
+          "FBX round-trip changed a source bone identity or hierarchy")
     check(len(result_meshes) >= len(parts), "round-trip lost character parts")
     check(len(result_meshes) <= 2048, "round-trip produced unbounded material fragments")
     if embed_textures:
@@ -258,10 +283,22 @@ def main():
     target_bounds = []
     target_uv_loops = [[], []]
     for mesh in result_meshes:
-        _, weighted, bounds = verify_mesh(mesh, result_arms[0])
+        modifiers = [mod for mod in mesh.modifiers if mod.type == "ARMATURE"]
+        check(len(modifiers) == 1 and modifiers[0].object in result_arms,
+              "FBX round-trip lost original per-part armature association")
+        _, weighted, bounds = verify_mesh(mesh, modifiers[0].object)
         imported_weighted_vertices += weighted
         target_bounds.append(bounds)
         append_uv_loops(mesh, target_uv_loops)
+    for part_name, original_rig in source_mesh_bindings:
+        matches = [mesh for mesh in result_meshes
+                   if mesh_belongs_to_part(mesh, part_name)]
+        check(bool(matches), "FBX round-trip lost the part " + part_name)
+        for mesh in matches:
+            associated = [mod.object.name for mod in mesh.modifiers
+                          if mod.type == "ARMATURE"]
+            check(associated == [original_rig],
+                  "FBX round-trip rebound original mesh to another part's skeleton")
     check(imported_weighted_vertices > 0 and source_weighted_vertices > 0,
           "round-trip lost original bone weights")
     # FBX may split original vertices at UV seams. Validate the global authored
@@ -275,11 +312,14 @@ def main():
               and abs(original_hi - imported_hi) <= 0.002,
               "FBX round-trip changed original UV0 bounds")
     verify_uv_loop_distributions(source_uv_loops, target_uv_loops)
-    print(json.dumps({"parts": len(parts), "bones": bone_count,
+    verified = {"parts": len(parts), "armatures": len(result_arms), "bones": bone_count,
                       "meshes": len(result_meshes), "display_shapes_excluded": len(display_shapes),
                       "weighted_vertices": imported_weighted_vertices,
                       "uv_loops": len(target_uv_loops[0]),
-                      "bytes": destination.stat().st_size}))
+                      "bytes": destination.stat().st_size}
+    (manifest_path.parent / "verified-export.json").write_text(
+        json.dumps(verified), encoding="utf-8")
+    print(json.dumps(verified))
 
 if __name__ == "__main__":
     try:

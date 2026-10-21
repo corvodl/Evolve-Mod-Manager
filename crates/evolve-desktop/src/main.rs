@@ -13,10 +13,14 @@ mod crash_diagnostics;
 mod design;
 mod developer_auth;
 mod explorer_tree;
+mod gfx_bundled_tools;
 mod gfx_dependencies;
 mod gfx_editor;
+mod gfx_external_textures;
+mod gfx_interactive;
 mod gfx_layout_canvas;
 mod gfx_live_inspector;
+mod gfx_tool_install;
 mod launcher_bridge;
 mod level_workspace;
 mod menu_popup;
@@ -176,6 +180,11 @@ struct State {
     gfx_active: bool,
     gfx_busy: bool,
     gfx_preview: Option<image::Handle>,
+    gfx_interactive_open: bool,
+    gfx_interactive_running: Option<gfx_interactive::RunningPreview>,
+    gfx_interactive_status: String,
+    gfx_install_busy: bool,
+    gfx_install_status: String,
     gfx_resource: usize,
     gfx_status: String,
     gfx_layout_open: bool,
@@ -289,6 +298,7 @@ struct State {
     viewer_sidebar_active: ViewerSidebarTab,
     equipment_source: Option<PathBuf>,
     equipment_slots: Vec<EquipmentSlot>,
+    emet_options: Option<evolve_core::EmetOptions>,
     equipment_overrides: EquipmentOverrides,
     kala_tubing: KalaTubingState,
     full_armor_glow: bool,
@@ -1152,15 +1162,13 @@ impl Operation {
                                     .to_string_lossy()
                                     .replace('\\', "/")
                                     .to_ascii_lowercase();
-                                let owner = cdf_dir
-                                    .find("characters/monsters/")
-                                    .map(|position| &cdf_dir[position..])
-                                    .ok_or("Selected CDF is not a monster")?;
+                                let owner = monster_owner_prefix(&cdf_dir)
+                                    .ok_or("Selected CDF is not within an original monster folder")?;
                                 let mut mapped = 0usize;
                                 let mut derived = HashMap::<usize, Arc<::image::RgbaImage>>::new();
                                 for (part, surface) in report.source_parts.iter().zip(surfaces.iter_mut()) {
                                     let binding = part.binding.replace('\\', "/").to_ascii_lowercase();
-                                    if surface.visible && binding.contains(owner)
+                                    if surface.visible && binding.contains(&owner)
                                         && let Some(base) = surface.diffuse.as_ref()
                                     {
                                         let key = Arc::as_ptr(base) as usize;
@@ -1178,8 +1186,11 @@ impl Operation {
                                         mapped += 1;
                                     }
                                 }
+                                let filename = texture.file_name()
+                                    .map(|name| name.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| "verified monster DDS".into());
                                 warnings.push(format!(
-                                    "Glow: {mapped} source-verified overlay sections (original Emittance and GlowAmount preserved)"
+                                    "Glow: {mapped} owner-matched overlay sections from {filename} (original Emittance and GlowAmount preserved)"
                                 ));
                             }
                             Err(error) => warnings.push(format!(
@@ -1188,7 +1199,11 @@ impl Operation {
                             }
                         }
                         Ok(None) => warnings.push(
-                            "Glow: no source-verified variant DDS found in the selected Asset Library/build; original emissive materials remain visible".into(),
+                            if build.is_none() && imported.is_some() {
+                                "Glow: select the source build (Stage 2) to resolve flat monster *_ts.pak textures; original emissive materials remain visible".into()
+                            } else {
+                                "Glow: no original variant DDS found in this monster's source folder or same-build texture PAK; original emissive materials remain visible".into()
+                            },
                         ),
                         Err(error) => warnings.push(format!(
                             "Glow source could not be uniquely resolved: {error}; retaining original material emission"
@@ -1390,6 +1405,8 @@ enum Message {
     ViewerSidebarAnimations(bool),
     ViewerSidebarSelect(ViewerSidebarTab),
     ViewerSidebarClose(ViewerSidebarTab),
+    ViewerEmetFace(String),
+    ViewerEmetBeacon(bool),
     ViewerEquip(String, String),
     ViewerKalaTubingState(KalaTubingState),
     ViewerToggleMonsterGlow,
@@ -1430,6 +1447,15 @@ enum Message {
     GfxConfigChanged(String),
     GfxPickBackend,
     GfxBackendPicked(Option<PathBuf>),
+    GfxRuffleConfigChanged(String),
+    GfxPickRuffle,
+    GfxRufflePicked(Option<PathBuf>),
+    GfxToggleInteractive,
+    GfxRunInteractive,
+    GfxInteractiveStarted(Result<gfx_interactive::RunningPreview, String>),
+    GfxStopInteractive,
+    GfxInstallTool(gfx_tool_install::Tool),
+    GfxToolInstalled(gfx_tool_install::Tool, Result<PathBuf, String>),
     GfxSelectResource(usize),
     GfxToggleLayout,
     GfxToggleLayoutRaster,
@@ -2016,6 +2042,23 @@ fn selected_stage_target(state: &State) -> Result<String, String> {
 /// Identify original historical 2012 geometry by its verified CryTek
 /// 0x745 render headers, not a directory name (Goliath and Rocky exist in
 /// multiple builds). Read only 16 bytes from each already-verified source.
+/// Derive the exact monster's texture/mesh namespace, not an arbitrary
+/// substring of a nested CDF folder or a similarly named neighbor. This is
+/// also used to constrain optional Stage 2 glow overlays to their owner.
+fn monster_owner_prefix(virtual_cdf: &str) -> Option<String> {
+    let normal = virtual_cdf.replace('\\', "/").to_ascii_lowercase();
+    let (_, rest) = normal.split_once("characters/monsters/")?;
+    let folder = rest.split('/').next()?;
+    if folder.is_empty()
+        || !folder
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+    {
+        return None;
+    }
+    Some(format!("characters/monsters/{folder}/"))
+}
+
 fn historical_2012_cdf(report: &AssemblyReport) -> bool {
     use std::io::Read;
     !report.geometry_parts.is_empty()
@@ -2044,6 +2087,7 @@ fn clear_viewer_asset(state: &mut State) {
     state.cdf_report = None;
     state.equipment_source = None;
     state.equipment_slots.clear();
+    state.emet_options = None;
     state.equipment_overrides.clear();
     state.kala_tubing = KalaTubingState::Banshee;
     state.full_armor_glow = false;
@@ -3058,6 +3102,50 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.viewer_sidebar_active = ViewerSidebarTab::Equipment;
             return update(state, Message::ViewerPreviewStaticCdf);
         }
+        Message::ViewerEmetFace(face) => {
+            if state.busy {
+                return Task::none();
+            }
+            let Some(options) = state.emet_options.as_ref() else {
+                state.status = "Emet expressions require the original Emet 3P CDF.".into();
+                return Task::none();
+            };
+            if face != evolve_core::character_emet::NO_FACE
+                && !options.faces.iter().any(|name| name == &face)
+            {
+                state.status = "Face is not present in Emet's authored CDF.".into();
+                return Task::none();
+            }
+            state
+                .equipment_overrides
+                .insert(evolve_core::character_emet::FACE.into(), face);
+            state.viewer_sidebar_active = ViewerSidebarTab::Equipment;
+            return update(state, Message::ViewerPreviewStaticCdf);
+        }
+        Message::ViewerEmetBeacon(show) => {
+            if state.busy {
+                return Task::none();
+            }
+            if !state
+                .emet_options
+                .as_ref()
+                .is_some_and(|options| !options.beacons.is_empty())
+            {
+                state.status = "No authored Respawn Beacon attachment in Emet's CDF.".into();
+                return Task::none();
+            }
+            state.equipment_overrides.insert(
+                evolve_core::character_emet::BEACON.into(),
+                (if show {
+                    evolve_core::character_emet::BEACON_ON
+                } else {
+                    evolve_core::character_emet::BEACON_OFF
+                })
+                .into(),
+            );
+            state.viewer_sidebar_active = ViewerSidebarTab::Equipment;
+            return update(state, Message::ViewerPreviewStaticCdf);
+        }
         Message::ViewerEquip(slot, binding) => {
             if state.busy {
                 state.status =
@@ -3627,9 +3715,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.damage_blend_percent = 0;
                 state.damage_blend_enabled = false;
                 state.equipment_source = Some(source.clone());
-                state.equipment_slots = read_cdf(&source)
-                    .map(|cdf| discover_equipment(&cdf, inventory))
+                let definition = read_cdf(&source).ok();
+                state.equipment_slots = definition
+                    .as_ref()
+                    .map(|cdf| discover_equipment(cdf, inventory))
                     .unwrap_or_default();
+                state.emet_options = definition.as_ref().and_then(|cdf| {
+                    evolve_core::discover_emet_options(&source.to_string_lossy(), cdf)
+                });
             }
             crash_diagnostics::record("cdf_preview_selected", &entry.relative_path);
             state.cdf_base_surfaces = None;
@@ -4014,6 +4107,141 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 );
             }
         }
+        Message::GfxInstallTool(tool) => {
+            if state.gfx_install_busy {
+                return Task::none();
+            }
+            let already = match tool {
+                gfx_tool_install::Tool::Ffdec => {
+                    gfx_bundled_tools::valid_ffdec(&state.preferences.ffdec_executable).is_some()
+                }
+                gfx_tool_install::Tool::Ruffle => {
+                    gfx_bundled_tools::valid_ruffle(&state.preferences.ruffle_executable).is_some()
+                }
+            };
+            if already {
+                state.gfx_install_status = format!("{} is already configured.", tool.name());
+                return Task::none();
+            }
+            state.gfx_install_busy = true;
+            state.gfx_install_status = format!(
+                "Downloading and verifying {} from its pinned official release...",
+                tool.name(),
+            );
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || gfx_tool_install::install(tool))
+                        .await
+                        .unwrap_or_else(|e| Err(format!("Installer worker failed: {e}")))
+                },
+                move |result| Message::GfxToolInstalled(tool, result),
+            );
+        }
+        Message::GfxToolInstalled(tool, result) => {
+            state.gfx_install_busy = false;
+            match result {
+                Ok(path) => {
+                    let path = path.to_string_lossy().into_owned();
+                    match tool {
+                        gfx_tool_install::Tool::Ffdec => state.preferences.ffdec_executable = path,
+                        gfx_tool_install::Tool::Ruffle => {
+                            state.preferences.ruffle_executable = path
+                        }
+                    }
+                    state.gfx_install_status = format!(
+                        "{} installed. {}",
+                        tool.name(),
+                        if tool == gfx_tool_install::Tool::Ffdec {
+                            "A compatible Java runtime may also be required."
+                        } else {
+                            "Interactive preview is ready to configure."
+                        },
+                    );
+                    persist_preferences(state);
+                }
+                Err(reason) => {
+                    state.gfx_install_status =
+                        format!("{} installation failed: {reason}", tool.name());
+                }
+            }
+        }
+        Message::GfxRuffleConfigChanged(path) => {
+            if path.len() <= 4096 {
+                state.preferences.ruffle_executable = path;
+                persist_preferences(state);
+            }
+        }
+        Message::GfxPickRuffle => {
+            return Task::perform(
+                async {
+                    tokio::task::spawn_blocking(|| native_export_picker("file"))
+                        .await
+                        .ok()
+                        .flatten()
+                },
+                Message::GfxRufflePicked,
+            );
+        }
+        Message::GfxRufflePicked(selected) => {
+            if let Some(path) = selected {
+                return update(
+                    state,
+                    Message::GfxRuffleConfigChanged(path.to_string_lossy().into()),
+                );
+            }
+        }
+        Message::GfxToggleInteractive => {
+            state.gfx_interactive_open = !state.gfx_interactive_open;
+            if state.gfx_interactive_open {
+                state.gfx_layout_open = false;
+            }
+        }
+        Message::GfxRunInteractive => {
+            if state.gfx_busy || state.busy {
+                state.gfx_interactive_status =
+                    "Wait for the current GFX operation to finish.".into();
+                return Task::none();
+            }
+            let Some(session) = state.gfx_session.clone() else {
+                state.gfx_interactive_status = "Open a GFX first.".into();
+                return Task::none();
+            };
+            state.gfx_interactive_running = None; // Kill an old preview before replacing files.
+            state.gfx_busy = true;
+            state.gfx_interactive_status =
+                "Preparing isolated UI_Assets and ActionScript preview...".into();
+            let executable = state.preferences.ruffle_executable.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        gfx_interactive::launch(&session, &executable)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Ruffle preview worker stopped: {e}")))
+                },
+                Message::GfxInteractiveStarted,
+            );
+        }
+        Message::GfxInteractiveStarted(result) => {
+            state.gfx_busy = false;
+            match result {
+                Ok(preview) => {
+                    state.gfx_interactive_status = format!(
+                        "Ruffle window launched · {} restored DDS tiles · {} skipped · {} missing imports. Original ActionScript executes where supported; Evolve callbacks are empty.",
+                        preview.restored_images, preview.skipped_images, preview.missing_imports,
+                    );
+                    state.gfx_interactive_running = Some(preview);
+                }
+                Err(error) => {
+                    state.gfx_interactive_status = format!("Interactive preview failed: {error}")
+                }
+            }
+        }
+        Message::GfxStopInteractive => {
+            state.gfx_interactive_running = None;
+            state.gfx_interactive_status =
+                "Stopped external Ruffle preview; no GFX project changes.".into();
+        }
         Message::GfxSelectResource(index) => {
             if state
                 .gfx_session
@@ -4087,6 +4315,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .then(|| p.source_build.clone())
                 })
             });
+            state.gfx_interactive_running = None;
             state.gfx_busy = true;
             state.gfx_active = true;
             state.gfx_preview = None;
@@ -4171,6 +4400,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.gfx_layout_show_raster = !state.gfx_layout_show_raster
         }
         Message::GfxToggleLayout => {
+            state.gfx_interactive_open = false;
             state.gfx_layout_open = !state.gfx_layout_open;
             if state.gfx_layout_open
                 && state.gfx_layout_selected.is_none()
@@ -4336,6 +4566,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             };
             let configured = state.preferences.ffdec_executable.clone();
+            if !matches!(
+                action,
+                gfx_editor::Action::PreviewFrame
+                    | gfx_editor::Action::ExportXml
+                    | gfx_editor::Action::ExportScripts
+            ) {
+                state.gfx_interactive_running = None;
+                state.gfx_interactive_status =
+                    "Staged movie changed; interactive preview closed.".into();
+            }
             // Any edit/undo/FFDec GUI handoff invalidates the old raster. Do
             // not paint a stale frame behind newly moved GFX placements.
             if !matches!(
@@ -7253,6 +7493,9 @@ fn initial_state() -> State {
     if let Ok(path) = blender_install::resolve_blender(&result.blender_path) {
         result.blender_path = path.to_string_lossy().into_owned();
     }
+    // Optional installer GFX tools are detected automatically. Any custom
+    // FFDec or Ruffle executable selected in settings takes precedence.
+    gfx_bundled_tools::detect_bundled(&mut result.preferences);
     result.library_root = result.preferences.asset_library_root.clone();
     result.assets_root = result.library_root.clone();
     if let Ok(executable) = std::env::current_exe()
@@ -7922,6 +8165,18 @@ mod project_edit_tests {
         state.cdf_surfaces = None;
         let _ = update(&mut state, Message::ViewerEmissiveStrengthChanged(4.0));
         assert_eq!(state.emissive_strength, 2.5);
+    }
+
+    #[test]
+    fn monster_glow_only_targets_its_exact_source_character_namespace() {
+        let owner =
+            monster_owner_prefix("Objects/characters/monsters/grounder/grounder3.cdf").unwrap();
+        assert_eq!(owner, "characters/monsters/grounder/");
+        assert!("objects/characters/monsters/grounder/grounder3.skinm".contains(&owner));
+        assert!(!"objects/characters/monsters/grounder_alt/grounder3.skinm".contains(&owner));
+        assert!(!"objects/characters/monsters/rocky/rocky3.skinm".contains(&owner));
+        assert!(monster_owner_prefix("characters/hunters/tech/tech.cdf").is_none());
+        assert!(monster_owner_prefix("characters/monsters/../goliath.cdf").is_none());
     }
 
     #[test]
