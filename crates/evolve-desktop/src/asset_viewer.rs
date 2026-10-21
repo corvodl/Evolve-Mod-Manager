@@ -293,6 +293,66 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
                 .style(design::muted),
         );
     }
+    if let Some(emet) = state.emet_options.as_ref() {
+        entries = entries.push(text("E.M.E.T. · FACE / EQUIPMENT").size(13));
+        if !emet.faces.is_empty() {
+            entries = entries.push(
+                text("Face · only one original CDF expression is rendered at a time.")
+                    .size(11)
+                    .style(design::muted),
+            );
+            let current = state.equipment_overrides
+                .get(evolve_core::character_emet::FACE)
+                .map(String::as_str)
+                .unwrap_or_else(|| emet.faces.first().map(String::as_str)
+                    .unwrap_or(evolve_core::character_emet::NO_FACE));
+            let mut faces = column![].spacing(4);
+            for face in &emet.faces {
+                let active = face == current;
+                faces = faces.push(
+                    design::button(format!("{} {}", if active { "✓" } else { "○" }, face.replace('_', " ")))
+                        .style(if active { design::primary } else { design::secondary })
+                        .on_press_maybe((!state.busy && !active)
+                            .then_some(Message::ViewerEmetFace(face.clone()))),
+                );
+            }
+            let none = current == evolve_core::character_emet::NO_FACE;
+            faces = faces.push(
+                design::button(if none { "✓ No expression" } else { "○ No expression" })
+                    .style(if none { design::primary } else { design::secondary })
+                    .on_press_maybe((!state.busy && !none)
+                        .then_some(Message::ViewerEmetFace(
+                            evolve_core::character_emet::NO_FACE.into()
+                        ))),
+            );
+            entries = entries.push(faces);
+        } else {
+            entries = entries.push(
+                text("No separately authored face attachments were found in this Emet CDF.")
+                    .size(11).style(design::muted),
+            );
+        }
+        if !emet.beacons.is_empty() {
+            let visible = state.equipment_overrides
+                .get(evolve_core::character_emet::BEACON)
+                .is_none_or(|value| value == evolve_core::character_emet::BEACON_ON);
+            entries = entries.push(text("Respawn Beacon").size(12));
+            entries = entries.push(
+                design::button(if visible { "☑ Show Respawn Beacon" } else { "☐ Show Respawn Beacon" })
+                    .on_press_maybe((!state.busy)
+                        .then_some(Message::ViewerEmetBeacon(!visible))),
+            );
+        } else {
+            entries = entries.push(
+                text("No attached Respawn Beacon mesh is declared in this CDF; a beacon cannot be placed at a guessed position.")
+                    .size(11).style(design::muted),
+            );
+        }
+        entries = entries.push(
+            text("These changes rebuild Emet's source-authored CDF assembly and are included when exporting this active CDF. No other hunter is affected.")
+                .size(11).style(design::muted),
+        );
+    }
     // This is a local viewport-only choice for the original Kala 3P CDF.
     // No other character gets alternate colors or fabricated emissive maps.
     let kala_selected = state.cdf_report.as_ref().is_some_and(|report| {
