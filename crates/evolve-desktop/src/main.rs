@@ -4353,10 +4353,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.gfx_busy = false;
             match result {
                 Ok((session, note, preview)) => {
+                    let selected_key = state.gfx_layout_selected.and_then(|index| {
+                        state.gfx_session.as_ref()?.layers.get(index)
+                    }).map(|layer| (layer.depth, layer.character));
+                    let retained = selected_key.and_then(|(depth, character)| {
+                        session.layers.iter().position(|layer| layer.depth == depth
+                            && layer.character == character)
+                    });
                     state.gfx_status = note;
                     state.gfx_session = Some(session);
-                    if state.gfx_layout_open {
-                        state.gfx_layout_selected = None;
+                    state.gfx_layout_selected = None;
+                    if let Some(index) = retained {
+                        let _ = update(state, Message::GfxLayoutSelect(index));
                     }
                     if let Some(image_bytes) = preview {
                         state.gfx_preview = Some(image::Handle::from_bytes(image_bytes));
