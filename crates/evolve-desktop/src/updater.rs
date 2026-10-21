@@ -10,7 +10,6 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 const API: &str = "https://api.github.com/repos/corvodl/Evolve-Mod-Manager";
@@ -28,7 +27,7 @@ pub enum UpdateChannel {
     Nightly,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct VerifiedAsset {
     pub name: String,
     pub size: u64,
@@ -265,7 +264,7 @@ pub fn discover_update(
     Ok(available.pop().map(|(_, value)| value))
 }
 
-fn check_file_hash(path: &Path, expected: &VerifiedAsset) -> Result<(), UpdateError> {
+pub(crate) fn check_file_hash(path: &Path, expected: &VerifiedAsset) -> Result<(), UpdateError> {
     let info = fs::symlink_metadata(path)?;
     if !info.file_type().is_file() || info.len() != expected.size {
         return Err(UpdateError::HashMismatch);
@@ -293,24 +292,27 @@ fn hasher_writer(digest: &mut Sha256) -> DigestWriter<'_> {
     DigestWriter(digest)
 }
 
-pub fn download_installer(update: &ReleaseUpdate, root: &Path) -> Result<PathBuf, UpdateError> {
+pub fn download_verified_asset(asset: &VerifiedAsset, root: &Path) -> Result<PathBuf, UpdateError> {
     let target_root = root.join("Updates");
     fs::create_dir_all(&target_root)?;
     if fs::symlink_metadata(&target_root)?.file_type().is_symlink() {
         return Err(UpdateError::Invalid("updates folder is a symlink".into()));
     }
-    let target = target_root.join(&update.installer.name);
+    let target = target_root.join(&asset.name);
     if target.exists() {
-        check_file_hash(&target, &update.installer)?;
-        return Ok(target);
+        if check_file_hash(&target, asset).is_ok() {
+            return Ok(target);
+        }
+        // Retry interrupted or corrupted downloads without trusting stale bytes.
+        fs::remove_file(&target)?;
     }
     let mut response = client()?
-        .get(&update.installer.url)
+        .get(&asset.url)
         .send()?
         .error_for_status()?;
     if response
         .content_length()
-        .is_some_and(|v| v > update.installer.size)
+        .is_some_and(|v| v > asset.size)
     {
         return Err(UpdateError::TooLarge);
     }
@@ -328,14 +330,14 @@ pub fn download_installer(update: &ReleaseUpdate, root: &Path) -> Result<PathBuf
         size = size
             .checked_add(count as u64)
             .ok_or(UpdateError::TooLarge)?;
-        if size > update.installer.size || size > MAX_DOWNLOAD {
+        if size > asset.size || size > MAX_DOWNLOAD {
             return Err(UpdateError::TooLarge);
         }
         temporary.write_all(&buffer[..count])?;
         digest.update(&buffer[..count]);
     }
-    if size != update.installer.size
-        || format!("{:x}", digest.finalize()) != update.installer.sha256
+    if size != asset.size
+        || format!("{:x}", digest.finalize()) != asset.sha256
     {
         return Err(UpdateError::HashMismatch);
     }
@@ -343,33 +345,8 @@ pub fn download_installer(update: &ReleaseUpdate, root: &Path) -> Result<PathBuf
     temporary
         .persist_noclobber(&target)
         .map_err(|e| UpdateError::Io(e.error))?;
-    check_file_hash(&target, &update.installer)?;
+    check_file_hash(&target, asset)?;
     Ok(target)
-}
-
-/// The user must explicitly select "Launch installer" in Settings. This
-/// function does not install anything silently, modify application data,
-/// or write to the game's directory.
-pub fn launch_verified_installer(
-    path: &Path,
-    update: &ReleaseUpdate,
-    root: &Path,
-) -> Result<(), UpdateError> {
-    let updates = fs::canonicalize(root.join("Updates"))?;
-    let canonical = fs::canonicalize(path)?;
-    if canonical.parent() != Some(updates.as_path())
-        || canonical.file_name().and_then(|s| s.to_str()) != Some(update.installer.name.as_str())
-        || !canonical
-            .extension()
-            .is_some_and(|s| s.eq_ignore_ascii_case("exe"))
-    {
-        return Err(UpdateError::Invalid(
-            "installer must be staged inside the managed Updates directory".into(),
-        ));
-    }
-    check_file_hash(&canonical, &update.installer)?;
-    Command::new(canonical).spawn()?;
-    Ok(())
 }
 
 #[cfg(test)]
