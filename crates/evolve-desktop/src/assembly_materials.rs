@@ -891,9 +891,8 @@ mod tests {
     #[test]
     fn alternate_armor_diffuse_emission_preserves_base_color_and_caps_blowout() {
         let base = image::RgbaImage::from_pixel(2, 1, image::Rgba([70, 45, 30, 255]));
-        let glow = image::RgbaImage::from_raw(
-            2, 1, vec![250, 200, 150, 255, 50, 30, 20, 255],
-        ).unwrap();
+        let glow =
+            image::RgbaImage::from_raw(2, 1, vec![250, 200, 150, 255, 50, 30, 20, 255]).unwrap();
         let emission = armor_emission(&base, &glow).unwrap();
         assert_eq!(emission.get_pixel(0, 0).0, [80, 80, 80, 255]);
         assert_eq!(emission.get_pixel(1, 0).0, [0, 0, 0, 255]);
