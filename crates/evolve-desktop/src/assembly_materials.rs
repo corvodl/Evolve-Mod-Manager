@@ -319,7 +319,8 @@ fn role_channel(role: &str) -> Option<usize> {
     match role {
         "diffuse" => Some(0),
         "normals" | "normal" | "bumpmap" => Some(1),
-        "emittance" | "emissive" | "emission" | "glow" => Some(2),
+        "emittance" | "emissive" | "emission" | "glow" | "emissivecolor"
+        | "emissionmap" | "glowmap" | "selfillum" | "selfillumination" => Some(2),
         "specular" | "specularcolor" => Some(3),
         "gloss" | "glossiness" | "smoothness" => Some(4),
         "opacity" => Some(5),
@@ -407,6 +408,22 @@ fn is_damage_blend_mask(
         && map.path.to_ascii_lowercase().contains("damage_blend_diff")
 }
 
+/// CryEngine's generic Opacity channel can hold non-cutout shader data on
+/// solid monster and equipment meshes. A map by itself does not establish
+/// alpha-test semantics. Real cutout/alpha-labelled sources are preserved.
+fn unverified_solid_body_opacity(slot: &evolve_core::MaterialSlot) -> bool {
+    matches!(
+        slot.shader.to_ascii_lowercase().as_str(),
+        "illum" | "cloth" | "humanskin"
+    ) && slot.opacity.unwrap_or(1.0) >= 0.999
+        && !slot.maps.iter().any(|map| {
+            map.role == "opacity"
+                && ["cutout", "alphatest", "_alpha"]
+                    .iter()
+                    .any(|marker| map.path.to_ascii_lowercase().contains(marker))
+        })
+}
+
 /// Per-channel resolved source textures and independent missing-map diagnostics.
 type ResolvedMaterialMaps = ([Option<Arc<image::RgbaImage>>; 6], Vec<String>);
 
@@ -452,6 +469,14 @@ fn authored_maps(
             counts[index] += 1;
         }
     }
+    // A uniquely authored Emittance entry outranks alternate spellings
+    // when both appear. Two different Emittance maps remain ambiguous.
+    let emittance = slot
+        .maps
+        .iter()
+        .filter(|map| map.role == "emittance")
+        .collect::<Vec<_>>();
+    let primary_emittance = (emittance.len() == 1).then(|| emittance[0].path.as_str());
     for map in &slot.maps {
         if is_damage_blend_mask(slot, map) {
             warnings.push(
@@ -462,7 +487,22 @@ fn authored_maps(
         let Some(index) = role_channel(&map.role) else {
             continue;
         };
-        if counts[index] > 1 {
+        if index == 5 && unverified_solid_body_opacity(slot) {
+            warnings.push(format!(
+                "{}: ignored an unverified opacity cutout on opaque {} body material; base diffuse remains visible",
+                slot.name, slot.shader
+            ));
+            continue;
+        }
+        if index == 2 && counts[index] > 1 && primary_emittance.is_some() {
+            if Some(map.path.as_str()) != primary_emittance {
+                continue;
+            }
+            warnings.push(format!(
+                "{}: selected uniquely authored Emittance over other emission-role maps",
+                slot.name
+            ));
+        } else if counts[index] > 1 {
             if !warnings
                 .iter()
                 .any(|w: &String| w.contains(&format!("channel {index}")))
@@ -1149,6 +1189,51 @@ mod tests {
         slot.glow_amount = Some(3.0);
         let opaque = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 255, 255, 255]));
         assert!(legacy_alpha_emission(&slot, &opaque).is_none());
+    }
+
+    #[test]
+    fn grounder_illum_body_does_not_disappear_from_an_unverified_opacity_channel() {
+        let plain = evolve_core::parse_material(
+            br#"<Material Name="Grounder_Body" Shader="Illum" Opacity="1">
+                <Textures>
+                    <Texture Map="Diffuse" File="characters/monsters/grounder/grounder3_diff.tif"/>
+                    <Texture Map="Opacity" File="characters/monsters/grounder/grounder3_detail.tif"/>
+                </Textures>
+            </Material>"#,
+        )
+        .unwrap();
+        assert!(unverified_solid_body_opacity(&plain.slots[0]));
+        let verified = evolve_core::parse_material(
+            br#"<Material Name="MaskedFin" Shader="Illum">
+                <Textures><Texture Map="Opacity" File="fin_cutout.tif"/></Textures>
+            </Material>"#,
+        )
+        .unwrap();
+        assert!(!unverified_solid_body_opacity(&verified.slots[0]));
+        let glass = evolve_core::parse_material(
+            br#"<Material Name="Glass" Shader="Glass">
+                <Textures><Texture Map="Opacity" File="glass_opacity.tif"/></Textures>
+            </Material>"#,
+        )
+        .unwrap();
+        assert!(!unverified_solid_body_opacity(&glass.slots[0]));
+    }
+
+    #[test]
+    fn kala_banshee_emissive_roles_and_source_zero_are_distinct() {
+        assert_eq!(role_channel("emissivecolor"), Some(2));
+        assert_eq!(role_channel("glowmap"), Some(2));
+        assert_eq!(role_channel("selfillumination"), Some(2));
+        assert_eq!(role_channel("normals"), Some(1));
+        assert_eq!(role_channel("custom"), None);
+        let authored = evolve_core::parse_material(
+            br#"<Material Name="BansheeGun" Shader="Illum" GlowAmount="0"><Textures>
+                <Texture Map="EmissiveColor" File="characters/hunters/tech/banshee_glow.tif"/>
+            </Textures></Material>"#,
+        )
+        .unwrap();
+        assert_eq!(authored.slots[0].glow_amount, Some(0.0));
+        assert_eq!(role_channel(&authored.slots[0].maps[0].role), Some(2));
     }
 
     #[test]
