@@ -233,10 +233,12 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
         text("Equipment swaps and full-armor glow affect the viewport and the exported CDF assembly. Original source assets remain unchanged.")
             .size(11).style(design::muted),
     ].spacing(10);
-    let monster_selected = state
-        .equipment_source
-        .as_ref()
-        .is_some_and(|path| path.to_string_lossy().replace('\\', "/").to_ascii_lowercase().contains("/monsters/"));
+    let monster_selected = state.equipment_source.as_ref().is_some_and(|path| {
+        path.to_string_lossy()
+            .replace('\\', "/")
+            .to_ascii_lowercase()
+            .contains("/monsters/")
+    });
     if monster_selected {
         entries = entries.push(
             design::button(if state.full_armor_glow {
