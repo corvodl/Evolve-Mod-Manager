@@ -57,11 +57,12 @@ fn safe_virtual(path: &str) -> bool {
 }
 fn image_path(movie: &str, name: &str) -> Option<String> {
     let movie_parent = movie.rsplit_once('/').map_or("", |(p, _)| p);
-    let virtual_path = if name.to_ascii_lowercase().starts_with("libs/ui/") || movie_parent.is_empty() {
-        name.to_owned()
-    } else {
-        format!("{movie_parent}/{name}")
-    };
+    let virtual_path =
+        if name.to_ascii_lowercase().starts_with("libs/ui/") || movie_parent.is_empty() {
+            name.to_owned()
+        } else {
+            format!("{movie_parent}/{name}")
+        };
     if !safe_virtual(&virtual_path) || !virtual_path.to_ascii_lowercase().ends_with(".tif") {
         return None;
     }
