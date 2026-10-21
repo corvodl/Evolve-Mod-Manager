@@ -137,7 +137,10 @@ pub fn validated_equipment_overrides(
         // Emet face/beacon choices are checked against the source CDF
         // by character_emet::choose in preview and export. They are not
         // equipment swaps and must never be used as alternate mesh paths.
-        if matches!(slot.as_str(), crate::character_emet::FACE | crate::character_emet::BEACON) {
+        if matches!(
+            slot.as_str(),
+            crate::character_emet::FACE | crate::character_emet::BEACON
+        ) {
             continue;
         }
         let matches = slots
