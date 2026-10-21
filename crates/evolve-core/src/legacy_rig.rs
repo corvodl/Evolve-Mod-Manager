@@ -311,6 +311,20 @@ fn streams<'a>(parts: &'a [Chunk<'a>]) -> Result<HashMap<u32, StreamData<'a>>, R
     }
     Ok(result)
 }
+/// Compare the complete original historical bind pose before selecting a
+/// common part-local skeleton for an assembled CDF. This does not remap or
+/// fabricate bone weights; a different order, hierarchy or rest pose is
+/// never treated as interchangeable merely because the bone count matches.
+pub fn identical_legacy_bind_skeletons(a: &[u8], b: &[u8]) -> Result<bool, RigError> {
+    let first = parse_legacy_skeleton(a)?;
+    let second = parse_legacy_skeleton(b)?;
+    Ok(first.names.len() == second.names.len()
+        && first.names.iter().zip(&second.names).all(|(x, y)| x.eq_ignore_ascii_case(y))
+        && first.parents == second.parents
+        && first.world.iter().zip(&second.world).all(|(x, y)| same_rest(x, y))
+        && first.inverse.iter().zip(&second.inverse).all(|(x, y)| same_rest(x, y)))
+}
+
 /// Return a verified source skeleton and original four-influence data.
 /// Use the master skeleton only if every ACTIVE weighted joint agrees in
 /// identity, ancestor chain and rest pose. Otherwise use the body's own
