@@ -42,7 +42,7 @@ jobs:
           Set-Content "Cargo.toml" -Value $manifest -Encoding utf8
           Write-Host "Building Nightly $env:VERSION"
 
-      # Core and desktop tests run on the PR CI. Compile only once here.
+      # Core and desktop lint/tests run in CI; compile binaries only once here.
       - run: cargo fmt --all -- --check
       - run: cargo build --release --workspace --bins
 
