@@ -15,7 +15,8 @@ permissions:
 # Avoid overlapping 20-minute Windows release builds.
 concurrency:
   group: evolve-nightly-windows
-  cancel-in-progress: false
+  # Superseded push builds should not use additional Windows runner time.
+  cancel-in-progress: true
 
 jobs:
   nightly:
