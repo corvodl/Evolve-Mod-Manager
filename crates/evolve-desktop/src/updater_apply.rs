@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
@@ -326,12 +326,8 @@ pub fn try_run_helper() -> bool {
             "missing or extra update helper arguments".into(),
         )),
     };
-    if let Err(error) = result {
-        if let Some(path) = plan_path {
-            if let Some(parent) = path.parent() {
-                let _ = fs::write(parent.join("last-update-error.txt"), error.to_string());
-            }
-        }
+    if let (Err(error), Some(parent)) = (result, plan_path.as_deref().and_then(Path::parent)) {
+        let _ = fs::write(parent.join("last-update-error.txt"), error.to_string());
     }
     true
 }
@@ -339,6 +335,7 @@ pub fn try_run_helper() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn manager_install_detection_never_treats_game_as_target() {
