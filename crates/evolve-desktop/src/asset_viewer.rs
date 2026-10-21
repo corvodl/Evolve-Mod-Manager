@@ -289,6 +289,54 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
                 .style(design::muted),
         );
     }
+    // This is a local viewport-only choice for the original Kala 3P CDF.
+    // No other character gets alternate colors or fabricated emissive maps.
+    let kala_selected = state.cdf_report.as_ref().is_some_and(|report| {
+        report.cdf_skeleton.eq_ignore_ascii_case(
+            "characters/hunters/merc_tech/tech_3p_skeleton.chr"
+        )
+    });
+    if kala_selected {
+        entries = entries.push(text("KALA (TECH) · ARM TUBING").size(13));
+        entries = entries.push(
+            row![
+                design::button(if state.kala_tubing == evolve_core::KalaTubingState::Banshee {
+                    "✓ Banshee · Blue"
+                } else {
+                    "○ Banshee · Blue"
+                })
+                .style(if state.kala_tubing == evolve_core::KalaTubingState::Banshee {
+                    design::primary
+                } else {
+                    design::secondary
+                })
+                .on_press_maybe(
+                    (!state.busy && state.kala_tubing != evolve_core::KalaTubingState::Banshee)
+                        .then_some(Message::ViewerKalaTubingState(evolve_core::KalaTubingState::Banshee))
+                ),
+                design::button(if state.kala_tubing == evolve_core::KalaTubingState::ArmorReducer {
+                    "✓ Armor Reducer · Red"
+                } else {
+                    "○ Armor Reducer · Red"
+                })
+                .style(if state.kala_tubing == evolve_core::KalaTubingState::ArmorReducer {
+                    design::primary
+                } else {
+                    design::secondary
+                })
+                .on_press_maybe(
+                    (!state.busy && state.kala_tubing != evolve_core::KalaTubingState::ArmorReducer)
+                        .then_some(Message::ViewerKalaTubingState(evolve_core::KalaTubingState::ArmorReducer))
+                ),
+            ]
+            .spacing(7),
+        );
+        entries = entries.push(
+            text("Uses Kala's original CDF weapon visibility groups and distinct blue/red animated tubing materials. GlowAmount=3 is retained; a modest 1.25× preview gain offsets missing in-game HDR bloom. Arm diffuse and source assets are unchanged.")
+                .size(11)
+                .style(design::muted),
+        );
+    }
     // Only show emission controls when an actual loaded GPU source carries
     // authored emission or the optional verified armor glow overlay.
     // A surface's strength alone is not proof of an emissive texture.
