@@ -562,6 +562,11 @@ fn gfx_viewport(state: &State) -> Element<'_, Message> {
                     design::button("Stop preview").on_press_maybe(
                         state.gfx_interactive_running.as_ref().map(|_| Message::GfxStopInteractive)),
                 ].spacing(6))
+                .push(text(if state.gfx_interactive_running.as_ref().is_some_and(|p| p.is_running()) {
+                    "Ruffle process: running (external window)"
+                } else {
+                    "Ruffle process: stopped / not launched"
+                }).size(11).style(design::muted))
                 .push(text(state.gfx_interactive_status.as_str()).size(11).style(design::muted))
                 .push(text("Only validated same-build UI_Assets imagery and imported GFX/SWF files are passed to the temporary player. Player can prompt for local imports; native UI data, localization, services and gameplay remain stubbed.")
                     .size(11).style(design::muted));
