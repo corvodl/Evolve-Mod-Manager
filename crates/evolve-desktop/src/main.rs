@@ -1003,7 +1003,16 @@ impl Operation {
             Self::InspectCdf(source) => read_cdf(&source)
                 .map(Completed::Character)
                 .map_err(|e| e.to_string()),
-            Self::BuildStaticCdf(source, inventory, imported, build, cache, equipment, glow, damage_percent) => {
+            Self::BuildStaticCdf(
+                source,
+                inventory,
+                imported,
+                build,
+                cache,
+                equipment,
+                glow,
+                damage_percent,
+            ) => {
                 crash_diagnostics::record("cdf_worker_begin", "reading authored CDF attachments");
                 let (mesh, report) = read_static_cdf_assembly_with_equipment(
                     &source,
@@ -2721,18 +2730,28 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ViewerToggleDamageBlend => {
             if state.busy {
-                state.status = "Finish the current model preview before changing damage blend.".into();
+                state.status =
+                    "Finish the current model preview before changing damage blend.".into();
                 return Task::none();
             }
             let Some(source) = &state.equipment_source else {
                 state.status = "Select a monster CDF to preview its authored damage layer.".into();
                 return Task::none();
             };
-            if !source.to_string_lossy().replace('\\', "/").to_ascii_lowercase().contains("/monsters/") {
+            if !source
+                .to_string_lossy()
+                .replace('\\', "/")
+                .to_ascii_lowercase()
+                .contains("/monsters/")
+            {
                 state.status = "Damage blend is only available for monster CDFs.".into();
                 return Task::none();
             }
-            state.damage_blend_percent = if state.damage_blend_percent == 0 { 100 } else { 0 };
+            state.damage_blend_percent = if state.damage_blend_percent == 0 {
+                100
+            } else {
+                0
+            };
             state.viewer_sidebar_active = ViewerSidebarTab::Equipment;
             return update(state, Message::ViewerPreviewStaticCdf);
         }
@@ -3487,7 +3506,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let export_matches_viewport = cdf_source
                 .as_ref()
                 .is_some_and(|source| state.equipment_source.as_ref() == Some(source));
-            if (!state.equipment_overrides.is_empty() || state.full_armor_glow || state.damage_blend_percent > 0)
+            if (!state.equipment_overrides.is_empty()
+                || state.full_armor_glow
+                || state.damage_blend_percent > 0)
                 && !export_matches_viewport
             {
                 state.status =
@@ -3523,7 +3544,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 export_dependencies: state.export_dependencies,
                 equipment,
                 full_armor_glow: state.full_armor_glow && export_matches_viewport,
-                damage_blend_percent: if export_matches_viewport { state.damage_blend_percent } else { 0 },
+                damage_blend_percent: if export_matches_viewport {
+                    state.damage_blend_percent
+                } else {
+                    0
+                },
             };
             state.export_dialog_open = false;
             return launch(state, Operation::ExportBundle(inventory, options));
