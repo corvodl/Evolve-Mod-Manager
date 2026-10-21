@@ -505,9 +505,12 @@ fn compiled_material_names(source: &[u8]) -> Result<Vec<String>, String> {
     let (Some(count), Some(start)) = (value(8), value(12)) else {
         return Ok(Vec::new());
     };
-    if count == 0 || count > 10_000
+    if count == 0
+        || count > 10_000
         || start < 16
-        || count.checked_mul(16).and_then(|n| start.checked_add(n))
+        || count
+            .checked_mul(16)
+            .and_then(|n| start.checked_add(n))
             .is_none_or(|end| end > source.len())
     {
         return Ok(Vec::new());
@@ -547,7 +550,10 @@ fn compiled_material_names(source: &[u8]) -> Result<Vec<String>, String> {
         };
         // Unlike a folder-wide filename search this is the exact authored
         // reference inside this particular render mesh.
-        if !names.iter().any(|name: &String| name.eq_ignore_ascii_case(&authored)) {
+        if !names
+            .iter()
+            .any(|name: &String| name.eq_ignore_ascii_case(&authored))
+        {
             names.push(authored);
         }
     }
@@ -588,7 +594,9 @@ fn exact_authored_mtl(
             let meta = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
             let real = fs::canonicalize(&path).map_err(|e| e.to_string())?;
             let library = fs::canonicalize(&scope.root).map_err(|e| e.to_string())?;
-            if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > MAX_SOURCE
+            if !meta.file_type().is_file()
+                || meta.len() == 0
+                || meta.len() > MAX_SOURCE
                 || !real.starts_with(library)
             {
                 return Err(format!("Unsafe indexed material {candidate}"));
@@ -656,8 +664,7 @@ fn original_model_material_with_scope(
                     candidates.push(reference);
                 }
                 for candidate in candidates {
-                    if let Some(found) =
-                        exact_authored_mtl(&root, inventory, &candidate, imported)?
+                    if let Some(found) = exact_authored_mtl(&root, inventory, &candidate, imported)?
                         && !hits.iter().any(|(_, path)| path == &found.1)
                     {
                         hits.push(found);
@@ -1656,33 +1663,42 @@ mod tests {
         // filename. The original cooked mesh points at emet_3o.mtl.
         let part = folder.join("oh.skinm");
         fs::write(&part, source_mesh_with_mtl_names(&["emet_3o"])).unwrap();
-        fs::write(folder.join("emet_3o.mtl"),
+        fs::write(
+            folder.join("emet_3o.mtl"),
             br#"<Material Name="Emet"><SubMaterials>
                <Material Name="Body" Shader="Illum"/>
                <Material Name="Equipment" Shader="Illum"/>
-               </SubMaterials></Material>"#).unwrap();
+               </SubMaterials></Material>"#,
+        )
+        .unwrap();
         // This same-stem file is deliberately not the compiled source
         // material; finding it first would silently assign wrong subset IDs.
         fs::write(folder.join("oh.mtl"), br#"<Material Name="Wrong"/>"#).unwrap();
         let inventory = crate::scan_directory(source.path()).unwrap();
-        let (virtual_name, file) = original_model_material(
-            source.path(), &part, &inventory, None,
-        ).unwrap().unwrap();
-        assert_eq!(virtual_name.to_ascii_lowercase(),
-            "characters/hunters/merc_emet/emet_3o.mtl");
+        let (virtual_name, file) = original_model_material(source.path(), &part, &inventory, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            virtual_name.to_ascii_lowercase(),
+            "characters/hunters/merc_emet/emet_3o.mtl"
+        );
         assert_eq!(file, fs::canonicalize(folder.join("emet_3o.mtl")).unwrap());
-        let slots = exact_multi_slot_materials_with_scope(
-            source.path(), &part, &inventory, None, None
-        ).unwrap().unwrap();
+        let slots =
+            exact_multi_slot_materials_with_scope(source.path(), &part, &inventory, None, None)
+                .unwrap()
+                .unwrap();
         assert_eq!(slots.len(), 2);
         assert_eq!(slots[0].name, "Body");
         assert_eq!(slots[1].name, "Equipment");
         // Explicit per-attachment CDF material always wins over MtlName.
-        let (explicit, _) = original_model_material(
-            source.path(), &part, &inventory, Some("oh.mtl"),
-        ).unwrap().unwrap();
-        assert_eq!(explicit.to_ascii_lowercase(),
-            "characters/hunters/merc_emet/oh.mtl");
+        let (explicit, _) =
+            original_model_material(source.path(), &part, &inventory, Some("oh.mtl"))
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            explicit.to_ascii_lowercase(),
+            "characters/hunters/merc_emet/oh.mtl"
+        );
     }
 
     #[test]
@@ -1695,7 +1711,9 @@ mod tests {
         let inventory = crate::scan_directory(root.path()).unwrap();
         let library = tempfile::tempdir().unwrap();
         let archive_id = "11111111111111111111";
-        let archive = library.path().join(format!("ui_characters.pak__{archive_id}"));
+        let archive = library
+            .path()
+            .join(format!("ui_characters.pak__{archive_id}"));
         let virtual_mtl = "characters/hunters/merc_emet/emet_3o.mtl";
         let mtl = archive.join("files").join(virtual_mtl);
         fs::create_dir_all(mtl.parent().unwrap()).unwrap();
@@ -1704,29 +1722,41 @@ mod tests {
             <Material Name="slot1" Shader="Illum"/>
             </SubMaterials></Material>"#;
         fs::write(&mtl, xml).unwrap();
-        fs::write(archive.join("asset-library.json"),
+        fs::write(
+            archive.join("asset-library.json"),
             serde_json::to_vec(&serde_json::json!({
                 "version":1,"name":"ui_characters.pak",
                 "source":"C:/Game/ui_characters.pak",
                 "entries":[{"path":virtual_mtl,"bytes":xml.len()}]
-            })).unwrap(),
-        ).unwrap();
-        fs::write(library.path().join("build-collections.json"),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            library.path().join("build-collections.json"),
             serde_json::to_vec(&serde_json::json!({
                 "version":1,
                 "builds":{"stage-two":{
                     "label":"Stage 2",
                     "members":{"11111111111111111111":{}}
                 }}
-            })).unwrap(),
-        ).unwrap();
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let scope = ImportedTextureScope {
             root: library.path().to_path_buf(),
             build: Some("Stage 2".into()),
         };
         let slots = exact_multi_slot_materials_with_scope(
-            root.path(), &part, &inventory, None, Some(&scope),
-        ).unwrap().unwrap();
+            root.path(),
+            &part,
+            &inventory,
+            None,
+            Some(&scope),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(slots.len(), 2);
         assert_eq!(slots[0].name, "slot0");
         assert_eq!(slots[1].name, "slot1");
@@ -1734,9 +1764,17 @@ mod tests {
             root: library.path().to_path_buf(),
             build: Some("Legacy 2012".into()),
         };
-        assert!(original_model_material_with_scope(
-            root.path(), &part, &inventory, None, Some(&wrong_build),
-        ).unwrap().is_none());
+        assert!(
+            original_model_material_with_scope(
+                root.path(),
+                &part,
+                &inventory,
+                None,
+                Some(&wrong_build),
+            )
+            .unwrap()
+            .is_none()
+        );
     }
 
     #[test]
@@ -1750,18 +1788,32 @@ mod tests {
         fs::write(&part, source_mesh_with_mtl_names(&["emet_3o"])).unwrap();
         fs::write(other.join("emet_3o.mtl"), b"<Material/>").unwrap();
         let inventory = crate::scan_directory(source.path()).unwrap();
-        assert!(original_model_material(source.path(), &part, &inventory, None)
-            .unwrap().is_none());
+        assert!(
+            original_model_material(source.path(), &part, &inventory, None)
+                .unwrap()
+                .is_none()
+        );
         fs::write(folder.join("emet_3o.mtl"), b"<Material/>").unwrap();
         fs::write(folder.join("emet_alt.mtl"), b"<Material/>").unwrap();
         fs::write(&part, source_mesh_with_mtl_names(&["emet_3o", "emet_alt"])).unwrap();
         let inventory = crate::scan_directory(source.path()).unwrap();
-        assert!(original_model_material(source.path(), &part, &inventory, None)
-            .unwrap_err().contains("conflicting"));
-        assert!(compiled_material_names(&source_mesh_with_mtl_names(
-            &["characters\\hunters\\merc_emet\\emet_3o"]
-        )).unwrap()[0].ends_with("emet_3o.mtl"));
-        assert!(compiled_material_names(b"invalid legacy stream").unwrap().is_empty());
+        assert!(
+            original_model_material(source.path(), &part, &inventory, None)
+                .unwrap_err()
+                .contains("conflicting")
+        );
+        assert!(
+            compiled_material_names(&source_mesh_with_mtl_names(&[
+                "characters\\hunters\\merc_emet\\emet_3o"
+            ]))
+            .unwrap()[0]
+                .ends_with("emet_3o.mtl")
+        );
+        assert!(
+            compiled_material_names(b"invalid legacy stream")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
