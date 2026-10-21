@@ -238,6 +238,44 @@ fn bounded_xml(input: &Path) -> Result<(), String> {
     }
     Ok(())
 }
+/// FFDec ActionScript imports must remain inside the isolated session.
+/// Reject symlinks, unrelated files, unbounded trees, and empty sources.
+fn validate_script_tree(root: &Path) -> Result<(), String> {
+    let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
+    let mut stack = vec![root.clone()];
+    let (mut count, mut total) = (0usize, 0u64);
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let kind = entry.file_type().map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if kind.is_symlink() || !path.starts_with(&root) {
+                return Err("ActionScript export contains a linked/unsafe path".into());
+            }
+            if kind.is_dir() {
+                stack.push(path);
+                if stack.len() > 256 {
+                    return Err("ActionScript directory nesting exceeds limit".into());
+                }
+            } else if kind.is_file() {
+                if !path.extension().and_then(|x| x.to_str())
+                    .is_some_and(|x| x.eq_ignore_ascii_case("as")) {
+                    return Err("Only ActionScript .as source files may be rebuilt".into());
+                }
+                count += 1;
+                total += entry.metadata().map_err(|e| e.to_string())?.len();
+                if count > 2000 || total > MAX_XML {
+                    return Err("ActionScript source tree exceeds 2000 files/64 MiB".into());
+                }
+            } else {
+                return Err("Unsupported ActionScript source type".into());
+            }
+        }
+    }
+    if count == 0 { return Err("No ActionScript source files found".into()); }
+    Ok(())
+}
+
 fn import_compiled(session: &mut Session, candidate: &Path) -> Result<(), String> {
     let (bytes, _) = read_gfx(candidate)?;
     stage(session, &bytes)
@@ -378,6 +416,7 @@ pub fn run(
             if !input.is_dir() {
                 return Err("Export editable ActionScript first".into());
             }
+            validate_script_tree(&input)?;
             let before = root.join("scripts-before.gfx");
             fs::copy(&session.editable, &before).map_err(|e| e.to_string())?;
             let output = root.join("scripts-rebuilt.gfx");
@@ -487,6 +526,17 @@ mod tests {
         assert!(ffdec_command("ffdec-cli.exe").is_err());
         assert!(ffdec_command("C:/not-installed/ffdec-cli.exe").is_err());
     }
+    #[test]
+    fn rejects_actionscript_tree_with_other_files_or_empty_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(validate_script_tree(dir.path()).is_err());
+        fs::write(dir.path().join("file.bin"), b"incorrect").unwrap();
+        assert!(validate_script_tree(dir.path()).is_err());
+        fs::remove_file(dir.path().join("file.bin")).unwrap();
+        fs::write(dir.path().join("feature.as"), b"trace('test');").unwrap();
+        assert!(validate_script_tree(dir.path()).is_ok());
+    }
+
     #[test]
     fn xml_dtd_and_external_entities_are_blocked() {
         let dir = tempfile::tempdir().unwrap();
