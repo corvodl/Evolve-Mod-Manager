@@ -1116,19 +1116,19 @@ impl Operation {
                                 let mut derived = HashMap::<usize, Arc<::image::RgbaImage>>::new();
                                 for (part, surface) in report.source_parts.iter().zip(surfaces.iter_mut()) {
                                     let binding = part.binding.replace('\\', "/").to_ascii_lowercase();
-                                    if surface.visible && binding.contains(owner) {
-                                        if let Some(base) = surface.diffuse.as_ref() {
-                                            let key = Arc::as_ptr(base) as usize;
-                                            let image = if let Some(existing) = derived.get(&key) {
-                                                Arc::clone(existing)
-                                            } else {
-                                                let pixels = Arc::new(assembly_materials::armor_emission(base, &rgba)?);
-                                                derived.insert(key, Arc::clone(&pixels));
-                                                pixels
-                                            };
-                                            surface.emissive = Some(image);
-                                            mapped += 1;
-                                        }
+                                    if surface.visible && binding.contains(owner)
+                                        && let Some(base) = surface.diffuse.as_ref()
+                                    {
+                                        let key = Arc::as_ptr(base) as usize;
+                                        let image = if let Some(existing) = derived.get(&key) {
+                                            Arc::clone(existing)
+                                        } else {
+                                            let pixels = Arc::new(assembly_materials::armor_emission(base, &rgba)?);
+                                            derived.insert(key, Arc::clone(&pixels));
+                                            pixels
+                                        };
+                                        surface.emissive = Some(image);
+                                        mapped += 1;
                                     }
                                 }
                                 warnings.push(format!(
