@@ -522,8 +522,8 @@ fn exact_single_slot_maps_with_scope(
         let target = match item.role.as_str() {
             "diffuse" => &mut maps.diffuse,
             "normal" | "normals" | "bumpmap" => &mut maps.normal,
-            "emissive" | "emittance" | "emission" | "glow" | "emissivecolor"
-            | "emissionmap" | "glowmap" | "selfillum" | "selfillumination" => &mut maps.emissive,
+            "emissive" | "emittance" | "emission" | "glow" | "emissivecolor" | "emissionmap"
+            | "glowmap" | "selfillum" | "selfillumination" => &mut maps.emissive,
             "specular" | "specularcolor" => &mut maps.specular,
             "gloss" | "glossiness" | "smoothness" => &mut maps.gloss,
             _ => continue,
