@@ -78,7 +78,7 @@ fn checked_member(name: &str) -> Result<PathBuf, String> {
 fn extract_bounded(zip_data: &[u8], output: &Path) -> Result<(), String> {
     let reader = std::io::Cursor::new(zip_data);
     let mut archive = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
-    if archive.len() == 0 || archive.len() > MAX_MEMBERS {
+    if archive.is_empty() || archive.len() > MAX_MEMBERS {
         return Err("Unexpected GFX utility archive entry count".into());
     }
     let mut total = 0u64;
@@ -197,10 +197,10 @@ fn install_at(tool: Tool, folder: &Path) -> Result<PathBuf, String> {
             return Err("Existing GFX tool directory is not a regular directory".into());
         }
         let existing = validated_file(&destination, tool.executable());
-        return existing.or_else(|_| Err(format!(
+        return existing.map_err(|_| format!(
             "{} directory already exists but is incomplete; reinstall via the manager installer",
             tool.name()
-        )));
+        ));
     }
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(15))
