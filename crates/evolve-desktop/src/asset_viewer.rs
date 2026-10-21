@@ -508,7 +508,7 @@ fn browser(state: &State) -> Element<'_, Message> {
 
 fn gfx_viewport(state: &State) -> Element<'_, Message> {
     let mut actions = column![
-        text("SCALEFORM GFX · PRIVATE EDIT WORKSPACE").size(16),
+        text("SCALEFORM GFX · DESIGN / INTERACTIVE PREVIEW").size(16),
         text("FFDec 26.3.0 is an optional external editor; game callbacks and ActionScript are not executed in static preview.")
             .size(11).style(design::muted),
         text_input("Absolute ffdec-cli.exe or ffdec.jar path", &state.preferences.ffdec_executable)
@@ -532,13 +532,40 @@ fn gfx_viewport(state: &State) -> Element<'_, Message> {
     if let Some(session) = &state.gfx_session {
         let info = &session.info;
         actions = actions.push(
-            design::button(if state.gfx_layout_open {
-                "Close visual GFX layout editor"
-            } else {
-                "Visual GFX layout editor…"
-            })
-            .on_press(Message::GfxToggleLayout),
+            row![
+                design::button(if state.gfx_layout_open {
+                    "Close design mode"
+                } else {
+                    "Design / layout editor"
+                })
+                .on_press(Message::GfxToggleLayout),
+                design::button(if state.gfx_interactive_open {
+                    "Close interactive controls"
+                } else {
+                    "Interactive ActionScript preview"
+                })
+                .on_press(Message::GfxToggleInteractive),
+            ]
+            .spacing(6),
         );
+        if state.gfx_interactive_open {
+            actions = actions
+                .push(text("INTERACTIVE PREVIEW · EXTERNAL RUFFLE").size(14))
+                .push(text("Runs original Flash ActionScript, timelines and mouse input where supported. Evolve/CryEngine callbacks are unavailable; an empty ExternalInterface prevents game actions. Interactive content opens in a separate Ruffle window; no project or PAK files are changed.")
+                    .size(11).style(design::muted))
+                .push(text_input("Path to installed ruffle.exe", &state.preferences.ruffle_executable)
+                    .on_input(Message::GfxRuffleConfigChanged).padding(8))
+                .push(row![
+                    design::button("Choose Ruffle executable…").on_press(Message::GfxPickRuffle),
+                    design::button("Launch / restart interactive preview")
+                        .on_press_maybe((!state.gfx_busy).then_some(Message::GfxRunInteractive)),
+                    design::button("Stop preview").on_press_maybe(
+                        state.gfx_interactive_running.as_ref().map(|_| Message::GfxStopInteractive)),
+                ].spacing(6))
+                .push(text(state.gfx_interactive_status.as_str()).size(11).style(design::muted))
+                .push(text("Only validated same-build UI_Assets imagery and imported GFX/SWF files are passed to the temporary player. Player can prompt for local imports; native UI data, localization, services and gameplay remain stubbed.")
+                    .size(11).style(design::muted));
+        }
         actions = actions
             .push(
                 text(format!(
