@@ -93,6 +93,36 @@ def verify_mesh(mesh, armature):
     check(weighted > 0, "missing original vertex weights")
     return modifiers[0], weighted, mesh_uv_bounds(mesh)
 
+def has_original_diffuse(mesh):
+    """Require a real image connected to material Base Color, not a tint."""
+    for material in mesh.data.materials:
+        if not material or not material.use_nodes or not material.node_tree:
+            continue
+        for link in material.node_tree.links:
+            if (link.to_socket.name == "Base Color"
+                    and link.from_node.type == "TEX_IMAGE"
+                    and link.from_node.image is not None):
+                return True
+    return False
+
+
+def mesh_belongs_to_part(mesh, name):
+    # FBX importers may append Blender duplicate suffixes to mesh objects.
+    return (mesh.name == name or mesh.name.startswith(name + "_material_")
+            or mesh.name.startswith(name + "."))
+
+
+def verify_part_diffuse_coverage(meshes, parts, stage):
+    missing = [
+        part["name"] for part in parts
+        if not any(mesh_belongs_to_part(mesh, part["name"])
+                   and has_original_diffuse(mesh) for mesh in meshes)
+    ]
+    check(not missing,
+          stage + ": missing embedded original diffuse images on parts: "
+          + ", ".join(missing[:12]))
+
+
 def diffuse_image_count(meshes):
     """Count verified diffuse images attached to source mesh materials.
 
@@ -176,6 +206,7 @@ def main():
     if embed_textures:
         check(diffuse_image_count(meshes) > 0,
               "selected embedded textures but no original diffuse image reached Blender")
+        verify_part_diffuse_coverage(meshes, parts, "GLB to Blender")
     check(len(meshes) <= 1024, "unbounded material fragment count")
     bone_count = len(master.data.bones)
     source_hierarchy = {
@@ -220,6 +251,7 @@ def main():
     if embed_textures:
         check(diffuse_image_count(result_meshes) > 0,
               "FBX round-trip lost embedded diffuse image links; refusing white export")
+        verify_part_diffuse_coverage(result_meshes, parts, "FBX round-trip")
     if animate:
         check(bool(bpy.data.actions), "FBX round-trip lost the verified CAF Action")
     imported_weighted_vertices = 0
