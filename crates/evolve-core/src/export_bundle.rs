@@ -4,7 +4,7 @@ use crate::character_unified_fbx::standalone_authored_diffuse;
 use crate::{
     AnimationPolicy, DependencyStatus, EquipmentOverrides, Inventory,
     convert_glb_to_fbx_with_options, export_dds_png, export_model_glb,
-    export_rigged_character_fbx_options, export_unified_cdf_fbx_options_with_glow, inspect_dependencies,
+    CdfExportAppearance, export_rigged_character_fbx_options, export_unified_cdf_fbx_options_with_glow, inspect_dependencies,
     read_model, read_static_cdf_assembly_with_equipment,
 };
 use std::collections::{HashSet, VecDeque};
@@ -387,8 +387,10 @@ pub fn export_bundle(
                 &target,
                 options.caf.as_deref(),
                 &options.equipment,
-                options.embed_textures,
-                options.full_armor_glow,
+                CdfExportAppearance {
+                    embed_textures: options.embed_textures,
+                    full_armor_glow: options.full_armor_glow,
+                },
             )
             .map_err(|e| format!("{relative}: {e}"))?;
         } else if options.rigged {
