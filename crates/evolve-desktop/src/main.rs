@@ -4069,7 +4069,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     let path = path.to_string_lossy().into_owned();
                     match tool {
                         gfx_tool_install::Tool::Ffdec => state.preferences.ffdec_executable = path,
-                        gfx_tool_install::Tool::Ruffle => state.preferences.ruffle_executable = path,
+                        gfx_tool_install::Tool::Ruffle => {
+                            state.preferences.ruffle_executable = path
+                        }
                     }
                     state.gfx_install_status = format!(
                         "{} installed. {}",
@@ -4083,7 +4085,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     persist_preferences(state);
                 }
                 Err(reason) => {
-                    state.gfx_install_status = format!("{} installation failed: {reason}", tool.name());
+                    state.gfx_install_status =
+                        format!("{} installation failed: {reason}", tool.name());
                 }
             }
         }
