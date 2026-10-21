@@ -298,23 +298,25 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
                 surfaces.iter().any(|surface| {
                     surface.visible
                         && (surface.armor_emissive.is_some()
-                            || (surface.emissive.is_some()
-                                && surface.emission_strength > 0.0))
+                            || (surface.emissive.is_some() && surface.emission_strength > 0.0))
                 })
             }));
     if emissive_available {
         entries = entries.push(
             row![
-                text(format!("Emissive strength: {:.2}×", state.emissive_strength)).size(12),
+                text(format!(
+                    "Emissive strength: {:.2}×",
+                    state.emissive_strength
+                ))
+                .size(12),
                 slider(
                     0.0..=4.0,
                     state.emissive_strength,
                     Message::ViewerEmissiveStrengthChanged,
                 )
-                .step(0.05)
+                .step(0.05_f32)
                 .width(Fill),
-                design::button("Reset")
-                    .on_press(Message::ViewerEmissiveStrengthChanged(1.0)),
+                design::button("Reset").on_press(Message::ViewerEmissiveStrengthChanged(1.0)),
             ]
             .spacing(7),
         );

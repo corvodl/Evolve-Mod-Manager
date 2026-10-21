@@ -2934,8 +2934,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         surfaces.iter().any(|part| {
                             part.visible
                                 && (part.armor_emissive.is_some()
-                                    || (part.emissive.is_some()
-                                        && part.emission_strength > 0.0))
+                                    || (part.emissive.is_some() && part.emission_strength > 0.0))
                         })
                     }))
             {
@@ -7336,17 +7335,32 @@ mod project_edit_tests {
     #[test]
     fn emissive_slider_preserves_original_source_and_requires_a_real_map() {
         let pixels = Arc::new(::image::RgbaImage::from_pixel(
-            1, 1, ::image::Rgba([180, 40, 20, 255])
+            1,
+            1,
+            ::image::Rgba([180, 40, 20, 255]),
         ));
         let surface = textured::Surface {
-            first_index: 0, index_count: 3, visible: true, transparent: false,
-            diffuse: None, normal: None, emissive: Some(Arc::clone(&pixels)),
-            armor_emissive: None, emission_strength: 3.0, specular: None, gloss: None, opacity: None
+            first_index: 0,
+            index_count: 3,
+            visible: true,
+            transparent: false,
+            diffuse: None,
+            normal: None,
+            emissive: Some(Arc::clone(&pixels)),
+            armor_emissive: None,
+            emission_strength: 3.0,
+            specular: None,
+            gloss: None,
+            opacity: None,
         };
         let model = Arc::new(RenderMesh {
             info: evolve_core::ModelInfo {
-                format: "test".into(), version: 0, chunk_count: 0,
-                vertex_count: 3, triangle_count: 1, original_uv0: false,
+                format: "test".into(),
+                version: 0,
+                chunk_count: 0,
+                vertex_count: 3,
+                triangle_count: 1,
+                original_uv0: false,
                 original_normals: false,
             },
             positions: vec![[0.0, 0.0, 0.0]; 3],
@@ -7364,8 +7378,18 @@ mod project_edit_tests {
         let _ = update(&mut state, Message::ViewerEmissiveStrengthChanged(2.5));
         assert_eq!(state.emissive_strength, 2.5);
         assert!(Arc::ptr_eq(&before, state.cdf_surfaces.as_ref().unwrap()));
-        assert_eq!(state.cdf_surfaces.as_ref().unwrap()[0].emission_strength, 3.0);
-        assert_eq!(state.cdf_surfaces.as_ref().unwrap()[0].emissive.as_ref().unwrap().as_raw(), pixels.as_raw());
+        assert_eq!(
+            state.cdf_surfaces.as_ref().unwrap()[0].emission_strength,
+            3.0
+        );
+        assert_eq!(
+            state.cdf_surfaces.as_ref().unwrap()[0]
+                .emissive
+                .as_ref()
+                .unwrap()
+                .as_raw(),
+            pixels.as_raw()
+        );
         state.cdf_surfaces = None;
         let _ = update(&mut state, Message::ViewerEmissiveStrengthChanged(4.0));
         assert_eq!(state.emissive_strength, 2.5);

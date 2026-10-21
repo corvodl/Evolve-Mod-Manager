@@ -1057,8 +1057,7 @@ impl Pipeline {
                 layout: &self.layout,
                 entries: &material_entries(
                     [
-                        &views[0], &views[1], &views[2], &views[3], &views[4], &views[5],
-                        &views[6],
+                        &views[0], &views[1], &views[2], &views[3], &views[4], &views[5], &views[6],
                     ],
                     &self.sampler,
                     &emission_uniform,
@@ -1124,7 +1123,10 @@ impl Pipeline {
             let default = emission_uniform_values(1.0, primitive.emissive_gain);
             queue.write_buffer(&self._emission_uniform, 0, bytemuck::bytes_of(&default));
             for surface in &self.gpu_surfaces {
-                let values = emission_uniform_values(surface.source_emission_strength, primitive.emissive_gain);
+                let values = emission_uniform_values(
+                    surface.source_emission_strength,
+                    primitive.emissive_gain,
+                );
                 queue.write_buffer(&surface._emission_uniform, 0, bytemuck::bytes_of(&values));
             }
         }
@@ -1412,7 +1414,10 @@ mod tests {
         assert_eq!(super::emission_uniform_values(3.0, 2.5)[..2], [3.0, 2.5]);
         assert_eq!(super::emission_uniform_values(0.0, 4.0)[..2], [0.0, 4.0]);
         assert_eq!(super::emission_uniform_values(3.0, 0.0)[..2], [3.0, 0.0]);
-        assert_eq!(super::emission_uniform_values(f32::NAN, f32::NAN)[..2], [0.0, 1.0]);
+        assert_eq!(
+            super::emission_uniform_values(f32::NAN, f32::NAN)[..2],
+            [0.0, 1.0]
+        );
     }
 
     #[test]
