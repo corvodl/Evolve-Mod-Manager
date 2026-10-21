@@ -250,7 +250,9 @@ fn matching_imported_high_mips(
     file: &Path,
     scope: Option<&ImportedTextureScope>,
 ) -> Result<Vec<PathBuf>, String> {
-    let Some(scope) = scope else { return Ok(Vec::new()); };
+    let Some(scope) = scope else {
+        return Ok(Vec::new());
+    };
     if scope.build.is_none() {
         // A unique build is essential before stitching across archives.
         return Ok(Vec::new());
@@ -274,7 +276,9 @@ fn matching_imported_high_mips(
     if number != "0" {
         return Ok(Vec::new());
     }
-    let Some(parent) = real.parent() else { return Ok(Vec::new()); };
+    let Some(parent) = real.parent() else {
+        return Ok(Vec::new());
+    };
     let mut highest = 0usize;
     for item in fs::read_dir(parent).map_err(|e| e.to_string())? {
         let item = item.map_err(|e| e.to_string())?;
@@ -306,13 +310,17 @@ fn matching_imported_high_mips(
                 }
                 let canonical = fs::canonicalize(path).map_err(|e| e.to_string())?;
                 if !canonical.starts_with(&library_root) {
-                    return Err(format!("DDS fragment {candidate} escaped the imported library"));
+                    return Err(format!(
+                        "DDS fragment {candidate} escaped the imported library"
+                    ));
                 }
                 found.push(canonical);
             }
             LibraryReferenceStatus::Missing => break,
             LibraryReferenceStatus::Ambiguous(_) => {
-                return Err(format!("Multiple source-build matches for DDS fragment {candidate}"));
+                return Err(format!(
+                    "Multiple source-build matches for DDS fragment {candidate}"
+                ));
             }
         }
     }
@@ -332,7 +340,10 @@ fn decode_original_mip(
                     if reason.contains("incomplete or noncontiguous split DDS set")
             );
             if !should_try {
-                return Err(format!("Cannot decode original DDS {}: {first}", file.display()));
+                return Err(format!(
+                    "Cannot decode original DDS {}: {first}",
+                    file.display()
+                ));
             }
             let extra = matching_imported_high_mips(file, imported)?;
             if extra.is_empty() {
@@ -838,8 +849,10 @@ pub fn export_unified_cdf_fbx_options_with_glow(
     let glow_png = if full_armor_glow {
         let path = monster_glow_path(source, inventory)?
             .ok_or("No exact full-armor glow DDS belongs to this monster and build")?;
-        Some(authored_png(&path, false, imported.as_ref())
-            .map_err(|e| format!("Full-armor glow DDS: {e}"))?)
+        Some(
+            authored_png(&path, false, imported.as_ref())
+                .map_err(|e| format!("Full-armor glow DDS: {e}"))?,
+        )
     } else {
         None
     };
@@ -1510,33 +1523,55 @@ mod tests {
         tail[84..88].copy_from_slice(b"DXT1");
         tail.extend_from_slice(&[224, 7, 0, 248, 0, 0, 0, 0]);
         fs::write(&low_file, &tail).unwrap();
-        fs::write(low_file.with_file_name("scorpid_body.dds.1"), [224, 7, 0, 248, 0, 0, 0, 0]).unwrap();
+        fs::write(
+            low_file.with_file_name("scorpid_body.dds.1"),
+            [224, 7, 0, 248, 0, 0, 0, 0],
+        )
+        .unwrap();
         fs::write(&high_file, [0, 248, 224, 7, 0, 0, 0, 0].repeat(4)).unwrap();
         fs::write(&legacy_file, [224, 7, 0, 248, 0, 0, 0, 0].repeat(4)).unwrap();
         for (archive, name, entries) in [
-            (&low, "dds_low.pak", vec![
-                serde_json::json!({"path":format!("{relative}.0"),"bytes":136}),
-                serde_json::json!({"path":format!("{relative}.1"),"bytes":8}),
-            ]),
-            (&high, "dds_high.pak", vec![
-                serde_json::json!({"path":format!("{relative}.2"),"bytes":32}),
-            ]),
-            (&legacy, "legacy_high.pak", vec![
-                serde_json::json!({"path":format!("{relative}.2"),"bytes":32}),
-            ]),
+            (
+                &low,
+                "dds_low.pak",
+                vec![
+                    serde_json::json!({"path":format!("{relative}.0"),"bytes":136}),
+                    serde_json::json!({"path":format!("{relative}.1"),"bytes":8}),
+                ],
+            ),
+            (
+                &high,
+                "dds_high.pak",
+                vec![serde_json::json!({"path":format!("{relative}.2"),"bytes":32})],
+            ),
+            (
+                &legacy,
+                "legacy_high.pak",
+                vec![serde_json::json!({"path":format!("{relative}.2"),"bytes":32})],
+            ),
         ] {
-            fs::write(archive.join("asset-library.json"), serde_json::to_vec(&serde_json::json!({
-                "version":1,"name":name,"source":"C:/game/assets.pak","entries":entries
-            })).unwrap()).unwrap();
+            fs::write(
+                archive.join("asset-library.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version":1,"name":name,"source":"C:/game/assets.pak","entries":entries
+                }))
+                .unwrap(),
+            )
+            .unwrap();
         }
-        fs::write(lib.path().join("build-collections.json"), serde_json::to_vec(&serde_json::json!({
-            "version":1,"builds":{
-                "stage-two":{"label":"Stage 2","members":{
-                    "11111111111111111111":{},"22222222222222222222":{}
-                }},
-                "legacy":{"label":"Legacy","members":{"33333333333333333333":{}}}
-            }
-        })).unwrap()).unwrap();
+        fs::write(
+            lib.path().join("build-collections.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version":1,"builds":{
+                    "stage-two":{"label":"Stage 2","members":{
+                        "11111111111111111111":{},"22222222222222222222":{}
+                    }},
+                    "legacy":{"label":"Legacy","members":{"33333333333333333333":{}}}
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let inventory = crate::scan_directory(&low.join("files")).unwrap();
         let scope = texture_scope(&inventory).unwrap();
         let fragments = matching_imported_high_mips(&low_file, Some(&scope)).unwrap();
