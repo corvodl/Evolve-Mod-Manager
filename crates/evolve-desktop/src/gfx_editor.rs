@@ -1,7 +1,7 @@
 //! Isolated GFX editing sessions, following the private manager's FFDec flow.
 //! No operation modifies original PAKs, libraries or the game installation.
-use crate::modding_projects::{self, ProjectRow};
 use crate::gfx_dependencies::{self, Dependency};
+use crate::modding_projects::{self, ProjectRow};
 use evolve_core::gfx::{GfxInfo, MAX_SOURCE, inspect_gfx};
 use evolve_core::gfx_layout::{LayoutEdit, StaticLayer, edit_first_frame, static_layers};
 use serde_json::Value;
@@ -458,7 +458,10 @@ pub fn run(
             let (before, _) = read_gfx(&session.editable)?;
             let rewritten = edit_first_frame(&before, edit).map_err(|e| e.to_string())?;
             stage(&mut session, &rewritten)?;
-            format!("Staged depth {} / character {} transform in isolated GFX copy. Use Undo or Apply to Mod Project.", edit.depth, edit.character)
+            format!(
+                "Staged depth {} / character {} transform in isolated GFX copy. Use Undo or Apply to Mod Project.",
+                edit.depth, edit.character
+            )
         }
         Action::Undo => {
             if session.edits == 0 {
