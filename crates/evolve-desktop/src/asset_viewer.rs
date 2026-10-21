@@ -840,8 +840,9 @@ fn gfx_viewport(state: &State) -> Element<'_, Message> {
         actions = actions
             .push(design::button("Inspect selected .gfx").on_press(Message::GfxOpenSelected));
     }
-    if state.gfx_layout_open {
-        if let Some(session) = &state.gfx_session {
+    if state.gfx_layout_open
+        && let Some(session) = &state.gfx_session
+    {
             let stage = iced::Size::new(session.info.width as f32, session.info.height as f32);
             let show_raster = state.gfx_layout_show_raster && state.gfx_preview.is_some();
             let canvas = canvas(super::gfx_layout_canvas::GfxLayoutCanvas {
@@ -879,7 +880,6 @@ fn gfx_viewport(state: &State) -> Element<'_, Message> {
                         .size(11).style(design::muted)
                 ].height(Fill).width(Length::FillPortion(3)).spacing(8)
             ].spacing(12).height(Fill).into();
-        }
     }
     row![
         scrollable(actions.padding(8)).width(Length::FillPortion(2)),
