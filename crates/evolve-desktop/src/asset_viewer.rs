@@ -256,7 +256,7 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
             .on_press_maybe((!state.busy).then_some(Message::ViewerToggleMonsterGlow)),
         );
         entries = entries.push(
-            text("Uses this monster's exact [name]_glow_diff DDS as an emissive overlay. Requires a complete imported DDS set; export with Rigged + Embedded textures.")
+            text("Optional [name]_glow_diff armor overlay. Unchecking leaves normal diffuse and authored material emission intact; preview works independently of FBX export options.")
                 .size(11)
                 .style(design::muted),
         );
@@ -285,6 +285,40 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
         }
         entries = entries.push(
             text("Approximates the original CryEngine BLENDLAYER using only this monster's verified Custom damage diffuse and Opacity damage-blend mask. Keeps geometry opaque and exports with Rigged + Embedded textures.")
+                .size(11)
+                .style(design::muted),
+        );
+    }
+    // Only show emission controls when an actual loaded GPU source carries
+    // authored emission or the optional verified armor glow overlay.
+    // A surface's strength alone is not proof of an emissive texture.
+    let emissive_available = state.model.is_some()
+        && (state.emissive_map.is_some()
+            || state.cdf_surfaces.as_ref().is_some_and(|surfaces| {
+                surfaces.iter().any(|surface| {
+                    surface.visible
+                        && surface.emissive.is_some()
+                        && surface.emission_strength > 0.0
+                })
+            }));
+    if emissive_available {
+        entries = entries.push(
+            row![
+                text(format!("Emissive strength: {:.2}×", state.emissive_strength)).size(12),
+                slider(
+                    0.0..=4.0,
+                    state.emissive_strength,
+                    Message::ViewerEmissiveStrengthChanged,
+                )
+                .step(0.05)
+                .width(Fill),
+                design::button("Reset")
+                    .on_press(Message::ViewerEmissiveStrengthChanged(1.0)),
+            ]
+            .spacing(7),
+        );
+        entries = entries.push(
+            text("Live viewport adjustment to existing emission and optional armor glow. Original source values and exported FBX remain unchanged.")
                 .size(11)
                 .style(design::muted),
         );
@@ -435,6 +469,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
                 pitch: state.pitch,
                 zoom: state.zoom.max(0.2),
                 light_strength: state.light_strength,
+                emissive_gain: state.emissive_strength,
                 pan_x: state.pan_x,
                 pan_y: state.pan_y,
                 shift: state.keyboard_modifiers.shift(),

@@ -266,6 +266,8 @@ struct State {
     equipment_slots: Vec<EquipmentSlot>,
     equipment_overrides: EquipmentOverrides,
     full_armor_glow: bool,
+    /// Viewport-only gain over the original source material emission.
+    emissive_strength: f32,
     damage_blend_percent: u8,
     damage_blend_enabled: bool,
     /// CDF source-part completion tracked by the loading worker.
@@ -1071,14 +1073,10 @@ impl Operation {
                 progress.store(90, Ordering::Relaxed);
                 // Historical CryTek 0x745 monster geometry is the 2012 build:
                 // it has no Stage 2 armor-glow/damage toggles.
-                // Full armor glow controls Stage 2 monster preview only.
-                // Switching off disables even explicitly authored emission,
-                // without changing cached source DDS or any FBX export option.
-                if !glow && !historical_2012_cdf(&report) {
-                    for surface in &mut surfaces {
-                        surface.emission_strength = 0.0;
-                    }
-                }
+                // Full armor glow is *only* the optional monster
+                // *_glow_diff overlay. Other authored emissive textures,
+                // GlowAmount and legacy alpha emission remain unchanged when
+                // the overlay checkbox is off.
                 if glow && !historical_2012_cdf(&report) {
                     match evolve_core::monster_glow_path(&source, &inventory) {
                         Ok(Some(texture)) => {
@@ -1356,6 +1354,7 @@ enum Message {
     ViewerSidebarClose(ViewerSidebarTab),
     ViewerEquip(String, String),
     ViewerToggleMonsterGlow,
+    ViewerEmissiveStrengthChanged(f32),
     ViewerToggleDamageBlend,
     ViewerDamageBlendChanged(u8),
     ViewerDamageBlendCommit,
@@ -1975,6 +1974,7 @@ fn clear_viewer_asset(state: &mut State) {
     state.equipment_slots.clear();
     state.equipment_overrides.clear();
     state.full_armor_glow = false;
+    state.emissive_strength = 1.0;
     state.damage_blend_percent = 0;
     state.damage_blend_enabled = false;
     state.viewer_load_progress = None;
@@ -2926,6 +2926,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.viewer_sidebar_active = ViewerSidebarTab::Equipment;
             return update(state, Message::ViewerDamageBlendCommit);
         }
+        Message::ViewerEmissiveStrengthChanged(value) => {
+            if value.is_finite()
+                && state.model.is_some()
+                && (state.emissive_map.is_some()
+                    || state.cdf_surfaces.as_ref().is_some_and(|surfaces| {
+                        surfaces.iter().any(|part| {
+                            part.visible
+                                && part.emissive.is_some()
+                                && part.emission_strength > 0.0
+                        })
+                    }))
+            {
+                state.emissive_strength = (value * 20.0).round().clamp(0.0, 80.0) / 20.0;
+            }
+        }
         Message::ViewerToggleMonsterGlow => {
             if state.busy {
                 state.status = "Finish the current preview before changing glow.".into();
@@ -3512,6 +3527,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             if state.equipment_source.as_ref() != Some(&source) {
                 state.equipment_overrides.clear();
+                state.emissive_strength = 1.0;
                 // Armor glow is the normal monster preview state. Missing
                 // original glow DDS must not block regular diffuse rendering.
                 let virtual_source = entry.relative_path.replace('\\', "/").to_ascii_lowercase();
@@ -6426,6 +6442,7 @@ fn view(state: &State) -> Element<'_, Message> {
                             specular:state.specular_map.clone(),gloss:state.gloss_map.clone(),
                             yaw:state.yaw,pitch:state.pitch,zoom:state.zoom,
                             light_strength:state.light_strength,
+                            emissive_gain:state.emissive_strength,
                             pan_x:state.pan_x,pan_y:state.pan_y,shift:state.keyboard_modifiers.shift(),
                         }).width(Fill).height(Length::Fixed(400.)).into()
                     }else{
@@ -6562,6 +6579,7 @@ fn view(state: &State) -> Element<'_, Message> {
                             specular:state.specular_map.clone(),gloss:state.gloss_map.clone(),
                         yaw:state.yaw,pitch:state.pitch,zoom:state.zoom.max(0.2),
                             light_strength:state.light_strength,
+                            emissive_gain:state.emissive_strength,
                             pan_x:state.pan_x,pan_y:state.pan_y,shift:state.keyboard_modifiers.shift(),
                     }).width(Fill).height(Length::Fixed(400.)).into()
                 }else{
@@ -6664,6 +6682,7 @@ fn initial_state() -> State {
         viewer_split: 0.67,
         level_zoom: 1.0,
         light_strength: 1.6,
+        emissive_strength: 1.0,
         viewer_explorer_visible: true,
         ..State::default()
     };
@@ -7310,6 +7329,44 @@ mod project_edit_tests {
                 .unwrap(),
             &pixels,
         ));
+    }
+
+    #[test]
+    fn emissive_slider_preserves_original_source_and_requires_a_real_map() {
+        let pixels = Arc::new(::image::RgbaImage::from_pixel(
+            1, 1, ::image::Rgba([180, 40, 20, 255])
+        ));
+        let surface = textured::Surface {
+            first_index: 0, index_count: 3, visible: true, transparent: false,
+            diffuse: None, normal: None, emissive: Some(Arc::clone(&pixels)),
+            emission_strength: 3.0, specular: None, gloss: None, opacity: None
+        };
+        let model = Arc::new(RenderMesh {
+            info: evolve_core::ModelInfo {
+                format: "test".into(), version: 0, chunk_count: 0,
+                vertex_count: 3, triangle_count: 1, original_uv0: false,
+                original_normals: false,
+            },
+            positions: vec![[0.0, 0.0, 0.0]; 3],
+            indices: vec![0, 1, 2],
+            uv0: None,
+            normals: None,
+        });
+        let mut state = State {
+            model: Some(model),
+            cdf_surfaces: Some(Arc::new(vec![surface.clone()])),
+            emissive_strength: 1.0,
+            ..State::default()
+        };
+        let before = state.cdf_surfaces.clone().unwrap();
+        let _ = update(&mut state, Message::ViewerEmissiveStrengthChanged(2.5));
+        assert_eq!(state.emissive_strength, 2.5);
+        assert!(Arc::ptr_eq(&before, state.cdf_surfaces.as_ref().unwrap()));
+        assert_eq!(state.cdf_surfaces.as_ref().unwrap()[0].emission_strength, 3.0);
+        assert_eq!(state.cdf_surfaces.as_ref().unwrap()[0].emissive.as_ref().unwrap().as_raw(), pixels.as_raw());
+        state.cdf_surfaces = None;
+        let _ = update(&mut state, Message::ViewerEmissiveStrengthChanged(4.0));
+        assert_eq!(state.emissive_strength, 2.5);
     }
 
     #[test]

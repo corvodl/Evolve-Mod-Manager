@@ -72,6 +72,8 @@ pub struct Scene {
     pub pitch: f32,
     pub zoom: f32,
     pub light_strength: f32,
+    /// Viewport-only multiplier, independent of the original material strength.
+    pub emissive_gain: f32,
     pub pan_x: f32,
     pub pan_y: f32,
     pub shift: bool,
@@ -139,6 +141,7 @@ pub struct Primitive {
     emissive_identity: usize,
     specular_identity: usize,
     gloss_identity: usize,
+    emissive_gain: f32,
 }
 impl shader::Program<super::Message> for Scene {
     type State = super::view_navigation::Navigation;
@@ -267,6 +270,7 @@ impl shader::Program<super::Message> for Scene {
                 .as_ref()
                 .map_or(0, |t| Arc::as_ptr(t) as usize),
             gloss_identity: self.gloss.as_ref().map_or(0, |t| Arc::as_ptr(t) as usize),
+            emissive_gain: self.emissive_gain,
         }
     }
 }
@@ -278,6 +282,7 @@ struct GpuSurface {
     opacity_map: bool,
     bind_group: wgpu::BindGroup,
     _emission_uniform: wgpu::Buffer,
+    source_emission_strength: f32,
 }
 
 pub struct Pipeline {
@@ -302,6 +307,7 @@ pub struct Pipeline {
     last_specular_identity: usize,
     last_gloss_identity: usize,
     last_surfaces_identity: usize,
+    last_emissive_gain: f32,
     gpu_surfaces: Vec<GpuSurface>,
     // Own every unique GPU source allocation while its bind groups exist.
     _surface_textures: Vec<wgpu::Texture>,
@@ -330,6 +336,23 @@ pub struct Pipeline {
 // textured.wgsl, including the standalone DDS refresh path. Keep this single
 // helper for initialization, CDF attachment ranges and texture reloads.
 const MATERIAL_BINDINGS: [u32; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+
+/// Keep the two gains separate: the CryEngine authored strength (3 != 100%)
+/// and the user's optional viewport setting. Shader multiplies x*y, never
+/// scales diffuse color, normals or UVs.
+fn emission_uniform_values(source_strength: f32, preview_gain: f32) -> [f32; 4] {
+    let source = if source_strength.is_finite() {
+        source_strength.clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+    let gain = if preview_gain.is_finite() {
+        preview_gain.clamp(0.0, 4.0)
+    } else {
+        1.0
+    };
+    [source, gain, 0.0, 0.0]
+}
 
 fn material_entries<'a>(
     views: [&'a wgpu::TextureView; 6],
@@ -362,18 +385,14 @@ impl Pipeline {
     fn emission_uniform(device: &wgpu::Device, queue: &wgpu::Queue, strength: f32) -> wgpu::Buffer {
         // Keep source-relative gain. Guard against nonfinite/pathological
         // values but never silently reinterpret source GlowAmount 3 as 100%.
-        let safe = if strength.is_finite() {
-            strength.clamp(0.0, 100.0)
-        } else {
-            0.0
-        };
+        let values = emission_uniform_values(strength, 1.0);
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Source material emission amount"),
             size: 16,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        queue.write_buffer(&buffer, 0, bytemuck::bytes_of(&[safe, 0.0f32, 0.0, 0.0]));
+        queue.write_buffer(&buffer, 0, bytemuck::bytes_of(&values));
         buffer
     }
 
@@ -828,6 +847,7 @@ impl Pipeline {
             last_specular_identity: usize::MAX,
             last_gloss_identity: usize::MAX,
             last_surfaces_identity: usize::MAX,
+            last_emissive_gain: f32::NAN,
             gpu_surfaces: Vec::new(),
             _surface_textures: Vec::new(),
             surface_table_valid: false,
@@ -862,6 +882,9 @@ impl Pipeline {
             return;
         }
         self.last_surfaces_identity = identity;
+        // New bind groups require fresh gain uploads even if the slider did
+        // not move. Reuse the already-decoded images on subsequent slider drags.
+        self.last_emissive_gain = f32::NAN;
         self.gpu_surfaces.clear();
         self._surface_textures.clear();
         self.surface_table_valid = false;
@@ -1015,6 +1038,7 @@ impl Pipeline {
                 opacity_map: opacity_uploaded,
                 bind_group: group,
                 _emission_uniform: emission_uniform,
+                source_emission_strength: part.emission_strength,
             });
         }
         super::crash_diagnostics::record(
@@ -1060,6 +1084,17 @@ impl Pipeline {
             primitive.surfaces.as_ref(),
             primitive.indices.len(),
         );
+        if self.last_emissive_gain.to_bits() != primitive.emissive_gain.to_bits() {
+            self.last_emissive_gain = primitive.emissive_gain;
+            // Buffers already exist on each material: update only 16 bytes
+            // per visible material, not CDF geometry or source DDS textures.
+            let default = emission_uniform_values(1.0, primitive.emissive_gain);
+            queue.write_buffer(&self._emission_uniform, 0, bytemuck::bytes_of(&default));
+            for surface in &self.gpu_surfaces {
+                let values = emission_uniform_values(surface.source_emission_strength, primitive.emissive_gain);
+                queue.write_buffer(&surface._emission_uniform, 0, bytemuck::bytes_of(&values));
+            }
+        }
         if !primitive.points.is_empty() && !primitive.indices.is_empty() {
             let vertex_bytes = bytemuck::cast_slice(&primitive.points);
             if vertex_bytes.len() > self.vertex_capacity {
@@ -1323,6 +1358,15 @@ mod tests {
         // for the remaining protected budget.
         assert!(!super::allows_cdf_role(0, 4 * mib, 300 * mib, 2, false));
         assert!(super::allows_cdf_role(0, 4 * mib, 300 * mib, 0, false));
+    }
+
+    #[test]
+    fn emissive_slider_multiplies_source_relative_glow_without_replacing_it() {
+        assert_eq!(super::emission_uniform_values(3.0, 1.0)[..2], [3.0, 1.0]);
+        assert_eq!(super::emission_uniform_values(3.0, 2.5)[..2], [3.0, 2.5]);
+        assert_eq!(super::emission_uniform_values(0.0, 4.0)[..2], [0.0, 4.0]);
+        assert_eq!(super::emission_uniform_values(3.0, 0.0)[..2], [3.0, 0.0]);
+        assert_eq!(super::emission_uniform_values(f32::NAN, f32::NAN)[..2], [0.0, 1.0]);
     }
 
     #[test]

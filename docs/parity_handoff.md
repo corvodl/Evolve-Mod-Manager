@@ -2,6 +2,30 @@
 
 Updated: **2026-10-20** · Repository: `corvodl/Evolve-Mod-Manager` · Working PR: **#6** on `feature/blender-viewport-cdf-autoload`, based on PR #5's `feature/pr5-combined-viewer-preview`. This document is a resumable engineering checklist, **not** a claim of production parity. See [PARITY.md](PARITY.md) for the broader feature matrix.
 
+## October 20 — follow-up: separate original emission from armor-overlay toggle
+
+The normal/base Stage 2 material is allowed to glow independently of the
+optional `[name]_glow_diff` overlay. The previous preview implementation
+incorrectly set `emission_strength=0` on *every* material when Full armor glow
+was unchecked; that hid original `Emittance` and CryEngine `GlowAmount` too.
+Now the switch solely controls loading/applying that monster-specific overlay.
+Explicit material emission remains on, with original source-relative gain.
+
+**Model Options emissive-strength slider:** shown only when a loaded model has
+a visible emitting material or explicit standalone emissive map; 0–4×,
+default 1×, reset action. A live per-scene viewport-only uniform scales both
+original emission and (when enabled) the optional armor overlay. Material
+source gain is retained as its separate uniform component; a slider change
+writes tiny GPU buffers without recooking DDS, rebuilding geometry, modifying
+material assignments, or changing FBX exports. Switching source assets resets
+preview gain to 1×. No slider is shown for non-emissive or unloaded models.
+
+**Acceptance:** Confirm ordinary Goliath material emission still visible with
+Full armor glow off; only the optional armor regions toggle; slider updates
+instantaneously, respects 0× and reset, and doesn't brighten diffuse/normal
+or alter original DDS. Verify both slider and option after CDF reloads,
+damage-blend preview and on Windows GPU; check CI before merge/release.
+
 ## October 20 — Stage 2 full-armor glow and source-authored intensity
 
 User-provided Goliath3 screenshot: **Full armor glow checked**, armor remains
