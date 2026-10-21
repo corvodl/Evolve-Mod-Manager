@@ -509,6 +509,69 @@ fn exact_multi_slot_materials_with_scope(
     Ok(Some(slots))
 }
 
+/// Compose original MTL BLENDLAYER into the exact subset's diffuse PNG.
+/// Authoritative source paths, rather than filename-scanned damage assets,
+/// select the damaged base and grayscale blend mask. Source alpha is not
+/// used to remove geometry; original UVs/material IDs remain unchanged.
+fn apply_export_damage_layer(
+    root: &Path,
+    original: &Path,
+    inventory: &Inventory,
+    material_hint: Option<&str>,
+    imported: Option<&ImportedTextureScope>,
+    slots: &mut [OriginalMaterialPng],
+    percent: u8,
+) -> Result<usize, String> {
+    if percent == 0 {
+        return Ok(0);
+    }
+    let Some((virtual_mtl, material)) =
+        original_model_material(root, original, inventory, material_hint)?
+    else {
+        return Ok(0);
+    };
+    let doc = read_material(&material).map_err(|e| e.to_string())?;
+    if doc.slots.len() != slots.len() {
+        return Err("Original damage material does not match the source subset layout".into());
+    }
+    let mut applied = 0;
+    for (leaf, target) in doc.slots.iter().zip(slots.iter_mut()) {
+        let Some(base_png) = target.diffuse.as_ref() else { continue };
+        if target.no_draw {
+            continue;
+        }
+        let Some((alternate_ref, blend_ref)) = crate::materials::authored_damage_layer(leaf) else {
+            continue;
+        };
+        let alternate_path = exact_original_texture(
+            root, inventory, &virtual_mtl, alternate_ref, imported,
+        )?.ok_or_else(|| format!("Missing authored alternate damage map {alternate_ref}"))?;
+        let blend_path = exact_original_texture(
+            root, inventory, &virtual_mtl, blend_ref, imported,
+        )?.ok_or_else(|| format!("Missing authored damage blend mask {blend_ref}"))?;
+        let base = image::load_from_memory(base_png)
+            .map_err(|e| format!("Invalid original subset diffuse PNG: {e}"))?
+            .to_rgba8();
+        let (_, alternate) = crate::dds::decode_dds_rgba(&alternate_path)
+            .map_err(|e| format!("Cannot decode authored damage map {}: {e}", alternate_path.display()))?;
+        let (_, mask) = crate::dds::decode_dds_rgba(&blend_path)
+            .map_err(|e| format!("Cannot decode authored damage mask {}: {e}", blend_path.display()))?;
+        let mixed = crate::materials::blend_damage_rgba(&base, &alternate, &mask, percent)?;
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(
+                mixed.as_raw(),
+                mixed.width(),
+                mixed.height(),
+                image::ExtendedColorType::Rgba8,
+            )
+            .map_err(|e| format!("Cannot encode blended damage diffuse: {e}"))?;
+        target.diffuse = Some(png);
+        applied += 1;
+    }
+    Ok(applied)
+}
+
 /// glTF metallicRoughnessTexture uses roughness in green and metallic in
 /// blue. An explicitly authored gloss map is *inverse* roughness; never
 /// derive it from arbitrary normal, specular or diffuse alpha.
@@ -620,6 +683,7 @@ pub fn export_unified_cdf_fbx_options(
         CdfExportAppearance {
             embed_textures,
             full_armor_glow: false,
+            damage_blend_percent: 0,
         },
     )
 }
@@ -629,6 +693,8 @@ pub fn export_unified_cdf_fbx_options(
 pub struct CdfExportAppearance {
     pub embed_textures: bool,
     pub full_armor_glow: bool,
+    /// Requested preview percentage for the authored Custom/Opacity damage blend.
+    pub damage_blend_percent: u8,
 }
 
 /// Export selected CDF parts/equipment, including the optional source-exact
@@ -645,9 +711,16 @@ pub fn export_unified_cdf_fbx_options_with_glow(
     let CdfExportAppearance {
         embed_textures,
         full_armor_glow,
+        damage_blend_percent,
     } = appearance;
     let root = fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
     let imported = texture_scope(inventory);
+    if damage_blend_percent > 100 {
+        return Err("Damage blend intensity must be between 0 and 100 percent".into());
+    }
+    if damage_blend_percent > 0 && !embed_textures {
+        return Err("Damage blend requires embedded textures in the rigged CDF FBX".into());
+    }
     if full_armor_glow && !embed_textures {
         return Err("Full-armor glow requires embedded textures in a rigged FBX".into());
     }
@@ -668,6 +741,7 @@ pub fn export_unified_cdf_fbx_options_with_glow(
         .rsplit_once('/')
         .map(|(dir, _)| format!("{dir}/").to_ascii_lowercase());
     let mut applied_glow = false;
+    let mut applied_damage = 0usize;
     if !destination.is_absolute()
         || !destination
             .extension()
@@ -776,6 +850,18 @@ pub fn export_unified_cdf_fbx_options_with_glow(
             if slots.iter().any(|slot| slot.diffuse.is_some()) {
                 diffuse_textured_parts += 1;
             }
+            if damage_blend_percent > 0
+                && monster_dir.as_deref().is_some_and(|owner| {
+                    original.strip_prefix(&root).is_ok_and(|relative| {
+                        relative.to_string_lossy().replace('\\', "/").to_ascii_lowercase().starts_with(owner)
+                    })
+                })
+            {
+                applied_damage += apply_export_damage_layer(
+                    &root, original, inventory, material_hint.as_deref(),
+                    imported.as_ref(), &mut slots, damage_blend_percent,
+                )?;
+            }
             // Only original parts of THIS monster get the glow overlay;
             // equipment bindings in other folders remain untouched.
             if let (Some(glow), Some(owner)) = (&glow_png, &monster_dir)
@@ -805,11 +891,29 @@ pub fn export_unified_cdf_fbx_options_with_glow(
                 material_hint.as_deref(),
                 imported.as_ref(),
             )?;
-            let diffuse = maps
+            let mut diffuse = maps
                 .diffuse
                 .as_deref()
                 .map(|f| authored_png(f, false))
                 .transpose()?;
+            if damage_blend_percent > 0
+                && monster_dir.as_deref().is_some_and(|owner| {
+                    original.strip_prefix(&root).is_ok_and(|relative| {
+                        relative.to_string_lossy().replace('\\', "/").to_ascii_lowercase().starts_with(owner)
+                    })
+                })
+            {
+                let mut slots = vec![OriginalMaterialPng {
+                    name: name.clone(),
+                    diffuse: diffuse.take(),
+                    ..Default::default()
+                }];
+                applied_damage += apply_export_damage_layer(
+                    &root, original, inventory, material_hint.as_deref(),
+                    imported.as_ref(), &mut slots, damage_blend_percent,
+                )?;
+                diffuse = slots.pop().and_then(|slot| slot.diffuse);
+            }
             let normal = maps
                 .normal
                 .as_deref()
@@ -873,6 +977,9 @@ pub fn export_unified_cdf_fbx_options_with_glow(
         fs::write(&staged, &glb).map_err(|e| e.to_string())?;
         entries.push(json!({"name":name,"source":staged}));
         labels.push(name.clone());
+    }
+    if damage_blend_percent > 0 && applied_damage == 0 {
+        return Err("No verified authored Custom damage diffuse and Opacity blend mask were found in the selected monster CDF".into());
     }
     if full_armor_glow && !applied_glow {
         return Err(
