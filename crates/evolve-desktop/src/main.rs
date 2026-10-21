@@ -38,10 +38,10 @@ use asset_cache::{SharedCache, decoded_dds, decoded_dds_indexed};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph,
-    EquipmentOverrides, EquipmentSlot, HookPairReport, ImportedLibrary, ImportedPak, Inventory, KalaTubingState,
-    LevelScene, LibraryBatchImportReport, LibraryReferenceStatus, MaterialReport, ModProfile,
-    ModelInfo, NativeCafMotion, PakHookPairReport, PakInventory, ProfileCatalog, ProfileMod,
-    ProfilePlan, RenderMesh, RigReport, SignedPakInfo, StageTransaction, TerrainInfo,
+    EquipmentOverrides, EquipmentSlot, HookPairReport, ImportedLibrary, ImportedPak, Inventory,
+    KalaTubingState, LevelScene, LibraryBatchImportReport, LibraryReferenceStatus, MaterialReport,
+    ModProfile, ModelInfo, NativeCafMotion, PakHookPairReport, PakInventory, ProfileCatalog,
+    ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo, StageTransaction, TerrainInfo,
     VerifiedCafAssembly, VerifiedCafSkin, add_mod_to_profile, apply_profile_stage, apply_stage_pak,
     batch_stage_status, compare_assets, convert_glb_to_fbx, convert_original_motion,
     create_mod_profile, decode_dds_rgba, discover_equipment, export_dds_png,
@@ -51,7 +51,7 @@ use evolve_core::{
     imported_library, initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak,
     inspect_pak_hook_pair, inspect_signed_pak, list_mod_profiles, load_level_scene,
     material_texture_candidates, plan_mod_profile, prepare_client_hook, read_cdf, read_material,
-    read_model, read_native_caf, read_static_cdf_assembly_with_equipment, read_terrain,
+    read_model, read_native_caf, read_terrain,
     rebuild_legacy_pak, rebuild_signed_pak_entry, resign_signed_pak, resolve_cdf,
     resolve_imported_reference, resolve_materials, restore_profile_stage, restore_stage,
     scan_directory, scan_directory_with_progress, stage_status,
@@ -3554,12 +3554,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.kala_tubing = KalaTubingState::Banshee;
                 // Preview-only boost makes this subdued authored tint easier to inspect
                 // without altering its GlowAmount=3, exported DDS or game materials.
-                state.emissive_strength = if read_cdf(&source)
-                    .is_ok_and(|cdf| evolve_core::is_original_kala_3p(&cdf)) {
-                    1.25
-                } else {
-                    1.0
-                };
+                state.emissive_strength =
+                    if read_cdf(&source).is_ok_and(|cdf| evolve_core::is_original_kala_3p(&cdf)) {
+                        1.25
+                    } else {
+                        1.0
+                    };
                 // Armor glow is the normal monster preview state. Missing
                 // original glow DDS must not block regular diffuse rendering.
                 let virtual_source = entry.relative_path.replace('\\', "/").to_ascii_lowercase();
