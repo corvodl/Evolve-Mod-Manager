@@ -496,10 +496,13 @@ mod tests {
         assert_eq!(attempts, 2);
 
         let mut unsafe_attempts = 0;
-        assert!(apply_portable_with_retry(|| {
-            unsafe_attempts += 1;
-            Err(UpdateError::Invalid("unsafe archive".into()))
-        }).is_err());
+        assert!(
+            apply_portable_with_retry(|| {
+                unsafe_attempts += 1;
+                Err(UpdateError::Invalid("unsafe archive".into()))
+            })
+            .is_err()
+        );
         assert_eq!(unsafe_attempts, 1);
     }
 
