@@ -186,6 +186,7 @@ struct State {
     gfx_layout_sy: String,
     gfx_layout_rotation: String,
     gfx_layout_visible: bool,
+    gfx_layout_show_raster: bool,
     gfx_live_open: bool,
     gfx_live_status: String,
     gfx_live_snapshot: Option<gfx_live_inspector::UiSnapshot>,
@@ -1431,6 +1432,7 @@ enum Message {
     GfxBackendPicked(Option<PathBuf>),
     GfxSelectResource(usize),
     GfxToggleLayout,
+    GfxToggleLayoutRaster,
     GfxLayoutSelect(usize),
     GfxLayoutDragged(usize, f32, f32),
     GfxLayoutValue(&'static str, String),
@@ -4150,6 +4152,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.gfx_live_status = format!("Cannot inspect UI hierarchy: {error}");
             }
         },
+        Message::GfxToggleLayoutRaster => state.gfx_layout_show_raster = !state.gfx_layout_show_raster,
         Message::GfxToggleLayout => {
             state.gfx_layout_open = !state.gfx_layout_open;
             if state.gfx_layout_open && state.gfx_layout_selected.is_none() {
