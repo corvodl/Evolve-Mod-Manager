@@ -385,7 +385,7 @@ fn kala_banshee_brightness_mask(slot: &evolve_core::MaterialSlot) -> bool {
 // Original blue/red Glow leaf tints from Kala's uploaded tech MTLs.
 // These are only applied to the exact verified tech_3p CDF material; every
 // other actor/material continues using its own source color.
-const KALA_ARMOR_REDUCER_TINT: [f32; 3] = [0.17788844, 0.0074990322, 0.0043914425];
+const KALA_ARMOR_REDUCER_TINT: [f32; 3] = [0.17788844, 0.007_499_032, 0.0043914425];
 
 fn kala_tubing_leaf(
     material_source: &Path,
@@ -561,6 +561,9 @@ struct MaterialLookup<'a> {
     build: Option<&'a str>,
 }
 
+// The original material provenance, texture budget, and Kala-only viewer
+// state are intentionally explicit: never resolve a texture by filename alone.
+#[allow(clippy::too_many_arguments)]
 fn authored_maps(
     document: &MaterialDocument,
     material_source: &Path,
