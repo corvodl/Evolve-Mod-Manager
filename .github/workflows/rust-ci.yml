@@ -48,7 +48,8 @@ jobs:
     needs: [core, desktop]
     runs-on: windows-2022
     timeout-minutes: 55
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    # Release-mode binaries are built by Nightly; avoid rebuilding them on every PR.
+    if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

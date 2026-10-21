@@ -46,14 +46,14 @@ use evolve_core::{
     create_mod_profile, decode_dds_rgba, discover_equipment, export_dds_png,
     export_level_scene_glb, export_rigged_character_fbx_textured_animated,
     export_rigged_character_glb, extract_legacy_pak, extract_signed_pak,
-    import_signed_library_selection, import_stage_pak, imported_archive_files, imported_library,
-    initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_pak_hook_pair,
-    inspect_signed_pak, list_mod_profiles, load_level_scene, material_texture_candidates,
-    plan_mod_profile, prepare_client_hook, read_cdf, read_material, read_model, read_native_caf,
-    read_static_cdf_assembly_with_equipment, read_terrain, rebuild_legacy_pak,
-    rebuild_signed_pak_entry, resign_signed_pak, resolve_cdf, resolve_imported_reference,
-    resolve_materials, restore_profile_stage, restore_stage, scan_directory,
-    scan_directory_with_progress, stage_status,
+    import_signed_library_selection_with_keys, import_stage_pak, imported_archive_files,
+    imported_library, initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak,
+    inspect_pak_hook_pair, inspect_signed_pak, list_mod_profiles, load_level_scene,
+    material_texture_candidates, plan_mod_profile, prepare_client_hook, read_cdf, read_material,
+    read_model, read_native_caf, read_static_cdf_assembly_with_equipment, read_terrain,
+    rebuild_legacy_pak, rebuild_signed_pak_entry, resign_signed_pak, resolve_cdf,
+    resolve_imported_reference, resolve_materials, restore_profile_stage, restore_stage,
+    scan_directory, scan_directory_with_progress, stage_status,
 };
 use iced::widget::{
     canvas, column, container, image, row, scrollable, shader, slider, space, svg, text, tooltip,
@@ -616,12 +616,15 @@ impl Operation {
             Self::LoadImportedLibrary(root) => imported_library(&root)
                 .map(Completed::ImportedLibrary)
                 .map_err(|e| e.to_string()),
-            Self::ImportSignedLibrary(root, source, key) => {
-                // Import is explicitly requested; don't create any directory while browsing.
+            Self::ImportSignedLibrary(root, source, stage) => {
+                // Resolve all known public keys for each archive; the included
+                // original RSA verifier also works without an existing stage.
+                let keys = modding_keys::archive_verification_keys(&stage)?;
                 if !root.exists() {
                     std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
                 }
-                let report = import_signed_library_selection(&root, &source, &key)?;
+                let report =
+                    import_signed_library_selection_with_keys(&root, &source, &keys.paths)?;
                 let catalog = imported_library(&root).map_err(|e| e.to_string())?;
                 Ok(Completed::ImportedSignedLibrary(report, catalog))
             }
@@ -1481,6 +1484,7 @@ enum Message {
     OpenCrashLogs,
     OpenCrashLogsFolder,
     PreferenceExperimental,
+    PreferenceUpdateChannel,
     PreferenceAutoUpdates,
     PreferenceStage(String),
     PreferenceGameStorage(String),
@@ -2472,20 +2476,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.library_show_configuration = true;
                 return Task::none();
             }
-            let key =
-                match modding_keys::public_key(PathBuf::from(&state.preferences.stage).as_path()) {
-                    Ok(key) => key,
-                    Err(error) => {
-                        state.status = error;
-                        return Task::none();
-                    }
-                };
             return launch(
                 state,
                 Operation::ImportSignedLibrary(
                     PathBuf::from(&state.library_root),
                     PathBuf::from(&state.library_import_source),
-                    key,
+                    PathBuf::from(&state.preferences.stage),
                 ),
             );
         }
@@ -3991,6 +3987,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::PreferenceExperimental => {
             state.preferences.experimental_updates = !state.preferences.experimental_updates;
+            state.preferences.nightly_updates = false;
+            persist_preferences(state);
+        }
+        Message::PreferenceUpdateChannel => {
+            if state.preferences.nightly_updates {
+                state.preferences.nightly_updates = false;
+                state.preferences.experimental_updates = false;
+            } else if state.preferences.experimental_updates {
+                state.preferences.nightly_updates = true;
+                state.preferences.experimental_updates = false;
+            } else {
+                state.preferences.nightly_updates = false;
+                state.preferences.experimental_updates = true;
+            }
+            state.available_update = None;
+            state.staged_installer = None;
             persist_preferences(state);
         }
         Message::PreferenceAutoUpdates => {
@@ -4052,7 +4064,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.update_status = "Checking public GitHub Releases for verified updates...".into();
             state.available_update = None;
             state.staged_installer = None;
-            let channel = if state.preferences.experimental_updates {
+            let channel = if state.preferences.nightly_updates {
+                UpdateChannel::Nightly
+            } else if state.preferences.experimental_updates {
                 UpdateChannel::Beta
             } else {
                 UpdateChannel::Stable
@@ -6143,7 +6157,7 @@ fn download_action(state: &State) -> Element<'_, Message> {
         .on_press(Message::DownloadUpdate)
         .into()
     } else {
-        text("Stable updates appear after the public release is published.").into()
+        text("Choose Stable, Beta or Nightly to check available verified releases.").into()
     }
 }
 fn run_installer_action(state: &State) -> Element<'_, Message> {

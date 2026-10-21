@@ -42,6 +42,8 @@ pub struct Preferences {
     pub asset_library_root: String,
     pub blender_executable: String,
     pub experimental_updates: bool,
+    /// Separate opt-in for prerelease Nightly builds.
+    pub nightly_updates: bool,
     pub automatic_update_checks: bool,
     pub create_desktop_shortcut: bool,
     /// Retain older application settings that the Rust interface does not
@@ -84,6 +86,7 @@ impl Default for Preferences {
             asset_library_root: String::new(),
             blender_executable: String::new(),
             experimental_updates: false,
+            nightly_updates: env!("CARGO_PKG_VERSION").contains("-nightly."),
             automatic_update_checks: true,
             create_desktop_shortcut: false,
             previous_options: BTreeMap::new(),
@@ -385,6 +388,7 @@ mod tests {
         assert_eq!(prefs.file_explorer_side, "Left");
         assert!(!prefs.keep_original_snapshots);
         assert!(!prefs.experimental_updates);
+        assert_eq!(prefs.nightly_updates, env!("CARGO_PKG_VERSION").contains("-nightly."));
         assert_eq!(
             prefs.previous_options.get("another_old_option"),
             Some(&serde_json::json!(true))
