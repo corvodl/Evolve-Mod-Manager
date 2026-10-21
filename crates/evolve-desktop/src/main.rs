@@ -298,6 +298,7 @@ struct State {
     viewer_sidebar_active: ViewerSidebarTab,
     equipment_source: Option<PathBuf>,
     equipment_slots: Vec<EquipmentSlot>,
+    emet_options: Option<evolve_core::EmetOptions>,
     equipment_overrides: EquipmentOverrides,
     kala_tubing: KalaTubingState,
     full_armor_glow: bool,
@@ -1404,6 +1405,8 @@ enum Message {
     ViewerSidebarAnimations(bool),
     ViewerSidebarSelect(ViewerSidebarTab),
     ViewerSidebarClose(ViewerSidebarTab),
+    ViewerEmetFace(String),
+    ViewerEmetBeacon(bool),
     ViewerEquip(String, String),
     ViewerKalaTubingState(KalaTubingState),
     ViewerToggleMonsterGlow,
@@ -2084,6 +2087,7 @@ fn clear_viewer_asset(state: &mut State) {
     state.cdf_report = None;
     state.equipment_source = None;
     state.equipment_slots.clear();
+    state.emet_options = None;
     state.equipment_overrides.clear();
     state.kala_tubing = KalaTubingState::Banshee;
     state.full_armor_glow = false;
@@ -3098,6 +3102,36 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.viewer_sidebar_active = ViewerSidebarTab::Equipment;
             return update(state, Message::ViewerPreviewStaticCdf);
         }
+        Message::ViewerEmetFace(face) => {
+            if state.busy { return Task::none(); }
+            let Some(options) = state.emet_options.as_ref() else {
+                state.status = "Emet expressions require the original Emet 3P CDF.".into();
+                return Task::none();
+            };
+            if face != evolve_core::character_emet::NO_FACE
+                && !options.faces.iter().any(|name| name == &face)
+            {
+                state.status = "Face is not present in Emet's authored CDF.".into();
+                return Task::none();
+            }
+            state.equipment_overrides.insert(evolve_core::character_emet::FACE.into(), face);
+            state.viewer_sidebar_active = ViewerSidebarTab::Equipment;
+            return update(state, Message::ViewerPreviewStaticCdf);
+        }
+        Message::ViewerEmetBeacon(show) => {
+            if state.busy { return Task::none(); }
+            if !state.emet_options.as_ref().is_some_and(|options| !options.beacons.is_empty()) {
+                state.status = "No authored Respawn Beacon attachment in Emet's CDF.".into();
+                return Task::none();
+            }
+            state.equipment_overrides.insert(
+                evolve_core::character_emet::BEACON.into(),
+                (if show { evolve_core::character_emet::BEACON_ON }
+                    else { evolve_core::character_emet::BEACON_OFF }).into(),
+            );
+            state.viewer_sidebar_active = ViewerSidebarTab::Equipment;
+            return update(state, Message::ViewerPreviewStaticCdf);
+        }
         Message::ViewerEquip(slot, binding) => {
             if state.busy {
                 state.status =
@@ -3667,9 +3701,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.damage_blend_percent = 0;
                 state.damage_blend_enabled = false;
                 state.equipment_source = Some(source.clone());
-                state.equipment_slots = read_cdf(&source)
-                    .map(|cdf| discover_equipment(&cdf, inventory))
+                let definition = read_cdf(&source).ok();
+                state.equipment_slots = definition
+                    .as_ref()
+                    .map(|cdf| discover_equipment(cdf, inventory))
                     .unwrap_or_default();
+                state.emet_options = definition.as_ref().and_then(|cdf| {
+                    evolve_core::discover_emet_options(&source.to_string_lossy(), cdf)
+                });
             }
             crash_diagnostics::record("cdf_preview_selected", &entry.relative_path);
             state.cdf_base_surfaces = None;
