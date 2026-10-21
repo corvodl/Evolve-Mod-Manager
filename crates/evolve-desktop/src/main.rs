@@ -2047,7 +2047,9 @@ fn monster_owner_prefix(virtual_cdf: &str) -> Option<String> {
     let (_, rest) = normal.split_once("characters/monsters/")?;
     let folder = rest.split('/').next()?;
     if folder.is_empty()
-        || !folder.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+        || !folder
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
     {
         return None;
     }
@@ -8114,8 +8116,8 @@ mod project_edit_tests {
 
     #[test]
     fn monster_glow_only_targets_its_exact_source_character_namespace() {
-        let owner = monster_owner_prefix("Objects/characters/monsters/grounder/grounder3.cdf")
-            .unwrap();
+        let owner =
+            monster_owner_prefix("Objects/characters/monsters/grounder/grounder3.cdf").unwrap();
         assert_eq!(owner, "characters/monsters/grounder/");
         assert!("objects/characters/monsters/grounder/grounder3.skinm".contains(&owner));
         assert!(!"objects/characters/monsters/grounder_alt/grounder3.skinm".contains(&owner));
