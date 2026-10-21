@@ -2994,8 +2994,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             if state.cdf_legacy_2012 {
                 state.status =
-                    "The optional Glow overlay is not available for original 2012 monsters."
-                        .into();
+                    "The optional Glow overlay is not available for original 2012 monsters.".into();
                 return Task::none();
             }
             state.full_armor_glow = !state.full_armor_glow;
