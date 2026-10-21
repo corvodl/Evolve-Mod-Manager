@@ -410,7 +410,7 @@ fn authored_maps(
     for map in &slot.maps {
         if is_damage_blend_mask(slot, map) {
             warnings.push(
-                "Original CryEngine damage-blend mask is not transparency; showing the intact opaque base (layered damage shader not yet reproduced)".into(),
+                "Original CryEngine damage-blend mask is not transparency; enable the sourced damage diffuse in Model Options to preview the blend".into(),
             );
             continue;
         }
