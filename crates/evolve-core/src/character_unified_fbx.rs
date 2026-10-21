@@ -130,6 +130,9 @@ fn plan_parts(
     let definition = read_cdf(&actual).map_err(|e| e.to_string())?;
     let validated = validated_equipment_overrides(&definition, inventory, equipment)?;
     let (skin_set, selected) = select_attachments(&definition).map_err(|e| e.to_string())?;
+    let selected = crate::character_emet::choose(
+        &actual.to_string_lossy(), &definition, selected, equipment,
+    )?;
     let resolved = resolve_cdf(inventory, &definition);
     let AssetResolution::Found(skeleton_ref) = resolved.skeleton else {
         return Err("Original CDF skeleton is missing or ambiguous".into());
