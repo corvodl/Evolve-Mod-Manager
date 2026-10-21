@@ -653,6 +653,13 @@ fn gfx_viewport(state: &State) -> Element<'_, Message> {
                 ),
             );
         if state.gfx_layout_open {
+            actions = actions.push(
+                design::button(if state.gfx_layout_show_raster {
+                    "Hide FFDec raster backdrop"
+                } else {
+                    "Show FFDec raster backdrop (requires rendered frame)"
+                }).on_press(Message::GfxToggleLayoutRaster)
+            );
             actions = actions.push(text("ROOT FIRST-FRAME LAYERS").size(14))
                 .push(text("Only real DefineShape bounds are draggable. Unbounded sprites support numeric editing. Runtime-created elements cannot be inferred from the static GFX.")
                     .size(11).style(design::muted));
@@ -780,17 +787,29 @@ fn gfx_viewport(state: &State) -> Element<'_, Message> {
     if state.gfx_layout_open {
         if let Some(session) = &state.gfx_session {
             let stage = iced::Size::new(session.info.width as f32, session.info.height as f32);
+            let show_raster = state.gfx_layout_show_raster && state.gfx_preview.is_some();
             let canvas = canvas(super::gfx_layout_canvas::GfxLayoutCanvas {
                 layers: &session.layers,
                 selected: state.gfx_layout_selected,
                 stage,
+                raster_background: show_raster,
             }).width(Fill).height(Fill);
+            let surface: Element<'_, Message> =
+                if let (true, Some(handle)) = (show_raster, &state.gfx_preview) {
+                    stack![
+                        image(handle.clone()).content_fit(iced::ContentFit::Contain)
+                            .width(Fill).height(Fill),
+                        canvas,
+                    ].width(Fill).height(Fill).into()
+                } else {
+                    canvas.into()
+                };
             return row![
                 scrollable(actions.padding(8)).width(Length::FillPortion(2)),
                 column![
                     text("ORIGINAL STAGE COORDINATES · STATIC ROOT FIRST FRAME")
                         .size(12).style(design::muted),
-                    canvas,
+                    surface,
                     text("Drag outlined shapes to update X/Y, then click Stage. Numeric changes are staged only on confirmation.")
                         .size(11).style(design::muted),
                     text("Use Undo staged edit to revert. No GFX or installed PAK is changed until Apply to Mod Project.")
