@@ -718,17 +718,8 @@ fn original_model_material_with_scope(
         if !tried.insert(candidate.to_ascii_lowercase()) {
             continue;
         }
-        match resolve_virtual(inventory, &candidate) {
-            AssetResolution::Found(relative) => {
-                let file = input_file(&root, &relative)?;
-                return Ok(Some((relative, file)));
-            }
-            AssetResolution::Missing => {}
-            AssetResolution::Ambiguous(_) => {
-                return Err(format!(
-                    "Conflicting original MTL for {virtual_mesh}: {candidate}"
-                ));
-            }
+        if let Some(found) = exact_authored_mtl(&root, inventory, &candidate, imported)? {
+            return Ok(Some(found));
         }
     }
     if let Some(authored) = override_mtl {
