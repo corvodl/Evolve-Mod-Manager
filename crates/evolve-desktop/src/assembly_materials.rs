@@ -598,7 +598,7 @@ fn authored_maps(
         if index == 2 && map.role == "decal" {
             result[index] = Some(Arc::new(tint_legacy_decal(slot, &image)));
             warnings.push(format!(
-                "{}: legacy Illum Decal glow uses source GlowAmount and Diffuse tint, without diffuse-alpha masking; animated Decal TexMod not yet supported in the static preview",
+                "{}: legacy Illum Decal uses authored GlowAmount and blue Diffuse tint, without diffuse-alpha masking; the viewer animates the Decal's independent TexMod (FBX stores its original map without baked motion)",
                 slot.name
             ));
         } else {
