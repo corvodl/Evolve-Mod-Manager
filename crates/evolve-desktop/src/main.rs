@@ -3960,18 +3960,30 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::GfxPickBackend => {
-            return Task::perform(async {
-                tokio::task::spawn_blocking(|| native_export_picker("file"))
-                    .await.ok().flatten()
-            }, Message::GfxBackendPicked);
+            return Task::perform(
+                async {
+                    tokio::task::spawn_blocking(|| native_export_picker("file"))
+                        .await
+                        .ok()
+                        .flatten()
+                },
+                Message::GfxBackendPicked,
+            );
         }
         Message::GfxBackendPicked(selected) => {
             if let Some(path) = selected {
-                return update(state, Message::GfxConfigChanged(path.to_string_lossy().into()));
+                return update(
+                    state,
+                    Message::GfxConfigChanged(path.to_string_lossy().into()),
+                );
             }
         }
         Message::GfxSelectResource(index) => {
-            if state.gfx_session.as_ref().is_some_and(|s| index < s.info.resources.len()) {
+            if state
+                .gfx_session
+                .as_ref()
+                .is_some_and(|s| index < s.info.resources.len())
+            {
                 state.gfx_resource = index;
             }
         }
@@ -3981,13 +3993,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             }
             let source = match verified_viewer_file(state) {
-                Ok(p) if p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("gfx")) => p,
+                Ok(p)
+                    if p.extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(|e| e.eq_ignore_ascii_case("gfx")) =>
+                {
+                    p
+                }
                 _ => {
                     state.status = "Select an indexed original .gfx movie before editing.".into();
                     return Task::none();
                 }
             };
-            let relative = state.selected
+            let relative = state
+                .selected
                 .and_then(|i| state.inventory.as_ref()?.entries.get(i))
                 .map(|e| e.relative_path.clone())
                 .unwrap_or_default();
@@ -4003,24 +4022,39 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     return Task::none();
                 }
             }
-            let project = if state.viewer_from_library { None } else {
-                state.modding_selected
+            let project = if state.viewer_from_library {
+                None
+            } else {
+                state
+                    .modding_selected
                     .and_then(|i| state.modding_projects.as_ref()?.get(i))
                     .filter(|p| {
                         std::fs::canonicalize(p.workspace.join("files")).ok()
                             == std::fs::canonicalize(
-                                state.inventory.as_ref().map(|i| i.root.as_str()).unwrap_or("")
-                            ).ok()
-                    }).cloned()
+                                state
+                                    .inventory
+                                    .as_ref()
+                                    .map(|i| i.root.as_str())
+                                    .unwrap_or(""),
+                            )
+                            .ok()
+                    })
+                    .cloned()
             };
             state.gfx_busy = true;
             state.gfx_active = true;
             state.gfx_preview = None;
             state.gfx_status = "Inspecting source GFX and preparing isolated edit copy...".into();
-            return Task::perform(async move {
-                tokio::task::spawn_blocking(move || gfx_editor::create(source, relative, project))
-                    .await.unwrap_or_else(|e| Err(e.to_string()))
-            }, Message::GfxOpened);
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        gfx_editor::create(source, relative, project)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()))
+                },
+                Message::GfxOpened,
+            );
         }
         Message::GfxOpened(result) => {
             state.gfx_busy = false;
@@ -4030,7 +4064,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         "Editable Mod Project GFX session ready. Original PAK remains untouched."
                     } else {
                         "Read-only Asset Library preview. Open a Mod Project for Apply."
-                    }.into();
+                    }
+                    .into();
                     state.gfx_session = Some(session);
                     state.gfx_resource = 0;
                     state.gfx_active = true;
@@ -4043,50 +4078,73 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::GfxPickReplacement => {
-            return Task::perform(async {
-                tokio::task::spawn_blocking(|| native_export_picker("file"))
-                    .await.ok().flatten()
-            }, Message::GfxReplacementPicked);
+            return Task::perform(
+                async {
+                    tokio::task::spawn_blocking(|| native_export_picker("file"))
+                        .await
+                        .ok()
+                        .flatten()
+                },
+                Message::GfxReplacementPicked,
+            );
         }
         Message::GfxPickEdited => {
-            return Task::perform(async {
-                tokio::task::spawn_blocking(|| native_export_picker("file"))
-                    .await.ok().flatten()
-            }, Message::GfxEditedPicked);
+            return Task::perform(
+                async {
+                    tokio::task::spawn_blocking(|| native_export_picker("file"))
+                        .await
+                        .ok()
+                        .flatten()
+                },
+                Message::GfxEditedPicked,
+            );
         }
         Message::GfxEditedPicked(selected) => {
             if let Some(path) = selected {
-                return update(state, Message::GfxAction(gfx_editor::Action::ImportGfx(path)));
+                return update(
+                    state,
+                    Message::GfxAction(gfx_editor::Action::ImportGfx(path)),
+                );
             }
         }
         Message::GfxRevealSession => {
             if let Some(session) = &state.gfx_session {
                 #[cfg(target_os = "windows")]
                 let command = std::process::Command::new("explorer.exe")
-                    .arg(session.folder.path()).spawn();
+                    .arg(session.folder.path())
+                    .spawn();
                 #[cfg(not(target_os = "windows"))]
                 let command = std::process::Command::new("xdg-open")
-                    .arg(session.folder.path()).spawn();
+                    .arg(session.folder.path())
+                    .spawn();
                 state.gfx_status = if command.is_ok() {
                     "Opened GFX editing scratch folder; modify exported XML/scripts there.".into()
                 } else {
-                    format!("Temporary editor folder: {}", session.folder.path().display())
+                    format!(
+                        "Temporary editor folder: {}",
+                        session.folder.path().display()
+                    )
                 };
             }
         }
         Message::GfxReplacementPicked(selected) => {
             if let Some(replacement) = selected {
-                return update(state, Message::GfxAction(
-                    gfx_editor::Action::ReplaceResource {
-                        index: state.gfx_resource, replacement,
-                    },
-                ));
+                return update(
+                    state,
+                    Message::GfxAction(gfx_editor::Action::ReplaceResource {
+                        index: state.gfx_resource,
+                        replacement,
+                    }),
+                );
             }
         }
         Message::GfxApply => {
-            return update(state, Message::GfxAction(gfx_editor::Action::Apply {
-                projects_root: PathBuf::from(&state.preferences.projects),
-            }));
+            return update(
+                state,
+                Message::GfxAction(gfx_editor::Action::Apply {
+                    projects_root: PathBuf::from(&state.preferences.projects),
+                }),
+            );
         }
         Message::GfxAction(action) => {
             if state.gfx_busy || state.busy {
@@ -4100,10 +4158,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let configured = state.preferences.ffdec_executable.clone();
             state.gfx_busy = true;
             state.gfx_status = "Running checked FFDec operation in private edit copy...".into();
-            return Task::perform(async move {
-                tokio::task::spawn_blocking(move || gfx_editor::run(session, action, &configured))
-                    .await.unwrap_or_else(|e| Err(format!("GFX worker failed: {e}")))
-            }, Message::GfxFinished);
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        gfx_editor::run(session, action, &configured)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("GFX worker failed: {e}")))
+                },
+                Message::GfxFinished,
+            );
         }
         Message::GfxFinished(result) => {
             state.gfx_busy = false;
