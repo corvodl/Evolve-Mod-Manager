@@ -319,8 +319,8 @@ fn role_channel(role: &str) -> Option<usize> {
     match role {
         "diffuse" => Some(0),
         "normals" | "normal" | "bumpmap" => Some(1),
-        "emittance" | "emissive" | "emission" | "glow" | "emissivecolor"
-        | "emissionmap" | "glowmap" | "selfillum" | "selfillumination" => Some(2),
+        "emittance" | "emissive" | "emission" | "glow" | "emissivecolor" | "emissionmap"
+        | "glowmap" | "selfillum" | "selfillumination" => Some(2),
         "specular" | "specularcolor" => Some(3),
         "gloss" | "glossiness" | "smoothness" => Some(4),
         "opacity" => Some(5),
