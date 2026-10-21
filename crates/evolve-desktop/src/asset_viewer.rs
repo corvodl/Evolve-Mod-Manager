@@ -517,101 +517,185 @@ fn gfx_viewport(state: &State) -> Element<'_, Message> {
         text(state.gfx_status.as_str()).size(12).style(design::muted)
     ].spacing(8);
     let mut preview: Element<'_, Message> = text(
-        "No static FFDec frame rendered yet. Runtime-defined text and menus may remain blank."
-    ).size(12).style(design::muted).into();
+        "No static FFDec frame rendered yet. Runtime-defined text and menus may remain blank.",
+    )
+    .size(12)
+    .style(design::muted)
+    .into();
     if let Some(handle) = &state.gfx_preview {
         preview = image(handle.clone())
             .content_fit(iced::ContentFit::Contain)
-            .width(Fill).height(Fill).into();
+            .width(Fill)
+            .height(Fill)
+            .into();
     }
     if let Some(session) = &state.gfx_session {
         let info = &session.info;
         actions = actions
-            .push(text(format!(
-                "{} · {}×{} · {:.1} FPS · {} frames · {} sprites · {} tags",
-                session.relative, info.width, info.height, info.fps,
-                info.frames, info.sprites.len(), info.tags,
-            )).size(12))
-            .push(text(format!(
-                "{} · {} resources · {} imports · ActionScript: {}",
-                if info.compressed { "CFX/zlib" } else { "GFX" },
-                info.resources.len(), info.imports.len(),
-                if info.script_present { "present" } else { "none detected" },
-            )).size(11).style(design::muted))
-            .push(text(format!(
-                "{} · {} staged changes · {}",
-                if session.project.is_some() { "Editable Mod Project" } else { "Asset Library / read-only" },
-                session.edits,
-                if session.applied { "Applied to extracted project" } else { "Not applied to project" },
-            )).size(11).style(design::muted))
-            .push(row![
-                design::button("Render selected frame")
-                    .on_press_maybe((!state.gfx_busy).then_some(Message::GfxAction(crate::gfx_editor::Action::PreviewFrame))),
-                design::button("Open full FFDec editor…")
-                    .on_press_maybe((!state.gfx_busy).then_some(Message::GfxAction(crate::gfx_editor::Action::OpenGui))),
-                design::button("Reload FFDec changes")
-                    .on_press_maybe((!state.gfx_busy).then_some(Message::GfxAction(crate::gfx_editor::Action::ReloadGui))),
-            ].spacing(5))
-            .push(row![
-                design::button("Export editable tag XML…")
-                    .on_press_maybe((!state.gfx_busy).then_some(Message::GfxAction(crate::gfx_editor::Action::ExportXml))),
-                design::button("Rebuild from edited XML…")
-                    .on_press_maybe((!state.gfx_busy).then_some(Message::GfxAction(crate::gfx_editor::Action::ImportXml))),
-            ].spacing(5))
-            .push(row![
-                design::button("Export ActionScript sources…")
-                    .on_press_maybe((!state.gfx_busy).then_some(Message::GfxAction(crate::gfx_editor::Action::ExportScripts))),
-                design::button("Rebuild from edited ActionScript…")
-                    .on_press_maybe((!state.gfx_busy).then_some(Message::GfxAction(crate::gfx_editor::Action::ImportScripts))),
-            ].spacing(5))
-            .push(row![
-                design::button("Import edited GFX…")
-                    .on_press_maybe((!state.gfx_busy).then_some(Message::GfxPickEdited)),
-                design::button("Undo staged edit")
-                    .on_press_maybe((!state.gfx_busy && session.edits > 0).then_some(
-                        Message::GfxAction(crate::gfx_editor::Action::Undo)
-                    )),
-                design::button("Open editing files…").on_press(Message::GfxRevealSession),
-            ].spacing(5))
-            .push(design::button("Apply to Mod Project (with EditorBackups)")
-                .on_press_maybe((!state.gfx_busy && session.project.is_some()
-                    && session.edits > 0 && !session.applied).then_some(Message::GfxApply)));
+            .push(
+                text(format!(
+                    "{} · {}×{} · {:.1} FPS · {} frames · {} sprites · {} tags",
+                    session.relative,
+                    info.width,
+                    info.height,
+                    info.fps,
+                    info.frames,
+                    info.sprites.len(),
+                    info.tags,
+                ))
+                .size(12),
+            )
+            .push(
+                text(format!(
+                    "{} · {} resources · {} imports · ActionScript: {}",
+                    if info.compressed { "CFX/zlib" } else { "GFX" },
+                    info.resources.len(),
+                    info.imports.len(),
+                    if info.script_present {
+                        "present"
+                    } else {
+                        "none detected"
+                    },
+                ))
+                .size(11)
+                .style(design::muted),
+            )
+            .push(
+                text(format!(
+                    "{} · {} staged changes · {}",
+                    if session.project.is_some() {
+                        "Editable Mod Project"
+                    } else {
+                        "Asset Library / read-only"
+                    },
+                    session.edits,
+                    if session.applied {
+                        "Applied to extracted project"
+                    } else {
+                        "Not applied to project"
+                    },
+                ))
+                .size(11)
+                .style(design::muted),
+            )
+            .push(
+                row![
+                    design::button("Render selected frame")
+                        .on_press_maybe((!state.gfx_busy).then_some(Message::GfxAction(
+                            crate::gfx_editor::Action::PreviewFrame
+                        ))),
+                    design::button("Open full FFDec editor…").on_press_maybe(
+                        (!state.gfx_busy)
+                            .then_some(Message::GfxAction(crate::gfx_editor::Action::OpenGui))
+                    ),
+                    design::button("Reload FFDec changes").on_press_maybe(
+                        (!state.gfx_busy)
+                            .then_some(Message::GfxAction(crate::gfx_editor::Action::ReloadGui))
+                    ),
+                ]
+                .spacing(5),
+            )
+            .push(
+                row![
+                    design::button("Export editable tag XML…").on_press_maybe(
+                        (!state.gfx_busy)
+                            .then_some(Message::GfxAction(crate::gfx_editor::Action::ExportXml))
+                    ),
+                    design::button("Rebuild from edited XML…").on_press_maybe(
+                        (!state.gfx_busy)
+                            .then_some(Message::GfxAction(crate::gfx_editor::Action::ImportXml))
+                    ),
+                ]
+                .spacing(5),
+            )
+            .push(
+                row![
+                    design::button("Export ActionScript sources…").on_press_maybe(
+                        (!state.gfx_busy).then_some(Message::GfxAction(
+                            crate::gfx_editor::Action::ExportScripts
+                        ))
+                    ),
+                    design::button("Rebuild from edited ActionScript…").on_press_maybe(
+                        (!state.gfx_busy).then_some(Message::GfxAction(
+                            crate::gfx_editor::Action::ImportScripts
+                        ))
+                    ),
+                ]
+                .spacing(5),
+            )
+            .push(
+                row![
+                    design::button("Import edited GFX…")
+                        .on_press_maybe((!state.gfx_busy).then_some(Message::GfxPickEdited)),
+                    design::button("Undo staged edit").on_press_maybe(
+                        (!state.gfx_busy && session.edits > 0)
+                            .then_some(Message::GfxAction(crate::gfx_editor::Action::Undo))
+                    ),
+                    design::button("Open editing files…").on_press(Message::GfxRevealSession),
+                ]
+                .spacing(5),
+            )
+            .push(
+                design::button("Apply to Mod Project (with EditorBackups)").on_press_maybe(
+                    (!state.gfx_busy
+                        && session.project.is_some()
+                        && session.edits > 0
+                        && !session.applied)
+                        .then_some(Message::GfxApply),
+                ),
+            );
         if !info.resources.is_empty() {
             actions = actions.push(text("REPLACE EXISTING RESOURCE · CHARACTER ID").size(13));
             for (index, item) in info.resources.iter().enumerate().take(80) {
                 actions = actions.push(
                     design::button(format!(
                         "{} #{} {}",
-                        item.kind, item.id,
-                        if state.gfx_resource == index { " ✓" } else { "" }
-                    )).on_press(Message::GfxSelectResource(index))
+                        item.kind,
+                        item.id,
+                        if state.gfx_resource == index {
+                            " ✓"
+                        } else {
+                            ""
+                        }
+                    ))
+                    .on_press(Message::GfxSelectResource(index)),
                 );
             }
             if info.resources.len() > 80 {
-                actions = actions.push(text("Only the first 80 tags are selectable here; use full FFDec for others.")
-                    .size(11).style(design::muted));
+                actions = actions.push(
+                    text("Only the first 80 tags are selectable here; use full FFDec for others.")
+                        .size(11)
+                        .style(design::muted),
+                );
             }
             actions = actions.push(
                 design::button("Replace selected resource…")
-                    .on_press_maybe((!state.gfx_busy).then_some(Message::GfxPickReplacement))
+                    .on_press_maybe((!state.gfx_busy).then_some(Message::GfxPickReplacement)),
             );
         }
         if !info.imports.is_empty() {
-            actions = actions.push(text(format!(
-                "Imported movies (same-build assets required): {}",
-                info.imports.join(", ")
-            )).size(11).style(design::muted));
+            actions = actions.push(
+                text(format!(
+                    "Imported movies (same-build assets required): {}",
+                    info.imports.join(", ")
+                ))
+                .size(11)
+                .style(design::muted),
+            );
         }
     } else {
-        actions = actions.push(
-            design::button("Inspect selected .gfx")
-                .on_press(Message::GfxOpenSelected)
-        );
+        actions = actions
+            .push(design::button("Inspect selected .gfx").on_press(Message::GfxOpenSelected));
     }
     row![
         scrollable(actions.padding(8)).width(Length::FillPortion(2)),
-        container(preview).center(Fill).width(Length::FillPortion(3))
-    ].spacing(12).height(Fill).into()
+        container(preview)
+            .center(Fill)
+            .width(Length::FillPortion(3))
+    ]
+    .spacing(12)
+    .height(Fill)
+    .into()
 }
 
 fn viewport(state: &State) -> Element<'_, Message> {
