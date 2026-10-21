@@ -1486,6 +1486,69 @@ mod tests {
     }
 
     #[test]
+    fn scorpid_low_tail_and_high_top_mip_use_same_build_manifest_only() {
+        let lib = tempfile::tempdir().unwrap();
+        let low = lib.path().join("dds_low.pak__11111111111111111111");
+        let high = lib.path().join("dds_high.pak__22222222222222222222");
+        let legacy = lib.path().join("legacy_high.pak__33333333333333333333");
+        let relative = "objects/characters/monsters/scorpid_2/scorpid_body.dds";
+        let low_file = low.join("files").join(format!("{relative}.0"));
+        let high_file = high.join("files").join(format!("{relative}.2"));
+        let legacy_file = legacy.join("files").join(format!("{relative}.2"));
+        for file in [&low_file, &high_file, &legacy_file] {
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+        }
+        let mut tail = vec![0u8; 128];
+        tail[0..4].copy_from_slice(b"DDS ");
+        tail[4..8].copy_from_slice(&124u32.to_le_bytes());
+        tail[8..12].copy_from_slice(&0x21007u32.to_le_bytes());
+        tail[12..16].copy_from_slice(&8u32.to_le_bytes());
+        tail[16..20].copy_from_slice(&8u32.to_le_bytes());
+        tail[28..32].copy_from_slice(&3u32.to_le_bytes());
+        tail[76..80].copy_from_slice(&32u32.to_le_bytes());
+        tail[80..84].copy_from_slice(&4u32.to_le_bytes());
+        tail[84..88].copy_from_slice(b"DXT1");
+        tail.extend_from_slice(&[224, 7, 0, 248, 0, 0, 0, 0]);
+        fs::write(&low_file, &tail).unwrap();
+        fs::write(low_file.with_file_name("scorpid_body.dds.1"), [224, 7, 0, 248, 0, 0, 0, 0]).unwrap();
+        fs::write(&high_file, [0, 248, 224, 7, 0, 0, 0, 0].repeat(4)).unwrap();
+        fs::write(&legacy_file, [224, 7, 0, 248, 0, 0, 0, 0].repeat(4)).unwrap();
+        for (archive, name, entries) in [
+            (&low, "dds_low.pak", vec![
+                serde_json::json!({"path":format!("{relative}.0"),"bytes":136}),
+                serde_json::json!({"path":format!("{relative}.1"),"bytes":8}),
+            ]),
+            (&high, "dds_high.pak", vec![
+                serde_json::json!({"path":format!("{relative}.2"),"bytes":32}),
+            ]),
+            (&legacy, "legacy_high.pak", vec![
+                serde_json::json!({"path":format!("{relative}.2"),"bytes":32}),
+            ]),
+        ] {
+            fs::write(archive.join("asset-library.json"), serde_json::to_vec(&serde_json::json!({
+                "version":1,"name":name,"source":"C:/game/assets.pak","entries":entries
+            })).unwrap()).unwrap();
+        }
+        fs::write(lib.path().join("build-collections.json"), serde_json::to_vec(&serde_json::json!({
+            "version":1,"builds":{
+                "stage-two":{"label":"Stage 2","members":{
+                    "11111111111111111111":{},"22222222222222222222":{}
+                }},
+                "legacy":{"label":"Legacy","members":{"33333333333333333333":{}}}
+            }
+        })).unwrap()).unwrap();
+        let inventory = crate::scan_directory(&low.join("files")).unwrap();
+        let scope = texture_scope(&inventory).unwrap();
+        let fragments = matching_imported_high_mips(&low_file, Some(&scope)).unwrap();
+        assert_eq!(fragments.len(), 1);
+        assert_eq!(fragments[0], fs::canonicalize(&high_file).unwrap());
+        assert!(crate::dds::decode_dds_rgba(&low_file).is_err());
+        let (info, image) = decode_original_mip(&low_file, Some(&scope)).unwrap();
+        assert_eq!(info.streaming_parts, 3);
+        assert_eq!(image.get_pixel(7, 7).0, [255, 0, 0, 255]);
+    }
+
+    #[test]
     fn missing_original_cdf_never_produces_export() {
         let root = tempfile::tempdir().unwrap();
         let output = tempfile::tempdir().unwrap();
