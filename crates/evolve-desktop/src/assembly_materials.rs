@@ -344,10 +344,8 @@ fn legacy_decal_role(slot: &evolve_core::MaterialSlot, role: &str) -> Option<usi
     }
 }
 
-/// Source-only static approximation: the authored Decal RGB and alpha are
-/// tinted by the material's authored Diffuse RGB, never by the unrelated
-/// body diffuse-alpha map or its serialized Emissive="0,0,0".
-/// Animated Decal TexMod coordinates require a separate renderer feature.
+/// The authored Decal transform affects only emission; it does not move UV0
+/// for diffuse, normals, opacity, or original character geometry.
 fn source_decal_motion(slot: &evolve_core::MaterialSlot) -> Option<evolve_core::DecalTexMod> {
     let source = slot.decal_tex_mod?;
     let emitted = slot
@@ -365,17 +363,47 @@ fn source_decal_motion(slot: &evolve_core::MaterialSlot) -> Option<evolve_core::
     }
 }
 
+/// Kala's animated chroma-fan atlas contains different source RGB hues.
+/// Its dedicated Banshee Gun Glow leaf instead authors a blue Diffuse color.
+/// Use the atlas's linear brightness as the independent moving emission mask:
+/// RGB-by-RGB multiplication retained the atlas's red frames as red streaks.
+/// Restrict this source-specific mask interpretation to the verified material;
+/// other legacy Decals keep their authored per-channel texture colors.
+fn kala_banshee_brightness_mask(slot: &evolve_core::MaterialSlot) -> bool {
+    slot.name.eq_ignore_ascii_case("bansheegun glow")
+        && slot.diffuse_tint.is_some()
+        && slot.maps.iter().any(|map| {
+            map.role == "decal"
+                && map
+                    .path
+                    .rsplit('/')
+                    .next()
+                    .is_some_and(|file| file.eq_ignore_ascii_case("chroma_fan320tiled_01b.tif"))
+        })
+}
+
 fn tint_legacy_decal(
     slot: &evolve_core::MaterialSlot,
     decal: &image::RgbaImage,
 ) -> image::RgbaImage {
     let tint = slot.diffuse_tint.unwrap_or([1.0, 1.0, 1.0]);
+    let use_brightness_mask = kala_banshee_brightness_mask(slot);
     let mut result = decal.clone();
     for pixel in result.pixels_mut() {
-        let mask = f32::from(pixel[3]) / 255.0;
+        let alpha = f32::from(pixel[3]) / 255.0;
+        let channels = [
+            srgb_linear(pixel[0]),
+            srgb_linear(pixel[1]),
+            srgb_linear(pixel[2]),
+        ];
+        let brightness = channels[0].max(channels[1]).max(channels[2]);
         for channel in 0..3 {
-            pixel[channel] =
-                linear_srgb(srgb_linear(pixel[channel]) * tint[channel].clamp(0.0, 1.0) * mask);
+            let source = if use_brightness_mask {
+                brightness
+            } else {
+                channels[channel]
+            };
+            pixel[channel] = linear_srgb(source * tint[channel].clamp(0.0, 1.0) * alpha);
         }
         pixel[3] = 255;
     }
@@ -1319,6 +1347,30 @@ mod tests {
         assert!(decal.pixels().all(|p| p[2] > p[1] && p[1] > p[0]));
         assert!(decal.pixels().all(|p| p[2] > 0));
         assert_eq!(original.get_pixel(0, 0)[0], 180);
+        assert!(kala_banshee_brightness_mask(slot));
+
+        // Regression: a red frame in the original rainbow/chroma atlas
+        // must still generate BLUE light on Kala, without modifying UV motion.
+        let red_frame = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]));
+        let corrected = tint_legacy_decal(slot, &red_frame);
+        let color = corrected.get_pixel(0, 0);
+        assert!(color[2] > color[1] && color[1] > color[0]);
+        assert!(color[2] > 0);
+        assert_eq!(*red_frame.get_pixel(0, 0), image::Rgba([255, 0, 0, 255]));
+        assert_eq!(slot.decal_tex_mod.unwrap().sample(2.0)[..2], [3.0, 4.0]);
+
+        // Atlas alpha remains an intensity mask, not mesh opacity.
+        let transparent = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 0]));
+        assert_eq!(
+            tint_legacy_decal(slot, &transparent).get_pixel(0, 0).0,
+            [0, 0, 0, 255]
+        );
+        let mut unrelated = slot.clone();
+        unrelated.name = "other legacy emissive".into();
+        assert!(!kala_banshee_brightness_mask(&unrelated));
+        let preserved = tint_legacy_decal(&unrelated, &red_frame);
+        assert!(preserved.get_pixel(0, 0)[0] > preserved.get_pixel(0, 0)[2]);
+
         let mut body = slot.clone();
         body.alpha_glow = true;
         assert_eq!(legacy_decal_role(&body, "decal"), None);
