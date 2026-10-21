@@ -4336,6 +4336,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             };
             let configured = state.preferences.ffdec_executable.clone();
+            // Any edit/undo/FFDec GUI handoff invalidates the old raster. Do
+            // not paint a stale frame behind newly moved GFX placements.
+            if !matches!(
+                action,
+                gfx_editor::Action::PreviewFrame
+                    | gfx_editor::Action::ExportXml
+                    | gfx_editor::Action::ExportScripts
+            ) {
+                state.gfx_preview = None;
+            }
             state.gfx_busy = true;
             state.gfx_status = "Running checked FFDec operation in private edit copy...".into();
             return Task::perform(
