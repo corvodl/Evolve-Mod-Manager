@@ -960,6 +960,79 @@ mod tests {
     }
 
     #[test]
+    fn cdf_resolves_scoped_high_dds_from_another_imported_pak() {
+        let library = tempfile::tempdir().unwrap();
+        let objects = library.path().join("Objects.pak__11111111111111111111");
+        let high = library.path().join("dds_high.pak__22222222222222222222");
+        let legacy = library.path().join("legacy_high.pak__33333333333333333333");
+        let character = "Objects/characters/monsters/scorpid_2";
+        for archive in [&objects, &high, &legacy] {
+            fs::create_dir_all(archive.join("files").join(character)).unwrap();
+        }
+        let mesh = objects.join("files").join(character).join("scorpid3.chr");
+        fs::write(&mesh, b"original model file").unwrap();
+        let mtl = objects.join("files").join(character).join("scorpid3.mtl");
+        fs::write(
+            &mtl,
+            br#"<Material Name="Scorpid"><Textures><Texture Map="Diffuse" File="body.tif"/></Textures></Material>"#,
+        )
+        .unwrap();
+        let texture = format!("{character}/body.dds.0");
+        let high_dds = high.join("files").join(&texture);
+        fs::write(&high_dds, b"source high").unwrap();
+        fs::write(legacy.join("files").join(&texture), b"legacy high").unwrap();
+        for (archive, name, entries) in [
+            (
+                &objects,
+                "Objects.pak",
+                vec![
+                    serde_json::json!({"path":format!("{character}/scorpid3.chr"),"bytes":19}),
+                    serde_json::json!({"path":format!("{character}/scorpid3.mtl"),"bytes":fs::metadata(&mtl).unwrap().len()}),
+                ],
+            ),
+            (&high, "dds_high.pak", vec![serde_json::json!({"path":texture,"bytes":11})]),
+            (&legacy, "legacy_high.pak", vec![serde_json::json!({"path":texture,"bytes":11})]),
+        ] {
+            fs::write(
+                archive.join("asset-library.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "version":1,"name":name,"source":"C:/game/assets.pak","entries":entries
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        fs::write(
+            library.path().join("build-collections.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version":1,"builds":{
+                    "stage-two":{"label":"Stage 2","members":{
+                        "11111111111111111111":{},"22222222222222222222":{}
+                    }},
+                    "legacy":{"label":"Legacy","members":{"33333333333333333333":{}}}
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let inventory = crate::scan_directory(&objects.join("files")).unwrap();
+        let scope = texture_scope(&inventory).unwrap();
+        assert_eq!(scope.build.as_deref(), Some("Stage 2"));
+        let maps = exact_single_slot_maps_with_scope(
+            Path::new(&inventory.root),
+            &mesh,
+            &inventory,
+            None,
+            Some(&scope),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::canonicalize(maps.diffuse.unwrap()).unwrap(),
+            fs::canonicalize(high_dds).unwrap()
+        );
+    }
+
+    #[test]
     fn missing_original_cdf_never_produces_export() {
         let root = tempfile::tempdir().unwrap();
         let output = tempfile::tempdir().unwrap();
