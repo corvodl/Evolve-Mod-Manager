@@ -241,9 +241,11 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
     });
     if monster_selected && state.cdf_legacy_2012 {
         entries = entries.push(
-            text("2012 original monster: optional Stage 2 Glow and damage blend are not available.")
-                .size(11)
-                .style(design::muted),
+            text(
+                "2012 original monster: optional Stage 2 Glow and damage blend are not available.",
+            )
+            .size(11)
+            .style(design::muted),
         );
     }
     if monster_selected && !state.cdf_legacy_2012 {
