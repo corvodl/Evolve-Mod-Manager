@@ -697,6 +697,43 @@ fn gfx_viewport(state: &State) -> Element<'_, Message> {
                             .then_some(Message::GfxStageLayout)));
             }
         }
+        actions = actions
+            .push(design::button(if state.gfx_live_open {
+                "Close Live UI Inspector (read-only)"
+            } else {
+                "Live UI Inspector (read-only)…"
+            }).on_press(Message::GfxToggleLiveInspector));
+        if state.gfx_live_open {
+            actions = actions
+                .push(text("LIVE UI INSPECTOR · READ-ONLY").size(14))
+                .push(text(state.gfx_live_status.as_str()).size(11).style(design::muted))
+                .push(design::button("Load externally captured UI snapshot JSON…")
+                    .on_press(Message::GfxImportUiSnapshot));
+            if let Some(snapshot) = &state.gfx_live_snapshot {
+                actions = actions
+                    .push(text(format!("{} · frame {} · {} nodes",snapshot.movie,snapshot.frame,snapshot.nodes.len()))
+                        .size(12));
+                for node in &snapshot.nodes {
+                    let indent = "  ".repeat(super::gfx_live_inspector::indent(snapshot,node).min(12));
+                    actions = actions.push(text(format!(
+                        "{}{} · {} · {}  at ({:.1},{:.1})  {}×{}  {}",
+                        indent,node.name,node.kind,node.text,node.x,node.y,
+                        node.width,node.height,if node.visible {"visible"}else{"hidden"},
+                    )).size(11));
+                }
+            } else {
+                actions = actions.push(text(
+                    "Actual live game hierarchy capture requires a separately verified offline GFx game-thread provider. No guessed pointers, process injection, or simulated live nodes."
+                ).size(11).style(design::muted));
+            }
+        }
+        if !session.dependencies.is_empty() {
+            actions = actions.push(text("SAME-BUILD GFX/SWF DEPENDENCIES").size(13));
+            for dep in &session.dependencies {
+                actions=actions.push(text(format!("{} — {}",dep.reference,dep.outcome))
+                    .size(11).style(design::muted));
+            }
+        }
         if !info.resources.is_empty() {
             actions = actions.push(text("REPLACE EXISTING RESOURCE · CHARACTER ID").size(13));
             for (index, item) in info.resources.iter().enumerate().take(80) {
