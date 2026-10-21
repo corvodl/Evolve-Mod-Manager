@@ -349,6 +349,19 @@ fn authored_texture(
     ))
 }
 
+/// Goliath's authored Illum BLENDLAYER materials bind a damage-blend color
+/// mask in an XML channel named "Opacity". It controls the alternate damage
+/// layer, not the mesh's coverage. Never discard solid body pixels using it.
+/// The exact authoring convention is also present in Goliath 1 and Goliath 2.
+fn is_damage_blend_mask(
+    slot: &evolve_core::MaterialSlot,
+    map: &evolve_core::TextureReference,
+) -> bool {
+    slot.shader.eq_ignore_ascii_case("Illum")
+        && map.role == "opacity"
+        && map.path.to_ascii_lowercase().contains("damage_blend_diff")
+}
+
 /// Per-channel resolved source textures and independent missing-map diagnostics.
 type ResolvedMaterialMaps = ([Option<Arc<image::RgbaImage>>; 6], Vec<String>);
 
@@ -388,11 +401,19 @@ fn authored_maps(
     // layer based on XML ordering.
     let mut counts = [0usize; 6];
     for map in &slot.maps {
-        if let Some(index) = role_channel(&map.role) {
+        if !is_damage_blend_mask(slot, map)
+            && let Some(index) = role_channel(&map.role)
+        {
             counts[index] += 1;
         }
     }
     for map in &slot.maps {
+        if is_damage_blend_mask(slot, map) {
+            warnings.push(
+                "Original CryEngine damage-blend mask is not transparency; showing the intact opaque base (layered damage shader not yet reproduced)".into(),
+            );
+            continue;
+        }
         let Some(index) = role_channel(&map.role) else {
             continue;
         };
@@ -459,7 +480,10 @@ fn needs_alpha_blending(slot: &evolve_core::MaterialSlot) -> bool {
     // through Goliath's body when the mask has intermediate gray values.
     is_translucent_shader(slot)
         || (slot.opacity.is_some_and(|value| value < 0.999)
-            && !slot.maps.iter().any(|map| map.role == "opacity"))
+            && !slot
+                .maps
+                .iter()
+                .any(|map| map.role == "opacity" && !is_damage_blend_mask(slot, map)))
 }
 
 /// The authoring model, not the diffuse bitmap's fourth channel, decides
@@ -741,6 +765,51 @@ mod tests {
         assert!(needs_alpha_blending(&make("Glass", Some(1.0), true)));
         assert!(needs_alpha_blending(&make("Water", None, false)));
         assert!(needs_alpha_blending(&make("Illum", Some(0.35), false)));
+    }
+
+    #[test]
+    fn goliath3_damage_blend_opacity_preserves_solid_body() {
+        // Source shape: Goliath3.mtl uses one Illum mesh slot with
+        // goliath1_damage_blend_diff.tif in its "Opacity" channel, while
+        // separate NoDraw skeleton slots and eye slot remain in place.
+        let document = evolve_core::parse_material(
+            br#"<Material><SubMaterials>
+                <Material Name="head_skel" Shader="NoDraw"/>
+                <Material Name="torso_skel" Shader="NoDraw"/>
+                <Material Name="limbs_skel" Shader="NoDraw"/>
+                <Material Name="mesh" Shader="Illum" Opacity="1">
+                    <Textures>
+                        <Texture Map="Diffuse" File="characters/monsters/goliath/textures/goliath3_diff.tif"/>
+                        <Texture Map="Opacity" File="characters/monsters/goliath/textures/goliath1_damage_blend_diff.tif"/>
+                    </Textures>
+                </Material>
+                <Material Name="unused" Shader="NoDraw"/>
+                <Material Name="Eyes" Shader="Illum">
+                    <Textures><Texture Map="Diffuse" File="characters/monsters/goliath/textures/goliath3_diff.tif"/></Textures>
+                </Material>
+            </SubMaterials></Material>"#,
+        )
+        .unwrap();
+        assert_eq!(document.slots.len(), 6);
+        let body = &document.slots[3];
+        let damage = body
+            .maps
+            .iter()
+            .find(|map| map.role == "opacity")
+            .unwrap();
+        assert!(is_damage_blend_mask(body, damage));
+        assert!(!needs_alpha_blending(body));
+        assert!(verified_opacity(body, None).is_none());
+        assert_eq!(document.slots[5].name, "Eyes");
+
+        // A real authored cutout must still retain its opacity semantics.
+        let genuine = evolve_core::parse_material(
+            br#"<Material Shader="Illum"><Textures>
+                <Texture Map="Opacity" File="textures/leaf_cutout.tif"/>
+            </Textures></Material>"#,
+        )
+        .unwrap();
+        assert!(!is_damage_blend_mask(&genuine.slots[0], &genuine.slots[0].maps[0]));
     }
 
     #[test]
