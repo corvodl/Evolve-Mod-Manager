@@ -15,7 +15,7 @@ Choose one of the two Windows downloads attached to a release:
 
 Windows may request administrator approval when launching the manager. Download builds only from the repository's Releases page. You **do not** need to install Rust, Visual Studio, or build the project yourself.
 
-Nightly releases receive experimental fixes first. Under **Settings → Updates**, choose Stable, Beta, or Nightly and check for new versions. Updates are verified against the SHA-256 checksums included in their GitHub release notes.
+Nightly releases receive experimental fixes first. Under **Settings → Updates**, choose Stable, Beta, or Nightly and check for new versions. When an update is available, select **Update and restart**: the manager downloads and verifies the matching GitHub release, closes itself, installs the update, and reopens. Portable copies remain portable. You do not need to download or run the installer yourself for subsequent updates.
 
 ## Features
 
@@ -30,7 +30,7 @@ The following features are available or being actively tested in the public prev
 - **Animations** — Experimental native CAF playback and character animation inspection, with limited DBA/conversion support.
 - **Blender exports** — Experimental model, character-assembly, and rigged FBX export, with optional material textures and animation support where verified.
 - **Level tools** — Preview supported terrain and level assets and export experimental Blender-compatible scenes.
-- **Settings and updates** — Appearance options, configurable paths, recovery preferences, and separate Stable/Beta/Nightly update channels.
+- **Settings and updates** — Appearance options, configurable paths, recovery preferences, Stable/Beta/Nightly channels, and experimental one-click verified update and restart.
 
 **Compatibility varies by asset.** Some Stage 2 and historical assets require additional material or skeleton handling. Missing dependencies and ambiguous references are reported rather than replaced with invented data.
 
@@ -41,7 +41,7 @@ The following features are available or being actively tested in the public prev
 - More complete **CAF/DBA animation** playback, skeleton compatibility, and layered animations.
 - Expanded **Level Editor** tools for assembling, editing, and exporting textured levels.
 - More complete **PAK and mod-profile management**, safe installed-game application, restore/rollback, and automated dependency handling.
-- **Seamless in-app updates** that apply verified downloads and restart the manager without making the user run the installer manually.
+- More reliable **update recovery and progress feedback** for installed and portable versions.
 - Performance, stability, and usability improvements as Nightly builds are tested.
 
 See [the development parity checklist](docs/PARITY.md) for technical implementation status.
