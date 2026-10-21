@@ -16,8 +16,7 @@ fn regular(path: &Path) -> bool {
 }
 
 /// Public-only original Stage 2 verification key; no private signing material.
-const ORIGINAL_PUBLIC_RSA: &[u8; 140] =
-    include_bytes!("../../../assets/reference/RSAKeyData.bin");
+const ORIGINAL_PUBLIC_RSA: &[u8; 140] = include_bytes!("../../../assets/reference/RSAKeyData.bin");
 
 pub struct ArchiveVerificationKeys {
     pub paths: Vec<PathBuf>,
