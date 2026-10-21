@@ -127,6 +127,19 @@ fn fs_main(input: Output) -> @location(0) vec4<f32> {
     return shade(input);
 }
 
+// Solid CryEngine character masks are alpha-tested with depth writes.
+// A gray authored opacity mask must not make the entire body see-through.
+// Preserve true blending for authored glass/water materials.
+@fragment
+fn fs_masked(input: Output) -> @location(0) vec4<f32> {
+    let coverage = clamp(textureSample(opacity_map, material_sampler, input.uv).r, 0.0, 1.0);
+    if coverage < 0.5 {
+        discard;
+    }
+    let color = shade(input);
+    return vec4<f32>(color.rgb, 1.0);
+}
+
 @fragment
 fn fs_opacity(input: Output) -> @location(0) vec4<f32> {
     let color = shade(input);
