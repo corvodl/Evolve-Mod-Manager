@@ -536,26 +536,36 @@ fn apply_export_damage_layer(
     }
     let mut applied = 0;
     for (leaf, target) in doc.slots.iter().zip(slots.iter_mut()) {
-        let Some(base_png) = target.diffuse.as_ref() else { continue };
+        let Some(base_png) = target.diffuse.as_ref() else {
+            continue;
+        };
         if target.no_draw {
             continue;
         }
         let Some((alternate_ref, blend_ref)) = crate::materials::authored_damage_layer(leaf) else {
             continue;
         };
-        let alternate_path = exact_original_texture(
-            root, inventory, &virtual_mtl, alternate_ref, imported,
-        )?.ok_or_else(|| format!("Missing authored alternate damage map {alternate_ref}"))?;
-        let blend_path = exact_original_texture(
-            root, inventory, &virtual_mtl, blend_ref, imported,
-        )?.ok_or_else(|| format!("Missing authored damage blend mask {blend_ref}"))?;
+        let alternate_path =
+            exact_original_texture(root, inventory, &virtual_mtl, alternate_ref, imported)?
+                .ok_or_else(|| format!("Missing authored alternate damage map {alternate_ref}"))?;
+        let blend_path =
+            exact_original_texture(root, inventory, &virtual_mtl, blend_ref, imported)?
+                .ok_or_else(|| format!("Missing authored damage blend mask {blend_ref}"))?;
         let base = image::load_from_memory(base_png)
             .map_err(|e| format!("Invalid original subset diffuse PNG: {e}"))?
             .to_rgba8();
-        let (_, alternate) = crate::dds::decode_dds_rgba(&alternate_path)
-            .map_err(|e| format!("Cannot decode authored damage map {}: {e}", alternate_path.display()))?;
-        let (_, mask) = crate::dds::decode_dds_rgba(&blend_path)
-            .map_err(|e| format!("Cannot decode authored damage mask {}: {e}", blend_path.display()))?;
+        let (_, alternate) = crate::dds::decode_dds_rgba(&alternate_path).map_err(|e| {
+            format!(
+                "Cannot decode authored damage map {}: {e}",
+                alternate_path.display()
+            )
+        })?;
+        let (_, mask) = crate::dds::decode_dds_rgba(&blend_path).map_err(|e| {
+            format!(
+                "Cannot decode authored damage mask {}: {e}",
+                blend_path.display()
+            )
+        })?;
         let mixed = crate::materials::blend_damage_rgba(&base, &alternate, &mask, percent)?;
         let mut png = Vec::new();
         image::codecs::png::PngEncoder::new(&mut png)
@@ -853,13 +863,22 @@ pub fn export_unified_cdf_fbx_options_with_glow(
             if damage_blend_percent > 0
                 && monster_dir.as_deref().is_some_and(|owner| {
                     original.strip_prefix(&root).is_ok_and(|relative| {
-                        relative.to_string_lossy().replace('\\', "/").to_ascii_lowercase().starts_with(owner)
+                        relative
+                            .to_string_lossy()
+                            .replace('\\', "/")
+                            .to_ascii_lowercase()
+                            .starts_with(owner)
                     })
                 })
             {
                 applied_damage += apply_export_damage_layer(
-                    &root, original, inventory, material_hint.as_deref(),
-                    imported.as_ref(), &mut slots, damage_blend_percent,
+                    &root,
+                    original,
+                    inventory,
+                    material_hint.as_deref(),
+                    imported.as_ref(),
+                    &mut slots,
+                    damage_blend_percent,
                 )?;
             }
             // Only original parts of THIS monster get the glow overlay;
@@ -899,7 +918,11 @@ pub fn export_unified_cdf_fbx_options_with_glow(
             if damage_blend_percent > 0
                 && monster_dir.as_deref().is_some_and(|owner| {
                     original.strip_prefix(&root).is_ok_and(|relative| {
-                        relative.to_string_lossy().replace('\\', "/").to_ascii_lowercase().starts_with(owner)
+                        relative
+                            .to_string_lossy()
+                            .replace('\\', "/")
+                            .to_ascii_lowercase()
+                            .starts_with(owner)
                     })
                 })
             {
@@ -909,8 +932,13 @@ pub fn export_unified_cdf_fbx_options_with_glow(
                     ..Default::default()
                 }];
                 applied_damage += apply_export_damage_layer(
-                    &root, original, inventory, material_hint.as_deref(),
-                    imported.as_ref(), &mut slots, damage_blend_percent,
+                    &root,
+                    original,
+                    inventory,
+                    material_hint.as_deref(),
+                    imported.as_ref(),
+                    &mut slots,
+                    damage_blend_percent,
                 )?;
                 diffuse = slots.pop().and_then(|slot| slot.diffuse);
             }
