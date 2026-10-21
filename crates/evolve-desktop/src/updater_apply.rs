@@ -42,6 +42,7 @@ pub struct PreparedUpdate {
 
 fn is_manager_binary(exe: &Path) -> bool {
     exe.file_name()
+        .and_then(|name| name.to_str())
         .is_some_and(|name| name.eq_ignore_ascii_case("evolve-mod-manager.exe"))
 }
 
