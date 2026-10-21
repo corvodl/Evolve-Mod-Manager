@@ -8050,6 +8050,36 @@ mod project_edit_tests {
     }
 
     #[test]
+    fn gfx_tools_is_contextual_and_switches_sections_without_sidebar_overlay() {
+        let mut state = State::default();
+        assert_eq!(state.gfx_tools_section, GfxToolsSection::Preview);
+        // Outside a GFX session the contextual tab is not selectable.
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarSelect(ViewerSidebarTab::GfxTools),
+        );
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
+        state.gfx_active = true;
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarSelect(ViewerSidebarTab::GfxTools),
+        );
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::GfxTools);
+        let _ = update(&mut state, Message::GfxToolsSection(GfxToolsSection::Layout));
+        assert!(state.gfx_layout_open);
+        assert!(state.viewer_explorer_visible);
+        assert_eq!(state.gfx_tools_section, GfxToolsSection::Layout);
+        let _ = update(&mut state, Message::GfxToolsSection(GfxToolsSection::Scripts));
+        assert_eq!(state.gfx_tools_section, GfxToolsSection::Scripts);
+        assert!(!state.gfx_layout_open);
+        let _ = update(&mut state, Message::GfxToolsSection(GfxToolsSection::Preview));
+        assert!(!state.gfx_layout_open);
+        // Like Files and Model Options, the contextual tab has no close button.
+        let _ = update(&mut state, Message::ViewerSidebarClose(ViewerSidebarTab::GfxTools));
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
+    }
+
+    #[test]
     fn docked_tools_can_open_switch_and_close_without_closing_files() {
         let mut state = State::default();
         let _ = update(
