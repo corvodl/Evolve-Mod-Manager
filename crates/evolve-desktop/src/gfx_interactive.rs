@@ -138,8 +138,8 @@ fn stage_import(
     reference: &str,
     output: &Path,
 ) -> Result<Option<(usize, usize)>, String> {
-    if !safe_import(reference) {
-        return Err("The movie contains an unsafe GFX/SWF import".into());
+    if !safe_import(reference) || reference.eq_ignore_ascii_case("movie.swf") {
+        return Err("The movie contains an unsafe or colliding GFX/SWF import".into());
     }
     let source_root = fs::canonicalize(session.folder.path()).map_err(|e| e.to_string())?;
     let candidate = source_root.join(reference);
@@ -232,6 +232,39 @@ mod tests {
         assert!(!safe_import("C:/evil.gfx"));
         assert!(safe_import("effects/modes.swf"));
         assert!(!safe_import("image.dds"));
+        assert!(safe_import("movie.swf")); // Reject at staging: destination collision.
+        assert_eq!("movie.swf".to_ascii_lowercase(), "movie.swf");
+    }
+    #[test]
+    fn valid_gfx_keeps_bytecode_and_tags_when_converted_for_runtime() {
+        // Minimal SWF frame header and one DoAction tag, deliberately without
+        // invoking a player or requiring copyrighted game files.
+        let mut bits = vec![0u8; 5 + 4 * 17];
+        let mut put = |offset: usize, width: usize, value: u32| {
+            for n in 0..width {
+                bits[offset + n] = ((value >> (width - 1 - n)) & 1) as u8;
+            }
+        };
+        put(0, 5, 17);
+        for (i, number) in [0i32, 38400, 0, 21600].iter().enumerate() {
+            put(5 + i * 17, 17, *number as u32);
+        }
+        let mut body = vec![0u8; bits.len().div_ceil(8)];
+        for (i, bit) in bits.iter().enumerate() {
+            body[i / 8] |= bit << (7 - i % 8);
+        }
+        body.extend(7680u16.to_le_bytes());
+        body.extend(1u16.to_le_bytes());
+        body.extend(((12u16 << 6) | 1).to_le_bytes());
+        body.push(0); // ActionEnd.
+        body.extend(0u16.to_le_bytes());
+        let mut original = b"GFX".to_vec();
+        original.push(15);
+        original.extend(((body.len() + 8) as u32).to_le_bytes());
+        original.extend(body);
+        let player = flash_movie(&original).unwrap();
+        assert_eq!(&player[..3], b"FWS");
+        assert_eq!(&player[3..], &original[3..]); // Preserved ActionScript.
     }
     #[test]
     fn rejects_invalid_flash_movie_without_executing_code() {
