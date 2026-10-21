@@ -792,11 +792,7 @@ mod tests {
         .unwrap();
         assert_eq!(document.slots.len(), 6);
         let body = &document.slots[3];
-        let damage = body
-            .maps
-            .iter()
-            .find(|map| map.role == "opacity")
-            .unwrap();
+        let damage = body.maps.iter().find(|map| map.role == "opacity").unwrap();
         assert!(is_damage_blend_mask(body, damage));
         assert!(!needs_alpha_blending(body));
         assert!(verified_opacity(body, None).is_none());
@@ -809,7 +805,10 @@ mod tests {
             </Textures></Material>"#,
         )
         .unwrap();
-        assert!(!is_damage_blend_mask(&genuine.slots[0], &genuine.slots[0].maps[0]));
+        assert!(!is_damage_blend_mask(
+            &genuine.slots[0],
+            &genuine.slots[0].maps[0]
+        ));
     }
 
     #[test]
