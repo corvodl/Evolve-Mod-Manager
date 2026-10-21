@@ -515,8 +515,11 @@ pub fn run(
             // temporary render copy, using source-build-qualified UI_Assets.
             let original = fs::read(&session.editable).map_err(|e| e.to_string())?;
             let textures = gfx_external_textures::prepare_preview(
-                &original, &session.relative, &session.source,
-                session.library_root.as_deref(), session.source_build.as_deref(),
+                &original,
+                &session.relative,
+                &session.source,
+                session.library_root.as_deref(),
+                session.source_build.as_deref(),
             )?;
             let render_file = root.join("textured-preview.gfx");
             fs::write(&render_file, &textures.movie).map_err(|e| e.to_string())?;
@@ -549,8 +552,12 @@ pub fn run(
             preview = Some(fs::read(&pictures[0]).map_err(|e| e.to_string())?);
             format!(
                 "FFDec static frame: {} verified UI_Assets bitmap tiles; {} unresolved/skipped. {} Runtime ActionScript is not executed.",
-                textures.converted, textures.skipped,
-                textures.ui_data.as_deref().unwrap_or("No associated same-build UI_Data element."),
+                textures.converted,
+                textures.skipped,
+                textures
+                    .ui_data
+                    .as_deref()
+                    .unwrap_or("No associated same-build UI_Data element."),
             )
         }
     };
