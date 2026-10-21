@@ -3,7 +3,7 @@
 //! only supported Scaleform DDS image tags are reconstructed for rendering.
 //! This is intentionally NOT a CryEngine host callback implementation.
 use crate::{gfx_editor::Session, gfx_external_textures};
-use evolve_core::gfx::{inspect_gfx, MAX_SOURCE};
+use evolve_core::gfx::{inspect_gfx, MAX_DECOMPRESSED, MAX_SOURCE};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -67,7 +67,7 @@ fn safe_import(name: &str) -> bool {
 /// Reheader to the SWF variant of the same compiled movie, without modifying
 /// bytecode, frame instructions or authored display-list transformations.
 fn flash_movie(movie: &[u8]) -> Result<Vec<u8>, String> {
-    if movie.len() < 16 || movie.len() > MAX_SOURCE {
+    if movie.len() < 16 || movie.len() > MAX_DECOMPRESSED {
         return Err("Imported Scaleform movie exceeds the native source size limit".into());
     }
     let mut inspection = movie.to_vec();
@@ -77,7 +77,17 @@ fn flash_movie(movie: &[u8]) -> Result<Vec<u8>, String> {
         _ => return Err("Unsupported imported movie signature".into()),
     };
     inspection[1..3].copy_from_slice(b"FX");
-    inspect_gfx(&inspection).map_err(|e| e.to_string())?;
+    if inspection.len() <= MAX_SOURCE {
+        inspect_gfx(&inspection).map_err(|e| e.to_string())?;
+    } else {
+        // Reconstructed preview-only bitmap characters can expand a checked
+        // original beyond the game's 12 MiB source bound (up to 32 MiB).
+        // Reject non-raw or inconsistent synthetic headers.
+        let size = u32::from_le_bytes(inspection[4..8].try_into().unwrap()) as usize;
+        if inspection[0] != b'G' || size != inspection.len() {
+            return Err("Invalid oversized render-only SWF movie".into());
+        }
+    }
     let mut swf = movie.to_vec();
     swf[0] = if inspection[0] == b'G' { b'F' } else { b'C' };
     swf[1..3].copy_from_slice(b"WS");
