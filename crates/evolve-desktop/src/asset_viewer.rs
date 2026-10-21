@@ -315,11 +315,11 @@ fn equipment_browser(state: &State) -> Element<'_, Message> {
             for face in &emet.faces {
                 let active = face == current;
                 faces = faces.push(
-                    design::button(format!(
+                    design::button(text(format!(
                         "{} {}",
                         if active { "✓" } else { "○" },
                         face.replace('_', " ")
-                    ))
+                    )))
                     .style(if active {
                         design::primary
                     } else {
