@@ -3194,7 +3194,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return update(state, Message::ViewerPreviewStaticCdf);
         }
         Message::ViewerSidebarSelect(tab) => {
-            state.viewer_sidebar_active = if tab == ViewerSidebarTab::GfxTools && !state.gfx_active {
+            state.viewer_sidebar_active = if tab == ViewerSidebarTab::GfxTools && !state.gfx_active
+            {
                 ViewerSidebarTab::Files
             } else {
                 tab
@@ -3211,7 +3212,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ViewerSidebarClose(tab) => {
             match tab {
-                ViewerSidebarTab::Files | ViewerSidebarTab::Equipment | ViewerSidebarTab::GfxTools => {} // Permanent context tool tabs.
+                ViewerSidebarTab::Files
+                | ViewerSidebarTab::Equipment
+                | ViewerSidebarTab::GfxTools => {} // Permanent context tool tabs.
                 ViewerSidebarTab::Animations => state.viewer_sidebar_animations = false,
                 ViewerSidebarTab::Inspector => state.viewer_show_inspector = false,
                 ViewerSidebarTab::Dependencies => state.viewer_sidebar_dependencies = false,
@@ -4437,7 +4440,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.gfx_layout_open = section == GfxToolsSection::Layout;
             if state.gfx_layout_open
                 && state.gfx_layout_selected.is_none()
-                && let Some(index) = state.gfx_session.as_ref()
+                && let Some(index) = state
+                    .gfx_session
+                    .as_ref()
                     .and_then(|session| session.layers.iter().position(|layer| layer.editable))
             {
                 return update(state, Message::GfxLayoutSelect(index));
