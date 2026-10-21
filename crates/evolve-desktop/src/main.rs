@@ -1185,8 +1185,11 @@ impl Operation {
                                         mapped += 1;
                                     }
                                 }
+                                let filename = texture.file_name()
+                                    .map(|name| name.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| "verified monster DDS".into());
                                 warnings.push(format!(
-                                    "Glow: {mapped} source-verified overlay sections (original Emittance and GlowAmount preserved)"
+                                    "Glow: {mapped} owner-matched overlay sections from {filename} (original Emittance and GlowAmount preserved)"
                                 ));
                             }
                             Err(error) => warnings.push(format!(
@@ -1195,7 +1198,11 @@ impl Operation {
                             }
                         }
                         Ok(None) => warnings.push(
-                            "Glow: no source-verified variant DDS found in the selected Asset Library/build; original emissive materials remain visible".into(),
+                            if build.is_none() && imported.is_some() {
+                                "Glow: select the source build (Stage 2) to resolve flat monster *_ts.pak textures; original emissive materials remain visible".into()
+                            } else {
+                                "Glow: no original variant DDS found in this monster's source folder or same-build texture PAK; original emissive materials remain visible".into()
+                            },
                         ),
                         Err(error) => warnings.push(format!(
                             "Glow source could not be uniquely resolved: {error}; retaining original material emission"
