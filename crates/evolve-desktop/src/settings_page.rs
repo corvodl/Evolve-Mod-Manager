@@ -280,7 +280,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             ].spacing(8),
             text(state.update_status.as_str()).size(12).style(design::muted),
             super::download_action(state),
-            super::run_installer_action(state),
+            text("Updates are downloaded, SHA-256 verified and installed when you select Update and restart. Portable downloads remain portable; your game files and preferences are preserved.").size(12).style(design::muted),
         ].spacing(8)),
         ].spacing(12).into(),
         Tab::Integration => column![
