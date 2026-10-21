@@ -3,7 +3,9 @@
 //! After explicit "Update and restart" consent, a copy of the current binary
 //! runs outside the install directory. It waits for Iced to exit, applies the
 //! verified release and starts the new manager. Game assets are never touched.
-use crate::updater::{ReleaseUpdate, UpdateError, VerifiedAsset, check_file_hash, download_verified_asset};
+use crate::updater::{
+    ReleaseUpdate, UpdateError, VerifiedAsset, check_file_hash, download_verified_asset,
+};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -48,7 +50,9 @@ fn is_manager_binary(exe: &Path) -> bool {
 
 fn installation_kind(exe: &Path) -> Result<InstallationKind, UpdateError> {
     if !is_manager_binary(exe) {
-        return Err(UpdateError::Invalid("unexpected application executable".into()));
+        return Err(UpdateError::Invalid(
+            "unexpected application executable".into(),
+        ));
     }
     let folder = exe
         .parent()
@@ -92,18 +96,22 @@ fn validate_plan(plan: &PreparedUpdate) -> Result<(), UpdateError> {
         || plan.payload.file_name().and_then(|n| n.to_str()) != Some(expected_name.as_str())
         || plan.asset.size == 0
     {
-        return Err(UpdateError::Invalid("update does not match the selected release".into()));
+        return Err(UpdateError::Invalid(
+            "update does not match the selected release".into(),
+        ));
     }
     let current_exe = fs::canonicalize(&plan.executable)?;
-    if current_exe != plan.executable
-        || installation_kind(&current_exe)? != plan.kind
-    {
-        return Err(UpdateError::Invalid("application install type has changed".into()));
+    if current_exe != plan.executable || installation_kind(&current_exe)? != plan.kind {
+        return Err(UpdateError::Invalid(
+            "application install type has changed".into(),
+        ));
     }
     let updates = fs::canonicalize(plan.root.join("Updates"))?;
     let payload = fs::canonicalize(&plan.payload)?;
     if payload.parent() != Some(updates.as_path()) {
-        return Err(UpdateError::Invalid("update is outside managed user data".into()));
+        return Err(UpdateError::Invalid(
+            "update is outside managed user data".into(),
+        ));
     }
     check_file_hash(&payload, &plan.asset)?;
     Ok(())
@@ -131,7 +139,11 @@ pub fn launch_worker(plan: &PreparedUpdate) -> Result<(), UpdateError> {
         .map_err(|e| UpdateError::Invalid(format!("cannot prepare update plan: {e}")))?;
     manifest.as_file_mut().sync_all()?;
     let (_, manifest_path) = manifest.keep().map_err(|e| UpdateError::Io(e.error))?;
-    if let Err(err) = Command::new(&worker).arg(HELPER_FLAG).arg(&manifest_path).spawn() {
+    if let Err(err) = Command::new(&worker)
+        .arg(HELPER_FLAG)
+        .arg(&manifest_path)
+        .spawn()
+    {
         let _ = fs::remove_file(&worker);
         let _ = fs::remove_file(&manifest_path);
         return Err(UpdateError::Io(err));
@@ -161,13 +173,17 @@ fn verify_portable_contents<R: Read + io::Seek>(
                 "portable update contains an unexpected or unsafe entry".into(),
             ));
         }
-        total = total.checked_add(entry.size()).ok_or(UpdateError::TooLarge)?;
+        total = total
+            .checked_add(entry.size())
+            .ok_or(UpdateError::TooLarge)?;
         if total > MAX_ZIP_CONTENTS {
             return Err(UpdateError::TooLarge);
         }
     }
     if names.len() != PORTABLE_MEMBERS.len() {
-        return Err(UpdateError::Invalid("portable release is missing required files".into()));
+        return Err(UpdateError::Invalid(
+            "portable release is missing required files".into(),
+        ));
     }
     Ok(())
 }
@@ -254,7 +270,9 @@ fn apply_update_plan(manifest: &Path) -> Result<(), UpdateError> {
         .map_err(|e| UpdateError::Invalid(format!("invalid update plan: {e}")))?;
     let managed_folder = fs::canonicalize(plan.root.join("Updates"))?;
     if fs::canonicalize(manifest)?.parent() != Some(managed_folder.as_path()) {
-        return Err(UpdateError::Invalid("untrusted update manifest location".into()));
+        return Err(UpdateError::Invalid(
+            "untrusted update manifest location".into(),
+        ));
     }
     validate_plan(&plan)?;
 
@@ -299,7 +317,9 @@ pub fn try_run_helper() -> bool {
     let plan_path = args.next().map(PathBuf::from);
     let result = match plan_path.as_deref() {
         Some(plan) if args.next().is_none() => apply_update_plan(plan),
-        _ => Err(UpdateError::Invalid("missing or extra update helper arguments".into())),
+        _ => Err(UpdateError::Invalid(
+            "missing or extra update helper arguments".into(),
+        )),
     };
     if let Err(error) = result {
         if let Some(path) = plan_path {
@@ -322,7 +342,10 @@ mod tests {
         fs::write(&app, b"test binary").unwrap();
         assert_eq!(installation_kind(&app).unwrap(), InstallationKind::Portable);
         fs::write(dir.path().join("unins000.exe"), b"installed").unwrap();
-        assert_eq!(installation_kind(&app).unwrap(), InstallationKind::Installed);
+        assert_eq!(
+            installation_kind(&app).unwrap(),
+            InstallationKind::Installed
+        );
         assert!(installation_kind(&dir.path().join("Evolve.exe")).is_err());
     }
 
