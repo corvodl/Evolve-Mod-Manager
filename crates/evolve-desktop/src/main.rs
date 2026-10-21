@@ -5083,28 +5083,29 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         // resolver does NOT perform cross-slot assignment,
                         // so its informational diagnostic must not replace
                         // the CDF renderer's actual assignment status.
-                        let (visible, mapped) = state.cdf_surfaces.as_ref().map_or((0, 0), |parts| {
-                            let visible = parts.iter().filter(|part| part.visible).count();
-                            let mapped = parts
-                                .iter()
-                                .filter(|part| part.visible && part.diffuse.is_some())
-                                .count();
-                            (visible, mapped)
-                        });
+                        let (visible, mapped) =
+                            state.cdf_surfaces.as_ref().map_or((0, 0), |parts| {
+                                let visible = parts.iter().filter(|part| part.visible).count();
+                                let mapped = parts
+                                    .iter()
+                                    .filter(|part| part.visible && part.diffuse.is_some())
+                                    .count();
+                                (visible, mapped)
+                            });
                         state.status = format!(
                             "CDF GPU: {mapped}/{visible} visible mesh ranges with original diffuse maps; {found}/{} authored DDS references located, {ambiguous} ambiguous.",
                             report.textures.len()
                         );
                         let unresolved = diagnostics
                             .iter()
-                            .filter(|note| !note.contains("require verified CryEngine mesh-subset assignments"))
+                            .filter(|note| {
+                                !note.contains("require verified CryEngine mesh-subset assignments")
+                            })
                             .cloned()
                             .collect::<Vec<_>>();
                         if !unresolved.is_empty() {
-                            state.auto_resource_note = format!(
-                                "CDF material diagnostics: {}",
-                                unresolved.join(" | ")
-                            );
+                            state.auto_resource_note =
+                                format!("CDF material diagnostics: {}", unresolved.join(" | "));
                         }
                     } else {
                         state.status = format!(
