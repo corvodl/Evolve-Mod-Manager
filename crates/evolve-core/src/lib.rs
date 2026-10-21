@@ -52,9 +52,10 @@ pub use cdf::{
     read_cdf, resolve_cdf, resolve_virtual,
 };
 pub use character_assembly::{
-    AssemblyError, AssemblyGeometry, AssemblyPart, AssemblyReport, combine_source_meshes,
-    read_static_cdf_assembly, read_static_cdf_assembly_with_equipment,
-    read_static_cdf_assembly_with_imported,
+    AssemblyError, AssemblyGeometry, AssemblyPart, AssemblyReport, KalaTubingState,
+    combine_source_meshes, is_original_kala_3p, read_static_cdf_assembly,
+    read_static_cdf_assembly_with_equipment, read_static_cdf_assembly_with_imported,
+    read_static_cdf_assembly_with_kala_state,
 };
 pub use character_equipment::{
     EquipmentChoice, EquipmentOverrides, EquipmentSlot, discover_equipment,
