@@ -382,11 +382,6 @@ fn kala_banshee_brightness_mask(slot: &evolve_core::MaterialSlot) -> bool {
         })
 }
 
-// Original blue/red Glow leaf tints from Kala's uploaded tech MTLs.
-// These are only applied to the exact verified tech_3p CDF material; every
-// other actor/material continues using its own source color.
-const KALA_ARMOR_REDUCER_TINT: [f32; 3] = [0.17788844, 0.007_499_032, 0.0043914425];
-
 fn kala_tubing_leaf(
     material_source: &Path,
     binding: &str,
@@ -419,18 +414,15 @@ fn tint_legacy_decal(
     slot: &evolve_core::MaterialSlot,
     decal: &image::RgbaImage,
 ) -> image::RgbaImage {
-    tint_legacy_decal_for_state(slot, decal, None, false)
+    tint_legacy_decal_for_state(slot, decal, false)
 }
 
 fn tint_legacy_decal_for_state(
     slot: &evolve_core::MaterialSlot,
     decal: &image::RgbaImage,
-    override_tint: Option<[f32; 3]>,
     kala_tubing: bool,
 ) -> image::RgbaImage {
-    let tint = override_tint
-        .or(slot.diffuse_tint)
-        .unwrap_or([1.0, 1.0, 1.0]);
+    let tint = slot.diffuse_tint.unwrap_or([1.0, 1.0, 1.0]);
     let use_brightness_mask = kala_tubing || kala_banshee_brightness_mask(slot);
     let mut result = decal.clone();
     for pixel in result.pixels_mut() {
@@ -678,12 +670,11 @@ fn authored_maps(
         if index == 2 && map.role == "decal" {
             let verified_kala =
                 kala_state.is_some() && kala_tubing_leaf(material_source, material_binding, slot);
-            let alternate_tint = (verified_kala
-                && kala_state == Some(evolve_core::KalaTubingState::ArmorReducer)
-                && slot.name.eq_ignore_ascii_case("Glow"))
-            .then_some(KALA_ARMOR_REDUCER_TINT);
+            // The original tech_3p.mtl body Glow stays blue in every
+            // equipment state. Only the equipment's own authored glow leaf
+            // can be red; never recolor body/waist tubing via weapon state.
             result[index] = Some(Arc::new(if verified_kala {
-                tint_legacy_decal_for_state(slot, &image, alternate_tint, true)
+                tint_legacy_decal_for_state(slot, &image, true)
             } else {
                 tint_legacy_decal(slot, &image)
             }));
@@ -1198,13 +1189,13 @@ pub fn load_with_progress(
                 surface.emission_strength = 0.0;
                 surface.emissive_uv = None;
             }
-            // Only a source-verified visible Kala 3P tube with a loaded
-            // emission map receives the earlier public viewer's 100/3
-            // preview calibration. No synthetic glow for missing textures,
-            // no change to model diffuse or FBX materials.
+            // Authored 100/3 calibration is global in the GPU viewer.
+            // Apply Kala's extra 0.3x/4x only to its WEAPON glow leaves.
+            // Body/waist Glow stays source blue for every equipment choice.
             surface.kala_emission_state = (surface.emissive.is_some()
                 && surface.emission_strength > 0.0
-                && kala_tubing_leaf(&path, &part.binding, leaf))
+                && kala_tubing_leaf(&path, &part.binding, leaf)
+                && !leaf.name.eq_ignore_ascii_case("Glow"))
             .then_some(kala_state);
             surface.specular = specular;
             surface.gloss = gloss;
@@ -1406,39 +1397,41 @@ mod tests {
     }
 
     #[test]
-    fn kala_tubing_uses_3x_original_glow_and_active_state_tint_only() {
-        let blue = evolve_core::parse_material(
+    fn kala_body_glow_remains_authored_blue_even_when_armor_reducer_is_selected() {
+        let body = evolve_core::parse_material(
             br#"<Material Name="Glow" Shader="Illum" GlowAmount="3"
                 Diffuse="0.072271854,0.1470273,0.42326769"><Textures>
                 <Texture Map="Decal" File="textures/particle/light/chroma_fan320tiled_01b.tif"/>
                 </Textures></Material>"#,
         )
         .unwrap();
-        let leaf = &blue.slots[0];
-        let source = Path::new("characters/hunters/merc_tech/tech_3p.mtl");
-        let binding = "characters/hunters/merc_tech/tech_3p.skin";
-        assert!(kala_tubing_leaf(source, binding, leaf));
-        assert_eq!(leaf.glow_amount, Some(3.0));
-        let red_atlas_frame = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]));
-        let banshee = tint_legacy_decal_for_state(leaf, &red_atlas_frame, None, true);
-        let armor = tint_legacy_decal_for_state(
-            leaf,
-            &red_atlas_frame,
-            Some(KALA_ARMOR_REDUCER_TINT),
-            true,
-        );
-        let b = banshee.get_pixel(0, 0);
-        let r = armor.get_pixel(0, 0);
-        assert!(b[2] > b[1] && b[1] > b[0], "Banshee tube should be blue");
-        assert!(
-            r[0] > r[1] && r[0] > r[2],
-            "Armor Reducer tube should be red"
-        );
-        assert_eq!(red_atlas_frame.get_pixel(0, 0).0, [255, 0, 0, 255]);
-        assert!(!kala_tubing_leaf(
-            Path::new("characters/hunters/other/tech_3p.mtl"),
-            binding,
-            leaf
+        let body_slot = &body.slots[0];
+        assert_eq!(body_slot.glow_amount, Some(3.0));
+        assert!(kala_tubing_leaf(
+            Path::new("characters/hunters/merc_tech/tech_3p.mtl"),
+            "characters/hunters/merc_tech/tech_3p.skin",
+            body_slot
+        ));
+        let original = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]));
+        let output = tint_legacy_decal_for_state(body_slot, &original, true);
+        let blue = output.get_pixel(0, 0);
+        assert!(blue[2] > blue[1] && blue[1] > blue[0]);
+        assert_eq!(original.get_pixel(0, 0).0, [255, 0, 0, 255]);
+        // Red is legitimately sourced ONLY from a distinct equipment leaf.
+        let reducer = evolve_core::parse_material(
+            br#"<Material Name="armorreducer glow" Shader="Illum" GlowAmount="3"
+                Diffuse="0.17788844,0.0074990322,0.0043914425"><Textures>
+                <Texture Map="Decal" File="textures/particle/light/chroma_fan320tiled_01b.tif"/>
+                </Textures></Material>"#,
+        )
+        .unwrap();
+        let red = tint_legacy_decal_for_state(&reducer.slots[0], &original, true);
+        let pixel = red.get_pixel(0, 0);
+        assert!(pixel[0] > pixel[1] && pixel[0] > pixel[2]);
+        assert!(kala_tubing_leaf(
+            Path::new("characters/hunters/merc_tech/weapons/bansheegun/techbansheegun_3p.mtl"),
+            "characters/hunters/merc_tech/techbansheegun_3p.skin",
+            &reducer.slots[0]
         ));
     }
 
