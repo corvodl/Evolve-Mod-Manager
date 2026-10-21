@@ -1412,6 +1412,8 @@ enum Message {
     GfxOpenSelected,
     GfxOpened(Result<gfx_editor::Session, String>),
     GfxConfigChanged(String),
+    GfxPickBackend,
+    GfxBackendPicked(Option<PathBuf>),
     GfxSelectResource(usize),
     GfxAction(gfx_editor::Action),
     GfxApply,
@@ -3954,6 +3956,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 persist_preferences(state);
             }
         }
+        Message::GfxPickBackend => {
+            return Task::perform(async {
+                tokio::task::spawn_blocking(|| native_export_picker("file"))
+                    .await.ok().flatten()
+            }, Message::GfxBackendPicked);
+        }
+        Message::GfxBackendPicked(selected) => {
+            if let Some(path) = selected {
+                return update(state, Message::GfxConfigChanged(path.to_string_lossy().into()));
+            }
+        }
         Message::GfxSelectResource(index) => {
             if state.gfx_session.as_ref().is_some_and(|s| index < s.info.resources.len()) {
                 state.gfx_resource = index;
@@ -3965,7 +3978,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             }
             let source = match verified_viewer_file(state) {
-                Ok(p) if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("gfx")) => p,
+                Ok(p) if p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("gfx")) => p,
                 _ => {
                     state.status = "Select an indexed original .gfx movie before editing.".into();
                     return Task::none();
