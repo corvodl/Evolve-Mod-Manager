@@ -224,6 +224,10 @@ def main():
         verify_part_diffuse_coverage(meshes, parts, "GLB to Blender")
     check(len(meshes) <= 1024, "unbounded material fragment count")
     bone_count = sum(len(arm.data.bones) for arm in armatures)
+    # Keep primitive strings: read_factory_settings destroys the original
+    # Blender objects before validation of the re-imported FBX.
+    source_mesh_bindings = [(mesh.name, rig.name)
+                            for mesh, rig in mesh_armatures.items()]
     source_hierarchy = {
         arm.name: {
             bone.name: (bone.parent.name if bone.parent else None)
@@ -286,15 +290,14 @@ def main():
         imported_weighted_vertices += weighted
         target_bounds.append(bounds)
         append_uv_loops(mesh, target_uv_loops)
-    for part_mesh, original_rig in mesh_armatures.items():
+    for part_name, original_rig in source_mesh_bindings:
         matches = [mesh for mesh in result_meshes
-                   if mesh_belongs_to_part(mesh, part_mesh.name)]
-        check(bool(matches), "FBX round-trip lost the part " + part_mesh.name)
+                   if mesh_belongs_to_part(mesh, part_name)]
+        check(bool(matches), "FBX round-trip lost the part " + part_name)
         for mesh in matches:
-            associated = [mod.object for mod in mesh.modifiers
+            associated = [mod.object.name for mod in mesh.modifiers
                           if mod.type == "ARMATURE"]
-            check(associated == [next((rig for rig in result_arms
-                                       if rig.name == original_rig.name), None)],
+            check(associated == [original_rig],
                   "FBX round-trip rebound original mesh to another part's skeleton")
     check(imported_weighted_vertices > 0 and source_weighted_vertices > 0,
           "round-trip lost original bone weights")
