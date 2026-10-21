@@ -104,9 +104,12 @@ pub fn is_original_kala_3p(cdf: &CdfDefinition) -> bool {
                     .binding
                     .eq_ignore_ascii_case("characters/hunters/merc_tech/techarmorreducer_3p.skin")
         })
-        && ["hiddenwhenbansheegunselected", "hiddenwhenarmorreducerselected"]
-            .iter()
-            .all(|name| cdf.skin_sets.contains_key(*name))
+        && [
+            "hiddenwhenbansheegunselected",
+            "hiddenwhenarmorreducerselected",
+        ]
+        .iter()
+        .all(|name| cdf.skin_sets.contains_key(*name))
 }
 
 pub fn select_attachments(
@@ -124,10 +127,13 @@ pub fn select_attachments_with_kala_state(
     } else if cdf.skin_sets.contains_key("default") {
         Some("default".to_owned())
     } else if is_original_kala_3p(cdf) {
-        Some(match kala_state {
-            KalaTubingState::Banshee => "hiddenwhenbansheegunselected",
-            KalaTubingState::ArmorReducer => "hiddenwhenarmorreducerselected",
-        }.to_owned())
+        Some(
+            match kala_state {
+                KalaTubingState::Banshee => "hiddenwhenbansheegunselected",
+                KalaTubingState::ArmorReducer => "hiddenwhenarmorreducerselected",
+            }
+            .to_owned(),
+        )
     } else {
         // Stage 2 CDFs often use SkinSets named HiddenWhen*Selected as
         // equipment exclusion metadata, not actual renderable variants.
@@ -156,7 +162,10 @@ pub fn select_attachments_with_kala_state(
                     .filter(char::is_ascii_alphanumeric)
                     .collect();
                 if is_original_kala_3p(cdf)
-                    && matches!(chosen.as_deref(), Some("hiddenwhenbansheegunselected" | "hiddenwhenarmorreducerselected"))
+                    && matches!(
+                        chosen.as_deref(),
+                        Some("hiddenwhenbansheegunselected" | "hiddenwhenarmorreducerselected")
+                    )
                 {
                     // This Kala SkinSet is an exclusion list, not a list
                     // of meshes to render. Keep the body and active gun.
