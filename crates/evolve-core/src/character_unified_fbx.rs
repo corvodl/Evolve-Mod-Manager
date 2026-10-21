@@ -607,8 +607,24 @@ pub fn export_unified_cdf_fbx_options(
     embed_textures: bool,
 ) -> Result<UnifiedCdfFbxReport, String> {
     export_unified_cdf_fbx_options_with_glow(
-        source, inventory, blender, destination, caf, equipment, embed_textures, false,
+        source,
+        inventory,
+        blender,
+        destination,
+        caf,
+        equipment,
+        CdfExportAppearance {
+            embed_textures,
+            full_armor_glow: false,
+        },
     )
+}
+
+/// Model Options affecting the appearance of a single CDF FBX.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CdfExportAppearance {
+    pub embed_textures: bool,
+    pub full_armor_glow: bool,
 }
 
 /// Export selected CDF parts/equipment, including the optional source-exact
@@ -620,9 +636,12 @@ pub fn export_unified_cdf_fbx_options_with_glow(
     destination: &Path,
     caf: Option<&Path>,
     equipment: &EquipmentOverrides,
-    embed_textures: bool,
-    full_armor_glow: bool,
+    appearance: CdfExportAppearance,
 ) -> Result<UnifiedCdfFbxReport, String> {
+    let CdfExportAppearance {
+        embed_textures,
+        full_armor_glow,
+    } = appearance;
     let root = fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
     let imported = texture_scope(inventory);
     if full_armor_glow && !embed_textures {
