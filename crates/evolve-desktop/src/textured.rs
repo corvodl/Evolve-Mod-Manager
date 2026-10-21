@@ -7,7 +7,7 @@ use iced::wgpu::util::{DeviceExt, TextureDataOrder};
 use iced::widget::shader::{self, Viewport};
 use iced::{Event, Rectangle, mouse};
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 // A large CDF can reuse the same original DDS in dozens of material ranges.
@@ -21,6 +21,23 @@ fn texture_cache_key(image: Option<&Arc<image::RgbaImage>>, role: usize) -> (usi
 fn gpu_budget_allows(used: usize, additional: usize) -> bool {
     used.checked_add(additional)
         .is_some_and(|total| total <= MAX_GPU_PREVIEW_TEXTURE_BYTES)
+}
+
+/// Reserve GPU space for ALL source diffuse maps before accepting optional
+/// normal/specular/glow uploads. Without this, early body sections consume
+/// the cap and later head/arm sections silently fall back to pale placeholders.
+fn allows_cdf_role(
+    used: usize,
+    additional: usize,
+    remaining_diffuse: usize,
+    role: usize,
+    can_fit_all_diffuse: bool,
+) -> bool {
+    if role != 0 && !can_fit_all_diffuse {
+        return false;
+    }
+    let reserve = if role == 0 { 0 } else { remaining_diffuse };
+    gpu_budget_allows(used.saturating_add(reserve), additional)
 }
 
 #[derive(Clone, Debug)]
@@ -845,6 +862,16 @@ impl Pipeline {
         let mut uploaded: HashMap<(usize, usize), wgpu::TextureView> = HashMap::new();
         let mut used_bytes = 0usize;
         let mut omitted_count = 0usize;
+        let mut unique_diffuse = HashSet::new();
+        let mut remaining_diffuse = 0usize;
+        for part in surfaces.iter().filter(|part| part.visible) {
+            if let Some(diffuse) = part.diffuse.as_ref()
+                && unique_diffuse.insert(Arc::as_ptr(diffuse) as usize)
+            {
+                remaining_diffuse = remaining_diffuse.saturating_add(diffuse.as_raw().len());
+            }
+        }
+        let can_fit_all_diffuse = remaining_diffuse <= MAX_GPU_PREVIEW_TEXTURE_BYTES;
         for part in surfaces.iter() {
             if !part.visible {
                 continue;
@@ -894,10 +921,20 @@ impl Pipeline {
                 // identities are source-arc + GPU role (color-space aware).
                 let size = image.map_or(4, |pixels| pixels.as_raw().len());
                 let key = texture_cache_key(image, role);
+                let already_uploaded = uploaded.contains_key(&key);
                 let allow_source = image.is_none()
-                    || uploaded.contains_key(&key)
-                    || gpu_budget_allows(used_bytes, size);
+                    || already_uploaded
+                    || allows_cdf_role(
+                        used_bytes,
+                        size,
+                        remaining_diffuse,
+                        role,
+                        can_fit_all_diffuse,
+                    );
                 let selected = if allow_source { image } else { None };
+                if role == 0 && selected.is_some() && !already_uploaded {
+                    remaining_diffuse = remaining_diffuse.saturating_sub(size);
+                }
                 if !allow_source {
                     omitted_count += 1;
                 }
@@ -1232,6 +1269,16 @@ mod tests {
         assert!(super::gpu_budget_allows(0, 256 * 1024 * 1024));
         assert!(!super::gpu_budget_allows(256 * 1024 * 1024, 4));
         assert!(!super::gpu_budget_allows(usize::MAX, 64));
+        // With 180 MiB still owed to later original diffuse textures,
+        // a new 90 MiB optional specular must NOT crowd them out.
+        let mib = 1024 * 1024;
+        assert!(!super::allows_cdf_role(0, 90 * mib, 180 * mib, 3, true));
+        assert!(super::allows_cdf_role(0, 90 * mib, 180 * mib, 0, true));
+        // If all diffuse assets exceed the fixed budget, omit optional
+        // maps first while still allowing each original diffuse to compete
+        // for the remaining protected budget.
+        assert!(!super::allows_cdf_role(0, 4 * mib, 300 * mib, 2, false));
+        assert!(super::allows_cdf_role(0, 4 * mib, 300 * mib, 0, false));
     }
 
     #[test]
