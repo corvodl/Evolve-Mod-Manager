@@ -8,6 +8,7 @@ use crate::fbx::publish_verified_binary_fbx;
 use crate::inventory::Inventory;
 use crate::library_catalog::{
     LibraryReferenceStatus, imported_library, resolve_imported_reference,
+    resolve_imported_reference_in_archive,
 };
 use crate::materials::{read_material, scoped_texture_candidates};
 use crate::model::{original_mesh_subsets, read_model};
@@ -424,6 +425,67 @@ pub fn monster_glow_path_with_library(
             exact_original_texture(&root, inventory, &virtual_cdf, &authored, imported)?
         {
             return Ok(Some(found));
+        }
+    }
+    // Stage 2's dedicated characters_monsters_<owner>_ts.pak often contains
+    // flat names, e.g. grounder_glow_diff.dds.0 through .7, whereas the
+    // selected CDF can be named grounder3.cdf. These are not global names:
+    // only the original monster folder determines <owner>, and the fallback
+    // searches that *exact* same-build monster texture archive.
+    let Some(scope) = imported else {
+        return Ok(None);
+    };
+    let Some(build) = scope.build.as_deref() else {
+        // Never use a root-level filename without a selected/unique build.
+        return Ok(None);
+    };
+    let Some((_, monster_relative)) = lower.split_once("characters/monsters/") else {
+        return Ok(None);
+    };
+    let Some(owner) = monster_relative.split('/').next() else {
+        return Ok(None);
+    };
+    if owner.is_empty()
+        || !owner
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        return Ok(None);
+    }
+    let archive = format!("characters_monsters_{owner}_ts.pak");
+    let mut stems = vec![stem.to_ascii_lowercase()];
+    if !stems.iter().any(|value| value == owner) {
+        stems.push(owner.to_owned());
+    }
+    for name in stems {
+        for suffix in ["_glow_diff.tif", "_glow.tif"] {
+            let authored = format!("{name}{suffix}");
+            match resolve_imported_reference_in_archive(
+                &scope.root,
+                &authored,
+                build,
+                &archive,
+            )
+            .map_err(|error| format!("Cannot search {archive} for {authored}: {error}"))?
+            {
+                LibraryReferenceStatus::Found(hit) => {
+                    let path = PathBuf::from(hit.absolute_path);
+                    let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+                    if !metadata.file_type().is_file()
+                        || metadata.len() == 0
+                        || metadata.len() > MAX_SOURCE
+                    {
+                        return Err(format!("Unsafe monster glow texture {authored}"));
+                    }
+                    return fs::canonicalize(path).map(Some).map_err(|e| e.to_string());
+                }
+                LibraryReferenceStatus::Missing => {}
+                LibraryReferenceStatus::Ambiguous(_) => {
+                    return Err(format!(
+                        "Ambiguous monster glow {authored} in the selected build's {archive}"
+                    ));
+                }
+            }
         }
     }
     Ok(None)
