@@ -8073,17 +8073,29 @@ mod project_edit_tests {
             Message::ViewerSidebarSelect(ViewerSidebarTab::GfxTools),
         );
         assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::GfxTools);
-        let _ = update(&mut state, Message::GfxToolsSection(GfxToolsSection::Layout));
+        let _ = update(
+            &mut state,
+            Message::GfxToolsSection(GfxToolsSection::Layout),
+        );
         assert!(state.gfx_layout_open);
         assert!(state.viewer_explorer_visible);
         assert_eq!(state.gfx_tools_section, GfxToolsSection::Layout);
-        let _ = update(&mut state, Message::GfxToolsSection(GfxToolsSection::Scripts));
+        let _ = update(
+            &mut state,
+            Message::GfxToolsSection(GfxToolsSection::Scripts),
+        );
         assert_eq!(state.gfx_tools_section, GfxToolsSection::Scripts);
         assert!(!state.gfx_layout_open);
-        let _ = update(&mut state, Message::GfxToolsSection(GfxToolsSection::Preview));
+        let _ = update(
+            &mut state,
+            Message::GfxToolsSection(GfxToolsSection::Preview),
+        );
         assert!(!state.gfx_layout_open);
         // Like Files and Model Options, the contextual tab has no close button.
-        let _ = update(&mut state, Message::ViewerSidebarClose(ViewerSidebarTab::GfxTools));
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarClose(ViewerSidebarTab::GfxTools),
+        );
         assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
     }
 
