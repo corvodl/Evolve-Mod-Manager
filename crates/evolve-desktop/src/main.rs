@@ -259,6 +259,7 @@ struct State {
     equipment_source: Option<PathBuf>,
     equipment_slots: Vec<EquipmentSlot>,
     equipment_overrides: EquipmentOverrides,
+    full_armor_glow: bool,
     viewer_from_library: bool,
     developer_password: String,
     developer_status: String,
@@ -411,6 +412,7 @@ enum Operation {
         Option<String>,
         SharedCache,
         EquipmentOverrides,
+        bool,
     ),
     ResolveCdf(PathBuf, PathBuf),
     InspectModel(PathBuf),
@@ -999,7 +1001,7 @@ impl Operation {
             Self::InspectCdf(source) => read_cdf(&source)
                 .map(Completed::Character)
                 .map_err(|e| e.to_string()),
-            Self::BuildStaticCdf(source, inventory, imported, build, cache, equipment) => {
+            Self::BuildStaticCdf(source, inventory, imported, build, cache, equipment, glow) => {
                 crash_diagnostics::record("cdf_worker_begin", "reading authored CDF attachments");
                 let (mesh, report) = read_static_cdf_assembly_with_equipment(
                     &source,
@@ -1019,13 +1021,48 @@ impl Operation {
                     ),
                 );
                 crash_diagnostics::record("cdf_materials_begin", "loading authored material maps");
-                let (surfaces, warnings) = assembly_materials::load(
+                let (mut surfaces, mut warnings) = assembly_materials::load(
                     &report,
                     &inventory,
                     imported.as_deref(),
                     build.as_deref(),
                     &cache,
                 );
+                if glow {
+                    let texture = evolve_core::monster_glow_path(&source, &inventory)?
+                        .ok_or("No original full-armor glow DDS found for this monster/stage")?;
+                    let (_, rgba) = decode_dds_rgba(&texture)
+                        .map_err(|e| format!("Cannot decode original full-armor glow DDS: {e}"))?;
+                    let emissive = Arc::new(rgba);
+                    let cdf_dir = source
+                        .strip_prefix(&inventory.root)
+                        .map_err(|_| "Monster CDF outside indexed source root")?
+                        .parent()
+                        .ok_or("Selected CDF lacks a character folder")?
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                        .to_ascii_lowercase();
+                    let owner = cdf_dir.find("characters/monsters/")
+                        .map(|position| &cdf_dir[position..])
+                        .ok_or("Selected CDF is not a monster")?;
+                    let mut mapped = 0usize;
+                    for (part, surface) in report.source_parts.iter().zip(surfaces.iter_mut()) {
+                        let binding = part.binding.replace('\\', "/").to_ascii_lowercase();
+                        if surface.visible && surface.diffuse.is_some()
+                            && binding.contains(owner)
+                        {
+                            surface.emissive = Some(emissive.clone());
+                            mapped += 1;
+                        }
+                    }
+                    if mapped == 0 {
+                        return Err("Full armor glow has no original monster mesh section with a diffuse map".into());
+                    }
+                    warnings.push(format!(
+                        "Full armor glow on: verified original {} mapped to {mapped} character mesh sections (equipment from other folders unchanged)",
+                        texture.display()
+                    ));
+                }
                 crash_diagnostics::record(
                     "cdf_worker_ready",
                     &format!(
@@ -1204,6 +1241,7 @@ enum Message {
     ViewerSidebarSelect(ViewerSidebarTab),
     ViewerSidebarClose(ViewerSidebarTab),
     ViewerEquip(String, String),
+    ViewerToggleMonsterGlow,
     ViewerSplitDrag(f32),
     OpenInspectorWindow,
     InspectorOpened,
@@ -1796,6 +1834,7 @@ fn clear_viewer_asset(state: &mut State) {
     state.equipment_source = None;
     state.equipment_slots.clear();
     state.equipment_overrides.clear();
+    state.full_armor_glow = false;
     state.texture_preview = None;
     state.texture = None;
     state.material_report = None;
@@ -2657,6 +2696,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.viewer_explorer_visible = true;
             state.viewer_menu = None;
         }
+        Message::ViewerToggleMonsterGlow => {
+            if state.busy {
+                state.status = "Finish the current preview before changing glow.".into();
+                return Task::none();
+            }
+            let Some(source) = &state.equipment_source else {
+                state.status = "Select a monster CDF to enable full-armor glow.".into();
+                return Task::none();
+            };
+            if !source.to_string_lossy().replace('\\', "/").to_ascii_lowercase().contains("/monsters/") {
+                state.status = "Full-armor glow is only available for monster CDFs.".into();
+                return Task::none();
+            }
+            state.full_armor_glow = !state.full_armor_glow;
+            state.viewer_sidebar_active = ViewerSidebarTab::Equipment;
+            return update(state, Message::ViewerPreviewStaticCdf);
+        }
         Message::ViewerEquip(slot, binding) => {
             if state.busy {
                 state.status =
@@ -3215,6 +3271,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             if state.equipment_source.as_ref() != Some(&source) {
                 state.equipment_overrides.clear();
+                state.full_armor_glow = false;
                 state.equipment_source = Some(source.clone());
                 state.equipment_slots = read_cdf(&source)
                     .map(|cdf| discover_equipment(&cdf, inventory))
@@ -3235,6 +3292,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 resource_build(state),
                 state.preview_cache.clone(),
                 state.equipment_overrides.clone(),
+                state.full_armor_glow,
             );
             return launch(state, operation);
         }
@@ -3379,10 +3437,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let cdf_source = (selected.len() == 1
                 && selected[0].to_ascii_lowercase().ends_with(".cdf"))
             .then(|| PathBuf::from(&inventory.root).join(&selected[0]));
-            let equipment = if cdf_source
+            let export_matches_viewport = cdf_source
                 .as_ref()
-                .is_some_and(|source| state.equipment_source.as_ref() == Some(source))
+                .is_some_and(|source| state.equipment_source.as_ref() == Some(source));
+            if (!state.equipment_overrides.is_empty() || state.full_armor_glow)
+                && !export_matches_viewport
             {
+                state.status = "To export current Model Options, select only the active CDF assembly.".into();
+                return Task::none();
+            }
+            if state.full_armor_glow && (!state.export_rigged || !state.export_embed_textures) {
+                state.status = "Full-armor glow needs Rigged and Embedded textures enabled for FBX export.".into();
+                return Task::none();
+            }
+            let equipment = if export_matches_viewport {
                 state.equipment_overrides.clone()
             } else {
                 EquipmentOverrides::new()
@@ -3402,6 +3470,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 embed_textures: state.export_embed_textures,
                 export_dependencies: state.export_dependencies,
                 equipment,
+                full_armor_glow: state.full_armor_glow && export_matches_viewport,
             };
             state.export_dialog_open = false;
             return launch(state, Operation::ExportBundle(inventory, options));
