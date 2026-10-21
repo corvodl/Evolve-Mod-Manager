@@ -93,6 +93,26 @@ def verify_mesh(mesh, armature):
     check(weighted > 0, "missing original vertex weights")
     return modifiers[0], weighted, mesh_uv_bounds(mesh)
 
+def diffuse_image_count(meshes):
+    """Count verified diffuse images attached to source mesh materials.
+
+    FBX can contain a Material object with no Texture or Video object.
+    Such an FBX renders white even with Material Preview enabled.
+    """
+    found = set()
+    for obj in meshes:
+        for material in obj.data.materials:
+            if not material or not material.use_nodes or not material.node_tree:
+                continue
+            for link in material.node_tree.links:
+                node = link.from_node
+                if (link.to_socket.name == "Base Color"
+                        and node.type == "TEX_IMAGE"
+                        and node.image is not None):
+                    found.add(node.image.name)
+    return len(found)
+
+
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:]
     check(len(argv) == 2, "expected parts manifest and destination")
@@ -153,6 +173,9 @@ def main():
             bpy.data.objects.remove(arm, do_unlink=True)
 
     check(master is not None and len(meshes) >= len(parts), "incomplete assembly")
+    if embed_textures:
+        check(diffuse_image_count(meshes) > 0,
+              "selected embedded textures but no original diffuse image reached Blender")
     check(len(meshes) <= 1024, "unbounded material fragment count")
     bone_count = len(master.data.bones)
     source_hierarchy = {
@@ -194,6 +217,9 @@ def main():
           "FBX round-trip changed the original bone hierarchy")
     check(len(result_meshes) >= len(parts), "round-trip lost character parts")
     check(len(result_meshes) <= 2048, "round-trip produced unbounded material fragments")
+    if embed_textures:
+        check(diffuse_image_count(result_meshes) > 0,
+              "FBX round-trip lost embedded diffuse image links; refusing white export")
     if animate:
         check(bool(bpy.data.actions), "FBX round-trip lost the verified CAF Action")
     imported_weighted_vertices = 0
