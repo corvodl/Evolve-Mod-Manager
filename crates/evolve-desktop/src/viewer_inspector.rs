@@ -209,7 +209,7 @@ pub(super) fn sidebar_inspector(state: &State) -> Element<'_, Message> {
         if damage_blend > 0 {
             summary = summary.push(
                 text(format!(
-                    "Damage blend: {damage_blend} original mask reference(s) — not transparency; layered damage preview not yet supported"
+                    "Damage blend: {damage_blend} original mask reference(s) — not transparency. Model Options intensity: {}%", state.damage_blend_percent
                 ))
                 .size(12)
                 .style(design::muted),
