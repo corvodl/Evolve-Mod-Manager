@@ -775,10 +775,20 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                         })
                         .on_press(Message::GfxToggleLayoutRaster),
                     );
-                    actions = actions.push(text("ROOT FIRST-FRAME LAYERS").size(14))
-                .push(text("Only real DefineShape bounds are draggable. Unbounded sprites support numeric editing. Runtime-created elements cannot be inferred from the static GFX.")
-                    .size(11).style(design::muted));
+                    actions = actions
+                        .push(text_input("Filter layers by name, ID or depth…", &state.gfx_layer_filter)
+                            .on_input(Message::GfxLayerFilterChanged).padding(8))
+                        .push(text(format!("{} original root layer(s)", session.layers.len()))
+                            .size(11).style(design::muted));
                     for (i, layer) in session.layers.iter().enumerate() {
+                        let query = state.gfx_layer_filter.trim().to_ascii_lowercase();
+                        if !query.is_empty()
+                            && !layer.label.to_ascii_lowercase().contains(&query)
+                            && !layer.depth.to_string().contains(&query)
+                            && !layer.character.to_string().contains(&query)
+                        {
+                            continue;
+                        }
                         actions = actions.push(
                             design::button(text(format!(
                                 "Depth {} · {} [#{}] {}{}",
