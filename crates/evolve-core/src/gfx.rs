@@ -66,8 +66,13 @@ fn clean_import(value: &[u8]) -> Result<String, GfxError> {
     let movie = std::str::from_utf8(&value[..end])
         .map_err(|_| Invalid("Invalid imported movie encoding"))?;
     // Only file-local, relative imports; never open an arbitrary URL or path.
-    if movie.contains('\\') || movie.contains(':') || movie.starts_with('/') ||
-        movie.split('/').any(|piece| piece.is_empty() || piece == "." || piece == "..") {
+    if movie.contains('\\')
+        || movie.contains(':')
+        || movie.starts_with('/')
+        || movie
+            .split('/')
+            .any(|piece| piece.is_empty() || piece == "." || piece == "..")
+    {
         return Err(Invalid("Unsafe external GFX import reference"));
     }
     Ok(movie.to_owned())
@@ -96,7 +101,9 @@ pub fn inspect_gfx(original: &[u8]) -> Result<GfxInfo, GfxError> {
             .take((MAX_DECOMPRESSED + 1) as u64)
             .read_to_end(&mut expanded)?;
         if expanded.len() != declared - 8 {
-            return Err(Invalid("Decompressed length differs from declared GFX length"));
+            return Err(Invalid(
+                "Decompressed length differs from declared GFX length",
+            ));
         }
         let mut data = original[..8].to_vec();
         data[0] = b'G';
@@ -126,7 +133,8 @@ pub fn inspect_gfx(original: &[u8]) -> Result<GfxInfo, GfxError> {
     let frames = u16::from_le_bytes(source[offset + 2..offset + 4].try_into().unwrap());
     let width = (values[1] - values[0]) / 20;
     let height = (values[3] - values[2]) / 20;
-    if !(1..=8192).contains(&width) || !(1..=8192).contains(&height)
+    if !(1..=8192).contains(&width)
+        || !(1..=8192).contains(&height)
         || i64::from(width) * i64::from(height) > 36_000_000
         || !(1..=2048).contains(&frames)
     {
@@ -197,7 +205,9 @@ pub fn inspect_gfx(original: &[u8]) -> Result<GfxInfo, GfxError> {
             7 | 34 => Some("button"),
             _ => None,
         };
-        if let Some(kind) = kind && payload.len() >= 2 {
+        if let Some(kind) = kind
+            && payload.len() >= 2
+        {
             let id = u16::from_le_bytes([payload[0], payload[1]]);
             if info.resources.len() >= 10_000 {
                 return Err(Invalid("Too many GFX resource tags"));
@@ -247,8 +257,17 @@ mod tests {
     #[test]
     fn reads_real_movie_dimensions_and_resource_tag() {
         let info = inspect_gfx(&fixture(Some((21, 7)))).unwrap();
-        assert_eq!((info.width, info.height, info.fps, info.frames), (1920, 1080, 30.0, 1));
-        assert_eq!(info.resources, vec![GfxResource { kind: "image", id: 7 }]);
+        assert_eq!(
+            (info.width, info.height, info.fps, info.frames),
+            (1920, 1080, 30.0, 1)
+        );
+        assert_eq!(
+            info.resources,
+            vec![GfxResource {
+                kind: "image",
+                id: 7
+            }]
+        );
     }
     #[test]
     fn cfx_decompression_and_malformed_inputs_are_bounded() {
