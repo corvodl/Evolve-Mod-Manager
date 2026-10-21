@@ -1103,12 +1103,20 @@ impl Operation {
                                     .map(|position| &cdf_dir[position..])
                                     .ok_or("Selected CDF is not a monster")?;
                                 let mut mapped = 0usize;
+                                let mut derived = HashMap::<usize, Arc<::image::RgbaImage>>::new();
                                 for (part, surface) in report.source_parts.iter().zip(surfaces.iter_mut()) {
                                     let binding = part.binding.replace('\\', "/").to_ascii_lowercase();
                                     if surface.visible && binding.contains(owner) {
                                         if let Some(base) = surface.diffuse.as_ref() {
-                                            let pixels = assembly_materials::armor_emission(base, &rgba)?;
-                                            surface.emissive = Some(Arc::new(pixels));
+                                            let key = Arc::as_ptr(base) as usize;
+                                            let image = if let Some(existing) = derived.get(&key) {
+                                                Arc::clone(existing)
+                                            } else {
+                                                let pixels = Arc::new(assembly_materials::armor_emission(base, &rgba)?);
+                                                derived.insert(key, Arc::clone(&pixels));
+                                                pixels
+                                            };
+                                            surface.emissive = Some(image);
                                             mapped += 1;
                                         }
                                     }
