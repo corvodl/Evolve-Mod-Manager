@@ -348,6 +348,19 @@ fn legacy_decal_role(slot: &evolve_core::MaterialSlot, role: &str) -> Option<usi
 /// tinted by the material's authored Diffuse RGB, never by the unrelated
 /// body diffuse-alpha map or its serialized Emissive="0,0,0".
 /// Animated Decal TexMod coordinates require a separate renderer feature.
+fn source_decal_motion(slot: &evolve_core::MaterialSlot) -> Option<evolve_core::DecalTexMod> {
+    let source = slot.decal_tex_mod?;
+    let emitted = slot.maps.iter().any(|map| map.role == "decal"
+        && legacy_decal_role(slot, &map.role) == Some(2));
+    let other_emission = slot.maps.iter().any(|map| map.role != "decal"
+        && role_channel(&map.role) == Some(2));
+    if emitted && !other_emission {
+        Some(source)
+    } else {
+        None
+    }
+}
+
 fn tint_legacy_decal(
     slot: &evolve_core::MaterialSlot,
     decal: &image::RgbaImage,
@@ -701,6 +714,7 @@ pub fn load_model(
             emissive: None,
             armor_emissive: None,
             emission_strength: 1.0,
+            emissive_uv: None,
             specular: None,
             gloss: None,
             opacity: None,
@@ -746,6 +760,7 @@ pub fn load_model(
                         surface.normal = normal;
                         surface.emissive = emissive;
                         surface.emission_strength = leaf.glow_amount.unwrap_or(1.0).max(0.0);
+            surface.emissive_uv = source_decal_motion(leaf);
                         surface.specular = specular;
                         surface.gloss = gloss;
                         // Original scalar opacity, when present, is independent
@@ -1003,6 +1018,7 @@ pub fn load_with_progress(
             emissive: None,
             armor_emissive: None,
             emission_strength: 1.0,
+            emissive_uv: None,
             specular: None,
             gloss: None,
             opacity: None,
@@ -1073,6 +1089,7 @@ pub fn load_with_progress(
             surface.normal = normal;
             surface.emissive = emissive;
             surface.emission_strength = leaf.glow_amount.unwrap_or(1.0).max(0.0);
+            surface.emissive_uv = source_decal_motion(leaf);
             surface.specular = specular;
             surface.gloss = gloss;
             surface.opacity = verified_opacity(leaf, opacity);
@@ -1155,6 +1172,7 @@ mod tests {
             emissive: None,
             armor_emissive: None,
             emission_strength: 1.0,
+            emissive_uv: None,
             specular: None,
             gloss: None,
             opacity: None,
@@ -1225,6 +1243,7 @@ mod tests {
             glow_amount: Some(3.0),
             alpha_glow: true,
             diffuse_tint: None,
+            decal_tex_mod: None,
         };
         let mask = legacy_alpha_emission(&slot, &diffuse).unwrap();
         assert!(mask.get_pixel(0, 0)[0] > 150);
@@ -1285,6 +1304,7 @@ mod tests {
         .unwrap();
         let slot = &document.slots[0];
         assert!(!slot.alpha_glow);
+        assert!(slot.decal_tex_mod.is_none());
         assert_eq!(legacy_decal_role(slot, "decal"), Some(2));
         assert_eq!(legacy_decal_role(slot, "normals"), Some(1));
         let original = image::RgbaImage::from_pixel(2, 2, image::Rgba([180, 180, 180, 220]));
@@ -1330,6 +1350,7 @@ mod tests {
             glow_amount: None,
             alpha_glow: false,
             diffuse_tint: None,
+            decal_tex_mod: None,
             maps: if with_mask {
                 vec![evolve_core::TextureReference {
                     role: "opacity".into(),
@@ -1464,6 +1485,7 @@ mod tests {
             emissive: None,
             armor_emissive: None,
             emission_strength: 1.0,
+            emissive_uv: None,
             specular: None,
             gloss: None,
             opacity: None,
@@ -1860,6 +1882,7 @@ mod tests {
             glow_amount: None,
             alpha_glow: false,
             diffuse_tint: None,
+            decal_tex_mod: None,
         };
         assert!(!needs_alpha_blending(&ordinary));
         let mut transparent = ordinary;
