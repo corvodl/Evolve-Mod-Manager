@@ -1,1 +1,23 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#D6454D" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/><path d="m19.4 15 1.6 1-2 3.5-1.7-.7a8 8 0 0 1-2.1 1.2L15 22h-4l-.2-2a8 8 0 0 1-2.1-1.2l-1.7.7L5 16l1.6-1a8 8 0 0 1 0-2l-1.6-1 2-3.5 1.7.7a8 8 0 0 1 2.1-1.2L11 6h4l.2 2a8 8 0 0 1 2.1 1.2l1.7-.7L21 12l-1.6 1a8 8 0 0 1 0 2z"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="24" height="24" viewBox="0 0 24 24"
+     fill="none" stroke="#D6454D" stroke-width="1.8"
+     stroke-linecap="round" stroke-linejoin="round">
+  <!-- Lucide "settings" icon, adapted to the Evolve navigation color.
+       ISC License
+       Copyright (c) 2026 Lucide Icons and Contributors
+       
+       Permission to use, copy, modify, and/or distribute this software for any
+       purpose with or without fee is hereby granted, provided that the above
+       copyright notice and this permission notice appear in all copies.
+       
+       THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+       WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+       MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+       ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+       WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+       ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+       OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+  -->
+  <path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/>
+  <circle cx="12" cy="12" r="3"/>
+</svg>
