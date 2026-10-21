@@ -54,6 +54,8 @@ pub struct Surface {
     pub armor_emissive: Option<Arc<image::RgbaImage>>,
     /// Exact per-leaf authored GlowAmount, not a guessed percentage.
     pub emission_strength: f32,
+    /// Authored moving Decal UVs used only for this material's emission.
+    pub emissive_uv: Option<evolve_core::DecalTexMod>,
     pub specular: Option<Arc<image::RgbaImage>>,
     pub gloss: Option<Arc<image::RgbaImage>>,
     /// Verified authored opacity DDS; not interchangeable with diffuse alpha.
@@ -76,6 +78,8 @@ pub struct Scene {
     pub light_strength: f32,
     /// Viewport-only multiplier, independent of the original material strength.
     pub emissive_gain: f32,
+    /// Continuous glow animation clock, independent of CAF playback.
+    pub emissive_time: f32,
     pub pan_x: f32,
     pub pan_y: f32,
     pub shift: bool,
@@ -144,6 +148,7 @@ pub struct Primitive {
     specular_identity: usize,
     gloss_identity: usize,
     emissive_gain: f32,
+    emissive_time: f32,
 }
 impl shader::Program<super::Message> for Scene {
     type State = super::view_navigation::Navigation;
@@ -273,6 +278,7 @@ impl shader::Program<super::Message> for Scene {
                 .map_or(0, |t| Arc::as_ptr(t) as usize),
             gloss_identity: self.gloss.as_ref().map_or(0, |t| Arc::as_ptr(t) as usize),
             emissive_gain: self.emissive_gain,
+            emissive_time: self.emissive_time,
         }
     }
 }
@@ -284,7 +290,9 @@ struct GpuSurface {
     opacity_map: bool,
     bind_group: wgpu::BindGroup,
     _emission_uniform: wgpu::Buffer,
+    _uv_uniform: wgpu::Buffer,
     source_emission_strength: f32,
+    emissive_uv: Option<evolve_core::DecalTexMod>,
 }
 
 pub struct Pipeline {
@@ -310,6 +318,7 @@ pub struct Pipeline {
     last_gloss_identity: usize,
     last_surfaces_identity: usize,
     last_emissive_gain: f32,
+    last_emissive_time: f32,
     gpu_surfaces: Vec<GpuSurface>,
     // Own every unique GPU source allocation while its bind groups exist.
     _surface_textures: Vec<wgpu::Texture>,
@@ -332,6 +341,7 @@ pub struct Pipeline {
     sampler: wgpu::Sampler,
     group: wgpu::BindGroup,
     _emission_uniform: wgpu::Buffer,
+    _uv_uniform: wgpu::Buffer,
     depth: wgpu::TextureView,
     depth_dimensions: (u32, u32),
 }
@@ -339,7 +349,7 @@ pub struct Pipeline {
 // Every runtime material bind group must follow the same schema used by
 // textured.wgsl, including the standalone DDS refresh path. Keep this single
 // helper for initialization, CDF attachment ranges and texture reloads.
-const MATERIAL_BINDINGS: [u32; 9] = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+const MATERIAL_BINDINGS: [u32; 10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 
 /// Keep the two gains separate: the CryEngine authored strength (3 != 100%)
 /// and the user's optional viewport setting. Shader multiplies x*y, never
@@ -358,10 +368,17 @@ fn emission_uniform_values(source_strength: f32, preview_gain: f32) -> [f32; 4] 
     [source, gain, 0.0, 0.0]
 }
 
+/// Source UV tiles and one texture-coordinate translation per axis.
+/// Type 2 uses constant motion rather than a sine oscillation.
+fn emissive_uv_values(uv: Option<evolve_core::DecalTexMod>, seconds: f32) -> [f32; 4] {
+    uv.map_or([1.0, 1.0, 0.0, 0.0], |value| value.sample(seconds))
+}
+
 fn material_entries<'a>(
     views: [&'a wgpu::TextureView; 7],
     sampler: &'a wgpu::Sampler,
     emission_uniform: &'a wgpu::Buffer,
+    uv_uniform: &'a wgpu::Buffer,
 ) -> [wgpu::BindGroupEntry<'a>; MATERIAL_BINDINGS.len()] {
     let texture = |binding: usize, channel: usize| wgpu::BindGroupEntry {
         binding: MATERIAL_BINDINGS[binding],
@@ -383,6 +400,10 @@ fn material_entries<'a>(
             resource: emission_uniform.as_entire_binding(),
         },
         texture(8, 6), // optional armor glow, not original Emittance
+        wgpu::BindGroupEntry {
+            binding: MATERIAL_BINDINGS[9],
+            resource: uv_uniform.as_entire_binding(),
+        },
     ]
 }
 
@@ -398,6 +419,21 @@ impl Pipeline {
             mapped_at_creation: false,
         });
         queue.write_buffer(&buffer, 0, bytemuck::bytes_of(&values));
+        buffer
+    }
+
+    fn emissive_uv_uniform(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        uv: Option<evolve_core::DecalTexMod>,
+    ) -> wgpu::Buffer {
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Independent animated Decal emission UV transform"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&buffer, 0, bytemuck::bytes_of(&emissive_uv_values(uv, 0.0)));
         buffer
     }
 
@@ -541,6 +577,16 @@ impl Pipeline {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 9,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
                     count: None,
                 },
@@ -819,6 +865,7 @@ impl Pipeline {
             "Neutral authored opacity",
         );
         let emission_uniform = Self::emission_uniform(device, queue, 1.0);
+        let uv_uniform = Self::emissive_uv_uniform(device, queue, None);
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Evolve actual texture sampler group"),
             layout: &layout,
@@ -834,6 +881,7 @@ impl Pipeline {
                 ],
                 &sampler,
                 &emission_uniform,
+                &uv_uniform,
             ),
         });
         let vertex = device.create_buffer(&wgpu::BufferDescriptor {
@@ -872,6 +920,7 @@ impl Pipeline {
             last_gloss_identity: usize::MAX,
             last_surfaces_identity: usize::MAX,
             last_emissive_gain: f32::NAN,
+            last_emissive_time: f32::NAN,
             gpu_surfaces: Vec::new(),
             _surface_textures: Vec::new(),
             surface_table_valid: false,
@@ -892,6 +941,7 @@ impl Pipeline {
             sampler,
             group,
             _emission_uniform: emission_uniform,
+            _uv_uniform: uv_uniform,
             depth,
             depth_dimensions: (1, 1),
         }
@@ -1052,6 +1102,7 @@ impl Pipeline {
                 }
             }
             let emission_uniform = Self::emission_uniform(device, queue, part.emission_strength);
+            let uv_uniform = Self::emissive_uv_uniform(device, queue, part.emissive_uv);
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Exact CDF attachment material"),
                 layout: &self.layout,
@@ -1061,6 +1112,7 @@ impl Pipeline {
                     ],
                     &self.sampler,
                     &emission_uniform,
+                    &uv_uniform,
                 ),
             });
             self.gpu_surfaces.push(GpuSurface {
@@ -1070,7 +1122,9 @@ impl Pipeline {
                 opacity_map: opacity_uploaded,
                 bind_group: group,
                 _emission_uniform: emission_uniform,
+                _uv_uniform: uv_uniform,
                 source_emission_strength: part.emission_strength,
+                emissive_uv: part.emissive_uv,
             });
         }
         super::crash_diagnostics::record(
@@ -1116,6 +1170,15 @@ impl Pipeline {
             primitive.surfaces.as_ref(),
             primitive.indices.len(),
         );
+        if self.last_emissive_time.to_bits() != primitive.emissive_time.to_bits() {
+            self.last_emissive_time = primitive.emissive_time;
+            for surface in &self.gpu_surfaces {
+                if surface.emissive_uv.is_some() {
+                    let transform = emissive_uv_values(surface.emissive_uv, primitive.emissive_time);
+                    queue.write_buffer(&surface._uv_uniform, 0, bytemuck::bytes_of(&transform));
+                }
+            }
+        }
         if self.last_emissive_gain.to_bits() != primitive.emissive_gain.to_bits() {
             self.last_emissive_gain = primitive.emissive_gain;
             // Buffers already exist on each material: update only 16 bytes
@@ -1242,6 +1305,7 @@ impl Pipeline {
                     ],
                     &self.sampler,
                     &self._emission_uniform,
+                    &self._uv_uniform,
                 ),
             });
             self.last_texture_identity = primitive.texture_identity;
@@ -1418,6 +1482,22 @@ mod tests {
             super::emission_uniform_values(f32::NAN, f32::NAN)[..2],
             [0.0, 1.0]
         );
+    }
+
+    #[test]
+    fn animated_kala_uv_does_not_change_regular_mesh_sampler() {
+        assert_eq!(super::emissive_uv_values(None, 31.0), [1.0, 1.0, 0.0, 0.0]);
+        let authored = evolve_core::DecalTexMod {
+            tile_u: 3.0, tile_v: 4.0, u_type: 2, u_rate: 1.0,
+            u_amplitude: 0.2, v_type: 0, v_rate: 0.0, v_amplitude: 0.1,
+        };
+        assert_eq!(super::emissive_uv_values(Some(authored), 1.0),
+            [3.0, 4.0, 0.2, 0.0]);
+        assert_eq!(super::emissive_uv_values(Some(authored), 2.0),
+            [3.0, 4.0, 0.4, 0.0]);
+        let shader = include_str!("textured.wgsl");
+        assert!(shader.contains("input.uv * emissive_uv.xy + emissive_uv.zw"));
+        assert!(shader.contains("textureSample(diffuse, material_sampler, input.uv)"));
     }
 
     #[test]
