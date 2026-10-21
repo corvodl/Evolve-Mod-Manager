@@ -1075,6 +1075,37 @@ mod tests {
     }
 
     #[test]
+    fn monster_glow_uses_selected_variant_and_original_character_folder_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = dir.path().join("objects/characters/monsters/goliath");
+        let neighbor = dir.path().join("objects/characters/monsters/scorpid_2");
+        fs::create_dir_all(&owner).unwrap();
+        fs::create_dir_all(&neighbor).unwrap();
+        fs::write(owner.join("goliath3.cdf"), b"cdf selection").unwrap();
+        fs::write(owner.join("goliath2_glow_diff.dds.0"), b"other stage").unwrap();
+        fs::write(neighbor.join("goliath3_glow_diff.dds.0"), b"other actor").unwrap();
+        let inventory = crate::scan_directory(dir.path()).unwrap();
+        assert!(
+            monster_glow_path(&owner.join("goliath3.cdf"), &inventory)
+                .unwrap()
+                .is_none(),
+            "Another stage/monster must never supply a glow texture"
+        );
+        let correct = owner.join("goliath3_glow_diff.dds.0");
+        fs::write(&correct, b"exact stage glow").unwrap();
+        let inventory = crate::scan_directory(dir.path()).unwrap();
+        assert_eq!(
+            fs::canonicalize(monster_glow_path(&owner.join("goliath3.cdf"), &inventory).unwrap().unwrap()).unwrap(),
+            fs::canonicalize(correct).unwrap()
+        );
+        fs::create_dir_all(dir.path().join("characters/hunters")).unwrap();
+        let hunter = dir.path().join("characters/hunters/hunter.cdf");
+        fs::write(&hunter, b"hunter CDF").unwrap();
+        let inventory = crate::scan_directory(dir.path()).unwrap();
+        assert!(monster_glow_path(&hunter, &inventory).unwrap().is_none());
+    }
+
+    #[test]
     fn cdf_resolves_scoped_high_dds_from_another_imported_pak() {
         let library = tempfile::tempdir().unwrap();
         let objects = library.path().join("Objects.pak__11111111111111111111");
