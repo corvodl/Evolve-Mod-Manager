@@ -617,7 +617,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
             panel(
                 row![
                     text(format!("{phase} · {percent}%")).size(12),
-                    progress_bar(0.0..=100.0, percent as f32).width(Fill),
+                    container(progress_bar(0.0..=100.0, percent as f32)).width(Fill),
                 ]
                 .spacing(12)
                 .align_y(iced::Center),
@@ -629,7 +629,7 @@ fn viewport(state: &State) -> Element<'_, Message> {
             panel(
                 row![
                     text("Loading original assets…").size(12),
-                    progress_bar(0.0..=100.0, 0.0).width(Fill),
+                    container(progress_bar(0.0..=100.0, 0.0)).width(Fill),
                     text("Progress unavailable").size(11).style(design::muted),
                 ]
                 .spacing(12)
