@@ -2820,9 +2820,53 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.viewer_menu = None;
         }
         Message::ViewerDamageBlendChanged(percent) => {
-            if percent <= 100 && state.equipment_source.is_some() && !state.busy {
+            if percent <= 100 && state.equipment_source.is_some() && !state.busy
+                && !state.cdf_legacy_2012
+            {
                 state.damage_blend_percent = percent;
             }
+        }
+        Message::ViewerDamageBlendCommit => {
+            if state.busy || state.cdf_legacy_2012 {
+                return Task::none();
+            }
+            let (Some(source), Some(base)) =
+                (&state.equipment_source, &state.cdf_base_surfaces)
+            else {
+                return Task::none();
+            };
+            if state.damage_blend_percent == 0 {
+                state.cdf_surfaces = Some(Arc::clone(base));
+                state.status = "Original character diffuse restored from memory (no reload).".into();
+                return Task::none();
+            }
+            if let Some(full) = &state.cdf_full_damage_surfaces {
+                if state.damage_blend_percent == 100 {
+                    state.cdf_surfaces = Some(Arc::clone(full));
+                    state.status = "100% damage applied from cached original maps.".into();
+                    return Task::none();
+                }
+                return launch(state, Operation::ReblendCdfDamage(
+                    source.clone(),
+                    Arc::clone(base),
+                    Arc::clone(full),
+                    state.damage_blend_percent,
+                ));
+            }
+            let (Some(report), Some(inventory)) =
+                (&state.cdf_report, &state.inventory)
+            else {
+                return Task::none();
+            };
+            return launch(state, Operation::PrepareCdfDamage(
+                source.clone(),
+                Arc::clone(report),
+                Arc::clone(base),
+                inventory.clone(),
+                state.library_catalog.as_ref().map(|c| PathBuf::from(&c.root)),
+                resource_build(state),
+                state.preview_cache.clone(),
+            ));
         }
         Message::ViewerToggleDamageBlend => {
             if state.busy {
@@ -2843,13 +2887,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Damage blend is only available for monster CDFs.".into();
                 return Task::none();
             }
+            if state.cdf_legacy_2012 {
+                state.status = "Damage blend is a Stage 2 feature, unavailable for original 2012 monsters.".into();
+                return Task::none();
+            }
             state.damage_blend_percent = if state.damage_blend_percent == 0 {
                 100
             } else {
                 0
             };
             state.viewer_sidebar_active = ViewerSidebarTab::Equipment;
-            return update(state, Message::ViewerPreviewStaticCdf);
+            return update(state, Message::ViewerDamageBlendCommit);
         }
         Message::ViewerToggleMonsterGlow => {
             if state.busy {
@@ -2867,6 +2915,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .contains("/monsters/")
             {
                 state.status = "Full-armor glow is only available for monster CDFs.".into();
+                return Task::none();
+            }
+            if state.cdf_legacy_2012 {
+                state.status = "Armor glow is a Stage 2 feature, unavailable for original 2012 monsters.".into();
                 return Task::none();
             }
             state.full_armor_glow = !state.full_armor_glow;
