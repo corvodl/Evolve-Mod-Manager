@@ -961,6 +961,7 @@ impl Pipeline {
         // New bind groups require fresh gain uploads even if the slider did
         // not move. Reuse the already-decoded images on subsequent slider drags.
         self.last_emissive_gain = f32::NAN;
+        self.last_emissive_time = f32::NAN;
         self.gpu_surfaces.clear();
         self._surface_textures.clear();
         self.surface_table_valid = false;
