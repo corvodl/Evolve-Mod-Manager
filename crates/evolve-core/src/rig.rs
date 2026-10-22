@@ -1060,8 +1060,8 @@ pub(crate) struct OriginalMaterialPng {
     pub roughness: Option<Vec<u8>>,
 }
 
-/// Split ONE verified rigged GLB into original material-ID primitives, reusing
-/// the source index buffer, original UV0 and all skin joint/weight attributes.
+/// Split ONE verified GLB into original material-ID primitives, reusing
+/// the source index buffer, original UV0 and (if present) skin attributes.
 /// Each authored MTL leaf gets its own original texture set. A NoDraw leaf
 /// remains an identifiable, fully transparent material instead of moving
 /// subsequent CryEngine subset indices or deleting original geometry.
@@ -1093,16 +1093,25 @@ pub(crate) fn embed_original_material_slots_glb(
     let primitives = doc["meshes"][0]["primitives"]
         .as_array()
         .ok_or_else(|| RigError::Invalid("Rigged geometry has no primitives".into()))?;
-    if primitives.len() != 1 || doc["skins"].as_array().is_none_or(|v| v.len() != 1) {
+    if primitives.len() != 1 {
         return Err(RigError::Invalid(
-            "Expected one verified source skinned mesh".into(),
+            "Expected one verified source mesh".into(),
         ));
     }
     let base = primitives[0].clone();
-    for attr in ["POSITION", "TEXCOORD_0", "JOINTS_0", "WEIGHTS_0"] {
-        if base["attributes"][attr].as_u64().is_none() {
+    let rigged = doc["skins"].as_array().is_some_and(|skins| !skins.is_empty());
+    if rigged && doc["skins"].as_array().is_none_or(|skins| skins.len() != 1) {
+        return Err(RigError::Invalid("Unexpected source skin count".into()));
+    }
+    let attrs: &[&str] = if rigged {
+        &["POSITION", "TEXCOORD_0", "JOINTS_0", "WEIGHTS_0"]
+    } else {
+        &["POSITION", "TEXCOORD_0"]
+    };
+    for attr in attrs {
+        if base["attributes"][*attr].as_u64().is_none() {
             return Err(RigError::Invalid(
-                "Rigged GLB has incomplete source attributes".into(),
+                "Source GLB has incomplete source attributes".into(),
             ));
         }
     }
