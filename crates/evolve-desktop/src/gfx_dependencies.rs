@@ -215,7 +215,11 @@ mod tests {
         let folder = library.join("USA-EN_xml.pak__11111111111111111111");
         fs::create_dir_all(folder.join("files/files")).unwrap();
         let original_font = b"GFX__original_font_movie";
-        fs::write(folder.join("files/files/gfxfontlib_locfont.gfx"), original_font).unwrap();
+        fs::write(
+            folder.join("files/files/gfxfontlib_locfont.gfx"),
+            original_font,
+        )
+        .unwrap();
         fs::write(
             folder.join("asset-library.json"),
             serde_json::to_vec(&serde_json::json!({
