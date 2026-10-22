@@ -197,6 +197,18 @@
             " (" + Number(renderFlags.nested_sprites || 0) + " nested sprites). " +
             (renderFlags.partial ? "Static effect inventory incomplete." :
                 "Ruffle output and runtime Scaleform effects not visually verified."));
+        const modeImages = report.mode_images || {};
+        if (Number(modeImages.requested || 0) > 0) {
+            messages.push("Original MenuModeSelect images: " +
+                Number(modeImages.staged || 0) + " / " +
+                Number(modeImages.requested || 0) +
+                " source-qualified DDS staged as temporary PNGs. " +
+                "Other CryEngine img:// image families remain unavailable.");
+            for (const key of ["missing", "ambiguous_or_invalid_manifest", "decode_or_budget_failures"]) {
+                const rows = Array.isArray(modeImages[key]) ? modeImages[key] : [];
+                if (rows.length) messages.push("Mode DDS " + key + ": " + rows.slice(0, 12).join(", "));
+            }
+        }
         const video = report.background_video || {};
         messages.push("Main-menu motion background: " +
             String(video.status || "Original video source not inspected"));
@@ -372,7 +384,15 @@
             allowScriptAccess: true,
             autoplay: "on",
             wmode: hasVideo ? "transparent" : "opaque",
-            backgroundColor: hasVideo ? null : "#000000"
+            backgroundColor: hasVideo ? null : "#000000",
+            // CryEngine implements img:// for dynamic menu card artwork.
+            // Ruffle supports URL rewriting; only the specific original
+            // MenuModeSelect DDS family is mapped to source-verified PNG copies
+            // served from this preview's isolated, local-only session.
+            urlRewriteRules: [
+                [/^img:\/\/Libs\/UI\/FlashAssets\/images\/MenuModeSelect\/([A-Za-z0-9_-]+)\.dds$/i,
+                 "./runtime-images/$1.png"]
+            ]
         });
         // Ruffle uses the source SWF stage dimensions (not the containing
         // browser window). Keep the independently decoded original video and
