@@ -3,9 +3,8 @@
 //! movie references are rendered by FFDec only when the selected Asset Library
 //! has an exact, manifest-verified file in the requested build.
 use evolve_core::gfx::MAX_SOURCE;
-use evolve_core::{
-    LibraryReferenceStatus, resolve_imported_reference, resolve_imported_reference_in_archive,
-};
+use evolve_core::library_catalog::resolve_imported_reference_in_archive;
+use evolve_core::{LibraryReferenceStatus, resolve_imported_reference};
 use std::fs;
 use std::path::{Path, PathBuf};
 
