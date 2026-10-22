@@ -154,10 +154,14 @@
         const imageIssues = stats.bitmap_skip_details || {};
         messages.push("Original DDS skips by cause: " +
             Number(imageIssues.missing_source || 0) + " missing source tiles, " +
-            Number(imageIssues.preview_limit || 0) + " preview safety/pixel limit, " +
+            Number(imageIssues.preview_limit || 0) + " bounded preview limits, " +
             Number(imageIssues.duplicate_or_embedded || 0) + " reused or already defined, " +
             Number(imageIssues.invalid_tile || 0) + " invalid atlas tiles, " +
             Number(imageIssues.decode_error || 0) + " DDS decoding failures.");
+        messages.push("Preview limit breakdown: " +
+            Number(imageIssues.bitmap_count_limit || 0) + " bitmap-count limit, " +
+            Number(imageIssues.pixel_limit || 0) + " tile/pixel budget, " +
+            Number(imageIssues.movie_size_limit || 0) + " reconstructed-SWF byte limit.");
         for (const file of (Array.isArray(imageIssues.missing_paths)
             ? imageIssues.missing_paths.slice(0, 12) : [])) {
             messages.push("Missing original DDS: " + String(file));

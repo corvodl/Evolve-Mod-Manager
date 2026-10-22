@@ -47,6 +47,33 @@ and `background_video.status`, verify the source
 same frame against live CryEngine output. Preserve the original sign-in
 text, never invent a translation, and keep the GFX bytes read-only.
 
+## October 22 — preview tile limits and missing video diagnosis
+
+The user's Nightly 22 diagnostic shows **119 DDS tiles restored, 292 skipped
+strictly due to preview limits, 0 missing source tiles, 0 DDS decode errors,
+and 0 missing imported SWF movies**. Do not describe those 292 as missing
+asset files. Most affected original Scaleform bitmap tiles are present but
+excluded by the preview's old 128-tile / 8-million-pixel safety ceilings.
+
+The temporary GFX-to-SWF raster path now allows at most **512 restored
+bitmaps**, **4 million pixels per cropped tile** and **32 million cropped
+pixels per source movie**. A conservative encoded-output check is performed
+before adding each bitmap so the original **32 MiB decompressed SWF size
+limit** remains effective; rejected tiles are reported without breaking the
+entire preview. Runtime diagnostics separate bitmap-count, pixel-budget and
+SWF-byte-limit skips. The original game assets and GFX stay unchanged.
+Large or incompressible original textures may still be skipped within the
+bounds. Real Ruffle memory and fidelity require Windows runtime testing.
+
+Separately, the original moving background was not imported from exact-build
+`videos.pak`: `Libs/UI/FlashAssets/videos/main_menu.usm` is required.
+That source USM must be imported and explicitly transcoded with configured
+FFmpeg or paired with a user-provided `main_menu.preview.mp4` derivative.
+Changing bitmap caps cannot produce the original background video.
+Font definition verification and dynamic ActionScript `@ui_` localization
+are independent pending tasks; 0/6 in-movie static fields does **not**
+verify that the native localization engine was successfully initialized.
+
 ## October 22 — source-verified videos.pak background discovery
 
 The main-menu browser background remains an optional **original
