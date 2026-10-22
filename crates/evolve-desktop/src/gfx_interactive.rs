@@ -1079,8 +1079,25 @@ mod tests {
         // Synthetic AVM1 DefineFunction root script (no original Evolve assets).
         let mut movie = b"FWS\x0f".to_vec();
         movie.extend_from_slice(&[0; 4]);
-        movie.extend_from_slice(&[0x08, 0x00]);
-        movie.extend_from_slice(&[0, 30, 1, 0]);
+        // Valid 1920×1080 SWF RECT, at 30fps. Previously the synthetic
+        // fixture used zero-sized stage bounds and failed inspect_gfx.
+        let mut bits = [0u8; 5 + 4 * 17];
+        let mut put = |offset: usize, width: usize, value: u32| {
+            for i in 0..width {
+                bits[offset + i] = ((value >> (width - i - 1)) & 1) as u8;
+            }
+        };
+        put(0, 5, 17);
+        for (i, value) in [0u32, 38400, 0, 21600].iter().enumerate() {
+            put(5 + i * 17, 17, *value);
+        }
+        let mut rect = vec![0u8; bits.len().div_ceil(8)];
+        for (i, bit) in bits.iter().enumerate() {
+            rect[i / 8] |= bit << (7 - i % 8);
+        }
+        movie.extend_from_slice(&rect);
+        movie.extend_from_slice(&7680u16.to_le_bytes());
+        movie.extend_from_slice(&1u16.to_le_bytes());
         let mut action = Vec::new();
         for (name, params) in [
             ("openScreen", 0u16),
