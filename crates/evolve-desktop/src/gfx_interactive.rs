@@ -956,7 +956,7 @@ fn localize_imported_initial_text(
     if !session.relative.eq_ignore_ascii_case("Libs/UI/main_menu.gfx") {
         return Ok(result);
     }
-    let mut keys = Vec::<String>::new();
+    let mut keys = std::collections::BTreeSet::<String>::new();
     for name in imports {
         if !safe_import(name) {
             return Err("Unsafe imported movie localization path".into());
@@ -968,10 +968,10 @@ fn localize_imported_initial_text(
         let bytes = fs::read(&source).map_err(|e| e.to_string())?;
         match crate::gfx_menu_text::authored_keys(&bytes) {
             Ok(found) => {
-                if keys.len().saturating_add(found.len()) > 1024 {
+                keys.extend(found);
+                if keys.len() > 1024 {
                     return Err("Imported menu translation requests exceed supported bounds".into());
                 }
-                keys.extend(found);
             }
             Err(_) => result.skipped += 1,
         }
@@ -979,6 +979,7 @@ fn localize_imported_initial_text(
     if keys.is_empty() {
         return Ok(result);
     }
+    let keys = keys.into_iter().collect::<Vec<_>>();
     let localization = crate::gfx_localization::menu_labels(
         session.library_root.as_deref(),
         session.source_build.as_deref(),
