@@ -133,7 +133,10 @@ mod tests {
         let js = web.join("ruffle.js").to_string_lossy().into_owned();
         assert!(valid_ruffle_web(&js).is_none());
         fs::write(web.join("ruffle.wasm"), b"wasm").unwrap();
-        assert_eq!(valid_ruffle_web(&js), fs::canonicalize(web.join("ruffle.js")).ok());
+        assert_eq!(
+            valid_ruffle_web(&js),
+            fs::canonicalize(web.join("ruffle.js")).ok()
+        );
         assert!(detected_ruffle_web("", root.path()).is_some());
         assert!(detected_ruffle_web(&js, root.path()).is_some());
         assert!(detected_ruffle_web("C:/missing/ruffle.js", root.path()).is_none());
