@@ -503,6 +503,7 @@ def embed_verified_normal_maps(objects, destination):
     pattern = re.compile(r"^" + stem + r"_normal_([0-9a-f]{12})\.png$")
     stage = destination.parent / "textures"
     media = {}
+    aggregate = 0
     if stage.exists():
         if not stage.is_dir() or stage.is_symlink():
             raise FBXValidationError("Invalid staged normal-map folder")
@@ -511,6 +512,9 @@ def embed_verified_normal_maps(objects, destination):
             if (not match or not file.is_file() or file.is_symlink()
                     or file.stat().st_size > 64 * 1024 * 1024):
                 raise FBXValidationError("Unexpected staged normal-map file")
+            aggregate += file.stat().st_size
+            if aggregate > 256 * 1024 * 1024 or len(media) >= 256:
+                raise FBXValidationError("Too many or oversized embedded normal maps")
             png = file.read_bytes()
             if (not png.startswith(b"\x89PNG\r\n\x1a\n")
                     or hashlib.sha256(png).hexdigest()[:12] != match.group(1)):
