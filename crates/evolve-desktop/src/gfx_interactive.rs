@@ -695,9 +695,21 @@ fn renderable_movie(
         result.skipped,
     ))
 }
+fn relative_import(parent: &str, child: &str) -> Result<String, String> {
+    if !parent.is_empty() && !safe_import(parent) || !safe_import(child) {
+        return Err("Unsafe Scaleform import reference".into());
+    }
+    let relative = if parent.is_empty() { child.to_owned() } else {
+        format!("{parent}/{child}")
+    };
+    if !safe_import(&relative) || relative.len() > 1024 {
+        return Err("Nested Scaleform import exceeds safe path constraints".into());
+    }
+    Ok(relative)
+}
+
 fn stage_import(
     session: &Session,
-    virtual_movie: &str,
     reference: &str,
     output: &Path,
 ) -> Result<Option<(usize, usize)>, String> {
@@ -717,12 +729,12 @@ fn stage_import(
         return Err("Imported movie is not a regular bounded file".into());
     }
     let bytes = fs::read(&real).map_err(|e| e.to_string())?;
-    let virtual_path = virtual_movie
+    let virtual_path = session.relative
         .rsplit_once('/')
         .map(|(parent, _)| format!("{parent}/{reference}"))
         .unwrap_or_else(|| reference.to_owned());
     let (swf, converted, skipped) =
-        renderable_movie(&bytes, &virtual_path, &session.source, session)?;
+        renderable_movie(&bytes, &virtual_path, &real, session)?;
     let target = output.join(reference);
     let parent = target
         .parent()
@@ -744,20 +756,21 @@ fn stage_live_import_graph(
         .imports
         .iter()
         .cloned()
-        .map(|name| (name, 0usize))
+        .map(|name| (String::new(), name, 0usize))
         .collect::<VecDeque<_>>();
     let mut visited = HashSet::new();
     let mut imported = Vec::<String>::new();
     let (mut restored, mut skipped, mut missing) = (0usize, 0usize, 0usize);
-    while let Some((name, depth)) = pending.pop_front() {
-        if !visited.insert(name.to_ascii_lowercase()) {
+    while let Some((parent, name, depth)) = pending.pop_front() {
+        let relative = relative_import(&parent, &name)?;
+        if !visited.insert(relative.to_ascii_lowercase()) {
             continue;
         }
         if visited.len() > MAX_IMPORTS {
             return Err("Original GFX import graph exceeds 128 linked movies".into());
         }
-        imported.push(name.clone());
-        match stage_import(session, &session.relative, &name, output) {
+        imported.push(relative.clone());
+        match stage_import(session, &relative, output) {
             Ok(Some((images, unresolved))) => {
                 restored += images;
                 skipped += unresolved;
@@ -771,7 +784,7 @@ fn stage_live_import_graph(
         if depth >= 3 {
             continue;
         }
-        let source = session.folder.path().join(&name);
+        let source = session.folder.path().join(&relative);
         let Ok(mut original) = fs::read(&source) else {
             continue;
         };
@@ -793,21 +806,24 @@ fn stage_live_import_graph(
         // The parent movie itself was manifest/same-folder verified before
         // following any nested references, and all nested members go through
         // that same restricted lookup and path validation.
-        let virtual_path = session
-            .relative
+        let virtual_path = session.relative
             .rsplit_once('/')
-            .map(|(parent, _)| format!("{parent}/{name}"))
-            .unwrap_or_else(|| name.clone());
+            .map(|(base, _)| format!("{base}/{relative}"))
+            .unwrap_or_else(|| relative.clone());
+        let next_parent = relative.rsplit_once('/')
+            .map(|(folder, _)| folder.to_owned())
+            .unwrap_or_default();
+        let source_parent = session.folder.path().join(&next_parent);
         crate::gfx_dependencies::stage_imports(
             &details.imports,
             &virtual_path,
             &source,
-            session.folder.path(),
+            &source_parent,
             session.library_root.as_deref(),
             session.source_build.as_deref(),
         )?;
         for child in details.imports {
-            pending.push_back((child, depth + 1));
+            pending.push_back((next_parent.clone(), child, depth + 1));
         }
     }
     imported.sort();
@@ -1370,6 +1386,15 @@ mod tests {
         let action = b"\x96\x12\x00\x00showPatchNotes\x00";
         assert_eq!(defined_function_arity(action, "showPatchNotes"), None);
         assert_eq!(defined_function_arity(&[0x9b, 0x01, 0x00, 0], "a"), None);
+    }
+    #[test]
+    fn nested_imports_keep_original_relative_parent_and_reject_escape() {
+        assert_eq!(relative_import("", "fonts/main.gfx").unwrap(), "fonts/main.gfx");
+        assert_eq!(relative_import("fonts", "glyphs.gfx").unwrap(), "fonts/glyphs.gfx");
+        assert_eq!(relative_import("ui/icons", "main.swf").unwrap(), "ui/icons/main.swf");
+        assert!(relative_import("../ui", "font.gfx").is_err());
+        assert!(relative_import("fonts", "../hidden.gfx").is_err());
+        assert!(relative_import("icons", "C:/private.swf").is_err());
     }
     #[test]
     fn refuses_untrusted_runtimes_and_import_paths() {
