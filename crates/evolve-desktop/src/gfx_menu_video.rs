@@ -12,21 +12,14 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const ORIGINAL_MEMBER: &str = "Libs/UI/FlashAssets/videos/main_menu.usm";
+const ORIGINAL_MEMBER: &str = "front_end/mainmenu_goliath.usm";
 const ORIGINAL_PAK: &str = "videos.pak";
-// CryEngine video packages are authored with either the full virtual path or
-// relative to their FlashAssets/videos mount. Only manifest-verified members
-// in the selected source build's *videos.pak* may be used.
-const VIDEO_MEMBERS: &[&str] = &[
-    ORIGINAL_MEMBER,
-    "files/Libs/UI/FlashAssets/videos/main_menu.usm",
-    "FlashAssets/videos/main_menu.usm",
-    "files/FlashAssets/videos/main_menu.usm",
-    "videos/main_menu.usm",
-    "files/videos/main_menu.usm",
-    "main_menu.usm",
-    "files/main_menu.usm",
-];
+// Stage 2 videos.pak contains individual front_end/mainmenu_*.usm backgrounds.
+// The Goliath movie is the default; the other character videos are not fallback
+// candidates, since selecting any of them would change the intended background.
+// Resolve only exact, source-build-qualified manifest entries (some imports
+// retain an additional "files/" prefix in their manifest paths).
+const VIDEO_MEMBERS: &[&str] = &[ORIGINAL_MEMBER, "files/front_end/mainmenu_goliath.usm"];
 const MAX_USM: u64 = 256 * 1024 * 1024;
 const MAX_BROWSER_VIDEO: u64 = 64 * 1024 * 1024;
 const CONVERSION_TIMEOUT: Duration = Duration::from_secs(45);
@@ -68,8 +61,12 @@ fn sidecar(original: &Path, scratch: &Path) -> Result<Option<&'static str>, Stri
         .ok_or("Original video has no parent folder")?;
     let safe_parent = fs::canonicalize(parent).map_err(|e| e.to_string())?;
     for (source_name, target_name, extension) in [
-        ("main_menu.preview.mp4", "menu-background.mp4", "mp4"),
-        ("main_menu.preview.webm", "menu-background.webm", "webm"),
+        ("mainmenu_goliath.preview.mp4", "menu-background.mp4", "mp4"),
+        (
+            "mainmenu_goliath.preview.webm",
+            "menu-background.webm",
+            "webm",
+        ),
     ] {
         let candidate = parent.join(source_name);
         if !candidate.exists() {
@@ -183,7 +180,7 @@ fn transcode(original: &Path, scratch: &Path, ffmpeg: &Path) -> Result<&'static 
     };
     if !result {
         let _ = fs::remove_file(&target);
-        return Err("FFmpeg could not demux/decode the source CRI USM; use a verified compatible decoder to make main_menu.preview.mp4".into());
+        return Err("FFmpeg could not demux/decode the source CRI USM; use a verified compatible decoder to make mainmenu_goliath.preview.mp4".into());
     }
     if plain_file(&target, MAX_BROWSER_VIDEO).is_err() || !is_browser_video(&target, "mp4")? {
         let _ = fs::remove_file(&target);
@@ -211,7 +208,7 @@ fn original_video(root: &Path, build: &str) -> Result<LibraryReferenceStatus, St
             }
             LibraryReferenceStatus::Ambiguous(_) => {
                 return Err(
-                    "Multiple same-build copies of the original main-menu video are ambiguous"
+                    "Multiple same-build copies of the Goliath main-menu video are ambiguous"
                         .into(),
                 );
             }
@@ -232,10 +229,10 @@ fn missing_video_status(root: &Path, build: &str) -> &'static str {
                     && archive.builds.iter().any(|label| label == build)
             }) =>
         {
-            "The selected build contains videos.pak, but its extracted manifest has no source-verified main_menu.usm at a supported mount path. Inspect the original PAK's video entries."
+            "The selected build contains videos.pak, but its extracted manifest has no source-verified front_end/mainmenu_goliath.usm at a supported mount path. Inspect the original PAK's video entries."
         }
         _ => {
-            "Import the original videos.pak into the selected build in Asset Library; the matching main_menu.usm is not available."
+            "Import the original videos.pak into the selected build in Asset Library; the Goliath background movie is not available."
         }
     }
 }
@@ -264,20 +261,26 @@ pub fn stage_main_menu(root: Option<&Path>, build: Option<&str>, scratch: &Path)
         }
         Ok(LibraryReferenceStatus::Ambiguous(_)) => {
             return json!({"source": base(), "status":
-                "More than one source-qualified main_menu.usm found in same-build videos.pak; resolve the duplicate instead of guessing."});
+                "More than one source-qualified Goliath menu video found in same-build videos.pak; resolve the duplicate instead of guessing."});
         }
         Err(error) => {
             return json!({"source": base(), "status": format!("Original video source resolution failed: {error}")});
         }
     };
+    // Report the actual manifest entry; a verified import may retain "files/".
+    let verified_source = json!({
+        "source_archive": ORIGINAL_PAK,
+        "source_member": &found.relative_path,
+        "playable": false
+    });
     let original = Path::new(&found.absolute_path);
     if let Err(error) = plain_file(original, MAX_USM) {
-        return json!({"source": base(), "status": format!("Original main-menu video rejected: {error}")});
+        return json!({"source": verified_source.clone(), "status": format!("Original main-menu video rejected: {error}")});
     }
     match is_usm(original) {
         Ok(true) => {}
         _ => {
-            return json!({"source": base(), "status":
+            return json!({"source": verified_source.clone(), "status":
             "Original main-menu video does not have a CRI USM CRID header; refusing fallback artwork."});
         }
     }
@@ -286,20 +289,22 @@ pub fn stage_main_menu(root: Option<&Path>, build: Option<&str>, scratch: &Path)
         Ok(None) => match configured_ffmpeg() {
             Ok(Some(binary)) => transcode(original, scratch, &binary)
                 .map(|file| (file, "locally converted original USM")),
-            Ok(None) => Err("Original CRI USM found. To show its moving background in Ruffle, put main_menu.preview.mp4 beside extracted main_menu.usm, or set EVOLVE_GFX_FFMPEG to the absolute path of a compatible FFmpeg executable.".to_owned()),
+            Ok(None) => Err("Original CRI USM found. To show its moving background in Ruffle, put mainmenu_goliath.preview.mp4 beside extracted mainmenu_goliath.usm, or set EVOLVE_GFX_FFMPEG to the absolute path of a compatible FFmpeg executable.".to_owned()),
             Err(error) => Err(format!("Original USM found but FFmpeg selection is invalid: {error}")),
         },
         Err(error) => Err(format!("Original USM found but preview derivative was rejected: {error}")),
     };
     match playback {
         Ok((file, mode)) => json!({
-            "source": base(),
+            "source": verified_source.clone(),
             "playable": true,
             "file": file,
             "mode": mode,
             "status": "Original main-menu background video staged separately behind transparent Ruffle UI."
         }),
-        Err(status) => json!({"source": base(), "playable": false, "status": status}),
+        Err(status) => {
+            json!({"source": verified_source.clone(), "playable": false, "status": status})
+        }
     }
 }
 
@@ -309,13 +314,13 @@ mod tests {
     #[test]
     fn validates_source_signatures_and_user_derivatives() {
         let folder = tempfile::tempdir().unwrap();
-        let original = folder.path().join("main_menu.usm");
+        let original = folder.path().join("mainmenu_goliath.usm");
         fs::write(&original, b"CRID\0\0\0\0\0\0\0\0").unwrap();
         assert!(is_usm(&original).unwrap());
         let target = tempfile::tempdir().unwrap();
         assert!(sidecar(&original, target.path()).unwrap().is_none());
         fs::write(
-            folder.path().join("main_menu.preview.mp4"),
+            folder.path().join("mainmenu_goliath.preview.mp4"),
             b"\0\0\0\x18ftypisom",
         )
         .unwrap();
@@ -328,7 +333,7 @@ mod tests {
             b"\0\0\0\x18ftypisom"
         );
         fs::write(
-            folder.path().join("main_menu.preview.mp4"),
+            folder.path().join("mainmenu_goliath.preview.mp4"),
             b"not-a-mp4-file",
         )
         .unwrap();
@@ -340,18 +345,26 @@ mod tests {
         let root = temp.path();
         let id = "11111111111111111111";
         let folder = root.join(format!("videos.pak__{id}"));
-        let virtual_path = "FlashAssets/videos/main_menu.usm";
+        let virtual_path = "front_end/mainmenu_goliath.usm";
         let source = folder.join("files").join(virtual_path);
         fs::create_dir_all(source.parent().unwrap()).unwrap();
         let data = b"CRID\0\0\0\0\0\0\0\0";
         fs::write(&source, data).unwrap();
+        // Multiple character backgrounds are normal. The Goliath default
+        // must not become ambiguous or silently fall back to another movie.
+        let kraken_path = "front_end/mainmenu_kraken.usm";
+        let kraken = folder.join("files").join(kraken_path);
+        fs::write(&kraken, data).unwrap();
         fs::write(
             folder.join("asset-library.json"),
             serde_json::to_vec(&json!({
                 "version": 1,
                 "name": "videos.pak",
                 "source": "/game/videos.pak",
-                "entries": [{"path": virtual_path, "bytes": data.len()}]
+                "entries": [
+                    {"path": virtual_path, "bytes": data.len()},
+                    {"path": kraken_path, "bytes": data.len()}
+                ]
             }))
             .unwrap(),
         )
@@ -385,6 +398,7 @@ mod tests {
                     .contains("preview derivative")
         );
         assert_eq!(result["source"]["source_archive"], ORIGINAL_PAK);
+        assert_eq!(result["source"]["source_member"], virtual_path);
         assert_eq!(result["playable"], false);
     }
     #[test]
