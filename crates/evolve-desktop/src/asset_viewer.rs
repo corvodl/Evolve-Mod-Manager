@@ -721,7 +721,7 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                     {
                         actions = actions
                             .push(text("ORIGINAL MENU ACTIONSCRIPT").size(12))
-                            .push(text("Use original root ActionScript menu handlers in an isolated Ruffle run. Each call is checked against its compiled signature; native game services remain blocked.").size(11).style(design::muted));
+                            .push(text("Control the SAME running Ruffle Web preview; no restart per action. Only source-verified handlers are dispatched. Native game services remain blocked.").size(11).style(design::muted));
                         for preset in [
                             crate::gfx_interactive::PreviewPreset::AsAuthored,
                             crate::gfx_interactive::PreviewPreset::HideEngagement,
@@ -752,16 +752,13 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                         }
                     }
                     actions = actions
-                        .push(
-                            text_input("Path to ruffle.exe", &state.preferences.ruffle_executable)
-                                .on_input(Message::GfxRuffleConfigChanged)
-                                .padding(8),
-                        )
-                        .push(design::button("Choose Ruffle…").on_press(Message::GfxPickRuffle))
+                        .push(text("Live mode opens a local browser window using the bundled Ruffle Web runtime. Desktop Ruffle does not support live button commands.").size(11).style(design::muted))
                         .push(
                             row![
-                                design::button("Launch / restart").on_press_maybe(
-                                    (!state.gfx_busy).then_some(Message::GfxRunInteractive)
+                                design::button("Open live preview").on_press_maybe(
+                                    (!state.gfx_busy
+                                        && !state.gfx_interactive_running.as_ref().is_some_and(|p| p.is_running()))
+                                    .then_some(Message::GfxRunInteractive)
                                 ),
                                 design::button("Stop").on_press_maybe(
                                     state
@@ -779,9 +776,9 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                                     .as_ref()
                                     .is_some_and(|p| p.is_running())
                                 {
-                                    "Ruffle: running in separate window"
+                                    "Ruffle Web: running in local browser — controls apply live"
                                 } else {
-                                    "Ruffle: stopped"
+                                    "Ruffle Web: stopped"
                                 },
                             )
                             .size(11)
@@ -794,7 +791,7 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                         );
                 }
                 actions = actions.push(
-                    text("Interactive preview runs original ActionScript where supported. Main-menu prompt presets call named original ActionScript functions; native gameplay and service callbacks remain unavailable.")
+                    text("Only source-verified callbacks are offered in live playback. Browser status confirms dispatch, not native game transitions. Unsupported handlers remain unavailable until their original dependencies are traced.")
                         .size(11).style(design::muted)
                 );
             }
