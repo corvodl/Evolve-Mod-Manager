@@ -2611,6 +2611,53 @@ mod tests {
     }
 
     #[test]
+    fn unrigged_cdf_preserves_duplicate_local_material_ids_as_distinct_parts() {
+        let source = tempfile::tempdir().unwrap();
+        let root = source.path();
+        let characters = root.join("characters");
+        fs::create_dir(&characters).unwrap();
+        fs::write(
+            characters.join("body.skinm"),
+            crate::model::tests::fixture(),
+        )
+        .unwrap();
+        fs::write(
+            root.join("emet.cdf"),
+            br#"<CharacterDefinition>
+                <Model File="characters/rig.chr"/>
+                <AttachmentList>
+                  <Attachment Type="CA_SKIN" AName="body" Binding="characters/body.skin"/>
+                  <Attachment Type="CA_SKIN" AName="visor" Binding="characters/body.skin"/>
+                </AttachmentList>
+            </CharacterDefinition>"#,
+        )
+        .unwrap();
+        let inv = crate::scan_directory(root).unwrap();
+        let (mesh, report) = crate::character_assembly::read_static_cdf_assembly(
+            &root.join("emet.cdf"),
+            &inv,
+        )
+        .unwrap();
+        assert_eq!(report.geometry_parts.len(), 2);
+        assert_eq!(report.source_parts.len(), 2);
+        assert_eq!(report.source_parts[0].material_slot, 0);
+        assert_eq!(report.source_parts[1].material_slot, 0);
+        let glb = static_cdf_material_glb(&mesh, &report, &inv, false).unwrap();
+        let bytes = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+        let doc: serde_json::Value = serde_json::from_slice(&glb[20..20 + bytes]).unwrap();
+        assert!(doc.get("skins").is_none());
+        assert_eq!(doc["materials"].as_array().unwrap().len(), 2);
+        assert_eq!(doc["meshes"][0]["primitives"].as_array().unwrap().len(), 2);
+        assert_eq!(doc["meshes"][0]["primitives"][0]["material"], 0);
+        assert_eq!(doc["meshes"][0]["primitives"][1]["material"], 1);
+        assert!(doc["materials"][0]["name"]
+            .as_str().unwrap().contains("body | original ID 000"));
+        assert!(doc["materials"][1]["name"]
+            .as_str().unwrap().contains("visor | original ID 000"));
+        assert!(doc["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"].is_null());
+    }
+
+    #[test]
     fn missing_original_cdf_never_produces_export() {
         let root = tempfile::tempdir().unwrap();
         let output = tempfile::tempdir().unwrap();
