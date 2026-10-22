@@ -202,8 +202,12 @@ fn locate_ruffle_web(root: &Path) -> Result<PathBuf, String> {
         .map_err(|e| e.to_string())?
         .filter_map(Result::ok)
         .any(|entry| {
-            entry.path().extension().is_some_and(|e| e.eq_ignore_ascii_case("wasm"))
-                && fs::symlink_metadata(entry.path()).is_ok_and(|m| m.file_type().is_file() && m.len() > 0)
+            entry
+                .path()
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("wasm"))
+                && fs::symlink_metadata(entry.path())
+                    .is_ok_and(|m| m.file_type().is_file() && m.len() > 0)
         });
     if !has_wasm {
         return Err("Ruffle Web ZIP has no adjacent WebAssembly runtime".into());
