@@ -304,7 +304,7 @@ def main():
     }
     check(source_hierarchy == target_hierarchy,
           "FBX round-trip changed a source bone identity or hierarchy")
-    check(len(result_meshes) >= len(parts), "round-trip lost character parts")
+    check(len(result_meshes) >= (len(armatures) if combine_meshes else len(parts)), "round-trip lost character meshes")
     check(len(result_meshes) <= 2048, "round-trip produced unbounded material fragments")
     verified_materials = verify_original_material_ids(
         result_meshes, original_material_parts)
@@ -313,7 +313,8 @@ def main():
     if embed_textures:
         check(diffuse_image_count(result_meshes) > 0,
               "FBX round-trip lost embedded diffuse image links; refusing white export")
-        verify_part_diffuse_coverage(result_meshes, parts, "FBX round-trip")
+        if not combine_meshes:
+            verify_part_diffuse_coverage(result_meshes, parts, "FBX round-trip")
     if animate:
         check(bool(bpy.data.actions), "FBX round-trip lost the verified CAF Action")
     validate_blender_meshes(result_meshes, rigged=True, embed_textures=embed_textures)
@@ -353,6 +354,9 @@ def main():
               and abs(original_hi - imported_hi) <= 0.002,
               "FBX round-trip changed original UV0 bounds")
     verify_uv_loop_distributions(source_uv_loops, target_uv_loops)
+    roots = [obj for obj in bpy.data.objects if obj.type == "EMPTY"
+             and obj.name == root_name]
+    check(bool(roots), "FBX round-trip lost the character hierarchy root")
     verified = {"parts": len(parts), "armatures": len(result_arms), "bones": bone_count,
                       "meshes": len(result_meshes), "display_shapes_excluded": len(display_shapes),
                       "weighted_vertices": imported_weighted_vertices,
