@@ -171,7 +171,9 @@ fn avm1_localization_keys(actions: &[u8], depth: usize, keys: &mut BTreeSet<Stri
             break;
         }
         let size = if code >= 0x80 {
-            let Some(bytes) = actions.get(at..at + 2) else { break };
+            let Some(bytes) = actions.get(at..at + 2) else {
+                break;
+            };
             at += 2;
             usize::from(u16::from_le_bytes([bytes[0], bytes[1]]))
         } else {
@@ -187,7 +189,9 @@ fn avm1_localization_keys(actions: &[u8], depth: usize, keys: &mut BTreeSet<Stri
                 let ty = payload[p];
                 p += 1;
                 if ty == 0 {
-                    let Some(stop) = zstring_end(payload, p) else { break };
+                    let Some(stop) = zstring_end(payload, p) else {
+                        break;
+                    };
                     if let Ok(value) = std::str::from_utf8(&payload[p..stop])
                         && value.to_ascii_lowercase().starts_with("@ui_")
                         && let Some(key) = label(value)
@@ -228,9 +232,8 @@ fn avm1_localization_keys(actions: &[u8], depth: usize, keys: &mut BTreeSet<Stri
                         }
                     }
                     if valid && let Some(size_bytes) = payload.get(p..p + 2) {
-                        let code_size = usize::from(u16::from_le_bytes([
-                            size_bytes[0], size_bytes[1],
-                        ]));
+                        let code_size =
+                            usize::from(u16::from_le_bytes([size_bytes[0], size_bytes[1]]));
                         p += 2;
                         if let Some(body) = payload.get(p..p.saturating_add(code_size)) {
                             avm1_localization_keys(body, depth + 1, keys);
@@ -397,13 +400,19 @@ mod tests {
             vec!["@ui_signinginprompt", "@ui_startgame"]
         );
         // Localization inventory never rewrites ActionScript instructions.
-        let (preview, patch) =
-            replace_authored_text(&source, &serde_json::json!({"translations":{
+        let (preview, patch) = replace_authored_text(
+            &source,
+            &serde_json::json!({"translations":{
                 "ui_startgame":"PLAY", "ui_signinginprompt":"Signing in"
-            }})).unwrap();
+            }}),
+        )
+        .unwrap();
         assert_eq!(patch.patched, 1);
-        assert!(preview.windows(b"@ui_SigningInPrompt".len())
-            .any(|part| part == b"@ui_SigningInPrompt"));
+        assert!(
+            preview
+                .windows(b"@ui_SigningInPrompt".len())
+                .any(|part| part == b"@ui_SigningInPrompt")
+        );
     }
     #[test]
     fn rejects_corrupt_swf_and_no_unsafe_guessing() {
