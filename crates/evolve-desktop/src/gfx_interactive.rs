@@ -199,7 +199,11 @@ fn trace_original_button_actions(swf: &[u8]) -> Result<(Vec<u8>, usize), String>
                     return Err("Invalid or excessive original button conditions".into());
                 }
                 let declared = usize::from(u16::from_le_bytes([tag[pos], tag[pos + 1]]));
-                let end = if declared == 0 { tag.len() } else { pos + declared };
+                let end = if declared == 0 {
+                    tag.len()
+                } else {
+                    pos + declared
+                };
                 if end > tag.len() || end <= pos + 4 {
                     return Err("Truncated original button condition actions".into());
                 }
@@ -245,7 +249,8 @@ fn trace_original_button_actions(swf: &[u8]) -> Result<(Vec<u8>, usize), String>
     if cursor != swf.len() {
         return Err("Trailing or incomplete SWF tags during button tracing".into());
     }
-    output[4..8].copy_from_slice(&(output.len() as u32).to_le_bytes());
+    let final_length = output.len() as u32;
+    output[4..8].copy_from_slice(&final_length.to_le_bytes());
     Ok((output, action_count))
 }
 
@@ -856,7 +861,10 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
         renderable_movie(&bytes, &session.relative, &session.source, session)?;
     // Trace authored SWF button handlers before registering the original
     // live callbacks. No synthesized UI or native handler mapping is added.
-    let (inspected, traced_buttons) = if session.relative.eq_ignore_ascii_case("Libs/UI/main_menu.gfx") {
+    let (inspected, traced_buttons) = if session
+        .relative
+        .eq_ignore_ascii_case("Libs/UI/main_menu.gfx")
+    {
         trace_original_button_actions(&swf)?
     } else {
         (swf, 0)
@@ -874,7 +882,14 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
             Err(error) => return Err(format!("Imported Scaleform movie {name}: {error}")),
         }
     }
-    write_live_menu_report(session, scratch.path(), converted, skipped, missing, traced_buttons)?;
+    write_live_menu_report(
+        session,
+        scratch.path(),
+        converted,
+        skipped,
+        missing,
+        traced_buttons,
+    )?;
     let live = gfx_live_web::LiveServer::start(scratch, actions, web_runtime)?;
     Ok(RunningPreview {
         process: None,
@@ -963,7 +978,10 @@ mod tests {
         assert_eq!(report["commands"][0]["command"], "Game_Start");
         assert_eq!(report["commands"][0]["child_submenu"], "Extras");
         assert_eq!(report["resources"]["restored_dds_tiles"], 5);
-        assert_eq!(report["resources"]["instrumented_original_button_conditions"], 2);
+        assert_eq!(
+            report["resources"]["instrumented_original_button_conditions"],
+            2
+        );
         assert_eq!(report["resources"]["skipped_dds_tiles"], 3);
         assert_eq!(report["resources"]["missing_imported_movies"], 1);
         assert_eq!(
@@ -999,14 +1017,22 @@ mod tests {
         tag.extend_from_slice(&(button.len() as u32).to_le_bytes());
         tag.extend_from_slice(&button);
         movie.splice(at..at, tag);
-        movie[4..8].copy_from_slice(&(movie.len() as u32).to_le_bytes());
+        let final_length = movie.len() as u32;
+        movie[4..8].copy_from_slice(&final_length.to_le_bytes());
         let source = movie.clone();
         let (traced, count) = trace_original_button_actions(&movie).unwrap();
         assert_eq!(count, 1);
         assert_eq!(movie, source); // Source byte-identical.
-        assert!(traced.windows(b"evolve-button:17:1".len()).any(|w| w == b"evolve-button:17:1"));
+        assert!(
+            traced
+                .windows(b"evolve-button:17:1".len())
+                .any(|w| w == b"evolve-button:17:1")
+        );
         assert!(traced.windows(6).any(|w| w == [0x96, 3, 0, 0, b'x', 0]));
-        assert_eq!(traced.len(), u32::from_le_bytes(traced[4..8].try_into().unwrap()) as usize);
+        assert_eq!(
+            traced.len(),
+            u32::from_le_bytes(traced[4..8].try_into().unwrap()) as usize
+        );
         let mut corrupted = movie;
         // The source's ActionOffset must be checked before instrumentation.
         let pos = at + 6 + 3;
