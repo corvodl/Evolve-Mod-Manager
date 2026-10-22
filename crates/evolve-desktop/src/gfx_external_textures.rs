@@ -651,7 +651,8 @@ pub(crate) fn embed_mode_bitmap_linkages(
     if output.len() > MAX_DECOMPRESSED {
         return Err("Original SWF + mode bitmap resources exceed safe preview cap".into());
     }
-    output[4..8].copy_from_slice(&(output.len() as u32).to_le_bytes());
+    let length = output.len() as u32;
+    output[4..8].copy_from_slice(&length.to_le_bytes());
     Ok((output, embedded, skipped))
 }
 
@@ -734,4 +735,66 @@ mod tests {
         z.read_to_end(&mut raw).unwrap();
         assert_eq!(raw, vec![11, 3, 5, 7]);
     }
+    #[test]
+    fn source_qualified_img_protocol_links_become_original_swf_assets() {
+        // Isolated synthetic FWS. All real menu DDS content is supplied by
+        // the user's Asset Library and is never bundled in the repository.
+        let scratch = tempfile::tempdir().unwrap();
+        let folder = scratch.path().join("runtime-images");
+        fs::create_dir_all(&folder).unwrap();
+        let png = folder.join("goliathTutorial.png");
+        let sample = RgbaImage::from_pixel(4, 4, image::Rgba([1, 2, 3, 255]));
+        image::DynamicImage::ImageRgba8(sample)
+            .save_with_format(&png, image::ImageFormat::Png)
+            .unwrap();
+        let mut source = b"FWS\x08".to_vec();
+        source.extend(0u32.to_le_bytes());
+        source.extend([0x08, 0]);
+        source.extend([0, 12, 1, 0]);
+        encode_tag(69, &[0, 0, 0, 0], &mut source);
+        encode_tag(1, &[], &mut source);
+        encode_tag(0, &[], &mut source);
+        let length = source.len() as u32;
+        source[4..8].copy_from_slice(&length.to_le_bytes());
+        let (linked, added, missing) = embed_mode_bitmap_linkages(
+            &source,
+            scratch.path(),
+            &["goliathTutorial".to_string(), "notStaged".to_string()],
+        )
+        .unwrap();
+        assert_eq!((added, missing), (1, 1));
+        let (_header, tags) = tags(&linked).unwrap();
+        assert_eq!(tags.iter().filter(|t| t.code == 36).count(), 1);
+        let position = tags.iter().position(|t| t.code == 56).unwrap();
+        assert!(position < tags.iter().position(|t| t.code == 1).unwrap());
+        let exports = &tags[position].data;
+        assert_eq!(&exports[..2], &1u16.to_le_bytes());
+        assert!(exports.windows(b"img://Libs/UI/FlashAssets/images/MenuModeSelect/goliathTutorial.dds".len())
+            .any(|v| v == b"img://Libs/UI/FlashAssets/images/MenuModeSelect/goliathTutorial.dds"));
+        assert!(source.windows(4).any(|v| v == b"FWS\x08"));
+        assert!(!source.windows(6).any(|v| v == b"img://"));
+        assert_eq!(&linked[4..8], &(linked.len() as u32).to_le_bytes());
+    }
+
+    #[test]
+    fn unsafe_linkage_names_are_rejected_without_source_file_reads() {
+        let scratch = tempfile::tempdir().unwrap();
+        fs::create_dir_all(scratch.path().join("runtime-images")).unwrap();
+        let mut source = b"FWS\x08".to_vec();
+        source.extend(0u32.to_le_bytes());
+        source.extend([0x08, 0, 0, 12, 1, 0]);
+        encode_tag(1, &[], &mut source);
+        encode_tag(0, &[], &mut source);
+        let length = source.len() as u32;
+        source[4..8].copy_from_slice(&length.to_le_bytes());
+        let (movie, accepted, rejected) = embed_mode_bitmap_linkages(
+            &source,
+            scratch.path(),
+            &["../secret".to_string(), "C:".to_string()],
+        )
+        .unwrap();
+        assert_eq!((accepted, rejected), (0, 2));
+        assert_eq!(movie, source);
+    }
+
 }
