@@ -1,7 +1,8 @@
 //! Optional video layer for the original Stage 2 main menu.
 //! Source is always the exact-build, manifest-verified CRI USM in videos.pak.
 //! The browser never receives a .usm or an arbitrary local file URL.
-use evolve_core::{LibraryReferenceStatus, resolve_imported_reference_in_archive};
+use evolve_core::LibraryReferenceStatus;
+use evolve_core::library_catalog::resolve_imported_reference_in_archive;
 use serde_json::{Value, json};
 use std::env;
 use std::fs::{self, File};
