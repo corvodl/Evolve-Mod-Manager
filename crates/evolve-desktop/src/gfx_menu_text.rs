@@ -285,7 +285,7 @@ mod tests {
         let mut broken = fixture("@ui_Play", 0x8000);
         broken[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(authored_keys(&broken).is_err());
-        assert!(label("@ui_@ui_STARTGAME").is_some()); // unresolved composite key, never guessed
+        assert!(label("@ui_@ui_STARTGAME").is_none()); // unresolved composite key, never guessed
         assert!(label("@ui BAD").is_none());
     }
 }
