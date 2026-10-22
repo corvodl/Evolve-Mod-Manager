@@ -38,11 +38,13 @@
         control.addEventListener("change", () => {
             previewRuntime.set(key, key === "CurrentMenu" ? control.value : control.checked);
             refreshPreviewStateStatus();
+            updateSourceGroup(currentSourceGroup());
             show("Preview-only " + key + " updated; reopen the original Flash submenu " +
                  "to test its authored layout. No native game state changed.");
         });
     }
     refreshPreviewStateStatus();
+    let currentSourceGroup = () => "Main";
     const sourcePanel = document.getElementById("source-panel");
     const sourceButton = document.getElementById("inspect");
     const toggleSource = (open) => {
@@ -526,6 +528,7 @@
                     pointerInput.downRuffle +
                     (pointerInput.lastTarget ? "; last non-Ruffle target " + pointerInput.lastTarget : "") +
                     (failures.length ? "; asset fetch/decode errors: " + failures.slice(0, 5).join("; ") : "");
+                refreshPreviewStateStatus();
                 const entry = makeText("li", text);
                 document.getElementById("resource-status").prepend(entry);
                 show(text, failures.length > 0 || (names.length > 0 && decoded !== names.length));
@@ -656,6 +659,7 @@
         const canPushSubmenu = report?.initialization?.verified_source_submenus === true;
         const canGoBack = report?.initialization?.verified_go_back === true;
         const sourceMenuStack = ["Main"];
+        currentSourceGroup = () => sourceMenuStack[sourceMenuStack.length - 1];
         const pushOriginalSourceMenu = group => {
             if (!canPushSubmenu || !groups.has(group) || !rowsForGroup(group).length ||
                 sourceMenuStack.length >= 32 || group === sourceMenuStack[sourceMenuStack.length - 1]) {
