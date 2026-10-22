@@ -137,35 +137,36 @@ pub fn stage_imports(
         // as root entries, not in Libs/UI. Only these two authored font
         // imports may use an exact-build archive-scoped root fallback.
         // Never override a same-build ambiguity or search an unrelated PAK.
-        if payload.is_none() && !origin.starts_with("Ambiguous import") {
-            if let (Some(root), Some(label)) = (library_root, build) {
-                let font_name = Path::new(import).file_name().and_then(|n| n.to_str());
-                if let Some(font) = font_name.filter(|name| {
-                    name.eq_ignore_ascii_case("gfxfontlib_locfont.gfx")
-                        || name.eq_ignore_ascii_case("gfxfontlib_glyphs_locfont.gfx")
-                }) {
-                    for candidate in [font.to_owned(), format!("files/{font}")] {
-                        match resolve_imported_reference_in_archive(
-                            root,
-                            &candidate,
-                            label,
-                            "USA-EN_xml.pak",
-                        )
-                        .map_err(|e| e.to_string())?
-                        {
-                            LibraryReferenceStatus::Found(hit) => {
-                                if let Ok(data) = verified(Path::new(&hit.absolute_path), None) {
-                                    payload = Some(data);
-                                    origin = format!("{label} · USA-EN_xml.pak (original font)");
-                                    break;
-                                }
-                            }
-                            LibraryReferenceStatus::Ambiguous(_) => {
-                                origin = format!("Ambiguous USA-EN font source ({label})");
+        if payload.is_none()
+            && !origin.starts_with("Ambiguous import")
+            && let (Some(root), Some(label)) = (library_root, build)
+        {
+            let font_name = Path::new(import).file_name().and_then(|n| n.to_str());
+            if let Some(font) = font_name.filter(|name| {
+                name.eq_ignore_ascii_case("gfxfontlib_locfont.gfx")
+                    || name.eq_ignore_ascii_case("gfxfontlib_glyphs_locfont.gfx")
+            }) {
+                for candidate in [font.to_owned(), format!("files/{font}")] {
+                    match resolve_imported_reference_in_archive(
+                        root,
+                        &candidate,
+                        label,
+                        "USA-EN_xml.pak",
+                    )
+                    .map_err(|e| e.to_string())?
+                    {
+                        LibraryReferenceStatus::Found(hit) => {
+                            if let Ok(data) = verified(Path::new(&hit.absolute_path), None) {
+                                payload = Some(data);
+                                origin = format!("{label} · USA-EN_xml.pak (original font)");
                                 break;
                             }
-                            LibraryReferenceStatus::Missing => {}
                         }
+                        LibraryReferenceStatus::Ambiguous(_) => {
+                            origin = format!("Ambiguous USA-EN font source ({label})");
+                            break;
+                        }
+                        LibraryReferenceStatus::Missing => {}
                     }
                 }
             }
