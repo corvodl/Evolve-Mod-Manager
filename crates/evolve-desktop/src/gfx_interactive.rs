@@ -1240,7 +1240,11 @@ mod tests {
             &["gfxfontlib_locfont.gfx".into()],
             serde_json::json!({"playable": false, "status": "missing videos.pak"}),
             LiveMenuLabels {
-                source: &crate::gfx_localization::menu_labels(None, None, &["@ui_STARTGAME".to_string()]),
+                source: &crate::gfx_localization::menu_labels(
+                    None,
+                    None,
+                    &["@ui_STARTGAME".to_string()],
+                ),
                 text: &crate::gfx_menu_text::TextPatch::default(),
             },
         )
