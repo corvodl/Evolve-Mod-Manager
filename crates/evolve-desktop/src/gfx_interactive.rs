@@ -291,7 +291,8 @@ pub(crate) fn install_live_callbacks(
     output.extend_from_slice(&swf[..insert_at]);
     output.extend_from_slice(&tag);
     output.extend_from_slice(&swf[insert_at..]);
-    output[4..8].copy_from_slice(&(output.len() as u32).to_le_bytes());
+    let full_length = output.len() as u32;
+    output[4..8].copy_from_slice(&full_length.to_le_bytes());
     Ok((output, allowed))
 }
 
