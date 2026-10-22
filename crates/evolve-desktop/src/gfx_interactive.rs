@@ -699,7 +699,9 @@ fn relative_import(parent: &str, child: &str) -> Result<String, String> {
     if !parent.is_empty() && !safe_import(parent) || !safe_import(child) {
         return Err("Unsafe Scaleform import reference".into());
     }
-    let relative = if parent.is_empty() { child.to_owned() } else {
+    let relative = if parent.is_empty() {
+        child.to_owned()
+    } else {
         format!("{parent}/{child}")
     };
     if !safe_import(&relative) || relative.len() > 1024 {
@@ -729,12 +731,12 @@ fn stage_import(
         return Err("Imported movie is not a regular bounded file".into());
     }
     let bytes = fs::read(&real).map_err(|e| e.to_string())?;
-    let virtual_path = session.relative
+    let virtual_path = session
+        .relative
         .rsplit_once('/')
         .map(|(parent, _)| format!("{parent}/{reference}"))
         .unwrap_or_else(|| reference.to_owned());
-    let (swf, converted, skipped) =
-        renderable_movie(&bytes, &virtual_path, &real, session)?;
+    let (swf, converted, skipped) = renderable_movie(&bytes, &virtual_path, &real, session)?;
     let target = output.join(reference);
     let parent = target
         .parent()
@@ -806,11 +808,13 @@ fn stage_live_import_graph(
         // The parent movie itself was manifest/same-folder verified before
         // following any nested references, and all nested members go through
         // that same restricted lookup and path validation.
-        let virtual_path = session.relative
+        let virtual_path = session
+            .relative
             .rsplit_once('/')
             .map(|(base, _)| format!("{base}/{relative}"))
             .unwrap_or_else(|| relative.clone());
-        let next_parent = relative.rsplit_once('/')
+        let next_parent = relative
+            .rsplit_once('/')
             .map(|(folder, _)| folder.to_owned())
             .unwrap_or_default();
         let source_parent = session.folder.path().join(&next_parent);
@@ -1051,14 +1055,21 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
     let bytes = fs::read(&session.editable).map_err(|e| e.to_string())?;
     let (swf, mut converted, mut skipped) =
         renderable_movie(&bytes, &session.relative, &session.source, session)?;
-    let main_menu = session.relative.eq_ignore_ascii_case("Libs/UI/main_menu.gfx");
-    let mut lookup_tokens = session.menu_commands.iter()
-        .map(|row| row.label.clone()).collect::<Vec<_>>();
+    let main_menu = session
+        .relative
+        .eq_ignore_ascii_case("Libs/UI/main_menu.gfx");
+    let mut lookup_tokens = session
+        .menu_commands
+        .iter()
+        .map(|row| row.label.clone())
+        .collect::<Vec<_>>();
     if main_menu {
         lookup_tokens.extend(crate::gfx_menu_text::authored_keys(&swf)?);
     }
     let localization = crate::gfx_localization::menu_labels(
-        session.library_root.as_deref(), session.source_build.as_deref(), &lookup_tokens,
+        session.library_root.as_deref(),
+        session.source_build.as_deref(),
+        &lookup_tokens,
     );
     let (swf, localized_text) = if main_menu {
         crate::gfx_menu_text::replace_authored_text(&swf, &localization)?
@@ -1391,9 +1402,18 @@ mod tests {
     }
     #[test]
     fn nested_imports_keep_original_relative_parent_and_reject_escape() {
-        assert_eq!(relative_import("", "fonts/main.gfx").unwrap(), "fonts/main.gfx");
-        assert_eq!(relative_import("fonts", "glyphs.gfx").unwrap(), "fonts/glyphs.gfx");
-        assert_eq!(relative_import("ui/icons", "main.swf").unwrap(), "ui/icons/main.swf");
+        assert_eq!(
+            relative_import("", "fonts/main.gfx").unwrap(),
+            "fonts/main.gfx"
+        );
+        assert_eq!(
+            relative_import("fonts", "glyphs.gfx").unwrap(),
+            "fonts/glyphs.gfx"
+        );
+        assert_eq!(
+            relative_import("ui/icons", "main.swf").unwrap(),
+            "ui/icons/main.swf"
+        );
         assert!(relative_import("../ui", "font.gfx").is_err());
         assert!(relative_import("fonts", "../hidden.gfx").is_err());
         assert!(relative_import("icons", "C:/private.swf").is_err());
