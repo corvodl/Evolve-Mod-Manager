@@ -361,3 +361,37 @@ replacement for native callbacks. This requires tracing the exact button
 callback and testing the associated animation frames and imported movies. The
 current standalone Ruffle desktop executable has a dummy ExternalInterface,
 so this work does **not** claim arbitrary native button commands function.
+
+## Stage 2 original moving main-menu background
+
+The full Evolve Stage 2 menu reference shows **two distinct layers**:
+the original CRI video `Libs/UI/FlashAssets/videos/main_menu.usm` in `videos.pak`,
+and `Libs/UI/main_menu.gfx` for the Flash menu, pop-ups, and controls.
+A red strip with an empty scroll area is likely part of the *Patch Notes*
+overlay, not the Daily Sign In window. We do not synthesize the Glacial
+Behemoth artwork as a placeholder for the original motion video.
+
+In the isolated Ruffle Web preview:
+
+1. Import the same-build **videos.pak** into the manager Asset Library and
+   select its build alongside `main_menu.gfx`.
+2. Because browsers cannot directly play proprietary CRI USM containers, a
+   separate browser video is required. Create `main_menu.preview.mp4` or
+   `main_menu.preview.webm` alongside the extracted original
+   `main_menu.usm`, **or** explicitly set `EVOLVE_GFX_FFMPEG` to the full
+   absolute path of a trusted modern `ffmpeg.exe` and relaunch the manager.
+   Only the exact-build source video is passed to this decoder. FFmpeg must
+   support the original CRI USM variant and H.264 encoding. This is best-effort,
+   not a replacement for CryEngine's built-in movie decoder.
+3. On success, the preview stores a bounded, temporary `menu-background.mp4`
+   or `menu-background.webm` and loops it **muted** beneath Ruffle's
+   `wmode: transparent` Flash viewport. The original USM and all PAKs
+   stay unchanged, and no video leaves the machine.
+4. The source inspector reports missing archives, unsupported video formats,
+   decoder issues, and whether the original motion layer is playable.
+   Without a verified source or browser derivative, the preview stays black.
+   It never infers the background from an unrelated static texture.
+
+The video layer does **not** fix missing source-defined navigation labels,
+font registration, news/profile data, or game-only native callbacks. The menu
+and Patch Notes overlay still require separate ActionScript/runtime validation.
