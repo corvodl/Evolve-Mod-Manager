@@ -10,6 +10,8 @@ import traceback
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from blender_uv0 import prepare_original_uv
+from blender_material_ids import (bind_original_material_ids,
+                                  verify_original_material_ids)
 from blender_fbx_safety import (prepare_export_materials, validate_blender_meshes,
                                optimize_binary_fbx, normal_image_names)
 
@@ -178,7 +180,8 @@ def main():
     source_uv_bounds = []
     source_uv_loops = [[], []]
     source_weighted_vertices = 0
-    for part in parts:
+    original_material_parts = []
+    for part_index, part in enumerate(parts):
         name, file = part.get("name"), part.get("source")
         check(isinstance(name, str) and 0 < len(name) <= 90 and
               isinstance(file, str), "invalid part description")
@@ -189,7 +192,11 @@ def main():
         bpy.ops.import_scene.gltf(filepath=str(source))
         added = set(bpy.data.objects) - before
         arms = [o for o in added if o.type == "ARMATURE"]
-        imported = prepare_original_uv(actual_meshes(added, arms))
+        source_meshes = actual_meshes(added, arms)
+        original_ids = part.get("material_ids")
+        bind_original_material_ids(source_meshes, part_index, name, original_ids)
+        original_material_parts.append(original_ids)
+        imported = prepare_original_uv(source_meshes)
         check(len(arms) == 1 and 1 <= len(imported) <= 128,
               "part has no original rig or too many material fragments")
         arm = arms[0]
@@ -225,6 +232,7 @@ def main():
               "selected embedded textures but no original diffuse image reached Blender")
         verify_part_diffuse_coverage(meshes, parts, "GLB to Blender")
     check(len(meshes) <= 1024, "unbounded material fragment count")
+    verify_original_material_ids(meshes, original_material_parts)
     prepare_export_materials(meshes, embed_textures, destination)
     source_normal_maps = normal_image_names(meshes) if not embed_textures else set()
     validate_blender_meshes(meshes, rigged=True, embed_textures=embed_textures)
@@ -280,6 +288,8 @@ def main():
           "FBX round-trip changed a source bone identity or hierarchy")
     check(len(result_meshes) >= len(parts), "round-trip lost character parts")
     check(len(result_meshes) <= 2048, "round-trip produced unbounded material fragments")
+    verified_materials = verify_original_material_ids(
+        result_meshes, original_material_parts)
     if embed_textures:
         check(diffuse_image_count(result_meshes) > 0,
               "FBX round-trip lost embedded diffuse image links; refusing white export")
@@ -327,7 +337,8 @@ def main():
                       "meshes": len(result_meshes), "display_shapes_excluded": len(display_shapes),
                       "weighted_vertices": imported_weighted_vertices,
                       "uv_loops": len(target_uv_loops[0]),
-                      "bytes": destination.stat().st_size, "fbx_optimization": optimized}
+                      "bytes": destination.stat().st_size, "fbx_optimization": optimized,
+                      "verified_source_material_ids": len(verified_materials)}
     (manifest_path.parent / "verified-export.json").write_text(
         json.dumps(verified), encoding="utf-8")
     print(json.dumps(verified))
