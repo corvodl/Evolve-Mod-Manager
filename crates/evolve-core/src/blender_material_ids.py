@@ -6,6 +6,8 @@ material list) means empty and NoDraw leaves cannot shift later assignments.
 Every original material-to-face assignment is audited after FBX round-trip.
 """
 from collections import Counter
+from collections import defaultdict
+import math
 import re
 
 _SOURCE = re.compile(r"^CryEngine slot ([0-9]{3}) - ")
@@ -92,6 +94,49 @@ def verify_original_material_ids(meshes, expected_parts):
            + "expected " + str(sorted(expected.items()))
            + ", got " + str(sorted(actual.items())))
     return actual
+
+
+def source_material_uv_distributions(meshes):
+    """Preserve per-MTL leaf UV corners even if Blender reorders triangles.
+
+    Two leaves with the same triangle count may still be accidentally swapped.
+    Comparing UV0 corner distributions per original ID detects this without
+    assuming index/face order survives material separation and FBX import.
+    """
+    streams = defaultdict(lambda: [[], []])
+    for mesh in meshes:
+        layers = mesh.data.uv_layers
+        _check(bool(layers), "no source UV0 for " + mesh.name)
+        uv = layers[0].data
+        _check(len(uv) == len(mesh.data.loops),
+               "incomplete material UV0 for " + mesh.name)
+        for face in mesh.data.polygons:
+            key = _tagged_id(_assigned_material(mesh, face).name)
+            _triangles(mesh, face)
+            for loop_index in face.loop_indices:
+                _check(0 <= loop_index < len(uv),
+                       "invalid material face UV index")
+                coords = uv[loop_index].uv
+                _check(len(coords) == 2 and all(math.isfinite(float(v)) for v in coords),
+                       "nonfinite material UV0")
+                for axis in (0, 1):
+                    streams[key][axis].append(float(coords[axis]))
+    return {key: (sorted(value[0]), sorted(value[1]))
+            for key, value in streams.items()}
+
+
+def verify_material_uv_distributions(source, target, tolerance=0.001):
+    """Reject source-ID texture-coordinate reassignment after FBX import."""
+    _check(source.keys() == target.keys(),
+           "FBX changed original material IDs while exporting UVs")
+    for key in source:
+        for axis in (0, 1):
+            before, after = source[key][axis], target[key][axis]
+            _check(len(before) == len(after) and all(
+                abs(a - b) <= tolerance for a, b in zip(before, after)),
+                "FBX changed UV corners associated with source material ID "
+                + str(key))
+    return True
 
 
 def bind_original_material_ids(meshes, part_index, part_name, records):
