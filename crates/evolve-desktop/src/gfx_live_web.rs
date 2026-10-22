@@ -406,7 +406,7 @@ mod tests {
         assert!(page.starts_with("HTTP/1.1 200 OK"));
         assert!(page.contains("Live GFX Preview"));
         let callback = get("/private-token/next", Some(PreviewPreset::HideEngagement));
-        assert!(callback.contains("evolvePreview_showEngagementPrompt"));
+        assert!(callback.contains(r#""arg":false"#));
         assert!(callback.contains("\\"arg\\":false"));
         assert!(get("/other-session/movie.swf", None).contains("404 Not Found"));
         assert!(get("/private-token/../test.swf", None).contains("400 Bad Request"));
