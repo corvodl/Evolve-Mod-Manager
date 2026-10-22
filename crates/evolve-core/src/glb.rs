@@ -166,6 +166,111 @@ pub fn geometry_glb_bytes(mesh: &RenderMesh) -> Result<Vec<u8>, GlbError> {
     Ok(output)
 }
 
+/// Retain verified original CryEngine subset IDs on a standalone static model.
+/// Unlike a generic geometry GLB, this creates one primitive for each authored
+/// triangle range and a material table with holes retained (e.g. source ID 10).
+/// Missing/unsupported source tables do not create fabricated nonzero IDs.
+pub fn geometry_glb_bytes_with_original_material_ids(
+    mesh: &RenderMesh,
+    source_bytes: &[u8],
+) -> Result<Vec<u8>, GlbError> {
+    let ranges = crate::model::original_mesh_subsets(source_bytes, mesh.indices.len())
+        .map_err(|e| GlbError::Invalid(format!("Cannot resolve original material IDs: {e}")))?;
+    if ranges.is_empty()
+        || ranges.iter().any(|&(_, _, id)| id == 255 || id >= 128)
+    {
+        return Err(GlbError::Invalid(
+            "Original source material range is unresolved".into(),
+        ));
+    }
+    let data = geometry_glb_bytes(mesh)?;
+    let json_len = u32::from_le_bytes(
+        data[12..16].try_into().map_err(|_| GlbError::Limits)?,
+    ) as usize;
+    let json_end = 20usize.checked_add(json_len).ok_or(GlbError::Limits)?;
+    let mut document: serde_json::Value =
+        serde_json::from_slice(data.get(20..json_end).ok_or(GlbError::Limits)?)?;
+    let bin = data.get(json_end + 8..).ok_or(GlbError::Limits)?;
+    let original = document["meshes"][0]["primitives"][0].clone();
+    let accessor = original["indices"]
+        .as_u64()
+        .ok_or_else(|| GlbError::Invalid("Standalone model has no index buffer".into()))?
+        as usize;
+    let view = document["accessors"][accessor]["bufferView"]
+        .as_u64()
+        .ok_or(GlbError::Limits)?;
+    if document["accessors"][accessor]["componentType"] != 5125 {
+        return Err(GlbError::Invalid("Original indices are not uint32".into()));
+    }
+    let max_id = ranges.iter().map(|&(_, _, id)| id).max().unwrap_or(0) as usize;
+    let mut materials = Vec::with_capacity(max_id + 1);
+    for id in 0..=max_id {
+        materials.push(json!({
+            "name":format!("CryEngine slot {id:03} - Original material ID {id}"),
+            "doubleSided":true,
+            "pbrMetallicRoughness":{"metallicFactor":0.0,"roughnessFactor":1.0}
+        }));
+    }
+    let mut primitives = Vec::with_capacity(ranges.len());
+    let mut cursor = 0u32;
+    for (first, count, material_id) in ranges {
+        let end = first.checked_add(count).ok_or(GlbError::Limits)?;
+        if first != cursor || count == 0 || !count.is_multiple_of(3)
+            || end as usize > mesh.indices.len()
+        {
+            return Err(GlbError::Invalid(
+                "Noncontiguous original subset material ranges".into(),
+            ));
+        }
+        let mut primitive = original.clone();
+        let accessors = document["accessors"].as_array_mut().ok_or(GlbError::Limits)?;
+        let offset = accessors.len();
+        accessors.push(json!({
+            "bufferView":view, "byteOffset":u64::from(first)*4,
+            "componentType":5125, "count":count, "type":"SCALAR"
+        }));
+        primitive["indices"] = json!(offset);
+        primitive["material"] = json!(material_id);
+        primitives.push(primitive);
+        cursor = end;
+    }
+    if cursor as usize != mesh.indices.len() {
+        return Err(GlbError::Invalid(
+            "Source material IDs do not cover the entire mesh".into(),
+        ));
+    }
+    document["meshes"][0]["primitives"] = json!(primitives);
+    document["materials"] = json!(materials);
+    let mut json_bytes = serde_json::to_vec(&document)?;
+    align4(&mut json_bytes);
+    // glTF JSON chunks are padded with spaces, not zero bytes.
+    for byte in json_bytes.iter_mut().rev() {
+        if *byte == 0 {
+            *byte = b' ';
+        } else {
+            break;
+        }
+    }
+    let size = 28usize
+        .checked_add(json_bytes.len())
+        .and_then(|n| n.checked_add(bin.len()))
+        .ok_or(GlbError::Limits)?;
+    if size > MAX_EXPORT_BYTES || size > u32::MAX as usize {
+        return Err(GlbError::Limits);
+    }
+    let mut result = Vec::with_capacity(size);
+    result.extend_from_slice(b"glTF");
+    result.extend_from_slice(&2u32.to_le_bytes());
+    result.extend_from_slice(&(size as u32).to_le_bytes());
+    result.extend_from_slice(&(json_bytes.len() as u32).to_le_bytes());
+    result.extend_from_slice(b"JSON");
+    result.extend_from_slice(&json_bytes);
+    result.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+    result.extend_from_slice(b"BIN\\0");
+    result.extend_from_slice(bin);
+    Ok(result)
+}
+
 pub fn export_model_glb(mesh: &RenderMesh, destination: &Path) -> Result<usize, GlbError> {
     let data = geometry_glb_bytes(mesh)?;
     let mut file = OpenOptions::new()
