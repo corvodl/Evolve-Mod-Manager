@@ -93,6 +93,12 @@ def run():
     if not embed_textures:
         if optimized["embedded_normal_maps"] != len(source_normal_maps):
             raise RuntimeError("FBX lost one or more embedded normal maps")
+    # The FBX round-trip removes all original bpy objects via factory reset.
+    # Snapshot *primitive values* before destroying the source scene: Blender
+    # 5.2 raises "StructRNA of type Object has been removed" even for o.type.
+    # Never read attributes through source meshes/visible after this point.
+    exported_mesh_count = len(meshes)
+    exported_armature_count = sum(obj.type == 'ARMATURE' for obj in visible)
     if source_material_ids or native_bounds is not None:
         bpy.ops.wm.read_factory_settings(use_empty=True)
         bpy.ops.import_scene.fbx(filepath=str(destination))
@@ -111,8 +117,8 @@ def run():
                 source_material_uvs, source_material_uv_distributions(roundtrip))
     print(json.dumps({
         "fbx_optimization": optimized,
-        "meshes": len(meshes),
-        "armatures": sum(o.type == 'ARMATURE' for o in visible),
+        "meshes": exported_mesh_count,
+        "armatures": exported_armature_count,
         "animations_included": include_animation,
         "output_bytes": destination.stat().st_size
     }))
