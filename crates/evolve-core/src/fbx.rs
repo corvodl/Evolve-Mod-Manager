@@ -151,15 +151,17 @@ pub(crate) fn publish_verified_binary_fbx_with_normals(
     if destination.exists() {
         return Err(FbxError::Exists);
     }
-    let staging_dir = staged.parent().ok_or_else(|| {
-        FbxError::Invalid("Staged FBX has no parent".into())
-    })?;
+    let staging_dir = staged
+        .parent()
+        .ok_or_else(|| FbxError::Invalid("Staged FBX has no parent".into()))?;
     let source_textures = staging_dir.join("textures");
     if !source_textures.exists() {
         return publish_verified_binary_fbx(staged, destination);
     }
     if !fs::symlink_metadata(&source_textures)?.file_type().is_dir() {
-        return Err(FbxError::Invalid("Invalid staged normal map directory".into()));
+        return Err(FbxError::Invalid(
+            "Invalid staged normal map directory".into(),
+        ));
     }
     let stem = destination
         .file_stem()
@@ -179,7 +181,9 @@ pub(crate) fn publish_verified_binary_fbx_with_normals(
             .and_then(|name| name.strip_suffix(".png"))
             .ok_or_else(|| FbxError::Invalid("Invalid external normal map filename".into()))?;
         if suffix.len() != 12 || !suffix.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err(FbxError::Invalid("Invalid external normal map digest".into()));
+            return Err(FbxError::Invalid(
+                "Invalid external normal map digest".into(),
+            ));
         }
         let meta = fs::symlink_metadata(entry.path())?;
         if !meta.file_type().is_file() || meta.len() < 8 || meta.len() > 64 * 1024 * 1024 {
@@ -213,7 +217,9 @@ pub(crate) fn publish_verified_binary_fbx_with_normals(
         fs::create_dir(&target_textures)?;
     }
     if !fs::symlink_metadata(&target_textures)?.file_type().is_dir() {
-        return Err(FbxError::Invalid("External texture directory must not be a link".into()));
+        return Err(FbxError::Invalid(
+            "External texture directory must not be a link".into(),
+        ));
     }
     let mut added = Vec::new();
     let result = (|| {
@@ -313,9 +319,11 @@ pub fn convert_glb_to_fbx_with_options(
         stage.path().join("blender_fbx_safety.py"),
         include_str!("blender_fbx_safety.py"),
     )?;
-    let staged_fbx = stage.path().join(destination.file_name().ok_or_else(|| {
-        FbxError::Invalid("FBX destination is missing its filename".into())
-    })?);
+    let staged_fbx = stage.path().join(
+        destination
+            .file_name()
+            .ok_or_else(|| FbxError::Invalid("FBX destination is missing its filename".into()))?,
+    );
     let mut child = Command::new(blender)
         .arg("--background")
         .arg("--factory-startup")
@@ -403,12 +411,14 @@ mod tests {
         let png = b"\x89PNG\r\n\x1a\nsource-normal-pixels";
         fs::write(stage_textures.join(name), png).unwrap();
         assert_eq!(
-            publish_verified_binary_fbx_with_normals(&source_fbx, &target_fbx, true)
-                .unwrap(),
+            publish_verified_binary_fbx_with_normals(&source_fbx, &target_fbx, true).unwrap(),
             body.len() as u64
         );
         assert_eq!(fs::read(target_fbx).unwrap(), body);
-        assert_eq!(fs::read(target.path().join("textures").join(name)).unwrap(), png);
+        assert_eq!(
+            fs::read(target.path().join("textures").join(name)).unwrap(),
+            png
+        );
     }
 
     #[test]
@@ -426,16 +436,15 @@ mod tests {
         fs::write(
             source.path().join("textures").join(name),
             b"\x89PNG\r\n\x1a\nsource",
-        ).unwrap();
-        fs::write(target.path().join("textures").join(name), b"conflict").unwrap();
-        assert!(publish_verified_binary_fbx_with_normals(
-            &source_fbx,
-            &target_fbx,
-            true,
         )
-        .is_err());
+        .unwrap();
+        fs::write(target.path().join("textures").join(name), b"conflict").unwrap();
+        assert!(publish_verified_binary_fbx_with_normals(&source_fbx, &target_fbx, true,).is_err());
         assert!(!target_fbx.exists());
-        assert_eq!(fs::read(target.path().join("textures").join(name)).unwrap(), b"conflict");
+        assert_eq!(
+            fs::read(target.path().join("textures").join(name)).unwrap(),
+            b"conflict"
+        );
     }
 
     #[test]
