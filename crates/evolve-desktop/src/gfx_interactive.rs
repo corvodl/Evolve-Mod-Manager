@@ -21,6 +21,7 @@ const MAX_IMPORTS: usize = 128;
 pub enum PreviewPreset {
     #[default]
     AsAuthored,
+    OpenScreen,
     ShowEngagement,
     HideEngagement,
     ShowSigningIn,
@@ -39,6 +40,7 @@ impl PreviewPreset {
     pub(crate) fn script_call(self) -> Option<(&'static str, Option<bool>)> {
         match self {
             Self::AsAuthored => None,
+            Self::OpenScreen => Some(("openScreen", None)),
             Self::ShowEngagement => Some(("showEngagementPrompt", Some(true))),
             Self::HideEngagement => Some(("showEngagementPrompt", Some(false))),
             Self::ShowSigningIn => Some(("showSigningInPrompt", Some(true))),
@@ -57,6 +59,7 @@ impl PreviewPreset {
     pub fn description(self) -> &'static str {
         match self {
             Self::AsAuthored => "Unmodified movie",
+            Self::OpenScreen => "Open original main menu screen",
             Self::ShowEngagement => "Show engagement prompt",
             Self::HideEngagement => "Dismiss engagement prompt",
             Self::ShowSigningIn => "Show sign-in prompt",
@@ -319,6 +322,7 @@ pub(crate) fn install_live_callbacks(
     // The whitelist is fixed and each callback is registered only if the
     // original first frame declares the expected exact arity in AVM1 bytecode.
     const PRESETS: &[PreviewPreset] = &[
+        PreviewPreset::OpenScreen,
         PreviewPreset::ShowEngagement,
         PreviewPreset::HideEngagement,
         PreviewPreset::ShowSigningIn,
@@ -986,12 +990,14 @@ fn write_live_menu_report(
         })
         .collect::<Vec<_>>();
     let initialized_in_swf = verified_actions.contains(&PreviewPreset::ReturnToMainMenu);
+    let original_open_screen = verified_actions.contains(&PreviewPreset::OpenScreen);
     let report = serde_json::json!({
         "source": "verified same-build UI_Data/MainMenuScreen.xml",
         "localization": localization,
         "fonts": font_imports,
         "initialization": {
             "verified_transition_to_main_menu": initialized_in_swf,
+            "verified_open_screen": original_open_screen,
             "native_cryengine_host_available": false,
             "status": "Only original verified ActionScript handlers may initialize local menu state. Native game state is unavailable."
         },
@@ -1073,6 +1079,7 @@ mod tests {
         movie.extend_from_slice(&[0, 30, 1, 0]);
         let mut action = Vec::new();
         for (name, params) in [
+            ("openScreen", 0u16),
             ("showEngagementPrompt", 1u16),
             ("transitionToMainMenu", 0),
             ("goBack", 0),
@@ -1155,6 +1162,7 @@ mod tests {
             report["initialization"]["verified_transition_to_main_menu"],
             false
         );
+        assert_eq!(report["initialization"]["verified_open_screen"], false);
         assert_eq!(report["commands"][0]["command"], "Game_Start");
         assert_eq!(report["commands"][0]["child_submenu"], "Extras");
         assert_eq!(report["resources"]["restored_dds_tiles"], 5);
@@ -1227,6 +1235,7 @@ mod tests {
         let movie = menu_fixture();
         let (patched, allowed) = install_live_callbacks(&movie, "Libs/UI/main_menu.gfx").unwrap();
         assert!(patched.len() > movie.len());
+        assert!(allowed.contains(&PreviewPreset::OpenScreen));
         assert!(allowed.contains(&PreviewPreset::ShowEngagement));
         assert!(allowed.contains(&PreviewPreset::HideEngagement));
         assert!(allowed.contains(&PreviewPreset::Back));
