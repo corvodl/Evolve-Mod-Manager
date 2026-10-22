@@ -1154,9 +1154,10 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                     .size(11)
                     .style(design::muted),
             )
-            .push(design::button("Inspect selected GFX").on_press_maybe(
-                (!state.gfx_busy).then_some(Message::GfxOpenSelected),
-            ));
+            .push(
+                design::button("Inspect selected GFX")
+                    .on_press_maybe((!state.gfx_busy).then_some(Message::GfxOpenSelected)),
+            );
     }
     scrollable(panel(actions.padding(12)).width(Fill))
         .height(Fill)
