@@ -3,6 +3,7 @@
 //! contextual and collapsed by default. Cryptographic keys are never entered.
 use super::{Message, State};
 use crate::design;
+use evolve_core::mod_safety::{ModKind, classify};
 use iced::widget::{column, container, row, scrollable, space, text};
 use iced::{Background, Border, Element, Fill, Length};
 
@@ -17,10 +18,12 @@ pub(super) fn matching_projects(state: &State) -> Vec<usize> {
         .iter()
         .enumerate()
         .filter_map(|(i, p)| {
-            (query.is_empty()
+            (state.modding_kind.is_none_or(|kind| {
+                kind == classify(p.modified.iter().map(String::as_str), p.changed_known)
+            }) && (query.is_empty()
                 || [&p.label, &p.target, &p.source_build]
                     .iter()
-                    .any(|value| value.to_lowercase().contains(&query)))
+                    .any(|value| value.to_lowercase().contains(&query))))
             .then_some(i)
         })
         .collect()
@@ -162,7 +165,7 @@ fn project_header() -> Element<'static, Message> {
         text("TARGET PAK").width(Length::FillPortion(4)),
         text("CHANGED").width(Length::FillPortion(1)),
         text("SOURCE BUILD").width(Length::FillPortion(2)),
-        text("STATE").width(Length::FillPortion(2)),
+        text("MOD TYPE").width(Length::FillPortion(2)),
         text("DETAILS").width(Length::FillPortion(3)),
     ]
     .spacing(8)
@@ -194,9 +197,15 @@ fn projects(state: &State) -> Element<'_, Message> {
             text(record.source_build.as_str())
                 .size(12)
                 .width(Length::FillPortion(2)),
-            text(record.status.as_str())
-                .size(12)
-                .width(Length::FillPortion(2)),
+            text(
+                classify(
+                    record.modified.iter().map(String::as_str),
+                    record.changed_known
+                )
+                .label()
+            )
+            .size(12)
+            .width(Length::FillPortion(2)),
             text(record.details.as_str())
                 .size(12)
                 .width(Length::FillPortion(3)),
@@ -281,7 +290,7 @@ fn modifications(state: &State) -> Element<'_, Message> {
     });
     let mut rows = column![
         row![
-            text("MODIFIED FILES IN design::selection(theme) PROJECT")
+            text("MODIFIED FILES IN SELECTED PROJECT")
                 .size(12)
                 .style(design::muted),
             space().width(Fill),
@@ -300,7 +309,7 @@ fn modifications(state: &State) -> Element<'_, Message> {
                     text(changed.as_str())
                         .width(Length::FillPortion(3))
                         .size(12),
-                    text(record.workspace.to_string_lossy().to_string())
+                    text(evolve_core::mod_safety::member_kind(changed).label())
                         .width(Length::FillPortion(2))
                         .size(11)
                         .style(design::muted),
@@ -529,6 +538,17 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         ]
         .spacing(10)
         .align_y(iced::Center),
+        row![
+            design::button("All mods").on_press(Message::ModdingKind(None)),
+            design::button("Cosmetic candidates").on_press(Message::ModdingKind(Some(ModKind::CosmeticCandidate))),
+            design::button("Gameplay").on_press(Message::ModdingKind(Some(ModKind::Gameplay))),
+            design::button("Needs review").on_press(Message::ModdingKind(Some(ModKind::NeedsReview))),
+        ].spacing(6),
+        text("Cosmetic candidates need content verification before online use. Gameplay, mixed and unverified mods stay offline. Current mod launching is offline only.").size(12).style(design::muted),
+        row![
+            design::button("Gameplay values…").on_press(Message::GuidedEdit(crate::guided_modding::Action::Open(false))),
+            design::button("Models…").on_press(Message::GuidedEdit(crate::guided_modding::Action::Open(true))),
+        ].spacing(6),
         projects(state),
         modifications(state),
         actions,
@@ -542,6 +562,11 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     ]
     .spacing(9)
     .height(Fill);
+    if state.guided_editor.open {
+        return column![text("Modding").size(22), crate::guided_modding::view(state)]
+            .spacing(10)
+            .into();
+    }
     if state.modding_advanced {
         main = main.push(archive_browser(state));
     }

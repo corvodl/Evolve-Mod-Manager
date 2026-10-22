@@ -2,6 +2,50 @@
 
 Updated: **2026-10-20** · Repository: `corvodl/Evolve-Mod-Manager` · Working PR: **#6** on `feature/blender-viewport-cdf-autoload`, based on PR #5's `feature/pr5-combined-viewer-preview`. This document is a resumable engineering checklist, **not** a claim of production parity. See [PARITY.md](PARITY.md) for the broader feature matrix.
 
+## 2026-10-22 — cosmetic/gameplay separation and guided editing
+
+Implemented in the public Rust/Iced repository, on top of `a50e99b` (current main at start of this change). No private repository code or game assets were copied. No new PR or contributor attribution is needed.
+
+### What now works
+
+- Modding projects have **All mods / Cosmetic candidates / Gameplay / Needs review** filters, a mod-type column, and per-changed-file classification. Classification uses the existing changed-member scan, never the mod's display name or PAK basename. Any detected gameplay member dominates a mixed set. Incomplete scans and unknown file types remain offline/review. Untouched projects display Unchanged.
+- Explicit gameplay roots cover Scripts, Entities, Libs/Actor, Abilities, Items, GameRules, Config, AI, EntityArchetypes, Progression, Player, GameTokens, ContextualCombat and ZooKeeper, plus parameter roots. `.actorparams`, `.chrparams`, Lua/config/executable files cannot become cosmetic by a cosmetic-looking filename elsewhere. Models, textures (including numbered DDS fragments), sounds, materials and UI assets are **candidates**, not a proof of online eligibility.
+- **Gameplay values…** indexes known virtual paths across editable project manifests. Search by character, ability, filename or build, select a document, then search named fields (health, cooldown, damage, etc.). Numeric and boolean attributes become editable form rows; `<param name="..." value="...">` rows show the parameter name and parent context. Repeated names retain distinct element identities. Original string references and other XML content are retained.
+- Stage-separated values (`100|200|300`) and vectors (`1,2,3|4,5,6`) are supported with finite-number and original component-count validation. These are syntax checks, **not** guessed engine ranges or a fabricated balance schema. Inherited values are not expanded into child documents. Text-node values and arbitrary string/reference editing are not part of this form yet.
+- Save edits the managed project copy through the existing backup/import transaction, validates XML, detects stale open documents both before serialization and at import, and preserves a recovery revision in EditorBackups. Existing build logic re-encodes CryXmlB members from their authenticated original. Unsaved form edits must be saved or explicitly discarded before switching documents. The Loaded value is the value at opening, not necessarily the original game default.
+- **Models…** indexes CDF/CGF/CHR/SKIN assets by name and build. Choosing an editable asset opens its existing model/file editor with the exact virtual path search and expanded explorer, exposing the existing preview/import/replacement workflow. This is a navigation shortcut, not an in-app mesh authoring tool.
+- Both guided lists can index the loaded Asset Library's manifests (respecting its build filter). Imported rows offer **Create editable copy** without asking the user to browse a PAK. Creation uses the existing verified imported-project operation and requires the imported original to map to the configured signing stage. It returns to the guided list after project creation. **Refresh assets** loads a missing library catalog or refreshes projects; source files remain read-only. Configure storage/stage if no verified mapping exists; never guess across builds.
+
+### Findings from the user's local game files
+
+Build collections identify `libs.pak__a78de803dee8f1530a35` as **Modded Stage 2** and `Scripts.pak__897f46b610c8e2022159` as **2012**. The stable paths differ by generation:
+
+- Stage 2: `libs/Actor/*.actorparams` (192 manifest members), `libs/Abilities/` (54), `libs/Items/` (788), and `libs/GameRules/` (13). For example, BaseMonster.actorparams contains named movement/collider values, inherited `base` identity and pipe-separated stage values. Abilities such as `libs/Abilities/Goliath/GoliathCharge.xml` are XML.
+- 2012: `Scripts/Entities/Abilities/XML/<character>/...xml`, e.g. WhipSpiderWebTrap3 contains `energy_cost` and `cooldown_time`; `Scripts/GameRules/CharacterClasses.xml` is another gameplay document.
+- Therefore an archive-independent, build-scoped virtual-path index is feasible and preferable to hardcoding one PAK name for all versions. The initial editor consumes verified extracted project copies and imported manifests; it does not discover installed loose files by a global filesystem search.
+
+### Online eligibility: unresolved and intentionally not advertised as working
+
+**This change does not enable online mod launching.** Existing mod/profile launch paths remain offline-only. A cosmetic candidate in this dashboard is only a routing hint. The current project scan is bounded (256 MiB hashing budget) and describes manifest-listed edits; it is not an exhaustive audit of installed PAKs, additions/deletions, loose-file overrides, profile swaps, or hooks. Its metadata is not an online trust boundary.
+
+The user's policy is feasible as a manager-enforced allowlist, but extension checks are insufficient. CGF/CHR files can contain collision/physics data; CDF attachment configuration and materials may affect behavior; GFX/SWF contains executable ActionScript and host commands. All of these need original-versus-modified semantic comparison before a change can be certified as **only** cosmetic. Unknown or mixed content must stay offline even if its category or filename says cosmetic. The manager must not reuse the private-helper or native offline-hook route to claim an online launch.
+
+Next implementation steps, in order:
+
+1. Add a full changed-content audit against an authenticated original for the **selected build**, including every enabled installed mod, archive-member additions/deletions, loose files, and any active stage/hook transaction. Stream hashes without the dashboard's sample budget. Bind the report to original and replacement content hashes and classifier version; revalidate at launch to invalidate stale approval.
+2. Add format-aware proofs: payload-only texture/audio changes first; then mesh visual chunks with physics/skeleton/collision invariants; then constrained CDF/material/UI semantic changes. Unknown formats and gameplay/ability/actor changes fail closed. Add adversarial mixed, mislabeled, edited-after-audit, symlink, and baseline-mismatch tests.
+3. Expose separate **cosmetic online** and **gameplay offline** installed-profile views using those reports. Gate the actual normal-client launch on the union of all enabled changes, with restoration/verification of offline hooks and incompatible files. Never let an editable user checkbox override detected gameplay.
+4. Verify the supported game's normal online behavior with the verified cosmetic-only payload. Manager classification alone cannot prove server compatibility. There is no online acceptance result in this handoff.
+5. Improve editor usability further: direct selection of the just-created member, build selection inside the guided panel, inherited/default-value resolution, schema-aware units/ranges/enums, explicit recovery buttons within the form, model replacement browsing, and background/paged indexing for exceptionally large libraries. Imported rows currently create the containing verified project before editing; unsupported stage mappings still require setup. The existing signed builder's 1–64 changed-member limit remains.
+
+### Validation
+
+- Core library: **181 passed, 0 failed**, with one optional real-file test ignored by default. The first sandbox run had Windows fixture replacement failures; rerunning outside the sandbox passed the full suite.
+- Real-file read-only acceptance: unchanged round trips are byte-identical for Stage 2 BaseMonster.actorparams (**93 fields**) and GoliathCharge.xml (**29 fields**). No original was modified. Reproduce with `EVOLVE_GAMEPLAY_DOCUMENT=<local file>` and `cargo test -p evolve-core real_gameplay_document_round_trip --lib -- --ignored --nocapture`.
+- Desktop suite: **210 passed, 0 failed**, one existing optional GFX test ignored. Includes new guided-save/backup/restore/stale-source rejection test; existing CryXmlB import/build serialization tests remain passing. Windows tests used a copied test executable with an asInvoker test-only manifest; production administrator manifest unchanged.
+- Workspace/all-target Clippy passes with `-D warnings`; desktop builds. No live GUI screenshot or installed-game launch was tested in this pass, and no claim of full online or model-editing parity is made.
+
+
 ## Nightly 20 screenshot — original sign-in overlay still visible
 
 The source screenshot shows a near-black Ruffle preview, visible original
@@ -47,6 +91,20 @@ and `background_video.status`, verify the source
 same frame against live CryEngine output. Preserve the original sign-in
 text, never invent a translation, and keep the GFX bytes read-only.
 
+## October 22 — exact-build videos.pak inventory and Goliath source lookup
+
+The Stage 2 main-menu background defaults to the original
+`front_end/mainmenu_goliath.usm`. If a variant `videos.pak` stores
+that exact filename beneath a deeper mount root, the Asset Library
+now checks the source build's verified imported archive member inventory,
+requires a unique exact Goliath filename, and never substitutes
+another monster or unrelated video. When absent, diagnostics list
+up to eight verified source member names instead of guessing a mount.
+
+CRI USM still requires a compatible configured FFmpeg executable or
+an original-derived MP4/WebM sidecar. This is source discovery and
+diagnostics, not a promise of browser playback or native video parity.
+
 ## October 22 — preview tile limits and missing video diagnosis
 
 The user's Nightly 22 diagnostic shows **119 DDS tiles restored, 292 skipped
@@ -73,31 +131,6 @@ Changing bitmap caps cannot produce the original background video.
 Font definition verification and dynamic ActionScript `@ui_` localization
 are independent pending tasks; 0/6 in-movie static fields does **not**
 verify that the native localization engine was successfully initialized.
-
-## October 22 — Nightly 26 video manifest inspection and bounded bitmap status
-
-Nightly 26 restored **295 original DDS tiles**, up from 119, and now
-reports **116 remaining tile/pixel-budget skips**, 0 missing source DDS tiles
-and 0 missing imported SWF/GFX movies. A further pixel-budget increase
-requires real-world memory/performance measurement; these are not missing
-textures and should not be counted as lookup failures.
-
-The original `videos.pak` is confirmed by the preview to belong to
-`Modded Stage 2`, but **none of the eight assumed video mount paths**
-yield a verified `main_menu.usm`. Its actual member names are unknown.
-The next preview inspects only the selected build's exact `videos.pak`
-using the existing read-only Asset Library inventory validation. A
-unique, verified file whose **filename exactly matches**
-`main_menu.usm` can be resolved even beneath a deeper, unanticipated
-parent directory. If no such file exists, the diagnostic reports the
-**actual verified video member names** (up to 8) and count, rather than
-claiming the archive is not imported. It must not infer from similar
-filenames which different movie the original menu uses.
-
-Even when found, USM still requires an explicitly configured compatible
-FFmpeg conversion or a valid user-provided preview MP4/WebM. No original
-assets are modified or embedded. Source-defined native video playback,
-runtime AVM1 localization and remaining visual effects remain unverified.
 
 ## October 22 — source-verified videos.pak background discovery
 

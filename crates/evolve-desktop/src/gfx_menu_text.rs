@@ -154,8 +154,149 @@ where
     Ok(dest)
 }
 
-/// Extract keys directly from the movie's authored edit-text initial values,
-/// not from guessed navigation order or screenshots.
+/// Read only typed AVM1 ActionPush string constants, including the bodies of
+/// ordinary DefineFunction actions. These original bytes are useful for
+/// discovering runtime-assigned @ui_ keys without assuming screen labels.
+/// Do not change original instruction lengths, jumps or authored bytecode.
+fn avm1_localization_keys(actions: &[u8], depth: usize, keys: &mut BTreeSet<String>) {
+    if depth > 4 || actions.len() > MAX_DECOMPRESSED {
+        return;
+    }
+    let mut at = 0usize;
+    let mut count = 0usize;
+    while at < actions.len() && count < 32_000 && keys.len() < 256 {
+        let code = actions[at];
+        at += 1;
+        if code == 0 {
+            break;
+        }
+        let size = if code >= 0x80 {
+            let Some(bytes) = actions.get(at..at + 2) else {
+                break;
+            };
+            at += 2;
+            usize::from(u16::from_le_bytes([bytes[0], bytes[1]]))
+        } else {
+            0
+        };
+        let Some(end) = at.checked_add(size).filter(|&end| end <= actions.len()) else {
+            break;
+        };
+        let payload = &actions[at..end];
+        if code == 0x88 && payload.len() >= 2 {
+            // ActionConstantPool stores string literals addressed by later
+            // Push Constant8/Constant16 opcodes. The original menu frequently
+            // stores localization keys in this table instead of inline Push.
+            let count = usize::from(u16::from_le_bytes([payload[0], payload[1]]));
+            let mut p = 2usize;
+            for _ in 0..count.min(2048) {
+                let Some(stop) = zstring_end(payload, p) else {
+                    break;
+                };
+                if let Ok(value) = std::str::from_utf8(&payload[p..stop])
+                    && value.to_ascii_lowercase().starts_with("@ui_")
+                    && let Some(key) = label(value)
+                {
+                    keys.insert(format!("@{key}"));
+                }
+                p = stop + 1;
+            }
+        } else if code == 0x96 {
+            let mut p = 0usize;
+            while p < payload.len() {
+                let ty = payload[p];
+                p += 1;
+                if ty == 0 {
+                    let Some(stop) = zstring_end(payload, p) else {
+                        break;
+                    };
+                    if let Ok(value) = std::str::from_utf8(&payload[p..stop])
+                        && value.to_ascii_lowercase().starts_with("@ui_")
+                        && let Some(key) = label(value)
+                    {
+                        keys.insert(format!("@{key}"));
+                    }
+                    p = stop + 1;
+                    continue;
+                }
+                let skip = match ty {
+                    1 | 7 => 4,
+                    2 | 3 => 0,
+                    4 | 5 | 8 => 1,
+                    6 => 8,
+                    9 => 2,
+                    _ => break,
+                };
+                let Some(next) = p.checked_add(skip).filter(|&next| next <= payload.len()) else {
+                    break;
+                };
+                p = next;
+            }
+        } else if code == 0x8e && depth < 4 {
+            // DefineFunction2: name, parameter count, register count, flags,
+            // registered parameter names, then an isolated AVM1 action body.
+            if let Some(name_end) = zstring_end(payload, 0) {
+                let mut p = name_end + 1;
+                if let Some(header) = payload.get(p..p + 5) {
+                    let parameters = usize::from(u16::from_le_bytes([header[0], header[1]]));
+                    p += 5;
+                    let mut valid = true;
+                    for _ in 0..parameters {
+                        if p >= payload.len() {
+                            valid = false;
+                            break;
+                        }
+                        if let Some(end) = zstring_end(payload, p + 1) {
+                            p = end + 1;
+                        } else {
+                            valid = false;
+                            break;
+                        }
+                    }
+                    if valid && let Some(size) = payload.get(p..p + 2) {
+                        let code_size = usize::from(u16::from_le_bytes([size[0], size[1]]));
+                        p += 2;
+                        if let Some(body) = payload.get(p..p.saturating_add(code_size)) {
+                            avm1_localization_keys(body, depth + 1, keys);
+                        }
+                    }
+                }
+            }
+        } else if code == 0x9b && depth < 4 {
+            // DefineFunction: functionName\0, parameter count, parameter
+            // names, codeSize and the authored function bytecode.
+            if let Some(name_end) = zstring_end(payload, 0) {
+                let mut p = name_end + 1;
+                if let Some(count_bytes) = payload.get(p..p + 2) {
+                    let parameters = u16::from_le_bytes([count_bytes[0], count_bytes[1]]);
+                    p += 2;
+                    let mut valid = true;
+                    for _ in 0..parameters {
+                        if let Some(end) = zstring_end(payload, p) {
+                            p = end + 1;
+                        } else {
+                            valid = false;
+                            break;
+                        }
+                    }
+                    if valid && let Some(size_bytes) = payload.get(p..p + 2) {
+                        let code_size =
+                            usize::from(u16::from_le_bytes([size_bytes[0], size_bytes[1]]));
+                        p += 2;
+                        if let Some(body) = payload.get(p..p.saturating_add(code_size)) {
+                            avm1_localization_keys(body, depth + 1, keys);
+                        }
+                    }
+                }
+            }
+        }
+        at = end;
+        count += 1;
+    }
+}
+
+/// Extract keys from original edit-text initial values and typed AVM1
+/// script strings; all translations remain source-qualified and exact-build.
 pub fn authored_keys(swf: &[u8]) -> Result<Vec<String>, String> {
     let mut keys = BTreeSet::new();
     let _ = walk(swf, |kind, tag| {
@@ -165,6 +306,11 @@ pub fn authored_keys(swf: &[u8]) -> Result<Vec<String>, String> {
             && let Some(key) = label(raw)
         {
             keys.insert(format!("@{key}"));
+        }
+        if kind == 12 {
+            avm1_localization_keys(tag, 0, &mut keys);
+        } else if kind == 59 && tag.len() >= 2 {
+            avm1_localization_keys(&tag[2..], 0, &mut keys);
         }
         Ok(tag.to_vec())
     })?;
@@ -277,6 +423,73 @@ mod tests {
                 .unwrap()
                 .0,
             dynamic
+        );
+    }
+    #[test]
+    fn discovers_runtime_actionscript_strings_without_mutating_bytecode() {
+        let mut source = fixture("@ui_STARTGAME", 0x8000);
+        let mut push = vec![0u8];
+        push.extend_from_slice(b"@ui_SigningInPrompt\0");
+        push.extend_from_slice(&[0u8]);
+        push.extend_from_slice(b"not_a_localization_key\0");
+        let mut actions = vec![0x96];
+        actions.extend_from_slice(&(push.len() as u16).to_le_bytes());
+        actions.extend_from_slice(&push);
+        actions.push(0);
+        let mut tag = ((12u16 << 6) | 63).to_le_bytes().to_vec();
+        tag.extend_from_slice(&(actions.len() as u32).to_le_bytes());
+        tag.extend_from_slice(&actions);
+        let at = source.len() - 2;
+        source.splice(at..at, tag);
+        let size = source.len() as u32;
+        source[4..8].copy_from_slice(&size.to_le_bytes());
+        assert_eq!(
+            authored_keys(&source).unwrap(),
+            vec!["@ui_signinginprompt", "@ui_startgame"]
+        );
+        // Localization inventory never rewrites ActionScript instructions.
+        let (preview, patch) = replace_authored_text(
+            &source,
+            &serde_json::json!({"translations":{
+                "ui_startgame":"PLAY", "ui_signinginprompt":"Signing in"
+            }}),
+        )
+        .unwrap();
+        assert_eq!(patch.patched, 1);
+        assert!(
+            preview
+                .windows(b"@ui_SigningInPrompt".len())
+                .any(|part| part == b"@ui_SigningInPrompt")
+        );
+    }
+    #[test]
+    fn discovers_verified_avm1_constant_pool_and_define_function2_label_literals() {
+        fn action(opcode: u8, payload: &[u8]) -> Vec<u8> {
+            let mut result = vec![opcode];
+            result.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+            result.extend_from_slice(payload);
+            result
+        }
+        let mut pool = 2u16.to_le_bytes().to_vec();
+        pool.extend_from_slice(b"@ui_SigningInPrompt\0@ui_Training\0");
+        let mut push = vec![0];
+        push.extend_from_slice(b"@ui_Options\0");
+        let mut nested = action(0x96, &push);
+        nested.push(0);
+        let mut func = b"settingsLabel\0".to_vec();
+        func.extend_from_slice(&0u16.to_le_bytes()); // Parameter count
+        func.push(1); // Register count
+        func.extend_from_slice(&0u16.to_le_bytes()); // Flags
+        func.extend_from_slice(&(nested.len() as u16).to_le_bytes());
+        func.extend_from_slice(&nested);
+        let mut script = action(0x88, &pool);
+        script.extend(action(0x8e, &func));
+        script.push(0);
+        let mut keys = BTreeSet::new();
+        avm1_localization_keys(&script, 0, &mut keys);
+        assert_eq!(
+            keys.into_iter().collect::<Vec<_>>(),
+            vec!["@ui_options", "@ui_signinginprompt", "@ui_training"]
         );
     }
     #[test]

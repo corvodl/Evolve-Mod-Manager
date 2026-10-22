@@ -592,6 +592,15 @@ pub fn import_raw_member(
     member: &str,
     replacement_source: &Path,
 ) -> Result<bool, String> {
+    import_raw_member_checked(project, projects_root, member, replacement_source, None)
+}
+fn import_raw_member_checked(
+    project: &ProjectRow,
+    projects_root: &Path,
+    member: &str,
+    replacement_source: &Path,
+    expected_current: Option<&[u8]>,
+) -> Result<bool, String> {
     const MAX_BYTES: u64 = 512 * 1024 * 1024;
     if !safe_member(member)
         || !regular(replacement_source, MAX_BYTES)
@@ -648,6 +657,9 @@ pub fn import_raw_member(
         return Err("Replacement must be an independent file outside this managed project".into());
     }
     let old_digest = digest(&original).map_err(|e| e.to_string())?;
+    if expected_current.is_some_and(|bytes| format!("{:x}", Sha256::digest(bytes)) != old_digest) {
+        return Err("File changed since opening; no changes were written".into());
+    }
     let new_digest = digest(&source).map_err(|e| e.to_string())?;
     if old_digest == new_digest {
         return Ok(false);
@@ -861,9 +873,173 @@ pub fn restore_original_raw_member(
     Ok(true)
 }
 
+/// Enumerate editable assets by virtual path, without exposing archive internals.
+pub fn guided_members(project: &ProjectRow, models: bool) -> Result<Vec<String>, String> {
+    let manifest = read_json(
+        &project.workspace.join(".evolve-pak-workspace.json"),
+        32 * 1024 * 1024,
+    )?;
+    if manifest.get("version").and_then(Value::as_u64) != Some(1)
+        || manifest.get("reference_only").and_then(Value::as_bool) == Some(true)
+    {
+        return Err("Not an editable project".into());
+    }
+    let entries = manifest
+        .get("entries")
+        .and_then(Value::as_array)
+        .ok_or("Missing project entries")?;
+    if entries.len() > MAX_ENTRIES {
+        return Err("Too many project entries".into());
+    }
+    let mut paths = Vec::new();
+    for e in entries {
+        let p = e
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or("Missing member path")?;
+        if !safe_member(p) {
+            return Err("Unsafe member path".into());
+        }
+        if if models {
+            evolve_core::mod_safety::model_document(p)
+        } else {
+            evolve_core::mod_safety::gameplay_document(p)
+        } {
+            paths.push(p.to_owned());
+        }
+    }
+    paths.sort_by_key(|p| p.to_ascii_lowercase());
+    Ok(paths)
+}
+
+pub fn read_gameplay_document(project: &ProjectRow, member: &str) -> Result<Vec<u8>, String> {
+    if !guided_members(project, false)?.iter().any(|p| p == member) {
+        return Err("Not an indexed gameplay document".into());
+    }
+    let files = fs::canonicalize(project.workspace.join("files")).map_err(|e| e.to_string())?;
+    let path = project.workspace.join("files").join(member);
+    if !regular(&path, evolve_core::gameplay_values::LIMIT as u64)
+        || !fs::canonicalize(&path)
+            .map_err(|e| e.to_string())?
+            .starts_with(&files)
+    {
+        return Err(
+            "Gameplay document is missing, linked, outside the project, or too large".into(),
+        );
+    }
+    fs::read(path).map_err(|e| e.to_string())
+}
+
+pub fn save_gameplay_document(
+    project: &ProjectRow,
+    projects_root: &Path,
+    member: &str,
+    snapshot: &[u8],
+    fields: &[evolve_core::gameplay_values::ValueField],
+) -> Result<bool, String> {
+    use std::io::Write;
+    if read_gameplay_document(project, member)? != snapshot {
+        return Err(
+            "File changed since opening. Reopen it before saving; no changes were written.".into(),
+        );
+    }
+    let bytes = evolve_core::gameplay_values::apply(snapshot, fields)?;
+    let mut replacement = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
+    replacement.write_all(&bytes).map_err(|e| e.to_string())?;
+    replacement.flush().map_err(|e| e.to_string())?;
+    import_raw_member_checked(
+        project,
+        projects_root,
+        member,
+        replacement.path(),
+        Some(snapshot),
+    )
+}
+
+/// Read only the bounded imported manifest for guided navigation; creation still
+/// goes through the full original-file and signing-stage verification path.
+pub fn guided_import_members(
+    archive: &evolve_core::library_catalog::ImportedPak,
+    models: bool,
+) -> Result<Vec<String>, String> {
+    let manifest = read_json(
+        &Path::new(&archive.directory).join("asset-library.json"),
+        32 * 1024 * 1024,
+    )?;
+    if manifest.get("version").and_then(Value::as_u64) != Some(1)
+        || manifest.get("source").and_then(Value::as_str) != Some(archive.source.as_str())
+    {
+        return Err("Imported source identity changed".into());
+    }
+    let entries = manifest
+        .get("entries")
+        .and_then(Value::as_array)
+        .ok_or("Missing imported members")?;
+    if entries.len() > MAX_ENTRIES {
+        return Err("Imported member limit".into());
+    }
+    let mut paths = Vec::new();
+    for entry in entries {
+        let p = entry
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or("Missing member path")?;
+        if !safe_member(p) {
+            return Err("Unsafe imported member".into());
+        }
+        if if models {
+            evolve_core::mod_safety::model_document(p)
+        } else {
+            evolve_core::mod_safety::gameplay_document(p)
+        } {
+            paths.push(p.to_owned());
+        }
+    }
+    Ok(paths)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn guided_values_save_backup_restore_and_stale_guard() {
+        let temp = tempfile::tempdir().unwrap();
+        let projects = temp.path().join("projects");
+        let workspace = projects.join("Example");
+        let member = "libs/Actor/BaseMonster.actorparams";
+        let file = workspace.join("files").join(member);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let original = br#"<Actor><param name="health" value="100|200|300"/></Actor>"#;
+        fs::write(&file, original).unwrap();
+        fs::write(workspace.join(".evolve-pak-workspace.json"), serde_json::to_vec(&serde_json::json!({
+            "version":1, "entries":[{"path":member,"format":"raw", "sha256":format!("{:x}",Sha256::digest(original))}]
+        })).unwrap()).unwrap();
+        let project = ProjectRow {
+            label: "Test".into(),
+            target: "libs.pak".into(),
+            source_build: "Test".into(),
+            status: "Draft".into(),
+            details: String::new(),
+            workspace: workspace.clone(),
+            modified: vec![],
+            changed_known: true,
+        };
+        assert_eq!(guided_members(&project, false).unwrap(), vec![member]);
+        let snapshot = read_gameplay_document(&project, member).unwrap();
+        let mut fields = evolve_core::gameplay_values::fields(&snapshot).unwrap();
+        fields[0].value = "110|220|330".into();
+        assert!(save_gameplay_document(&project, &projects, member, &snapshot, &fields).unwrap());
+        assert!(save_gameplay_document(&project, &projects, member, &snapshot, &fields).is_err());
+        assert_eq!(
+            fs::read_dir(workspace.join("EditorBackups"))
+                .unwrap()
+                .count(),
+            1
+        );
+        assert!(restore_original_raw_member(&project, &projects, member).unwrap());
+        assert_eq!(fs::read(file).unwrap(), original);
+        assert!(read_gameplay_document(&project, "../outside.xml").is_err());
+    }
     #[test]
     fn converted_xml_import_restore_and_binary_serialization_preserve_identity() {
         let temp = tempfile::tempdir().unwrap();
