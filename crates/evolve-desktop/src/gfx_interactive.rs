@@ -1416,6 +1416,7 @@ struct LiveMenuLabels<'a> {
     text: &'a crate::gfx_menu_text::TextPatch,
     imported_text: &'a ImportedTextCounts,
     render_effects: &'a serde_json::Value,
+    linked_screens: &'a [serde_json::Value],
 }
 
 fn write_live_menu_report(
@@ -1425,7 +1426,6 @@ fn write_live_menu_report(
     verified_actions: &[PreviewPreset],
     imported_movies: &[String],
     background_video: serde_json::Value,
-    linked_screens: &[serde_json::Value],
     labels: LiveMenuLabels<'_>,
 ) -> Result<(), String> {
     let entries = session
@@ -1500,7 +1500,7 @@ fn write_live_menu_report(
             "scope": "Only source-authored DefineEditText initial strings in imported SWF previews; dynamic assignments remain unresolved."
         },
         "background_video": background_video,
-        "linked_screens": linked_screens,
+        "linked_screens": labels.linked_screens,
         "initialization": {
             "verified_transition_to_main_menu": initialized_in_swf,
             "verified_open_screen": original_open_screen,
@@ -1615,8 +1615,8 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
         &actions,
         &imported_movies,
         background_video,
-        &linked_screens,
         LiveMenuLabels {
+            linked_screens: &linked_screens,
             source: &localization,
             text: &localized_text,
             imported_text: &imported_text,
@@ -1740,8 +1740,8 @@ mod tests {
             &[PreviewPreset::Back, PreviewPreset::HideSigningIn],
             &["gfxfontlib_locfont.gfx".into()],
             serde_json::json!({"playable": false, "status": "missing videos.pak"}),
-            &[],
             LiveMenuLabels {
+                linked_screens: &[],
                 source: &crate::gfx_localization::menu_labels(
                     None,
                     None,
