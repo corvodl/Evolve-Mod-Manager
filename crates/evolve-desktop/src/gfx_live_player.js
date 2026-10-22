@@ -21,7 +21,8 @@
             ...originalButtonEvents.map((event, index) => makeText("li",
                 event.kind === "fscommand"
                     ? "#" + (index + 1) + " FSCommand " + event.command +
-                      " (" + event.arguments + ") · blocked"
+                      " (" + event.arguments + ") · " +
+                      (event.disposition === "local-only" ? "verified local submenu" : "blocked")
                     : "#" + (index + 1) + " original button " + event.button_id +
                       " · flags " + event.condition_flags + " · native mapping unverified"))
         );
