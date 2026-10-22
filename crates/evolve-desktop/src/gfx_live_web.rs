@@ -292,6 +292,11 @@ fn respond(
                 mime,
             );
         }
+        path if safe_mode_image_asset(path) => {
+            // These are PNG derivatives of exact-build source DDS files.
+            // Never expose raw .dds, user files, or an arbitrary image folder.
+            serve_file(stream, &root.join(path), root, 12 * 1024 * 1024, "image/png");
+        }
         "menu-background.mp4" | "menu-background.webm" => {
             let mime = if relative.ends_with(".mp4") {
                 "video/mp4"
@@ -324,6 +329,16 @@ fn safe_asset(name: &str) -> bool {
             || name.ends_with(".wasm")
             || name.ends_with(".json")
             || name.ends_with(".map"))
+}
+fn safe_mode_image_asset(name: &str) -> bool {
+    let Some(file) = name.strip_prefix("runtime-images/") else {
+        return false;
+    };
+    let Some(stem) = file.strip_suffix(".png") else {
+        return false;
+    };
+    (1..=64).contains(&stem.len())
+        && stem.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
 }
 fn safe_import_asset(name: &str) -> bool {
     !name.is_empty()
@@ -386,6 +401,22 @@ fn send(stream: &mut TcpStream, code: u16, mime: &str, payload: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_verified_mode_preview_names_can_be_served() {
+        assert!(safe_mode_image_asset("runtime-images/hunt.png"));
+        assert!(safe_mode_image_asset("runtime-images/goliathTutorialUnfocus.png"));
+        for path in [
+            "runtime-images/../other.png",
+            "runtime-images/hunt.dds",
+            "runtime-images/.png",
+            "runtime-images//hunt.png",
+            "runtime-images/hunt.png/../../secret.png",
+            "runtime-images/hunt%2Fsecret.png",
+            "foo/runtime-images/hunt.png",
+        ] {
+            assert!(!safe_mode_image_asset(path), "{path}");
+        }
+    }
     #[test]
     fn rejects_remote_or_unbounded_asset_paths() {
         assert!(safe_asset("ruffle.js"));
