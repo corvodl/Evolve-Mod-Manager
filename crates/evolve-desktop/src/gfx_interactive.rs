@@ -1758,6 +1758,7 @@ mod tests {
             serde_json::json!({"playable": false, "status": "missing videos.pak"}),
             LiveMenuLabels {
                 linked_screens: &[],
+                mode_images: &serde_json::json!({"requested": 0, "staged": 0}),
                 source: &crate::gfx_localization::menu_labels(
                     None,
                     None,
