@@ -178,11 +178,12 @@ pub fn geometry_glb_bytes_for_fbx(mesh: &RenderMesh) -> Result<Vec<u8>, GlbError
 
 fn add_static_fbx_basis(data: Vec<u8>) -> Result<Vec<u8>, GlbError> {
     if data.len() < 28 || &data[..4] != b"glTF" || &data[16..20] != b"JSON" {
-        return Err(GlbError::Invalid("Not a valid static GLB intermediate".into()));
+        return Err(GlbError::Invalid(
+            "Not a valid static GLB intermediate".into(),
+        ));
     }
-    let json_len = u32::from_le_bytes(
-        data[12..16].try_into().map_err(|_| GlbError::Limits)?,
-    ) as usize;
+    let json_len =
+        u32::from_le_bytes(data[12..16].try_into().map_err(|_| GlbError::Limits)?) as usize;
     let json_end = 20usize.checked_add(json_len).ok_or(GlbError::Limits)?;
     let bin_len_at = json_end;
     let bin_header_end = json_end.checked_add(8).ok_or(GlbError::Limits)?;
@@ -194,11 +195,16 @@ fn add_static_fbx_basis(data: Vec<u8>) -> Result<Vec<u8>, GlbError> {
             .try_into()
             .map_err(|_| GlbError::Limits)?,
     ) as usize;
-    if data.len() != bin_header_end.checked_add(bin_len).ok_or(GlbError::Limits)? {
-        return Err(GlbError::Invalid("Static GLB has invalid BIN boundaries".into()));
+    if data.len()
+        != bin_header_end
+            .checked_add(bin_len)
+            .ok_or(GlbError::Limits)?
+    {
+        return Err(GlbError::Invalid(
+            "Static GLB has invalid BIN boundaries".into(),
+        ));
     }
-    let mut doc: serde_json::Value =
-        serde_json::from_slice(&data[20..json_end])?;
+    let mut doc: serde_json::Value = serde_json::from_slice(&data[20..json_end])?;
     let scene = doc["scene"]
         .as_u64()
         .ok_or_else(|| GlbError::Invalid("Static GLB lacks a default scene".into()))?
@@ -218,7 +224,9 @@ fn add_static_fbx_basis(data: Vec<u8>) -> Result<Vec<u8>, GlbError> {
         .iter()
         .any(|root| root.as_u64().is_none_or(|id| id as usize >= basis_index))
     {
-        return Err(GlbError::Invalid("Static GLB references an invalid scene root".into()));
+        return Err(GlbError::Invalid(
+            "Static GLB references an invalid scene root".into(),
+        ));
     }
     nodes.push(json!({
         "name":"CryEngine Z-up to glTF Y-up (static FBX)",
@@ -437,8 +445,7 @@ mod tests {
         let corrected = geometry_glb_bytes_for_fbx(&mesh()).unwrap();
         let raw_size = u32::from_le_bytes(raw[12..16].try_into().unwrap()) as usize;
         let new_size = u32::from_le_bytes(corrected[12..16].try_into().unwrap()) as usize;
-        let original: serde_json::Value =
-            serde_json::from_slice(&raw[20..20 + raw_size]).unwrap();
+        let original: serde_json::Value = serde_json::from_slice(&raw[20..20 + raw_size]).unwrap();
         let adjusted: serde_json::Value =
             serde_json::from_slice(&corrected[20..20 + new_size]).unwrap();
         assert_eq!(original["scenes"][0]["nodes"], json!([0]));
@@ -470,8 +477,7 @@ mod tests {
         let corrected = geometry_glb_bytes_for_fbx(&mesh()).unwrap();
         let source_len = u32::from_le_bytes(raw[12..16].try_into().unwrap()) as usize;
         let target_len = u32::from_le_bytes(corrected[12..16].try_into().unwrap()) as usize;
-        let source: serde_json::Value =
-            serde_json::from_slice(&raw[20..20 + source_len]).unwrap();
+        let source: serde_json::Value = serde_json::from_slice(&raw[20..20 + source_len]).unwrap();
         let target: serde_json::Value =
             serde_json::from_slice(&corrected[20..20 + target_len]).unwrap();
         // The level assembler adds its own basis; it must still receive
