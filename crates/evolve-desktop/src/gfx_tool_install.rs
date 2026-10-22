@@ -218,6 +218,14 @@ pub fn install(tool: Tool) -> Result<PathBuf, String> {
     if !cfg!(target_os = "windows") {
         return Err("In-app GFX tool installation is only supported on Windows".into());
     }
+    if tool == Tool::RuffleWeb {
+        // The installed app normally lives under Program Files; users must be
+        // able to repair a missing Web runtime without elevating the manager.
+        // SHA-pinned Web assets are installed into this user's settings root.
+        let settings = crate::settings::settings_path().map_err(|e| e.to_string())?;
+        let profile = settings.parent().ok_or("No user integration directory")?;
+        return install_at(tool, profile);
+    }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let folder = exe
         .parent()
