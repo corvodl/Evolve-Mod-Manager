@@ -1577,7 +1577,11 @@ fn write_live_menu_report(
 
 /// A persistent browser-based Ruffle preview. All selected controls use
 /// an allowlisted live ExternalInterface callback instead of patch/restart.
-pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPreview, String> {
+pub fn launch_live(
+    session: &Session,
+    web_runtime: &str,
+    ffmpeg_executable: &str,
+) -> Result<RunningPreview, String> {
     let scratch = tempfile::Builder::new()
         .prefix("evolve-gfx-live-")
         .tempdir()
@@ -1635,6 +1639,7 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
             session.library_root.as_deref(),
             session.source_build.as_deref(),
             scratch.path(),
+            ffmpeg_executable,
         )
     } else {
         serde_json::json!({"playable": false, "status": "Not the Stage 2 main menu"})
