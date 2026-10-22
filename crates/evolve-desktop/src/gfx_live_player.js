@@ -108,7 +108,10 @@
         for (const font of (Array.isArray(report.fonts) ? report.fonts : [])) {
             messages.push("Font library " + String(font.movie) + ": "
                 + (font.staged ? "original source staged" : "original source missing")
-                + " (" + String(font.source) + "). Rendering compatibility unverified.");
+                + " · " + (Number.isInteger(font.define_font_tags)
+                    ? String(font.define_font_tags) + " original font definitions"
+                    : "font definitions not verified")
+                + " (" + String(font.source) + "). Binding and glyph selection unverified.");
         }
         const video = report.background_video || {};
         messages.push("Main-menu motion background: " +
