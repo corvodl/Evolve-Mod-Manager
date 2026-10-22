@@ -389,6 +389,56 @@ mod tests {
     }
 
     #[test]
+    fn external_normals_are_published_next_to_fbx() {
+        let source = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let source_fbx = source.path().join("emet.fbx");
+        let target_fbx = target.path().join("emet.fbx");
+        let mut body = FBX_HEADER.to_vec();
+        body.extend(std::iter::repeat_n(0u8, 512));
+        fs::write(&source_fbx, &body).unwrap();
+        let stage_textures = source.path().join("textures");
+        fs::create_dir(&stage_textures).unwrap();
+        let name = "emet_normal_123456789abc.png";
+        let png = b"\x89PNG\r\n\x1a\nsource-normal-pixels";
+        fs::write(stage_textures.join(name), png).unwrap();
+        assert_eq!(
+            publish_verified_binary_fbx_with_normals(&source_fbx, &target_fbx, true)
+                .unwrap(),
+            body.len() as u64
+        );
+        assert_eq!(fs::read(target_fbx).unwrap(), body);
+        assert_eq!(fs::read(target.path().join("textures").join(name)).unwrap(), png);
+    }
+
+    #[test]
+    fn external_normal_collision_rejects_without_publishing() {
+        let source = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let source_fbx = source.path().join("emet.fbx");
+        let target_fbx = target.path().join("emet.fbx");
+        let mut body = FBX_HEADER.to_vec();
+        body.extend(std::iter::repeat_n(0u8, 512));
+        fs::write(&source_fbx, body).unwrap();
+        let name = "emet_normal_123456789abc.png";
+        fs::create_dir(source.path().join("textures")).unwrap();
+        fs::create_dir(target.path().join("textures")).unwrap();
+        fs::write(
+            source.path().join("textures").join(name),
+            b"\x89PNG\r\n\x1a\nsource",
+        ).unwrap();
+        fs::write(target.path().join("textures").join(name), b"conflict").unwrap();
+        assert!(publish_verified_binary_fbx_with_normals(
+            &source_fbx,
+            &target_fbx,
+            true,
+        )
+        .is_err());
+        assert!(!target_fbx.exists());
+        assert_eq!(fs::read(target.path().join("textures").join(name)).unwrap(), b"conflict");
+    }
+
+    #[test]
     fn verified_fbx_publisher_refuses_truncated_header() {
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("invalid.fbx");
