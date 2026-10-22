@@ -374,7 +374,7 @@ pub fn prepare_preview(
     }
     let mut converted = HashMap::<u16, Vec<u8>>::new();
     let mut cached = HashMap::<String, RgbaImage>::new();
-    let mut total_pixels = 0;
+    let mut total_pixels = 0u64;
     let mut encoded_bytes = 0usize;
     for tile in mappings {
         if converted.len() >= MAX_BITMAPS {
