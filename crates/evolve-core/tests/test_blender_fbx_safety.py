@@ -109,7 +109,7 @@ class FBXSafetyTests(unittest.TestCase):
             source = "C:/Temporary/export/textures/" + filename
             image_nodes = tuple(
                 obj(kind, id_, subtype, [
-                    node("FileName", string(source), 1),
+                    node("Filename" if kind == "Video" else "FileName", string(source), 1),
                     node("RelativeFilename", string(source), 1),
                 ])
                 for kind, id_, subtype in [
@@ -124,7 +124,7 @@ class FBXSafetyTests(unittest.TestCase):
             for item in objs.children:
                 if item.name in (b"Video", b"Texture"):
                     self.assertEqual(
-                        _properties(item.get(b"FileName"))[0],
+                        _properties(item.get(b"Filename") or item.get(b"FileName"))[0],
                         ("textures/" + filename).encode(),
                     )
                     self.assertEqual(
