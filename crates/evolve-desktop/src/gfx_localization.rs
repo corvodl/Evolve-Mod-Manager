@@ -1,7 +1,8 @@
 //! Exact-build CryEngine text_ui_*.xml lookup for *preview diagnostics*.
 //! Never substitutes an English guess for an unavailable game string or
 //! writes back to a PAK, movie, or imported Asset Library.
-use evolve_core::{LibraryReferenceStatus, imported_library, resolve_imported_reference};
+use evolve_core::library_catalog::resolve_imported_reference_in_archive;
+use evolve_core::{LibraryReferenceStatus, imported_library};
 use quick_xml::{
     Reader,
     escape::unescape,
@@ -314,10 +315,17 @@ fn load_sheets(
     wanted: &HashSet<String>,
 ) -> Result<LocalizationSheets, String> {
     let library = imported_library(root).map_err(|e| e.to_string())?;
-    let mut paths = HashSet::<String>::new();
+    // Preserve the source archive identity. Looking up the member path
+    // globally can report Ambiguous when multiple same-build language PAKs
+    // contain text_ui_menus.xml, even though each archive itself is verified.
+    let mut paths = HashSet::<(String, String)>::new();
+    let mut usa_en_found = false;
     for archive in &library.archives {
         if !archive.builds.iter().any(|label| label == build) {
             continue;
+        }
+        if archive.name.eq_ignore_ascii_case("USA-EN_xml.pak") {
+            usa_en_found = true;
         }
         let manifest_path = Path::new(&archive.directory).join("asset-library.json");
         let data = regular(&manifest_path, MAX_MANIFEST)?;
@@ -333,9 +341,14 @@ fn load_sheets(
             if let Some(name) = entry["path"].as_str()
                 && relevant_path(name, &archive.name, language)
             {
-                paths.insert(name.to_owned());
+                paths.insert((archive.name.clone(), name.to_owned()));
             }
         }
+    }
+    if paths.is_empty() && usa_en_found {
+        return Err(
+            "USA-EN_xml.pak is assigned to this build, but its extracted manifest has no supported text_ui_*.xml entries".into(),
+        );
     }
     if paths.len() > MAX_FILES {
         return Err("Too many same-build localization sheets".into());
@@ -345,11 +358,26 @@ fn load_sheets(
     let mut values = HashMap::<String, String>::new();
     let mut duplicates = HashSet::<String>::new();
     let mut sources = Vec::<String>::new();
-    for path in paths {
-        let LibraryReferenceStatus::Found(info) =
-            resolve_imported_reference(root, &path, Some(build)).map_err(|e| e.to_string())?
-        else {
-            continue;
+    for (archive_name, path) in paths {
+        let info = match resolve_imported_reference_in_archive(
+            root,
+            &path,
+            build,
+            &archive_name,
+        )
+        .map_err(|e| format!("{archive_name}: {path}: {e}"))?
+        {
+            LibraryReferenceStatus::Found(info) => info,
+            LibraryReferenceStatus::Missing => {
+                return Err(format!(
+                    "Selected-build localization entry is missing or modified: {archive_name}: {path}"
+                ));
+            }
+            LibraryReferenceStatus::Ambiguous(_) => {
+                return Err(format!(
+                    "Multiple matching localization archives in this build: {archive_name}: {path}"
+                ));
+            }
         };
         let bytes = regular(Path::new(&info.absolute_path), MAX_XML)?;
         let table = parse_sheet(&bytes, wanted)?;
