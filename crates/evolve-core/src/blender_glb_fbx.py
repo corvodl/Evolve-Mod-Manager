@@ -90,9 +90,9 @@ def run():
     if not destination.is_file() or destination.stat().st_size < 256:
         raise RuntimeError("Blender did not create a valid FBX")
     optimized = optimize_binary_fbx(destination, embed_textures=embed_textures)
-    if not embed_textures and source_normal_maps:
-        if optimized["external_normal_maps"] != len(source_normal_maps):
-            raise RuntimeError("FBX lost one or more external normal-map references")
+    if not embed_textures:
+        if optimized["embedded_normal_maps"] != len(source_normal_maps):
+            raise RuntimeError("FBX lost one or more embedded normal maps")
     if source_material_ids or native_bounds is not None:
         bpy.ops.wm.read_factory_settings(use_empty=True)
         bpy.ops.import_scene.fbx(filepath=str(destination))
