@@ -74,6 +74,31 @@ Font definition verification and dynamic ActionScript `@ui_` localization
 are independent pending tasks; 0/6 in-movie static fields does **not**
 verify that the native localization engine was successfully initialized.
 
+## October 22 — Nightly 26 video manifest inspection and bounded bitmap status
+
+Nightly 26 restored **295 original DDS tiles**, up from 119, and now
+reports **116 remaining tile/pixel-budget skips**, 0 missing source DDS tiles
+and 0 missing imported SWF/GFX movies. A further pixel-budget increase
+requires real-world memory/performance measurement; these are not missing
+textures and should not be counted as lookup failures.
+
+The original `videos.pak` is confirmed by the preview to belong to
+`Modded Stage 2`, but **none of the eight assumed video mount paths**
+yield a verified `main_menu.usm`. Its actual member names are unknown.
+The next preview inspects only the selected build's exact `videos.pak`
+using the existing read-only Asset Library inventory validation. A
+unique, verified file whose **filename exactly matches**
+`main_menu.usm` can be resolved even beneath a deeper, unanticipated
+parent directory. If no such file exists, the diagnostic reports the
+**actual verified video member names** (up to 8) and count, rather than
+claiming the archive is not imported. It must not infer from similar
+filenames which different movie the original menu uses.
+
+Even when found, USM still requires an explicitly configured compatible
+FFmpeg conversion or a valid user-provided preview MP4/WebM. No original
+assets are modified or embedded. Source-defined native video playback,
+runtime AVM1 localization and remaining visual effects remain unverified.
+
 ## October 22 — source-verified videos.pak background discovery
 
 The main-menu browser background remains an optional **original
