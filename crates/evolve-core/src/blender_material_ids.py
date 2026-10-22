@@ -7,8 +7,11 @@ Every original material-to-face assignment is audited after FBX round-trip.
 """
 from collections import Counter
 from collections import defaultdict
+import json
 import math
 import re
+import struct
+from pathlib import Path
 
 _SOURCE = re.compile(r"^CryEngine slot ([0-9]{3}) - ")
 _TAG = re.compile(r"^EVOLVE_MID_P([0-9]{3})_S([0-9]{3})__")
@@ -17,6 +20,49 @@ _TAG = re.compile(r"^EVOLVE_MID_P([0-9]{3})_S([0-9]{3})__")
 def _check(condition, message):
     if not condition:
         raise RuntimeError("CryEngine material IDs: " + message)
+
+
+def material_records_from_glb(path):
+    """Recover authoritative source IDs from tagged glTF material primitives.
+
+    Untagged generic GLBs are not assumed to be CryEngine subset exports.
+    Partially tagged meshes fail closed rather than assigning guessed IDs.
+    """
+    data = Path(path).read_bytes()
+    _check(len(data) >= 28 and data[:4] == b"glTF"
+           and struct.unpack_from("<I", data, 4)[0] == 2,
+           "invalid source GLB")
+    length = struct.unpack_from("<I", data, 12)[0]
+    _check(data[16:20] == b"JSON" and 20 + length <= len(data),
+           "invalid source GLB material document")
+    document = json.loads(data[20:20+length])
+    mats = document.get("materials", [])
+    meshes = document.get("meshes", [])
+    tagged, untagged = 0, 0
+    totals = Counter()
+    for mesh in meshes:
+        for primitive in mesh.get("primitives", []):
+            index = primitive.get("material")
+            material = mats[index] if type(index) is int and 0 <= index < len(mats) else {}
+            identity = _material_id(material.get("name", ""))
+            if identity is None:
+                untagged += 1
+                continue
+            accessor = primitive.get("indices")
+            _check(type(accessor) is int and 0 <= accessor < len(document.get("accessors", [])),
+                   "material primitive has no original indices")
+            count = document["accessors"][accessor].get("count")
+            _check(type(count) is int and count > 0 and count % 3 == 0,
+                   "invalid CryEngine primitive triangle count")
+            totals[identity] += count // 3
+            tagged += 1
+    _check(not (tagged and untagged),
+           "some material primitives have no verifiable source ID")
+    if not tagged:
+        return None
+    return [{"id": identity, "triangles": triangles,
+             "name": "Original CryEngine material ID " + str(identity)}
+            for identity, triangles in sorted(totals.items())]
 
 
 def parse_material_records(records):
