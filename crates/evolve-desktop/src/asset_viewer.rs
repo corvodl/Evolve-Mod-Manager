@@ -777,10 +777,8 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                         .push(text("Live mode opens a local browser window using the bundled Ruffle Web runtime. Desktop Ruffle does not support live button commands.").size(11).style(design::muted))
                         .push(
                             row![
-                                design::button("Open live preview").on_press_maybe(
-                                    (!state.gfx_busy
-                                        && !state.gfx_interactive_running.as_ref().is_some_and(|p| p.is_running()))
-                                    .then_some(Message::GfxRunInteractive)
+                                design::button("Open / focus live preview").on_press_maybe(
+                                    (!state.gfx_busy).then_some(Message::GfxRunInteractive)
                                 ),
                                 design::button("Stop").on_press_maybe(
                                     state
