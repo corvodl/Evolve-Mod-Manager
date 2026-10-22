@@ -1643,6 +1643,8 @@ mod tests {
                 ),
                 text: &crate::gfx_menu_text::TextPatch::default(),
             },
+            &ImportedTextCounts::default(),
+            &serde_json::json!({"status":"No source rendering effects verified"}),
         )
         .unwrap();
         let report: serde_json::Value =
