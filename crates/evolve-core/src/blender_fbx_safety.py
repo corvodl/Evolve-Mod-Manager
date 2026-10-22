@@ -502,7 +502,7 @@ def validate_external_normal_references(objects, destination):
         if image_node.name not in (b"Texture", b"Video"):
             continue
         name_fields = [n for n in image_node.children
-                       if n.name in (b"FileName", b"RelativeFilename")]
+                       if n.name in (b"FileName", b"Filename", b"RelativeFilename")]
         if not name_fields:
             raise FBXValidationError("External FBX image missing filename")
         for field in name_fields:
