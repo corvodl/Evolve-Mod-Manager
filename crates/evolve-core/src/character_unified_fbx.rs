@@ -1840,7 +1840,7 @@ pub fn export_unified_cdf_fbx_options_with_glow(
                     "Blender character validation failed: {status}. Blender diagnostic:\n{}",
                     crate::fbx::blender_diagnostic_tail(&log)
                 ));
-            },
+            }
             None if start.elapsed() > Duration::from_secs(1800) => {
                 let _ = child.kill();
                 let _ = child.wait();
