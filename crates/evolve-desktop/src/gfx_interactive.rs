@@ -743,6 +743,7 @@ fn stage_live_import_graph(
         .map(|name| (name, 0usize))
         .collect::<VecDeque<_>>();
     let mut visited = HashSet::new();
+    let mut imported = Vec::<String>::new();
     let (mut restored, mut skipped, mut missing) = (0usize, 0usize, 0usize);
     while let Some((name, depth)) = pending.pop_front() {
         if !visited.insert(name.to_ascii_lowercase()) {
@@ -751,6 +752,7 @@ fn stage_live_import_graph(
         if visited.len() > MAX_IMPORTS {
             return Err("Original GFX import graph exceeds 128 linked movies".into());
         }
+        imported.push(name.clone());
         match stage_import(session, &session.relative, &name, output) {
             Ok(Some((images, unresolved))) => {
                 restored += images;
@@ -804,7 +806,6 @@ fn stage_live_import_graph(
             pending.push_back((child, depth + 1));
         }
     }
-    let mut imported = visited.into_iter().collect::<Vec<_>>();
     imported.sort();
     Ok((restored, skipped, missing, imported))
 }
