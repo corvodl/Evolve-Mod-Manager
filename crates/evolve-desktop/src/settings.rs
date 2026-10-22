@@ -47,6 +47,8 @@ pub struct Preferences {
     /// Optional self-hosted Ruffle Web ruffle.js for persistent live GFX controls.
     /// Separate from the standalone desktop ruffle.exe executable.
     pub ruffle_web_runtime: String,
+    /// Optional user-selected FFmpeg executable for source-verified USM menu video previews.
+    pub gfx_ffmpeg_executable: String,
     pub experimental_updates: bool,
     /// Separate opt-in for prerelease Nightly builds.
     pub nightly_updates: bool,
@@ -94,6 +96,7 @@ impl Default for Preferences {
             ffdec_executable: String::new(),
             ruffle_executable: String::new(),
             ruffle_web_runtime: String::new(),
+            gfx_ffmpeg_executable: String::new(),
             experimental_updates: false,
             nightly_updates: env!("CARGO_PKG_VERSION").contains("-nightly."),
             automatic_update_checks: true,
@@ -220,6 +223,7 @@ impl Preferences {
             &self.ffdec_executable,
             &self.ruffle_executable,
             &self.ruffle_web_runtime,
+            &self.gfx_ffmpeg_executable,
         ] {
             if path.len() > 4096 || path.contains('\0') {
                 return Err(SettingsError::InvalidValue);
