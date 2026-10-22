@@ -47,6 +47,40 @@ and `background_video.status`, verify the source
 same frame against live CryEngine output. Preserve the original sign-in
 text, never invent a translation, and keep the GFX bytes read-only.
 
+## October 22 — inspected USA-EN_xml.pak: original English menu text
+
+The provided `USA-EN_xml.pak` is a **standard unencrypted ZIP PAK**, with
+61 entries including `files/text_ui_menus.xml` (815,654 bytes),
+`files/text_credits.xml`, and the original root-level
+`gfxfontlib_locfont.gfx` and `gfxfontlib_glyphs_locfont.gfx`.
+The UI sheet contains 8,282 original named strings.
+
+Unlike spreadsheet-localization releases, this Stage 2 archive stores
+`<Strings><Category><String name="ui_..." value="..."/></Category></Strings>`.
+The existing reader previously accepted only SpreadsheetML
+KEY/TRANSLATED TEXT rows and the name `English_XML.pak`; the update accepts
+the original `USA-EN_xml.pak` format and both its root and `files/`-prefixed
+manifest member paths, without relaxing exact-build source selection.
+
+Verified examples from the original archive:
+`ui_SigningInPrompt = SIGNING IN. PLEASE WAIT...`,
+`ui_mp_OnlineGame = PLAY`, `ui_Training = TRAINING`,
+`ui_Options = OPTIONS`, `ui_ChallengesMainMenuButton = CHALLENGES`,
+`ui_goliath_tutorial = GOLIATH TUTORIAL`.
+
+Only the two authored original locfont GFX imports may fall back to the
+selected build's USA-EN archive root. Other missing/ambiguous dependencies
+remain blocked, as do cross-build references. Nothing from the source PAK
+is copied into the repository, changed, or hardcoded as a translation.
+
+**User procedure:** import the unchanged `USA-EN_xml.pak` into the
+**Modded Stage 2** Asset Library build and reopen the GFX preview.
+Expect source-derived inspector translations and any matching authored
+SWF DefineEditText initial values to resolve from XML. Text dynamically
+assigned later by ActionScript still requires a separately verified
+Ruffle/Scaleform runtime localization mechanism. Staging the original
+font library does not by itself prove correct font binding or glyphs.
+
 ## October 22 — linked original GFX screen previews and silent CLI tools
 
 - A same-build screen catalog now tries exact, unambiguous `Libs/UI/*.gfx`

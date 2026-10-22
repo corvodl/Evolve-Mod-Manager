@@ -3,6 +3,7 @@
 //! movie references are rendered by FFDec only when the selected Asset Library
 //! has an exact, manifest-verified file in the requested build.
 use evolve_core::gfx::MAX_SOURCE;
+use evolve_core::library_catalog::resolve_imported_reference_in_archive;
 use evolve_core::{LibraryReferenceStatus, resolve_imported_reference};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -132,6 +133,44 @@ pub fn stage_imports(
                 origin = "Library lookup unavailable without a verified source build".into();
             }
         }
+        // The official USA-EN_xml.pak stores its localization font libraries
+        // as root entries, not in Libs/UI. Only these two authored font
+        // imports may use an exact-build archive-scoped root fallback.
+        // Never override a same-build ambiguity or search an unrelated PAK.
+        if payload.is_none()
+            && !origin.starts_with("Ambiguous import")
+            && let (Some(root), Some(label)) = (library_root, build)
+        {
+            let font_name = Path::new(import).file_name().and_then(|n| n.to_str());
+            if let Some(font) = font_name.filter(|name| {
+                name.eq_ignore_ascii_case("gfxfontlib_locfont.gfx")
+                    || name.eq_ignore_ascii_case("gfxfontlib_glyphs_locfont.gfx")
+            }) {
+                for candidate in [font.to_owned(), format!("files/{font}")] {
+                    match resolve_imported_reference_in_archive(
+                        root,
+                        &candidate,
+                        label,
+                        "USA-EN_xml.pak",
+                    )
+                    .map_err(|e| e.to_string())?
+                    {
+                        LibraryReferenceStatus::Found(hit) => {
+                            if let Ok(data) = verified(Path::new(&hit.absolute_path), None) {
+                                payload = Some(data);
+                                origin = format!("{label} · USA-EN_xml.pak (original font)");
+                                break;
+                            }
+                        }
+                        LibraryReferenceStatus::Ambiguous(_) => {
+                            origin = format!("Ambiguous USA-EN font source ({label})");
+                            break;
+                        }
+                        LibraryReferenceStatus::Missing => {}
+                    }
+                }
+            }
+        }
         let Some(data) = payload else {
             diagnostics.push(Dependency {
                 reference: import.clone(),
@@ -168,6 +207,76 @@ mod tests {
         assert_eq!(&swf_import(&bytes, "effects.swf")[..3], b"FWS");
         assert_eq!(&bytes[..3], b"GFX");
         assert_eq!(&swf_import(&bytes, "effects.gfx")[..3], b"GFX");
+    }
+    #[test]
+    fn source_qualified_usa_en_font_import_preserves_verified_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        let folder = library.join("USA-EN_xml.pak__11111111111111111111");
+        fs::create_dir_all(folder.join("files/files")).unwrap();
+        let original_font = b"GFX__original_font_movie";
+        fs::write(
+            folder.join("files/files/gfxfontlib_locfont.gfx"),
+            original_font,
+        )
+        .unwrap();
+        fs::write(
+            folder.join("asset-library.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "name": "USA-EN_xml.pak",
+                "source": "/verified/USA-EN_xml.pak",
+                "entries": [{
+                    "path": "files/gfxfontlib_locfont.gfx",
+                    "bytes": original_font.len()
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            library.join("build-collections.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "builds": {
+                    "stage-two": {
+                        "label": "Modded Stage 2",
+                        "members": {"11111111111111111111": {}}
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let source = temp.path().join("main_menu.gfx");
+        fs::write(&source, b"GFX__source_menu___").unwrap();
+        let scratch = temp.path().join("preview");
+        fs::create_dir(&scratch).unwrap();
+        let found = stage_imports(
+            &["gfxfontlib_locfont.gfx".to_owned()],
+            "Libs/UI/main_menu.gfx",
+            &source,
+            &scratch,
+            Some(&library),
+            Some("Modded Stage 2"),
+        )
+        .unwrap();
+        assert_eq!(found.len(), 1);
+        assert!(found[0].outcome.contains("USA-EN_xml.pak"));
+        assert_eq!(
+            fs::read(scratch.join("gfxfontlib_locfont.gfx")).unwrap(),
+            original_font
+        );
+        let other = stage_imports(
+            &["gfxfontlib_locfont.gfx".to_owned()],
+            "Libs/UI/main_menu.gfx",
+            &source,
+            &scratch,
+            Some(&library),
+            Some("Legacy 2012"),
+        )
+        .unwrap();
+        assert!(!other[0].outcome.contains("original font"));
     }
     #[test]
     fn refuses_unsafe_imports_and_fails_closed_without_build() {
