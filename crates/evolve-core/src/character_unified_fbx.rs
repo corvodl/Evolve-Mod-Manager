@@ -1034,15 +1034,10 @@ pub(crate) fn static_model_material_glb(
     if subsets.is_empty() || subsets.iter().any(|&(_, _, id)| id == 255 || id >= 128) {
         return Err("Source model has unresolved material IDs".into());
     }
-    let authored = exact_multi_slot_materials_with_scope(
-        &root,
-        source,
-        inventory,
-        None,
-        scope.as_ref(),
-    )?;
-    let original_table = has_original_mesh_subset_table(&original_bytes)
-        .map_err(|e| e.to_string())?;
+    let authored =
+        exact_multi_slot_materials_with_scope(&root, source, inventory, None, scope.as_ref())?;
+    let original_table =
+        has_original_mesh_subset_table(&original_bytes).map_err(|e| e.to_string())?;
     if !original_table && authored.as_ref().is_some_and(|slots| slots.len() > 1) {
         return Err("Source has a multi-leaf MTL but no original material subset table".into());
     }
@@ -1098,9 +1093,7 @@ pub(crate) fn static_cdf_material_glb(
     }
     for (part_index, part) in report.geometry_parts.iter().enumerate() {
         let first = cursor;
-        while cursor < report.source_parts.len()
-            && report.source_parts[cursor].name == part.name
-        {
+        while cursor < report.source_parts.len() && report.source_parts[cursor].name == part.name {
             cursor += 1;
         }
         let authored = &report.source_parts[first..cursor];
@@ -1111,7 +1104,10 @@ pub(crate) fn static_cdf_material_glb(
             ));
         }
         let override_material = authored[0].material_hint.as_deref();
-        if authored.iter().any(|entry| entry.material_hint.as_deref() != override_material) {
+        if authored
+            .iter()
+            .any(|entry| entry.material_hint.as_deref() != override_material)
+        {
             return Err(format!(
                 "CDF part {} has conflicting original material overrides",
                 part.name
@@ -1125,8 +1121,8 @@ pub(crate) fn static_cdf_material_glb(
             scope.as_ref(),
         )?;
         let raw = fs::read(&part.source).map_err(|e| e.to_string())?;
-        let original_table = has_original_mesh_subset_table(&raw)
-            .map_err(|e| format!("{}: {e}", part.name))?;
+        let original_table =
+            has_original_mesh_subset_table(&raw).map_err(|e| format!("{}: {e}", part.name))?;
         if !original_table && original.as_ref().is_some_and(|list| list.len() > 1) {
             return Err(format!(
                 "CDF part {} has a multi-leaf original MTL without a source subset table",
@@ -1138,10 +1134,11 @@ pub(crate) fn static_cdf_material_glb(
             .map(|entry| entry.material_slot)
             .max()
             .ok_or("CDF source part lost its material slots")?;
-        if max_id >= 128
-            || authored.iter().any(|entry| entry.material_slot == 255)
-        {
-            return Err(format!("CDF part {} has an unresolved material ID", part.name));
+        if max_id >= 128 || authored.iter().any(|entry| entry.material_slot == 255) {
+            return Err(format!(
+                "CDF part {} has an unresolved material ID",
+                part.name
+            ));
         }
         let mut leaves = if let Some(leaves) = original {
             if max_id as usize >= leaves.len() {
@@ -1161,11 +1158,14 @@ pub(crate) fn static_cdf_material_glb(
                 })
                 .collect::<Vec<_>>()
         };
-        if slots.len().checked_add(leaves.len()).is_none_or(|n| n > 128) {
+        if slots
+            .len()
+            .checked_add(leaves.len())
+            .is_none_or(|n| n > 128)
+        {
             return Err("CDF has more than 128 source material leaves".into());
         }
-        let offset = u32::try_from(slots.len())
-            .map_err(|_| "CDF material offset overflow")?;
+        let offset = u32::try_from(slots.len()).map_err(|_| "CDF material offset overflow")?;
         for (id, leaf) in leaves.iter_mut().enumerate() {
             let suffix = leaf.name.chars().take(90).collect::<String>();
             leaf.name = format!(
@@ -1205,13 +1205,11 @@ pub(crate) fn static_cdf_material_glb(
         }
         slots.extend(leaves);
     }
-    if cursor != report.source_parts.len()
-        || expected_index as usize != mesh.indices.len()
-    {
+    if cursor != report.source_parts.len() || expected_index as usize != mesh.indices.len() {
         return Err("CDF original material IDs do not cover all source faces".into());
     }
-    let base = crate::glb::geometry_glb_bytes_for_fbx(mesh)
-        .map_err(|e| format!("CDF source GLB: {e}"))?;
+    let base =
+        crate::glb::geometry_glb_bytes_for_fbx(mesh).map_err(|e| format!("CDF source GLB: {e}"))?;
     embed_original_material_slots_glb(&base, &subsets, &slots)
         .map_err(|e| format!("CDF original material/normal mapping: {e}"))
 }
