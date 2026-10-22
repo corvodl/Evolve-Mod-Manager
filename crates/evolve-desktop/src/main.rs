@@ -27,6 +27,7 @@ mod gfx_menu_text;
 mod gfx_menu_video;
 mod gfx_mode_images;
 mod gfx_tool_install;
+mod guided_modding;
 mod launcher_bridge;
 mod level_workspace;
 mod menu_popup;
@@ -373,6 +374,8 @@ struct State {
     modding_projects: Option<Vec<ProjectRow>>,
     modding_selected: Option<usize>,
     modding_filter: String,
+    modding_kind: Option<evolve_core::mod_safety::ModKind>,
+    guided_editor: guided_modding::Editor,
     modding_page: usize,
     modding_changes_page: usize,
     editor_replace_source: String,
@@ -1402,6 +1405,8 @@ enum Message {
     ModdingBrowsePaks,
     ModdingSelectArchive(usize),
     ModdingOpenProject,
+    ModdingKind(Option<evolve_core::mod_safety::ModKind>),
+    GuidedEdit(guided_modding::Action),
     ModdingReviewChanges,
     ModdingBuild,
     ModdingUnpackPak,
@@ -2542,6 +2547,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     PathBuf::from(&state.editor_replace_source),
                 ),
             );
+        }
+        Message::GuidedEdit(action) => return guided_modding::update(state, action),
+        Message::ModdingKind(kind) => {
+            state.modding_kind = kind;
+            state.modding_page = 0;
         }
         Message::ModdingOpenProject => {
             if state.busy {
@@ -5942,6 +5952,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .map_or(0, |i| i / modding_page::PAGE);
                     state.modding_changes_page = 0;
                     state.project_selection.clear();
+                    if state.guided_editor.open {
+                        let models = state.guided_editor.models;
+                        return guided_modding::update(state, guided_modding::Action::Open(models));
+                    }
                     if let Some(path) = focus {
                         state.modding_open_editor_when_scanned = true;
                         return begin_scan(state, path.join("files"));
@@ -5996,6 +6010,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     refresh_library_matches(state);
                     state.page = Some(Page::AssetLibrary);
                     persist_preferences(state);
+                    if state.guided_editor.open {
+                        state.page = Some(Page::Files);
+                        let models = state.guided_editor.models;
+                        return guided_modding::update(state, guided_modding::Action::Open(models));
+                    }
                 }
                 Ok(Completed::ImportedPakFiles(inventory)) => {
                     state.viewer_queued_preview = None;
