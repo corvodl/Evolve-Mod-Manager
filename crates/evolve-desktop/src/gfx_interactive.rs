@@ -974,10 +974,7 @@ fn stage_linked_screens(session: &Session, scratch: &Path) -> Vec<serde_json::Va
         };
         // A linked screen gets its own scratch hierarchy so its original
         // relative ImportAssets paths cannot collide with main_menu.gfx.
-        let Some(base) = scratch.join("screens").join(id).parent().map(Path::to_path_buf) else {
-            continue;
-        };
-        let destination = base.join(id);
+        let destination = scratch.join("screens").join(id);
         let screen = match crate::gfx_editor::create(
             PathBuf::from(found.absolute_path),
             virtual_path.clone(),
@@ -1741,6 +1738,7 @@ mod tests {
             &[PreviewPreset::Back, PreviewPreset::HideSigningIn],
             &["gfxfontlib_locfont.gfx".into()],
             serde_json::json!({"playable": false, "status": "missing videos.pak"}),
+            &[],
             LiveMenuLabels {
                 source: &crate::gfx_localization::menu_labels(
                     None,
@@ -1757,6 +1755,7 @@ mod tests {
             serde_json::from_slice(&fs::read(folder.path().join("preview-menu.json")).unwrap())
                 .unwrap();
         assert_eq!(report["commands"][0]["label"], "@ui_STARTGAME");
+        assert!(report["linked_screens"].as_array().unwrap().is_empty());
         assert_eq!(report["background_video"]["playable"], false);
         assert_eq!(report["authored_flash_text"]["localized"], 0);
         assert_eq!(report["localization"]["unresolved"][0], "ui_startgame");
