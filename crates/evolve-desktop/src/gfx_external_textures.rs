@@ -726,7 +726,8 @@ pub(crate) fn route_mode_image_loadclip_urls(swf: &[u8]) -> Result<(Vec<u8>, usi
     if output.len() != swf.len() {
         return Err("Source image URL rewrite unexpectedly changed SWF length".into());
     }
-    output[4..8].copy_from_slice(&(output.len() as u32).to_le_bytes());
+    let final_length = output.len() as u32;
+    output[4..8].copy_from_slice(&final_length.to_le_bytes());
     Ok((output, rewritten))
 }
 
@@ -744,7 +745,8 @@ mod tests {
         encode_tag(59, &init_action, &mut original);
         encode_tag(1, &[], &mut original);
         encode_tag(0, &[], &mut original);
-        original[4..8].copy_from_slice(&(original.len() as u32).to_le_bytes());
+        let length = original.len() as u32;
+        original[4..8].copy_from_slice(&length.to_le_bytes());
         let pristine = original.clone();
         let (patched, count) = route_mode_image_loadclip_urls(&original).unwrap();
         assert_eq!(count, 1);
@@ -767,7 +769,8 @@ mod tests {
         encode_tag(59, b"\x01\x00DifferentClass\0loadBitmap\0img://\0", &mut source);
         encode_tag(1, &[], &mut source);
         encode_tag(0, &[], &mut source);
-        source[4..8].copy_from_slice(&(source.len() as u32).to_le_bytes());
+        let length = source.len() as u32;
+        source[4..8].copy_from_slice(&length.to_le_bytes());
         let (untouched, count) = route_mode_image_loadclip_urls(&source).unwrap();
         assert_eq!(count, 0);
         assert_eq!(untouched, source);
