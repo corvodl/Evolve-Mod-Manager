@@ -6,6 +6,7 @@ use crate::gfx_menu_map;
 use crate::modding_projects::{self, ProjectRow};
 use evolve_core::gfx::{GfxInfo, MAX_SOURCE, inspect_gfx};
 use evolve_core::gfx_layout::{LayoutEdit, StaticLayer, edit_first_frame, static_layers};
+use evolve_core::{LibraryReferenceStatus, imported_library, resolve_imported_reference};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -55,6 +56,46 @@ pub enum Action {
 
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+/// When the editor was opened outside the Asset Library's build-filtered view,
+/// use only the exact original GFX bytes of a verified library member to
+/// recover its build label. One ambiguous or cross-build match never becomes
+/// an inferred build; no filename-only Stage 2 fallback is permitted.
+fn verified_gfx_source_build(root: &Path, relative: &str, source_bytes: &[u8]) -> Option<String> {
+    let catalog = imported_library(root).ok()?;
+    if catalog.builds.len() > 32 {
+        return None;
+    }
+    let mut result: Option<String> = None;
+    for label in catalog.builds {
+        let Ok(LibraryReferenceStatus::Found(found)) =
+            resolve_imported_reference(root, relative, Some(&label))
+        else {
+            continue;
+        };
+        let path = Path::new(&found.absolute_path);
+        let Ok(meta) = fs::symlink_metadata(path) else {
+            continue;
+        };
+        if !meta.file_type().is_file() || meta.len() != source_bytes.len() as u64
+            || meta.len() > MAX_SOURCE as u64
+        {
+            continue;
+        }
+        let Ok(candidate) = fs::read(path) else {
+            continue;
+        };
+        if candidate == source_bytes {
+            if result.is_some() {
+                // Identical source movie assigned to multiple build labels:
+                // user must select the build explicitly.
+                return None;
+            }
+            result = Some(label);
+        }
+    }
+    result
 }
 fn regular(path: &Path, maximum: u64) -> Result<(), String> {
     let meta = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
@@ -129,6 +170,11 @@ pub fn create(
         project_allows(project, &source, &relative)?;
     }
     let (bytes, info) = read_gfx(&source)?;
+    let source_build = source_build.or_else(|| {
+        imported_library.as_deref().and_then(|root| {
+            verified_gfx_source_build(root, &relative, &bytes)
+        })
+    });
     let folder = Arc::new(
         tempfile::Builder::new()
             .prefix("evolve-private-gfx-edit-")
@@ -592,6 +638,59 @@ mod tests {
         ] {
             assert!(!valid_member(path));
         }
+    }
+    #[test]
+    fn auto_build_requires_exact_verified_bytes_and_unique_membership() {
+        let library = tempfile::tempdir().unwrap();
+        let id = "11111111111111111111";
+        let folder = library.path().join(format!("ui_data.pak__{id}"));
+        fs::create_dir_all(folder.join("files/Libs/UI")).unwrap();
+        let movie = b"GFX  original verified movie bytes";
+        fs::write(folder.join("files/Libs/UI/main_menu.gfx"), movie).unwrap();
+        fs::write(
+            folder.join("asset-library.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1, "name": "ui_data.pak", "source": "/unused",
+                "entries": [{
+                    "path": "Libs/UI/main_menu.gfx",
+                    "bytes": movie.len()
+                }]
+            })).unwrap(),
+        ).unwrap();
+        let manifest = |second: bool| serde_json::json!({
+            "version": 1,
+            "builds": {
+                "stage-two": {
+                    "label": "Stage 2",
+                    "members": {id: {}}
+                },
+                "legacy": {
+                    "label": "Legacy",
+                    "members": if second {serde_json::json!({id: {}})}
+                               else {serde_json::json!({})}
+                }
+            }
+        });
+        fs::write(
+            library.path().join("build-collections.json"),
+            serde_json::to_vec(&manifest(false)).unwrap(),
+        ).unwrap();
+        assert_eq!(
+            verified_gfx_source_build(library.path(), "Libs/UI/main_menu.gfx", movie),
+            Some("Stage 2".into())
+        );
+        assert_eq!(
+            verified_gfx_source_build(library.path(), "Libs/UI/main_menu.gfx", b"wrong"),
+            None
+        );
+        fs::write(
+            library.path().join("build-collections.json"),
+            serde_json::to_vec(&manifest(true)).unwrap(),
+        ).unwrap();
+        assert_eq!(
+            verified_gfx_source_build(library.path(), "Libs/UI/main_menu.gfx", movie),
+            None
+        );
     }
     #[test]
     fn external_ffdec_must_be_absolute_and_supported() {
