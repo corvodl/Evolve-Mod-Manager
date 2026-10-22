@@ -1527,7 +1527,11 @@ pub fn export_unified_cdf_fbx_options_with_glow(
         include_str!("blender_fbx_safety.py"),
     )
     .map_err(|e| e.to_string())?;
-    let temp_fbx = work.path().join(destination.file_name().ok_or("FBX output file name missing")?);
+    let temp_fbx = work.path().join(
+        destination
+            .file_name()
+            .ok_or("FBX output file name missing")?,
+    );
     let mut child = Command::new(blender)
         .arg("--background")
         .arg("--factory-startup")
