@@ -407,7 +407,6 @@ mod tests {
         assert!(page.contains("Live GFX Preview"));
         let callback = get("/private-token/next", Some(PreviewPreset::HideEngagement));
         assert!(callback.contains(r#""arg":false"#));
-        assert!(callback.contains("\\"arg\\":false"));
         assert!(get("/other-session/movie.swf", None).contains("404 Not Found"));
         assert!(get("/private-token/../test.swf", None).contains("400 Bad Request"));
         assert!(get("/private-token/ruffle/ruffle.js", None).contains("// bundled preview"));
