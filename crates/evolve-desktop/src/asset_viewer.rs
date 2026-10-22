@@ -750,7 +750,7 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                                     format!("{} (not registered)", preset.description())
                                 };
                                 choices_row = choices_row.push(
-                                    design::button(description)
+                                    design::button(text(description))
                                         .on_press_maybe(available.then_some(
                                             Message::GfxSelectPreviewPreset(preset))),
                                 );
