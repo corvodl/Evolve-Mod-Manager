@@ -60,7 +60,7 @@ test("only the local preview lifts the eval restriction needed by pinned Ruffle"
     assert.match(web, /script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'/);
     assert.match(web, /connect-src 'self'/);
     assert.match(web, /frame-ancestors 'none'/);
-    assert.match(web, /127\\.0\\.0\\.1/);
+    assert.match(web, /127\.0\.0\.1/);
 });
 
 test("preview page registers host answers before loading the source SWF", () => {
