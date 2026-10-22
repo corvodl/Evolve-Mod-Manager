@@ -517,6 +517,144 @@ pub fn prepare_preview(
     Ok(result)
 }
 
+/// Give the original Scaleform img:// bitmap lookup an SWF linkage fallback.
+///
+/// GFx normally handles img:// through a C++ ImageCreator callback, not a
+/// browser request. Ruffle's URL rewrite alone cannot implement that callback.
+/// Exporting the *verified original* DDS as a temporary SWF bitmap under its
+/// authored img:// linkage allows ordinary AVM1 BitmapData.loadBitmap lookups
+/// to resolve without changing original game files or fabricating artwork.
+/// Whether a particular movie uses this path still requires runtime testing.
+pub(crate) fn embed_mode_bitmap_linkages(
+    swf: &[u8],
+    scratch: &Path,
+    names: &[String],
+) -> Result<(Vec<u8>, usize, usize), String> {
+    if names.is_empty() {
+        return Ok((swf.to_vec(), 0, 0));
+    }
+    if swf.len() > MAX_DECOMPRESSED || !swf.starts_with(b"FWS") {
+        return Err("Mode bitmap injection requires a bounded temporary FWS".into());
+    }
+    let (head, movie_tags) = tags(swf)?;
+    if !movie_tags.iter().any(|tag| tag.code == 1) {
+        return Err("Mode bitmap injection requires an original ShowFrame".into());
+    }
+    // SWF character IDs are global, including original Scaleform 1008 tiles.
+    // Never overwrite existing shapes, sprites, fonts, or bitmap resources.
+    let mut reserved = HashSet::<u16>::new();
+    for tag in &movie_tags {
+        if matches!(
+            tag.code,
+            2 | 6 | 7 | 10 | 11 | 14 | 20 | 21 | 22 | 32 | 34 | 35 | 36
+                | 37 | 39 | 46 | 48 | 60 | 75 | 83 | 84 | 87 | 90 | 91 | 1008 | 1009
+        ) {
+            if let Some(id) = u16_at(&tag.data, 0) {
+                reserved.insert(id);
+            }
+        }
+    }
+    let mut extra = Vec::new();
+    let mut link_entries = Vec::new();
+    let mut embedded = 0usize;
+    let mut skipped = 0usize;
+    let mut seen = HashSet::new();
+    let source = scratch.join("runtime-images");
+    let canonical_source = fs::canonicalize(&source).map_err(|e| e.to_string())?;
+    for name in names.iter().take(64) {
+        if !seen.insert(name.clone())
+            || name.is_empty()
+            || name.len() > 64
+            || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        {
+            skipped += 1;
+            continue;
+        }
+        let local = source.join(format!("{name}.png"));
+        let Ok(meta) = fs::symlink_metadata(&local) else {
+            skipped += 1;
+            continue;
+        };
+        if !meta.file_type().is_file() || meta.len() > 12 * 1024 * 1024 {
+            skipped += 1;
+            continue;
+        }
+        let Ok(real) = fs::canonicalize(&local) else {
+            skipped += 1;
+            continue;
+        };
+        if !real.starts_with(&canonical_source) {
+            skipped += 1;
+            continue;
+        }
+        let Ok(bytes) = fs::read(real) else {
+            skipped += 1;
+            continue;
+        };
+        let Ok(bitmap) = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+        else {
+            skipped += 1;
+            continue;
+        };
+        let image = bitmap.to_rgba8();
+        let pixels = u64::from(image.width()) * u64::from(image.height());
+        if pixels == 0 || pixels > MAX_CROP_PIXELS {
+            skipped += 1;
+            continue;
+        }
+        let Some(id) = (1..=u16::MAX).rev().find(|id| !reserved.contains(id)) else {
+            skipped += 1;
+            continue;
+        };
+        let original_linkage = format!(
+            "img://Libs/UI/FlashAssets/images/MenuModeSelect/{name}.dds"
+        );
+        let encoded = encode_bitmap(id, &image)?;
+        let mut entry = Vec::with_capacity(original_linkage.len() + 3);
+        entry.extend(id.to_le_bytes());
+        entry.extend(original_linkage.as_bytes());
+        entry.push(0);
+        // Preserve the existing fixed parser/movie cap. When an image would
+        // exhaust it, skip that image instead of breaking the whole preview.
+        let within_budget = swf.len()
+            .checked_add(extra.len())
+            .and_then(|n| n.checked_add(encoded.len()))
+            .and_then(|n| n.checked_add(link_entries.len()))
+            .and_then(|n| n.checked_add(entry.len()))
+            .and_then(|n| n.checked_add(8))
+            .is_some_and(|n| n <= MAX_DECOMPRESSED);
+        if !within_budget {
+            skipped += 1;
+            continue;
+        }
+        reserved.insert(id);
+        extra.extend(encoded);
+        link_entries.extend(entry);
+        embedded += 1;
+    }
+    skipped += names.len().saturating_sub(64);
+    if embedded == 0 {
+        return Ok((swf.to_vec(), 0, skipped));
+    }
+    let mut exports = (embedded as u16).to_le_bytes().to_vec();
+    exports.extend(link_entries);
+    encode_tag(56, &exports, &mut extra); // Standard SWF ExportAssets linkages.
+    let mut output = swf[..head].to_vec();
+    let mut inserted = false;
+    for tag in movie_tags {
+        if tag.code == 1 && !inserted {
+            output.extend_from_slice(&extra);
+            inserted = true;
+        }
+        encode_tag(tag.code, &tag.data, &mut output);
+    }
+    if output.len() > MAX_DECOMPRESSED {
+        return Err("Original SWF + mode bitmap resources exceed safe preview cap".into());
+    }
+    output[4..8].copy_from_slice(&(output.len() as u32).to_le_bytes());
+    Ok((output, embedded, skipped))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
