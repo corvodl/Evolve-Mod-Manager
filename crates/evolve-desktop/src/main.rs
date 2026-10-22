@@ -4229,7 +4229,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::GfxSelectPreviewPreset(preset) => {
             state.gfx_preview_preset = preset;
-            state.gfx_interactive_status = format!("Selected preview: {}. Launch/restart to test.", preset.description());
+            state.gfx_interactive_status = format!(
+                "Selected preview: {}. Launch/restart to test.",
+                preset.description()
+            );
         }
         Message::GfxRunInteractive => {
             if state.gfx_busy || state.busy {
@@ -4265,7 +4268,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.gfx_interactive_status = format!(
                         "Ruffle window launched ({}) · {} restored DDS tiles · {} skipped · {} missing imports. Original ActionScript executes where supported; native Evolve callbacks remain disabled.",
                         preview.preset.description(),
-                        preview.restored_images, preview.skipped_images, preview.missing_imports,
+                        preview.restored_images,
+                        preview.skipped_images,
+                        preview.missing_imports,
                     );
                     state.gfx_interactive_running = Some(preview);
                 }
