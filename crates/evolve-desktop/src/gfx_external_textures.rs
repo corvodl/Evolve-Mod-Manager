@@ -705,8 +705,12 @@ pub(crate) fn route_mode_image_loadclip_urls(swf: &[u8]) -> Result<(Vec<u8>, usi
     for tag in records {
         let mut data = tag.data;
         if tag.code == 59
-            && data.windows(b"ImageLoading\0".len()).any(|s| s == b"ImageLoading\0")
-            && data.windows(b"loadBitmap\0".len()).any(|s| s == b"loadBitmap\0")
+            && data
+                .windows(b"ImageLoading\0".len())
+                .any(|s| s == b"ImageLoading\0")
+            && data
+                .windows(b"loadBitmap\0".len())
+                .any(|s| s == b"loadBitmap\0")
         {
             for at in 0..data.len().saturating_sub(b"img://\0".len() - 1) {
                 if &data[at..at + b"img://\0".len()] == b"img://\0" {
@@ -766,7 +770,11 @@ mod tests {
         let mut source = b"FWS\x08".to_vec();
         source.extend(0u32.to_le_bytes());
         source.extend([0x08, 0, 0, 12, 1, 0]);
-        encode_tag(59, b"\x01\x00DifferentClass\0loadBitmap\0img://\0", &mut source);
+        encode_tag(
+            59,
+            b"\x01\x00DifferentClass\0loadBitmap\0img://\0",
+            &mut source,
+        );
         encode_tag(1, &[], &mut source);
         encode_tag(0, &[], &mut source);
         let length = source.len() as u32;
