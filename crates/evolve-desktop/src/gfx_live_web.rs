@@ -410,7 +410,11 @@ mod tests {
             let src = tempfile::tempdir().unwrap();
             let web = tempfile::tempdir().unwrap();
             fs::write(src.path().join("movie.swf"), b"FWSsynthetic").unwrap();
-            fs::write(src.path().join("menu-background.mp4"), b"\0\0\0\x18ftypisom").unwrap();
+            fs::write(
+                src.path().join("menu-background.mp4"),
+                b"\0\0\0\x18ftypisom",
+            )
+            .unwrap();
             fs::write(web.path().join("ruffle.js"), b"// bundled preview").unwrap();
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let destination = listener.local_addr().unwrap();
