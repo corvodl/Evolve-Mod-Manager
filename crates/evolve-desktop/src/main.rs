@@ -3860,7 +3860,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ExportToggleRigged => state.export_rigged = !state.export_rigged,
         Message::ExportToggleEmbedded => state.export_embed_textures = !state.export_embed_textures,
-        Message::ExportToggleCombineMeshes => state.export_combine_meshes = !state.export_combine_meshes,
+        Message::ExportToggleCombineMeshes => {
+            state.export_combine_meshes = !state.export_combine_meshes
+        }
         Message::ExportToggleDependencies => {
             state.export_dependencies = !state.export_dependencies;
         }
