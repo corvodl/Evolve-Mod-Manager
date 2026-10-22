@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from blender_uv0 import prepare_original_uv
 from blender_fbx_safety import (prepare_export_materials, validate_blender_meshes,
-                               optimize_binary_fbx)
+                               optimize_binary_fbx, normal_image_names)
 
 def check(condition, reason):
     if not condition:
@@ -225,7 +225,8 @@ def main():
               "selected embedded textures but no original diffuse image reached Blender")
         verify_part_diffuse_coverage(meshes, parts, "GLB to Blender")
     check(len(meshes) <= 1024, "unbounded material fragment count")
-    prepare_export_materials(meshes, embed_textures)
+    prepare_export_materials(meshes, embed_textures, destination)
+    source_normal_maps = normal_image_names(meshes) if not embed_textures else set()
     validate_blender_meshes(meshes, rigged=True, embed_textures=embed_textures)
     bone_count = sum(len(arm.data.bones) for arm in armatures)
     # Keep primitive strings: read_factory_settings destroys the original
@@ -256,7 +257,8 @@ def main():
         use_armature_deform_only=False, axis_forward="-Y", axis_up="Z",
         bake_anim=animate, bake_anim_use_all_actions=animate,
         bake_anim_use_nla_strips=animate, bake_anim_simplify_factor=0,
-        path_mode="COPY", embed_textures=embed_textures)
+        path_mode="COPY" if embed_textures else "RELATIVE",
+        embed_textures=embed_textures)
     check(destination.is_file() and destination.stat().st_size >= 256,
           "FBX export failed")
     optimized = optimize_binary_fbx(destination, embed_textures=embed_textures)
@@ -285,6 +287,9 @@ def main():
     if animate:
         check(bool(bpy.data.actions), "FBX round-trip lost the verified CAF Action")
     validate_blender_meshes(result_meshes, rigged=True, embed_textures=embed_textures)
+    if not embed_textures:
+        check(source_normal_maps == normal_image_names(result_meshes),
+              "FBX round-trip lost an external normal-map material link")
     imported_weighted_vertices = 0
     target_bounds = []
     target_uv_loops = [[], []]
