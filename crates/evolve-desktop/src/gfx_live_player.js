@@ -89,6 +89,11 @@
         document.getElementById("localization-unresolved").replaceChildren(
             ...notFound.slice(0, 30).map(item => makeText("li", "Unresolved: @" + String(item)))
         );
+        const flashText = report.authored_flash_text || {};
+        document.getElementById("localization-status").textContent +=
+            " · Original Flash edit text: " + Number(flashText.localized || 0) +
+            " localized, " + Number(flashText.unresolved || 0) + " unresolved (" +
+            Number(flashText.fields || 0) + " original edit fields).";
         const stats = report.resources || {};
         const resource = document.getElementById("resource-status");
         const messages = [
