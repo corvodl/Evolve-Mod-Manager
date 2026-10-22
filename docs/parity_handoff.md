@@ -2,6 +2,46 @@
 
 Updated: **2026-10-20** · Repository: `corvodl/Evolve-Mod-Manager` · Working PR: **#6** on `feature/blender-viewport-cdf-autoload`, based on PR #5's `feature/pr5-combined-viewer-preview`. This document is a resumable engineering checklist, **not** a claim of production parity. See [PARITY.md](PARITY.md) for the broader feature matrix.
 
+## 2026-10-22 — Stage 2 image-card blocker traced to numeric CurrentMenu
+
+Recovered the user's original `main_menu.gfx` directly from the previously
+supplied `UI(1).zip` (353,610 bytes; SHA-256
+`7ac1133f42fcb3a6b74ddd228860beb154965d8f6a1d8f2ab4e02630bc442762`).
+This game binary remains outside the repository.
+
+The original AVM1 `shouldUseImageButtons()` (DefineFunction2 in the
+first-frame DoAction) invokes
+`flash.external.ExternalInterface.call("CurrentMenu")`, converts the
+result with ActionToNumber, and compares with three original globals:
+`MMS_SOLO`, `MMS_TUTORIALS`, `MMS_NPE`.
+Original constant assignments found in that same bytecode are
+`MMS_SOLO=0`, `MMS_EXTRAS=1`, `MMS_TUTORIALS=2`,
+`MMS_NPE=3`, `MMS_ROOT=4`.
+Nightly 31's preview-only adapter returned the literal source submenu
+name, such as `"Training"`. `Number("Training")` is NaN, so all
+three original image-button comparisons were false. The user's runtime
+capture corroborated the issue: eight `CurrentMenu` host calls were
+received and all 24/24 source MenuModeSelect images were linked, but
+the original menu still rendered its text-only branch.
+
+The preview-only host getter now returns the **numeric** MMS value,
+never the visible submenu name. Original `Main` maps to 4;
+UI_Data `Singleplayer`/`Training`/`Tutorials` map to 2;
+`NPE` maps to 3; `Solo` to 0; and `Extras` to 1.
+The inspector displays the numeric enum and lets the user select all
+five original values explicitly. Existing original `pushMenuState`
+navigation updates it **before** invoking the Flash callback.
+The GFX, linked DDS, hover animations, and native game-service
+restrictions remain unchanged; no replacement HTML cards are drawn.
+
+Expected acceptance with the real GFX: after entering the original
+Training/Tutorials or NPE submenu, `shouldUseImageButtons()` must take
+its existing image-button branch and Ruffle must render the source
+bitmap links. Passing a source-bytecode assertion or JS unit test is
+not yet an end-to-end visual confirmation; if the image branch runs but
+is still blank, inspect the original image-loader symbol instances and
+Ruffle bitmap linkage rather than revisiting numeric game-state IDs.
+
 ## 2026-10-22 — original Training image cards: preview runtime state
 
 The source `Libs/UI/main_menu.gfx` already contains the original
@@ -11,7 +51,7 @@ Training screen's `NPE` and `CustomSolo` conditions can also
 suppress authored choices when those game values are unknown.
 
 The isolated Ruffle preview now exposes three **preview-only** JavaScript
-ExternalInterface answers: `CurrentMenu` (source submenu name),
+ExternalInterface answers: `CurrentMenu` (numeric MMS_* enum),
 `NPE` and `CustomSolo` (booleans). Their assumed values can be
 changed in the source UI_Data inspector without changing original game
 files or injecting into Evolve. The example Training flags initially
@@ -40,17 +80,11 @@ browser, do not treat this as a general-purpose sandbox for untrusted
 Flash files. The preview still serves only its private-token scratch
 content and allows no native game-service bridge.
 
-**Still unverified:** The exact original ExternalInterface invocation
-used by `shouldUseImageButtons()` to request `CurrentMenu` has not
-been established from its decompiled ActionScript. Registering functions
-with those literal names only answers Flash calls **if** they use
-those exported names directly; a different native bridge name will
-continue to return no answer. The expected native string for the
-Training menu (e.g. `Training` versus `Singleplayer`) also needs
-verification from an original runtime trace. Do not claim image-card
-or hover parity until the actual main_menu.gfx is tested: the source
-inspector provides both menu-name options to help identify the
-correct lookup without adding synthetic SWF UI.
+**Updated finding:** The original `CurrentMenu` host-call name and
+numeric MMS values were recovered and documented above; the previous
+string-returning adapter was incorrect. Full Ruffle image-card and
+hover behavior must still be checked in an installed build. No
+synthetic SWF artwork or native game-service bridges are added.
 
 ## 2026-10-22 — cosmetic/gameplay separation and guided editing
 
