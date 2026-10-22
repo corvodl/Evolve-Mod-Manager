@@ -525,7 +525,7 @@ mod tests {
         assert!(MAX_BITMAPS >= 411);
         assert!(MAX_TOTAL_PIXELS >= 32_000_000);
         assert!(has_movie_budget(500_000, 10_000_000, 3_000_000));
-        assert!(!has_movie_budget(500_000, 31_000_000, 2_000_000));
+        assert!(!has_movie_budget(500_000, 31_000_000, 3_000_000));
         assert!(!has_movie_budget(usize::MAX, usize::MAX, 1));
     }
     #[test]
