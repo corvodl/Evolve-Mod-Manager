@@ -1320,7 +1320,9 @@ pub fn export_unified_cdf_fbx_options_with_glow(
         let original_table = has_original_mesh_subset_table(&raw)
             .map_err(|e| format!("CDF part {name} source material ID table: {e}"))?;
         if !original_table
-            && original_materials.as_ref().is_some_and(|slots| slots.len() > 1)
+            && original_materials
+                .as_ref()
+                .is_some_and(|slots| slots.len() > 1)
         {
             return Err(format!(
                 "CDF part {name}: source MTL has multiple leaves but the mesh has no original subset table. Material IDs cannot safely be resolved."
