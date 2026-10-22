@@ -38,7 +38,7 @@ UsePreviousAppDir=no
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: unchecked
 Name: "startmenuicon"; Description: "Add to the Start Menu"; GroupDescription: "Shortcuts:"; Flags: checkedonce
-Name: "gfxeditors"; Description: "Include Ruffle and FFDec for GFX editing (about 40 MB additional download size)"; GroupDescription: "Optional GFX tools:"; Flags: checkedonce
+Name: "gfxeditors"; Description: "Include Ruffle Desktop/Web and FFDec for live GFX editing (about 50 MB additional download size)"; GroupDescription: "Optional GFX tools:"; Flags: checkedonce
 
 [Files]
 Source: "..\target\release\evolve-mod-manager.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -49,6 +49,7 @@ Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 ; User can deselect the GFX tools task; only manager is required.
 Source: "..\dist\third_party\FFDec\*"; DestDir: "{app}\third_party\FFDec"; Flags: ignoreversion recursesubdirs createallsubdirs; Tasks: gfxeditors
 Source: "..\dist\third_party\Ruffle\*"; DestDir: "{app}\third_party\Ruffle"; Flags: ignoreversion recursesubdirs createallsubdirs; Tasks: gfxeditors
+Source: "..\dist\third_party\RuffleWeb\*"; DestDir: "{app}\third_party\RuffleWeb"; Flags: ignoreversion recursesubdirs createallsubdirs; Tasks: gfxeditors
 Source: "..\dist\third_party\THIRD_PARTY_TOOLS.txt"; DestDir: "{app}\third_party"; Flags: ignoreversion; Tasks: gfxeditors
 
 [Icons]
