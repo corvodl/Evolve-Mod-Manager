@@ -82,6 +82,7 @@ fn parse(input: &[u8]) -> Result<Vec<MenuCommand>, String> {
     let mut scratch = Vec::new();
     let mut submenu = None::<String>;
     let mut in_main_menu = false;
+    let mut main_menu_depth = 0usize;
     let mut commands = Vec::new();
     let mut found_main_menu = false;
     loop {
@@ -91,11 +92,19 @@ fn parse(input: &[u8]) -> Result<Vec<MenuCommand>, String> {
                 if tag == b"MainMenu" && !in_main_menu {
                     found_main_menu = true;
                     in_main_menu = true;
-                } else if in_main_menu
-                    && [b"Main".as_slice(), b"Extras", b"Singleplayer", b"NPE"]
-                        .contains(&tag.as_slice())
-                {
-                    submenu = Some(String::from_utf8_lossy(&tag).into_owned());
+                } else if in_main_menu {
+                    // UI_Data can add original submenu groups beyond the four
+                    // historically hardcoded names. Keep source-defined child
+                    // groups only: nested icon/condition elements are not
+                    // independent menus.
+                    if main_menu_depth == 0
+                        && (2..=64).contains(&tag.len())
+                        && tag.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_')
+                        && tag.as_slice() != b"Button"
+                    {
+                        submenu = Some(String::from_utf8_lossy(&tag).into_owned());
+                    }
+                    main_menu_depth += 1;
                 }
             }
             Ok(Event::Empty(e)) if in_main_menu && e.name().as_ref() == b"Button" => {
@@ -138,11 +147,16 @@ fn parse(input: &[u8]) -> Result<Vec<MenuCommand>, String> {
             Ok(Event::End(e)) => {
                 if e.name().as_ref() == b"MainMenu" {
                     in_main_menu = false;
+                    main_menu_depth = 0;
+                    submenu = None;
                 } else if submenu
                     .as_deref()
                     .is_some_and(|name| name.as_bytes() == e.name().as_ref())
                 {
                     submenu = None;
+                }
+                if in_main_menu {
+                    main_menu_depth = main_menu_depth.saturating_sub(1);
                 }
             }
             Ok(Event::DocType(_)) => {
@@ -181,6 +195,21 @@ mod tests {
         assert!(map[1].outcome().contains("Game-bound"));
         assert_eq!(map[2].submenu, "Extras");
         assert_eq!(map[2].command, "patchNotesButton");
+    }
+
+    #[test]
+    fn preserves_all_original_ui_data_submenu_groups_not_only_hardcoded_four() {
+        let xml = br#"<Root><MainMenu>
+            <Main><Button display_name="@ui_Play" command="Browse" child_submenu="Multiplayer"/></Main>
+            <Multiplayer><Button display_name="@ui_Join" command="OnlineMultiplayer"/></Multiplayer>
+            <Profiles><Button display_name="@ui_Swap" command="Profiles"/></Profiles>
+            </MainMenu></Root>"#;
+        let commands = parse(xml).unwrap();
+        assert_eq!(commands.len(), 3);
+        assert_eq!(commands[0].submenu, "Main");
+        assert_eq!(commands[1].submenu, "Multiplayer");
+        assert_eq!(commands[2].submenu, "Profiles");
+        assert_eq!(commands[0].child_submenu, "Multiplayer");
     }
 
     #[test]

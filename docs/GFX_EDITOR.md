@@ -105,6 +105,39 @@ Runtime ActionScript callbacks, localization, buttons created in code and
 video playback cannot be faithfully rendered from a static movie.
 
 
+## Why the original Evolve main menu is partially blank in Ruffle
+
+The menu is **not** a self-contained, static SWF screen. A working original
+ActionScript callback (such as a patch-note overlay dismiss) only proves that
+its AVM handler ran. The other visible screen elements still depend on
+CryEngine-hosted UI_Data initialization, localization, fonts, imported GFX
+movies, atlas DDS assets and game state.
+
+Symptoms including `BUILD INFO GOES HERE`, raw `@ui_STARTGAME` placeholders,
+an otherwise black screen, and outlined but unfilled buttons indicate that
+the original movie is running **outside its native game host**. The
+standalone Ruffle player cannot supply these native conditions by itself.
+
+The optional **Source UI_Data menu** button in the live preview opens a
+separate read-only command inspector. When `UI/MainMenuScreen.xml` exists in
+the selected build's verified Asset Library, this inspector shows its original
+Main and other nested menu sections, following only explicitly declared
+`child_submenu` links. It never invents a Flash display list, localization,
+or a runnable native button handler. CryEngine-bound buttons are visibly
+disabled. Closing the inspector returns to the same running movie.
+
+The inspector's resource section reports missing GFX/SWF imports (including
+font libraries), unresolved bitmap tiles, and whether the exact source build
+and Asset Library are available. Imported movie names are taken from the
+original compiled GFX. Ruffle `FSCommand` calls are displayed as blocked
+diagnostics; ActionScript traces that report missing resources/errors can
+also appear in the browser status line. No game process or DLL calls are made.
+
+For full visual parity, source-build-specific localization such as the
+original `text_ui_*.xml` resources, verified font imports and UI_Data setup
+need to be integrated and validated against the actual movie. The inspector
+is a diagnostic/navigation tool, **not a claim of full menu rendering**.
+
 ## Live Ruffle Web preview (PR #23)
 
 For GFX files open **GFX Tools → Preview → Ruffle controls**. **Open live preview**

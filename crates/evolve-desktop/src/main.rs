@@ -21,6 +21,7 @@ mod gfx_interactive;
 mod gfx_layout_canvas;
 mod gfx_live_inspector;
 mod gfx_live_web;
+mod gfx_localization;
 mod gfx_menu_map;
 mod gfx_tool_install;
 mod launcher_bridge;
