@@ -927,7 +927,7 @@ mod tests {
     fn ui_data_browser_report_preserves_original_labels_and_never_fabricates_handlers() {
         let folder = Arc::new(tempfile::tempdir().unwrap());
         let mut movie = menu_fixture();
-        movie[0] = b'G';
+        movie[..3].copy_from_slice(b"GFX");
         let session = Session {
             source: folder.path().join("main_menu.gfx"),
             relative: "Libs/UI/main_menu.gfx".into(),
