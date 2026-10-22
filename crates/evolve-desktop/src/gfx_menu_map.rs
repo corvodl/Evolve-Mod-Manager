@@ -15,6 +15,7 @@ pub struct MenuCommand {
     pub child_submenu: String,
     pub disabled_when: String,
     pub hidden_when: String,
+    pub platform: String,
 }
 
 impl MenuCommand {
@@ -43,7 +44,7 @@ pub fn load(
     if build.trim().is_empty() {
         return Err("Cannot inspect UI_Data from an unnamed build".into());
     }
-    match resolve_imported_reference(root, "UI/MainMenuScreen.xml", Some(build))
+    match resolve_imported_reference(root, "Libs/UI/MainMenuScreen.xml", Some(build))
         .map_err(|e| e.to_string())?
     {
         LibraryReferenceStatus::Missing => Ok((
@@ -118,6 +119,7 @@ fn parse(input: &[u8]) -> Result<Vec<MenuCommand>, String> {
                     child_submenu: String::new(),
                     disabled_when: String::new(),
                     hidden_when: String::new(),
+                    platform: String::new(),
                 };
                 for attribute in e.attributes().with_checks(true) {
                     let attribute = attribute.map_err(|_| "Malformed UI_Data button attribute")?;
@@ -134,6 +136,7 @@ fn parse(input: &[u8]) -> Result<Vec<MenuCommand>, String> {
                         b"child_submenu" => command.child_submenu = value,
                         b"disabled_when" => command.disabled_when = value,
                         b"hidden_when" => command.hidden_when = value,
+                        b"platform" => command.platform = value,
                         _ => (),
                     }
                 }
@@ -177,6 +180,14 @@ fn parse(input: &[u8]) -> Result<Vec<MenuCommand>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retains_platform_and_conditions_without_inventing_native_state() {
+        let rows = parse(br#"<ScreenCinematics><MainMenu><Main><Button display_name="@ui_Exit" command="Exit" platform="pc"/><Button display_name="@ui_Store" command="Store" platform="durango" hidden_when="CustomCondition=[!Store]"/></Main></MainMenu></ScreenCinematics>"#).unwrap();
+        assert_eq!(rows[0].platform, "pc");
+        assert_eq!(rows[1].platform, "durango");
+        assert_eq!(rows[1].hidden_when, "CustomCondition=[!Store]");
+    }
 
     #[test]
     fn reads_original_screen_style_without_triggering_game_commands() {

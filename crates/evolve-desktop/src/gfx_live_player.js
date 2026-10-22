@@ -231,9 +231,22 @@
                 show("Original hidePatchNotes raised: " + String(error), true);
             }
         });
+        // Preserve XML order and exact command identifiers. Conditional game
+        // state is unavailable: hidden entries stay hidden, conditional actions
+        // stay disabled. These are original Flash buttons, not HTML substitutes.
+        const translate = key => (report.localization?.translations || {})[key.replace(/^@/, "").toLowerCase()] || key;
+        const menuLabels = {play: translate("@ui_mp_OnlineGame"), training: translate("@ui_Training")};
+        const menuData = (report.commands || []).filter(item =>
+            item.submenu === "Main" && (!item.platform || item.platform === "pc") && !item.hidden_when
+        ).slice(0, 128).map(item => ({
+            displayName: (report.localization?.translations || {})[String(item.label).replace(/^@/, "").toLowerCase()] || item.label,
+            command: item.command, isEnabled: !item.disabled_when,
+            isDisabledOnSignIn: Boolean(item.disabled_when), isNew: false,
+            isSelectableWhenDisabled: false, setStatListArray: []
+        }));
         const initializeOriginal = async (automatic) => {
             if (!canInitialize) {
-                show("No zero-argument original openScreen or transitionToMainMenu callback was verified. Host argument requirements cannot be guessed.", true);
+                show("No supported source-verified menu lifecycle was found.", true);
                 return;
             }
             // The original first-frame callback registration must run before
@@ -241,10 +254,10 @@
             // never a mock game-service or fabricated menu screen.
             for (let attempt = 0; attempt < 5; attempt++) {
                 try {
-                    const result = player.ruffle().callExternalInterface("evolvePreview_" + originalStartup);
+                    const result = player.ruffle().callExternalInterface("evolvePreview_" + originalStartup, menuData, menuLabels);
                     if (result === true) {
                         show((automatic ? "Automatic" : "Manual") +
-                            " original " + originalStartup + " invoked. Native CryEngine UI initialization is still absent; verify visible content.");
+                            " original " + originalStartup + " invoked with source menu rows. Offline preview state; game services remain unavailable.");
                         return;
                     }
                 } catch (e) {
@@ -282,6 +295,10 @@
                     show("Movie reset in this window.");
                 } else if (action.kind === "call") {
                     const args = action.arg === null ? [] : [action.arg];
+                    if (action.name === "evolvePreview_openScreen") {
+                        await initializeOriginal(false);
+                        continue;
+                    }
                     let result;
                     try {
                         result = player.ruffle().callExternalInterface(action.name, ...args);

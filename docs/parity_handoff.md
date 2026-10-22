@@ -2,6 +2,125 @@
 
 Updated: **2026-10-20** · Repository: `corvodl/Evolve-Mod-Manager` · Working PR: **#6** on `feature/blender-viewport-cdf-autoload`, based on PR #5's `feature/pr5-combined-viewer-preview`. This document is a resumable engineering checklist, **not** a claim of production parity. See [PARITY.md](PARITY.md) for the broader feature matrix.
 
+## October 22 — source-backed original main-menu population
+
+Worked from `feature/gfx-main-menu-text-init` at `071e2a5`, which contains the
+current live Ruffle callback and initial-text localization work. This change does
+not create a replacement HTML menu or claim pixel-identical game rendering.
+
+### Evidence from the installed game (read only)
+
+FFDec exported scripts from the imported `Libs/UI/main_menu.gfx` in UI_Assets.
+The original root `openScreen` has **seven arguments**, independently confirmed
+by `Libs/UI/UIElements/MainMenu.xml` in the matching UI_Data import:
+`is_in_world`, engagement prompt, debug info, comm, cinematic playing, background
+video, news. The previous zero-argument allowlist rejected this real function and
+fell back to `transitionToMainMenu`, which fades existing controls but does not
+populate them.
+
+The root's `pushMenuState` copies `menuButtonData` into a menu stack and invokes
+`setupMenuBtns`. That function attaches the original `mcButtonMainMenu` symbols,
+uses the source label/command/enabled fields, and registers original rollover and
+press handlers. Its featured-button sizing compares names against
+`MODE_NAME_PLAY` and `MODE_NAME_TRAINING`; translating labels without translating
+these two comparison values changes the original layout. Button activation reaches
+`makeMenuSelection` and then game ExternalInterface commands/cinematics. UI_Data
+command names do **not** establish that a native service is available in Ruffle.
+
+The source menu catalog is **Libs/UI/MainMenuScreen.xml**, not
+`UI/MainMenuScreen.xml`; the prior exact resolver asked for the latter and could
+miss the installed import entirely. The source contains separate PC/Durango/Orbis
+entries, conditional visibility and sign-in restrictions, not one universal list.
+
+### Implemented
+
+- Correct exact same-build menu XML lookup; retain platform along with original
+  command, visibility and disabled expressions in the preview manifest.
+- Recognize the seven-argument menu only when original first-frame bytecode also
+  declares `clearMenuState(1)`, `pushMenuState(0)`, and
+  `transitionToMainMenu(0)`. Other arities remain rejected; generic GFX is unchanged.
+- The preview callback now clears prior menu state, supplies source-derived menu
+  data, calls the original seven-argument `openScreen`, then `pushMenuState` and
+  `transitionToMainMenu`. The browser passes localized labels and updates the two
+  original featured-label comparisons consistently. Manual initialization, automatic
+  startup, reset-button initialization, and the queued Open Screen command use the
+  same data path.
+- Preview rows retain XML order and exact command identifiers, select PC/unscoped
+  entries, omit conditionally hidden entries and disable conditionally gated
+  actions. This is an explicitly limited offline preview policy, **not** evaluated
+  real game state. Lifecycle values are `(false,false,false,false,true,"",false)`;
+  these describe a preview without engagement/debug/comm/news or an in-movie video.
+  Do not call these values the authoritative host state for every game session.
+- No game services, launch/store/exit commands, profiles or credentials are exposed.
+  Original source GFX and imported game resources are untouched.
+
+### Font and localization findings
+
+All four inspected font-library movies contain six standard **DefineFont3** tags,
+not only Scaleform-specific glyph data. `gfxfontlib_locfont.gfx` declares Rocketship
+Town (190 glyphs), Indento Bold (63), Bender (173), Cabin (two 190-glyph definitions)
+and SV Basic Manual (151). Presence/staging alone does not prove runtime binding.
+The movie's `gfx.utils.Locale.getTranslatedString` returns its input unchanged;
+there is no embedded translation implementation there. Initial-text rewriting
+cannot localize arbitrary later `.text = "@key"` assignments. This change localizes
+host-supplied main-menu rows only; dynamic prompts and all other UI still require
+an appropriate source-backed translator/host model.
+
+### Validation and resume points
+
+- Desktop suite: **191 passed, 1 opt-in real-asset test ignored**. The opt-in test
+  then passed separately against the installed original menu and verified source
+  bytes unchanged. All-targets workspace Clippy passed; JS syntax check passed.
+- Independent FFDec decompilation of the generated SWF confirmed the callback
+  parameters, original-variable assignments, seven values and lifecycle call order.
+  This validates emitted bytecode, **not** browser-visible frame equivalence.
+- Local-only evidence: `work/gfx-main-menu/scripts`, `patched-scripts`, and
+  `initialized-preview.swf` under the parent workspace. Do not commit these game
+  scripts/assets. Reproduce with the ignored `real_menu_bootstrap_acceptance` test
+  using `EVOLVE_GFX_SOURCE` and a new `EVOLVE_GFX_PREVIEW_OUT` outside original assets.
+- Next run the original menu in Ruffle and compare captured frames at fixed times
+  with the same game build, language, resolution and host state. Verify native
+  button attach/press behavior, import aliases/font glyph selection, labels and
+  original featured sizing. **Pixel identity has not been achieved or verified.**
+- Implement an explicit preview-state model for XML conditions, then local submenu
+  navigation using original movie callbacks and source-defined row lists. Native
+  commands remain observed/unavailable until deliberately simulated. The current
+  implementation initializes Main; it is not complete submenu/service emulation.
+- Extract a reusable host-contract model from same-build UIElements definitions:
+  function names/arity, variables/arrays, events, constraints and movie references.
+  Bind only reviewed UI-local operations to validated original bytecode; do not
+  extrapolate this main-menu-specific lifecycle to arbitrary assets automatically.
+- Continue dynamic localization, font alias mapping and Scaleform rendering effects;
+  missing native color-multiplier/noise effects and the game background composition
+  can prevent identical appearance even with correct text and geometry.
+
+## October 22 — retained engine glow research (evidence, not calibration)
+
+Original 2012 Shaders.pak source provides concrete next steps beyond a guessed
+`GlowAmount=3 => 100%` scale. In `Illum.cfx` the ALPHAGLOW/ALPHAGLOW_CUSTOM branch
+uses the authored `AmbientMultiplier` (default 1, editor range 0–32). In
+`fragLib.cfi` lines 754–763 the ambient-pass alpha glow adds diffuse RGB multiplied
+by diffuse alpha (or custom-map red) and that multiplier. Separately,
+`CommonGlowPass.cfi` lines 109–139 combines the diffuse/decal sample, `GlowParams`,
+material diffuse color and masks. **The CPU binding of material GlowAmount into
+PB_GlowParams remains unverified**; these are distinct paths, not interchangeable
+intensity values. Do not port the 2012 constants blindly to Stage 2.
+
+`HDRPostProcess.cfx` lines 541–568 then applies adapted exposure, bloom, color
+balance and a filmic curve. A screenshot's final brightness is not a standalone
+material scalar. The sampled Stage 2 Wraith effects actually author GlowAmount
+5 (abduction), 10 (decoy), 4 (nebula shroud), and 2 (phasing glass); the base body
+has a Decal glow texture but no GlowAmount attribute in the inspected material.
+Absence must remain distinct from zero/default/runtime override.
+
+Official reference: [CryEngine 3 Glow Effect](https://www.cryengine.com/docs/static/engines/cryengine-3/categories/1114113/pages/1048623)
+describes strength, diffuse RGB and alpha masking; it does not define 3 as 100%.
+[Decal Opacity Map](https://www.cryengine.com/docs/static/engines/cryengine-3/categories/1114113/pages/23299074)
+describes the shader-dependent Decal glow path. Next inspect the matching build's
+CPU constant binding/runtime material overrides and capture linear scene/glow
+buffers plus exposure/bloom settings; keep source material gain separate from an
+explicit viewer exposure control. No further glow formula was changed here.
+
 ## October 20 — follow-up: separate original emission from armor-overlay toggle
 
 The normal/base Stage 2 material is allowed to glow independently of the

@@ -357,27 +357,84 @@ pub(crate) fn install_live_callbacks(
             .iter()
             .filter_map(|actions| defined_function_arity(actions, function))
             .collect::<Vec<_>>();
-        if found.is_empty() || found.iter().any(|&count| count != expected) {
+        let populated_menu = function == "openScreen"
+            && !found.is_empty()
+            && found.iter().all(|&count| count == 7)
+            && [
+                ("clearMenuState", 1),
+                ("pushMenuState", 0),
+                ("transitionToMainMenu", 0),
+            ]
+            .iter()
+            .all(|(name, arity)| {
+                let matches = chunks
+                    .iter()
+                    .filter_map(|a| defined_function_arity(a, name))
+                    .collect::<Vec<_>>();
+                !matches.is_empty() && matches.iter().all(|n| n == arity)
+            });
+        if !populated_menu && (found.is_empty() || found.iter().any(|&count| count != expected)) {
             continue;
         }
         let method = format!("evolvePreview_{}", function);
         let wrapper = format!("evolveCallback_{}", function);
         // DefineFunction(wrapper, optional boolean parameter) body.
         let mut body = Vec::new();
-        if argument.is_some() {
-            avm1_push_string(&mut body, "value")?;
-            body.push(0x1c); // GetVariable
+        if populated_menu {
+            // Source MainMenu.xml + main_menu.gfx define this seven-argument
+            // lifecycle. Values describe an offline preview, not game state.
+            avm1_push_boolean(&mut body, false);
+            avm1_push_i32(&mut body, 1);
+            avm1_push_string(&mut body, "clearMenuState")?;
+            body.extend_from_slice(&[0x3d, 0x17]);
+            avm1_push_string(&mut body, "menuButtonData")?;
+            avm1_push_string(&mut body, "menuData")?;
+            body.push(0x1c);
+            body.push(0x1d); // SetVariable: original pending menu array.
+            // The original layout compares these labels to choose featured
+            // button dimensions. Translate both sides of that comparison.
+            for (target, key) in [
+                ("MODE_NAME_PLAY", "play"),
+                ("MODE_NAME_TRAINING", "training"),
+            ] {
+                avm1_push_string(&mut body, target)?;
+                avm1_push_string(&mut body, "menuLabels")?;
+                body.push(0x1c);
+                avm1_push_string(&mut body, key)?;
+                body.extend_from_slice(&[0x4e, 0x1d]);
+            }
+            avm1_push_boolean(&mut body, false); // showNews
+            avm1_push_string(&mut body, "")?; // background_video: separately staged
+            avm1_push_boolean(&mut body, true); // cinematic already playing
+            for _ in 0..4 {
+                avm1_push_boolean(&mut body, false);
+            }
+            avm1_push_i32(&mut body, 7);
+            avm1_push_string(&mut body, "openScreen")?;
+            body.extend_from_slice(&[0x3d, 0x17]);
+            for callback in ["pushMenuState", "transitionToMainMenu"] {
+                avm1_push_i32(&mut body, 0);
+                avm1_push_string(&mut body, callback)?;
+                body.extend_from_slice(&[0x3d, 0x17]);
+            }
+        } else {
+            if argument.is_some() {
+                avm1_push_string(&mut body, "value")?;
+                body.push(0x1c);
+            }
+            avm1_push_i32(&mut body, expected as i32);
+            avm1_push_string(&mut body, function)?;
+            body.extend_from_slice(&[0x3d, 0x17]);
         }
-        avm1_push_i32(&mut body, expected as i32);
-        avm1_push_string(&mut body, function)?;
-        body.extend_from_slice(&[0x3d, 0x17]); // CallFunction, Pop result
         avm1_push_boolean(&mut body, true);
         body.extend_from_slice(&[0x3e, 0]); // Return(true), End
         let mut def = Vec::new();
         def.extend_from_slice(wrapper.as_bytes());
         def.push(0);
-        def.extend_from_slice(&(expected as u16).to_le_bytes());
-        if expected == 1 {
+        def.extend_from_slice(&((if populated_menu { 2 } else { expected }) as u16).to_le_bytes());
+        if populated_menu {
+            def.extend_from_slice(b"menuData\0menuLabels\0");
+        } else if expected == 1 {
             def.extend_from_slice(b"value\0");
         }
         def.extend_from_slice(&(body.len() as u16).to_le_bytes());
@@ -977,7 +1034,8 @@ fn write_live_menu_report(
                 "command": item.command,
                 "child_submenu": item.child_submenu,
                 "disabled_when": item.disabled_when,
-                "hidden_when": item.hidden_when
+                "hidden_when": item.hidden_when,
+                "platform": item.platform
             })
         })
         .collect::<Vec<_>>();
@@ -1144,6 +1202,9 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
 mod tests {
     use super::*;
     fn menu_fixture() -> Vec<u8> {
+        menu_fixture_arity(0)
+    }
+    fn menu_fixture_arity(open_arity: u16) -> Vec<u8> {
         // Synthetic AVM1 DefineFunction root script (no original Evolve assets).
         let mut movie = b"FWS\x0f".to_vec();
         movie.extend_from_slice(&[0; 4]);
@@ -1168,7 +1229,9 @@ mod tests {
         movie.extend_from_slice(&1u16.to_le_bytes());
         let mut action = Vec::new();
         for (name, params) in [
-            ("openScreen", 0u16),
+            ("openScreen", open_arity),
+            ("clearMenuState", 1),
+            ("pushMenuState", 0),
             ("showEngagementPrompt", 1u16),
             ("transitionToMainMenu", 0),
             ("goBack", 0),
@@ -1220,6 +1283,7 @@ mod tests {
                 child_submenu: "Extras".into(),
                 disabled_when: String::new(),
                 hidden_when: String::new(),
+                platform: String::new(),
             }],
             menu_command_status: "1 verified original menu entry".into(),
             library_root: None,
@@ -1330,6 +1394,44 @@ mod tests {
         let pos = at + 6 + 3;
         corrupted[pos..pos + 2].copy_from_slice(&u16::MAX.to_le_bytes());
         assert!(trace_original_button_actions(&corrupted).is_err());
+    }
+
+    #[test]
+    fn seven_argument_menu_uses_original_population_and_lifecycle() {
+        let original = menu_fixture_arity(7);
+        let (patched, allowed) =
+            install_live_callbacks(&original, "Libs/UI/main_menu.gfx").unwrap();
+        assert!(allowed.contains(&PreviewPreset::OpenScreen));
+        for name in ["menuButtonData", "menuLabels", "MODE_NAME_TRAINING"] {
+            assert!(patched.windows(name.len()).any(|w| w == name.as_bytes()));
+        }
+        for unsupported in [2, 6, 8] {
+            let (_, allowed) =
+                install_live_callbacks(&menu_fixture_arity(unsupported), "Libs/UI/main_menu.gfx")
+                    .unwrap();
+            assert!(!allowed.contains(&PreviewPreset::OpenScreen));
+        }
+        assert_eq!(original, menu_fixture_arity(7));
+    }
+
+    #[test]
+    #[ignore = "read-only local game acceptance; set EVOLVE_GFX_SOURCE and EVOLVE_GFX_PREVIEW_OUT"]
+    fn real_menu_bootstrap_acceptance() {
+        let source = std::env::var("EVOLVE_GFX_SOURCE").unwrap();
+        let output = std::env::var("EVOLVE_GFX_PREVIEW_OUT").unwrap();
+        let bytes = fs::read(&source).unwrap();
+        let movie = flash_movie(&bytes).unwrap();
+        let (patched, allowed) = install_live_callbacks(&movie, "Libs/UI/main_menu.gfx").unwrap();
+        assert!(allowed.contains(&PreviewPreset::OpenScreen));
+        use std::io::Write;
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(output)
+            .unwrap()
+            .write_all(&patched)
+            .unwrap();
+        assert_eq!(fs::read(source).unwrap(), bytes);
     }
 
     #[test]
