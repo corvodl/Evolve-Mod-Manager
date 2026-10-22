@@ -124,6 +124,29 @@ fn parse_sheet(bytes: &[u8], wanted: &HashSet<String>) -> Result<HashMap<String,
                 }
                 data.push_str(&decoded);
             }
+            Ok(Event::GeneralRef(event)) if in_data => {
+                // quick-xml 0.38 emits &amp; and numeric references separately
+                // from Text. Resolve only the predefined XML entities and
+                // numeric character references; never expand DTD entities.
+                let symbol = std::str::from_utf8(event.as_ref())
+                    .map_err(|_| "Invalid localization entity encoding")?;
+                let decoded = match symbol {
+                    "amp" => "&".to_owned(),
+                    "lt" => "<".to_owned(),
+                    "gt" => ">".to_owned(),
+                    "quot" => "\\"".to_owned(),
+                    "apos" => "'".to_owned(),
+                    _ => event
+                        .resolve_char_ref()
+                        .map_err(|_| "Invalid localization character reference")?
+                        .map(|ch| ch.to_string())
+                        .ok_or("Unrecognized localization entity reference")?,
+                };
+                if data.len() + decoded.len() > 2048 {
+                    return Err("Localization cell too long".into());
+                }
+                data.push_str(&decoded);
+            }
             Ok(Event::CData(event)) if in_data => {
                 let decoded = String::from_utf8_lossy(event.as_ref());
                 if data.len() + decoded.len() > 2048 {
@@ -294,6 +317,10 @@ mod tests {
             .collect();
         let found = parse_sheet(xml, &wanted).unwrap();
         assert_eq!(found["ui_startgame"], "Play & Continue");
+        assert!(parse_sheet(
+            b"<Workbook><Row><Cell><Data>KEY</Data></Cell><Cell><Data>TRANSLATED TEXT</Data></Cell></Row><Row><Cell><Data>ui_STARTGAME</Data></Cell><Cell><Data>&unknown;</Data></Cell></Row></Workbook>",
+            &wanted,
+        ).is_err());
         assert_eq!(found["ui_other"], "Other");
         assert!(!found.contains_key("unknown"));
     }
