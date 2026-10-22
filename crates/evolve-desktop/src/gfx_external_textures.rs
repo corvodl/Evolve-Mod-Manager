@@ -17,11 +17,36 @@ const MAX_BITMAPS: usize = 128;
 const MAX_CROP_PIXELS: u64 = 2_500_000;
 const MAX_TOTAL_PIXELS: u64 = 8_000_000;
 
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct SkipDetails {
+    pub missing_source: usize,
+    pub preview_limit: usize,
+    pub invalid_tile: usize,
+    pub duplicate_or_embedded: usize,
+    pub decode_error: usize,
+    pub missing_paths: Vec<String>,
+}
+impl SkipDetails {
+    pub fn accumulate(&mut self, other: &Self) {
+        self.missing_source += other.missing_source;
+        self.preview_limit += other.preview_limit;
+        self.invalid_tile += other.invalid_tile;
+        self.duplicate_or_embedded += other.duplicate_or_embedded;
+        self.decode_error += other.decode_error;
+        for path in &other.missing_paths {
+            if self.missing_paths.len() < 12 && !self.missing_paths.contains(path) {
+                self.missing_paths.push(path.clone());
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct RenderReport {
     pub movie: Vec<u8>,
     pub converted: usize,
     pub skipped: usize,
+    pub skip_details: SkipDetails,
     pub ui_data: Option<String>,
 }
 
@@ -321,7 +346,12 @@ pub fn prepare_preview(
             built_in.insert(id);
         }
     }
-    if mappings.is_empty() || atlases.is_empty() {
+    if mappings.is_empty() {
+        return Ok(result);
+    }
+    if atlases.is_empty() {
+        result.skipped = mappings.len();
+        result.skip_details.invalid_tile = mappings.len();
         return Ok(result);
     }
     let mut converted = HashMap::<u16, Vec<u8>>::new();
@@ -330,26 +360,29 @@ pub fn prepare_preview(
     for tile in mappings {
         if converted.len() >= MAX_BITMAPS {
             result.skipped += 1;
+            result.skip_details.preview_limit += 1;
             continue;
         }
         if counts.get(&tile.character) != Some(&1) || built_in.contains(&tile.character) {
             result.skipped += 1;
+            result.skip_details.duplicate_or_embedded += 1;
             continue;
         }
         let Some(atlas) = atlases.get(&tile.image) else {
             result.skipped += 1;
+            result.skip_details.invalid_tile += 1;
             continue;
         };
         let [x0, y0, x1, y1] = tile.rectangle;
         let crop_pixels = u64::from(x1.saturating_sub(x0)) * u64::from(y1.saturating_sub(y0));
-        if x0 >= x1
-            || y0 >= y1
-            || x1 > atlas.width
-            || y1 > atlas.height
-            || crop_pixels > MAX_CROP_PIXELS
-            || total_pixels + crop_pixels > MAX_TOTAL_PIXELS
-        {
+        if x0 >= x1 || y0 >= y1 || x1 > atlas.width || y1 > atlas.height {
             result.skipped += 1;
+            result.skip_details.invalid_tile += 1;
+            continue;
+        }
+        if crop_pixels > MAX_CROP_PIXELS || total_pixels + crop_pixels > MAX_TOTAL_PIXELS {
+            result.skipped += 1;
+            result.skip_details.preview_limit += 1;
             continue;
         }
         if !cached.contains_key(&atlas.virtual_path) {
@@ -362,6 +395,18 @@ pub fn prepare_preview(
             )?
             else {
                 result.skipped += 1;
+                result.skip_details.missing_source += 1;
+                if result.skip_details.missing_paths.len() < 12
+                    && !result
+                        .skip_details
+                        .missing_paths
+                        .contains(&atlas.virtual_path)
+                {
+                    result
+                        .skip_details
+                        .missing_paths
+                        .push(atlas.virtual_path.clone());
+                }
                 continue;
             };
             match decode_dds_rgba(&path) {
@@ -373,6 +418,7 @@ pub fn prepare_preview(
                 }
                 Err(_) => {
                     result.skipped += 1;
+                    result.skip_details.decode_error += 1;
                     continue;
                 }
             }
@@ -382,6 +428,7 @@ pub fn prepare_preview(
         };
         if x1 as u32 > image.width() || y1 as u32 > image.height() {
             result.skipped += 1;
+            result.skip_details.invalid_tile += 1;
             continue;
         }
         let cut = imageops::crop_imm(
@@ -442,6 +489,30 @@ pub fn prepare_preview(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preview_skip_diagnostics_preserve_independent_causes_and_safe_paths() {
+        let mut first = SkipDetails {
+            missing_source: 2,
+            preview_limit: 3,
+            missing_paths: vec!["Libs/UI/main_menu_I9.dds".into()],
+            ..Default::default()
+        };
+        let second = SkipDetails {
+            missing_source: 1,
+            invalid_tile: 4,
+            missing_paths: vec![
+                "Libs/UI/main_menu_I9.dds".into(),
+                "Libs/UI/main_menu_I10.dds".into(),
+            ],
+            ..Default::default()
+        };
+        first.accumulate(&second);
+        assert_eq!(first.missing_source, 3);
+        assert_eq!(first.preview_limit, 3);
+        assert_eq!(first.invalid_tile, 4);
+        assert_eq!(first.missing_paths.len(), 2);
+        assert_eq!(first.missing_paths[1], "Libs/UI/main_menu_I10.dds");
+    }
     #[test]
     fn atlas_path_is_scoped_to_gfx_and_rejects_traversal() {
         assert_eq!(

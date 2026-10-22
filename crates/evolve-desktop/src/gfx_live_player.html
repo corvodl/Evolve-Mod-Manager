@@ -17,6 +17,12 @@ main { flex:1; min-height:0; display:flex; align-items:center; justify-content:c
 #background-video { position:absolute; inset:0; width:100%; height:100%;
   object-fit:cover; pointer-events:none; z-index:0; }
 #background-video[hidden] { display:none !important; }
+#preview-notice { position:absolute; left:12px; bottom:12px; z-index:2;
+  max-width:min(620px, 78%); padding:9px 12px; border:1px solid #71572f;
+  border-radius:6px; background:rgba(31,27,23,.94); color:#f6d6a1;
+  font-size:12px; line-height:1.45; white-space:pre-line;
+  pointer-events:none; }
+#preview-notice[hidden] { display:none !important; }
 main { position:relative; overflow:hidden; }
 #source-panel { position:absolute; top:12px; right:12px; bottom:12px; width:min(340px, 42vw);
   background:rgba(29,32,38,.98); border:1px solid #525762; border-radius:8px;
@@ -51,6 +57,7 @@ button:hover { background:#bb353c; }
 <button id="inspect" type="button" aria-expanded="false" aria-controls="source-panel">Source UI_Data menu</button>
 <button id="initialize" type="button" disabled title="Requires a source-verified original openScreen or transitionToMainMenu callback">Initialize original menu</button>
 <button id="dismiss-overlay" type="button" disabled title="Requires the original verified hidePatchNotes callback">Dismiss original Patch Notes</button>
+<button id="dismiss-signin" type="button" disabled title="Requires the original verified showSigningInPrompt(bool) function">Dismiss sign-in prompt</button>
 <button id="reset" type="button">Reset movie</button>
 </div>
 </header>
@@ -58,6 +65,7 @@ button:hover { background:#bb353c; }
 <div id="composition">
 <video id="background-video" autoplay muted loop playsinline preload="auto" hidden aria-hidden="true"></video>
 <div id="stage" aria-label="Ruffle interactive Scaleform preview"></div>
+<div id="preview-notice" role="note" hidden></div>
 </div>
 <aside id="source-panel" hidden aria-label="Original UI_Data menu inspector">
 <button id="source-close" type="button" aria-label="Close source menu">×</button>

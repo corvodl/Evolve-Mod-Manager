@@ -2,6 +2,51 @@
 
 Updated: **2026-10-20** · Repository: `corvodl/Evolve-Mod-Manager` · Working PR: **#6** on `feature/blender-viewport-cdf-autoload`, based on PR #5's `feature/pr5-combined-viewer-preview`. This document is a resumable engineering checklist, **not** a claim of production parity. See [PARITY.md](PARITY.md) for the broader feature matrix.
 
+## Nightly 20 screenshot — original sign-in overlay still visible
+
+The source screenshot shows a near-black Ruffle preview, visible original
+`@ui_SigningInPrompt` text, two outlined prompt buttons, and a faint
+original red logo. **This does not prove that the source UI failed to load**:
+the separate video background may be unavailable, the sign-in layer may
+remain active without native network state, and Ruffle may omit original
+Scaleform color/shader/font behavior. Screenshot alone cannot distinguish them.
+
+The live preview now exposes a **Dismiss sign-in prompt** action only when
+the original first-frame AVM1 `showSigningInPrompt(bool)` function is
+signature-verified. Clicking calls that source function with `false` in
+the isolated movie. It never fakes successful login, network state, or game
+native callbacks. The button stays disabled if unsupported.
+
+When the source background cannot be prepared, a compact on-stage notice
+reports the exact `videos.pak` staging status and points to the existing
+source-backed sidecar / explicitly configured FFmpeg path. If
+`ui_signinginprompt` remains unresolved in the exact-build English
+localization report, the notice also calls out the missing translation.
+These are **diagnostics and a verified UI-local action**, not a full
+rendering fix or complete native main-menu initialization.
+
+Additional follow-up based on the resource diagnostic screenshot: the Asset
+Library is configured but the GFX source build is unavailable; 61 bitmap tiles
+were restored, **350 were skipped for unknown individual reasons**, one
+nested movie is missing, and the main-menu video is not source-qualified.
+The previous summary of all 350 as missing source files would be incorrect.
+
+The editor now attempts to identify a build when one and only one library
+build contains an exact virtual movie path with byte-for-byte identical
+original GFX data. Cross-build identical copies, ambiguous members, and
+missing manifests intentionally remain unselected. Nothing is identified
+by basename or game version guess. The preview now reports separate bitmap
+skip counts for missing DDS source, preview pixel/tile limits, invalid
+atlas rectangles/definitions, duplicate/already defined bitmap IDs, and
+DDS decoder failures. It includes up to twelve original virtual DDS names
+for the missing-source category. Existing safety limits remain enforced.
+
+Still required: inspect the user's `preview-menu.json` resource counts
+and `background_video.status`, verify the source
+`showSigningInPrompt(false)` visual transition in Ruffle, and compare the
+same frame against live CryEngine output. Preserve the original sign-in
+text, never invent a translation, and keep the GFX bytes read-only.
+
 ## October 22 — source-backed GFX parity continuation after submenu wiring
 
 Branch: `feature/gfx-main-menu-text-init`, draft PR #29. This pass builds on

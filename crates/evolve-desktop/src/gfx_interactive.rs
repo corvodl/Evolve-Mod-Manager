@@ -766,7 +766,7 @@ fn renderable_movie(
     virtual_movie: &str,
     source: &Path,
     session: &Session,
-) -> Result<(Vec<u8>, usize, usize), String> {
+) -> Result<(Vec<u8>, usize, usize, gfx_external_textures::SkipDetails), String> {
     // Use the exact same verified atlas reconstruction as the FFDec preview.
     // Ruffle can then rasterize preserved bitmap-fill shapes and run supported
     // AVM1/AVM2 actions in the original script tags.
@@ -790,6 +790,7 @@ fn renderable_movie(
         flash_movie(&result.movie)?,
         result.converted,
         result.skipped,
+        result.skip_details,
     ))
 }
 fn relative_import(parent: &str, child: &str) -> Result<String, String> {
@@ -814,7 +815,7 @@ fn stage_import(
     session: &Session,
     reference: &str,
     output: &Path,
-) -> Result<Option<(usize, usize)>, String> {
+) -> Result<Option<(usize, usize, gfx_external_textures::SkipDetails)>, String> {
     if !safe_import(reference) || reference.eq_ignore_ascii_case("movie.swf") {
         return Err("The movie contains an unsafe or colliding GFX/SWF import".into());
     }
@@ -836,14 +837,15 @@ fn stage_import(
         .rsplit_once('/')
         .map(|(parent, _)| format!("{parent}/{reference}"))
         .unwrap_or_else(|| reference.to_owned());
-    let (swf, converted, skipped) = renderable_movie(&bytes, &virtual_path, &real, session)?;
+    let (swf, converted, skipped, details) =
+        renderable_movie(&bytes, &virtual_path, &real, session)?;
     let target = output.join(reference);
     let parent = target
         .parent()
         .ok_or("Invalid imported movie destination")?;
     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     fs::write(target, swf).map_err(|e| e.to_string())?;
-    Ok(Some((converted, skipped)))
+    Ok(Some((converted, skipped, details)))
 }
 /// Follow original movie imports recursively, including font/glyph movies
 /// imported by imported font libraries. All bytes are resolved from the same
@@ -852,7 +854,16 @@ fn stage_import(
 fn stage_live_import_graph(
     session: &Session,
     output: &Path,
-) -> Result<(usize, usize, usize, Vec<String>), String> {
+) -> Result<
+    (
+        usize,
+        usize,
+        usize,
+        Vec<String>,
+        gfx_external_textures::SkipDetails,
+    ),
+    String,
+> {
     let mut pending = session
         .info
         .imports
@@ -863,6 +874,7 @@ fn stage_live_import_graph(
     let mut visited = HashSet::new();
     let mut imported = Vec::<String>::new();
     let (mut restored, mut skipped, mut missing) = (0usize, 0usize, 0usize);
+    let mut skip_details = gfx_external_textures::SkipDetails::default();
     while let Some((parent, name, depth)) = pending.pop_front() {
         let relative = relative_import(&parent, &name)?;
         if !visited.insert(relative.to_ascii_lowercase()) {
@@ -873,9 +885,10 @@ fn stage_live_import_graph(
         }
         imported.push(relative.clone());
         match stage_import(session, &relative, output) {
-            Ok(Some((images, unresolved))) => {
+            Ok(Some((images, unresolved, details))) => {
                 restored += images;
                 skipped += unresolved;
+                skip_details.accumulate(&details);
             }
             Ok(None) => {
                 missing += 1;
@@ -931,7 +944,7 @@ fn stage_live_import_graph(
         }
     }
     imported.sort();
-    Ok((restored, skipped, missing, imported))
+    Ok((restored, skipped, missing, imported, skip_details))
 }
 
 #[derive(Default)]
@@ -1029,7 +1042,7 @@ pub fn launch(
         .tempdir()
         .map_err(|e| e.to_string())?;
     let input = fs::read(&session.editable).map_err(|e| e.to_string())?;
-    let (swf, mut converted, mut skipped) =
+    let (swf, mut converted, mut skipped, _) =
         renderable_movie(&input, &session.relative, &session.source, session)?;
     let root_movie = root.path().join("movie.swf");
     let movie = inject_preview_call(&swf, &session.relative, preset)?;
@@ -1037,7 +1050,7 @@ pub fn launch(
     let mut missing = 0usize;
     for name in session.info.imports.iter().take(MAX_IMPORTS) {
         match stage_import(session, name, root.path()) {
-            Ok(Some((images, skip))) => {
+            Ok(Some((images, skip, _))) => {
                 converted += images;
                 skipped += skip;
             }
@@ -1320,6 +1333,7 @@ struct LiveMenuCounts {
     skipped: usize,
     missing: usize,
     traced_buttons: usize,
+    bitmap_skips: gfx_external_textures::SkipDetails,
 }
 struct LiveMenuLabels<'a> {
     source: &'a serde_json::Value,
@@ -1388,6 +1402,7 @@ fn write_live_menu_report(
     let initialized_in_swf = verified_actions.contains(&PreviewPreset::ReturnToMainMenu);
     let original_open_screen = verified_actions.contains(&PreviewPreset::OpenScreen);
     let original_hide_patch_notes = verified_actions.contains(&PreviewPreset::HidePatchNotes);
+    let original_hide_signing_in = verified_actions.contains(&PreviewPreset::HideSigningIn);
     let report = serde_json::json!({
         "source": "verified same-build UI_Data/MainMenuScreen.xml",
         "localization": labels.source,
@@ -1414,6 +1429,7 @@ fn write_live_menu_report(
             "verified_source_submenus": original_open_screen,
             "verified_go_back": verified_actions.contains(&PreviewPreset::Back),
             "verified_hide_patch_notes": original_hide_patch_notes,
+            "verified_hide_signing_in": original_hide_signing_in,
             "native_cryengine_host_available": false,
             "status": "Only original verified ActionScript handlers may initialize local menu state. Native game state is unavailable."
         },
@@ -1423,9 +1439,11 @@ fn write_live_menu_report(
             "restored_dds_tiles": counts.restored,
             "instrumented_original_button_conditions": counts.traced_buttons,
             "skipped_dds_tiles": counts.skipped,
+            "bitmap_skip_details": counts.bitmap_skips,
             "missing_imported_movies": counts.missing,
             "unresolved_imports": unresolved,
             "has_source_build": session.source_build.is_some(),
+            "source_build_label": session.source_build,
             "has_asset_library": session.library_root.is_some()
         },
         "limitation": "This is a source-defined command inspector. The original SWF is unchanged. Native CryEngine game state, dynamic Scaleform UI initialization, and in-game localization are not reproduced."
@@ -1445,7 +1463,7 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
         .tempdir()
         .map_err(|e| e.to_string())?;
     let bytes = fs::read(&session.editable).map_err(|e| e.to_string())?;
-    let (swf, mut converted, mut skipped) =
+    let (swf, mut converted, mut skipped, mut bitmap_skips) =
         renderable_movie(&bytes, &session.relative, &session.source, session)?;
     let main_menu = session
         .relative
@@ -1481,8 +1499,9 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
     };
     let (movie, actions) = install_live_callbacks(&inspected, &session.relative)?;
     fs::write(scratch.path().join("movie.swf"), movie).map_err(|e| e.to_string())?;
-    let (imported_images, import_skipped, missing, imported_movies) =
+    let (imported_images, import_skipped, missing, imported_movies, imported_skips) =
         stage_live_import_graph(session, scratch.path())?;
+    bitmap_skips.accumulate(&imported_skips);
     let imported_text = localize_imported_initial_text(session, scratch.path(), &imported_movies)?;
     converted += imported_images;
     skipped += import_skipped;
@@ -1508,6 +1527,7 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
             skipped,
             missing,
             traced_buttons,
+            bitmap_skips,
         },
         &actions,
         &imported_movies,
@@ -1631,8 +1651,9 @@ mod tests {
                 skipped: 3,
                 missing: 1,
                 traced_buttons: 2,
+                bitmap_skips: gfx_external_textures::SkipDetails::default(),
             },
-            &[PreviewPreset::Back],
+            &[PreviewPreset::Back, PreviewPreset::HideSigningIn],
             &["gfxfontlib_locfont.gfx".into()],
             serde_json::json!({"playable": false, "status": "missing videos.pak"}),
             LiveMenuLabels {
@@ -1663,6 +1684,8 @@ mod tests {
             false
         );
         assert_eq!(report["initialization"]["verified_open_screen"], false);
+        assert_eq!(report["initialization"]["verified_hide_signing_in"], true);
+        assert_eq!(report["initialization"]["verified_hide_patch_notes"], false);
         assert_eq!(report["commands"][0]["command"], "Game_Start");
         assert_eq!(report["commands"][0]["child_submenu"], "Extras");
         assert_eq!(report["resources"]["restored_dds_tiles"], 5);
