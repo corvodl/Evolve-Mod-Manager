@@ -244,6 +244,17 @@ fn respond(
             "application/javascript; charset=utf-8",
             include_bytes!("gfx_live_player.js"),
         ),
+        "preview-menu.json" => {
+            // Only the generated same-build UI_Data manifest is visible:
+            // never expose the editor's source files or the user's filesystem.
+            serve_file(
+                stream,
+                &root.join("preview-menu.json"),
+                root,
+                64 * 1024,
+                "application/json; charset=utf-8",
+            );
+        }
         "next" => {
             let answer = match receiver.try_recv() {
                 Ok(PreviewPreset::AsAuthored) => json!({"kind":"reload"}),
@@ -421,6 +432,7 @@ mod tests {
         assert!(get("/other-session/movie.swf", None).contains("404 Not Found"));
         assert!(get("/private-token/../test.swf", None).contains("400 Bad Request"));
         assert!(get("/private-token/ruffle/ruffle.js", None).contains("// bundled preview"));
+        assert!(get("/private-token/preview-menu.json", None).contains("404 Not Found"));
     }
 
     #[test]
