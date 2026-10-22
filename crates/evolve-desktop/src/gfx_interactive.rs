@@ -936,6 +936,7 @@ fn write_live_menu_report(
     counts: LiveMenuCounts,
     verified_actions: &[PreviewPreset],
     imported_movies: &[String],
+    background_video: serde_json::Value,
 ) -> Result<(), String> {
     let entries = session
         .menu_commands
@@ -997,6 +998,7 @@ fn write_live_menu_report(
         "source": "verified same-build UI_Data/MainMenuScreen.xml",
         "localization": localization,
         "fonts": font_imports,
+        "background_video": background_video,
         "initialization": {
             "verified_transition_to_main_menu": initialized_in_swf,
             "verified_open_screen": original_open_screen,
@@ -1049,6 +1051,17 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
         stage_live_import_graph(session, scratch.path())?;
     converted += imported_images;
     skipped += import_skipped;
+    // The original Stage 2 background is CRI USM in videos.pak; it is not
+    // supposed to be reconstructed as a static Flash fill.
+    let background_video = if session.relative.eq_ignore_ascii_case("Libs/UI/main_menu.gfx") {
+        crate::gfx_menu_video::stage_main_menu(
+            session.library_root.as_deref(),
+            session.source_build.as_deref(),
+            scratch.path(),
+        )
+    } else {
+        serde_json::json!({"playable": false, "status": "Not the Stage 2 main menu"})
+    };
     write_live_menu_report(
         session,
         scratch.path(),
@@ -1060,6 +1073,7 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
         },
         &actions,
         &imported_movies,
+        background_video,
     )?;
     let live = gfx_live_web::LiveServer::start(scratch, actions, web_runtime)?;
     Ok(RunningPreview {
@@ -1170,12 +1184,14 @@ mod tests {
             },
             &[PreviewPreset::Back],
             &["gfxfontlib_locfont.gfx".into()],
+            serde_json::json!({"playable": false, "status": "missing videos.pak"}),
         )
         .unwrap();
         let report: serde_json::Value =
             serde_json::from_slice(&fs::read(folder.path().join("preview-menu.json")).unwrap())
                 .unwrap();
         assert_eq!(report["commands"][0]["label"], "@ui_STARTGAME");
+        assert_eq!(report["background_video"]["playable"], false);
         assert_eq!(report["localization"]["unresolved"][0], "ui_startgame");
         assert_eq!(
             report["initialization"]["native_cryengine_host_available"],
