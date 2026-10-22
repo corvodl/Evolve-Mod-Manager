@@ -74,7 +74,8 @@ class StaticFBXBasisTests(unittest.TestCase):
 
     def test_fails_if_height_is_scaled_or_parent_transform_missing(self):
         original = ([-1., -2., 0.], [1., 2., 10.])
-        displaced = Mesh([[-1., -2., 0.], [1., 2., 10.]], offset=[0., 0., 4.])
+        displaced = Mesh([[-1., -2., 0.], [1., 2., 10.], [0., 0., 5.]],
+                         offset=[0., 0., 4.])
         with self.assertRaisesRegex(RuntimeError, "rotated, scaled, or displaced"):
             verify_static_world_bounds([displaced], original, "FBX round-trip")
 
