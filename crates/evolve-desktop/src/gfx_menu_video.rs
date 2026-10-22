@@ -2,7 +2,9 @@
 //! Source is always the exact-build, manifest-verified CRI USM in videos.pak.
 //! The browser never receives a .usm or an arbitrary local file URL.
 use evolve_core::library_catalog::resolve_imported_reference_in_archive;
-use evolve_core::{LibraryReference, LibraryReferenceStatus, imported_library};
+use evolve_core::{
+    LibraryReference, LibraryReferenceStatus, imported_archive_files, imported_library,
+};
 use serde_json::{Value, json};
 use std::env;
 use std::fs::{self, File};
@@ -192,6 +194,42 @@ fn transcode(original: &Path, scratch: &Path, ffmpeg: &Path) -> Result<&'static 
     Ok("menu-background.mp4")
 }
 
+/// Return the validated paths of video members from the exact source-build
+/// videos.pak archive. This inventory uses the Asset Library's original
+/// read-only manifest and validates extracted file sizes and symlink safety.
+/// Never inspect arbitrary game folders or other builds.
+fn imported_video_members(root: &Path, build: &str) -> Result<Option<Vec<String>>, String> {
+    let library = imported_library(root).map_err(|e| e.to_string())?;
+    let mut archives = library.archives.iter().filter(|archive| {
+        archive.name.eq_ignore_ascii_case(ORIGINAL_PAK)
+            && archive.builds.iter().any(|label| label == build)
+    });
+    let Some(archive) = archives.next() else {
+        return Ok(None);
+    };
+    if archives.next().is_some() {
+        return Err("Multiple same-build videos.pak archives: choose one verified source".into());
+    }
+    let inventory = imported_archive_files(archive)
+        .map_err(|e| format!("Cannot validate the imported videos.pak manifest: {e}"))?;
+    let paths = inventory
+        .entries
+        .into_iter()
+        .map(|entry| entry.relative_path)
+        .filter(|name| {
+            let lower = name.to_ascii_lowercase();
+            [".usm", ".bik", ".mp4", ".webm"]
+                .iter()
+                .any(|suffix| lower.ends_with(suffix))
+        })
+        .collect::<Vec<_>>();
+    Ok(Some(paths))
+}
+
+fn is_named_main_menu_usm(path: &str) -> bool {
+    path.rsplit('/').next().is_some_and(|name| name.eq_ignore_ascii_case("main_menu.usm"))
+}
+
 /// Accept only unambiguous source-verified representations inside videos.pak.
 /// No global basename searching, no game directory probing, no guessed assets.
 fn original_video(root: &Path, build: &str) -> Result<LibraryReferenceStatus, String> {
@@ -217,6 +255,34 @@ fn original_video(root: &Path, build: &str) -> Result<LibraryReferenceStatus, St
             }
         }
     }
+    // Some original videos.pak variants have a deeper mount root than the
+    // fixed authored paths. Accept only a *unique*, exact main_menu.usm
+    // basename from the same verified videos.pak; never choose the first
+    // similar-looking clip.
+    if matches.is_empty() {
+        if let Some(paths) = imported_video_members(root, build)? {
+            for path in paths.into_iter().filter(|name| is_named_main_menu_usm(name)) {
+                match resolve_imported_reference_in_archive(root, &path, build, ORIGINAL_PAK)
+                    .map_err(|e| format!("Cannot verify original video member {path}: {e}"))?
+                {
+                    LibraryReferenceStatus::Found(found) => {
+                        if !matches
+                            .iter()
+                            .any(|previous| previous.absolute_path == found.absolute_path)
+                        {
+                            matches.push(found);
+                        }
+                    }
+                    LibraryReferenceStatus::Ambiguous(_) => {
+                        return Err("Original main_menu.usm has ambiguous copies within videos.pak".into());
+                    }
+                    LibraryReferenceStatus::Missing => {
+                        return Err(format!("Original video member {path} is missing or modified"));
+                    }
+                }
+            }
+        }
+    }
     Ok(match matches.len() {
         0 => LibraryReferenceStatus::Missing,
         1 => LibraryReferenceStatus::Found(matches.remove(0)),
@@ -224,19 +290,25 @@ fn original_video(root: &Path, build: &str) -> Result<LibraryReferenceStatus, St
     })
 }
 
-fn missing_video_status(root: &Path, build: &str) -> &'static str {
-    match imported_library(root) {
-        Ok(library)
-            if library.archives.iter().any(|archive| {
-                archive.name.eq_ignore_ascii_case(ORIGINAL_PAK)
-                    && archive.builds.iter().any(|label| label == build)
-            }) =>
-        {
-            "The selected build contains videos.pak, but its extracted manifest has no source-verified main_menu.usm at a supported mount path. Inspect the original PAK's video entries."
+fn missing_video_status(root: &Path, build: &str) -> String {
+    match imported_video_members(root, build) {
+        Ok(None) => "Import the original videos.pak into the selected build in Asset Library; the matching main_menu.usm is not available.".into(),
+        Ok(Some(paths)) if paths.is_empty() => {
+            "The selected build's videos.pak has no verified USM or other recognizable video files. Check the imported archive's extracted manifest.".into()
         }
-        _ => {
-            "Import the original videos.pak into the selected build in Asset Library; the matching main_menu.usm is not available."
+        Ok(Some(paths)) => {
+            let candidates = paths
+                .iter()
+                .take(8)
+                .map(|name| name.chars().take(160).collect::<String>())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "The selected build's videos.pak has {} verified video members but none named main_menu.usm. Original filenames (first 8): {candidates}. Determine which authored movie drives the main-menu background before linking it.",
+                paths.len()
+            )
         }
+        Err(error) => format!("Imported videos.pak could not be indexed safely: {error}"),
     }
 }
 
@@ -340,7 +412,7 @@ mod tests {
         let root = temp.path();
         let id = "11111111111111111111";
         let folder = root.join(format!("videos.pak__{id}"));
-        let virtual_path = "FlashAssets/videos/main_menu.usm";
+        let virtual_path = "Movies/Stage2/FlashAssets/videos/main_menu.usm";
         let source = folder.join("files").join(virtual_path);
         fs::create_dir_all(source.parent().unwrap()).unwrap();
         let data = b"CRID\0\0\0\0\0\0\0\0";
