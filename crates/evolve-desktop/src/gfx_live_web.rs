@@ -292,6 +292,14 @@ fn respond(
                 mime,
             );
         }
+        "menu-background.mp4" | "menu-background.webm" => {
+            let mime = if relative.ends_with(".mp4") {
+                "video/mp4"
+            } else {
+                "video/webm"
+            };
+            serve_file(stream, &root.join(relative), root, MAX_STATIC_ASSET, mime);
+        }
         filename if filename == "movie.swf" || safe_import_asset(filename) => {
             serve_file(
                 stream,
@@ -368,7 +376,7 @@ fn send(stream: &mut TcpStream, code: u16, mime: &str, payload: &[u8]) {
         _ => "Error",
     };
     let header = format!(
-        "HTTP/1.1 {code} {reason}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'none'\r\n\r\n",
+        "HTTP/1.1 {code} {reason}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; media-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'none'\r\n\r\n",
         payload.len()
     );
     let _ = stream.write_all(header.as_bytes());
@@ -402,6 +410,7 @@ mod tests {
             let src = tempfile::tempdir().unwrap();
             let web = tempfile::tempdir().unwrap();
             fs::write(src.path().join("movie.swf"), b"FWSsynthetic").unwrap();
+            fs::write(src.path().join("menu-background.mp4"), b"\0\0\0\x18ftypisom").unwrap();
             fs::write(web.path().join("ruffle.js"), b"// bundled preview").unwrap();
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let destination = listener.local_addr().unwrap();
@@ -433,6 +442,8 @@ mod tests {
         assert!(get("/private-token/../test.swf", None).contains("400 Bad Request"));
         assert!(get("/private-token/ruffle/ruffle.js", None).contains("// bundled preview"));
         assert!(get("/private-token/preview-menu.json", None).contains("404 Not Found"));
+        assert!(get("/private-token/menu-background.mp4", None).contains("video/mp4"));
+        assert!(get("/private-token/secret.mp4", None).contains("404 Not Found"));
     }
 
     #[test]
