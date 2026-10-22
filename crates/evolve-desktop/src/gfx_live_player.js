@@ -18,16 +18,18 @@
     const previewStateStatus = document.getElementById("runtime-status");
     const refreshPreviewStateStatus = () => {
         const state = previewRuntime.snapshot();
-        menuInput.value = state.CurrentMenu;
+        menuInput.value = String(state.CurrentMenu);
         npeInput.checked = state.NPE;
         soloInput.checked = state.CustomSolo;
         previewStateStatus.textContent = "Local values: CurrentMenu=" + state.CurrentMenu +
-            ", NPE=" + state.NPE + ", CustomSolo=" + state.CustomSolo +
+            " (" + state.currentMenuConstant + "), NPE=" + state.NPE +
+            ", CustomSolo=" + state.CustomSolo +
             ". Direct Flash host queries received: CurrentMenu " + state.requests.CurrentMenu +
             ", NPE " + state.requests.NPE + ", CustomSolo " + state.requests.CustomSolo + ".";
     };
     const setPreviewMenu = group => {
-        // Use the authored UI_Data submenu name, not a synthetic HTML card.
+        // Original UI_Data submenu names are mapped to the actual numeric
+        // CryEngine MMS_* IDs; no HTML image-button replacements are used.
         if (previewRuntime.set("CurrentMenu", group)) refreshPreviewStateStatus();
     };
     for (const [control, key] of [
@@ -36,11 +38,12 @@
         [soloInput, "CustomSolo"]
     ]) {
         control.addEventListener("change", () => {
-            previewRuntime.set(key, key === "CurrentMenu" ? control.value : control.checked);
+            previewRuntime.set(key, key === "CurrentMenu" ? Number(control.value) : control.checked);
             refreshPreviewStateStatus();
             updateSourceGroup(currentSourceGroup());
-            show("Preview-only " + key + " updated; reopen the original Flash submenu " +
-                 "to test its authored layout. No native game state changed.");
+            show("Preview-only " + key + " updated. Original Flash evaluates image buttons " +
+                 "when entering a submenu; navigate back and reopen it to test the change. " +
+                 "No native game state changed.");
         });
     }
     refreshPreviewStateStatus();
