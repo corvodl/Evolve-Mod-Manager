@@ -787,7 +787,9 @@ fn stage_live_import_graph(
         // The parent movie itself was manifest/same-folder verified before
         // following any nested references, and all nested members go through
         // that same restricted lookup and path validation.
-        let virtual_path = session.relative.rsplit_once('/')
+        let virtual_path = session
+            .relative
+            .rsplit_once('/')
             .map(|(parent, _)| format!("{parent}/{name}"))
             .unwrap_or_else(|| name.clone());
         crate::gfx_dependencies::stage_imports(
