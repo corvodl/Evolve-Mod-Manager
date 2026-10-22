@@ -21,6 +21,7 @@ pub struct LiveServer {
     active: Arc<AtomicBool>,
     queued: mpsc::Sender<PreviewPreset>,
     supported: Vec<PreviewPreset>,
+    url: String,
     worker: Option<JoinHandle<()>>,
     _scratch: tempfile::TempDir,
 }
@@ -100,6 +101,7 @@ impl LiveServer {
             active,
             queued,
             supported,
+            url,
             worker: Some(worker),
             _scratch: scratch,
         })
@@ -107,6 +109,12 @@ impl LiveServer {
 
     pub fn is_running(&self) -> bool {
         self.active.load(Ordering::Acquire)
+    }
+    pub fn reopen(&self) -> Result<(), String> {
+        if !self.is_running() {
+            return Err("Live GFX preview is stopped".into());
+        }
+        open_browser(&self.url)
     }
     pub fn supports(&self, preset: PreviewPreset) -> bool {
         preset == PreviewPreset::AsAuthored || self.supported.contains(&preset)
@@ -419,6 +427,7 @@ mod tests {
             active: Arc::new(AtomicBool::new(true)),
             queued: sender,
             supported: vec![PreviewPreset::Back],
+            url: "http://127.0.0.1:0/private-token/".into(),
             worker: None,
             _scratch: tempfile::tempdir().unwrap(),
         };
