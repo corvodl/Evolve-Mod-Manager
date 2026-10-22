@@ -1053,7 +1053,10 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
     skipped += import_skipped;
     // The original Stage 2 background is CRI USM in videos.pak; it is not
     // supposed to be reconstructed as a static Flash fill.
-    let background_video = if session.relative.eq_ignore_ascii_case("Libs/UI/main_menu.gfx") {
+    let background_video = if session
+        .relative
+        .eq_ignore_ascii_case("Libs/UI/main_menu.gfx")
+    {
         crate::gfx_menu_video::stage_main_menu(
             session.library_root.as_deref(),
             session.source_build.as_deref(),
