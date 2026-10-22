@@ -209,10 +209,11 @@ mod tests {
             let mut dds = vec![0u8; 128];
             dds[..4].copy_from_slice(b"DDS ");
             dds[4..8].copy_from_slice(&124u32.to_le_bytes());
-            dds[8..12].copy_from_slice(&0x21007u32.to_le_bytes());
+            // Matches supplied single-surface source headers (flags
+            // 0x81007 with no mipmap-count flag and zero stored mip count).
+            dds[8..12].copy_from_slice(&0x81007u32.to_le_bytes());
             dds[12..16].copy_from_slice(&600u32.to_le_bytes());
             dds[16..20].copy_from_slice(&340u32.to_le_bytes());
-            dds[28..32].copy_from_slice(&1u32.to_le_bytes());
             dds[76..80].copy_from_slice(&32u32.to_le_bytes());
             dds[80..84].copy_from_slice(&4u32.to_le_bytes());
             dds[84..88].copy_from_slice(fourcc);
