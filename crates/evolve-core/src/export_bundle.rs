@@ -443,7 +443,6 @@ pub fn export_bundle(
                 options.caf.as_deref(),
                 &target,
                 options.embed_textures,
-                options.combine_meshes,
             )
             .map_err(|e| format!("{relative}: {e}"))?;
         } else {
