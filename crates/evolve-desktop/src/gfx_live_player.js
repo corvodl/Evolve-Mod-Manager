@@ -403,6 +403,31 @@
                         if (width === 0 || height === 0 || width > 8192 || height > 8192) {
                             throw new Error("invalid PNG dimensions");
                         }
+                        // Validate actual browser pixel decoding, not just a
+                        // recognizable PNG signature/header.
+                        const blob = new Blob([bytes], {type: "image/png"});
+                        if (typeof createImageBitmap === "function") {
+                            const bitmap = await createImageBitmap(blob);
+                            try {
+                                if (bitmap.width !== width || bitmap.height !== height) {
+                                    throw new Error("decoded dimensions disagree with PNG");
+                                }
+                            } finally {
+                                bitmap.close();
+                            }
+                        } else {
+                            const url = URL.createObjectURL(blob);
+                            try {
+                                const image = new Image();
+                                image.src = url;
+                                await image.decode();
+                                if (image.naturalWidth !== width || image.naturalHeight !== height) {
+                                    throw new Error("decoded dimensions disagree with PNG");
+                                }
+                            } finally {
+                                URL.revokeObjectURL(url);
+                            }
+                        }
                         decoded++;
                     } catch (error) {
                         failures.push(name + ": " + String(error).slice(0, 80));
