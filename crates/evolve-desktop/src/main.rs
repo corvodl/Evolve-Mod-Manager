@@ -18,6 +18,7 @@ mod gfx_dependencies;
 mod gfx_editor;
 mod gfx_external_textures;
 mod gfx_interactive;
+mod gfx_live_web;
 mod gfx_layout_canvas;
 mod gfx_live_inspector;
 mod gfx_menu_map;
@@ -4229,12 +4230,31 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::GfxSelectPreviewPreset(preset) => {
             state.gfx_preview_preset = preset;
-            state.gfx_interactive_status = format!(
-                "Selected preview: {}. Launch/restart to test.",
-                preset.description()
-            );
+            if let Some(live) = state.gfx_interactive_running.as_ref()
+                && live.is_running()
+            {
+                state.gfx_interactive_status = match live.dispatch_live(preset) {
+                    Ok(()) => format!(
+                        "Sent {} to the running Ruffle Web preview. Check its status line for ActionScript acknowledgement.",
+                        preset.description()
+                    ),
+                    Err(reason) => format!("Not dispatched: {reason}"),
+                };
+            } else if state.gfx_session.is_some() && !state.gfx_busy {
+                // A first control click also opens the live player. Further
+                // clicks reuse the same browser window and running movie.
+                return update(state, Message::GfxRunInteractive);
+            } else {
+                state.gfx_interactive_status =
+                    "Open the GFX and live preview before sending menu actions.".into();
+            }
         }
         Message::GfxRunInteractive => {
+            if state.gfx_interactive_running.as_ref().is_some_and(|p| p.is_running()) {
+                state.gfx_interactive_status =
+                    "Live preview is already open. Menu actions update without restarting.".into();
+                return Task::none();
+            }
             if state.gfx_busy || state.busy {
                 state.gfx_interactive_status =
                     "Wait for the current GFX operation to finish.".into();
@@ -4244,16 +4264,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.gfx_interactive_status = "Open a GFX first.".into();
                 return Task::none();
             };
-            state.gfx_interactive_running = None; // Kill an old preview before replacing files.
+            state.gfx_interactive_running = None; // Drop only a closed/stopped session.
             state.gfx_busy = true;
             state.gfx_interactive_status =
-                "Preparing isolated UI_Assets and ActionScript preview...".into();
-            let executable = state.preferences.ruffle_executable.clone();
-            let preset = state.gfx_preview_preset;
+                "Preparing persistent local Ruffle Web/ActionScript preview...".into();
             return Task::perform(
                 async move {
                     tokio::task::spawn_blocking(move || {
-                        gfx_interactive::launch(&session, &executable, preset)
+                        gfx_interactive::launch_live(&session)
                     })
                     .await
                     .unwrap_or_else(|e| Err(format!("Ruffle preview worker stopped: {e}")))
@@ -4265,13 +4283,25 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.gfx_busy = false;
             match result {
                 Ok(preview) => {
+                    let requested = state.gfx_preview_preset;
                     state.gfx_interactive_status = format!(
-                        "Ruffle window launched ({}) · {} restored DDS tiles · {} skipped · {} missing imports. Original ActionScript executes where supported; native Evolve callbacks remain disabled.",
-                        preview.preset.description(),
+                        "Persistent local Ruffle Web preview opened · {} restored DDS tiles · {} skipped · {} missing imports. Native game callbacks disabled. Original menu controls use verified live callbacks.",
                         preview.restored_images,
                         preview.skipped_images,
                         preview.missing_imports,
                     );
+                    if requested != gfx_interactive::PreviewPreset::AsAuthored {
+                        state.gfx_interactive_status = match preview.dispatch_live(requested) {
+                            Ok(()) => format!(
+                                "Opened live Ruffle preview and queued {}. The preview shows whether ActionScript received it.",
+                                requested.description()
+                            ),
+                            Err(reason) => format!(
+                                "Live preview opened, but {} could not be dispatched: {reason}",
+                                requested.description()
+                            ),
+                        };
+                    }
                     state.gfx_interactive_running = Some(preview);
                 }
                 Err(error) => {
@@ -4282,7 +4312,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::GfxStopInteractive => {
             state.gfx_interactive_running = None;
             state.gfx_interactive_status =
-                "Stopped external Ruffle preview; no GFX project changes.".into();
+                "Stopped local live-preview server (close the browser tab). Original GFX remains unchanged.".into();
         }
         Message::GfxSelectResource(index) => {
             if state
