@@ -227,7 +227,9 @@ fn imported_video_members(root: &Path, build: &str) -> Result<Option<Vec<String>
 }
 
 fn is_named_main_menu_usm(path: &str) -> bool {
-    path.rsplit('/').next().is_some_and(|name| name.eq_ignore_ascii_case("main_menu.usm"))
+    path.rsplit('/')
+        .next()
+        .is_some_and(|name| name.eq_ignore_ascii_case("main_menu.usm"))
 }
 
 /// Accept only unambiguous source-verified representations inside videos.pak.
@@ -261,7 +263,10 @@ fn original_video(root: &Path, build: &str) -> Result<LibraryReferenceStatus, St
     // similar-looking clip.
     if matches.is_empty() {
         if let Some(paths) = imported_video_members(root, build)? {
-            for path in paths.into_iter().filter(|name| is_named_main_menu_usm(name)) {
+            for path in paths
+                .into_iter()
+                .filter(|name| is_named_main_menu_usm(name))
+            {
                 match resolve_imported_reference_in_archive(root, &path, build, ORIGINAL_PAK)
                     .map_err(|e| format!("Cannot verify original video member {path}: {e}"))?
                 {
@@ -274,10 +279,14 @@ fn original_video(root: &Path, build: &str) -> Result<LibraryReferenceStatus, St
                         }
                     }
                     LibraryReferenceStatus::Ambiguous(_) => {
-                        return Err("Original main_menu.usm has ambiguous copies within videos.pak".into());
+                        return Err(
+                            "Original main_menu.usm has ambiguous copies within videos.pak".into(),
+                        );
                     }
                     LibraryReferenceStatus::Missing => {
-                        return Err(format!("Original video member {path} is missing or modified"));
+                        return Err(format!(
+                            "Original video member {path} is missing or modified"
+                        ));
                     }
                 }
             }
