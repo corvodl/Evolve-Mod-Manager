@@ -1814,8 +1814,11 @@ pub fn export_unified_cdf_fbx_options_with_glow(
         include_str!("blender_material_ids.py"),
     )
     .map_err(|e| e.to_string())?;
-    fs::write(work.path().join("blender_export_hierarchy.py"),
-              include_str!("blender_export_hierarchy.py")).map_err(|e| e.to_string())?;
+    fs::write(
+        work.path().join("blender_export_hierarchy.py"),
+        include_str!("blender_export_hierarchy.py"),
+    )
+    .map_err(|e| e.to_string())?;
     let temp_fbx = work.path().join(
         destination
             .file_name()
