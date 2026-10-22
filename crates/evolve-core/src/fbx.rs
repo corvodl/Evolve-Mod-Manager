@@ -137,6 +137,48 @@ pub(crate) fn publish_verified_binary_fbx(
     Ok(copied)
 }
 
+/// The old exporter threw away both Blender streams and reduced every Python
+/// traceback to "exit code 1". Keep output in a bounded, isolated file (not a
+/// piped child process, which can deadlock on a full OS pipe). On failure,
+/// extract the tail including the last Python traceback for user diagnostics.
+pub(crate) fn blender_diagnostic_tail(path: &Path) -> String {
+    const MAX_BYTES: u64 = 24 * 1024;
+    const MAX_CHARS: usize = 3500;
+    let Ok(mut file) = File::open(path) else {
+        return "Blender produced no diagnostic log".into();
+    };
+    let Ok(size) = file.metadata().map(|m| m.len()) else {
+        return "Unable to inspect Blender's diagnostic log".into();
+    };
+    if file.seek(SeekFrom::Start(size.saturating_sub(MAX_BYTES))).is_err() {
+        return "Unable to seek Blender's diagnostic log".into();
+    }
+    let mut bytes = Vec::new();
+    if file.read_to_end(&mut bytes).is_err() {
+        return "Unable to read Blender's diagnostic log".into();
+    }
+    let rendered = String::from_utf8_lossy(&bytes);
+    let salient = rendered
+        .rfind("Traceback (most recent call last):")
+        .or_else(|| rendered.rfind("Error:"))
+        .or_else(|| rendered.rfind("RuntimeError:"))
+        .map(|pos| &rendered[pos..])
+        .unwrap_or(&rendered);
+    let diagnostic: String = salient
+        .chars()
+        .rev()
+        .take(MAX_CHARS)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    if diagnostic.trim().is_empty() {
+        "Blender exited without an explanatory Python error".into()
+    } else {
+        diagnostic.trim().to_string()
+    }
+}
+
 /// Execute only an explicitly supplied installed Blender executable, with a
 /// fixed bundled script. No shell, PATH lookup or downloads. Stage alongside
 /// destination, validate actual FBX signature, then publish without overwrite.
@@ -209,6 +251,9 @@ pub fn convert_glb_to_fbx_with_options(
             .file_name()
             .ok_or_else(|| FbxError::Invalid("FBX destination is missing its filename".into()))?,
     );
+    let log = stage.path().join("blender-export.log");
+    let stdout = File::create(&log)?;
+    let stderr = stdout.try_clone()?;
     let mut child = Command::new(blender)
         .arg("--background")
         .arg("--factory-startup")
@@ -225,8 +270,8 @@ pub fn convert_glb_to_fbx_with_options(
             "0"
         })
         .arg(if embed_textures { "1" } else { "0" })
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
         .spawn()
         .map_err(|e| FbxError::Converter(e.to_string()))?;
     let begun = Instant::now();
@@ -243,7 +288,8 @@ pub fn convert_glb_to_fbx_with_options(
     };
     if !status.success() {
         return Err(FbxError::Converter(format!(
-            "Blender exit status: {status}"
+            "Blender exit status: {status}. Blender diagnostic:\n{}",
+            blender_diagnostic_tail(&log)
         )));
     }
     // Embedded normal-map Content is verified in the staged FBX by Blender's
@@ -264,6 +310,25 @@ pub fn convert_glb_to_fbx_with_options(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn error_tail_includes_blender_traceback_without_full_log_or_deadlock() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("blender-export.log");
+        let huge = "noisy Blender startup output".repeat(5000);
+        fs::write(
+            &log,
+            format!(
+                "{huge}\nTraceback (most recent call last):\n  File \"export.py\", line 54\nValueError: FBX normal-map media reference missing\n"
+            ),
+        )
+        .unwrap();
+        let summary = blender_diagnostic_tail(&log);
+        assert!(summary.contains("Traceback (most recent call last):"));
+        assert!(summary.contains("ValueError: FBX normal-map media reference missing"));
+        assert!(!summary.contains(&huge));
+        assert!(summary.len() <= 4000);
+    }
+
     #[test]
     fn verified_fbx_publisher_preserves_binary_header_and_every_byte() {
         let directory = tempfile::tempdir().unwrap();
