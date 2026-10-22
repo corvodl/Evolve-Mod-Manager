@@ -13,6 +13,24 @@ strong { color:#f35a5e; letter-spacing:.04em; }
 small { color:#a2a7b1; }
 main { flex:1; min-height:0; display:flex; align-items:center; justify-content:center; background:#050505; }
 #stage { width:100%; height:100%; }
+main { position:relative; overflow:hidden; }
+#source-panel { position:absolute; top:12px; right:12px; bottom:12px; width:min(340px, 42vw);
+  background:rgba(29,32,38,.98); border:1px solid #525762; border-radius:8px;
+  box-shadow:0 8px 28px #0009; padding:12px; overflow:auto; z-index:4; }
+#source-panel[hidden] { display:none; }
+#source-panel h2 { font-size:14px; margin:0 0 10px; color:#f1f3f7; }
+#source-panel h3 { font-size:12px; margin:16px 0 6px; color:#f3a6a8; }
+#source-panel p,#source-panel li { font-size:12px; line-height:1.5; color:#bcc0c9; }
+#source-panel ul { padding-left:18px; margin:5px 0; }
+#source-buttons { display:flex; flex-direction:column; gap:7px; }
+#source-buttons button { text-align:left; background:#363942; border:1px solid #515661; }
+#source-buttons button:disabled { opacity:.67; cursor:not-allowed; }
+#source-buttons button:not(:disabled):hover { background:#595c68; }
+#source-buttons small { display:block; margin-top:4px; color:#adb0b9; }
+#source-back { margin:8px 0; }
+#source-close { float:right; background:#363942; padding:4px 9px; }
+header .tools { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+@media(max-width:650px) { #source-panel { left:8px; right:8px; width:auto; } }
 ruffle-player { width:100%; height:100%; display:block; }
 footer { padding:9px 14px; border-top:1px solid #34363b; background:#202329; min-height:48px; }
 #feedback { color:#d5d8dd; }
@@ -24,9 +42,28 @@ button:hover { background:#bb353c; }
 <body>
 <header><div><strong>EVOLVE · Live GFX Preview</strong>
 <div><small>Original ActionScript only · native game services disabled</small></div></div>
+<div class="tools">
+<button id="inspect" type="button" aria-expanded="false" aria-controls="source-panel">Source UI_Data menu</button>
 <button id="reset" type="button">Reset movie</button>
+</div>
 </header>
-<main><div id="stage" aria-label="Ruffle interactive Scaleform preview"></div></main>
+<main>
+<div id="stage" aria-label="Ruffle interactive Scaleform preview"></div>
+<aside id="source-panel" hidden aria-label="Original UI_Data menu inspector">
+<button id="source-close" type="button" aria-label="Close source menu">×</button>
+<h2>Original UI_Data menu</h2>
+<p>This lists commands from the game's verified menu definitions. It is <strong>not</strong> a replacement for missing Scaleform graphics. Native game commands cannot run here.</p>
+<p id="source-state">Loading original menu definitions…</p>
+<div id="source-navigation" hidden>
+<button id="source-back" type="button">Main menu</button>
+<h3 id="source-section">Main</h3>
+<div id="source-buttons"></div>
+</div>
+<h3>Resource diagnostics</h3>
+<ul id="resource-status"></ul>
+<p id="source-limits"></p>
+</aside>
+</main>
 <footer role="status"><span id="feedback">Loading Ruffle Web…</span></footer>
 <script src="./ruffle/ruffle.js"></script>
 <script src="./preview.js"></script>
