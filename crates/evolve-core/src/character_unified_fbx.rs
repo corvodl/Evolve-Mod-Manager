@@ -835,6 +835,21 @@ fn exact_multi_slot_materials_with_scope(
     override_mtl: Option<&str>,
     imported: Option<&ImportedTextureScope>,
 ) -> Result<Option<Vec<OriginalMaterialPng>>, String> {
+    exact_multi_slot_materials_scoped_roles(
+        root, mesh_path, inventory, override_mtl, imported, true,
+    )
+}
+
+/// No-embed exports need only the authored normal DDS. They must not fail
+/// because a diffuse/emissive DDS is unindexed or lacks high mip fragments.
+fn exact_multi_slot_materials_scoped_roles(
+    root: &Path,
+    mesh_path: &Path,
+    inventory: &Inventory,
+    override_mtl: Option<&str>,
+    imported: Option<&ImportedTextureScope>,
+    include_color_maps: bool,
+) -> Result<Option<Vec<OriginalMaterialPng>>, String> {
     let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
     let Some((virtual_mtl, material)) =
         original_model_material_with_scope(&root, mesh_path, inventory, override_mtl, imported)?
@@ -861,6 +876,11 @@ fn exact_multi_slot_materials_with_scope(
                 .iter()
                 .any(|map| SOURCE_EMISSION_ROLES.contains(&map.role.as_str()));
         for map in &leaf.maps {
+            if !include_color_maps
+                && !matches!(map.role.as_str(), "normal" | "normals" | "bumpmap")
+            {
+                continue;
+            }
             let role = match map.role.as_str() {
                 "diffuse" => 0,
                 "normal" | "normals" | "bumpmap" => 1,
@@ -1113,12 +1133,8 @@ pub(crate) fn static_cdf_material_glb(
                 part.name
             ));
         }
-        let original = exact_multi_slot_materials_with_scope(
-            &root,
-            &part.source,
-            inventory,
-            override_material,
-            scope.as_ref(),
+        let original = exact_multi_slot_materials_scoped_roles(
+            &root, &part.source, inventory, override_material, scope.as_ref(), embed_textures,
         )?;
         let raw = fs::read(&part.source).map_err(|e| e.to_string())?;
         let original_table =
