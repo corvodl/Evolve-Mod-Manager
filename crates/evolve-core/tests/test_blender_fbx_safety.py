@@ -8,7 +8,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 from blender_fbx_safety import (
     FBXValidationError, Node, _read_nodes, _write_nodes,
-    _validate_geometry, optimize_binary_fbx,
+    _validate_geometry, optimize_binary_fbx, _properties,
 )
 
 
@@ -98,12 +98,54 @@ class FBXSafetyTests(unittest.TestCase):
                 optimize_binary_fbx(path)
             self.assertEqual(path.read_bytes(),original)
 
-    def test_rejects_texture_refs_when_untextured(self):
+    def test_external_normal_png_is_preserved_with_relative_material_links(self):
         with tempfile.TemporaryDirectory() as folder:
-            path = pathlib.Path(folder)/"pink.fbx"
-            path.write_bytes(sample(extra_objects=(obj("Texture",12,"TextureVideoClip"),)))
-            with self.assertRaisesRegex(FBXValidationError,"references images"):
-                optimize_binary_fbx(path,embed_textures=False)
+            root = pathlib.Path(folder)
+            path = root / "emet.fbx"
+            textures = root / "textures"
+            textures.mkdir()
+            filename = "emet_normal_123456789abc.png"
+            (textures / filename).write_bytes(b"\x89PNG\r\n\x1a\n" + bytes(40))
+            source = "C:/Temporary/export/textures/" + filename
+            image_nodes = tuple(
+                obj(kind, id_, subtype, [
+                    node("FileName", string(source), 1),
+                    node("RelativeFilename", string(source), 1),
+                ])
+                for kind, id_, subtype in [
+                    ("Texture", 12, "TextureVideoClip"),
+                    ("Video", 13, "Clip"),
+                ]
+            )
+            path.write_bytes(sample(extra_objects=image_nodes))
+            stats = optimize_binary_fbx(path, embed_textures=False)
+            self.assertEqual(stats["external_normal_maps"], 1)
+            objs = _read_nodes(path.read_bytes())[1][0]
+            for item in objs.children:
+                if item.name in (b"Video", b"Texture"):
+                    self.assertEqual(
+                        _properties(item.get(b"FileName"))[0],
+                        ("textures/" + filename).encode(),
+                    )
+                    self.assertEqual(
+                        _properties(item.get(b"RelativeFilename"))[0],
+                        ("textures/" + filename).encode(),
+                    )
+            self.assertTrue((textures / filename).exists())
+
+    def test_unembedded_export_rejects_unexpected_diffuse_or_missing_png(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = pathlib.Path(folder) / "pink.fbx"
+            path.write_bytes(sample(extra_objects=(
+                obj("Texture", 12, "TextureVideoClip", [
+                    node("FileName", string("textures/body_diffuse.png"), 1),
+                ]),
+            )))
+            old = path.read_bytes()
+            with self.assertRaisesRegex(
+                    FBXValidationError, "non-normal or missing image"):
+                optimize_binary_fbx(path, embed_textures=False)
+            self.assertEqual(old, path.read_bytes())
 
 
 if __name__ == "__main__":
