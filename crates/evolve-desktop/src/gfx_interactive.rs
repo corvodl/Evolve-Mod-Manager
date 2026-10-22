@@ -934,6 +934,78 @@ fn stage_live_import_graph(
     Ok((restored, skipped, missing, imported))
 }
 
+#[derive(Default)]
+struct ImportedTextCounts {
+    movies: usize,
+    localized: usize,
+    unresolved: usize,
+    fields: usize,
+    skipped: usize,
+}
+
+/// The root menu's translation pass cannot see the initial strings in nested
+/// source movies. Resolve these keys from the exact selected build and patch
+/// only the imported, temporary SWF copies; do not alter runtime ActionScript
+/// assignments, source files, font libraries or game installation contents.
+fn localize_imported_initial_text(
+    session: &Session,
+    root: &Path,
+    imports: &[String],
+) -> Result<ImportedTextCounts, String> {
+    let mut result = ImportedTextCounts::default();
+    if !session.relative.eq_ignore_ascii_case("Libs/UI/main_menu.gfx") {
+        return Ok(result);
+    }
+    let mut keys = Vec::<String>::new();
+    for name in imports {
+        if !safe_import(name) {
+            return Err("Unsafe imported movie localization path".into());
+        }
+        let source = root.join(name);
+        if !source.is_file() {
+            continue;
+        }
+        let bytes = fs::read(&source).map_err(|e| e.to_string())?;
+        match crate::gfx_menu_text::authored_keys(&bytes) {
+            Ok(found) => {
+                if keys.len().saturating_add(found.len()) > 1024 {
+                    return Err("Imported menu translation requests exceed supported bounds".into());
+                }
+                keys.extend(found);
+            }
+            Err(_) => result.skipped += 1,
+        }
+    }
+    if keys.is_empty() {
+        return Ok(result);
+    }
+    let localization = crate::gfx_localization::menu_labels(
+        session.library_root.as_deref(),
+        session.source_build.as_deref(),
+        &keys,
+    );
+    for name in imports {
+        let target = root.join(name);
+        if !target.is_file() {
+            continue;
+        }
+        let bytes = fs::read(&target).map_err(|e| e.to_string())?;
+        match crate::gfx_menu_text::replace_authored_text(&bytes, &localization) {
+            Ok((patched, changes)) => {
+                result.movies += 1;
+                result.localized += changes.patched;
+                result.unresolved += changes.unresolved;
+                result.fields += changes.original_edit_fields;
+                if changes.patched > 0 {
+                    fs::write(target, patched).map_err(|e| e.to_string())?;
+                }
+            }
+            Err(_) => result.skipped += 1,
+        }
+    }
+    Ok(result)
+}
+
 /// Start a distinct Ruffle window on a temporary, validated copy of the GFX.
 ///
 /// Host FSCommands and Evolve native Scaleform ExternalInterface are NOT
@@ -1062,6 +1134,7 @@ fn write_live_menu_report(
     imported_movies: &[String],
     background_video: serde_json::Value,
     labels: LiveMenuLabels<'_>,
+    imported_text: &ImportedTextCounts,
 ) -> Result<(), String> {
     let entries = session
         .menu_commands
@@ -1121,6 +1194,14 @@ fn write_live_menu_report(
             "scope": "Only original DefineEditText initial strings; dynamic ActionScript labels require native host semantics."
         },
         "fonts": font_imports,
+        "imported_flash_text": {
+            "movies": imported_text.movies,
+            "localized": imported_text.localized,
+            "unresolved": imported_text.unresolved,
+            "fields": imported_text.fields,
+            "unreadable_or_unsupported": imported_text.skipped,
+            "scope": "Only source-authored DefineEditText initial strings in imported SWF previews; dynamic assignments remain unresolved."
+        },
         "background_video": background_video,
         "initialization": {
             "verified_transition_to_main_menu": initialized_in_swf,
@@ -1196,6 +1277,7 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
     fs::write(scratch.path().join("movie.swf"), movie).map_err(|e| e.to_string())?;
     let (imported_images, import_skipped, missing, imported_movies) =
         stage_live_import_graph(session, scratch.path())?;
+    let imported_text = localize_imported_initial_text(session, scratch.path(), &imported_movies)?;
     converted += imported_images;
     skipped += import_skipped;
     // The original Stage 2 background is CRI USM in videos.pak; it is not
@@ -1228,6 +1310,7 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
             source: &localization,
             text: &localized_text,
         },
+        &imported_text,
     )?;
     let live = gfx_live_web::LiveServer::start(scratch, actions, web_runtime)?;
     Ok(RunningPreview {
