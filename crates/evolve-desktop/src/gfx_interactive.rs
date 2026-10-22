@@ -148,7 +148,9 @@ pub(crate) fn install_live_callbacks(
         return Ok((swf.to_vec(), Vec::new()));
     }
     if swf.len() < 24 || swf.len() > MAX_DECOMPRESSED || &swf[..3] != b"FWS" {
-        return Err("Live ActionScript callbacks need a validated uncompressed main-menu SWF".into());
+        return Err(
+            "Live ActionScript callbacks need a validated uncompressed main-menu SWF".into(),
+        );
     }
     if usize::try_from(u32::from_le_bytes(swf[4..8].try_into().unwrap())).ok() != Some(swf.len()) {
         return Err("Live callback SWF length does not match its header".into());
@@ -194,27 +196,40 @@ pub(crate) fn install_live_callbacks(
     // The whitelist is fixed and each callback is registered only if the
     // original first frame declares the expected exact arity in AVM1 bytecode.
     const PRESETS: &[PreviewPreset] = &[
-        PreviewPreset::ShowEngagement, PreviewPreset::HideEngagement,
-        PreviewPreset::ShowSigningIn, PreviewPreset::HideSigningIn,
-        PreviewPreset::Back, PreviewPreset::ReturnToMainMenu,
-        PreviewPreset::ShowPatchNotes, PreviewPreset::HidePatchNotes,
-        PreviewPreset::ShowNews, PreviewPreset::HideNews,
-        PreviewPreset::ShowChallenges, PreviewPreset::HideChallenges,
+        PreviewPreset::ShowEngagement,
+        PreviewPreset::HideEngagement,
+        PreviewPreset::ShowSigningIn,
+        PreviewPreset::HideSigningIn,
+        PreviewPreset::Back,
+        PreviewPreset::ReturnToMainMenu,
+        PreviewPreset::ShowPatchNotes,
+        PreviewPreset::HidePatchNotes,
+        PreviewPreset::ShowNews,
+        PreviewPreset::HideNews,
+        PreviewPreset::ShowChallenges,
+        PreviewPreset::HideChallenges,
     ];
     let mut allowed = Vec::new();
     let mut emitted = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for preset in PRESETS {
-        let Some((function, argument)) = preset.script_call() else { continue };
+        let Some((function, argument)) = preset.script_call() else {
+            continue;
+        };
         if !seen.insert(function) {
             // Both show/hide toggle presets share the same callback.
-            if allowed.iter().any(|item: &PreviewPreset| item.script_call().is_some_and(|(name, _)| name == function)) {
+            if allowed.iter().any(|item: &PreviewPreset| {
+                item.script_call().is_some_and(|(name, _)| name == function)
+            }) {
                 allowed.push(*preset);
             }
             continue;
         }
         let expected = usize::from(argument.is_some());
-        let found = chunks.iter().filter_map(|actions| defined_function_arity(actions, function)).collect::<Vec<_>>();
+        let found = chunks
+            .iter()
+            .filter_map(|actions| defined_function_arity(actions, function))
+            .collect::<Vec<_>>();
         if found.is_empty() || found.iter().any(|&count| count != expected) {
             continue;
         }
@@ -427,16 +442,24 @@ impl RunningPreview {
             return server.is_running();
         }
         self.process.as_ref().is_some_and(|process| {
-            process.child.lock().is_ok_and(|mut child| child.try_wait().ok().flatten().is_none())
+            process
+                .child
+                .lock()
+                .is_ok_and(|mut child| child.try_wait().ok().flatten().is_none())
         })
     }
 
     pub fn can_dispatch_live(&self, preset: PreviewPreset) -> bool {
-        self.live.as_ref().is_some_and(|server| server.supports(preset))
+        self.live
+            .as_ref()
+            .is_some_and(|server| server.supports(preset))
     }
 
     pub fn dispatch_live(&self, preset: PreviewPreset) -> Result<(), String> {
-        self.live.as_ref().ok_or("Live browser preview is not running")?.dispatch(preset)
+        self.live
+            .as_ref()
+            .ok_or("Live browser preview is not running")?
+            .dispatch(preset)
     }
 }
 fn executable(path: &str) -> Result<PathBuf, String> {
@@ -709,10 +732,16 @@ mod tests {
         assert!(allowed.contains(&PreviewPreset::Back));
         assert!(!allowed.contains(&PreviewPreset::HideSigningIn));
         assert_eq!(&patched[4..8], &(patched.len() as u32).to_le_bytes());
-        assert!(patched.windows(b"evolvePreview_showEngagementPrompt".len())
-            .any(|chunk| chunk == b"evolvePreview_showEngagementPrompt"));
-        assert!(patched.windows(b"addCallback".len())
-            .any(|chunk| chunk == b"addCallback"));
+        assert!(
+            patched
+                .windows(b"evolvePreview_showEngagementPrompt".len())
+                .any(|chunk| chunk == b"evolvePreview_showEngagementPrompt")
+        );
+        assert!(
+            patched
+                .windows(b"addCallback".len())
+                .any(|chunk| chunk == b"addCallback")
+        );
         assert_eq!(movie, menu_fixture());
         let (other, empty) = install_live_callbacks(&movie, "Other.gfx").unwrap();
         assert_eq!(movie, other);
