@@ -834,207 +834,26 @@ pub fn launch(
         .map_err(|e| e.to_string())?;
     let input = fs::read(&session.editable).map_err(|e| e.to_string())?;
     let (swf, mut converted, mut skipped) =
-        renderable_movie(&input, &session.relative, &session.source, session)?;
-    let root_movie = root.path().join("movie.swf");
-    let movie = inject_preview_call(&swf, &session.relative, preset)?;
-    fs::write(&root_movie, movie).map_err(|e| e.to_string())?;
-    let mut missing = 0usize;
-    for name in session.info.imports.iter().take(MAX_IMPORTS) {
-        match stage_import(session, &session.relative, name, root.path()) {
-            Ok(Some((images, skip))) => {
-                converted += images;
-                skipped += skip;
-            }
-            Ok(None) => missing += 1,
-            Err(e) => return Err(format!("Imported Scaleform movie {name}: {e}")),
-        }
-    }
-    // The movie executes *only* in this external test player. No game DLLs,
-    // registered game paths, credentials, or network bridges are handed off.
-    let child = Command::new(binary)
-        .arg("--dummy-external-interface")
-        .arg("--open-url-mode")
-        .arg("deny")
-        .arg("--filesystem-access-mode")
-        .arg("ask")
-        .arg(&root_movie)
-        .current_dir(root.path())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("Unable to launch Ruffle desktop: {e}"))?;
-    Ok(RunningPreview {
-        process: Some(Arc::new(ProcessOwner {
-            child: Mutex::new(child),
-            _scratch: root,
-        })),
-        live: None,
-        restored_images: converted,
-        skipped_images: skipped,
-        missing_imports: missing,
-        preset,
-    })
-}
-
-/// Count original embedded SWF DefineFont definitions in the isolated font
-/// import. An actual font definition is stronger than mere path resolution,
-/// but still not proof that Ruffle reproduced Scaleform's font renderer.
-fn original_font_definitions(path: &Path) -> Option<usize> {
-    let bytes = fs::read(path).ok()?;
-    if bytes.len() < 16 || bytes.len() > MAX_DECOMPRESSED || &bytes[..3] != b"FWS" {
-        return None;
-    }
-    let nbits = usize::from(bytes[8] >> 3);
-    if !(1..=31).contains(&nbits) {
-        return None;
-    }
-    let mut cursor = 8 + (5 + 4 * nbits).div_ceil(8) + 4;
-    let mut found = 0usize;
-    let mut tags = 0usize;
-    while cursor + 2 <= bytes.len() {
-        let header = u16::from_le_bytes([bytes[cursor], bytes[cursor + 1]]);
-        cursor += 2;
-        let kind = header >> 6;
-        let mut length = usize::from(header & 63);
-        if length == 63 {
-            if cursor + 4 > bytes.len() {
-                return None;
-            }
-            length = u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().ok()?) as usize;
-            cursor += 4;
-        }
-        if length > bytes.len() - cursor || tags >= 80_000 {
-            return None;
-        }
-        if matches!(kind, 10 | 48 | 75 | 91) {
-            found += 1;
-        }
-        cursor += length;
-        tags += 1;
-        if kind == 0 {
-            return (cursor == bytes.len()).then_some(found);
-        }
-    }
-    None
-}
-
-/// Serialize *source-defined* UI_Data commands for an optional live browser
-/// inspector. These do not become fabricated SWF display-list nodes. Commands
-/// that require CryEngine remain read-only; only known child submenu links can
-/// be traversed locally. This is diagnostics, NOT native menu emulation.
-struct LiveMenuCounts {
-    restored: usize,
-    skipped: usize,
-    missing: usize,
-    traced_buttons: usize,
-}
-
-fn write_live_menu_report(
-    session: &Session,
-    scratch: &Path,
-    counts: LiveMenuCounts,
-    verified_actions: &[PreviewPreset],
-    imported_movies: &[String],
-    background_video: serde_json::Value,
-) -> Result<(), String> {
-    let entries = session
+        renderable_movie(&bytes, &session.relative, &session.source, session)?;
+    let main_menu = session.relative.eq_ignore_ascii_case("Libs/UI/main_menu.gfx");
+    let mut lookup_tokens = session
         .menu_commands
         .iter()
-        .take(128)
-        .map(|item| {
-            serde_json::json!({
-                "submenu": item.submenu,
-                "label": item.label,
-                "command": item.command,
-                "child_submenu": item.child_submenu,
-                "disabled_when": item.disabled_when,
-                "hidden_when": item.hidden_when
-            })
-        })
+        .map(|row| row.label.clone())
         .collect::<Vec<_>>();
-    let unresolved = session
-        .dependencies
-        .iter()
-        .filter(|item| {
-            item.outcome.contains("Missing")
-                || item.outcome.contains("unavailable")
-                || item.outcome.contains("Ambiguous")
-        })
-        .take(128)
-        .map(|item| item.reference.as_str())
-        .collect::<Vec<_>>();
-    let label_tokens = session
-        .menu_commands
-        .iter()
-        .map(|entry| entry.label.clone())
-        .collect::<Vec<_>>();
+    if main_menu {
+        lookup_tokens.extend(crate::gfx_menu_text::authored_keys(&swf)?);
+    }
     let localization = crate::gfx_localization::menu_labels(
         session.library_root.as_deref(),
         session.source_build.as_deref(),
-        &label_tokens,
+        &lookup_tokens,
     );
-    // Imported font movies remain original same-build assets; resolving an
-    // import does not prove Ruffle supports its Scaleform glyph tags.
-    let font_imports = imported_movies
-        .iter()
-        .filter(|name| name.to_ascii_lowercase().contains("font"))
-        .map(|name| {
-            let found = session
-                .dependencies
-                .iter()
-                .find(|entry| entry.reference.eq_ignore_ascii_case(name));
-            serde_json::json!({
-                "movie": name,
-                "staged": scratch.join(name).is_file(),
-                "define_font_tags": original_font_definitions(&scratch.join(name)),
-                "source": found.map_or("Source-defined nested import", |dependency| dependency.outcome.as_str())
-            })
-        })
-        .collect::<Vec<_>>();
-    let initialized_in_swf = verified_actions.contains(&PreviewPreset::ReturnToMainMenu);
-    let original_open_screen = verified_actions.contains(&PreviewPreset::OpenScreen);
-    let report = serde_json::json!({
-        "source": "verified same-build UI_Data/MainMenuScreen.xml",
-        "localization": localization,
-        "fonts": font_imports,
-        "background_video": background_video,
-        "initialization": {
-            "verified_transition_to_main_menu": initialized_in_swf,
-            "verified_open_screen": original_open_screen,
-            "native_cryengine_host_available": false,
-            "status": "Only original verified ActionScript handlers may initialize local menu state. Native game state is unavailable."
-        },
-        "menu_status": session.menu_command_status,
-        "commands": entries,
-        "resources": {
-            "restored_dds_tiles": counts.restored,
-            "instrumented_original_button_conditions": counts.traced_buttons,
-            "skipped_dds_tiles": counts.skipped,
-            "missing_imported_movies": counts.missing,
-            "unresolved_imports": unresolved,
-            "has_source_build": session.source_build.is_some(),
-            "has_asset_library": session.library_root.is_some()
-        },
-        "limitation": "This is a source-defined command inspector. The original SWF is unchanged. Native CryEngine game state, dynamic Scaleform UI initialization, and in-game localization are not reproduced."
-    });
-    let bytes = serde_json::to_vec(&report).map_err(|e| e.to_string())?;
-    if bytes.len() > 512 * 1024 {
-        return Err("Original menu definition report exceeds 512 KiB".into());
-    }
-    fs::write(scratch.join("preview-menu.json"), bytes).map_err(|e| e.to_string())
-}
-
-/// A persistent browser-based Ruffle preview. All selected controls use
-/// an allowlisted live ExternalInterface callback instead of patch/restart.
-pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPreview, String> {
-    let scratch = tempfile::Builder::new()
-        .prefix("evolve-gfx-live-")
-        .tempdir()
-        .map_err(|e| e.to_string())?;
-    let bytes = fs::read(&session.editable).map_err(|e| e.to_string())?;
-    let (swf, mut converted, mut skipped) =
-        renderable_movie(&bytes, &session.relative, &session.source, session)?;
+    let (swf, localized_text) = if main_menu {
+        crate::gfx_menu_text::replace_authored_text(&swf, &localization)?
+    } else {
+        (swf, crate::gfx_menu_text::TextPatch::default())
+    };
     // Trace authored SWF button handlers before registering the original
     // live callbacks. No synthesized UI or native handler mapping is added.
     let (inspected, traced_buttons) = if session
@@ -1077,6 +896,8 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
         &actions,
         &imported_movies,
         background_video,
+        &localization,
+        &localized_text,
     )?;
     let live = gfx_live_web::LiveServer::start(scratch, actions, web_runtime)?;
     Ok(RunningPreview {
@@ -1188,6 +1009,8 @@ mod tests {
             &[PreviewPreset::Back],
             &["gfxfontlib_locfont.gfx".into()],
             serde_json::json!({"playable": false, "status": "missing videos.pak"}),
+            &crate::gfx_localization::menu_labels(None, None, &["@ui_STARTGAME".to_string()]),
+            &crate::gfx_menu_text::TextPatch::default(),
         )
         .unwrap();
         let report: serde_json::Value =
@@ -1195,6 +1018,7 @@ mod tests {
                 .unwrap();
         assert_eq!(report["commands"][0]["label"], "@ui_STARTGAME");
         assert_eq!(report["background_video"]["playable"], false);
+        assert_eq!(report["authored_flash_text"]["localized"], 0);
         assert_eq!(report["localization"]["unresolved"][0], "ui_startgame");
         assert_eq!(
             report["initialization"]["native_cryengine_host_available"],
