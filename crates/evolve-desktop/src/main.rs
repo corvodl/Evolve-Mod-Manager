@@ -3617,9 +3617,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 && !state
                     .selected
                     .and_then(|selected| state.inventory.as_ref()?.entries.get(selected))
-                    .is_some_and(|entry| {
-                        entry.relative_path.to_ascii_lowercase().ends_with(".gfx")
-                    })
+                    .is_some_and(|entry| entry.relative_path.to_ascii_lowercase().ends_with(".gfx"))
             {
                 state.gfx_active = false;
                 if state.viewer_sidebar_active == ViewerSidebarTab::GfxTools {
@@ -4449,7 +4447,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::GfxOpenSelected => {
             if state.gfx_busy {
                 state.viewer_queued_preview = state.selected;
-                state.status = "GFX preview queued until the current GFX operation finishes.".into();
+                state.status =
+                    "GFX preview queued until the current GFX operation finishes.".into();
                 return Task::none();
             }
             let source = match verified_viewer_file(state) {
@@ -8263,8 +8262,16 @@ mod project_edit_tests {
         std::fs::write(dir.path().join("main_menu.gfx"), b"invalid fixture").unwrap();
         std::fs::write(dir.path().join("hunter.skin"), b"invalid mesh").unwrap();
         let inventory = scan_directory(dir.path()).unwrap();
-        let gfx = inventory.entries.iter().position(|entry| entry.relative_path == "main_menu.gfx").unwrap();
-        let mesh = inventory.entries.iter().position(|entry| entry.relative_path == "hunter.skin").unwrap();
+        let gfx = inventory
+            .entries
+            .iter()
+            .position(|entry| entry.relative_path == "main_menu.gfx")
+            .unwrap();
+        let mesh = inventory
+            .entries
+            .iter()
+            .position(|entry| entry.relative_path == "hunter.skin")
+            .unwrap();
         let original = std::fs::canonicalize(dir.path().join("main_menu.gfx")).unwrap();
         let mut state = State {
             inventory: Some(inventory),
@@ -8277,8 +8284,14 @@ mod project_edit_tests {
         assert!(!state.gfx_active);
         assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
         assert!(state.busy, "model preview must launch normally");
-        let _ = update(&mut state, Message::GfxOpened(original, Err("stale".into())));
-        assert!(!state.gfx_active, "old GFX completion cannot steal the viewport");
+        let _ = update(
+            &mut state,
+            Message::GfxOpened(original, Err("stale".into())),
+        );
+        assert!(
+            !state.gfx_active,
+            "old GFX completion cannot steal the viewport"
+        );
         assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
     }
 
@@ -8289,8 +8302,16 @@ mod project_edit_tests {
             std::fs::write(dir.path().join("main_menu.gfx"), b"invalid fixture").unwrap();
             std::fs::write(dir.path().join(target), b"invalid fixture").unwrap();
             let inventory = scan_directory(dir.path()).unwrap();
-            let gfx = inventory.entries.iter().position(|entry| entry.relative_path == "main_menu.gfx").unwrap();
-            let other = inventory.entries.iter().position(|entry| entry.relative_path == target).unwrap();
+            let gfx = inventory
+                .entries
+                .iter()
+                .position(|entry| entry.relative_path == "main_menu.gfx")
+                .unwrap();
+            let other = inventory
+                .entries
+                .iter()
+                .position(|entry| entry.relative_path == target)
+                .unwrap();
             let mut state = State {
                 inventory: Some(inventory),
                 ..State::default()
@@ -8315,7 +8336,10 @@ mod project_edit_tests {
         refresh_viewer_rows(&mut state);
         let source = std::fs::canonicalize(dir.path().join("main_menu.gfx")).unwrap();
         let _ = update(&mut state, Message::ViewerSelectFile(0));
-        let _ = update(&mut state, Message::GfxOpened(source, Err("synthetic error".into())));
+        let _ = update(
+            &mut state,
+            Message::GfxOpened(source, Err("synthetic error".into())),
+        );
         assert!(state.gfx_active);
         assert!(state.gfx_status.contains("synthetic error"));
         assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::GfxTools);
