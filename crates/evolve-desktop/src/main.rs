@@ -181,6 +181,7 @@ struct State {
     gfx_busy: bool,
     gfx_preview: Option<image::Handle>,
     gfx_interactive_open: bool,
+    gfx_preview_preset: gfx_interactive::PreviewPreset,
     gfx_interactive_running: Option<gfx_interactive::RunningPreview>,
     gfx_interactive_status: String,
     gfx_install_busy: bool,
@@ -1466,6 +1467,7 @@ enum Message {
     GfxRufflePicked(Option<PathBuf>),
     GfxToggleInteractive,
     GfxRunInteractive,
+    GfxSelectPreviewPreset(gfx_interactive::PreviewPreset),
     GfxInteractiveStarted(Result<gfx_interactive::RunningPreview, String>),
     GfxStopInteractive,
     GfxInstallTool(gfx_tool_install::Tool),
@@ -4224,6 +4226,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.gfx_layout_open = false;
             }
         }
+        Message::GfxSelectPreviewPreset(preset) => {
+            state.gfx_preview_preset = preset;
+            state.gfx_interactive_status = format!("Selected preview: {}. Launch/restart to test.", preset.description());
+        }
         Message::GfxRunInteractive => {
             if state.gfx_busy || state.busy {
                 state.gfx_interactive_status =
@@ -4239,10 +4245,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.gfx_interactive_status =
                 "Preparing isolated UI_Assets and ActionScript preview...".into();
             let executable = state.preferences.ruffle_executable.clone();
+            let preset = state.gfx_preview_preset;
             return Task::perform(
                 async move {
                     tokio::task::spawn_blocking(move || {
-                        gfx_interactive::launch(&session, &executable)
+                        gfx_interactive::launch(&session, &executable, preset)
                     })
                     .await
                     .unwrap_or_else(|e| Err(format!("Ruffle preview worker stopped: {e}")))
@@ -4255,7 +4262,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             match result {
                 Ok(preview) => {
                     state.gfx_interactive_status = format!(
-                        "Ruffle window launched · {} restored DDS tiles · {} skipped · {} missing imports. Original ActionScript executes where supported; Evolve callbacks are empty.",
+                        "Ruffle window launched ({}) · {} restored DDS tiles · {} skipped · {} missing imports. Original ActionScript executes where supported; native Evolve callbacks remain disabled.",
+                        preview.preset.description(),
                         preview.restored_images, preview.skipped_images, preview.missing_imports,
                     );
                     state.gfx_interactive_running = Some(preview);
