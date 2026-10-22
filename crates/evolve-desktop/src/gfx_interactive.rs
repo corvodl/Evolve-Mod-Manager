@@ -734,7 +734,7 @@ fn stage_import(
 fn stage_live_import_graph(
     session: &Session,
     output: &Path,
-) -> Result<(usize, usize, usize), String> {
+) -> Result<(usize, usize, usize, Vec<String>), String> {
     let mut pending = session
         .info
         .imports
@@ -802,7 +802,9 @@ fn stage_live_import_graph(
             pending.push_back((child, depth + 1));
         }
     }
-    Ok((restored, skipped, missing))
+    let mut imported = visited.into_iter().collect::<Vec<_>>();
+    imported.sort();
+    Ok((restored, skipped, missing, imported))
 }
 
 /// Start a distinct Ruffle window on a temporary, validated copy of the GFX.
@@ -868,6 +870,48 @@ pub fn launch(
     })
 }
 
+/// Count original embedded SWF DefineFont definitions in the isolated font
+/// import. An actual font definition is stronger than mere path resolution,
+/// but still not proof that Ruffle reproduced Scaleform's font renderer.
+fn original_font_definitions(path: &Path) -> Option<usize> {
+    let bytes = fs::read(path).ok()?;
+    if bytes.len() < 16 || bytes.len() > MAX_DECOMPRESSED || &bytes[..3] != b"FWS" {
+        return None;
+    }
+    let nbits = usize::from(bytes[8] >> 3);
+    if !(1..=31).contains(&nbits) {
+        return None;
+    }
+    let mut cursor = 8 + (5 + 4 * nbits).div_ceil(8) + 4;
+    let mut found = 0usize;
+    let mut tags = 0usize;
+    while cursor + 2 <= bytes.len() {
+        let header = u16::from_le_bytes([bytes[cursor], bytes[cursor + 1]]);
+        cursor += 2;
+        let kind = header >> 6;
+        let mut length = usize::from(header & 63);
+        if length == 63 {
+            if cursor + 4 > bytes.len() {
+                return None;
+            }
+            length = u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().ok()?) as usize;
+            cursor += 4;
+        }
+        if length > bytes.len() - cursor || tags >= 80_000 {
+            return None;
+        }
+        if matches!(kind, 10 | 48 | 75 | 91) {
+            found += 1;
+        }
+        cursor += length;
+        tags += 1;
+        if kind == 0 {
+            return (cursor == bytes.len()).then_some(found);
+        }
+    }
+    None
+}
+
 /// Serialize *source-defined* UI_Data commands for an optional live browser
 /// inspector. These do not become fabricated SWF display-list nodes. Commands
 /// that require CryEngine remain read-only; only known child submenu links can
@@ -880,6 +924,7 @@ fn write_live_menu_report(
     missing: usize,
     traced_buttons: usize,
     verified_actions: &[PreviewPreset],
+    imported_movies: &[String],
 ) -> Result<(), String> {
     let entries = session
         .menu_commands
@@ -932,7 +977,8 @@ fn write_live_menu_report(
             serde_json::json!({
                 "movie": name,
                 "staged": scratch.join(name).is_file(),
-                "source": found.map_or("Not resolved", |dependency| dependency.outcome.as_str())
+                "define_font_tags": original_font_definitions(&scratch.join(name)),
+                "source": found.map_or("Source-defined nested import", |dependency| dependency.outcome.as_str())
             })
         })
         .collect::<Vec<_>>();
@@ -988,7 +1034,7 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
     };
     let (movie, actions) = install_live_callbacks(&inspected, &session.relative)?;
     fs::write(scratch.path().join("movie.swf"), movie).map_err(|e| e.to_string())?;
-    let (imported_images, import_skipped, missing) =
+    let (imported_images, import_skipped, missing, imported_movies) =
         stage_live_import_graph(session, scratch.path())?;
     converted += imported_images;
     skipped += import_skipped;
@@ -1000,6 +1046,7 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
         missing,
         traced_buttons,
         &actions,
+        &imported_movies,
     )?;
     let live = gfx_live_web::LiveServer::start(scratch, actions, web_runtime)?;
     Ok(RunningPreview {
@@ -1099,6 +1146,7 @@ mod tests {
         assert_eq!(report["commands"][0]["command"], "Game_Start");
         assert_eq!(report["commands"][0]["child_submenu"], "Extras");
         assert_eq!(report["resources"]["restored_dds_tiles"], 5);
+        assert_eq!(report["fonts"][0]["staged"], false);
         assert_eq!(
             report["resources"]["instrumented_original_button_conditions"],
             2
