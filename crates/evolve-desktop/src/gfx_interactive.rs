@@ -955,12 +955,14 @@ fn verified_ui_asset_movie(
     build: &str,
     filename: &str,
 ) -> Option<evolve_core::LibraryReference> {
-    use evolve_core::library_catalog::resolve_imported_reference_in_archive;
     use evolve_core::LibraryReferenceStatus;
+    use evolve_core::library_catalog::resolve_imported_reference_in_archive;
     if build.trim().is_empty()
         || filename.is_empty()
         || !filename.ends_with(".gfx")
-        || !filename.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'.')
+        || !filename
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'.')
     {
         return None;
     }
@@ -971,7 +973,9 @@ fn verified_ui_asset_movie(
         filename.to_owned(),
         format!("files/{filename}"),
     ] {
-        match resolve_imported_reference_in_archive(root, &candidate, build, "UI_Assets.pak").ok()? {
+        match resolve_imported_reference_in_archive(root, &candidate, build, "UI_Assets.pak")
+            .ok()?
+        {
             LibraryReferenceStatus::Found(hit) => {
                 if found.is_some() {
                     return None; // Two virtual members: refuse ambiguous source.
@@ -1614,7 +1618,7 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
         (swf, 0)
     };
     let (movie, actions) = install_live_callbacks(&inspected, &session.relative)?;
-    fs::write(scratch.path().join("movie.swf"), movie).map_err(|e| e.to_string())?;
+    fs::write(scratch.path().join("movie.swf"), &movie).map_err(|e| e.to_string())?;
     let (imported_images, import_skipped, missing, imported_movies, imported_skips) =
         stage_live_import_graph(session, scratch.path())?;
     bitmap_skips.accumulate(&imported_skips);
@@ -1703,8 +1707,10 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({
                 "version": 1, "name": "UI_Assets.pak", "source": "/game/UI_Assets.pak",
                 "entries": [{"path":"settings.gfx", "bytes":movie.len()}]
-            })).unwrap()
-        ).unwrap();
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         fs::write(
             root.join("build-collections.json"),
             serde_json::to_vec(&serde_json::json!({
