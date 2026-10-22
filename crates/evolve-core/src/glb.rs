@@ -432,6 +432,57 @@ mod tests {
         ));
     }
     #[test]
+    fn static_fbx_bridge_keeps_cryengine_z_up_and_original_mesh_attributes() {
+        let raw = geometry_glb_bytes(&mesh()).unwrap();
+        let corrected = geometry_glb_bytes_for_fbx(&mesh()).unwrap();
+        let raw_size = u32::from_le_bytes(raw[12..16].try_into().unwrap()) as usize;
+        let new_size = u32::from_le_bytes(corrected[12..16].try_into().unwrap()) as usize;
+        let original: serde_json::Value =
+            serde_json::from_slice(&raw[20..20 + raw_size]).unwrap();
+        let adjusted: serde_json::Value =
+            serde_json::from_slice(&corrected[20..20 + new_size]).unwrap();
+        assert_eq!(original["scenes"][0]["nodes"], json!([0]));
+        assert_eq!(original["nodes"].as_array().unwrap().len(), 1);
+        assert_eq!(adjusted["scenes"][0]["nodes"], json!([1]));
+        assert_eq!(adjusted["nodes"][1]["children"], json!([0]));
+        assert_eq!(
+            adjusted["extras"]["evolve_static_fbx_basis"],
+            "cryengine_z_up_to_gltf_y_up"
+        );
+        // The Blender glTF loader rotates incoming Y-up to Z-up. The new
+        // basis applies its exact inverse so source CryEngine Z remains up.
+        let quat = adjusted["nodes"][1]["rotation"].as_array().unwrap();
+        let qx = quat[0].as_f64().unwrap();
+        let qw = quat[3].as_f64().unwrap();
+        assert!((qx * qx + qw * qw - 1.).abs() < 1e-6);
+        assert!((2. * qx * qw + 1.).abs() < 1e-6);
+        assert_eq!(adjusted["bufferViews"], original["bufferViews"]);
+        assert_eq!(adjusted["accessors"], original["accessors"]);
+        assert_eq!(adjusted["meshes"], original["meshes"]);
+        // Author UVs/normals/triangles and geometry buffer must be identical.
+        assert_eq!(&raw[20 + raw_size + 8..], &corrected[20 + new_size + 8..]);
+        assert_eq!(&corrected[20 + new_size + 4..20 + new_size + 8], b"BIN\0");
+    }
+
+    #[test]
+    fn z_up_static_export_does_not_change_default_level_glb_basis() {
+        let raw = geometry_glb_bytes(&mesh()).unwrap();
+        let corrected = geometry_glb_bytes_for_fbx(&mesh()).unwrap();
+        let source_len = u32::from_le_bytes(raw[12..16].try_into().unwrap()) as usize;
+        let target_len = u32::from_le_bytes(corrected[12..16].try_into().unwrap()) as usize;
+        let source: serde_json::Value =
+            serde_json::from_slice(&raw[20..20 + source_len]).unwrap();
+        let target: serde_json::Value =
+            serde_json::from_slice(&corrected[20..20 + target_len]).unwrap();
+        // The level assembler adds its own basis; it must still receive
+        // unrotated, single-root geometry GLBs.
+        assert!(source["extras"]["evolve_static_fbx_basis"].is_null());
+        assert_eq!(source["nodes"][0]["mesh"], 0);
+        assert_eq!(target["nodes"][0]["mesh"], 0);
+        assert_eq!(source["scenes"][0]["nodes"], json!([0]));
+    }
+
+    #[test]
     fn rejects_fabricated_index_or_invalid_original_uv() {
         let mut bad = mesh();
         bad.indices[2] = 4;
