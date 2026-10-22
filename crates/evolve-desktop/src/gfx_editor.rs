@@ -78,7 +78,8 @@ fn verified_gfx_source_build(root: &Path, relative: &str, source_bytes: &[u8]) -
         let Ok(meta) = fs::symlink_metadata(path) else {
             continue;
         };
-        if !meta.file_type().is_file() || meta.len() != source_bytes.len() as u64
+        if !meta.file_type().is_file()
+            || meta.len() != source_bytes.len() as u64
             || meta.len() > MAX_SOURCE as u64
         {
             continue;
@@ -171,9 +172,9 @@ pub fn create(
     }
     let (bytes, info) = read_gfx(&source)?;
     let source_build = source_build.or_else(|| {
-        imported_library.as_deref().and_then(|root| {
-            verified_gfx_source_build(root, &relative, &bytes)
-        })
+        imported_library
+            .as_deref()
+            .and_then(|root| verified_gfx_source_build(root, &relative, &bytes))
     });
     let folder = Arc::new(
         tempfile::Builder::new()
@@ -655,26 +656,31 @@ mod tests {
                     "path": "Libs/UI/main_menu.gfx",
                     "bytes": movie.len()
                 }]
-            })).unwrap(),
-        ).unwrap();
-        let manifest = |second: bool| serde_json::json!({
-            "version": 1,
-            "builds": {
-                "stage-two": {
-                    "label": "Stage 2",
-                    "members": {"11111111111111111111": {}}
-                },
-                "legacy": {
-                    "label": "Legacy",
-                    "members": if second {serde_json::json!({"11111111111111111111": {}})}
-                               else {serde_json::json!({})}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let manifest = |second: bool| {
+            serde_json::json!({
+                "version": 1,
+                "builds": {
+                    "stage-two": {
+                        "label": "Stage 2",
+                        "members": {"11111111111111111111": {}}
+                    },
+                    "legacy": {
+                        "label": "Legacy",
+                        "members": if second {serde_json::json!({"11111111111111111111": {}})}
+                                   else {serde_json::json!({})}
+                    }
                 }
-            }
-        });
+            })
+        };
         fs::write(
             library.path().join("build-collections.json"),
             serde_json::to_vec(&manifest(false)).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(
             verified_gfx_source_build(library.path(), "Libs/UI/main_menu.gfx", movie),
             Some("Stage 2".into())
@@ -686,7 +692,8 @@ mod tests {
         fs::write(
             library.path().join("build-collections.json"),
             serde_json::to_vec(&manifest(true)).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(
             verified_gfx_source_build(library.path(), "Libs/UI/main_menu.gfx", movie),
             None
