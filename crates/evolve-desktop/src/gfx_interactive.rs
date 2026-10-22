@@ -2007,6 +2007,23 @@ mod tests {
         assert_eq!(source[0]["glyphs"], 0);
         assert_eq!(source[0]["bold"], true);
         assert_eq!(source[0]["italic"], false);
+        assert_eq!(original_font_definitions(&path), Some(1));
+        // The importer can preserve a compressed CWS wrapper. Inventory
+        // must decode that original format without rewriting game sources.
+        let raw = fs::read(&path).unwrap();
+        let mut encoder = flate2::write::ZlibEncoder::new(
+            Vec::new(),
+            flate2::Compression::default(),
+        );
+        use std::io::Write;
+        encoder.write_all(&raw[8..]).unwrap();
+        let mut compressed = b"CWS".to_vec();
+        compressed.extend_from_slice(&raw[3..8]);
+        compressed.extend(encoder.finish().unwrap());
+        let compressed_path = directory.path().join("font-compressed.swf");
+        fs::write(&compressed_path, compressed).unwrap();
+        assert_eq!(original_font_definitions(&compressed_path), Some(1));
+        assert_eq!(original_font_inventory(&compressed_path).unwrap(), source);
     }
 
     #[test]
