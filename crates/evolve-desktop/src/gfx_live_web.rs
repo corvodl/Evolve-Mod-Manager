@@ -295,7 +295,13 @@ fn respond(
         path if safe_mode_image_asset(path) => {
             // These are PNG derivatives of exact-build source DDS files.
             // Never expose raw .dds, user files, or an arbitrary image folder.
-            serve_file(stream, &root.join(path), root, 12 * 1024 * 1024, "image/png");
+            serve_file(
+                stream,
+                &root.join(path),
+                root,
+                12 * 1024 * 1024,
+                "image/png",
+            );
         }
         "menu-background.mp4" | "menu-background.webm" => {
             let mime = if relative.ends_with(".mp4") {
@@ -338,7 +344,9 @@ fn safe_mode_image_asset(name: &str) -> bool {
         return false;
     };
     (1..=64).contains(&stem.len())
-        && stem.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+        && stem
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
 }
 fn safe_import_asset(name: &str) -> bool {
     !name.is_empty()
@@ -404,7 +412,9 @@ mod tests {
     #[test]
     fn only_verified_mode_preview_names_can_be_served() {
         assert!(safe_mode_image_asset("runtime-images/hunt.png"));
-        assert!(safe_mode_image_asset("runtime-images/goliathTutorialUnfocus.png"));
+        assert!(safe_mode_image_asset(
+            "runtime-images/goliathTutorialUnfocus.png"
+        ));
         for path in [
             "runtime-images/../other.png",
             "runtime-images/hunt.dds",
