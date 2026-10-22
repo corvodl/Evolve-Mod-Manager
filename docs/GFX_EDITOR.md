@@ -153,13 +153,12 @@ The GFX pane now has separate **Design / layout editor** and
 **Interactive ActionScript preview** controls. The former uses conservative
 first-frame layout editing and staged Undo/Apply exactly as before.
 
-Interactive preview uses **Ruffle desktop** (`ruffle.exe`). When the
-optional GFX tools are selected during Windows installation, the manager
-automatically detects its bundled path. Users of the portable ZIP or
-installations without the GFX tools option can select a separately installed
-Ruffle executable. Click **Launch / restart interactive preview** to open
-a separate Ruffle window. Close that window or click **Stop preview** to
-end the process.
+Interactive GFX Tools actions now use **Ruffle Web** in a persistent local
+browser tab, loaded from the installer-bundled selfhosted Ruffle Web package.
+Press **Open live preview** to start; subsequent verified menu actions are sent
+to the same running player. Use its **Reset movie** button to reload the SWF
+without opening another window. Standalone Ruffle Desktop remains selectable
+for independent SWF inspection, but does not accept these live commands.
 
 The manager:
 - Validates and reads the **staged working GFX** (not the installed game).
@@ -171,17 +170,17 @@ The manager:
 - Preserves original ActionScript bytecode, tag ordering, timeline states,
   shape placement, and button definitions wherever the Flash emulator
   understands their instructions.
-- Runs an **empty ExternalInterface** in Ruffle and blocks URL launches,
-  without sending commands to CryEngine or a real Evolve session.
-  Local filesystem access uses Ruffle's prompt-based mode for imports.
-- Owns the child process and temporary working directory, and stops it
-  when the user stops/restarts the preview, opens another GFX, or stages
-  a movie-changing operation.
+- Registers only source-verified AVM1 callbacks in an isolated Web Ruffle
+  runtime; commands never reach native Evolve game services or an installed
+  client. Network requests are restricted to the local preview origin.
+- Owns the temporary local HTTP server and working movie directory; stopping
+  the preview or opening another GFX drops its server and isolated assets.
 
 **Limits:** Ruffle is an independent Flash emulator, not Evolve's original
 Scaleform runtime. It does not recreate CryEngine's native GFx callbacks,
 game state, menu data, game-specific UI services, or missing imported
-assets. The dummy ExternalInterface returns no Evolve-specific values.
+assets. Only allowlisted local menu handler invocations are supported; no native
+Evolve ExternalInterface/game-service implementation is provided.
 Some ActionScript 1/2/3 constructs and Scaleform extensions are unsupported.
 A menu may animate or respond to mouse input without populating real
 button lists or navigation. No fake button data or guessed image placements
@@ -197,8 +196,8 @@ game GFX can run in this environment.
 ### Bundled tools and installation size
 
 The installer offers a **GFX editing tools** option (preselected, optional):
-Ruffle v0.7.1 Windows x64 (20.5 MiB ZIP) plus FFDec v26.3.0 portable
-(19.0 MiB ZIP). They are compiled into the installer only and can be
+Ruffle Desktop v0.7.1 (20.5 MiB ZIP), Ruffle Web v0.7.1
+(10.5 MiB ZIP), plus FFDec v26.3.0 portable (19.0 MiB ZIP). They are compiled into the installer only and can be
 omitted at installation. Setup adds no third-party shortcuts or services.
 Ruffle and FFDec remain independent upstream products distributed under
 their own licenses; notices and source locations are installed alongside
@@ -280,11 +279,13 @@ root-frame ActionScript references to `showEngagementPrompt` and
 `showSigningInPrompt`, and the UI definition binds `main_menu.gfx` to
 the MainMenuNew GFx element. From GFX Tools → Preview → Ruffle controls,
 select **Unmodified movie**, **Show/Dismiss engagement prompt**, or
-**Show/Dismiss sign-in prompt**, then relaunch preview.
+**Show/Dismiss sign-in prompt** to dispatch immediately to the running
+Ruffle Web player. No restart is needed.
 
-A selected preset inserts a narrowly allowlisted AVM1 function call in the
-**temporary Ruffle SWF only**, immediately before the movie's original first
-ShowFrame. The original GFX file, its resource tags, extracted project, and
+The live player registers narrowly allowlisted AVM1 callback wrappers in its
+**temporary Ruffle SWF only**, after the original first-frame root handlers
+have been declared. Buttons call the registered wrappers later, after the
+running movie has initialized. The original GFX file, its resource tags, extracted project, and
 installed PAK are not modified. The movie's own ActionScript still controls
 the visible prompt; no image layer is hidden by arbitrary depth or coordinates.
 An unavailable or dynamically resolved original handler fails closed rather
@@ -293,10 +294,9 @@ native in-game button-to-handler relationship is fully traced.
 
 **Still not emulated:** Evolve game services (network, purchases, matchmaking,
 account, launcher), Scaleform native callbacks, fully populated localization
-and menu data, and complete clickable UI parity. Ruffle remains launched with
-`--dummy-external-interface` and denied URL navigation. The original menu
-needs an audited callback bridge for the remaining buttons; simply detecting
-a function's name does not verify every corresponding button action.
+and menu data, and complete clickable UI parity. The old desktop fallback uses a dummy ExternalInterface. Live mode instead
+uses only the allowlisted browser preview callback bridge; simply detecting a
+function's name does not verify every corresponding game UI transition.
 
 
 ### Source-verified local UI actions and UI_Data catalog
@@ -306,10 +306,11 @@ for AVM1 `DefineFunction` and `DefineFunction2` declarations, including their
 actual argument counts. Preview-only presets now include **Back**, **Return to
 main menu**, **Show/Dismiss patch notes**, **Show/Hide news**, and **Enable/Disable
 challenge controls**, in addition to both engagement and sign-in prompt toggles.
-A preset is injected into the temporary Ruffle SWF before its first ShowFrame;
-it is rejected if the exact root function/arity is missing. Buttons can still
-depend on native state not present in Ruffle, so the injection confirms a call
-site but **not** end-to-end screen parity.
+A callback is registered in the temporary SWF when the original root
+function and arity are verified. Buttons call it live after initialization,
+without relaunching; the browser reports whether the callback returned.
+The game's native UI state remains unavailable, so a dispatched call is
+**not** proof of end-to-end screen parity.
 
 **GFX Tools → Inspector** now lists menu buttons from a verified, exact-build
 `UI/MainMenuScreen.xml` in the Asset Library. It displays the command,
