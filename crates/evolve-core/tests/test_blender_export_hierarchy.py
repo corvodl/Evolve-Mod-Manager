@@ -3,7 +3,10 @@ import json
 import struct
 import tempfile
 import unittest
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from blender_export_hierarchy import clean_name, original_part_labels
 
 
