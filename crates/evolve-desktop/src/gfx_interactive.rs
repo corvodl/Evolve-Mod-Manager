@@ -86,10 +86,7 @@ fn defined_function_arity(actions: &[u8], name: &str) -> Option<usize> {
             if offset + 2 > actions.len() {
                 return None;
             }
-            let count = usize::from(u16::from_le_bytes([
-                actions[offset],
-                actions[offset + 1],
-            ]));
+            let count = usize::from(u16::from_le_bytes([actions[offset], actions[offset + 1]]));
             offset += 2;
             count
         } else {
@@ -112,10 +109,7 @@ fn defined_function_arity(actions: &[u8], name: &str) -> Option<usize> {
         if end + 3 > payload.len() {
             return None;
         }
-        let count = usize::from(u16::from_le_bytes([
-            payload[end + 1],
-            payload[end + 2],
-        ]));
+        let count = usize::from(u16::from_le_bytes([payload[end + 1], payload[end + 2]]));
         if count > 16 {
             return None;
         }
@@ -141,7 +135,9 @@ fn inject_preview_call(
         return Err("Preview functions are only defined for the original main_menu.gfx".into());
     }
     if swf.len() < 24 || swf.len() > MAX_DECOMPRESSED || &swf[..3] != b"FWS" {
-        return Err("Menu action testing requires an uncompressed, bounded main-menu preview".into());
+        return Err(
+            "Menu action testing requires an uncompressed, bounded main-menu preview".into(),
+        );
     }
     if usize::try_from(u32::from_le_bytes(swf[4..8].try_into().unwrap())).ok() != Some(swf.len()) {
         return Err("Incorrect preview SWF length".into());
@@ -491,23 +487,30 @@ mod tests {
             PreviewPreset::ReturnToMainMenu,
             PreviewPreset::Back,
         ] {
-            let edited =
-                inject_preview_call(&movie, "Libs/UI/main_menu.gfx", preset).unwrap();
+            let edited = inject_preview_call(&movie, "Libs/UI/main_menu.gfx", preset).unwrap();
             assert!(edited.len() > movie.len());
             assert_eq!(&edited[4..8], &(edited.len() as u32).to_le_bytes());
             assert_eq!(movie, menu_fixture()); // Source remains byte-identical.
         }
-        assert!(inject_preview_call(
-            &movie, "Other.gfx", PreviewPreset::HideEngagement
-        ).is_err());
-        assert!(inject_preview_call(
-            &movie, "Libs/UI/main_menu.gfx", PreviewPreset::HideSigningIn
-        ).is_err());
+        assert!(inject_preview_call(&movie, "Other.gfx", PreviewPreset::HideEngagement).is_err());
+        assert!(
+            inject_preview_call(
+                &movie,
+                "Libs/UI/main_menu.gfx",
+                PreviewPreset::HideSigningIn
+            )
+            .is_err()
+        );
         // Conflicting signatures must not pass merely because the function
         // name appears as an unrelated text constant.
-        assert!(inject_preview_call(
-            &movie, "Libs/UI/main_menu.gfx", PreviewPreset::HidePatchNotes
-        ).is_err());
+        assert!(
+            inject_preview_call(
+                &movie,
+                "Libs/UI/main_menu.gfx",
+                PreviewPreset::HidePatchNotes
+            )
+            .is_err()
+        );
     }
     #[test]
     fn textual_function_name_alone_does_not_enable_callback() {
