@@ -18,9 +18,9 @@ mod gfx_dependencies;
 mod gfx_editor;
 mod gfx_external_textures;
 mod gfx_interactive;
-mod gfx_live_web;
 mod gfx_layout_canvas;
 mod gfx_live_inspector;
+mod gfx_live_web;
 mod gfx_menu_map;
 mod gfx_tool_install;
 mod launcher_bridge;
@@ -4250,7 +4250,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::GfxRunInteractive => {
-            if state.gfx_interactive_running.as_ref().is_some_and(|p| p.is_running()) {
+            if state
+                .gfx_interactive_running
+                .as_ref()
+                .is_some_and(|p| p.is_running())
+            {
                 state.gfx_interactive_status =
                     "Live preview is already open. Menu actions update without restarting.".into();
                 return Task::none();
@@ -4270,11 +4274,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 "Preparing persistent local Ruffle Web/ActionScript preview...".into();
             return Task::perform(
                 async move {
-                    tokio::task::spawn_blocking(move || {
-                        gfx_interactive::launch_live(&session)
-                    })
-                    .await
-                    .unwrap_or_else(|e| Err(format!("Ruffle preview worker stopped: {e}")))
+                    tokio::task::spawn_blocking(move || gfx_interactive::launch_live(&session))
+                        .await
+                        .unwrap_or_else(|e| Err(format!("Ruffle preview worker stopped: {e}")))
                 },
                 Message::GfxInteractiveStarted,
             );
@@ -4286,9 +4288,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     let requested = state.gfx_preview_preset;
                     state.gfx_interactive_status = format!(
                         "Persistent local Ruffle Web preview opened · {} restored DDS tiles · {} skipped · {} missing imports. Native game callbacks disabled. Original menu controls use verified live callbacks.",
-                        preview.restored_images,
-                        preview.skipped_images,
-                        preview.missing_imports,
+                        preview.restored_images, preview.skipped_images, preview.missing_imports,
                     );
                     if requested != gfx_interactive::PreviewPreset::AsAuthored {
                         state.gfx_interactive_status = match preview.dispatch_live(requested) {
