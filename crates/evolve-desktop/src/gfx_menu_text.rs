@@ -17,7 +17,9 @@ fn label(text: &str) -> Option<String> {
     let raw = text.trim();
     let key = raw.strip_prefix('@')?;
     if !(3..=128).contains(&key.len())
-        || !key.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'-'))
+        || !key
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'-'))
     {
         return None;
     }
@@ -49,21 +51,36 @@ fn edit_text_value(tag: &[u8]) -> Option<(usize, usize)> {
     }
     let flags = u16::from_be_bytes([tag[at], tag[at + 1]]);
     at += 2;
-    if flags & 0x0100 != 0 { skip(tag, &mut at, 2)?; }
-    if flags & 0x0080 != 0 { at = zstring_end(tag, at)? + 1; }
-    if flags & 0x0100 != 0 { skip(tag, &mut at, 2)?; }
-    if flags & 0x0400 != 0 { skip(tag, &mut at, 4)?; }
-    if flags & 0x0200 != 0 { skip(tag, &mut at, 2)?; }
-    if flags & 0x0020 != 0 { skip(tag, &mut at, 9)?; }
+    if flags & 0x0100 != 0 {
+        skip(tag, &mut at, 2)?;
+    }
+    if flags & 0x0080 != 0 {
+        at = zstring_end(tag, at)? + 1;
+    }
+    if flags & 0x0100 != 0 {
+        skip(tag, &mut at, 2)?;
+    }
+    if flags & 0x0400 != 0 {
+        skip(tag, &mut at, 4)?;
+    }
+    if flags & 0x0200 != 0 {
+        skip(tag, &mut at, 2)?;
+    }
+    if flags & 0x0020 != 0 {
+        skip(tag, &mut at, 9)?;
+    }
     at = zstring_end(tag, at)? + 1; // authored variable name
-    if flags & 0x8000 == 0 { return None; }
+    if flags & 0x8000 == 0 {
+        return None;
+    }
     let end = zstring_end(tag, at)?;
     // Never modify malformed tags or anything beyond the initial string.
     (end + 1 == tag.len()).then_some((at, end))
 }
 
 fn walk<F>(swf: &[u8], mut tag_fn: F) -> Result<Vec<u8>, String>
-where F: FnMut(u16, &[u8]) -> Result<Vec<u8>, String>
+where
+    F: FnMut(u16, &[u8]) -> Result<Vec<u8>, String>,
 {
     if swf.len() < 20 || swf.len() > MAX_DECOMPRESSED || &swf[..3] != b"FWS" {
         return Err("Original menu localization requires a validated uncompressed SWF".into());
@@ -100,7 +117,11 @@ where F: FnMut(u16, &[u8]) -> Result<Vec<u8>, String>
             return Err("SWF contains an invalid tag length".into());
         }
         let updated = tag_fn(kind, &swf[at..at + length])?;
-        if updated.len() > MAX_DECOMPRESSED.saturating_sub(dest.len()).saturating_sub(6) {
+        if updated.len()
+            > MAX_DECOMPRESSED
+                .saturating_sub(dest.len())
+                .saturating_sub(6)
+        {
             return Err("Localized SWF exceeds preview limits".into());
         }
         if updated == swf[at..at + length] {
@@ -159,9 +180,15 @@ pub fn replace_authored_text(swf: &[u8], report: &Value) -> Result<(Vec<u8>, Tex
             return Ok(tag.to_vec());
         }
         diagnostics.original_edit_fields += 1;
-        let Some((start, end)) = edit_text_value(tag) else { return Ok(tag.to_vec()); };
-        let Ok(raw) = std::str::from_utf8(&tag[start..end]) else { return Ok(tag.to_vec()); };
-        let Some(key) = label(raw) else { return Ok(tag.to_vec()); };
+        let Some((start, end)) = edit_text_value(tag) else {
+            return Ok(tag.to_vec());
+        };
+        let Ok(raw) = std::str::from_utf8(&tag[start..end]) else {
+            return Ok(tag.to_vec());
+        };
+        let Some(key) = label(raw) else {
+            return Ok(tag.to_vec());
+        };
         let replacement = lookup.and_then(|map| map.get(&key)).and_then(Value::as_str);
         let Some(replacement) = replacement else {
             diagnostics.unresolved += 1;
@@ -189,7 +216,9 @@ mod tests {
         movie.extend_from_slice(&[0; 4]);
         let mut bits = [0u8; 5 + 4 * 17];
         let mut put = |offset: usize, width: usize, value: u32| {
-            for i in 0..width { bits[offset + i] = ((value >> (width - 1 - i)) & 1) as u8; }
+            for i in 0..width {
+                bits[offset + i] = ((value >> (width - 1 - i)) & 1) as u8;
+            }
         };
         put(0, 5, 17);
         for (i, value) in [0u32, 38400, 0, 21600].iter().enumerate() {
@@ -203,7 +232,9 @@ mod tests {
         movie.extend_from_slice(&1u16.to_le_bytes());
         let mut edit = vec![17, 0, 0b00001000, 0];
         edit.extend_from_slice(&flags.to_be_bytes());
-        if flags & 0x0100 != 0 { edit.extend_from_slice(&[1, 0, 12, 0]); }
+        if flags & 0x0100 != 0 {
+            edit.extend_from_slice(&[1, 0, 12, 0]);
+        }
         edit.extend_from_slice(b"menuLabel\0");
         if flags & 0x8000 != 0 {
             edit.extend_from_slice(text.as_bytes());
@@ -241,7 +272,12 @@ mod tests {
         assert_eq!(after, original);
         let dynamic = fixture("unused", 0);
         assert!(authored_keys(&dynamic).unwrap().is_empty());
-        assert_eq!(replace_authored_text(&dynamic, &serde_json::json!({})).unwrap().0, dynamic);
+        assert_eq!(
+            replace_authored_text(&dynamic, &serde_json::json!({}))
+                .unwrap()
+                .0,
+            dynamic
+        );
     }
     #[test]
     fn rejects_corrupt_swf_and_no_unsafe_guessing() {
