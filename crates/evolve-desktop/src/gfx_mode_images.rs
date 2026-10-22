@@ -2,9 +2,9 @@
 //! The original main_menu.gfx requests these separately from its 1008/1009
 //! Scaleform atlas tiles. Converted PNGs live only in the isolated scratch
 //! directory. Neither the source movie nor any imported PAK is modified.
+use evolve_core::LibraryReferenceStatus;
 use evolve_core::dds::decode_dds_rgba;
 use evolve_core::library_catalog::resolve_imported_reference_in_archive;
-use evolve_core::LibraryReferenceStatus;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::fs;
@@ -20,7 +20,9 @@ const MAX_TOTAL_PNG_BYTES: u64 = 64 * 1024 * 1024;
 
 fn safe_image_name(name: &str) -> bool {
     (1..=64).contains(&name.len())
-        && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+        && name
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
 }
 
 /// Find full virtual paths authored in the original ActionScript constants.
@@ -126,7 +128,8 @@ pub(crate) fn stage(
             continue;
         };
         let pixels = u64::from(rgba.width()) * u64::from(rgba.height());
-        if pixels == 0 || pixels > MAX_PIXELS_PER_IMAGE
+        if pixels == 0
+            || pixels > MAX_PIXELS_PER_IMAGE
             || total_pixels.saturating_add(pixels) > MAX_TOTAL_PIXELS
         {
             failed.push(name);
@@ -141,7 +144,8 @@ pub(crate) fn stage(
             continue;
         }
         let size = fs::metadata(&target).map(|m| m.len()).unwrap_or(u64::MAX);
-        if size == 0 || size > MAX_PNG_BYTES
+        if size == 0
+            || size > MAX_PNG_BYTES
             || total_bytes.saturating_add(size) > MAX_TOTAL_PNG_BYTES
         {
             let _ = fs::remove_file(&target);
@@ -170,7 +174,10 @@ mod tests {
     #[test]
     fn discovers_only_original_virtual_mode_images() {
         let data = b"prefix\0Libs/UI/FlashAssets/images/MenuModeSelect/hunt.dds\0junk\0Libs/UI/FlashAssets/images/MenuModeSelect/goliathTutorialUnfocus.DDS\0Libs/UI/FlashAssets/images/MenuModeSelect/../secret.dds\0Libs/UI/FlashAssets/images/Other/hunt.dds\0";
-        assert_eq!(referenced_modes(data), vec!["goliathTutorialUnfocus", "hunt"]);
+        assert_eq!(
+            referenced_modes(data),
+            vec!["goliathTutorialUnfocus", "hunt"]
+        );
     }
     #[test]
     fn original_menu_modes_include_all_twenty_four_focus_variants() {
@@ -178,9 +185,18 @@ mod tests {
         // main_menu.gfx and the separately supplied MenuModeSelect archive.
         // The game assets themselves are intentionally not redistributed.
         let names = [
-            "coop", "custom", "goliathTutorial", "hunt", "markovTutorial",
-            "npe", "npeGriffin", "npeHank", "npeMarkov", "npeVal",
-            "ranked", "training",
+            "coop",
+            "custom",
+            "goliathTutorial",
+            "hunt",
+            "markovTutorial",
+            "npe",
+            "npeGriffin",
+            "npeHank",
+            "npeMarkov",
+            "npeVal",
+            "ranked",
+            "training",
         ];
         let mut authored = Vec::new();
         for stem in names {
@@ -193,7 +209,10 @@ mod tests {
         }
         let all = referenced_modes(&authored);
         assert_eq!(all.len(), 24);
-        assert_eq!(all.iter().filter(|name| name.ends_with("Unfocus")).count(), 12);
+        assert_eq!(
+            all.iter().filter(|name| name.ends_with("Unfocus")).count(),
+            12
+        );
         for stem in names {
             assert!(all.contains(&stem.to_owned()));
             assert!(all.contains(&format!("{stem}Unfocus")));
@@ -264,16 +283,20 @@ mod tests {
         dds[84..88].copy_from_slice(b"DXT1");
         dds.extend([0, 248, 224, 7, 0, 0, 0, 0]);
         fs::write(&source, &dds).unwrap();
-        fs::write(folder.join("asset-library.json"),
+        fs::write(
+            folder.join("asset-library.json"),
             serde_json::to_vec(&json!({
                 "version": 1, "name": PAK, "source": "/game/UI_Assets.pak",
                 "entries": [{
                     "path": "images/MenuModeSelect/hunt.dds",
                     "bytes": dds.len()
                 }]
-            })).unwrap()
-        ).unwrap();
-        fs::write(root.join("build-collections.json"),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            root.join("build-collections.json"),
             serde_json::to_vec(&json!({
                 "version": 1,
                 "builds": {
@@ -282,8 +305,10 @@ mod tests {
                         "members": {"11111111111111111111": {}}
                     }
                 }
-            })).unwrap()
-        ).unwrap();
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let scratch = tempfile::tempdir().unwrap();
         let movie = b"Libs/UI/FlashAssets/images/MenuModeSelect/hunt.dds\0";
         let result = stage(Some(root), Some("Modded Stage 2"), scratch.path(), movie);
@@ -293,7 +318,10 @@ mod tests {
         assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
         assert_eq!(fs::read(&source).unwrap(), dds);
         let other = tempfile::tempdir().unwrap();
-        assert_eq!(stage(Some(root), Some("2012"), other.path(), movie)["staged"], 0);
+        assert_eq!(
+            stage(Some(root), Some("2012"), other.path(), movie)["staged"],
+            0
+        );
         assert!(!other.path().join("runtime-images/hunt.png").exists());
     }
     #[test]
