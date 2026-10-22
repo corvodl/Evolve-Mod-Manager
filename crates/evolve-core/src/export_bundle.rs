@@ -3,7 +3,7 @@
 use crate::character_unified_fbx::standalone_authored_diffuse;
 use crate::{
     AnimationPolicy, CdfExportAppearance, DependencyStatus, EquipmentOverrides, Inventory,
-    convert_glb_to_fbx_with_options, export_dds_png, export_rigged_character_fbx_options,
+    convert_glb_to_fbx_with_layout, export_dds_png, export_rigged_character_fbx_options,
     export_unified_cdf_fbx_options_with_glow, inspect_dependencies, read_model,
     read_static_cdf_assembly_with_equipment,
 };
@@ -26,6 +26,7 @@ pub struct ExportBundleOptions {
     pub rigged: bool,
     pub embed_textures: bool,
     pub export_dependencies: bool,
+    pub combine_meshes: bool,
     pub equipment: EquipmentOverrides,
     /// Source-verified full-armor monster glow, enabled in Model Options.
     pub full_armor_glow: bool,
@@ -393,6 +394,7 @@ pub fn export_bundle(
                     embed_textures: options.embed_textures,
                     full_armor_glow: options.full_armor_glow,
                     damage_blend_percent: options.damage_blend_percent,
+                    combine_meshes: options.combine_meshes,
                 },
             )
             .map_err(|e| format!("{relative}: {e}"))?;
@@ -441,6 +443,7 @@ pub fn export_bundle(
                 options.caf.as_deref(),
                 &target,
                 options.embed_textures,
+                options.combine_meshes,
             )
             .map_err(|e| format!("{relative}: {e}"))?;
         } else {
@@ -493,7 +496,7 @@ pub fn export_bundle(
                 .map_err(|e| format!("{relative} original material and normal maps: {e}"))?;
                 fs::write(&glb, mapped).map_err(|e| e.to_string())?;
             }
-            convert_glb_to_fbx_with_options(
+            convert_glb_to_fbx_with_layout(
                 &options.blender,
                 &glb,
                 &target,
@@ -574,6 +577,7 @@ mod tests {
             rigged: false,
             embed_textures: false,
             export_dependencies: false,
+            combine_meshes: false,
             equipment: EquipmentOverrides::new(),
             full_armor_glow: false,
             damage_blend_percent: 0,
