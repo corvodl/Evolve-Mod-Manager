@@ -10,6 +10,7 @@ import traceback
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from blender_uv0 import prepare_original_uv
+from blender_export_hierarchy import character_root, combine_source_meshes, clean_name
 from blender_material_ids import (bind_original_material_ids,
                                   verify_original_material_ids,
                                   source_material_uv_distributions,
@@ -168,7 +169,10 @@ def main():
     animate = manifest.get("include_animation")
     embed_textures = manifest.get("embed_textures", True)
     distinct_historical = manifest.get("allow_distinct_historical_armatures", False)
-    check(type(embed_textures) is bool and type(distinct_historical) is bool,
+    combine_meshes = manifest.get("combine_meshes", False)
+    root_name = clean_name(manifest.get("character_name", "Character"), "Character")
+    check(type(embed_textures) is bool and type(distinct_historical) is bool
+          and type(combine_meshes) is bool,
           "invalid original rigged export options")
     check(isinstance(parts, list) and 1 <= len(parts) <= 128 and type(animate) is bool,
           "invalid or excessive verified parts")
@@ -239,6 +243,13 @@ def main():
     prepare_export_materials(meshes, embed_textures, destination)
     source_normal_maps = normal_image_names(meshes) if not embed_textures else set()
     validate_blender_meshes(meshes, rigged=True, embed_textures=embed_textures)
+    if combine_meshes:
+        meshes, mesh_armatures = combine_source_meshes(meshes, mesh_armatures, root_name)
+        verify_original_material_ids(meshes, original_material_parts)
+        verify_material_uv_distributions(source_material_uvs, source_material_uv_distributions(meshes))
+        validate_blender_meshes(meshes, rigged=True, embed_textures=embed_textures)
+        # Joining changes the mesh naming, not the verified source attachment set.
+    export_root = character_root(root_name, meshes, armatures)
     bone_count = sum(len(arm.data.bones) for arm in armatures)
     # Keep primitive strings: read_factory_settings destroys the original
     # Blender objects before validation of the re-imported FBX.
@@ -258,13 +269,14 @@ def main():
     bpy.ops.object.select_all(action="DESELECT")
     for rig in armatures:
         rig.select_set(True)
+    export_root.select_set(True)
     for mesh in meshes:
         mesh.select_set(True)
         verify_mesh(mesh, mesh_armatures[mesh])
     bpy.context.view_layer.objects.active = armatures[0]
     bpy.ops.export_scene.fbx(
         filepath=str(destination), use_selection=True,
-        object_types={"ARMATURE", "MESH"}, add_leaf_bones=False,
+        object_types={"ARMATURE", "MESH", "EMPTY"}, add_leaf_bones=False,
         use_armature_deform_only=False, axis_forward="-Y", axis_up="Z",
         bake_anim=animate, bake_anim_use_all_actions=animate,
         bake_anim_use_nla_strips=animate, bake_anim_simplify_factor=0,
@@ -292,7 +304,7 @@ def main():
     }
     check(source_hierarchy == target_hierarchy,
           "FBX round-trip changed a source bone identity or hierarchy")
-    check(len(result_meshes) >= len(parts), "round-trip lost character parts")
+    check(len(result_meshes) >= (len(armatures) if combine_meshes else len(parts)), "round-trip lost character meshes")
     check(len(result_meshes) <= 2048, "round-trip produced unbounded material fragments")
     verified_materials = verify_original_material_ids(
         result_meshes, original_material_parts)
@@ -301,7 +313,8 @@ def main():
     if embed_textures:
         check(diffuse_image_count(result_meshes) > 0,
               "FBX round-trip lost embedded diffuse image links; refusing white export")
-        verify_part_diffuse_coverage(result_meshes, parts, "FBX round-trip")
+        if not combine_meshes:
+            verify_part_diffuse_coverage(result_meshes, parts, "FBX round-trip")
     if animate:
         check(bool(bpy.data.actions), "FBX round-trip lost the verified CAF Action")
     validate_blender_meshes(result_meshes, rigged=True, embed_textures=embed_textures)
@@ -341,6 +354,9 @@ def main():
               and abs(original_hi - imported_hi) <= 0.002,
               "FBX round-trip changed original UV0 bounds")
     verify_uv_loop_distributions(source_uv_loops, target_uv_loops)
+    roots = [obj for obj in bpy.data.objects if obj.type == "EMPTY"
+             and obj.name == root_name]
+    check(bool(roots), "FBX round-trip lost the character hierarchy root")
     verified = {"parts": len(parts), "armatures": len(result_arms), "bones": bone_count,
                       "meshes": len(result_meshes), "display_shapes_excluded": len(display_shapes),
                       "weighted_vertices": imported_weighted_vertices,
