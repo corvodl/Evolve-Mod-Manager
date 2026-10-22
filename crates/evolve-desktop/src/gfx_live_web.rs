@@ -251,7 +251,7 @@ fn respond(
                 stream,
                 &root.join("preview-menu.json"),
                 root,
-                64 * 1024,
+                512 * 1024,
                 "application/json; charset=utf-8",
             );
         }
