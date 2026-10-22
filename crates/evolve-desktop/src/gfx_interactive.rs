@@ -100,6 +100,20 @@ fn defined_function_arity(actions: &[u8], name: &str) -> Option<usize> {
         if opcode != 0x9b && opcode != 0x8e {
             continue;
         }
+        // AVM1 function action headers exclude their enclosed instruction
+        // bodies. Skip the body to avoid accepting a nested function as a
+        // global menu handler.
+        if length < 2 {
+            return None;
+        }
+        let body_length = usize::from(u16::from_le_bytes([
+            payload[length - 2],
+            payload[length - 1],
+        ]));
+        if body_length > actions.len() - offset {
+            return None;
+        }
+        offset += body_length;
         let Some(end) = payload.iter().position(|b| *b == 0) else {
             return None;
         };
