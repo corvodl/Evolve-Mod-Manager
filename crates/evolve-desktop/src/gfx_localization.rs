@@ -2,7 +2,7 @@
 //! Never substitutes an English guess for an unavailable game string or
 //! writes back to a PAK, movie, or imported Asset Library.
 use evolve_core::{LibraryReferenceStatus, imported_library, resolve_imported_reference};
-use quick_xml::{Reader, escape::unescape, events::Event};
+use quick_xml::{Reader, escape::unescape, events::{BytesStart, Event}};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -81,9 +81,47 @@ fn consume_row(
     }
 }
 
-/// Read only the source's spreadsheet-style rows (KEY, TRANSLATED TEXT),
-/// including namespaced SpreadsheetML Row/Cell/Data tags. Reject DTDs and
-/// malformed XML; unknown formats remain unresolved, not guessed.
+/// Evolve Stage 2's USA-EN_xml.pak ships CryEngine Strings XML, not the
+/// SpreadsheetML exported by other builds:
+/// <Strings><Category><String name="ui_X" value="English"/></Category></Strings>.
+/// Decode XML attributes (including entities) only for requested keys.
+fn consume_native_string(
+    tag: &BytesStart<'_>,
+    reader: &Reader<&[u8]>,
+    wanted: &HashSet<String>,
+    found: &mut HashMap<String, String>,
+) -> Result<(), String> {
+    let mut key = None;
+    let mut value = None;
+    for attr in tag.attributes() {
+        let attr = attr.map_err(|_| "Malformed localization XML attribute")?;
+        let field = xml_name(attr.key.as_ref());
+        if field.eq_ignore_ascii_case(b"name") || field.eq_ignore_ascii_case(b"value") {
+            let decoded = attr
+                .decode_and_unescape_value(reader.decoder())
+                .map_err(|_| "Invalid localization XML attribute escaping")?;
+            if field.eq_ignore_ascii_case(b"name") {
+                let normalized = decoded.trim().trim_start_matches('@').to_ascii_lowercase();
+                if normalized.len() <= 128 {
+                    key = Some(normalized);
+                }
+            } else if decoded.len() <= 1024 {
+                value = Some(decoded.into_owned());
+            }
+        }
+    }
+    if let (Some(key), Some(value)) = (key, value)
+        && wanted.contains(&key)
+        && !value.trim().is_empty()
+    {
+        found.entry(key).or_insert(value);
+    }
+    Ok(())
+}
+
+/// Read the source's SpreadsheetML KEY/TRANSLATED TEXT rows or
+/// CryEngine Strings/Category/String name/value attributes from USA-EN.
+/// Reject DTDs and malformed XML; unknown formats remain unresolved, not guessed.
 fn parse_sheet(bytes: &[u8], wanted: &HashSet<String>) -> Result<HashMap<String, String>, String> {
     if bytes.len() > MAX_XML as usize {
         return Err("Localization sheet too large".into());
@@ -99,8 +137,26 @@ fn parse_sheet(bytes: &[u8], wanted: &HashSet<String>) -> Result<HashMap<String,
     let mut columns = None;
     let mut found = HashMap::new();
     let mut rows = 0usize;
+    let mut in_strings = false;
+    let mut native_strings = false;
     loop {
         match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(event)) if xml_name(event.name().as_ref()) == b"Strings" => {
+                in_strings = true;
+                native_strings = true;
+            }
+            Ok(Event::Start(event))
+                if in_strings && xml_name(event.name().as_ref()).eq_ignore_ascii_case(b"String") =>
+            {
+                rows += 1;
+                consume_native_string(&event, &reader, wanted, &mut found)?;
+            }
+            Ok(Event::Empty(event))
+                if in_strings && xml_name(event.name().as_ref()).eq_ignore_ascii_case(b"String") =>
+            {
+                rows += 1;
+                consume_native_string(&event, &reader, wanted, &mut found)?;
+            }
             Ok(Event::Start(event)) => match xml_name(event.name().as_ref()) {
                 b"Row" => {
                     in_row = true;
@@ -155,6 +211,7 @@ fn parse_sheet(bytes: &[u8], wanted: &HashSet<String>) -> Result<HashMap<String,
                 data.push_str(&decoded);
             }
             Ok(Event::End(event)) => match xml_name(event.name().as_ref()) {
+                b"Strings" => in_strings = false,
                 b"Data" => in_data = false,
                 b"Cell" if in_row => {
                     if cells.len() >= MAX_ROW {
@@ -180,8 +237,8 @@ fn parse_sheet(bytes: &[u8], wanted: &HashSet<String>) -> Result<HashMap<String,
         }
         buf.clear();
     }
-    if columns.is_none() {
-        return Err("No verified KEY/TRANSLATED TEXT column headers".into());
+    if columns.is_none() && !native_strings {
+        return Err("No verified SpreadsheetML headers or CryEngine Strings root".into());
     }
     Ok(found)
 }
@@ -195,9 +252,12 @@ fn relevant_path(member: &str, archive_name: &str, language: &str) -> bool {
         return false;
     }
     let prefix = format!("localization/{language}/");
+    let from_english_xml = archive_name.eq_ignore_ascii_case(&format!("{language}_xml.pak"));
+    let from_usa_en = language.eq_ignore_ascii_case("english")
+        && archive_name.eq_ignore_ascii_case("USA-EN_xml.pak");
+    let root_member = lowered.strip_prefix("files/").unwrap_or(&lowered);
     lowered.starts_with(&prefix)
-        || (!lowered.contains('/')
-            && archive_name.eq_ignore_ascii_case(&format!("{language}_xml.pak")))
+        || ((from_english_xml || from_usa_en) && !root_member.contains('/'))
 }
 
 /// Localizes *inspector labels only*. Ruffle/AVM text fields still require
