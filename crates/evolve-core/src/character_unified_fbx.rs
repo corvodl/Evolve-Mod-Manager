@@ -1054,8 +1054,9 @@ pub(crate) fn static_model_material_glb(
     if subsets.is_empty() || subsets.iter().any(|&(_, _, id)| id == 255 || id >= 128) {
         return Err("Source model has unresolved material IDs".into());
     }
-    let authored =
-        exact_multi_slot_materials_with_scope(&root, source, inventory, None, scope.as_ref())?;
+    let authored = exact_multi_slot_materials_scoped_roles(
+        &root, source, inventory, None, scope.as_ref(), embed_textures,
+    )?;
     let original_table =
         has_original_mesh_subset_table(&original_bytes).map_err(|e| e.to_string())?;
     if !original_table && authored.as_ref().is_some_and(|slots| slots.len() > 1) {
