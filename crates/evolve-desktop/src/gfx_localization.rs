@@ -14,6 +14,8 @@ const MAX_FILES: usize = 24;
 const MAX_ROW: usize = 128;
 const MAX_MATCHES: usize = 256;
 
+type LocalizationSheets = (HashMap<String, String>, Vec<String>, HashSet<String>);
+
 fn xml_name(value: &[u8]) -> &[u8] {
     value.rsplit(|c| *c == b':').next().unwrap_or(value)
 }
@@ -187,21 +189,21 @@ pub fn menu_labels(root: Option<&Path>, build: Option<&str>, labels: &[String]) 
         return json!({"language":"english","status":"No localization keys in UI_Data",
             "translations":{},"unresolved":[],"sources":[]});
     }
-    if let (Some(root), Some(build)) = (root, build) {
-        if !build.trim().is_empty() {
-            match load_sheets(root, build, "english", &wanted) {
-                Ok((values, files, conflicts)) => {
-                    translations = values;
-                    sources = files;
-                    ambiguous = conflicts;
-                    status = format!(
-                        "{} verified English UI keys from {} exact-build localization sheets",
-                        translations.len(),
-                        sources.len()
-                    );
-                }
-                Err(e) => status = format!("Localization unavailable: {e}"),
+    if let (Some(root), Some(build)) = (root, build)
+        && !build.trim().is_empty()
+    {
+        match load_sheets(root, build, "english", &wanted) {
+            Ok((values, files, conflicts)) => {
+                translations = values;
+                sources = files;
+                ambiguous = conflicts;
+                status = format!(
+                    "{} verified English UI keys from {} exact-build localization sheets",
+                    translations.len(),
+                    sources.len()
+                );
             }
+            Err(e) => status = format!("Localization unavailable: {e}"),
         }
     }
     let unresolved = wanted
@@ -221,7 +223,7 @@ fn load_sheets(
     build: &str,
     language: &str,
     wanted: &HashSet<String>,
-) -> Result<(HashMap<String, String>, Vec<String>, HashSet<String>), String> {
+) -> Result<LocalizationSheets, String> {
     let library = imported_library(root).map_err(|e| e.to_string())?;
     let mut paths = HashSet::<String>::new();
     for archive in &library.archives {
@@ -239,10 +241,10 @@ fn load_sheets(
             return Err("Localization manifest missing entries".into());
         };
         for entry in entries {
-            if let Some(name) = entry["path"].as_str() {
-                if relevant_path(name, &archive.name, language) {
-                    paths.insert(name.to_owned());
-                }
+            if let Some(name) = entry["path"].as_str()
+                && relevant_path(name, &archive.name, language)
+            {
+                paths.insert(name.to_owned());
             }
         }
     }
@@ -318,7 +320,7 @@ mod tests {
             "English_XML.pak",
             "english"
         ));
-        let report = menu_labels(None, None, &["@ui_STARTGAME".to_string()].to_vec());
+        let report = menu_labels(None, None, &["@ui_STARTGAME".to_string()]);
         assert_eq!(report["unresolved"][0], "ui_startgame");
     }
 }
