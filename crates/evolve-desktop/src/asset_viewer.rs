@@ -725,23 +725,37 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                         use crate::gfx_interactive::PreviewPreset as MenuPreset;
                         for (label, choices) in [
                             ("MOVIE", &[MenuPreset::AsAuthored][..]),
-                            ("ENGAGEMENT PROMPT", &[MenuPreset::HideEngagement,
-                                MenuPreset::ShowEngagement][..]),
-                            ("SIGN-IN PROMPT", &[MenuPreset::HideSigningIn,
-                                MenuPreset::ShowSigningIn][..]),
-                            ("MENU NAVIGATION", &[MenuPreset::Back,
-                                MenuPreset::ReturnToMainMenu][..]),
-                            ("PATCH NOTES", &[MenuPreset::ShowPatchNotes,
-                                MenuPreset::HidePatchNotes][..]),
-                            ("NEWS PANEL", &[MenuPreset::ShowNews,
-                                MenuPreset::HideNews][..]),
-                            ("CHALLENGE CONTROLS", &[MenuPreset::ShowChallenges,
-                                MenuPreset::HideChallenges][..]),
+                            (
+                                "ENGAGEMENT PROMPT",
+                                &[MenuPreset::HideEngagement, MenuPreset::ShowEngagement][..],
+                            ),
+                            (
+                                "SIGN-IN PROMPT",
+                                &[MenuPreset::HideSigningIn, MenuPreset::ShowSigningIn][..],
+                            ),
+                            (
+                                "MENU NAVIGATION",
+                                &[MenuPreset::Back, MenuPreset::ReturnToMainMenu][..],
+                            ),
+                            (
+                                "PATCH NOTES",
+                                &[MenuPreset::ShowPatchNotes, MenuPreset::HidePatchNotes][..],
+                            ),
+                            (
+                                "NEWS PANEL",
+                                &[MenuPreset::ShowNews, MenuPreset::HideNews][..],
+                            ),
+                            (
+                                "CHALLENGE CONTROLS",
+                                &[MenuPreset::ShowChallenges, MenuPreset::HideChallenges][..],
+                            ),
                         ] {
                             actions = actions.push(text(label).size(10).style(design::muted));
                             let mut choices_row = row![].spacing(6);
                             for &preset in choices {
-                                let available = state.gfx_interactive_running.as_ref()
+                                let available = state
+                                    .gfx_interactive_running
+                                    .as_ref()
                                     .filter(|live| live.is_running())
                                     .is_none_or(|live| live.can_dispatch_live(preset));
                                 let description = if available {
@@ -750,9 +764,10 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                                     format!("{} (not registered)", preset.description())
                                 };
                                 choices_row = choices_row.push(
-                                    design::button(text(description))
-                                        .on_press_maybe(available.then_some(
-                                            Message::GfxSelectPreviewPreset(preset))),
+                                    design::button(text(description)).on_press_maybe(
+                                        available
+                                            .then_some(Message::GfxSelectPreviewPreset(preset)),
+                                    ),
                                 );
                             }
                             actions = actions.push(choices_row);
