@@ -115,6 +115,10 @@
         if (video.playable) {
             messages.push("Video playback source: " + String(video.mode || "browser video"));
         }
+        messages.push("In-movie localized static Flash labels: " +
+            Number(report.authored_flash_text?.localized || 0) + " / " +
+            Number(report.authored_flash_text?.fields || 0) +
+            "; dynamically created native labels not substituted.");
         messages.push("Native CryEngine initialization: unavailable.");
         for (const name of (Array.isArray(stats.unresolved_imports)
             ? stats.unresolved_imports.slice(0, 16) : [])) {
@@ -213,6 +217,20 @@
         const canInitialize = canOpenScreen || canReturnToMain;
         const originalStartup = canOpenScreen ? "openScreen" : "transitionToMainMenu";
         initButton.disabled = !canInitialize;
+        const dismissOverlay = document.getElementById("dismiss-overlay");
+        const canDismissPatchNotes = report?.initialization?.verified_hide_patch_notes === true;
+        dismissOverlay.disabled = !canDismissPatchNotes;
+        dismissOverlay.addEventListener("click", () => {
+            if (!canDismissPatchNotes) return;
+            try {
+                const result = player.ruffle().callExternalInterface("evolvePreview_hidePatchNotes");
+                show(result === true
+                    ? "Called original hidePatchNotes; check the Flash menu for the visible transition."
+                    : "Original hidePatchNotes callback was unavailable at runtime.", result !== true);
+            } catch (error) {
+                show("Original hidePatchNotes raised: " + String(error), true);
+            }
+        });
         const initializeOriginal = async (automatic) => {
             if (!canInitialize) {
                 show("No zero-argument original openScreen or transitionToMainMenu callback was verified. Host argument requirements cannot be guessed.", true);
