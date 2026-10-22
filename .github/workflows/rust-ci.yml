@@ -29,6 +29,8 @@ jobs:
         run: python3 -m unittest discover -s crates/evolve-core/tests -p 'test_blender_uv0.py'
       - name: Validate external FBX normal-map and rig regression tests
         run: python3 -m unittest discover -s crates/evolve-core/tests -p 'test_blender_fbx_safety.py'
+      - name: Validate original material-ID and face-assignment parity
+        run: python3 -m unittest discover -s crates/evolve-core/tests -p 'test_blender_material_ids.py'
       - name: Validate original 2012 Rocky 47/48-bone armature compatibility
         run: python3 -m unittest discover -s crates/evolve-core/tests -p 'test_2012_rocky_armatures.py'
       - run: cargo fmt --all -- --check
