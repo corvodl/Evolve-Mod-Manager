@@ -1338,6 +1338,7 @@ pub fn export_unified_cdf_fbx_options(
             embed_textures,
             full_armor_glow: false,
             damage_blend_percent: 0,
+            combine_meshes: false,
         },
     )
 }
@@ -1349,6 +1350,7 @@ pub struct CdfExportAppearance {
     pub full_armor_glow: bool,
     /// Requested preview percentage for the authored Custom/Opacity damage blend.
     pub damage_blend_percent: u8,
+    pub combine_meshes: bool,
 }
 
 /// Export selected CDF parts/equipment, including the optional source-exact
@@ -1366,6 +1368,7 @@ pub fn export_unified_cdf_fbx_options_with_glow(
         embed_textures,
         full_armor_glow,
         damage_blend_percent,
+        combine_meshes,
     } = appearance;
     let root = fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
     let imported = texture_scope(inventory);
@@ -1787,6 +1790,8 @@ pub fn export_unified_cdf_fbx_options_with_glow(
         serde_json::to_vec(&json!({
             "parts":entries, "include_animation":motion.is_some(),
             "embed_textures":embed_textures,
+            "character_name":source.file_stem().and_then(|n| n.to_str()).unwrap_or("Character"),
+            "combine_meshes":combine_meshes,
             "allow_distinct_historical_armatures":allow_distinct_historical_rigs
         }))
         .map_err(|e| e.to_string())?,
@@ -1809,6 +1814,8 @@ pub fn export_unified_cdf_fbx_options_with_glow(
         include_str!("blender_material_ids.py"),
     )
     .map_err(|e| e.to_string())?;
+    fs::write(work.path().join("blender_export_hierarchy.py"),
+              include_str!("blender_export_hierarchy.py")).map_err(|e| e.to_string())?;
     let temp_fbx = work.path().join(
         destination
             .file_name()
