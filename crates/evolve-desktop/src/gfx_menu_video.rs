@@ -19,10 +19,7 @@ const ORIGINAL_PAK: &str = "videos.pak";
 // candidates, since selecting any of them would change the intended background.
 // Resolve only exact, source-build-qualified manifest entries (some imports
 // retain an additional "files/" prefix in their manifest paths).
-const VIDEO_MEMBERS: &[&str] = &[
-    ORIGINAL_MEMBER,
-    "files/front_end/mainmenu_goliath.usm",
-];
+const VIDEO_MEMBERS: &[&str] = &[ORIGINAL_MEMBER, "files/front_end/mainmenu_goliath.usm"];
 const MAX_USM: u64 = 256 * 1024 * 1024;
 const MAX_BROWSER_VIDEO: u64 = 64 * 1024 * 1024;
 const CONVERSION_TIMEOUT: Duration = Duration::from_secs(45);
@@ -65,7 +62,11 @@ fn sidecar(original: &Path, scratch: &Path) -> Result<Option<&'static str>, Stri
     let safe_parent = fs::canonicalize(parent).map_err(|e| e.to_string())?;
     for (source_name, target_name, extension) in [
         ("mainmenu_goliath.preview.mp4", "menu-background.mp4", "mp4"),
-        ("mainmenu_goliath.preview.webm", "menu-background.webm", "webm"),
+        (
+            "mainmenu_goliath.preview.webm",
+            "menu-background.webm",
+            "webm",
+        ),
     ] {
         let candidate = parent.join(source_name);
         if !candidate.exists() {
@@ -301,7 +302,9 @@ pub fn stage_main_menu(root: Option<&Path>, build: Option<&str>, scratch: &Path)
             "mode": mode,
             "status": "Original main-menu background video staged separately behind transparent Ruffle UI."
         }),
-        Err(status) => json!({"source": verified_source.clone(), "playable": false, "status": status}),
+        Err(status) => {
+            json!({"source": verified_source.clone(), "playable": false, "status": status})
+        }
     }
 }
 
