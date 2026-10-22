@@ -2,7 +2,7 @@
 //! desktop runtime. The original ActionScript bytecode remains in the movie;
 //! only supported Scaleform DDS image tags are reconstructed for rendering.
 //! This is intentionally NOT a CryEngine host callback implementation.
-use crate::{gfx_editor::Session, gfx_external_textures};
+use crate::{gfx_editor::Session, gfx_external_textures, gfx_live_web};
 use evolve_core::gfx::{MAX_DECOMPRESSED, MAX_SOURCE, inspect_gfx};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -33,7 +33,7 @@ pub enum PreviewPreset {
 }
 
 impl PreviewPreset {
-    fn script_call(self) -> Option<(&'static str, Option<bool>)> {
+    pub(crate) fn script_call(self) -> Option<(&'static str, Option<bool>)> {
         match self {
             Self::AsAuthored => None,
             Self::ShowEngagement => Some(("showEngagementPrompt", Some(true))),
@@ -130,6 +130,174 @@ fn defined_function_arity(actions: &[u8], name: &str) -> Option<usize> {
         }
     }
     arity
+}
+
+/// Register an allowlisted bridge on the original *first* frame, after the
+/// movie has declared its root functions. Unlike the old one-shot patch, the
+/// callback is invoked later through Ruffle Web's ExternalInterface in a
+/// persistent player. No native CryEngine interfaces are implemented.
+///
+/// The wrapper returns `true` after calling the original handler so the
+/// JavaScript caller can distinguish dispatched actions from missing callbacks.
+/// This is NOT proof that a handler could complete a native game transition.
+pub(crate) fn install_live_callbacks(
+    swf: &[u8],
+    virtual_movie: &str,
+) -> Result<(Vec<u8>, Vec<PreviewPreset>), String> {
+    if !virtual_movie.eq_ignore_ascii_case("Libs/UI/main_menu.gfx") {
+        return Ok((swf.to_vec(), Vec::new()));
+    }
+    if swf.len() < 24 || swf.len() > MAX_DECOMPRESSED || &swf[..3] != b"FWS" {
+        return Err("Live ActionScript callbacks need a validated uncompressed main-menu SWF".into());
+    }
+    if usize::try_from(u32::from_le_bytes(swf[4..8].try_into().unwrap())).ok() != Some(swf.len()) {
+        return Err("Live callback SWF length does not match its header".into());
+    }
+    let nbits = usize::from(swf[8] >> 3);
+    if !(1..=31).contains(&nbits) {
+        return Err("Invalid live callback SWF frame rectangle".into());
+    }
+    let mut cursor = 8 + (5 + 4 * nbits).div_ceil(8) + 4;
+    let mut tag_count = 0usize;
+    let mut chunks = Vec::new();
+    let insert_at = loop {
+        if cursor + 2 > swf.len() {
+            return Err("Root frame ShowFrame not found for live menu callbacks".into());
+        }
+        let start = cursor;
+        let header = u16::from_le_bytes(swf[cursor..cursor + 2].try_into().unwrap());
+        cursor += 2;
+        let code = header >> 6;
+        let mut length = usize::from(header & 63);
+        if length == 63 {
+            if cursor + 4 > swf.len() {
+                return Err("Truncated first-frame SWF tag".into());
+            }
+            length = u32::from_le_bytes(swf[cursor..cursor + 4].try_into().unwrap()) as usize;
+            cursor += 4;
+        }
+        if length > swf.len() - cursor {
+            return Err("Invalid first-frame SWF tag size".into());
+        }
+        if code == 1 {
+            break start;
+        }
+        if code == 0 || tag_count >= 80_000 {
+            return Err("Live callback insertion needs an original first frame".into());
+        }
+        if code == 12 {
+            chunks.push(&swf[cursor..cursor + length]);
+        }
+        cursor += length;
+        tag_count += 1;
+    };
+    // The whitelist is fixed and each callback is registered only if the
+    // original first frame declares the expected exact arity in AVM1 bytecode.
+    const PRESETS: &[PreviewPreset] = &[
+        PreviewPreset::ShowEngagement, PreviewPreset::HideEngagement,
+        PreviewPreset::ShowSigningIn, PreviewPreset::HideSigningIn,
+        PreviewPreset::Back, PreviewPreset::ReturnToMainMenu,
+        PreviewPreset::ShowPatchNotes, PreviewPreset::HidePatchNotes,
+        PreviewPreset::ShowNews, PreviewPreset::HideNews,
+        PreviewPreset::ShowChallenges, PreviewPreset::HideChallenges,
+    ];
+    let mut allowed = Vec::new();
+    let mut emitted = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for preset in PRESETS {
+        let Some((function, argument)) = preset.script_call() else { continue };
+        if !seen.insert(function) {
+            // Both show/hide toggle presets share the same callback.
+            if allowed.iter().any(|item: &PreviewPreset| item.script_call().is_some_and(|(name, _)| name == function)) {
+                allowed.push(*preset);
+            }
+            continue;
+        }
+        let expected = usize::from(argument.is_some());
+        let found = chunks.iter().filter_map(|actions| defined_function_arity(actions, function)).collect::<Vec<_>>();
+        if found.is_empty() || found.iter().any(|&count| count != expected) {
+            continue;
+        }
+        let method = format!("evolvePreview_{}", function);
+        let wrapper = format!("evolveCallback_{}", function);
+        // DefineFunction(wrapper, optional boolean parameter) body.
+        let mut body = Vec::new();
+        if argument.is_some() {
+            avm1_push_string(&mut body, "value")?;
+            body.push(0x1c); // GetVariable
+        }
+        avm1_push_i32(&mut body, expected as i32);
+        avm1_push_string(&mut body, function)?;
+        body.extend_from_slice(&[0x3d, 0x17]); // CallFunction, Pop result
+        avm1_push_boolean(&mut body, true);
+        body.extend_from_slice(&[0x3e, 0]); // Return(true), End
+        let mut def = Vec::new();
+        def.extend_from_slice(wrapper.as_bytes());
+        def.push(0);
+        def.extend_from_slice(&(expected as u16).to_le_bytes());
+        if expected == 1 {
+            def.extend_from_slice(b"value\0");
+        }
+        def.extend_from_slice(&(body.len() as u16).to_le_bytes());
+        emitted.push(0x9b);
+        emitted.extend_from_slice(&(def.len() as u16).to_le_bytes());
+        emitted.extend_from_slice(&def);
+        emitted.extend_from_slice(&body);
+
+        // flash.external.ExternalInterface.addCallback(
+        //     "evolvePreview_function", _root, wrapper)
+        avm1_push_string(&mut emitted, &wrapper)?;
+        emitted.push(0x1c); // GetVariable -> wrapper Function
+        avm1_push_string(&mut emitted, "_root")?;
+        emitted.push(0x1c); // GetVariable -> receiver
+        avm1_push_string(&mut emitted, &method)?;
+        avm1_push_i32(&mut emitted, 3);
+        avm1_push_string(&mut emitted, "flash")?;
+        emitted.push(0x1c); // GetVariable
+        avm1_push_string(&mut emitted, "external")?;
+        emitted.push(0x4e); // GetMember
+        avm1_push_string(&mut emitted, "ExternalInterface")?;
+        emitted.push(0x4e); // GetMember
+        avm1_push_string(&mut emitted, "addCallback")?;
+        emitted.extend_from_slice(&[0x52, 0x17]); // CallMethod; Pop
+        allowed.push(*preset);
+    }
+    if emitted.is_empty() {
+        return Ok((swf.to_vec(), allowed));
+    }
+    emitted.push(0); // End DoAction block.
+    let mut tag = ((12u16 << 6) | 63).to_le_bytes().to_vec();
+    tag.extend_from_slice(&(emitted.len() as u32).to_le_bytes());
+    tag.extend_from_slice(&emitted);
+    if swf.len().saturating_add(tag.len()) > MAX_DECOMPRESSED {
+        return Err("Live menu callback injection exceeds SWF size limit".into());
+    }
+    let mut output = Vec::with_capacity(swf.len() + tag.len());
+    output.extend_from_slice(&swf[..insert_at]);
+    output.extend_from_slice(&tag);
+    output.extend_from_slice(&swf[insert_at..]);
+    output[4..8].copy_from_slice(&(output.len() as u32).to_le_bytes());
+    Ok((output, allowed))
+}
+
+fn avm1_push_string(actions: &mut Vec<u8>, value: &str) -> Result<(), String> {
+    if value.len() > 250 || value.contains('\0') {
+        return Err("Unsafe AVM1 preview callback name".into());
+    }
+    let mut bytes = vec![0u8];
+    bytes.extend_from_slice(value.as_bytes());
+    bytes.push(0);
+    actions.push(0x96);
+    actions.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+    actions.extend_from_slice(&bytes);
+    Ok(())
+}
+fn avm1_push_i32(actions: &mut Vec<u8>, value: i32) {
+    actions.extend_from_slice(&[0x96, 5, 0, 7]);
+    actions.extend_from_slice(&value.to_le_bytes());
+}
+fn avm1_push_boolean(actions: &mut Vec<u8>, value: bool) {
+    actions.extend_from_slice(&[0x96, 2, 0, 5, u8::from(value)]);
 }
 
 /// Insert one validated, UI-local original ActionScript call into a
@@ -246,7 +414,8 @@ impl Drop for ProcessOwner {
 }
 #[derive(Debug, Clone)]
 pub struct RunningPreview {
-    process: Arc<ProcessOwner>,
+    process: Option<Arc<ProcessOwner>>,
+    live: Option<Arc<gfx_live_web::LiveServer>>,
     pub restored_images: usize,
     pub skipped_images: usize,
     pub missing_imports: usize,
@@ -254,10 +423,20 @@ pub struct RunningPreview {
 }
 impl RunningPreview {
     pub fn is_running(&self) -> bool {
-        self.process
-            .child
-            .lock()
-            .is_ok_and(|mut child| child.try_wait().ok().flatten().is_none())
+        if let Some(server) = &self.live {
+            return server.is_running();
+        }
+        self.process.as_ref().is_some_and(|process| {
+            process.child.lock().is_ok_and(|mut child| child.try_wait().ok().flatten().is_none())
+        })
+    }
+
+    pub fn can_dispatch_live(&self, preset: PreviewPreset) -> bool {
+        self.live.as_ref().is_some_and(|server| server.supports(preset))
+    }
+
+    pub fn dispatch_live(&self, preset: PreviewPreset) -> Result<(), String> {
+        self.live.as_ref().ok_or("Live browser preview is not running")?.dispatch(preset)
     }
 }
 fn executable(path: &str) -> Result<PathBuf, String> {
@@ -437,14 +616,49 @@ pub fn launch(
         .spawn()
         .map_err(|e| format!("Unable to launch Ruffle desktop: {e}"))?;
     Ok(RunningPreview {
-        process: Arc::new(ProcessOwner {
+        process: Some(Arc::new(ProcessOwner {
             child: Mutex::new(child),
             _scratch: root,
-        }),
+        })),
+        live: None,
         restored_images: converted,
         skipped_images: skipped,
         missing_imports: missing,
         preset,
+    })
+}
+
+/// A persistent browser-based Ruffle preview. All selected controls use
+/// an allowlisted live ExternalInterface callback instead of patch/restart.
+pub fn launch_live(session: &Session) -> Result<RunningPreview, String> {
+    let scratch = tempfile::Builder::new()
+        .prefix("evolve-gfx-live-")
+        .tempdir()
+        .map_err(|e| e.to_string())?;
+    let bytes = fs::read(&session.editable).map_err(|e| e.to_string())?;
+    let (swf, mut converted, mut skipped) =
+        renderable_movie(&bytes, &session.relative, &session.source, session)?;
+    let (movie, actions) = install_live_callbacks(&swf, &session.relative)?;
+    fs::write(scratch.path().join("movie.swf"), movie).map_err(|e| e.to_string())?;
+    let mut missing = 0usize;
+    for name in session.info.imports.iter().take(MAX_IMPORTS) {
+        match stage_import(session, &session.relative, name, scratch.path()) {
+            Ok(Some((images, skip))) => {
+                converted += images;
+                skipped += skip;
+            }
+            Ok(None) => missing += 1,
+            Err(error) => return Err(format!("Imported Scaleform movie {name}: {error}")),
+        }
+    }
+    let live = gfx_live_web::LiveServer::start(scratch, actions)?;
+    Ok(RunningPreview {
+        process: None,
+        live: Some(Arc::new(live)),
+        restored_images: converted,
+        skipped_images: skipped,
+        missing_imports: missing,
+        preset: PreviewPreset::AsAuthored,
     })
 }
 
@@ -483,6 +697,26 @@ mod tests {
         let n = movie.len() as u32;
         movie[4..8].copy_from_slice(&n.to_le_bytes());
         movie
+    }
+
+    #[test]
+    fn verified_live_callbacks_use_registered_original_handlers_without_restarting() {
+        let movie = menu_fixture();
+        let (patched, allowed) = install_live_callbacks(&movie, "Libs/UI/main_menu.gfx").unwrap();
+        assert!(patched.len() > movie.len());
+        assert!(allowed.contains(&PreviewPreset::ShowEngagement));
+        assert!(allowed.contains(&PreviewPreset::HideEngagement));
+        assert!(allowed.contains(&PreviewPreset::Back));
+        assert!(!allowed.contains(&PreviewPreset::HideSigningIn));
+        assert_eq!(&patched[4..8], &(patched.len() as u32).to_le_bytes());
+        assert!(patched.windows(b"evolvePreview_showEngagementPrompt".len())
+            .any(|chunk| chunk == b"evolvePreview_showEngagementPrompt"));
+        assert!(patched.windows(b"addCallback".len())
+            .any(|chunk| chunk == b"addCallback"));
+        assert_eq!(movie, menu_fixture());
+        let (other, empty) = install_live_callbacks(&movie, "Other.gfx").unwrap();
+        assert_eq!(movie, other);
+        assert!(empty.is_empty());
     }
 
     #[test]
