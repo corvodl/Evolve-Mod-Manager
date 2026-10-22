@@ -323,7 +323,13 @@ fn serve_file(stream: &mut TcpStream, path: &Path, base: &Path, limit: u64, mime
         send(stream, 404, "text/plain", b"Preview file missing");
         return;
     };
-    if !real.starts_with(base) {
+    // On Windows canonicalize() returns the verbatim \\?\\ form, while
+    // TempDir::path() may be a regular drive path. Compare like with like.
+    let Ok(canonical_base) = fs::canonicalize(base) else {
+        send(stream, 404, "text/plain", b"Preview root unavailable");
+        return;
+    };
+    if !real.starts_with(&canonical_base) {
         send(stream, 403, "text/plain", b"Asset outside preview root");
         return;
     }
