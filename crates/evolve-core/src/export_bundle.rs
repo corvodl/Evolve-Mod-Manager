@@ -501,6 +501,7 @@ pub fn export_bundle(
                 &target,
                 AnimationPolicy::default(),
                 options.embed_textures,
+                options.combine_meshes,
             )
             .map_err(|e| e.to_string())?;
             if options.embed_textures {
