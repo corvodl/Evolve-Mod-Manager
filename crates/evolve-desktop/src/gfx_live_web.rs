@@ -244,6 +244,12 @@ fn respond(
             "application/javascript; charset=utf-8",
             include_bytes!("gfx_live_player.js"),
         ),
+        "preview-state.js" => send(
+            stream,
+            200,
+            "application/javascript; charset=utf-8",
+            include_bytes!("gfx_preview_runtime.js"),
+        ),
         "preview-menu.json" => {
             // Only the generated same-build UI_Data manifest is visible:
             // never expose the editor's source files or the user's filesystem.
