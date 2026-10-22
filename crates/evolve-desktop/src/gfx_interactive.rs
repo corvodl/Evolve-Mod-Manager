@@ -450,6 +450,10 @@ impl RunningPreview {
         })
     }
 
+    pub fn reopen_live(&self) -> Result<(), String> {
+        self.live.as_ref().ok_or("Live preview is not active")?.reopen()
+    }
+
     pub fn can_dispatch_live(&self, preset: PreviewPreset) -> bool {
         self.live
             .as_ref()
