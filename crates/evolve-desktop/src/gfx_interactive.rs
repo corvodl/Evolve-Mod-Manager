@@ -696,7 +696,11 @@ fn renderable_movie(
     ))
 }
 fn relative_import(parent: &str, child: &str) -> Result<String, String> {
-    if !parent.is_empty() && !safe_import(parent) || !safe_import(child) {
+    // A parent is a directory, not a .gfx/.swf file. Validate the path
+    // segments by appending a synthetic file name for the shared validator.
+    if (!parent.is_empty() && !safe_import(&format!("{parent}/source.gfx")))
+        || !safe_import(child)
+    {
         return Err("Unsafe Scaleform import reference".into());
     }
     let relative = if parent.is_empty() {
