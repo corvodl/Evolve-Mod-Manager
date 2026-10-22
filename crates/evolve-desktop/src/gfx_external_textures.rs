@@ -13,14 +13,29 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 const MAX_TAGS: usize = 80_000;
-const MAX_BITMAPS: usize = 128;
-const MAX_CROP_PIXELS: u64 = 2_500_000;
-const MAX_TOTAL_PIXELS: u64 = 8_000_000;
+// Stage 2 main_menu.gfx can reference hundreds of packed image tiles.
+// Keep meaningful ceilings, but do not cut off almost every later tile.
+const MAX_BITMAPS: usize = 512;
+const MAX_CROP_PIXELS: u64 = 4_000_000;
+const MAX_TOTAL_PIXELS: u64 = 32_000_000;
+
+/// A bitmap may be restored only if the encoded SWF remains within the
+/// existing 32 MiB parser limit. Check before inserting so an oversized
+/// atlas cannot turn the entire live preview into an error.
+fn has_movie_budget(original: usize, encoded_so_far: usize, next: usize) -> bool {
+    original
+        .checked_add(encoded_so_far)
+        .and_then(|n| n.checked_add(next))
+        .is_some_and(|n| n <= MAX_DECOMPRESSED)
+}
 
 #[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct SkipDetails {
     pub missing_source: usize,
     pub preview_limit: usize,
+    pub bitmap_count_limit: usize,
+    pub pixel_limit: usize,
+    pub movie_size_limit: usize,
     pub invalid_tile: usize,
     pub duplicate_or_embedded: usize,
     pub decode_error: usize,
@@ -30,6 +45,9 @@ impl SkipDetails {
     pub fn accumulate(&mut self, other: &Self) {
         self.missing_source += other.missing_source;
         self.preview_limit += other.preview_limit;
+        self.bitmap_count_limit += other.bitmap_count_limit;
+        self.pixel_limit += other.pixel_limit;
+        self.movie_size_limit += other.movie_size_limit;
         self.invalid_tile += other.invalid_tile;
         self.duplicate_or_embedded += other.duplicate_or_embedded;
         self.decode_error += other.decode_error;
@@ -356,11 +374,13 @@ pub fn prepare_preview(
     }
     let mut converted = HashMap::<u16, Vec<u8>>::new();
     let mut cached = HashMap::<String, RgbaImage>::new();
-    let mut total_pixels = 0;
+    let mut total_pixels = 0u64;
+    let mut encoded_bytes = 0usize;
     for tile in mappings {
         if converted.len() >= MAX_BITMAPS {
             result.skipped += 1;
             result.skip_details.preview_limit += 1;
+            result.skip_details.bitmap_count_limit += 1;
             continue;
         }
         if counts.get(&tile.character) != Some(&1) || built_in.contains(&tile.character) {
@@ -380,9 +400,12 @@ pub fn prepare_preview(
             result.skip_details.invalid_tile += 1;
             continue;
         }
-        if crop_pixels > MAX_CROP_PIXELS || total_pixels + crop_pixels > MAX_TOTAL_PIXELS {
+        if crop_pixels > MAX_CROP_PIXELS
+            || total_pixels.saturating_add(crop_pixels) > MAX_TOTAL_PIXELS
+        {
             result.skipped += 1;
             result.skip_details.preview_limit += 1;
+            result.skip_details.pixel_limit += 1;
             continue;
         }
         if !cached.contains_key(&atlas.virtual_path) {
@@ -439,7 +462,15 @@ pub fn prepare_preview(
             (y1 - y0) as u32,
         )
         .to_image();
-        converted.insert(tile.character, encode_bitmap(tile.character, &cut)?);
+        let encoded = encode_bitmap(tile.character, &cut)?;
+        if !has_movie_budget(raw.len(), encoded_bytes, encoded.len()) {
+            result.skipped += 1;
+            result.skip_details.preview_limit += 1;
+            result.skip_details.movie_size_limit += 1;
+            continue;
+        }
+        encoded_bytes += encoded.len();
+        converted.insert(tile.character, encoded);
         total_pixels += crop_pixels;
     }
     if converted.is_empty() {
@@ -490,10 +521,17 @@ pub fn prepare_preview(
 mod tests {
     use super::*;
     #[test]
+    fn preview_bitmap_budgets_allow_large_original_menus_but_not_oversized_swf() {
+        assert!(has_movie_budget(500_000, 10_000_000, 3_000_000));
+        assert!(!has_movie_budget(500_000, 31_000_000, 3_000_000));
+        assert!(!has_movie_budget(usize::MAX, usize::MAX, 1));
+    }
+    #[test]
     fn preview_skip_diagnostics_preserve_independent_causes_and_safe_paths() {
         let mut first = SkipDetails {
             missing_source: 2,
             preview_limit: 3,
+            pixel_limit: 3,
             missing_paths: vec!["Libs/UI/main_menu_I9.dds".into()],
             ..Default::default()
         };
@@ -509,6 +547,7 @@ mod tests {
         first.accumulate(&second);
         assert_eq!(first.missing_source, 3);
         assert_eq!(first.preview_limit, 3);
+        assert_eq!(first.pixel_limit, 3);
         assert_eq!(first.invalid_tile, 4);
         assert_eq!(first.missing_paths.len(), 2);
         assert_eq!(first.missing_paths[1], "Libs/UI/main_menu_I10.dds");
