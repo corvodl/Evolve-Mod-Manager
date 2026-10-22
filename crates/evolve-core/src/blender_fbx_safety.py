@@ -3,8 +3,10 @@
 Never modify geometry, UV arrays, bone models, or weighted cluster transforms.
 FBX 7.4 (32-bit offsets) and 7.5+ (64-bit offsets) are supported.
 """
+import hashlib
 import math
 import os
+import re
 import struct
 import zlib
 from pathlib import Path
@@ -264,9 +266,8 @@ def optimize_binary_fbx(path, embed_textures=True):
     if objects is None or connections is None:
         raise FBXValidationError("Missing FBX object/connection tables")
     meshes = _validate_geometry(objects)
-    if not embed_textures and any(node.name in (b"Texture", b"Video")
-                                  for node in objects.children):
-        raise FBXValidationError("Untextured FBX still references images")
+    if not embed_textures:
+        validate_external_normal_references(objects, path)
 
     clusters = [obj for obj in objects.children_named(b"Deformer")
                 if len(_properties(obj)) >= 3 and _properties(obj)[2] == b"Cluster"]
@@ -372,13 +373,86 @@ def _connected_ids(connections):
     return result
 
 
-def prepare_export_materials(meshes, embed_textures):
-    """No embedded textures means *no* stale temporary file references."""
+def _normal_image(material):
+    """Find the image actually driving the Principled normal input.
+
+    The glTF importer normally wires Image -> NormalMap -> Principled.
+    Unrelated blue image nodes must not be guessed to be normal maps.
+    """
+    if not material.use_nodes or not material.node_tree:
+        return None
+    for node in material.node_tree.nodes:
+        if node.type != "BSDF_PRINCIPLED":
+            continue
+        target = node.inputs.get("Normal")
+        if target is None or not target.is_linked:
+            continue
+        normal_node = target.links[0].from_node
+        if normal_node.type != "NORMAL_MAP":
+            raise FBXValidationError(
+                "Unsupported source normal shader graph: " + material.name)
+        color = normal_node.inputs.get("Color")
+        if color is None or not color.is_linked:
+            raise FBXValidationError("Normal-map node has no image: " + material.name)
+        image_node = color.links[0].from_node
+        if image_node.type != "TEX_IMAGE" or image_node.image is None:
+            raise FBXValidationError(
+                "Unresolved source normal image: " + material.name)
+        return image_node.image
+    return None
+
+
+def _normal_png(image):
+    """Do not color-convert packed original DDS->PNG normal maps."""
+    packed = image.packed_file
+    if packed is not None:
+        content = bytes(packed.data)
+    else:
+        import bpy
+        source = Path(bpy.path.abspath(image.filepath))
+        if not source.is_file() or source.suffix.lower() != ".png":
+            raise FBXValidationError(
+                "Original normal PNG not accessible: " + image.name)
+        content = source.read_bytes()
+    if (not content.startswith(b"\\x89PNG\\r\\n\\x1a\\n")
+            or len(content) > 64 * 1024 * 1024):
+        raise FBXValidationError("Source normal map is not a valid-sized PNG")
+    return content
+
+
+def prepare_export_materials(meshes, embed_textures, destination=None):
+    """When diffuse embedding is off, still export original normals externally.
+
+    The FBX and its normal maps are initially staged together; Rust publishes
+    PNGs to destination/textures before publishing the FBX itself.
+    """
+    import bpy
+    destination = Path(destination) if destination else None
+    saved = {}
+    if not embed_textures and destination is None:
+        raise FBXValidationError("External normal export needs a staged destination")
     for mesh in meshes:
         for material in mesh.data.materials:
             if material is None:
                 continue
             if not embed_textures:
+                source_normal = _normal_image(material)
+                separate = None
+                if source_normal is not None:
+                    png = _normal_png(source_normal)
+                    digest = hashlib.sha256(png).hexdigest()[:12]
+                    filename = destination.stem + "_normal_" + digest + ".png"
+                    image_path = destination.parent / "textures" / filename
+                    image_path.parent.mkdir(parents=True, exist_ok=True)
+                    if image_path.exists() and image_path.read_bytes() != png:
+                        raise FBXValidationError("Normal map staging filename collision")
+                    if not image_path.exists():
+                        image_path.write_bytes(png)
+                    separate = saved.get(filename)
+                    if separate is None:
+                        separate = bpy.data.images.load(str(image_path), check_existing=True)
+                        separate.colorspace_settings.name = "Non-Color"
+                        saved[filename] = separate
                 material.diffuse_color = (1.0, 1.0, 1.0, 1.0)
                 material.use_nodes = True
                 tree = material.node_tree
@@ -389,15 +463,74 @@ def prepare_export_materials(meshes, embed_textures):
                 surface.inputs["Metallic"].default_value = 0.
                 surface.inputs["Roughness"].default_value = .5
                 tree.links.new(surface.outputs["BSDF"], output.inputs["Surface"])
+                if separate is not None:
+                    tex = tree.nodes.new("ShaderNodeTexImage")
+                    tex.image = separate
+                    tex.interpolation = "Linear"
+                    normal = tree.nodes.new("ShaderNodeNormalMap")
+                    normal.space = "TANGENT"
+                    tree.links.new(tex.outputs["Color"], normal.inputs["Color"])
+                    tree.links.new(normal.outputs["Normal"], surface.inputs["Normal"])
             elif material.use_nodes:
                 for node in material.node_tree.nodes:
                     if node.type != "TEX_IMAGE":
                         continue
                     image = node.image
                     if image is None or not (image.packed_file or
-                            (image.filepath and Path(__import__("bpy").path.abspath(image.filepath)).is_file())):
+                            (image.filepath and Path(bpy.path.abspath(image.filepath)).is_file())):
                         raise FBXValidationError(
                             "Embedded export has unresolved image: " + material.name)
+    return len(saved)
+
+
+def validate_external_normal_references(objects, destination):
+    """All non-embedded FBX image links must be staged relative normal PNGs.
+
+    Rewrite absolute paths in both FBX FileName and RelativeFilename fields so
+    a copied FBX never retains the temporary export directory.
+    """
+    stem = re.escape(destination.stem)
+    pattern = re.compile(r"^" + stem + r"_normal_[0-9a-f]{12}\\.png$")
+    expected_folder = destination.parent / "textures"
+    disk_files = {f.name for f in expected_folder.iterdir() if f.is_file()} if expected_folder.is_dir() else set()
+    if any(not pattern.fullmatch(name) for name in disk_files):
+        raise FBXValidationError("Unexpected file in staged normal-map folder")
+    references = set()
+    for image_node in objects.children:
+        if image_node.name not in (b"Texture", b"Video"):
+            continue
+        name_fields = [n for n in image_node.children
+                       if n.name in (b"FileName", b"RelativeFilename")]
+        if not name_fields:
+            raise FBXValidationError("External FBX image missing filename")
+        for field in name_fields:
+            value = _text(field).decode("utf-8", errors="replace").replace("\\\\", "/")
+            name = value.rsplit("/", 1)[-1]
+            if not pattern.fullmatch(name) or name not in disk_files:
+                raise FBXValidationError("FBX has a non-normal or missing image reference")
+            references.add(name)
+            rel = ("textures/" + name).encode("utf-8")
+            field.props = b"S" + struct.pack("<I", len(rel)) + rel
+            field.count = 1
+        content = image_node.get(b"Content")
+        if content is not None and any(isinstance(p, bytes) and p for p in _properties(content)):
+            raise FBXValidationError("External FBX accidentally embeds image data")
+    if references != disk_files:
+        raise FBXValidationError("Missing normal link or unreferenced normal PNG in FBX")
+    return len(references)
+
+
+def normal_image_names(meshes):
+    """Source/round-trip normal-map identity, independent of mesh splits."""
+    names = set()
+    for mesh in meshes:
+        for material in mesh.data.materials:
+            if material is None:
+                continue
+            image = _normal_image(material)
+            if image is not None:
+                names.add(Path(image.filepath.replace("\\\\", "/")).name)
+    return names
 
 
 def validate_blender_meshes(meshes, *, rigged=False, embed_textures=True):
@@ -435,6 +568,14 @@ def validate_blender_meshes(meshes, *, rigged=False, embed_textures=True):
     if not embed_textures:
         for mesh in meshes:
             for material in mesh.data.materials:
-                if material and material.use_nodes and any(
-                        node.type == "TEX_IMAGE" for node in material.node_tree.nodes):
-                    raise FBXValidationError("Untextured export retains image nodes")
+                if not material or not material.use_nodes:
+                    continue
+                allowed = _normal_image(material)
+                for node in material.node_tree.nodes:
+                    if node.type == "TEX_IMAGE" and node.image != allowed:
+                        raise FBXValidationError(
+                            "Unembedded FBX retains a non-normal image node")
+                if allowed is not None:
+                    import bpy
+                    if not Path(bpy.path.abspath(allowed.filepath)).is_file():
+                        raise FBXValidationError("Linked external normal map missing")
