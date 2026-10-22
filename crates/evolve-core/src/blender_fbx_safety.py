@@ -266,8 +266,9 @@ def optimize_binary_fbx(path, embed_textures=True):
     if objects is None or connections is None:
         raise FBXValidationError("Missing FBX object/connection tables")
     meshes = _validate_geometry(objects)
+    external_normals = 0
     if not embed_textures:
-        validate_external_normal_references(objects, path)
+        external_normals = validate_external_normal_references(objects, path)
 
     clusters = [obj for obj in objects.children_named(b"Deformer")
                 if len(_properties(obj)) >= 3 and _properties(obj)[2] == b"Cluster"]
@@ -358,7 +359,8 @@ def optimize_binary_fbx(path, embed_textures=True):
             target.unlink()
     return {"meshes": meshes, "weighted_clusters": active_clusters,
             "removed_empty_clusters": len(clusters) - active_clusters,
-            "merged_bind_poses": len(poses) - len(pose_groups)}
+            "merged_bind_poses": len(poses) - len(pose_groups),
+            "external_normal_maps": external_normals}
 
 
 def _connected_ids(connections):
