@@ -395,3 +395,37 @@ In the isolated Ruffle Web preview:
 The video layer does **not** fix missing source-defined navigation labels,
 font registration, news/profile data, or game-only native callbacks. The menu
 and Patch Notes overlay still require separate ActionScript/runtime validation.
+
+## Source-backed main-menu text and original UI lifecycle (stacked after video preview)
+
+The Ruffle preview now performs a bounded pass over the **original SWF
+DefineEditText initial values**, not arbitrary rendered pixels or screenshot
+coordinates. Keys such as `@ui_STARTGAME` are matched only against values
+from the selected build's verified English `text_ui_*.xml` sheets. Matching
+source-authored text fields receive the verified translation in the isolated
+temporary `movie.swf` only; original `.gfx`, PAKs and ActionScript opcodes
+remain unchanged. Unknown/missing/composite labels stay untouched. GFX Tools
+reports how many original edit fields were found, how many were localized,
+and how many keys remain unresolved. This **does not** translate dynamically
+created TextFields, variable assignments, HTML markup, or game-side data.
+
+The original nested Scaleform font/navigation GFX imports are now resolved
+relative to the movie that declared each import (rather than the root menu
+movie). Imports remain checked for safe paths and must exist in the selected
+build's same-folder extraction or verified Asset Library. Imported font
+glyph rendering still depends on Ruffle supporting the original SWF tags.
+
+If the source GFX registers a verified `hidePatchNotes` method, the live
+preview exposes **Dismiss original Patch Notes** without a restart. A successful
+call proves invocation of the original ActionScript wrapper, not that the
+CryEngine game state or UI services were reproduced. If no verified method
+is present, the control stays disabled. The original `openScreen` and
+`transitionToMainMenu` entry points remain optional source-verified calls,
+not guessed host initialization.
+
+Remaining parity checks with the authentic build:
+- Main menu without the Patch Notes overlay, original navigation labels,
+  highlight transitions, news carousel and buttons
+- Correct embedded/imported font library glyphs versus the game's renderer
+- Native game-owned UI data (profile, challenges, store, rewards, patch notes)
+- Actual source button-to-native handler mapping and complete runtime behavior
