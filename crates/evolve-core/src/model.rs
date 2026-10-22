@@ -231,7 +231,7 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
         }
         let base = offset + if legacy { 16 } else { 0 };
         let stream_type = endian_u32(data, base + 4, swapped)?;
-        if !matches!(stream_type, 0 | 1 | 2 | 5 | 15) {
+        if !matches!(stream_type, 0 | 1 | 2 | 5 | 6 | 15) {
             continue;
         }
         let count = endian_u32(data, base + 8, swapped)? as usize;
@@ -397,6 +397,56 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
     }) {
         return Err(ModelError::Format("invalid UV0 values".into()));
     }
+    // Type 1 stores full-precision in-game normals. Several CryTek 0x745
+    // meshes instead store the *game's* tangent and bitangent frame in type
+    // 6, each as four signed normalized i16 values. In that case recover
+    // the shading normal from the authored frame (T cross B, with the
+    // tangent handedness), NEVER from averaged polygon geometry.
+    let tangent_normals = streams.get(&6).and_then(|stream| {
+        if stream.count != nv || stream.stride != 16 {
+            return None;
+        }
+        let mut out = Vec::with_capacity(nv);
+        for i in 0..nv {
+            let at = stream.offset + i * 16;
+            let mut tb = [0f32; 8];
+            for (j, value) in tb.iter_mut().enumerate() {
+                let at = at + j * 2;
+                let bytes = [data[at], data[at + 1]];
+                let raw = if stream.big_endian {
+                    i16::from_be_bytes(bytes)
+                } else {
+                    i16::from_le_bytes(bytes)
+                };
+                *value = (f32::from(raw) / 32767.0).clamp(-1.0, 1.0);
+            }
+            let t = [tb[0], tb[1], tb[2]];
+            let b = [tb[4], tb[5], tb[6]];
+            let length_squared = |v: [f32; 3]| v.iter().map(|x| x * x).sum::<f32>();
+            if !(0.5..1.5).contains(&length_squared(t))
+                || !(0.5..1.5).contains(&length_squared(b))
+                || tb[3].abs() < 0.5
+            {
+                return None;
+            }
+            let cross = [
+                t[1] * b[2] - t[2] * b[1],
+                t[2] * b[0] - t[0] * b[2],
+                t[0] * b[1] - t[1] * b[0],
+            ];
+            let length = length_squared(cross).sqrt();
+            if !length.is_finite() || length < 0.5 {
+                return None;
+            }
+            let sign = tb[3].signum();
+            out.push([
+                cross[0] * sign / length,
+                cross[1] * sign / length,
+                cross[2] * sign / length,
+            ]);
+        }
+        Some(out)
+    });
     let normals = if let Some(stream) = streams.get(&1) {
         if stream.count == nv && stream.stride == 12 {
             let decoded = (0..nv)
@@ -422,7 +472,8 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
         }
     } else {
         None
-    };
+    }
+    .or(tangent_normals);
     let bounds = (0..3)
         .map(|i| {
             let lo = positions.iter().map(|v| v[i]).fold(f32::INFINITY, f32::min);
@@ -825,6 +876,60 @@ pub(crate) mod tests {
         let position = u32at(&raw, table + 4 + 8).unwrap() as usize;
         raw[position + 40..position + 44].copy_from_slice(&f32::NAN.to_be_bytes());
         assert!(parse_model_bytes(&raw).is_err());
+    }
+
+    /// Original 2012 mesh with no separate type-1 normal stream; source
+    /// tangent/bitangent stream is the only in-game shading orientation.
+    fn historical_tangent_frame_fixture(handedness: i16) -> Vec<u8> {
+        let mut bytes = legacy_2012_fixture();
+        let old_table = u32at(&bytes, 16).unwrap() as usize;
+        let old_rows = bytes[old_table + 4..].to_vec();
+        bytes.truncate(old_table);
+        let offset = bytes.len();
+        let mut chunk = vec![0u8; 40];
+        chunk[0..4].copy_from_slice(&CRYTEK_STREAM.to_le_bytes());
+        chunk[4..8].copy_from_slice(&0x800u32.to_le_bytes());
+        chunk[8..12].copy_from_slice(&(offset as u32).to_le_bytes());
+        chunk[20..24].copy_from_slice(&6u32.to_le_bytes());
+        chunk[24..28].copy_from_slice(&3u32.to_le_bytes());
+        chunk[28..32].copy_from_slice(&16u32.to_le_bytes());
+        for _ in 0..3 {
+            for component in [32767i16, 0, 0, handedness, 0, 32767, 0, 32767] {
+                chunk.extend_from_slice(&component.to_le_bytes());
+            }
+        }
+        bytes.extend_from_slice(&chunk);
+        let table = bytes.len();
+        bytes[16..20].copy_from_slice(&(table as u32).to_le_bytes());
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(&old_rows);
+        bytes.extend_from_slice(&CRYTEK_STREAM.to_le_bytes());
+        bytes.extend_from_slice(&0x800u32.to_le_bytes());
+        bytes.extend_from_slice(&(offset as u32).to_le_bytes());
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn retrieves_game_normals_from_historical_tangent_frames() {
+        let mesh = parse_model_bytes(&historical_tangent_frame_fixture(32767)).unwrap();
+        assert!(mesh.info.original_normals);
+        assert_eq!(mesh.normals.unwrap(), vec![[0.0, 0.0, 1.0]; 3]);
+        let mirrored = parse_model_bytes(&historical_tangent_frame_fixture(-32767)).unwrap();
+        assert_eq!(mirrored.normals.unwrap(), vec![[0.0, 0.0, -1.0]; 3]);
+    }
+
+    #[test]
+    fn does_not_invent_normals_from_invalid_source_tangents() {
+        let mut bytes = historical_tangent_frame_fixture(32767);
+        let original = parse_model_bytes(&bytes).unwrap();
+        assert!(original.info.original_normals);
+        let at = u32at(&bytes, 16).unwrap() as usize - 48;
+        // The added stream's first tangent has zero magnitude.
+        bytes[at + 40..at + 46].fill(0);
+        let mesh = parse_model_bytes(&bytes).unwrap();
+        assert!(!mesh.info.original_normals);
+        assert!(mesh.normals.is_none());
     }
 
     #[test]
