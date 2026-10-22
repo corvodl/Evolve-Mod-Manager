@@ -9,7 +9,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -28,29 +28,48 @@ pub struct LiveServer {
 
 impl std::fmt::Debug for LiveServer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LiveServer").field("supported", &self.supported).finish()
+        f.debug_struct("LiveServer")
+            .field("supported", &self.supported)
+            .finish()
     }
 }
 
 impl LiveServer {
-    pub fn start(scratch: tempfile::TempDir, supported: Vec<PreviewPreset>) -> Result<Self, String> {
+    pub fn start(
+        scratch: tempfile::TempDir,
+        supported: Vec<PreviewPreset>,
+    ) -> Result<Self, String> {
         // This is the pin-verified Ruffle WASM bundle shipped with GFX Tools.
         // Desktop Ruffle does not implement browser-side ExternalInterface RPC.
         let app = std::env::current_exe().map_err(|e| e.to_string())?;
-        let bundle = app.parent().ok_or("No executable directory")?
-            .join("third_party").join("RuffleWeb");
+        let bundle = app
+            .parent()
+            .ok_or("No executable directory")?
+            .join("third_party")
+            .join("RuffleWeb");
         let bundle = fs::canonicalize(&bundle).map_err(|_| {
             "Live GFX controls need the optional Ruffle Web tools. Reinstall with GFX Tools selected.".to_string()
         })?;
         let js = bundle.join("ruffle.js");
-        if !js.is_file() || fs::symlink_metadata(&js).map_err(|e| e.to_string())?.file_type().is_symlink() {
+        if !js.is_file()
+            || fs::symlink_metadata(&js)
+                .map_err(|e| e.to_string())?
+                .file_type()
+                .is_symlink()
+        {
             return Err("Verified Ruffle Web runtime is missing ruffle.js".into());
         }
-        let token = scratch.path().file_name()
+        let token = scratch
+            .path()
+            .file_name()
             .and_then(|s| s.to_str())
             .ok_or("Live GFX preview has no session token")?
             .to_owned();
-        if token.len() < 16 || !token.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        if token.len() < 16
+            || !token
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
             return Err("Invalid random live GFX preview session token".into());
         }
         let listener = TcpListener::bind(("127.0.0.1", 0))
@@ -65,14 +84,26 @@ impl LiveServer {
             .name("isolated-gfx-web-preview".into())
             .spawn(move || serve(listener, files, bundle, token, receiver, live))
             .map_err(|e| e.to_string())?;
-        let url = format!("http://127.0.0.1:{port}/{}/", scratch.path().file_name()
-            .and_then(|s| s.to_str()).ok_or("Missing preview token")?);
+        let url = format!(
+            "http://127.0.0.1:{port}/{}/",
+            scratch
+                .path()
+                .file_name()
+                .and_then(|s| s.to_str())
+                .ok_or("Missing preview token")?
+        );
         if let Err(error) = open_browser(&url) {
             active.store(false, Ordering::Release);
             let _ = worker.join();
             return Err(error);
         }
-        Ok(Self { active, queued, supported, worker: Some(worker), _scratch: scratch })
+        Ok(Self {
+            active,
+            queued,
+            supported,
+            worker: Some(worker),
+            _scratch: scratch,
+        })
     }
 
     pub fn is_running(&self) -> bool {
@@ -91,7 +122,9 @@ impl LiveServer {
                 preset.description()
             ));
         }
-        self.queued.send(preset).map_err(|_| "Live preview bridge disconnected".into())
+        self.queued
+            .send(preset)
+            .map_err(|_| "Live preview bridge disconnected".into())
     }
 }
 impl Drop for LiveServer {
@@ -110,8 +143,13 @@ fn open_browser(url: &str) -> Result<(), String> {
     } else {
         ("xdg-open", vec![url])
     };
-    Command::new(bin).args(args).stdout(Stdio::null()).stderr(Stdio::null())
-        .spawn().map(|_| ()).map_err(|e| format!("Cannot open local Ruffle Web preview: {e}"))
+    Command::new(bin)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Cannot open local Ruffle Web preview: {e}"))
 }
 fn serve(
     listener: TcpListener,
@@ -147,17 +185,32 @@ fn respond(
     receiver: &mpsc::Receiver<PreviewPreset>,
 ) {
     let mut buffer = [0u8; MAX_REQUEST];
-    let Ok(amount) = stream.read(&mut buffer) else { return; };
-    if amount == 0 { return; }
+    let Ok(amount) = stream.read(&mut buffer) else {
+        return;
+    };
+    if amount == 0 {
+        return;
+    }
     let Ok(header) = std::str::from_utf8(&buffer[..amount]) else {
         send(stream, 400, "text/plain", b"Invalid request");
         return;
     };
-    let Some(first) = header.lines().next() else { return };
-    let Some((method, rest)) = first.split_once(' ') else { return };
-    let Some((uri, protocol)) = rest.split_once(' ') else { return };
+    let Some(first) = header.lines().next() else {
+        return;
+    };
+    let Some((method, rest)) = first.split_once(' ') else {
+        return;
+    };
+    let Some((uri, protocol)) = rest.split_once(' ') else {
+        return;
+    };
     if method != "GET" || protocol.trim_end() != "HTTP/1.1" && protocol.trim_end() != "HTTP/1.0" {
-        send(stream, 405, "text/plain", b"Only local GET preview requests are supported");
+        send(
+            stream,
+            405,
+            "text/plain",
+            b"Only local GET preview requests are supported",
+        );
         return;
     }
     let prefix = format!("/{token}/");
@@ -165,17 +218,27 @@ fn respond(
         send(stream, 404, "text/plain", b"Preview session not found");
         return;
     };
-    if relative.contains(['?', '#', '%', '\\']) || relative.starts_with('/')
-        || relative.contains("..") || relative.contains(':')
+    if relative.contains(['?', '#', '%', '\\'])
+        || relative.starts_with('/')
+        || relative.contains("..")
+        || relative.contains(':')
     {
         send(stream, 400, "text/plain", b"Invalid preview path");
         return;
     }
     match relative {
-        "" | "index.html" => send(stream, 200, "text/html; charset=utf-8",
-                                   include_bytes!("gfx_live_player.html")),
-        "preview.js" => send(stream, 200, "application/javascript; charset=utf-8",
-                             include_bytes!("gfx_live_player.js")),
+        "" | "index.html" => send(
+            stream,
+            200,
+            "text/html; charset=utf-8",
+            include_bytes!("gfx_live_player.html"),
+        ),
+        "preview.js" => send(
+            stream,
+            200,
+            "application/javascript; charset=utf-8",
+            include_bytes!("gfx_live_player.js"),
+        ),
         "next" => {
             let answer = match receiver.try_recv() {
                 Ok(PreviewPreset::AsAuthored) => json!({"kind":"reload"}),
@@ -205,27 +268,47 @@ fn respond(
                 "map" => "application/json",
                 _ => "application/octet-stream",
             };
-            serve_file(stream, &bundle.join(filename), bundle, MAX_STATIC_ASSET, mime);
+            serve_file(
+                stream,
+                &bundle.join(filename),
+                bundle,
+                MAX_STATIC_ASSET,
+                mime,
+            );
         }
         filename if filename == "movie.swf" || safe_import_asset(filename) => {
-            serve_file(stream, &root.join(filename), root, MAX_SWF_ASSET,
-                       "application/x-shockwave-flash");
+            serve_file(
+                stream,
+                &root.join(filename),
+                root,
+                MAX_SWF_ASSET,
+                "application/x-shockwave-flash",
+            );
         }
         _ => send(stream, 404, "text/plain", b"Asset unavailable"),
     }
 }
 fn safe_asset(name: &str) -> bool {
-    !name.is_empty() && name.len() < 160 && name.bytes()
-        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
-        && !name.starts_with('.') && !name.contains("..")
-        && (name.ends_with(".js") || name.ends_with(".wasm") ||
-            name.ends_with(".json") || name.ends_with(".map"))
+    !name.is_empty()
+        && name.len() < 160
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+        && !name.starts_with('.')
+        && !name.contains("..")
+        && (name.ends_with(".js")
+            || name.ends_with(".wasm")
+            || name.ends_with(".json")
+            || name.ends_with(".map"))
 }
 fn safe_import_asset(name: &str) -> bool {
-    !name.is_empty() && name.len() < 1024 &&
-    !name.contains(['\\', ':', '%', '?', '#']) &&
-    name.split('/').all(|part| !part.is_empty() && part != "." && part != "..") &&
-    (name.ends_with(".swf") || name.ends_with(".gfx"))
+    !name.is_empty()
+        && name.len() < 1024
+        && !name.contains(['\\', ':', '%', '?', '#'])
+        && name
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+        && (name.ends_with(".swf") || name.ends_with(".gfx"))
 }
 fn serve_file(stream: &mut TcpStream, path: &Path, base: &Path, limit: u64, mime: &str) {
     let Ok(real) = fs::canonicalize(path) else {
@@ -236,9 +319,16 @@ fn serve_file(stream: &mut TcpStream, path: &Path, base: &Path, limit: u64, mime
         send(stream, 403, "text/plain", b"Asset outside preview root");
         return;
     }
-    let Ok(metadata) = fs::symlink_metadata(path) else { return; };
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return;
+    };
     if !metadata.file_type().is_file() || metadata.len() > limit {
-        send(stream, 403, "text/plain", b"Preview asset is not a bounded file");
+        send(
+            stream,
+            403,
+            "text/plain",
+            b"Preview asset is not a bounded file",
+        );
         return;
     }
     match fs::read(real) {
@@ -247,8 +337,14 @@ fn serve_file(stream: &mut TcpStream, path: &Path, base: &Path, limit: u64, mime
     }
 }
 fn send(stream: &mut TcpStream, code: u16, mime: &str, payload: &[u8]) {
-    let reason = match code { 200 => "OK", 400 => "Bad Request", 403 => "Forbidden",
-        404 => "Not Found", 405 => "Method Not Allowed", _ => "Error" };
+    let reason = match code {
+        200 => "OK",
+        400 => "Bad Request",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        _ => "Error",
+    };
     let header = format!(
         "HTTP/1.1 {code} {reason}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'none'\r\n\r\n",
         payload.len()
@@ -264,7 +360,14 @@ mod tests {
     fn rejects_remote_or_unbounded_asset_paths() {
         assert!(safe_asset("ruffle.js"));
         assert!(safe_asset("core.ruffle.ab12.wasm"));
-        for path in ["../x.js", "secret.txt", "foo/ruffle.js", ".env", "C:.js", "a%2e.js"] {
+        for path in [
+            "../x.js",
+            "secret.txt",
+            "foo/ruffle.js",
+            ".env",
+            "C:.js",
+            "a%2e.js",
+        ] {
             assert!(!safe_asset(path), "{path}");
         }
         assert!(safe_import_asset("effects/other.swf"));
