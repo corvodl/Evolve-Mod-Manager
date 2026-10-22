@@ -1433,6 +1433,7 @@ fn write_live_menu_report(
             "missing_imported_movies": counts.missing,
             "unresolved_imports": unresolved,
             "has_source_build": session.source_build.is_some(),
+            "source_build_label": session.source_build,
             "has_asset_library": session.library_root.is_some()
         },
         "limitation": "This is a source-defined command inspector. The original SWF is unchanged. Native CryEngine game state, dynamic Scaleform UI initialization, and in-game localization are not reproduced."
