@@ -1670,8 +1670,7 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
         // the verified same-build artwork without modifying game assets.
         let (linked_movie, linkages, skipped_linkages) =
             gfx_external_textures::embed_mode_bitmap_linkages(&movie, scratch.path(), &names)?;
-        fs::write(scratch.path().join("movie.swf"), &linked_movie)
-            .map_err(|e| e.to_string())?;
+        fs::write(scratch.path().join("movie.swf"), &linked_movie).map_err(|e| e.to_string())?;
         mode_images["flash_bitmap_linkages"] = serde_json::json!(linkages);
         mode_images["flash_linkage_skips"] = serde_json::json!(skipped_linkages);
     }
