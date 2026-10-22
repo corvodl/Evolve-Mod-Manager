@@ -662,11 +662,11 @@ mod tests {
             "builds": {
                 "stage-two": {
                     "label": "Stage 2",
-                    "members": {id: {}}
+                    "members": {"11111111111111111111": {}}
                 },
                 "legacy": {
                     "label": "Legacy",
-                    "members": if second {serde_json::json!({id: {}})}
+                    "members": if second {serde_json::json!({"11111111111111111111": {}})}
                                else {serde_json::json!({})}
                 }
             }
