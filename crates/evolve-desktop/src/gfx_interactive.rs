@@ -947,12 +947,49 @@ fn stage_live_import_graph(
     Ok((restored, skipped, missing, imported, skip_details))
 }
 
+/// Resolve only exact, same-build UI_Assets manifest entries. Original PAKs
+/// can store GFX movies at their archive root even though the game's virtual
+/// UI mount is Libs/UI. Do not search unrelated archives or guess by basename.
+fn verified_ui_asset_movie(
+    root: &Path,
+    build: &str,
+    filename: &str,
+) -> Option<evolve_core::LibraryReference> {
+    use evolve_core::library_catalog::resolve_imported_reference_in_archive;
+    use evolve_core::LibraryReferenceStatus;
+    if build.trim().is_empty()
+        || filename.is_empty()
+        || !filename.ends_with(".gfx")
+        || !filename.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'.')
+    {
+        return None;
+    }
+    let mut found = None;
+    for candidate in [
+        format!("Libs/UI/{filename}"),
+        format!("files/Libs/UI/{filename}"),
+        filename.to_owned(),
+        format!("files/{filename}"),
+    ] {
+        match resolve_imported_reference_in_archive(root, &candidate, build, "UI_Assets.pak").ok()? {
+            LibraryReferenceStatus::Found(hit) => {
+                if found.is_some() {
+                    return None; // Two virtual members: refuse ambiguous source.
+                }
+                found = Some(hit);
+            }
+            LibraryReferenceStatus::Ambiguous(_) => return None,
+            LibraryReferenceStatus::Missing => {}
+        }
+    }
+    found
+}
+
 /// Stage other *source-verified* UI_Assets movies next to the original menu.
 /// These are manually browsable preview screens, not invented mappings from
 /// native MainMenuScreen.xml commands to a Flash movie or game service.
 /// Only an exact, unambiguous, matching-build virtual file is accepted.
 fn stage_linked_screens(session: &Session, scratch: &Path) -> Vec<serde_json::Value> {
-    use evolve_core::{LibraryReferenceStatus, resolve_imported_reference};
     const CANDIDATES: &[(&str, &str, &str)] = &[
         ("options", "Options", "options.gfx"),
         ("settings", "Settings", "settings.gfx"),
@@ -972,12 +1009,10 @@ fn stage_linked_screens(session: &Session, scratch: &Path) -> Vec<serde_json::Va
     };
     let mut screens = Vec::new();
     for &(id, title, file) in CANDIDATES {
-        let virtual_path = format!("Libs/UI/{file}");
-        let Ok(LibraryReferenceStatus::Found(found)) =
-            resolve_imported_reference(root, &virtual_path, Some(build))
-        else {
+        let Some(found) = verified_ui_asset_movie(root, build, file) else {
             continue;
         };
+        let virtual_path = found.relative_path.clone();
         // A linked screen gets its own scratch hierarchy so its original
         // relative ImportAssets paths cannot collide with main_menu.gfx.
         let destination = scratch.join("screens").join(id);
