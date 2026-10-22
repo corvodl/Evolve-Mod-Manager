@@ -204,7 +204,7 @@ mod tests {
                 authored.extend_from_slice(VIRTUAL_PREFIX.as_bytes());
                 authored.extend_from_slice(stem.as_bytes());
                 authored.extend_from_slice(suffix.as_bytes());
-                authored.extend_from_slice(b".dds\\0");
+                authored.extend_from_slice(b".dds\0");
             }
         }
         let all = referenced_modes(&authored);
@@ -248,7 +248,7 @@ mod tests {
                 .save_with_format(&output, image::ImageFormat::Png)
                 .unwrap();
             let png = fs::read(output).unwrap();
-            assert!(png.starts_with(b"\\x89PNG\\r\\n\\x1a\\n"));
+            assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
         }
     }
     #[test]
