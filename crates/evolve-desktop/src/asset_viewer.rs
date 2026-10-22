@@ -718,13 +718,21 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                     if session.relative.eq_ignore_ascii_case("Libs/UI/main_menu.gfx") {
                         actions = actions
                             .push(text("ORIGINAL MENU ACTIONSCRIPT").size(12))
-                            .push(text("Test verified prompt functions in an isolated Ruffle run. These options never call game services or modify the source movie.").size(11).style(design::muted));
+                            .push(text("Use original root ActionScript menu handlers in an isolated Ruffle run. Each call is checked against its compiled signature; native game services remain blocked.").size(11).style(design::muted));
                         for preset in [
                             crate::gfx_interactive::PreviewPreset::AsAuthored,
                             crate::gfx_interactive::PreviewPreset::HideEngagement,
                             crate::gfx_interactive::PreviewPreset::ShowEngagement,
                             crate::gfx_interactive::PreviewPreset::HideSigningIn,
                             crate::gfx_interactive::PreviewPreset::ShowSigningIn,
+                            crate::gfx_interactive::PreviewPreset::Back,
+                            crate::gfx_interactive::PreviewPreset::ReturnToMainMenu,
+                            crate::gfx_interactive::PreviewPreset::ShowPatchNotes,
+                            crate::gfx_interactive::PreviewPreset::HidePatchNotes,
+                            crate::gfx_interactive::PreviewPreset::ShowNews,
+                            crate::gfx_interactive::PreviewPreset::HideNews,
+                            crate::gfx_interactive::PreviewPreset::ShowChallenges,
+                            crate::gfx_interactive::PreviewPreset::HideChallenges,
                         ] {
                             actions = actions.push(
                                 design::button(text(format!("{} {}", 
