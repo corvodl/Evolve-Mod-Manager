@@ -282,7 +282,7 @@ def optimize_binary_fbx(path, embed_textures=True):
         raise FBXValidationError("Rig contains no weighted clusters")
 
     # FBX bind poses have no connections. Merge only poses sharing unchanged
-    # node IDs and identical bind transforms; distinct historical rigs stay
+    # node IDs and identical bind transforms. Require identical node sets:\n    # partial overlaps can be legitimate distinct historical bind poses.
     # separate. This collects one pose per armature instead of one per mesh.
     poses = objects.children_named(b"Pose")
     pose_groups = []
@@ -293,7 +293,7 @@ def optimize_binary_fbx(path, embed_textures=True):
         combined = False
         for master, known in pose_groups:
             overlap = set(known) & set(entries)
-            if not overlap or any(known[i][1] != entries[i][1] for i in overlap):
+            if set(known) != set(entries) or any(known[i][1] != entries[i][1] for i in overlap):
                 continue
             # Existing Pose ID must be unused in connections before deleting.
             if _object_id(pose) in _connected_ids(connections):
