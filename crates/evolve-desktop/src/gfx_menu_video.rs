@@ -1,7 +1,7 @@
 //! Optional video layer for the original Stage 2 main menu.
 //! Source is always the exact-build, manifest-verified CRI USM in videos.pak.
 //! The browser never receives a .usm or an arbitrary local file URL.
-use evolve_core::LibraryReferenceStatus;
+use evolve_core::{LibraryReference, LibraryReferenceStatus, imported_library};
 use evolve_core::library_catalog::resolve_imported_reference_in_archive;
 use serde_json::{Value, json};
 use std::env;
@@ -14,6 +14,19 @@ use std::time::{Duration, Instant};
 
 const ORIGINAL_MEMBER: &str = "Libs/UI/FlashAssets/videos/main_menu.usm";
 const ORIGINAL_PAK: &str = "videos.pak";
+// CryEngine video packages are authored with either the full virtual path or
+// relative to their FlashAssets/videos mount. Only manifest-verified members
+// in the selected source build's *videos.pak* may be used.
+const VIDEO_MEMBERS: &[&str] = &[
+    ORIGINAL_MEMBER,
+    "files/Libs/UI/FlashAssets/videos/main_menu.usm",
+    "FlashAssets/videos/main_menu.usm",
+    "files/FlashAssets/videos/main_menu.usm",
+    "videos/main_menu.usm",
+    "files/videos/main_menu.usm",
+    "main_menu.usm",
+    "files/main_menu.usm",
+];
 const MAX_USM: u64 = 256 * 1024 * 1024;
 const MAX_BROWSER_VIDEO: u64 = 64 * 1024 * 1024;
 const CONVERSION_TIMEOUT: Duration = Duration::from_secs(45);
@@ -104,7 +117,13 @@ fn configured_ffmpeg() -> Result<Option<PathBuf>, String> {
 }
 fn transcode(original: &Path, scratch: &Path, ffmpeg: &Path) -> Result<&'static str, String> {
     let target = scratch.join("menu-background.mp4");
-    let mut child = Command::new(ffmpeg)
+    let mut command = Command::new(ffmpeg);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut child = command
         .arg("-hide_banner")
         .arg("-nostdin")
         .arg("-loglevel")
@@ -173,6 +192,43 @@ fn transcode(original: &Path, scratch: &Path, ffmpeg: &Path) -> Result<&'static 
     Ok("menu-background.mp4")
 }
 
+/// Accept only unambiguous source-verified representations inside videos.pak.
+/// No global basename searching, no game directory probing, no guessed assets.
+fn original_video(root: &Path, build: &str) -> Result<LibraryReferenceStatus, String> {
+    let mut matches = Vec::<LibraryReference>::new();
+    for &member in VIDEO_MEMBERS {
+        match resolve_imported_reference_in_archive(root, member, build, ORIGINAL_PAK)
+            .map_err(|e| format!("Cannot inspect source videos.pak: {e}"))?
+        {
+            LibraryReferenceStatus::Missing => {}
+            LibraryReferenceStatus::Found(found) => {
+                if !matches.iter().any(|previous| previous.absolute_path == found.absolute_path) {
+                    matches.push(found);
+                }
+            }
+            LibraryReferenceStatus::Ambiguous(_) => {
+                return Err("Multiple same-build copies of the original main-menu video are ambiguous".into());
+            }
+        }
+    }
+    Ok(match matches.len() {
+        0 => LibraryReferenceStatus::Missing,
+        1 => LibraryReferenceStatus::Found(matches.remove(0)),
+        _ => LibraryReferenceStatus::Ambiguous(matches),
+    })
+}
+
+fn missing_video_status(root: &Path, build: &str) -> &'static str {
+    match imported_library(root) {
+        Ok(library) if library.archives.iter().any(|archive| {
+            archive.name.eq_ignore_ascii_case(ORIGINAL_PAK)
+                && archive.builds.iter().any(|label| label == build)
+        }) =>
+            "The selected build contains videos.pak, but its extracted manifest has no source-verified main_menu.usm at a supported mount path. Inspect the original PAK's video entries.",
+        _ => "Import the original videos.pak into the selected build in Asset Library; the matching main_menu.usm is not available.",
+    }
+}
+
 /// Report only relative, known preview filenames to the browser. Missing
 /// video never blocks GFX editing or fabricates static monster artwork.
 pub fn stage_main_menu(root: Option<&Path>, build: Option<&str>, scratch: &Path) -> Value {
@@ -190,20 +246,14 @@ pub fn stage_main_menu(root: Option<&Path>, build: Option<&str>, scratch: &Path)
     if build.trim().is_empty() {
         return json!({"source": base(), "status": "Select a verified source build for the original background video."});
     }
-    let found = match resolve_imported_reference_in_archive(
-        root,
-        ORIGINAL_MEMBER,
-        build,
-        ORIGINAL_PAK,
-    ) {
+    let found = match original_video(root, build) {
         Ok(LibraryReferenceStatus::Found(entry)) => entry,
         Ok(LibraryReferenceStatus::Missing) => {
-            return json!({"source": base(), "status":
-            "Original Libs/UI/FlashAssets/videos/main_menu.usm is not imported from videos.pak for this build."});
+            return json!({"source": base(), "status": missing_video_status(root, build)});
         }
         Ok(LibraryReferenceStatus::Ambiguous(_)) => {
             return json!({"source": base(), "status":
-            "Ambiguous same-build original main-menu videos; choose one source PAK before rendering."});
+                "More than one source-qualified main_menu.usm found in same-build videos.pak; resolve the duplicate instead of guessing."});
         }
         Err(error) => {
             return json!({"source": base(), "status": format!("Original video source resolution failed: {error}")});
@@ -272,6 +322,54 @@ mod tests {
         )
         .unwrap();
         assert!(sidecar(&original, target.path()).is_err());
+    }
+    #[test]
+    fn video_source_can_be_verified_from_relative_video_pak_member() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let id = "11111111111111111111";
+        let folder = root.join(format!("videos.pak__{id}"));
+        let virtual_path = "FlashAssets/videos/main_menu.usm";
+        let source = folder.join("files").join(virtual_path);
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        let data = b"CRID\0\0\0\0\0\0\0\0";
+        fs::write(&source, data).unwrap();
+        fs::write(
+            folder.join("asset-library.json"),
+            serde_json::to_vec(&json!({
+                "version": 1,
+                "name": "videos.pak",
+                "source": "/game/videos.pak",
+                "entries": [{"path": virtual_path, "bytes": data.len()}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            root.join("build-collections.json"),
+            serde_json::to_vec(&json!({
+                "version": 1,
+                "builds": {
+                    "stage2": {"label": "Modded Stage 2", "members": {"11111111111111111111": {}}}
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            original_video(root, "Modded Stage 2").unwrap(),
+            LibraryReferenceStatus::Found(found) if found.relative_path == virtual_path
+        ));
+        assert!(matches!(
+            original_video(root, "2012").unwrap(),
+            LibraryReferenceStatus::Missing
+        ));
+        let scratch = tempfile::tempdir().unwrap();
+        let result = stage_main_menu(Some(root), Some("Modded Stage 2"), scratch.path());
+        assert!(result["status"].as_str().unwrap().contains("FFmpeg")
+            || result["status"].as_str().unwrap().contains("preview derivative"));
+        assert_eq!(result["source"]["source_archive"], ORIGINAL_PAK);
+        assert_eq!(result["playable"], false);
     }
     #[test]
     fn missing_build_never_fabricates_a_background() {
