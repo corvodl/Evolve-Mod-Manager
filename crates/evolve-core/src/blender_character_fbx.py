@@ -11,7 +11,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from blender_uv0 import prepare_original_uv
 from blender_material_ids import (bind_original_material_ids,
-                                  verify_original_material_ids)
+                                  verify_original_material_ids,
+                                  source_material_uv_distributions,
+                                  verify_material_uv_distributions)
 from blender_fbx_safety import (prepare_export_materials, validate_blender_meshes,
                                optimize_binary_fbx, normal_image_names)
 
@@ -233,6 +235,7 @@ def main():
         verify_part_diffuse_coverage(meshes, parts, "GLB to Blender")
     check(len(meshes) <= 1024, "unbounded material fragment count")
     verify_original_material_ids(meshes, original_material_parts)
+    source_material_uvs = source_material_uv_distributions(meshes)
     prepare_export_materials(meshes, embed_textures, destination)
     source_normal_maps = normal_image_names(meshes) if not embed_textures else set()
     validate_blender_meshes(meshes, rigged=True, embed_textures=embed_textures)
@@ -290,6 +293,8 @@ def main():
     check(len(result_meshes) <= 2048, "round-trip produced unbounded material fragments")
     verified_materials = verify_original_material_ids(
         result_meshes, original_material_parts)
+    verify_material_uv_distributions(
+        source_material_uvs, source_material_uv_distributions(result_meshes))
     if embed_textures:
         check(diffuse_image_count(result_meshes) > 0,
               "FBX round-trip lost embedded diffuse image links; refusing white export")
