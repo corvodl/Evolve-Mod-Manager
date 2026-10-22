@@ -800,14 +800,54 @@ mod tests {
     }
 
     #[test]
-    fn ui_data_browser_report_never_fabricates_movie_handlers() {
-        let report = serde_json::json!({
-            "submenu":"Main","label":"@ui_STARTGAME","command":"Game_Start",
-            "child_submenu":"","disabled_when":"","hidden_when":""
-        });
-        assert_eq!(report["label"], "@ui_STARTGAME");
-        // Source-defined commands must NEVER be forwarded into the callback
-        // whitelist: only validated AVM1 handlers may dispatch in Ruffle.
+    fn ui_data_browser_report_preserves_original_labels_and_never_fabricates_handlers() {
+        let folder = Arc::new(tempfile::tempdir().unwrap());
+        let mut movie = menu_fixture();
+        movie[0] = b'G';
+        let session = Session {
+            source: folder.path().join("main_menu.gfx"),
+            relative: "Libs/UI/main_menu.gfx".into(),
+            editable: folder.path().join("movie.gfx"),
+            folder: Arc::clone(&folder),
+            project: None,
+            original_sha: String::new(),
+            info: inspect_gfx(&movie).unwrap(),
+            layers: Vec::new(),
+            dependencies: vec![crate::gfx_dependencies::Dependency {
+                reference: "gfxfontlib_locfont.gfx".into(),
+                outcome: "Missing verified source".into(),
+            }],
+            menu_commands: vec![crate::gfx_menu_map::MenuCommand {
+                submenu: "Main".into(),
+                label: "@ui_STARTGAME".into(),
+                command: "Game_Start".into(),
+                child_submenu: "Extras".into(),
+                disabled_when: String::new(),
+                hidden_when: String::new(),
+            }],
+            menu_command_status: "1 verified original menu entry".into(),
+            library_root: None,
+            source_build: None,
+            edits: 0,
+            applied: false,
+        };
+        write_live_menu_report(&session, folder.path(), 5, 3, 1).unwrap();
+        let report: serde_json::Value = serde_json::from_slice(
+            &fs::read(folder.path().join("preview-menu.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["commands"][0]["label"], "@ui_STARTGAME");
+        assert_eq!(report["commands"][0]["command"], "Game_Start");
+        assert_eq!(report["commands"][0]["child_submenu"], "Extras");
+        assert_eq!(report["resources"]["restored_dds_tiles"], 5);
+        assert_eq!(report["resources"]["skipped_dds_tiles"], 3);
+        assert_eq!(report["resources"]["missing_imported_movies"], 1);
+        assert_eq!(
+            report["resources"]["unresolved_imports"][0],
+            "gfxfontlib_locfont.gfx"
+        );
+        // Source UI_Data commands remain separate from the allowlisted
+        // ActionScript callback dispatcher. Native game commands cannot run.
         for preset in [
             PreviewPreset::ShowEngagement,
             PreviewPreset::HideEngagement,
