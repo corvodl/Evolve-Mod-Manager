@@ -26,16 +26,22 @@ fn regular(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
 }
 fn label_key(label: &str) -> Option<String> {
     let key = label.strip_prefix('@')?.trim();
-    if key.len() < 3 || key.len() > 128 || !key.bytes().all(|b|
-        b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')
-    ) {
+    if key.len() < 3
+        || key.len() > 128
+        || !key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+    {
         return None;
     }
     Some(key.to_ascii_lowercase())
 }
 fn header_name(label: &str) -> String {
-    label.chars().filter(|c| c.is_ascii_alphanumeric())
-        .flat_map(char::to_uppercase).collect()
+    label
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(char::to_uppercase)
+        .collect()
 }
 fn consume_row(
     cells: &[String],
@@ -54,11 +60,18 @@ fn consume_row(
         return;
     }
     if let Some((key_index, value_index, original_index)) = *columns {
-        let Some(key) = cells.get(key_index) else { return };
+        let Some(key) = cells.get(key_index) else {
+            return;
+        };
         let cleaned = key.trim().trim_start_matches('@').to_ascii_lowercase();
-        if !wanted.contains(&cleaned) { return; }
+        if !wanted.contains(&cleaned) {
+            return;
+        }
         let value = cells.get(value_index).map(|v| v.trim()).unwrap_or_default();
-        let alternative = original_index.and_then(|i| cells.get(i)).map(|v| v.trim()).unwrap_or_default();
+        let alternative = original_index
+            .and_then(|i| cells.get(i))
+            .map(|v| v.trim())
+            .unwrap_or_default();
         let selected = if value.is_empty() { alternative } else { value };
         if !selected.is_empty() && selected.len() <= 1024 {
             found.insert(cleaned, selected.to_owned());
@@ -70,7 +83,9 @@ fn consume_row(
 /// including namespaced SpreadsheetML Row/Cell/Data tags. Reject DTDs and
 /// malformed XML; unknown formats remain unresolved, not guessed.
 fn parse_sheet(bytes: &[u8], wanted: &HashSet<String>) -> Result<HashMap<String, String>, String> {
-    if bytes.len() > MAX_XML as usize { return Err("Localization sheet too large".into()); }
+    if bytes.len() > MAX_XML as usize {
+        return Err("Localization sheet too large".into());
+    }
     let mut reader = Reader::from_reader(bytes);
     reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
@@ -85,9 +100,18 @@ fn parse_sheet(bytes: &[u8], wanted: &HashSet<String>) -> Result<HashMap<String,
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(event)) => match xml_name(event.name().as_ref()) {
-                b"Row" => { in_row = true; cells.clear(); rows += 1; }
-                b"Cell" if in_row => { in_cell = true; data.clear(); }
-                b"Data" if in_cell => { in_data = true; }
+                b"Row" => {
+                    in_row = true;
+                    cells.clear();
+                    rows += 1;
+                }
+                b"Cell" if in_row => {
+                    in_cell = true;
+                    data.clear();
+                }
+                b"Data" if in_cell => {
+                    in_data = true;
+                }
                 _ => {}
             },
             Ok(Event::Text(event)) if in_data => {
@@ -99,13 +123,17 @@ fn parse_sheet(bytes: &[u8], wanted: &HashSet<String>) -> Result<HashMap<String,
             }
             Ok(Event::CData(event)) if in_data => {
                 let decoded = String::from_utf8_lossy(event.as_ref());
-                if data.len() + decoded.len() > 2048 { return Err("Localization CDATA too long".into()); }
+                if data.len() + decoded.len() > 2048 {
+                    return Err("Localization CDATA too long".into());
+                }
                 data.push_str(&decoded);
             }
             Ok(Event::End(event)) => match xml_name(event.name().as_ref()) {
                 b"Data" => in_data = false,
                 b"Cell" if in_row => {
-                    if cells.len() >= MAX_ROW { return Err("Localization row too wide".into()); }
+                    if cells.len() >= MAX_ROW {
+                        return Err("Localization row too wide".into());
+                    }
                     cells.push(std::mem::take(&mut data));
                     in_cell = false;
                     in_data = false;
@@ -134,19 +162,21 @@ fn parse_sheet(bytes: &[u8], wanted: &HashSet<String>) -> Result<HashMap<String,
 fn relevant_path(member: &str, archive_name: &str, language: &str) -> bool {
     let lowered = member.to_ascii_lowercase().replace('\\', "/");
     let suffix = lowered.rsplit('/').next().unwrap_or("");
-    let relevant = suffix.starts_with("text_ui_") && suffix.ends_with(".xml")
+    let relevant = suffix.starts_with("text_ui_")
+        && suffix.ends_with(".xml")
         && lowered.split('/').all(|p| p != ".." && p != ".");
-    if !relevant { return false; }
+    if !relevant {
+        return false;
+    }
     let prefix = format!("localization/{language}/");
     lowered.starts_with(&prefix)
-        || ( !lowered.contains('/') && archive_name.eq_ignore_ascii_case(&format!("{language}_xml.pak")) )
+        || (!lowered.contains('/')
+            && archive_name.eq_ignore_ascii_case(&format!("{language}_xml.pak")))
 }
 
 /// Localizes *inspector labels only*. Ruffle/AVM text fields still require
 /// verified native GFx translation and font initialization (not simulated).
-pub fn menu_labels(
-    root: Option<&Path>, build: Option<&str>, labels: &[String],
-) -> Value {
+pub fn menu_labels(root: Option<&Path>, build: Option<&str>, labels: &[String]) -> Value {
     let wanted: HashSet<String> = labels.iter().filter_map(|s| label_key(s)).collect();
     let mut status = "No verified build/language localization available".to_string();
     let mut sources = Vec::<String>::new();
@@ -163,15 +193,21 @@ pub fn menu_labels(
                     translations = values;
                     sources = files;
                     ambiguous = conflicts;
-                    status = format!("{} verified English UI keys from {} exact-build localization sheets",
-                        translations.len(), sources.len());
+                    status = format!(
+                        "{} verified English UI keys from {} exact-build localization sheets",
+                        translations.len(),
+                        sources.len()
+                    );
                 }
                 Err(e) => status = format!("Localization unavailable: {e}"),
             }
         }
     }
-    let unresolved = wanted.iter().filter(|key| !translations.contains_key(*key))
-        .cloned().collect::<Vec<_>>();
+    let unresolved = wanted
+        .iter()
+        .filter(|key| !translations.contains_key(*key))
+        .cloned()
+        .collect::<Vec<_>>();
     let mut unresolved = unresolved;
     unresolved.sort();
     let mut conflicts = ambiguous.into_iter().collect::<Vec<_>>();
@@ -179,13 +215,18 @@ pub fn menu_labels(
     json!({"language":"english","status":status,"translations":translations,
         "unresolved":unresolved,"ambiguous":conflicts,"sources":sources})
 }
-fn load_sheets(root: &Path, build: &str, language: &str, wanted: &HashSet<String>)
-    -> Result<(HashMap<String,String>,Vec<String>,HashSet<String>),String>
-{
+fn load_sheets(
+    root: &Path,
+    build: &str,
+    language: &str,
+    wanted: &HashSet<String>,
+) -> Result<(HashMap<String, String>, Vec<String>, HashSet<String>), String> {
     let library = imported_library(root).map_err(|e| e.to_string())?;
     let mut paths = HashSet::<String>::new();
     for archive in &library.archives {
-        if !archive.builds.iter().any(|label| label == build) { continue; }
+        if !archive.builds.iter().any(|label| label == build) {
+            continue;
+        }
         let manifest_path = Path::new(&archive.directory).join("asset-library.json");
         let data = regular(&manifest_path, MAX_MANIFEST)?;
         let doc: Value = serde_json::from_slice(&data).map_err(|_| "Invalid library manifest")?;
@@ -198,33 +239,42 @@ fn load_sheets(root: &Path, build: &str, language: &str, wanted: &HashSet<String
         };
         for entry in entries {
             if let Some(name) = entry["path"].as_str() {
-                if relevant_path(name, &archive.name, language) { paths.insert(name.to_owned()); }
+                if relevant_path(name, &archive.name, language) {
+                    paths.insert(name.to_owned());
+                }
             }
         }
     }
-    if paths.len() > MAX_FILES { return Err("Too many same-build localization sheets".into()); }
+    if paths.len() > MAX_FILES {
+        return Err("Too many same-build localization sheets".into());
+    }
     let mut paths = paths.into_iter().collect::<Vec<_>>();
     paths.sort();
-    let mut values = HashMap::<String,String>::new();
+    let mut values = HashMap::<String, String>::new();
     let mut duplicates = HashSet::<String>::new();
     let mut sources = Vec::<String>::new();
     for path in paths {
         let LibraryReferenceStatus::Found(info) =
             resolve_imported_reference(root, &path, Some(build)).map_err(|e| e.to_string())?
-        else { continue };
+        else {
+            continue;
+        };
         let bytes = regular(Path::new(&info.absolute_path), MAX_XML)?;
         let table = parse_sheet(&bytes, wanted)?;
         sources.push(format!("{}: {}", info.archive_name, path));
         for (key, value) in table {
-            if duplicates.contains(&key) { continue; }
+            if duplicates.contains(&key) {
+                continue;
+            }
             if values.get(&key).is_some_and(|existing| existing != &value) {
-                values.remove(&key); duplicates.insert(key);
+                values.remove(&key);
+                duplicates.insert(key);
             } else {
                 values.insert(key, value);
             }
         }
     }
-    Ok((values,sources,duplicates))
+    Ok((values, sources, duplicates))
 }
 #[cfg(test)]
 mod tests {
@@ -236,7 +286,9 @@ mod tests {
             <Row><Cell><Data>ui_STARTGAME</Data></Cell><Cell><Data>Start game</Data></Cell><Cell><Data>Play &amp; Continue</Data></Cell></Row>
             <Row><Cell><Data>ui_OTHER</Data></Cell><Cell><Data>Other</Data></Cell><Cell><Data></Data></Cell></Row>
             </Table></Worksheet></Workbook>"#;
-        let wanted = ["ui_startgame".to_owned(), "ui_other".to_owned()].into_iter().collect();
+        let wanted = ["ui_startgame".to_owned(), "ui_other".to_owned()]
+            .into_iter()
+            .collect();
         let found = parse_sheet(xml, &wanted).unwrap();
         assert_eq!(found["ui_startgame"], "Play & Continue");
         assert_eq!(found["ui_other"], "Other");
@@ -245,10 +297,26 @@ mod tests {
     #[test]
     fn refuses_doctype_and_unrelated_build_languages() {
         assert!(parse_sheet(b"<!DOCTYPE a><a/>", &HashSet::new()).is_err());
-        assert!(relevant_path("Localization/English/text_ui_menu.xml", "English_XML.pak", "english"));
-        assert!(relevant_path("text_ui_menu.xml", "English_XML.pak", "english"));
-        assert!(!relevant_path("Localization/German/text_ui_menu.xml", "English_XML.pak", "english"));
-        assert!(!relevant_path("../text_ui_menu.xml", "English_XML.pak", "english"));
+        assert!(relevant_path(
+            "Localization/English/text_ui_menu.xml",
+            "English_XML.pak",
+            "english"
+        ));
+        assert!(relevant_path(
+            "text_ui_menu.xml",
+            "English_XML.pak",
+            "english"
+        ));
+        assert!(!relevant_path(
+            "Localization/German/text_ui_menu.xml",
+            "English_XML.pak",
+            "english"
+        ));
+        assert!(!relevant_path(
+            "../text_ui_menu.xml",
+            "English_XML.pak",
+            "english"
+        ));
         let report = menu_labels(None, None, &["@ui_STARTGAME".to_string()].to_vec());
         assert_eq!(report["unresolved"][0], "ui_startgame");
     }
