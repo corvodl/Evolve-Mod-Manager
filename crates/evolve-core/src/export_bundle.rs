@@ -3,9 +3,9 @@
 use crate::character_unified_fbx::standalone_authored_diffuse;
 use crate::{
     AnimationPolicy, CdfExportAppearance, DependencyStatus, EquipmentOverrides, Inventory,
-    convert_glb_to_fbx_with_options, export_dds_png,
-    export_rigged_character_fbx_options, export_unified_cdf_fbx_options_with_glow,
-    inspect_dependencies, read_model, read_static_cdf_assembly_with_equipment,
+    convert_glb_to_fbx_with_options, export_dds_png, export_rigged_character_fbx_options,
+    export_unified_cdf_fbx_options_with_glow, inspect_dependencies, read_model,
+    read_static_cdf_assembly_with_equipment,
 };
 use std::collections::{HashSet, VecDeque};
 use std::fs;
@@ -474,8 +474,7 @@ pub fn export_bundle(
                 // A flattened static CDF has several source meshes; the
                 // individual source-subset IDs cannot be reconstructed after
                 // geometry assembly. Unified rigged CDF handles each part.
-                crate::glb::export_model_glb_for_fbx(&mesh, &glb)
-                    .map_err(|e| e.to_string())?;
+                crate::glb::export_model_glb_for_fbx(&mesh, &glb).map_err(|e| e.to_string())?;
             } else {
                 let raw = fs::read(&source).map_err(|e| e.to_string())?;
                 let mapped = crate::glb::geometry_glb_bytes_with_original_material_ids(&mesh, &raw)
