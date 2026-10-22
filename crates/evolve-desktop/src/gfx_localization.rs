@@ -116,9 +116,10 @@ fn parse_sheet(bytes: &[u8], wanted: &HashSet<String>) -> Result<HashMap<String,
             },
             Ok(Event::Text(event)) if in_data => {
                 let raw = String::from_utf8_lossy(event.as_ref());
-                let decoded = unescape(&raw)
-                    .map_err(|_| "Invalid localization XML escaping")?;
-                if data.len() + decoded.len() > 2048 { return Err("Localization cell too long".into()); }
+                let decoded = unescape(&raw).map_err(|_| "Invalid localization XML escaping")?;
+                if data.len() + decoded.len() > 2048 {
+                    return Err("Localization cell too long".into());
+                }
                 data.push_str(&decoded);
             }
             Ok(Event::CData(event)) if in_data => {
@@ -230,8 +231,8 @@ fn load_sheets(
         let manifest_path = Path::new(&archive.directory).join("asset-library.json");
         let data = regular(&manifest_path, MAX_MANIFEST)?;
         let doc: Value = serde_json::from_slice(&data).map_err(|_| "Invalid library manifest")?;
-        if doc["version"].as_u64() != Some(1) ||
-            doc["name"].as_str() != Some(archive.name.as_str()) {
+        if doc["version"].as_u64() != Some(1) || doc["name"].as_str() != Some(archive.name.as_str())
+        {
             return Err("Localization library manifest mismatch".into());
         }
         let Some(entries) = doc["entries"].as_array() else {
