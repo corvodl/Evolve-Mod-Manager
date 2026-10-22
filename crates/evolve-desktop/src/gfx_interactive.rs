@@ -4,6 +4,7 @@
 //! This is intentionally NOT a CryEngine host callback implementation.
 use crate::{gfx_editor::Session, gfx_external_textures, gfx_live_web};
 use evolve_core::gfx::{MAX_DECOMPRESSED, MAX_SOURCE, inspect_gfx};
+use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -726,6 +727,84 @@ fn stage_import(
     fs::write(target, swf).map_err(|e| e.to_string())?;
     Ok(Some((converted, skipped)))
 }
+/// Follow original movie imports recursively, including font/glyph movies
+/// imported by imported font libraries. All bytes are resolved from the same
+/// source build into scratch copies. Never guess a missing font or scan the
+/// user's installed game.
+fn stage_live_import_graph(
+    session: &Session,
+    output: &Path,
+) -> Result<(usize, usize, usize), String> {
+    let mut pending = session
+        .info
+        .imports
+        .iter()
+        .cloned()
+        .map(|name| (name, 0usize))
+        .collect::<VecDeque<_>>();
+    let mut visited = HashSet::new();
+    let (mut restored, mut skipped, mut missing) = (0usize, 0usize, 0usize);
+    while let Some((name, depth)) = pending.pop_front() {
+        if !visited.insert(name.to_ascii_lowercase()) {
+            continue;
+        }
+        if visited.len() > MAX_IMPORTS {
+            return Err("Original GFX import graph exceeds 128 linked movies".into());
+        }
+        match stage_import(session, &session.relative, &name, output) {
+            Ok(Some((images, unresolved))) => {
+                restored += images;
+                skipped += unresolved;
+            }
+            Ok(None) => {
+                missing += 1;
+                continue;
+            }
+            Err(error) => return Err(format!("Imported Scaleform movie {name}: {error}")),
+        }
+        if depth >= 3 {
+            continue;
+        }
+        let source = session.folder.path().join(&name);
+        let Ok(mut original) = fs::read(&source) else {
+            continue;
+        };
+        if original.len() < 16 || original.len() > MAX_SOURCE {
+            continue;
+        }
+        match &original[..3] {
+            b"FWS" => original[..3].copy_from_slice(b"GFX"),
+            b"CWS" => original[..3].copy_from_slice(b"CFX"),
+            b"GFX" | b"CFX" => (),
+            _ => continue,
+        }
+        let Ok(details) = inspect_gfx(&original) else {
+            continue;
+        };
+        if details.imports.is_empty() {
+            continue;
+        }
+        // The parent movie itself was manifest/same-folder verified before
+        // following any nested references, and all nested members go through
+        // that same restricted lookup and path validation.
+        let virtual_path = session.relative.rsplit_once('/')
+            .map(|(parent, _)| format!("{parent}/{name}"))
+            .unwrap_or_else(|| name.clone());
+        crate::gfx_dependencies::stage_imports(
+            &details.imports,
+            &virtual_path,
+            &source,
+            session.folder.path(),
+            session.library_root.as_deref(),
+            session.source_build.as_deref(),
+        )?;
+        for child in details.imports {
+            pending.push_back((child, depth + 1));
+        }
+    }
+    Ok((restored, skipped, missing))
+}
+
 /// Start a distinct Ruffle window on a temporary, validated copy of the GFX.
 ///
 /// Host FSCommands and Evolve native Scaleform ExternalInterface are NOT
@@ -900,17 +979,10 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
     };
     let (movie, actions) = install_live_callbacks(&inspected, &session.relative)?;
     fs::write(scratch.path().join("movie.swf"), movie).map_err(|e| e.to_string())?;
-    let mut missing = 0usize;
-    for name in session.info.imports.iter().take(MAX_IMPORTS) {
-        match stage_import(session, &session.relative, name, scratch.path()) {
-            Ok(Some((images, skip))) => {
-                converted += images;
-                skipped += skip;
-            }
-            Ok(None) => missing += 1,
-            Err(error) => return Err(format!("Imported Scaleform movie {name}: {error}")),
-        }
-    }
+    let (imported_images, import_skipped, missing) =
+        stage_live_import_graph(session, scratch.path())?;
+    converted += imported_images;
+    skipped += import_skipped;
     write_live_menu_report(
         session,
         scratch.path(),
