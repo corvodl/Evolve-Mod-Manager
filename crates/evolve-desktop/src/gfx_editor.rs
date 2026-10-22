@@ -145,13 +145,14 @@ pub fn create(
         imported_library.as_deref(),
         source_build.as_deref(),
     )?;
-    let (menu_commands, menu_command_status) =
-        if relative.eq_ignore_ascii_case("Libs/UI/main_menu.gfx") {
-            gfx_menu_map::load(imported_library.as_deref(), source_build.as_deref())
-                .unwrap_or_else(|error| (Vec::new(), format!("UI_Data mapping unavailable: {error}")))
-        } else {
-            (Vec::new(), String::new())
-        };
+    let (menu_commands, menu_command_status) = if relative
+        .eq_ignore_ascii_case("Libs/UI/main_menu.gfx")
+    {
+        gfx_menu_map::load(imported_library.as_deref(), source_build.as_deref())
+            .unwrap_or_else(|error| (Vec::new(), format!("UI_Data mapping unavailable: {error}")))
+    } else {
+        (Vec::new(), String::new())
+    };
     Ok(Session {
         source,
         relative,
