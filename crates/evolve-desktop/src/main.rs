@@ -1467,6 +1467,9 @@ enum Message {
     GfxRuffleConfigChanged(String),
     GfxPickRuffle,
     GfxRufflePicked(Option<PathBuf>),
+    GfxRuffleWebConfigChanged(String),
+    GfxPickRuffleWeb,
+    GfxRuffleWebPicked(Option<PathBuf>),
     GfxToggleInteractive,
     GfxRunInteractive,
     GfxSelectPreviewPreset(gfx_interactive::PreviewPreset),
@@ -4150,6 +4153,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 gfx_tool_install::Tool::Ruffle => {
                     gfx_bundled_tools::valid_ruffle(&state.preferences.ruffle_executable).is_some()
                 }
+                gfx_tool_install::Tool::RuffleWeb => {
+                    gfx_bundled_tools::valid_ruffle_web(&state.preferences.ruffle_web_runtime)
+                        .is_some()
+                }
             };
             if already {
                 state.gfx_install_status = format!("{} is already configured.", tool.name());
@@ -4179,14 +4186,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         gfx_tool_install::Tool::Ruffle => {
                             state.preferences.ruffle_executable = path
                         }
+                        gfx_tool_install::Tool::RuffleWeb => {
+                            state.preferences.ruffle_web_runtime = path
+                        }
                     }
                     state.gfx_install_status = format!(
                         "{} installed. {}",
                         tool.name(),
-                        if tool == gfx_tool_install::Tool::Ffdec {
-                            "A compatible Java runtime may also be required."
-                        } else {
-                            "Interactive preview is ready to configure."
+                        match tool {
+                            gfx_tool_install::Tool::Ffdec => "A compatible Java runtime may also be required.",
+                            gfx_tool_install::Tool::Ruffle => "Standalone desktop Ruffle is ready. Live GFX buttons require Ruffle Web separately.",
+                            gfx_tool_install::Tool::RuffleWeb => "Live GFX preview is ready. Open GFX Tools to use the persistent browser player.",
                         },
                     );
                     persist_preferences(state);
@@ -4219,6 +4229,31 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return update(
                     state,
                     Message::GfxRuffleConfigChanged(path.to_string_lossy().into()),
+                );
+            }
+        }
+        Message::GfxRuffleWebConfigChanged(path) => {
+            if path.len() <= 4096 && !path.contains('\0') {
+                state.preferences.ruffle_web_runtime = path;
+                persist_preferences(state);
+            }
+        }
+        Message::GfxPickRuffleWeb => {
+            return Task::perform(
+                async {
+                    tokio::task::spawn_blocking(|| native_export_picker("file"))
+                        .await
+                        .ok()
+                        .flatten()
+                },
+                Message::GfxRuffleWebPicked,
+            );
+        }
+        Message::GfxRuffleWebPicked(selected) => {
+            if let Some(path) = selected {
+                return update(
+                    state,
+                    Message::GfxRuffleWebConfigChanged(path.to_string_lossy().into()),
                 );
             }
         }
@@ -4275,9 +4310,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.gfx_busy = true;
             state.gfx_interactive_status =
                 "Preparing persistent local Ruffle Web/ActionScript preview...".into();
+            let web_runtime = state.preferences.ruffle_web_runtime.clone();
             return Task::perform(
                 async move {
-                    tokio::task::spawn_blocking(move || gfx_interactive::launch_live(&session))
+                    tokio::task::spawn_blocking(move || gfx_interactive::launch_live(&session, &web_runtime))
                         .await
                         .unwrap_or_else(|e| Err(format!("Ruffle preview worker stopped: {e}")))
                 },
