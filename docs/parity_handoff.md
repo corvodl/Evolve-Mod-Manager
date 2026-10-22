@@ -2,6 +2,65 @@
 
 Updated: **2026-10-20** · Repository: `corvodl/Evolve-Mod-Manager` · Working PR: **#6** on `feature/blender-viewport-cdf-autoload`, based on PR #5's `feature/pr5-combined-viewer-preview`. This document is a resumable engineering checklist, **not** a claim of production parity. See [PARITY.md](PARITY.md) for the broader feature matrix.
 
+## 2026-10-22 — source MovieClipLoader cards and legacy-menu replacement plan
+
+The supplied original Stage 2 `main_menu.gfx` confirms the next
+image-card blocker. Its `setupMenuBtns()` creates `mcButtonImage` and
+`mcModeImageFocus` / `mcModeImageUnfocus` clips, looks up authored
+`scripts.asset_helpers.ImageLocationData.MenuModeSelect` values, and
+calls `ImageLoading.loadBitmap()` for both artwork states. The actual
+`ImageLoading` DoInitAction class uses
+`MovieClipLoader.loadClip("img://" + source_dds, holder)`, not
+`BitmapData.loadBitmap()`. Merely embedding 24 SWF ExportAssets
+linkages does not satisfy the original movie's `loadClip` requests.
+
+For the read-only main-menu preview only, convert the single compiled
+`ImageLoading` constant-pool URL prefix from `img://` to equal-size
+`./img/` in the *temporary* FWS. The local tokenized server now
+maps only `img/Libs/UI/FlashAssets/images/MenuModeSelect/<safe>.dds`
+to the already staged, same-build `runtime-images/<safe>.png`.
+No source PAK, GFX, or image is modified; all other `img://`
+families and game services stay unsupported. Source handler, artwork,
+focus/unfocus and timeline are retained. The preview manifest exposes
+the number of rewritten source MovieClipLoader URL prefixes.
+Acceptance still requires a real Ruffle session with cards and
+mouse hover, since web PNG decoding via `MovieClipLoader.loadClip`
+has not been verified against this movie.
+
+Other findings in the same original GFX: the mode-card path assigns
+`VIDEO_NAME_MODE_SELECT`; `updateVideo(name)` closes the old
+`mNetstream`, reads `FrontEndVideoList[name.toLowerCase()]`, starts
+a new stream and reveals the mode-select layout. This supports
+distinct submenu video behavior, but does not identify specific USM
+assets or prove they are available. The existing preview still stages
+the single default Goliath background; per-screen video selection
+needs source-qualified catalog resolution and safe player switching.
+
+**Long-term legacy menu swap while retaining Stage 2 functionality:**
+- Inventory the actual legacy build's `main_menu.gfx`, dependencies,
+  fonts, localization/UI_Data command XML, and background videos.
+  A Stage 2 archive alone cannot establish legacy ActionScript
+  handler names or parameters.
+- Implement a versioned native menu compatibility adapter that
+  maps verified *legacy* screen transitions and input state to current
+  Stage 2 game services. Preserve sign-in, matchmaking, player state,
+  mod/offline policy, and inaccessible native commands as explicit
+  disabled functions until exact mappings are verified.
+- Keep view/asset staging separate from command execution. Ruffle is
+  an isolated UI preview, not a replacement for CryEngine Scaleform
+  native callbacks. Do not just overwrite Stage 2 `main_menu.gfx`
+  with the old movie or claim that such a swap will function.
+- Add a selectable legacy menu skin/runtime option only after
+  exact-build dependency and callback checks pass; require reversible
+  installation/backups and multiplayer/offline safety tests.
+
+Text is mixed: built-in timeline elements, fonts and initial edit text
+are authored in GFX, while many labels, localization keys,
+descriptions, build/account status, and menu row contents arrive through
+ActionScript and CryEngine state. The screenshots' placeholder build
+info and unresolved `@ui_SigningInPrompt` remain separate runtime
+binding problems.
+
 ## 2026-10-22 — Stage 2 image-card blocker traced to numeric CurrentMenu
 
 Recovered the user's original `main_menu.gfx` directly from the previously
