@@ -14,9 +14,18 @@ from blender_material_ids import (
 class Material:
     def __init__(self, name):
         self.name = name
+        self.props = {}
 
     def copy(self):
-        return Material(self.name)
+        copied = Material(self.name)
+        copied.props = dict(self.props)
+        return copied
+
+    def __setitem__(self, key, value):
+        self.props[key] = value
+
+    def get(self, key, default=None):
+        return self.props.get(key, default)
 
 
 class Polygon:
@@ -45,11 +54,13 @@ class SourceMaterialTests(unittest.TestCase):
         ], [0, 0, 1])
         expected = [
             {"id": 0, "name": "Body", "triangles": 2},
-            {"id": 10, "name": "NoDraw attachment", "triangles": 1},
+            {"id": 10, "name": "NoDraw attachment", "triangles": 1,
+             "no_draw": True},
         ]
         bind_original_material_ids([mesh], 0, "Historical Character", expected)
         self.assertEqual(source_material_histogram([mesh]), {(0, 0): 2, (0, 10): 1})
         self.assertIn("P000_S010__", mesh.data.materials[1].name)
+        self.assertTrue(mesh.data.materials[1].get("evolve_source_no_draw"))
         self.assertEqual(verify_original_material_ids([mesh], [expected]),
                          {(0, 0): 2, (0, 10): 1})
 
@@ -67,9 +78,8 @@ class SourceMaterialTests(unittest.TestCase):
             Mesh("Emet_material_000", [original.data.materials[1]], [0]),
             Mesh("Emet_material_001", [original.data.materials[0]], [0, 0]),
         ]
-        self.assertEqual(verify_original_material_ids(
-            separated, [[], [], [], expected]) if False else
-            source_material_histogram(separated), {(3, 2): 2, (3, 11): 1})
+        self.assertEqual(source_material_histogram(separated),
+                         {(3, 2): 2, (3, 11): 1})
         # Verify the complete global audit with intermediate parts present.
         missing = [Mesh("other" + str(i), [Material(
             "EVOLVE_MID_P%03d_S000__Body" % i)], [0])
@@ -96,7 +106,7 @@ class SourceMaterialTests(unittest.TestCase):
         original = Mesh("unknown", [Material("material_001"),
                                     Material("material_002")], [0, 1])
         with self.assertRaisesRegex(RuntimeError, "original multi-material leaf ID missing"):
-            bind_original_material_ids(original and [original], 0, "Unknown", [
+            bind_original_material_ids([original], 0, "Unknown", [
                 {"id": 0, "triangles": 1, "name": "Base"},
                 {"id": 10, "triangles": 1, "name": "Other"},
             ])
