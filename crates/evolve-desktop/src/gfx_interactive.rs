@@ -106,7 +106,7 @@ fn defined_function_arity(actions: &[u8], name: &str) -> Option<usize> {
         let Some(end) = payload.iter().position(|b| *b == 0) else {
             return None;
         };
-        if payload[..end] != *name.as_bytes() {
+        if &payload[..end] != name.as_bytes() {
             continue;
         }
         if end + 3 > payload.len() {
