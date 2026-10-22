@@ -3,8 +3,38 @@
 // preview assumptions, NOT discovered live game state or native callbacks.
 (function (root) {
     const HOST_KEYS = Object.freeze(["CurrentMenu", "NPE", "CustomSolo"]);
+    // Verified from the original Stage 2 main_menu.gfx (GFX DefineFunction2):
+    // shouldUseImageButtons() uses ToNumber(ExternalInterface.call("CurrentMenu"))
+    // and compares it to global MMS_TUTORIALS (2), MMS_NPE (3), MMS_SOLO (0).
+    // MMS_EXTRAS=1 and MMS_ROOT=4 are assigned in the same source bytecode.
+    // Strings such as "Training" produce NaN and disable image cards.
+    const MODE_IDS = Object.freeze({
+        SOLO: 0, EXTRAS: 1, TUTORIALS: 2, NPE: 3, ROOT: 4
+    });
+    const MODE_NAMES = Object.freeze([
+        "MMS_SOLO", "MMS_EXTRAS", "MMS_TUTORIALS", "MMS_NPE", "MMS_ROOT"
+    ]);
+    const GROUP_IDS = Object.freeze({
+        main: MODE_IDS.ROOT,
+        root: MODE_IDS.ROOT,
+        extras: MODE_IDS.EXTRAS,
+        singleplayer: MODE_IDS.TUTORIALS,
+        training: MODE_IDS.TUTORIALS,
+        tutorials: MODE_IDS.TUTORIALS,
+        npe: MODE_IDS.NPE,
+        solo: MODE_IDS.SOLO,
+        customsolo: MODE_IDS.SOLO
+    });
+    const menuId = value => {
+        if (typeof value === "number" && Number.isInteger(value) &&
+            value >= MODE_IDS.SOLO && value <= MODE_IDS.ROOT) return value;
+        if (typeof value !== "string") return null;
+        if (/^[0-4]$/.test(value)) return Number(value);
+        const key = value.trim().toLowerCase();
+        return Object.prototype.hasOwnProperty.call(GROUP_IDS, key) ? GROUP_IDS[key] : null;
+    };
     const INITIAL = Object.freeze({
-        CurrentMenu: "Main",
+        CurrentMenu: MODE_IDS.ROOT,
         // Show all known authored Training choices in the local preview.
         // The checkboxes can turn these off to compare the original conditions.
         NPE: true,
@@ -12,9 +42,7 @@
     });
     function create(initial = INITIAL) {
         const values = {
-            CurrentMenu: typeof initial.CurrentMenu === "string" &&
-                /^[A-Za-z0-9_]{1,64}$/.test(initial.CurrentMenu)
-                ? initial.CurrentMenu : INITIAL.CurrentMenu,
+            CurrentMenu: menuId(initial.CurrentMenu) ?? INITIAL.CurrentMenu,
             NPE: initial.NPE === true,
             CustomSolo: initial.CustomSolo === true
         };
@@ -26,8 +54,9 @@
         };
         const set = (name, value) => {
             if (name === "CurrentMenu") {
-                if (typeof value !== "string" || !/^[A-Za-z0-9_]{1,64}$/.test(value)) return false;
-                values.CurrentMenu = value;
+                const resolved = menuId(value);
+                if (resolved === null) return false;
+                values.CurrentMenu = resolved;
                 return true;
             }
             if (name !== "NPE" && name !== "CustomSolo") return false;
@@ -49,6 +78,7 @@
         };
         const snapshot = () => ({
             ...values,
+            currentMenuConstant: MODE_NAMES[values.CurrentMenu],
             requests: {...requests}
         });
         // Only these exact query names have no-op/preview equivalents.
@@ -60,7 +90,7 @@
         };
         return {get, set, condition, snapshot, install};
     }
-    const api = Object.freeze({create, HOST_KEYS});
+    const api = Object.freeze({create, HOST_KEYS, MODE_IDS, menuId});
     root.EvolvePreviewRuntime = api;
     if (typeof module !== "undefined" && module.exports) {
         module.exports = api;
