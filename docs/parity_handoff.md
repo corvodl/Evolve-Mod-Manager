@@ -2,6 +2,30 @@
 
 Updated: **2026-10-20** · Repository: `corvodl/Evolve-Mod-Manager` · Working PR: **#6** on `feature/blender-viewport-cdf-autoload`, based on PR #5's `feature/pr5-combined-viewer-preview`. This document is a resumable engineering checklist, **not** a claim of production parity. See [PARITY.md](PARITY.md) for the broader feature matrix.
 
+## October 22 — continued original Flash submenu navigation (PR #29)
+
+From `afd8d0d`, the original `openScreen(7)` and `pushMenuState(0)`
+first-frame definitions provide an explicit UI-local next step. The isolated
+SWF preview now registers an `evolvePreview_pushSourceMenu` ExternalInterface
+callback only when the verified main-menu lifecycle is present; the callback
+assigns source-supplied rows to the original `menuButtonData` and calls the
+original `pushMenuState`. The source inspector can request these transitions
+only for existing submenu groups with visible PC/unscoped rows from matching
+UI_Data. Its Back control invokes the existing verified `goBack` callback
+when a locally initiated submenu is active, and reset clears the local stack.
+Native game services and arbitrary button command execution remain blocked.
+This does not fabricate Flash display objects or rewrite the original assets.
+
+Commits: `2c77edb`, `eaa286f`, `7f38b33`. This change adds a synthetic
+bytecode-registration assertion but **does not prove** Ruffle correctly renders
+submenu transition frames, original button press-to-command mapping, or that
+`pushMenuState` accepts every parsed UI_Data submenu unchanged. The inspector
+button remains a diagnostic control, not a claim that clicking the in-movie
+button drives the native host. Ruffle real-asset visual acceptance and final
+Windows CI at latest head are still required. Runtime localization outside the
+source initial strings, matching DefineFont3 font binding/aliases, and native
+Scaleform effects remain open.
+
 ## October 22 — source-backed original main-menu population
 
 Worked from `feature/gfx-main-menu-text-init` at `071e2a5`, which contains the
