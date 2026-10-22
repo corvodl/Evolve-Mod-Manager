@@ -988,7 +988,7 @@ mod tests {
         let button = [
             17, 0, // original character ID
             0, // TrackAsMenu
-            4, 0, // ActionOffset, measured from this field
+            3, 0, // ActionOffset, measured from this field
             0, // terminating ButtonRecord
             0, 0, // final ButtonCondActionSize
             1, 0, // original event condition
