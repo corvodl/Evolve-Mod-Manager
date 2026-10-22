@@ -1002,6 +1002,7 @@ fn write_live_menu_report(
         .collect::<Vec<_>>();
     let initialized_in_swf = verified_actions.contains(&PreviewPreset::ReturnToMainMenu);
     let original_open_screen = verified_actions.contains(&PreviewPreset::OpenScreen);
+    let original_hide_patch_notes = verified_actions.contains(&PreviewPreset::HidePatchNotes);
     let report = serde_json::json!({
         "source": "verified same-build UI_Data/MainMenuScreen.xml",
         "localization": localization,
@@ -1016,6 +1017,7 @@ fn write_live_menu_report(
         "initialization": {
             "verified_transition_to_main_menu": initialized_in_swf,
             "verified_open_screen": original_open_screen,
+            "verified_hide_patch_notes": original_hide_patch_notes,
             "native_cryengine_host_available": false,
             "status": "Only original verified ActionScript handlers may initialize local menu state. Native game state is unavailable."
         },
