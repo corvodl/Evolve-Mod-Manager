@@ -184,6 +184,59 @@ mod tests {
         assert!(!temp.path().join("runtime-images").exists());
     }
     #[test]
+    fn imported_same_build_menu_dds_becomes_a_temporary_png() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let folder = root.join("UI_Assets.pak__11111111111111111111");
+        let source = folder.join("files/images/MenuModeSelect/hunt.dds");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        // Minimal four-by-four DXT1 DDS, using the same header contract as
+        // the existing core decoder fixtures. No proprietary source assets.
+        let mut dds = vec![0u8; 128];
+        dds[..4].copy_from_slice(b"DDS ");
+        dds[4..8].copy_from_slice(&124u32.to_le_bytes());
+        dds[8..12].copy_from_slice(&0x21007u32.to_le_bytes());
+        dds[12..16].copy_from_slice(&4u32.to_le_bytes());
+        dds[16..20].copy_from_slice(&4u32.to_le_bytes());
+        dds[28..32].copy_from_slice(&1u32.to_le_bytes());
+        dds[76..80].copy_from_slice(&32u32.to_le_bytes());
+        dds[80..84].copy_from_slice(&4u32.to_le_bytes());
+        dds[84..88].copy_from_slice(b"DXT1");
+        dds.extend([0, 248, 224, 7, 0, 0, 0, 0]);
+        fs::write(&source, &dds).unwrap();
+        fs::write(folder.join("asset-library.json"),
+            serde_json::to_vec(&json!({
+                "version": 1, "name": PAK, "source": "/game/UI_Assets.pak",
+                "entries": [{
+                    "path": "images/MenuModeSelect/hunt.dds",
+                    "bytes": dds.len()
+                }]
+            })).unwrap()
+        ).unwrap();
+        fs::write(root.join("build-collections.json"),
+            serde_json::to_vec(&json!({
+                "version": 1,
+                "builds": {
+                    "stage2": {
+                        "label": "Modded Stage 2",
+                        "members": {"11111111111111111111": {}}
+                    }
+                }
+            })).unwrap()
+        ).unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let movie = b"Libs/UI/FlashAssets/images/MenuModeSelect/hunt.dds\0";
+        let result = stage(Some(root), Some("Modded Stage 2"), scratch.path(), movie);
+        assert_eq!(result["requested"], 1, "{result:?}");
+        assert_eq!(result["staged"], 1, "{result:?}");
+        let png = fs::read(scratch.path().join("runtime-images/hunt.png")).unwrap();
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert_eq!(fs::read(&source).unwrap(), dds);
+        let other = tempfile::tempdir().unwrap();
+        assert_eq!(stage(Some(root), Some("2012"), other.path(), movie)["staged"], 0);
+        assert!(!other.path().join("runtime-images/hunt.png").exists());
+    }
+    #[test]
     fn no_unverified_source_is_ever_staged() {
         let temp = tempfile::tempdir().unwrap();
         let movie = b"Libs/UI/FlashAssets/images/MenuModeSelect/hunt.dds\0";
