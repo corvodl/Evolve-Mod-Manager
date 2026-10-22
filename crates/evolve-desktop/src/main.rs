@@ -8386,7 +8386,10 @@ mod project_edit_tests {
         assert!(state.gfx_busy);
         let _ = update(&mut state, Message::ViewerSelectFile(second));
         assert_eq!(state.viewer_queued_preview, Some(second));
-        let _ = update(&mut state, Message::GfxOpened(old_source, Err("stale".into())));
+        let _ = update(
+            &mut state,
+            Message::GfxOpened(old_source, Err("stale".into())),
+        );
         assert!(state.gfx_busy, "newest GFX opens after stale result");
         assert_eq!(state.viewer_queued_preview, None);
         assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::GfxTools);
