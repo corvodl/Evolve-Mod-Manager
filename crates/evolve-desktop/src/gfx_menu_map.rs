@@ -100,7 +100,7 @@ fn parse(input: &[u8]) -> Result<Vec<MenuCommand>, String> {
                     if main_menu_depth == 0
                         && (2..=64).contains(&tag.len())
                         && tag.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_')
-                        && tag != b"Button"
+                        && tag.as_slice() != b"Button"
                     {
                         submenu = Some(String::from_utf8_lossy(&tag).into_owned());
                     }
