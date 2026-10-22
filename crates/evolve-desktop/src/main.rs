@@ -1475,6 +1475,9 @@ enum Message {
     GfxRuffleWebConfigChanged(String),
     GfxPickRuffleWeb,
     GfxRuffleWebPicked(Option<PathBuf>),
+    GfxFfmpegConfigChanged(String),
+    GfxPickFfmpeg,
+    GfxFfmpegPicked(Option<PathBuf>),
     GfxToggleInteractive,
     GfxRunInteractive,
     GfxSelectPreviewPreset(gfx_interactive::PreviewPreset),
@@ -4274,6 +4277,31 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 );
             }
         }
+        Message::GfxFfmpegConfigChanged(path) => {
+            if path.len() <= 4096 && !path.contains('\0') {
+                state.preferences.gfx_ffmpeg_executable = path;
+                persist_preferences(state);
+            }
+        }
+        Message::GfxPickFfmpeg => {
+            return Task::perform(
+                async {
+                    tokio::task::spawn_blocking(|| native_export_picker("file"))
+                        .await
+                        .ok()
+                        .flatten()
+                },
+                Message::GfxFfmpegPicked,
+            );
+        }
+        Message::GfxFfmpegPicked(selected) => {
+            if let Some(path) = selected {
+                return update(
+                    state,
+                    Message::GfxFfmpegConfigChanged(path.to_string_lossy().into()),
+                );
+            }
+        }
         Message::GfxToggleInteractive => {
             state.gfx_interactive_open = !state.gfx_interactive_open;
             if state.gfx_interactive_open {
@@ -4328,10 +4356,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.gfx_interactive_status =
                 "Preparing persistent local Ruffle Web/ActionScript preview...".into();
             let web_runtime = state.preferences.ruffle_web_runtime.clone();
+            let ffmpeg = state.preferences.gfx_ffmpeg_executable.clone();
             return Task::perform(
                 async move {
                     tokio::task::spawn_blocking(move || {
-                        gfx_interactive::launch_live(&session, &web_runtime)
+                        gfx_interactive::launch_live(&session, &web_runtime, &ffmpeg)
                     })
                     .await
                     .unwrap_or_else(|e| Err(format!("Ruffle preview worker stopped: {e}")))
