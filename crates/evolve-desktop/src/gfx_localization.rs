@@ -385,6 +385,96 @@ mod tests {
         assert!(!found.contains_key("unknown"));
     }
     #[test]
+    fn parses_real_usa_en_string_structure_without_hardcoded_translations() {
+        let xml = br#"<?xml version='1.0' encoding='utf-8'?>
+            <Strings><Category name="Common">
+              <String name="ui_SigningInPrompt" value="SIGNING IN. PLEASE WAIT..." />
+              <String name="ui_mp_OnlineGame" value="PLAY" />
+              <String name="ui_Custom" value="A &amp; B" />
+              <String name="ui_long_not_requested" value="Ignore" />
+            </Category><Category name="Credits">
+              <string name="ui_credits_TRS_HDR1" value="TURTLE ROCK STUDIOS" />
+            </Category></Strings>"#;
+        let wanted = [
+            "ui_signinginprompt".to_owned(),
+            "ui_mp_onlinegame".to_owned(),
+            "ui_custom".to_owned(),
+            "ui_credits_trs_hdr1".to_owned(),
+        ]
+        .into_iter()
+        .collect();
+        let translations = parse_sheet(xml, &wanted).unwrap();
+        assert_eq!(translations.len(), 4);
+        assert_eq!(translations["ui_signinginprompt"], "SIGNING IN. PLEASE WAIT...");
+        assert_eq!(translations["ui_mp_onlinegame"], "PLAY");
+        assert_eq!(translations["ui_custom"], "A & B");
+        assert_eq!(translations["ui_credits_trs_hdr1"], "TURTLE ROCK STUDIOS");
+        assert!(!translations.contains_key("ui_long_not_requested"));
+        assert!(parse_sheet(
+            b"<!DOCTYPE Strings><Strings><String name='ui_a' value='no'/></Strings>",
+            &wanted,
+        )
+        .is_err());
+        assert!(parse_sheet(
+            b"<Strings><String name='ui_mp_onlinegame' value='&unknown;'/></Strings>",
+            &wanted,
+        )
+        .is_err());
+    }
+    #[test]
+    fn resolves_usa_en_archive_only_in_matching_library_build() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let folder = root.join("USA-EN_xml.pak__11111111111111111111");
+        fs::create_dir_all(folder.join("files/files")).unwrap();
+        let xml = br#"<Strings><Category name="MainMenu">
+            <String name="ui_Options" value="OPTIONS"/>
+            <String name="ui_Training" value="TRAINING"/>
+            <String name="ui_SigningInPrompt" value="SIGNING IN. PLEASE WAIT..."/>
+            </Category></Strings>"#;
+        fs::write(folder.join("files/files/text_ui_menus.xml"), xml).unwrap();
+        fs::write(
+            folder.join("asset-library.json"),
+            serde_json::to_vec(&json!({
+                "version": 1,
+                "name": "USA-EN_xml.pak",
+                "source": "/original/USA-EN_xml.pak",
+                "entries": [{
+                    "path": "files/text_ui_menus.xml",
+                    "bytes": xml.len()
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            root.join("build-collections.json"),
+            serde_json::to_vec(&json!({
+                "version": 1,
+                "builds": {
+                    "stage-two": {
+                        "label": "Modded Stage 2",
+                        "members": {"11111111111111111111": {}}
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let keys = vec![
+            "@ui_Options".to_owned(),
+            "@ui_Training".to_owned(),
+            "@ui_SigningInPrompt".to_owned(),
+        ];
+        let result = menu_labels(Some(root), Some("Modded Stage 2"), &keys);
+        assert_eq!(result["translations"]["ui_options"], "OPTIONS");
+        assert_eq!(result["translations"]["ui_signinginprompt"], "SIGNING IN. PLEASE WAIT...");
+        assert_eq!(result["sources"].as_array().unwrap().len(), 1);
+        let wrong = menu_labels(Some(root), Some("2012 Legacy"), &keys);
+        assert_eq!(wrong["translations"].as_object().unwrap().len(), 0);
+        assert_eq!(wrong["unresolved"].as_array().unwrap().len(), 3);
+    }
+    #[test]
     fn refuses_doctype_and_unrelated_build_languages() {
         assert!(parse_sheet(b"<!DOCTYPE a><a/>", &HashSet::new()).is_err());
         assert!(relevant_path(
@@ -395,6 +485,26 @@ mod tests {
         assert!(relevant_path(
             "text_ui_menu.xml",
             "English_XML.pak",
+            "english"
+        ));
+        assert!(relevant_path(
+            "files/text_ui_menus.xml",
+            "USA-EN_xml.pak",
+            "english"
+        ));
+        assert!(relevant_path(
+            "text_ui_menus.xml",
+            "USA-EN_xml.pak",
+            "english"
+        ));
+        assert!(!relevant_path(
+            "files/text_ui_menus.xml",
+            "USA-EN_xml.pak",
+            "german"
+        ));
+        assert!(!relevant_path(
+            "files/text_ui_menus.xml",
+            "German_XML.pak",
             "english"
         ));
         assert!(!relevant_path(
