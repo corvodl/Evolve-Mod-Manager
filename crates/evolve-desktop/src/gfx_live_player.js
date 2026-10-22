@@ -171,11 +171,14 @@
         });
         const report = await sourceLoad;
         const initButton = document.getElementById("initialize");
-        const canInitialize = report?.initialization?.verified_transition_to_main_menu === true;
+        const canOpenScreen = report?.initialization?.verified_open_screen === true;
+        const canReturnToMain = report?.initialization?.verified_transition_to_main_menu === true;
+        const canInitialize = canOpenScreen || canReturnToMain;
+        const originalStartup = canOpenScreen ? "openScreen" : "transitionToMainMenu";
         initButton.disabled = !canInitialize;
         const initializeOriginal = async (automatic) => {
             if (!canInitialize) {
-                show("Original transitionToMainMenu is not verified in this movie. No guessed initialization executed.", true);
+                show("No zero-argument original openScreen or transitionToMainMenu callback was verified. Host argument requirements cannot be guessed.", true);
                 return;
             }
             // The original first-frame callback registration must run before
@@ -183,10 +186,10 @@
             // never a mock game-service or fabricated menu screen.
             for (let attempt = 0; attempt < 5; attempt++) {
                 try {
-                    const result = player.ruffle().callExternalInterface("evolvePreview_transitionToMainMenu");
+                    const result = player.ruffle().callExternalInterface("evolvePreview_" + originalStartup);
                     if (result === true) {
                         show((automatic ? "Automatic" : "Manual") +
-                            " original transitionToMainMenu invoked. Native CryEngine UI initialization is still absent; verify visible content.");
+                            " original " + originalStartup + " invoked. Native CryEngine UI initialization is still absent; verify visible content.");
                         return;
                     }
                 } catch (e) {
