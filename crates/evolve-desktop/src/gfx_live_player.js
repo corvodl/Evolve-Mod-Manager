@@ -30,6 +30,7 @@
     let updateSourceGroup = () => {};
     let navigateSourceGroup = () => false;
     let navigateSourceBack = () => false;
+    let openVerifiedScreen = () => false;
     document.getElementById("source-back").addEventListener("click", () => {
         navigateSourceBack();
     });
@@ -108,6 +109,24 @@
              showGroup(initial);
         } else {
             navigation.hidden = true;
+        }
+        const linked = document.getElementById("linked-screen-buttons");
+        linked.replaceChildren();
+        const screens = Array.isArray(report.linked_screens) ? report.linked_screens : [];
+        for (const screen of screens) {
+            if (!screen || !/^[a-z0-9-]{1,48}$/.test(String(screen.id || "")) ||
+                !/^screens\/[a-z0-9-]{1,48}\/movie\.swf$/.test(String(screen.movie || ""))) {
+                continue;
+            }
+            const button = makeText("button", String(screen.title || screen.id));
+            button.appendChild(makeText("small", String(screen.virtual_source || "") +
+                " · same-build verified; native routing not established"));
+            button.addEventListener("click", () => { void openVerifiedScreen(screen); });
+            linked.appendChild(button);
+        }
+        if (!screens.length) {
+            linked.appendChild(makeText("p",
+                "No other original GFX screens were verified in this source build. Import the matching UI_Assets PAK."));
         }
         const statusText = String(localization.status || "No localization manifest available");
         document.getElementById("localization-status").textContent = statusText
@@ -230,7 +249,57 @@
         }
         const runtime = window.RufflePlayer.newest();
         const player = runtime.createPlayer();
-        document.getElementById("stage").appendChild(player);
+        const stageElement = document.getElementById("stage");
+        stageElement.appendChild(player);
+        const linkedBack = document.getElementById("linked-screen-back");
+        const videoElement = document.getElementById("background-video");
+        let linkedPlayer = null;
+        const returnToOriginalMenu = () => {
+            if (!linkedPlayer) return false;
+            linkedPlayer.remove();
+            linkedPlayer = null;
+            player.hidden = false;
+            videoElement.hidden = !videoElement.src;
+            linkedBack.hidden = true;
+            show("Returned to the original main-menu instance; its ActionScript state was not reset.");
+            return true;
+        };
+        linkedBack.addEventListener("click", returnToOriginalMenu);
+        openVerifiedScreen = async screen => {
+            if (!screen || !/^screens\/[a-z0-9-]{1,48}\/movie\.swf$/.test(String(screen.movie || ""))) {
+                show("Linked screen rejected: not a staged, verified source movie.", true);
+                return false;
+            }
+            returnToOriginalMenu();
+            const candidate = runtime.createPlayer();
+            stageElement.appendChild(candidate);
+            try {
+                if (typeof candidate.ruffle().addFSCommandHandler === "function") {
+                    candidate.ruffle().addFSCommandHandler((command, args) => {
+                        show("Linked GFX requested native FSCommand " + String(command).slice(0, 90) +
+                            " (" + String(args).slice(0, 90) + "); blocked in preview.", true);
+                    });
+                }
+                await candidate.ruffle().load({
+                    url: "./" + screen.movie,
+                    allowScriptAccess: false,
+                    autoplay: "on",
+                    wmode: "opaque",
+                    backgroundColor: "#000000"
+                });
+                linkedPlayer = candidate;
+                player.hidden = true;
+                videoElement.hidden = true;
+                linkedBack.hidden = false;
+                show("Previewing verified " + String(screen.title) +
+                     ". Original native CryEngine screen lifecycle is unavailable.");
+                return true;
+            } catch (error) {
+                candidate.remove();
+                show("Cannot open source movie: " + String(error), true);
+                return false;
+            }
+        };
         // Record native FSCommands and AVM trace diagnostics, but deliberately
         // DO NOT execute game commands from an untrusted or modded SWF.
         if (typeof player.ruffle().addFSCommandHandler === "function") {
@@ -454,6 +523,7 @@
             await initializeOriginal(true);
         }
         document.getElementById("reset").addEventListener("click", () => {
+            returnToOriginalMenu();
             player.ruffle().reload().then(async () => {
                 sourceMenuStack.splice(1);
                 show("Movie reset in the same window.");
@@ -469,10 +539,12 @@
                 }
                 const action = await response.json();
                 if (action.kind === "reload") {
+                    returnToOriginalMenu();
                     await player.ruffle().reload();
                     sourceMenuStack.splice(1);
                     show("Movie reset in this window.");
                 } else if (action.kind === "call") {
+                    returnToOriginalMenu();
                     const args = action.arg === null ? [] : [action.arg];
                     if (action.name === "evolvePreview_openScreen") {
                         await initializeOriginal(false);
