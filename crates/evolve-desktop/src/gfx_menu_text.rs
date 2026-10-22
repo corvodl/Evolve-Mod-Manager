@@ -190,7 +190,9 @@ fn avm1_localization_keys(actions: &[u8], depth: usize, keys: &mut BTreeSet<Stri
             let count = usize::from(u16::from_le_bytes([payload[0], payload[1]]));
             let mut p = 2usize;
             for _ in 0..count.min(2048) {
-                let Some(stop) = zstring_end(payload, p) else { break };
+                let Some(stop) = zstring_end(payload, p) else {
+                    break;
+                };
                 if let Ok(value) = std::str::from_utf8(&payload[p..stop])
                     && value.to_ascii_lowercase().starts_with("@ui_")
                     && let Some(key) = label(value)
@@ -458,6 +460,36 @@ mod tests {
             preview
                 .windows(b"@ui_SigningInPrompt".len())
                 .any(|part| part == b"@ui_SigningInPrompt")
+        );
+    }
+    #[test]
+    fn discovers_verified_avm1_constant_pool_and_define_function2_label_literals() {
+        fn action(opcode: u8, payload: &[u8]) -> Vec<u8> {
+            let mut result = vec![opcode];
+            result.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+            result.extend_from_slice(payload);
+            result
+        }
+        let mut pool = 2u16.to_le_bytes().to_vec();
+        pool.extend_from_slice(b"@ui_SigningInPrompt\0@ui_Training\0");
+        let mut push = vec![0];
+        push.extend_from_slice(b"@ui_Options\0");
+        let mut nested = action(0x96, &push);
+        nested.push(0);
+        let mut func = b"settingsLabel\0".to_vec();
+        func.extend_from_slice(&0u16.to_le_bytes()); // Parameter count
+        func.push(1); // Register count
+        func.extend_from_slice(&0u16.to_le_bytes()); // Flags
+        func.extend_from_slice(&(nested.len() as u16).to_le_bytes());
+        func.extend_from_slice(&nested);
+        let mut script = action(0x88, &pool);
+        script.extend(action(0x8e, &func));
+        script.push(0);
+        let mut keys = BTreeSet::new();
+        avm1_localization_keys(&script, 0, &mut keys);
+        assert_eq!(
+            keys.into_iter().collect::<Vec<_>>(),
+            vec!["@ui_options", "@ui_signinginprompt", "@ui_training"]
         );
     }
     #[test]
