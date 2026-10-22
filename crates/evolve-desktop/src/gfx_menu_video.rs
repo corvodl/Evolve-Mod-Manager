@@ -265,32 +265,32 @@ fn original_video(root: &Path, build: &str) -> Result<LibraryReferenceStatus, St
         && let Some(paths) = imported_video_members(root, build)?
     {
         for path in paths
-                .into_iter()
-                .filter(|name| is_named_main_menu_usm(name))
+            .into_iter()
+            .filter(|name| is_named_main_menu_usm(name))
+        {
+            match resolve_imported_reference_in_archive(root, &path, build, ORIGINAL_PAK)
+                .map_err(|e| format!("Cannot verify original video member {path}: {e}"))?
             {
-                match resolve_imported_reference_in_archive(root, &path, build, ORIGINAL_PAK)
-                    .map_err(|e| format!("Cannot verify original video member {path}: {e}"))?
-                {
-                    LibraryReferenceStatus::Found(found) => {
-                        if !matches
-                            .iter()
-                            .any(|previous| previous.absolute_path == found.absolute_path)
-                        {
-                            matches.push(found);
-                        }
-                    }
-                    LibraryReferenceStatus::Ambiguous(_) => {
-                        return Err(
-                            "Original main_menu.usm has ambiguous copies within videos.pak".into(),
-                        );
-                    }
-                    LibraryReferenceStatus::Missing => {
-                        return Err(format!(
-                            "Original video member {path} is missing or modified"
-                        ));
+                LibraryReferenceStatus::Found(found) => {
+                    if !matches
+                        .iter()
+                        .any(|previous| previous.absolute_path == found.absolute_path)
+                    {
+                        matches.push(found);
                     }
                 }
+                LibraryReferenceStatus::Ambiguous(_) => {
+                    return Err(
+                        "Original main_menu.usm has ambiguous copies within videos.pak".into(),
+                    );
+                }
+                LibraryReferenceStatus::Missing => {
+                    return Err(format!(
+                        "Original video member {path} is missing or modified"
+                    ));
+                }
             }
+        }
     }
     Ok(match matches.len() {
         0 => LibraryReferenceStatus::Missing,
