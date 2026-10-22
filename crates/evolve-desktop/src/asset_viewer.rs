@@ -722,33 +722,40 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                         actions = actions
                             .push(text("ORIGINAL MENU ACTIONSCRIPT").size(12))
                             .push(text("Control the SAME running Ruffle Web preview; no restart per action. Only source-verified handlers are dispatched. Native game services remain blocked.").size(11).style(design::muted));
-                        for preset in [
-                            crate::gfx_interactive::PreviewPreset::AsAuthored,
-                            crate::gfx_interactive::PreviewPreset::HideEngagement,
-                            crate::gfx_interactive::PreviewPreset::ShowEngagement,
-                            crate::gfx_interactive::PreviewPreset::HideSigningIn,
-                            crate::gfx_interactive::PreviewPreset::ShowSigningIn,
-                            crate::gfx_interactive::PreviewPreset::Back,
-                            crate::gfx_interactive::PreviewPreset::ReturnToMainMenu,
-                            crate::gfx_interactive::PreviewPreset::ShowPatchNotes,
-                            crate::gfx_interactive::PreviewPreset::HidePatchNotes,
-                            crate::gfx_interactive::PreviewPreset::ShowNews,
-                            crate::gfx_interactive::PreviewPreset::HideNews,
-                            crate::gfx_interactive::PreviewPreset::ShowChallenges,
-                            crate::gfx_interactive::PreviewPreset::HideChallenges,
+                        use crate::gfx_interactive::PreviewPreset as MenuPreset;
+                        for (label, choices) in [
+                            ("MOVIE", &[MenuPreset::AsAuthored][..]),
+                            ("ENGAGEMENT PROMPT", &[MenuPreset::HideEngagement,
+                                MenuPreset::ShowEngagement][..]),
+                            ("SIGN-IN PROMPT", &[MenuPreset::HideSigningIn,
+                                MenuPreset::ShowSigningIn][..]),
+                            ("MENU NAVIGATION", &[MenuPreset::Back,
+                                MenuPreset::ReturnToMainMenu][..]),
+                            ("PATCH NOTES", &[MenuPreset::ShowPatchNotes,
+                                MenuPreset::HidePatchNotes][..]),
+                            ("NEWS PANEL", &[MenuPreset::ShowNews,
+                                MenuPreset::HideNews][..]),
+                            ("CHALLENGE CONTROLS", &[MenuPreset::ShowChallenges,
+                                MenuPreset::HideChallenges][..]),
                         ] {
-                            actions = actions.push(
-                                design::button(text(format!(
-                                    "{} {}",
-                                    if state.gfx_preview_preset == preset {
-                                        "✓"
-                                    } else {
-                                        " "
-                                    },
-                                    preset.description(),
-                                )))
-                                .on_press(Message::GfxSelectPreviewPreset(preset)),
-                            );
+                            actions = actions.push(text(label).size(10).style(design::muted));
+                            let mut choices_row = row![].spacing(6);
+                            for &preset in choices {
+                                let available = state.gfx_interactive_running.as_ref()
+                                    .filter(|live| live.is_running())
+                                    .is_none_or(|live| live.can_dispatch_live(preset));
+                                let description = if available {
+                                    preset.description().to_owned()
+                                } else {
+                                    format!("{} (not registered)", preset.description())
+                                };
+                                choices_row = choices_row.push(
+                                    design::button(description)
+                                        .on_press_maybe(available.then_some(
+                                            Message::GfxSelectPreviewPreset(preset))),
+                                );
+                            }
+                            actions = actions.push(choices_row);
                         }
                     }
                     actions = actions
