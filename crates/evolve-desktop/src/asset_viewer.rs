@@ -992,9 +992,9 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
             }
             GfxToolsSection::Inspector => {
                 if session
-                        .relative
-                        .eq_ignore_ascii_case("Libs/UI/main_menu.gfx")
-                    {
+                    .relative
+                    .eq_ignore_ascii_case("Libs/UI/main_menu.gfx")
+                {
                     actions = actions
                         .push(text("ORIGINAL UI_DATA MENU COMMANDS").size(13))
                         .push(
