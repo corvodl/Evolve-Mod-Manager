@@ -1689,6 +1689,36 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn linked_original_screen_can_resolve_archive_root_gfx() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let pak = root.join("UI_Assets.pak__11111111111111111111");
+        fs::create_dir_all(pak.join("files")).unwrap();
+        let movie = b"GFX synthetic source movie";
+        fs::write(pak.join("files/settings.gfx"), movie).unwrap();
+        fs::write(
+            pak.join("asset-library.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1, "name": "UI_Assets.pak", "source": "/game/UI_Assets.pak",
+                "entries": [{"path":"settings.gfx", "bytes":movie.len()}]
+            })).unwrap()
+        ).unwrap();
+        fs::write(
+            root.join("build-collections.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version":1,
+                "builds":{"stage-two":{"label":"Modded Stage 2","members":{"11111111111111111111":{}}}}
+            })).unwrap()
+        ).unwrap();
+        let found = verified_ui_asset_movie(root, "Modded Stage 2", "settings.gfx").unwrap();
+        assert_eq!(found.relative_path, "settings.gfx");
+        assert!(verified_ui_asset_movie(root, "2012", "settings.gfx").is_none());
+        assert!(verified_ui_asset_movie(root, "Modded Stage 2", "../settings.gfx").is_none());
+        assert!(verified_ui_asset_movie(root, "Modded Stage 2", "made_up.gfx").is_none());
+    }
+
     fn menu_fixture() -> Vec<u8> {
         menu_fixture_arity(0)
     }
