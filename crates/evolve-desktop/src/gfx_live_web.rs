@@ -395,6 +395,12 @@ fn serve_file(stream: &mut TcpStream, path: &Path, base: &Path, limit: u64, mime
         Err(_) => send(stream, 404, "text/plain", b"Unable to read preview file"),
     }
 }
+// Ruffle Web v0.7.1 implements ActionScript ExternalInterface.call with
+// JavaScript's Function constructor, so 'wasm-unsafe-eval' alone prevents
+// the exact preview-only CurrentMenu/NPE/CustomSolo host getters from running.
+// This server binds 127.0.0.1 on a random port with a private session token;
+// all network access, object/embed, framing, and external scripts remain CSP
+// restricted. Never serve unrelated app/account content from this origin.
 fn send(stream: &mut TcpStream, code: u16, mime: &str, payload: &[u8]) {
     let reason = match code {
         200 => "OK",
@@ -405,7 +411,7 @@ fn send(stream: &mut TcpStream, code: u16, mime: &str, payload: &[u8]) {
         _ => "Error",
     };
     let header = format!(
-        "HTTP/1.1 {code} {reason}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; media-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'none'\r\n\r\n",
+        "HTTP/1.1 {code} {reason}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; connect-src 'self'; media-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'none'\r\n\r\n",
         payload.len()
     );
     let _ = stream.write_all(header.as_bytes());
