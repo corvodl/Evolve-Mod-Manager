@@ -546,8 +546,31 @@ pub(crate) fn embed_mode_bitmap_linkages(
     for tag in &movie_tags {
         if matches!(
             tag.code,
-            2 | 6 | 7 | 10 | 11 | 14 | 20 | 21 | 22 | 32 | 34 | 35 | 36
-                | 37 | 39 | 46 | 48 | 60 | 75 | 83 | 84 | 87 | 90 | 91 | 1008 | 1009
+            2 | 6
+                | 7
+                | 10
+                | 11
+                | 14
+                | 20
+                | 21
+                | 22
+                | 32
+                | 34
+                | 35
+                | 36
+                | 37
+                | 39
+                | 46
+                | 48
+                | 60
+                | 75
+                | 83
+                | 84
+                | 87
+                | 90
+                | 91
+                | 1008
+                | 1009
         ) {
             if let Some(id) = u16_at(&tag.data, 0) {
                 reserved.insert(id);
@@ -565,7 +588,9 @@ pub(crate) fn embed_mode_bitmap_linkages(
         if !seen.insert(name.clone())
             || name.is_empty()
             || name.len() > 64
-            || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
         {
             skipped += 1;
             continue;
@@ -606,9 +631,8 @@ pub(crate) fn embed_mode_bitmap_linkages(
             skipped += 1;
             continue;
         };
-        let original_linkage = format!(
-            "img://Libs/UI/FlashAssets/images/MenuModeSelect/{name}.dds"
-        );
+        let original_linkage =
+            format!("img://Libs/UI/FlashAssets/images/MenuModeSelect/{name}.dds");
         let encoded = encode_bitmap(id, &image)?;
         let mut entry = Vec::with_capacity(original_linkage.len() + 3);
         entry.extend(id.to_le_bytes());
@@ -616,7 +640,8 @@ pub(crate) fn embed_mode_bitmap_linkages(
         entry.push(0);
         // Preserve the existing fixed parser/movie cap. When an image would
         // exhaust it, skip that image instead of breaking the whole preview.
-        let within_budget = swf.len()
+        let within_budget = swf
+            .len()
             .checked_add(extra.len())
             .and_then(|n| n.checked_add(encoded.len()))
             .and_then(|n| n.checked_add(link_entries.len()))
@@ -769,8 +794,15 @@ mod tests {
         assert!(position < tags.iter().position(|t| t.code == 1).unwrap());
         let exports = &tags[position].data;
         assert_eq!(&exports[..2], &1u16.to_le_bytes());
-        assert!(exports.windows(b"img://Libs/UI/FlashAssets/images/MenuModeSelect/goliathTutorial.dds".len())
-            .any(|v| v == b"img://Libs/UI/FlashAssets/images/MenuModeSelect/goliathTutorial.dds"));
+        assert!(
+            exports
+                .windows(
+                    b"img://Libs/UI/FlashAssets/images/MenuModeSelect/goliathTutorial.dds".len()
+                )
+                .any(
+                    |v| v == b"img://Libs/UI/FlashAssets/images/MenuModeSelect/goliathTutorial.dds"
+                )
+        );
         assert!(source.windows(4).any(|v| v == b"FWS\x08"));
         assert!(!source.windows(6).any(|v| v == b"img://"));
         assert_eq!(&linked[4..8], &(linked.len() as u32).to_le_bytes());
@@ -796,5 +828,4 @@ mod tests {
         assert_eq!((accepted, rejected), (0, 2));
         assert_eq!(movie, source);
     }
-
 }
