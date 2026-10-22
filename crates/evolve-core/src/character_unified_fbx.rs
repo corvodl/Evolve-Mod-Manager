@@ -11,7 +11,7 @@ use crate::library_catalog::{
     resolve_imported_reference_in_archive,
 };
 use crate::materials::{read_material, scoped_texture_candidates};
-use crate::model::{original_mesh_subsets, read_model};
+use crate::model::{has_original_mesh_subset_table, original_mesh_subsets, read_model};
 use crate::native_caf::read_native_caf;
 use crate::rig::{
     OriginalMaterialPng, embed_original_material_slots_glb, embed_verified_material_png_glb,
@@ -1314,6 +1314,46 @@ pub fn export_unified_cdf_fbx_options_with_glow(
             material_hint.as_deref(),
             imported.as_ref(),
         )?;
+        // Keep each original source subset ID and triangle count as a contract
+        // for Blender: material separation and FBX reimport must not remap faces
+        // to adjacent MTL leaves (notably empty NoDraw equipment slots).
+        let original_table = has_original_mesh_subset_table(&raw)
+            .map_err(|e| format!("CDF part {name} source material ID table: {e}"))?;
+        if !original_table
+            && original_materials.as_ref().is_some_and(|slots| slots.len() > 1)
+        {
+            return Err(format!(
+                "CDF part {name}: source MTL has multiple leaves but the mesh has no                  original subset table. Material IDs cannot safely be resolved."
+            ));
+        }
+        let mut material_face_counts = std::collections::BTreeMap::<u32, u64>::new();
+        for &(_, count, source_id) in &source_subsets {
+            if source_id == 255 {
+                return Err(format!(
+                    "CDF part {name} has unresolved source material ID 255"
+                ));
+            }
+            if let Some(slots) = &original_materials
+                && source_id as usize >= slots.len()
+            {
+                return Err(format!(
+                    "CDF part {name}: subset material ID {source_id} exceeds                      original MTL leaf count {}",
+                    slots.len()
+                ));
+            }
+            *material_face_counts.entry(source_id).or_insert(0) += u64::from(count / 3);
+        }
+        let original_material_ids = material_face_counts
+            .iter()
+            .map(|(&id, &triangles)| {
+                let leaf = original_materials
+                    .as_ref()
+                    .and_then(|slots| slots.get(id as usize))
+                    .map(|slot| slot.name.as_str())
+                    .unwrap_or("Source material (no MTL leaf)");
+                json!({"id":id, "triangles":triangles, "name":leaf})
+            })
+            .collect::<Vec<_>>();
         // More than one source submaterial requires explicit source MTL and
         // original subset IDs; never paint every face with the first leaf.
         if source_subsets.iter().any(|(_, _, id)| *id == 255) {
@@ -1487,7 +1527,11 @@ pub fn export_unified_cdf_fbx_options_with_glow(
         }
         let staged = work.path().join(format!("part-{index:03}.glb"));
         fs::write(&staged, &glb).map_err(|e| e.to_string())?;
-        entries.push(json!({"name":name,"source":staged}));
+        entries.push(json!({
+            "name":name,
+            "source":staged,
+            "material_ids":original_material_ids
+        }));
         labels.push(name.clone());
     }
     if damage_blend_percent > 0 && applied_damage == 0 {
