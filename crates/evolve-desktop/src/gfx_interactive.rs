@@ -1128,8 +1128,17 @@ mod tests {
             edits: 0,
             applied: false,
         };
-        write_live_menu_report(&session, folder.path(), 5, 3, 1, 2, &[PreviewPreset::Back])
-            .unwrap();
+        write_live_menu_report(
+            &session,
+            folder.path(),
+            5,
+            3,
+            1,
+            2,
+            &[PreviewPreset::Back],
+            &["gfxfontlib_locfont.gfx".into()],
+        )
+        .unwrap();
         let report: serde_json::Value =
             serde_json::from_slice(&fs::read(folder.path().join("preview-menu.json")).unwrap())
                 .unwrap();
@@ -1146,6 +1155,7 @@ mod tests {
         assert_eq!(report["commands"][0]["command"], "Game_Start");
         assert_eq!(report["commands"][0]["child_submenu"], "Extras");
         assert_eq!(report["resources"]["restored_dds_tiles"], 5);
+        assert_eq!(report["fonts"][0]["staged"], false);
         assert_eq!(report["fonts"][0]["staged"], false);
         assert_eq!(
             report["resources"]["instrumented_original_button_conditions"],
