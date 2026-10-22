@@ -1195,6 +1195,103 @@ fn original_font_inventory(path: &Path) -> Option<Vec<serde_json::Value>> {
     None
 }
 
+/// Count SWF-authored display-list effect *flags*, including nested sprites.
+/// This is an evidence inventory, not a substitute for the Scaleform
+/// renderer: per-frame ActionScript color changes, CryEngine shader passes,
+/// and Ruffle's actual pixel output require independent capture/verification.
+fn source_render_effect_inventory(movie: &[u8]) -> serde_json::Value {
+    #[derive(Default)]
+    struct Counters {
+        placements: usize,
+        color_transforms: usize,
+        filter_lists: usize,
+        blend_modes: usize,
+        sprites: usize,
+        incomplete: bool,
+    }
+    fn walk(bytes: &[u8], mut at: usize, depth: usize, stats: &mut Counters) -> bool {
+        if depth > 8 {
+            stats.incomplete = true;
+            return true;
+        }
+        let mut tags = 0usize;
+        while at + 2 <= bytes.len() && tags < 80_000 {
+            let header = u16::from_le_bytes([bytes[at], bytes[at + 1]]);
+            at += 2;
+            let kind = header >> 6;
+            let mut size = usize::from(header & 63);
+            if size == 63 {
+                if at + 4 > bytes.len() {
+                    return false;
+                }
+                size = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+                at += 4;
+            }
+            if size > bytes.len() - at {
+                return false;
+            }
+            let tag = &bytes[at..at + size];
+            match kind {
+                26 if !tag.is_empty() => {
+                    stats.placements += 1;
+                    if tag[0] & 0x08 != 0 {
+                        stats.color_transforms += 1;
+                    }
+                }
+                70 if tag.len() >= 2 => {
+                    stats.placements += 1;
+                    if tag[0] & 0x08 != 0 {
+                        stats.color_transforms += 1;
+                    }
+                    if tag[1] & 0x01 != 0 {
+                        stats.filter_lists += 1;
+                    }
+                    if tag[1] & 0x02 != 0 {
+                        stats.blend_modes += 1;
+                    }
+                }
+                39 if tag.len() >= 4 => {
+                    stats.sprites += 1;
+                    if !walk(&tag[4..], 0, depth + 1, stats) {
+                        return false;
+                    }
+                }
+                _ => {}
+            }
+            at += size;
+            tags += 1;
+            if kind == 0 {
+                return at == bytes.len();
+            }
+        }
+        false
+    }
+    if movie.len() < 20 || movie.len() > MAX_DECOMPRESSED || &movie[..3] != b"FWS" {
+        return serde_json::json!({"status": "Source SWF unavailable or not uncompressed"});
+    }
+    let nbits = usize::from(movie[8] >> 3);
+    if !(1..=31).contains(&nbits) {
+        return serde_json::json!({"status": "Invalid original SWF frame bounds"});
+    }
+    let start = 8 + (5 + 4 * nbits).div_ceil(8) + 4;
+    if start > movie.len() {
+        return serde_json::json!({"status": "Truncated original SWF header"});
+    }
+    let mut counters = Counters::default();
+    let valid = walk(movie, start, 0, &mut counters);
+    serde_json::json!({
+        "status": if valid { "SWF flags inventoried" } else { "Malformed SWF tags" },
+        "partial": counters.incomplete || !valid,
+        "placement_count": counters.placements,
+        "authored_color_transforms": counters.color_transforms,
+        "authored_filter_lists": counters.filter_lists,
+        "authored_blend_modes": counters.blend_modes,
+        "nested_sprites": counters.sprites,
+        "runtime_verified": false,
+        "note": "Static authored tags only. Original dynamic color multipliers, noise, post effects, and Ruffle pixels remain unverified."
+    })
+}
+
 /// Serialize *source-defined* UI_Data commands for an optional live browser
 /// inspector. These do not become fabricated SWF display-list nodes. Commands
 /// that require CryEngine remain read-only; only known child submenu links can
@@ -1219,6 +1316,7 @@ fn write_live_menu_report(
     background_video: serde_json::Value,
     labels: LiveMenuLabels<'_>,
     imported_text: &ImportedTextCounts,
+    render_effects: &serde_json::Value,
 ) -> Result<(), String> {
     let entries = session
         .menu_commands
@@ -1281,6 +1379,7 @@ fn write_live_menu_report(
             "scope": "Only original DefineEditText initial strings; dynamic ActionScript labels require native host semantics."
         },
         "fonts": font_imports,
+        "render_effects": render_effects,
         "imported_flash_text": {
             "movies": imported_text.movies,
             "localized": imported_text.localized,
@@ -1352,6 +1451,7 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
     };
     // Trace authored SWF button handlers before registering the original
     // live callbacks. No synthesized UI or native handler mapping is added.
+    let render_effects = source_render_effect_inventory(&swf);
     let (inspected, traced_buttons) = if session
         .relative
         .eq_ignore_ascii_case("Libs/UI/main_menu.gfx")
@@ -1398,6 +1498,7 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
             text: &localized_text,
         },
         &imported_text,
+        &render_effects,
     )?;
     let live = gfx_live_web::LiveServer::start(scratch, actions, web_runtime)?;
     Ok(RunningPreview {
@@ -1606,6 +1707,28 @@ mod tests {
         let pos = at + 6 + 3;
         corrupted[pos..pos + 2].copy_from_slice(&u16::MAX.to_le_bytes());
         assert!(trace_original_button_actions(&corrupted).is_err());
+    }
+
+    #[test]
+    fn source_effect_inventory_counts_authored_flags_without_claiming_visual_parity() {
+        let mut movie = menu_fixture_arity(7);
+        // Synthetic PlaceObject3: color-transform, filter-list, blend-mode.
+        let payload = [0x08, 0x03, 0, 0];
+        let mut tag = ((70u16 << 6) | (payload.len() as u16)).to_le_bytes().to_vec();
+        tag.extend_from_slice(&payload);
+        let at = movie.len() - 2;
+        movie.splice(at..at, tag);
+        let size = movie.len() as u32;
+        movie[4..8].copy_from_slice(&size.to_le_bytes());
+        let inventory = source_render_effect_inventory(&movie);
+        assert_eq!(inventory["status"], "SWF flags inventoried");
+        assert_eq!(inventory["authored_color_transforms"], 1);
+        assert_eq!(inventory["authored_filter_lists"], 1);
+        assert_eq!(inventory["authored_blend_modes"], 1);
+        assert_eq!(inventory["runtime_verified"], false);
+        // Do not accept an incomplete or corrupt authored tag stream as proof.
+        movie.pop();
+        assert_eq!(source_render_effect_inventory(&movie)["partial"], true);
     }
 
     #[test]
