@@ -32,6 +32,8 @@ def parse_material_records(records):
         _check(isinstance(name, str) and len(name) <= 256
                and not any(ord(ch) < 32 for ch in name),
                "invalid original material name")
+        _check(type(entry.get("no_draw", False)) is bool,
+               "invalid authored NoDraw material flag")
         _check(identity not in result, "duplicate original material ID")
         result[identity] = count
     return result
@@ -137,6 +139,10 @@ def bind_original_material_ids(meshes, part_index, part_name, records):
             label = re.sub(r"[^a-zA-Z0-9_.-]+", "_", source.name).strip("_")
             prefix = f"EVOLVE_MID_P{part_index:03}_S{source_id:03}__"
             unique.name = prefix + (label[:24] or "Material")
+            source_flags = next(entry for entry in records
+                                if entry["id"] == source_id)
+            unique["evolve_source_material_id"] = source_id
+            unique["evolve_source_no_draw"] = source_flags.get("no_draw", False)
             mesh.data.materials[local_index] = unique
     subset = source_material_histogram(meshes)
     actual = {identity: triangles for (part, identity), triangles
