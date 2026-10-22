@@ -1,8 +1,8 @@
 //! Optional video layer for the original Stage 2 main menu.
 //! Source is always the exact-build, manifest-verified CRI USM in videos.pak.
 //! The browser never receives a .usm or an arbitrary local file URL.
-use evolve_core::{LibraryReference, LibraryReferenceStatus, imported_library};
 use evolve_core::library_catalog::resolve_imported_reference_in_archive;
+use evolve_core::{LibraryReference, LibraryReferenceStatus, imported_library};
 use serde_json::{Value, json};
 use std::env;
 use std::fs::{self, File};
@@ -202,12 +202,18 @@ fn original_video(root: &Path, build: &str) -> Result<LibraryReferenceStatus, St
         {
             LibraryReferenceStatus::Missing => {}
             LibraryReferenceStatus::Found(found) => {
-                if !matches.iter().any(|previous| previous.absolute_path == found.absolute_path) {
+                if !matches
+                    .iter()
+                    .any(|previous| previous.absolute_path == found.absolute_path)
+                {
                     matches.push(found);
                 }
             }
             LibraryReferenceStatus::Ambiguous(_) => {
-                return Err("Multiple same-build copies of the original main-menu video are ambiguous".into());
+                return Err(
+                    "Multiple same-build copies of the original main-menu video are ambiguous"
+                        .into(),
+                );
             }
         }
     }
@@ -220,12 +226,17 @@ fn original_video(root: &Path, build: &str) -> Result<LibraryReferenceStatus, St
 
 fn missing_video_status(root: &Path, build: &str) -> &'static str {
     match imported_library(root) {
-        Ok(library) if library.archives.iter().any(|archive| {
-            archive.name.eq_ignore_ascii_case(ORIGINAL_PAK)
-                && archive.builds.iter().any(|label| label == build)
-        }) =>
-            "The selected build contains videos.pak, but its extracted manifest has no source-verified main_menu.usm at a supported mount path. Inspect the original PAK's video entries.",
-        _ => "Import the original videos.pak into the selected build in Asset Library; the matching main_menu.usm is not available.",
+        Ok(library)
+            if library.archives.iter().any(|archive| {
+                archive.name.eq_ignore_ascii_case(ORIGINAL_PAK)
+                    && archive.builds.iter().any(|label| label == build)
+            }) =>
+        {
+            "The selected build contains videos.pak, but its extracted manifest has no source-verified main_menu.usm at a supported mount path. Inspect the original PAK's video entries."
+        }
+        _ => {
+            "Import the original videos.pak into the selected build in Asset Library; the matching main_menu.usm is not available."
+        }
     }
 }
 
@@ -366,8 +377,13 @@ mod tests {
         ));
         let scratch = tempfile::tempdir().unwrap();
         let result = stage_main_menu(Some(root), Some("Modded Stage 2"), scratch.path());
-        assert!(result["status"].as_str().unwrap().contains("FFmpeg")
-            || result["status"].as_str().unwrap().contains("preview derivative"));
+        assert!(
+            result["status"].as_str().unwrap().contains("FFmpeg")
+                || result["status"]
+                    .as_str()
+                    .unwrap()
+                    .contains("preview derivative")
+        );
         assert_eq!(result["source"]["source_archive"], ORIGINAL_PAK);
         assert_eq!(result["playable"], false);
     }
