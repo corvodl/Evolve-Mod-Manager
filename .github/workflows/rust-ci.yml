@@ -33,6 +33,8 @@ jobs:
         run: python3 -m unittest discover -s crates/evolve-core/tests -p 'test_blender_fbx_safety.py'
       - name: Validate original material-ID and face-assignment parity
         run: python3 -m unittest discover -s crates/evolve-core/tests -p 'test_blender_material_ids.py'
+      - name: Validate authored character hierarchy and mesh labels
+        run: python3 -m unittest discover -s crates/evolve-core/tests -p 'test_blender_export_hierarchy.py'
       - name: Validate static unrigged FBX world-axis parity
         run: python3 -m unittest discover -s crates/evolve-core/tests -p 'test_blender_static_fbx_basis.py'
       - name: Validate original 2012 Rocky 47/48-bone armature compatibility
