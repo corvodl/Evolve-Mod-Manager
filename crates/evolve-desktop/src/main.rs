@@ -3743,6 +3743,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return update(state, Message::ViewerPreviewStaticCdf);
         }
         Message::ViewerPreviewStaticCdf => {
+            // CDF assemblies can be opened directly from virtual explorer
+            // entries, bypassing ViewerSelectFile and ViewerPreviewSelected.
+            // They must also leave the GFX workspace immediately.
+            state.gfx_active = false;
+            if state.viewer_sidebar_active == ViewerSidebarTab::GfxTools {
+                state.viewer_sidebar_active = ViewerSidebarTab::Files;
+            }
             if state.busy {
                 state.viewer_queued_preview = state.selected;
                 state.status =
@@ -8303,6 +8310,24 @@ mod project_edit_tests {
             "old GFX completion cannot steal the viewport"
         );
         assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
+    }
+
+    #[test]
+    fn direct_cdf_assembly_preview_leaves_gfx_even_when_worker_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("character.cdf"), b"<CharacterDefinition/>").unwrap();
+        let mut state = State {
+            inventory: Some(scan_directory(dir.path()).unwrap()),
+            selected: Some(0),
+            gfx_active: true,
+            busy: true,
+            viewer_sidebar_active: ViewerSidebarTab::GfxTools,
+            ..State::default()
+        };
+        let _ = update(&mut state, Message::ViewerPreviewStaticCdf);
+        assert!(!state.gfx_active);
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
+        assert_eq!(state.viewer_queued_preview, Some(0));
     }
 
     #[test]
