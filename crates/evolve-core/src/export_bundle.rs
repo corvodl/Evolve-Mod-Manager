@@ -449,32 +449,37 @@ pub fn export_bundle(
                     "Full-armor glow and damage blend require rigged textured CDF export".into(),
                 );
             }
-            let mesh = if relative.to_ascii_lowercase().ends_with(".cdf") {
-                // Static character export honors exactly the same verified
-                // equipment changes as the live Model Options viewport.
-                read_static_cdf_assembly_with_equipment(
+            let (mesh, cdf_report) = if relative.to_ascii_lowercase().ends_with(".cdf") {
+                // Static character export uses the same original attachments,
+                // source MTL leaves and active equipment as Model Options.
+                let (mesh, report) = read_static_cdf_assembly_with_equipment(
                     &source,
                     inventory,
                     None,
                     None,
                     &options.equipment,
                 )
-                .map_err(|e| e.to_string())?
-                .0
+                .map_err(|e| e.to_string())?;
+                (mesh, Some(report))
             } else {
                 if !options.equipment.is_empty() {
                     return Err("Equipment overrides require the selected CDF assembly".into());
                 }
-                read_model(&source).map_err(|e| e.to_string())?
+                (read_model(&source).map_err(|e| e.to_string())?, None)
             };
             let glb = stage
                 .path()
                 .join(format!("{}.glb", output_stem(&relative)?));
-            if relative.to_ascii_lowercase().ends_with(".cdf") {
-                // A flattened static CDF has several source meshes; the
-                // individual source-subset IDs cannot be reconstructed after
-                // geometry assembly. Unified rigged CDF handles each part.
-                crate::glb::export_model_glb_for_fbx(&mesh, &glb).map_err(|e| e.to_string())?;
+            if let Some(report) = cdf_report.as_ref() {
+                // Use each original attachment's verified subset spans
+                // *before* Blender receives the flattened geometry. This
+                // preserves CryEngine MTL leaf IDs and authored normal maps
+                // even when the FBX does not have a skeleton or embedded DDS.
+                let mapped = crate::character_unified_fbx::static_cdf_material_glb(
+                    &mesh, report, inventory, options.embed_textures,
+                )
+                .map_err(|e| format!("{relative} source material and normal maps: {e}"))?;
+                fs::write(&glb, mapped).map_err(|e| e.to_string())?;
             } else {
                 let raw = fs::read(&source).map_err(|e| e.to_string())?;
                 let mapped = crate::glb::geometry_glb_bytes_with_original_material_ids(&mesh, &raw)
