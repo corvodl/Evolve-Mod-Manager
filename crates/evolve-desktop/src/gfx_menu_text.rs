@@ -84,6 +84,7 @@ where F: FnMut(u16, &[u8]) -> Result<Vec<u8>, String>
     let mut at = start;
     let mut count = 0usize;
     while at + 2 <= swf.len() && count < 80_000 {
+        let tag_begin = at;
         let header = u16::from_le_bytes([swf[at], swf[at + 1]]);
         at += 2;
         let kind = header >> 6;
@@ -102,13 +103,19 @@ where F: FnMut(u16, &[u8]) -> Result<Vec<u8>, String>
         if updated.len() > MAX_DECOMPRESSED.saturating_sub(dest.len()).saturating_sub(6) {
             return Err("Localized SWF exceeds preview limits".into());
         }
-        if updated.len() < 63 {
-            dest.extend_from_slice(&((kind << 6) | updated.len() as u16).to_le_bytes());
+        if updated == swf[at..at + length] {
+            // Preserve the exact original tag header encoding, including a
+            // long header on a tag that could also fit into a short one.
+            dest.extend_from_slice(&swf[tag_begin..at + length]);
         } else {
-            dest.extend_from_slice(&((kind << 6) | 63).to_le_bytes());
-            dest.extend_from_slice(&(updated.len() as u32).to_le_bytes());
+            if updated.len() < 63 {
+                dest.extend_from_slice(&((kind << 6) | updated.len() as u16).to_le_bytes());
+            } else {
+                dest.extend_from_slice(&((kind << 6) | 63).to_le_bytes());
+                dest.extend_from_slice(&(updated.len() as u32).to_le_bytes());
+            }
+            dest.extend_from_slice(&updated);
         }
-        dest.extend_from_slice(&updated);
         at += length;
         count += 1;
         if kind == 0 {
