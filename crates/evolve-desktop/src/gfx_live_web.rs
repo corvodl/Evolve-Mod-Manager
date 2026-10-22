@@ -165,7 +165,8 @@ fn serve(
                     continue;
                 }
                 let _ = stream.set_read_timeout(Some(Duration::from_millis(650)));
-                let _ = stream.set_write_timeout(Some(Duration::from_millis(650)));
+                // Ruffle Web WASM binaries can be several MiB; don't truncate slow local loads.
+                let _ = stream.set_write_timeout(Some(Duration::from_secs(15)));
                 respond(&mut stream, &root, &bundle, &token, &receiver);
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -373,6 +374,45 @@ mod tests {
         assert!(!safe_import_asset("../private.swf"));
         assert!(!safe_import_asset("C:/test.swf"));
     }
+    #[test]
+    fn loopback_server_serves_only_its_session_and_queued_actions() {
+        fn get(path: &str, action: Option<PreviewPreset>) -> String {
+            let src = tempfile::tempdir().unwrap();
+            let web = tempfile::tempdir().unwrap();
+            fs::write(src.path().join("movie.swf"), b"FWSsynthetic").unwrap();
+            fs::write(web.path().join("ruffle.js"), b"// bundled preview").unwrap();
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let destination = listener.local_addr().unwrap();
+            let request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+            let source = src.path().to_path_buf();
+            let bundle = web.path().to_path_buf();
+            let reply = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                let (sender, received) = mpsc::channel();
+                if let Some(preset) = action {
+                    sender.send(preset).unwrap();
+                }
+                respond(&mut socket, &source, &bundle, "private-token", &received);
+            });
+            let mut client = TcpStream::connect(destination).unwrap();
+            client.write_all(request.as_bytes()).unwrap();
+            client.shutdown(std::net::Shutdown::Write).unwrap();
+            let mut bytes = Vec::new();
+            client.read_to_end(&mut bytes).unwrap();
+            reply.join().unwrap();
+            String::from_utf8_lossy(&bytes).into_owned()
+        }
+        let page = get("/private-token/", None);
+        assert!(page.starts_with("HTTP/1.1 200 OK"));
+        assert!(page.contains("Live GFX Preview"));
+        let callback = get("/private-token/next", Some(PreviewPreset::HideEngagement));
+        assert!(callback.contains("evolvePreview_showEngagementPrompt"));
+        assert!(callback.contains("\\"arg\\":false"));
+        assert!(get("/other-session/movie.swf", None).contains("404 Not Found"));
+        assert!(get("/private-token/../test.swf", None).contains("400 Bad Request"));
+        assert!(get("/private-token/ruffle/ruffle.js", None).contains("// bundled preview"));
+    }
+
     #[test]
     fn preview_queue_rejects_unknown_source_handlers() {
         let (sender, rx) = mpsc::channel();
