@@ -924,7 +924,7 @@ pub(crate) mod tests {
         let mut bytes = historical_tangent_frame_fixture(32767);
         let original = parse_model_bytes(&bytes).unwrap();
         assert!(original.info.original_normals);
-        let at = u32at(&bytes, 16).unwrap() as usize - 48;
+        let at = u32at(&bytes, 16).unwrap() as usize - 88;
         // The added stream's first tangent has zero magnitude.
         bytes[at + 40..at + 46].fill(0);
         let mesh = parse_model_bytes(&bytes).unwrap();
