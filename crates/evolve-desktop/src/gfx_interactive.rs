@@ -1647,7 +1647,7 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
     // Mode-selection artwork is loaded dynamically by the original
     // ImageLoading.loadBitmap("img://...") ActionScript, not by atlas 1008/1009.
     // Stage verified source images as PNGs for the Ruffle URL rewrite rule.
-    let mode_images = if main_menu {
+    let mut mode_images = if main_menu {
         crate::gfx_mode_images::stage(
             session.library_root.as_deref(),
             session.source_build.as_deref(),
@@ -1657,6 +1657,23 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
     } else {
         serde_json::json!({"requested": 0, "staged": 0})
     };
+    if main_menu {
+        let names = mode_images["staged_names"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|name| name.as_str().map(ToOwned::to_owned))
+            .collect::<Vec<_>>();
+        // Ruffle cannot perform the engine's native Scaleform img:// loader.
+        // Add scratch-only DefineBitsLossless2 + ExportAssets records with
+        // original linkage names, so standard BitmapData.loadBitmap can find
+        // the verified same-build artwork without modifying game assets.
+        let (linked_movie, linkages, skipped_linkages) =
+            gfx_external_textures::embed_mode_bitmap_linkages(&movie, scratch.path(), &names)?;
+        fs::write(scratch.path().join("movie.swf"), &linked_movie).map_err(|e| e.to_string())?;
+        mode_images["flash_bitmap_linkages"] = serde_json::json!(linkages);
+        mode_images["flash_linkage_skips"] = serde_json::json!(skipped_linkages);
+    }
     write_live_menu_report(
         session,
         scratch.path(),
