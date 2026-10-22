@@ -30,6 +30,8 @@ pub struct Session {
     pub info: GfxInfo,
     pub layers: Vec<StaticLayer>,
     pub dependencies: Vec<Dependency>,
+    pub menu_commands: Vec<gfx_menu_map::MenuCommand>,
+    pub menu_command_status: String,
     pub library_root: Option<PathBuf>,
     pub source_build: Option<String>,
     pub edits: usize,
@@ -143,6 +145,13 @@ pub fn create(
         imported_library.as_deref(),
         source_build.as_deref(),
     )?;
+    let (menu_commands, menu_command_status) =
+        if relative.eq_ignore_ascii_case("Libs/UI/main_menu.gfx") {
+            gfx_menu_map::load(imported_library.as_deref(), source_build.as_deref())
+                .unwrap_or_else(|error| (Vec::new(), format!("UI_Data mapping unavailable: {error}")))
+        } else {
+            (Vec::new(), String::new())
+        };
     Ok(Session {
         source,
         relative,
@@ -152,6 +161,8 @@ pub fn create(
         original_sha: digest(&bytes),
         layers: static_layers(&bytes).map_err(|e| e.to_string())?,
         dependencies,
+        menu_commands,
+        menu_command_status,
         library_root: imported_library,
         source_build,
         info,
