@@ -1663,9 +1663,7 @@ mod tests {
             normal: Some(b"\x89PNG\r\n\x1a\n".to_vec()),
             ..Default::default()
         }];
-        let out = embed_original_material_slots_glb(
-            &source, &[(0, 3, 0)], &slots,
-        ).unwrap();
+        let out = embed_original_material_slots_glb(&source, &[(0, 3, 0)], &slots).unwrap();
         let len = u32::from_le_bytes(out[12..16].try_into().unwrap()) as usize;
         let doc: Value = serde_json::from_slice(&out[20..20 + len]).unwrap();
         assert!(doc["skins"].is_null());
@@ -1676,7 +1674,8 @@ mod tests {
         assert_eq!(doc["meshes"][0]["primitives"][0]["material"], 0);
         assert_eq!(doc["meshes"][0]["primitives"][0]["attributes"]["NORMAL"], 1);
         assert_eq!(
-            doc["extras"]["evolve_static_fbx_basis"], "cryengine_z_up_to_gltf_y_up"
+            doc["extras"]["evolve_static_fbx_basis"],
+            "cryengine_z_up_to_gltf_y_up"
         );
     }
 
