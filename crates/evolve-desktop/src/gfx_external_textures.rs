@@ -573,7 +573,8 @@ pub(crate) fn embed_mode_bitmap_linkages(
                 | 91
                 | 1008
                 | 1009
-        ) && let Some(id) = u16_at(&tag.data, 0) {
+        ) && let Some(id) = u16_at(&tag.data, 0)
+        {
             reserved.insert(id);
         }
     }
