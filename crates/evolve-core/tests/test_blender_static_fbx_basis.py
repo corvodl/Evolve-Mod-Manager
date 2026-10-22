@@ -106,7 +106,8 @@ class StaticFBXBasisTests(unittest.TestCase):
                        "visible": [source_mesh, source_armature],
                        "destination": destination,
                        "json": json, "optimized": {"embedded_normal_maps": 1},
-                       "include_animation": False}
+                       "include_animation": False,
+                       "root_name": "Emet", "combine_meshes": False}
             compile_snippet = lambda statements: compile(
                 ast.fix_missing_locations(ast.Module(
                     body=statements, type_ignores=[])), "<lifecycle-test>", "exec")
