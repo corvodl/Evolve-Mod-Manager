@@ -2,7 +2,9 @@
 //! Source is always the exact-build, manifest-verified CRI USM in videos.pak.
 //! The browser never receives a .usm or an arbitrary local file URL.
 use evolve_core::library_catalog::resolve_imported_reference_in_archive;
-use evolve_core::{LibraryReference, LibraryReferenceStatus, imported_library};
+use evolve_core::{
+    LibraryReference, LibraryReferenceStatus, imported_archive_files, imported_library,
+};
 use serde_json::{Value, json};
 use std::env;
 use std::fs::{self, File};
@@ -192,6 +194,43 @@ fn transcode(original: &Path, scratch: &Path, ffmpeg: &Path) -> Result<&'static 
     Ok("menu-background.mp4")
 }
 
+/// Enumerate only verified video members from the selected source build's
+/// imported videos.pak. No untrusted filesystem scan or cross-build fallback.
+fn imported_video_members(root: &Path, build: &str) -> Result<Option<Vec<String>>, String> {
+    let library = imported_library(root).map_err(|e| e.to_string())?;
+    let mut archives = library.archives.iter().filter(|archive| {
+        archive.name.eq_ignore_ascii_case(ORIGINAL_PAK)
+            && archive.builds.iter().any(|label| label == build)
+    });
+    let Some(archive) = archives.next() else {
+        return Ok(None);
+    };
+    if archives.next().is_some() {
+        return Err("Multiple same-build videos.pak archives: choose one verified source".into());
+    }
+    let inventory = imported_archive_files(archive)
+        .map_err(|e| format!("Cannot validate the imported videos.pak manifest: {e}"))?;
+    Ok(Some(
+        inventory
+            .entries
+            .into_iter()
+            .map(|entry| entry.relative_path)
+            .filter(|path| {
+                let lower = path.to_ascii_lowercase();
+                [".usm", ".bik", ".mp4", ".webm"]
+                    .iter()
+                    .any(|suffix| lower.ends_with(*suffix))
+            })
+            .collect(),
+    ))
+}
+
+fn is_goliath_video(path: &str) -> bool {
+    path.rsplit('/')
+        .next()
+        .is_some_and(|name| name.eq_ignore_ascii_case("mainmenu_goliath.usm"))
+}
+
 /// Accept only unambiguous source-verified representations inside videos.pak.
 /// No global basename searching, no game directory probing, no guessed assets.
 fn original_video(root: &Path, build: &str) -> Result<LibraryReferenceStatus, String> {
@@ -217,6 +256,30 @@ fn original_video(root: &Path, build: &str) -> Result<LibraryReferenceStatus, St
             }
         }
     }
+    // Other videos.pak versions can place the Goliath clip under a deeper
+    // mount root. Resolve an exact, unique Goliath filename from the original
+    // verified archive, never a similar-looking monster background.
+    if matches.is_empty()
+        && let Some(paths) = imported_video_members(root, build)?
+    {
+        for path in paths.into_iter().filter(|path| is_goliath_video(path)) {
+            match resolve_imported_reference_in_archive(root, &path, build, ORIGINAL_PAK)
+                .map_err(|e| format!("Cannot verify original Goliath video member {path}: {e}"))?
+            {
+                LibraryReferenceStatus::Found(found) => {
+                    if !matches.iter().any(|entry| entry.absolute_path == found.absolute_path) {
+                        matches.push(found);
+                    }
+                }
+                LibraryReferenceStatus::Ambiguous(_) => {
+                    return Err("Ambiguous source-qualified Goliath video copies".into());
+                }
+                LibraryReferenceStatus::Missing => {
+                    return Err(format!("Original Goliath video member {path} is missing or modified"));
+                }
+            }
+        }
+    }
     Ok(match matches.len() {
         0 => LibraryReferenceStatus::Missing,
         1 => LibraryReferenceStatus::Found(matches.remove(0)),
@@ -224,19 +287,25 @@ fn original_video(root: &Path, build: &str) -> Result<LibraryReferenceStatus, St
     })
 }
 
-fn missing_video_status(root: &Path, build: &str) -> &'static str {
-    match imported_library(root) {
-        Ok(library)
-            if library.archives.iter().any(|archive| {
-                archive.name.eq_ignore_ascii_case(ORIGINAL_PAK)
-                    && archive.builds.iter().any(|label| label == build)
-            }) =>
-        {
-            "The selected build contains videos.pak, but its extracted manifest has no source-verified front_end/mainmenu_goliath.usm at a supported mount path. Inspect the original PAK's video entries."
+fn missing_video_status(root: &Path, build: &str) -> String {
+    match imported_video_members(root, build) {
+        Ok(None) => "Import the original videos.pak into the selected build in Asset Library; the Goliath background movie is not available.".into(),
+        Ok(Some(paths)) if paths.is_empty() => {
+            "The selected build's videos.pak has no verified video files. Inspect its extracted archive manifest.".into()
         }
-        _ => {
-            "Import the original videos.pak into the selected build in Asset Library; the Goliath background movie is not available."
+        Ok(Some(paths)) => {
+            let candidates = paths
+                .iter()
+                .take(8)
+                .map(|path| path.chars().take(160).collect::<String>())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "The selected build's videos.pak contains {} verified video members but none resolved as mainmenu_goliath.usm. Original filenames (first 8): {candidates}. Check the source archive rather than selecting a different monster video.",
+                paths.len()
+            )
         }
+        Err(error) => format!("Imported videos.pak could not be safely indexed: {error}"),
     }
 }
 
@@ -265,7 +334,7 @@ pub fn stage_main_menu(
     let found = match original_video(root, build) {
         Ok(LibraryReferenceStatus::Found(entry)) => entry,
         Ok(LibraryReferenceStatus::Missing) => {
-            return json!({"source": base(), "status": missing_video_status(root, build)});
+            return json!({"source": base(), "playable": false, "status": missing_video_status(root, build)});
         }
         Ok(LibraryReferenceStatus::Ambiguous(_)) => {
             return json!({"source": base(), "status":
@@ -427,6 +496,62 @@ mod tests {
         assert_eq!(result["source"]["source_archive"], ORIGINAL_PAK);
         assert_eq!(result["source"]["source_member"], virtual_path);
         assert_eq!(result["playable"], false);
+    }
+    #[test]
+    fn discovers_deep_goliath_video_and_reports_source_movie_names() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let id = "11111111111111111111";
+        let folder = root.join(format!("videos.pak__{id}"));
+        let deep = "Movies/Stage2/front_end/mainmenu_goliath.usm";
+        let intro = "Movies/Stage2/front_end/intro.usm";
+        let source = folder.join("files").join(deep);
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        let video = b"CRID\0\0\0\0\0\0\0\0";
+        fs::write(&source, video).unwrap();
+        fs::write(
+            folder.join("asset-library.json"),
+            serde_json::to_vec(&json!({
+                "version":1,
+                "name":"videos.pak",
+                "source":"/game/videos.pak",
+                "entries":[{"path":deep,"bytes":video.len()}]
+            })).unwrap(),
+        ).unwrap();
+        fs::write(
+            root.join("build-collections.json"),
+            serde_json::to_vec(&json!({
+                "version":1,
+                "builds":{"stage2":{"label":"Modded Stage 2","members":{"11111111111111111111":{}}}}
+            })).unwrap(),
+        ).unwrap();
+        assert!(matches!(
+            original_video(root, "Modded Stage 2").unwrap(),
+            LibraryReferenceStatus::Found(found) if found.relative_path == deep
+        ));
+        let scratch = tempfile::tempdir().unwrap();
+        let preview = stage_main_menu(Some(root), Some("Modded Stage 2"), scratch.path(), "");
+        assert_eq!(preview["source"]["source_member"], deep);
+        assert_eq!(preview["playable"], false);
+        // A different movie must only appear in diagnostics; it cannot
+        // silently become a replacement for the default Goliath background.
+        fs::rename(&source, folder.join("files").join(intro)).unwrap();
+        fs::write(
+            folder.join("asset-library.json"),
+            serde_json::to_vec(&json!({
+                "version":1,
+                "name":"videos.pak",
+                "source":"/game/videos.pak",
+                "entries":[{"path":intro,"bytes":video.len()}]
+            })).unwrap(),
+        ).unwrap();
+        assert!(matches!(
+            original_video(root, "Modded Stage 2").unwrap(),
+            LibraryReferenceStatus::Missing
+        ));
+        let missing = stage_main_menu(Some(root), Some("Modded Stage 2"), scratch.path(), "");
+        assert_eq!(missing["playable"], false);
+        assert!(missing["status"].as_str().unwrap().contains(intro));
     }
     #[test]
     fn missing_build_never_fabricates_a_background() {

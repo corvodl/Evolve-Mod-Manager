@@ -91,6 +91,20 @@ and `background_video.status`, verify the source
 same frame against live CryEngine output. Preserve the original sign-in
 text, never invent a translation, and keep the GFX bytes read-only.
 
+## October 22 — exact-build videos.pak inventory and Goliath source lookup
+
+The Stage 2 main-menu background defaults to the original
+`front_end/mainmenu_goliath.usm`. If a variant `videos.pak` stores
+that exact filename beneath a deeper mount root, the Asset Library
+now checks the source build's verified imported archive member inventory,
+requires a unique exact Goliath filename, and never substitutes
+another monster or unrelated video. When absent, diagnostics list
+up to eight verified source member names instead of guessing a mount.
+
+CRI USM still requires a compatible configured FFmpeg executable or
+an original-derived MP4/WebM sidecar. This is source discovery and
+diagnostics, not a promise of browser playback or native video parity.
+
 ## October 22 — preview tile limits and missing video diagnosis
 
 The user's Nightly 22 diagnostic shows **119 DDS tiles restored, 292 skipped
