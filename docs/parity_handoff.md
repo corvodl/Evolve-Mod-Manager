@@ -47,6 +47,24 @@ and `background_video.status`, verify the source
 same frame against live CryEngine output. Preserve the original sign-in
 text, never invent a translation, and keep the GFX bytes read-only.
 
+## October 22 — source-verified videos.pak background discovery
+
+The main-menu browser background remains an optional **original
+`main_menu.usm` from `videos.pak`**. The original resource may be stored
+relative to either `Libs/UI/FlashAssets/videos`, `FlashAssets/videos`,
+`videos` or at the archive root (with optional extracted `files/` prefix).
+These are checked **only inside the matching build's actual videos.pak
+manifest**; no unrelated movie or nearest-basename substitution is allowed.
+Multiple distinct candidates are treated as ambiguous, not silently picked.
+
+The preview now distinguishes a missing `videos.pak` import from an
+imported video PAK with no matching source movie, and can stage the verified
+CRI USM only after its `CRID` header and bounded size are validated.
+A compatible explicit FFmpeg binary or source-adjacent user-provided preview
+MP4/WebM remains required for Ruffle playback; Windows conversion hides the
+FFmpeg CLI console. The original PAK is unchanged. No video is synthesized
+if the source clip is not present in the Asset Library.
+
 ## October 22 — verified Stage 2 archive present but 0 English sheets
 
 The user confirmed `USA-EN_xml.pak` is visible under **Asset
