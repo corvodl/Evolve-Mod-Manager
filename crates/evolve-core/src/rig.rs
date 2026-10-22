@@ -1639,6 +1639,46 @@ mod tests {
     }
 
     #[test]
+    fn unrigged_source_exports_normal_map_without_diffuse_or_skeleton() {
+        let mesh = RenderMesh {
+            info: crate::model::ModelInfo {
+                format: "static CDF source".into(),
+                version: 7,
+                chunk_count: 0,
+                vertex_count: 3,
+                triangle_count: 1,
+                original_uv0: true,
+                original_normals: true,
+            },
+            positions: vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]],
+            indices: vec![0, 1, 2],
+            uv0: Some(vec![[0., 0.], [1., 0.], [0., 1.]]),
+            normals: Some(vec![[0., 0., 1.]; 3]),
+        };
+        let source = crate::glb::geometry_glb_bytes_for_fbx(&mesh).unwrap();
+        let slots = [OriginalMaterialPng {
+            name: "Emet visor original material".into(),
+            normal: Some(b"\x89PNG\r\n\x1a\n".to_vec()),
+            ..Default::default()
+        }];
+        let out = embed_original_material_slots_glb(
+            &source, &[(0, 3, 0)], &slots,
+        ).unwrap();
+        let len = u32::from_le_bytes(out[12..16].try_into().unwrap()) as usize;
+        let doc: Value = serde_json::from_slice(&out[20..20 + len]).unwrap();
+        assert!(doc["skins"].is_null());
+        assert_eq!(doc["materials"].as_array().unwrap().len(), 1);
+        assert_eq!(doc["materials"][0]["normalTexture"]["index"], 0);
+        assert!(doc["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"].is_null());
+        assert_eq!(doc["images"][0]["mimeType"], "image/png");
+        assert_eq!(doc["meshes"][0]["primitives"][0]["material"], 0);
+        assert_eq!(doc["meshes"][0]["primitives"][0]["attributes"]["NORMAL"], 1);
+        assert_eq!(
+            doc["extras"]["evolve_static_fbx_basis"], "cryengine_z_up_to_gltf_y_up"
+        );
+    }
+
+    #[test]
     fn verifies_inverse_bind_and_unchanged_hierarchy() {
         let raw = sample_skeleton();
         let bones = parse_compiled_skeleton(&raw).unwrap();
