@@ -1183,6 +1183,21 @@ fn original_font_inventory(path: &Path) -> Option<Vec<serde_json::Value>> {
                 "define_font_tag": kind
             }));
         }
+        // DefineFontName (88) is the source PostScript/full-name alias for
+        // a font ID within this movie, not a system-font substitution request.
+        if kind == 88 && tag.len() >= 4 {
+            let id = u16::from_le_bytes([tag[0], tag[1]]);
+            let end = tag[2..].iter().position(|b| *b == 0)?;
+            let alias = std::str::from_utf8(&tag[2..2 + end]).ok()?;
+            if alias.len() > 128 || alias.chars().any(char::is_control) {
+                return None;
+            }
+            for font in &mut inventory {
+                if font["font_id"].as_u64() == Some(u64::from(id)) {
+                    font["postscript_name"] = serde_json::json!(alias);
+                }
+            }
+        }
         if inventory.len() > 128 {
             return None;
         }
