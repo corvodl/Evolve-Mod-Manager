@@ -1417,6 +1417,7 @@ struct LiveMenuLabels<'a> {
     imported_text: &'a ImportedTextCounts,
     render_effects: &'a serde_json::Value,
     linked_screens: &'a [serde_json::Value],
+    mode_images: &'a serde_json::Value,
 }
 
 fn write_live_menu_report(
@@ -1501,6 +1502,7 @@ fn write_live_menu_report(
         },
         "background_video": background_video,
         "linked_screens": labels.linked_screens,
+        "mode_images": labels.mode_images,
         "initialization": {
             "verified_transition_to_main_menu": initialized_in_swf,
             "verified_open_screen": original_open_screen,
@@ -1602,6 +1604,19 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
     } else {
         Vec::new()
     };
+    // Mode-selection artwork is loaded dynamically by the original
+    // ImageLoading.loadBitmap("img://...") ActionScript, not by atlas 1008/1009.
+    // Stage verified source images as PNGs for the Ruffle URL rewrite rule.
+    let mode_images = if main_menu {
+        crate::gfx_mode_images::stage(
+            session.library_root.as_deref(),
+            session.source_build.as_deref(),
+            scratch.path(),
+            &movie,
+        )
+    } else {
+        serde_json::json!({"requested": 0, "staged": 0})
+    };
     write_live_menu_report(
         session,
         scratch.path(),
@@ -1617,6 +1632,7 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
         background_video,
         LiveMenuLabels {
             linked_screens: &linked_screens,
+            mode_images: &mode_images,
             source: &localization,
             text: &localized_text,
             imported_text: &imported_text,
