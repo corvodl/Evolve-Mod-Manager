@@ -27,6 +27,8 @@ jobs:
         run: node --check crates/evolve-desktop/src/gfx_live_player.js
       - name: Verify original GFX hover input routes over background video
         run: node --test crates/evolve-desktop/tests/gfx_preview_input.test.mjs
+      - name: Verify original Training menu preview-only host state
+        run: node --test crates/evolve-desktop/tests/gfx_preview_runtime.test.cjs
       - name: Validate bundled Blender converter syntax
         run: python3 -c "import ast,pathlib; [ast.parse(p.read_text(encoding='utf-8'), filename=str(p)) for p in pathlib.Path('crates/evolve-core/src').glob('blender_*.py')]"
       - name: Validate source-faithful UV seam/tile regressions

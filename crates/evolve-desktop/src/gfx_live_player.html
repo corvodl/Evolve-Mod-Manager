@@ -41,6 +41,9 @@ main { position:relative; overflow:hidden; }
 #source-buttons button:not(:disabled):hover { background:#595c68; }
 #source-buttons small { display:block; margin-top:4px; color:#adb0b9; }
 #source-back { margin:8px 0; }
+#runtime-state { display:flex; flex-direction:column; gap:8px; margin:8px 0; }
+#runtime-state label { display:flex; align-items:center; gap:8px; font-size:12px; }
+#runtime-state select { min-width:124px; color:#e7e8ed; background:#363942; border:1px solid #515661; padding:4px; }
 #source-close { float:right; background:#363942; padding:4px 9px; }
 button:disabled { opacity:.45; cursor:not-allowed; }
 header .tools { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
@@ -90,6 +93,19 @@ button:hover { background:#bb353c; }
 <h3>Verified English localization</h3>
 <p id="localization-status">Checking exact-build text_ui resources…</p>
 <ul id="localization-unresolved"></ul>
+<h3>Offline preview state (not live game values)</h3>
+<p>These values only answer recognized Flash preview queries. They do not execute game commands or change your Evolve installation. Toggle them to inspect original menu conditions.</p>
+<div id="runtime-state">
+<label>CurrentMenu
+<select id="runtime-current-menu">
+<option value="Main">Main</option>
+<option value="Training">Training</option>
+<option value="Singleplayer">Singleplayer</option>
+</select></label>
+<label><input id="runtime-npe" type="checkbox" checked> NPE (Training preview)</label>
+<label><input id="runtime-custom-solo" type="checkbox" checked> CustomSolo (Training preview)</label>
+</div>
+<p id="runtime-status" aria-live="polite"></p>
 <h3>Original Flash button events</h3>
 <p>Only executed Flash button IDs and condition flags are shown. A matching native game command is never inferred from the order of UI_Data entries.</p>
 <ul id="button-events"></ul>
@@ -101,6 +117,7 @@ button:hover { background:#bb353c; }
 </main>
 <footer role="status"><span id="feedback">Loading Ruffle Web…</span></footer>
 <script src="./ruffle/ruffle.js"></script>
+<script src="./preview-state.js"></script>
 <script src="./preview.js"></script>
 </body>
 </html>

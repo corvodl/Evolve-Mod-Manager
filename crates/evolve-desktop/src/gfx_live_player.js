@@ -7,6 +7,44 @@
         feedback.textContent = message;
         feedback.classList.toggle("warning", warn);
     };
+    const previewRuntime = window.EvolvePreviewRuntime.create();
+    // Ruffle Web resolves ActionScript ExternalInterface.call names against
+    // page functions. Register only these three bounded preview queries;
+    // there is deliberately no generic native game-service dispatcher.
+    previewRuntime.install(window);
+    const menuInput = document.getElementById("runtime-current-menu");
+    const npeInput = document.getElementById("runtime-npe");
+    const soloInput = document.getElementById("runtime-custom-solo");
+    const previewStateStatus = document.getElementById("runtime-status");
+    const refreshPreviewStateStatus = () => {
+        const state = previewRuntime.snapshot();
+        menuInput.value = state.CurrentMenu;
+        npeInput.checked = state.NPE;
+        soloInput.checked = state.CustomSolo;
+        previewStateStatus.textContent = "Local values: CurrentMenu=" + state.CurrentMenu +
+            ", NPE=" + state.NPE + ", CustomSolo=" + state.CustomSolo +
+            ". Direct Flash host queries received: CurrentMenu " + state.requests.CurrentMenu +
+            ", NPE " + state.requests.NPE + ", CustomSolo " + state.requests.CustomSolo + ".";
+    };
+    const setPreviewMenu = group => {
+        // Use the authored UI_Data submenu name, not a synthetic HTML card.
+        if (previewRuntime.set("CurrentMenu", group)) refreshPreviewStateStatus();
+    };
+    for (const [control, key] of [
+        [menuInput, "CurrentMenu"],
+        [npeInput, "NPE"],
+        [soloInput, "CustomSolo"]
+    ]) {
+        control.addEventListener("change", () => {
+            previewRuntime.set(key, key === "CurrentMenu" ? control.value : control.checked);
+            refreshPreviewStateStatus();
+            updateSourceGroup(currentSourceGroup());
+            show("Preview-only " + key + " updated; reopen the original Flash submenu " +
+                 "to test its authored layout. No native game state changed.");
+        });
+    }
+    refreshPreviewStateStatus();
+    let currentSourceGroup = () => "Main";
     const sourcePanel = document.getElementById("source-panel");
     const sourceButton = document.getElementById("inspect");
     const toggleSource = (open) => {
@@ -76,14 +114,14 @@
             for (const entry of entries.filter(item =>
                 item.submenu === group &&
                 (!item.platform || String(item.platform).toLowerCase() === "pc") &&
-                !item.hidden_when
+                !previewRuntime.condition(item.hidden_when).triggered
             )) {
                 const target = String(entry.child_submenu || "");
                 const isLocal = groups.has(target) && target !== group &&
-                    !entry.disabled_when && entries.some(row =>
+                    !previewRuntime.condition(entry.disabled_when).triggered && entries.some(row =>
                         row.submenu === target &&
                         (!row.platform || String(row.platform).toLowerCase() === "pc") &&
-                        !row.hidden_when);
+                        !previewRuntime.condition(row.hidden_when).triggered);
                 const label = String(entry.label || entry.command || "(unnamed source entry)");
                 const translated = label.charAt(0) === "@"
                     ? translations[label.slice(1).toLowerCase()] : undefined;
@@ -481,11 +519,16 @@
                     Number(report.mode_images?.flash_bitmap_linkages || 0) +
                     "; recognized font libraries " + knownFonts + "/" + fonts.length +
                     "; Goliath video " + playback +
+                    "; local host query counts CurrentMenu/NPE/CustomSolo " +
+                    [previewRuntime.snapshot().requests.CurrentMenu,
+                     previewRuntime.snapshot().requests.NPE,
+                     previewRuntime.snapshot().requests.CustomSolo].join("/") +
                     "; mouse input (composition/Ruffle/down) " +
                     pointerInput.overComposition + "/" + pointerInput.overRuffle + "/" +
                     pointerInput.downRuffle +
                     (pointerInput.lastTarget ? "; last non-Ruffle target " + pointerInput.lastTarget : "") +
                     (failures.length ? "; asset fetch/decode errors: " + failures.slice(0, 5).join("; ") : "");
+                refreshPreviewStateStatus();
                 const entry = makeText("li", text);
                 document.getElementById("resource-status").prepend(entry);
                 show(text, failures.length > 0 || (names.length > 0 && decoded !== names.length));
@@ -604,10 +647,11 @@
         const groups = new Set(sourceRows.map(item => item.submenu));
         const rowsForGroup = group => sourceRows.filter(item =>
             item.submenu === group && (!item.platform || String(item.platform).toLowerCase() === "pc")
-            && !item.hidden_when
+            && !previewRuntime.condition(item.hidden_when).triggered
         ).slice(0, 128).map(item => ({
             displayName: translate(String(item.label || "")),
-            command: item.command, isEnabled: !item.disabled_when,
+            command: item.command,
+            isEnabled: !previewRuntime.condition(item.disabled_when).triggered,
             isDisabledOnSignIn: Boolean(item.disabled_when), isNew: false,
             isSelectableWhenDisabled: false, setStatListArray: []
         }));
@@ -615,12 +659,15 @@
         const canPushSubmenu = report?.initialization?.verified_source_submenus === true;
         const canGoBack = report?.initialization?.verified_go_back === true;
         const sourceMenuStack = ["Main"];
+        currentSourceGroup = () => sourceMenuStack[sourceMenuStack.length - 1];
         const pushOriginalSourceMenu = group => {
             if (!canPushSubmenu || !groups.has(group) || !rowsForGroup(group).length ||
                 sourceMenuStack.length >= 32 || group === sourceMenuStack[sourceMenuStack.length - 1]) {
                 show("Original submenu has no verified, visible source rows.", true);
                 return false;
             }
+            const previous = previewRuntime.snapshot().CurrentMenu;
+            setPreviewMenu(group);
             try {
                 const result = player.ruffle().callExternalInterface(
                     "evolvePreview_pushSourceMenu", rowsForGroup(group));
@@ -630,12 +677,15 @@
                      ". Native game-service commands remain disabled.");
                 return true;
             } catch (error) {
+                setPreviewMenu(previous);
                 show("Original submenu transition failed: " + String(error), true);
                 return false;
             }
         };
         const goBackOriginalSourceMenu = () => {
             if (!canGoBack || sourceMenuStack.length < 2) return false;
+            const previous = previewRuntime.snapshot().CurrentMenu;
+            setPreviewMenu(sourceMenuStack[sourceMenuStack.length - 2]);
             try {
                 const result = player.ruffle().callExternalInterface("evolvePreview_goBack");
                 if (result !== true) throw new Error("Original goBack unavailable");
@@ -644,6 +694,7 @@
                 show("Original Flash goBack invoked. Visual transition requires Ruffle verification.");
                 return true;
             } catch (error) {
+                setPreviewMenu(previous);
                 show("Original goBack failed: " + String(error), true);
                 return false;
             }
@@ -659,7 +710,8 @@
                 typeof item.child_submenu === "string" &&
                 groups.has(item.child_submenu) &&
                 item.child_submenu !== current &&
-                !item.disabled_when && !item.hidden_when &&
+                !previewRuntime.condition(item.disabled_when).triggered &&
+                !previewRuntime.condition(item.hidden_when).triggered &&
                 (!item.platform || String(item.platform).toLowerCase() === "pc")
             );
             if (eligible.length !== 1) return false;
@@ -684,6 +736,7 @@
                     const result = player.ruffle().callExternalInterface("evolvePreview_" + originalStartup, menuData, menuLabels);
                     if (result === true) {
                         sourceMenuStack.splice(1);
+                        setPreviewMenu("Main");
                         updateSourceGroup("Main");
                         show((automatic ? "Automatic" : "Manual") +
                             " original " + originalStartup + " invoked with source menu rows. Offline preview state; game services remain unavailable.");
@@ -709,6 +762,7 @@
             returnToOriginalMenu();
             player.ruffle().reload().then(async () => {
                 sourceMenuStack.splice(1);
+                setPreviewMenu("Main");
                 show("Movie reset in the same window.");
                 if (canInitialize) await initializeOriginal(true);
             }).catch(e => show("Movie reset failed: " + String(e), true));
@@ -725,6 +779,7 @@
                     returnToOriginalMenu();
                     await player.ruffle().reload();
                     sourceMenuStack.splice(1);
+                    setPreviewMenu("Main");
                     show("Movie reset in this window.");
                 } else if (action.kind === "call") {
                     returnToOriginalMenu();

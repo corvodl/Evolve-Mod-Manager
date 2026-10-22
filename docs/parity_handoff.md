@@ -2,6 +2,56 @@
 
 Updated: **2026-10-20** · Repository: `corvodl/Evolve-Mod-Manager` · Working PR: **#6** on `feature/blender-viewport-cdf-autoload`, based on PR #5's `feature/pr5-combined-viewer-preview`. This document is a resumable engineering checklist, **not** a claim of production parity. See [PARITY.md](PARITY.md) for the broader feature matrix.
 
+## 2026-10-22 — original Training image cards: preview runtime state
+
+The source `Libs/UI/main_menu.gfx` already contains the original
+mode-card display list and the `shouldUseImageButtons()` decision.
+The Flash code references the native menu state `CurrentMenu`; the
+Training screen's `NPE` and `CustomSolo` conditions can also
+suppress authored choices when those game values are unknown.
+
+The isolated Ruffle preview now exposes three **preview-only** JavaScript
+ExternalInterface answers: `CurrentMenu` (source submenu name),
+`NPE` and `CustomSolo` (booleans). Their assumed values can be
+changed in the source UI_Data inspector without changing original game
+files or injecting into Evolve. The example Training flags initially
+default to true **for preview coverage**, not as verified live game
+state. The main menu still uses the verified original seven-argument
+Flash `openScreen` and `pushMenuState` paths; no HTML buttons or
+replacement card graphics are generated.
+
+For the verified `MainMenuScreen.xml` manifest, only the exact
+`CustomCondition=[NPE]`, `CustomCondition=[!NPE]`,
+`CustomCondition=[CustomSolo]`, and
+`CustomCondition=[!CustomSolo]` expressions are evaluated locally.
+All unknown game conditions remain blocked. The source inspector and
+Flash menu receive rows filtered using these values, while native
+game commands remain disabled. The local state tracker reports direct
+host query counts to distinguish a called adapter from a nonworking
+Flash query.
+
+The pinned Ruffle Web v0.7.1 runtime evaluates Flash-to-JavaScript
+`ExternalInterface.call` names using a JavaScript Function constructor.
+The isolated loopback preview therefore allows `'unsafe-eval'` in its CSP
+in addition to the existing WASM exception; this is deliberately not
+enabled in the main desktop application or any public remote host.
+Because this broadens what a modified GFX can execute in the local
+browser, do not treat this as a general-purpose sandbox for untrusted
+Flash files. The preview still serves only its private-token scratch
+content and allows no native game-service bridge.
+
+**Still unverified:** The exact original ExternalInterface invocation
+used by `shouldUseImageButtons()` to request `CurrentMenu` has not
+been established from its decompiled ActionScript. Registering functions
+with those literal names only answers Flash calls **if** they use
+those exported names directly; a different native bridge name will
+continue to return no answer. The expected native string for the
+Training menu (e.g. `Training` versus `Singleplayer`) also needs
+verification from an original runtime trace. Do not claim image-card
+or hover parity until the actual main_menu.gfx is tested: the source
+inspector provides both menu-name options to help identify the
+correct lookup without adding synthetic SWF UI.
+
 ## 2026-10-22 — cosmetic/gameplay separation and guided editing
 
 Implemented in the public Rust/Iced repository, on top of `a50e99b` (current main at start of this change). No private repository code or game assets were copied. No new PR or contributor attribution is needed.
