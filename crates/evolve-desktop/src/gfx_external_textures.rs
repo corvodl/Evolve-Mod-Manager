@@ -17,7 +17,9 @@ const MAX_TAGS: usize = 80_000;
 // Keep meaningful ceilings, but do not cut off almost every later tile.
 const MAX_BITMAPS: usize = 512;
 const MAX_CROP_PIXELS: u64 = 4_000_000;
-const MAX_TOTAL_PIXELS: u64 = 32_000_000;
+// Higher bounded budget restores more original Stage 2 menu sprite tiles;
+// final reconstructed movie is still capped by MAX_DECOMPRESSED (32 MiB).
+const MAX_TOTAL_PIXELS: u64 = 48_000_000;
 
 /// A bitmap may be restored only if the encoded SWF remains within the
 /// existing 32 MiB parser limit. Check before inserting so an oversized
