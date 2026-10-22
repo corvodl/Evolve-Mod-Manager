@@ -1388,6 +1388,7 @@ fn write_live_menu_report(
     let initialized_in_swf = verified_actions.contains(&PreviewPreset::ReturnToMainMenu);
     let original_open_screen = verified_actions.contains(&PreviewPreset::OpenScreen);
     let original_hide_patch_notes = verified_actions.contains(&PreviewPreset::HidePatchNotes);
+    let original_hide_signing_in = verified_actions.contains(&PreviewPreset::HideSigningIn);
     let report = serde_json::json!({
         "source": "verified same-build UI_Data/MainMenuScreen.xml",
         "localization": labels.source,
@@ -1414,6 +1415,7 @@ fn write_live_menu_report(
             "verified_source_submenus": original_open_screen,
             "verified_go_back": verified_actions.contains(&PreviewPreset::Back),
             "verified_hide_patch_notes": original_hide_patch_notes,
+            "verified_hide_signing_in": original_hide_signing_in,
             "native_cryengine_host_available": false,
             "status": "Only original verified ActionScript handlers may initialize local menu state. Native game state is unavailable."
         },
@@ -1632,7 +1634,7 @@ mod tests {
                 missing: 1,
                 traced_buttons: 2,
             },
-            &[PreviewPreset::Back],
+            &[PreviewPreset::Back, PreviewPreset::HideSigningIn],
             &["gfxfontlib_locfont.gfx".into()],
             serde_json::json!({"playable": false, "status": "missing videos.pak"}),
             LiveMenuLabels {
@@ -1663,6 +1665,8 @@ mod tests {
             false
         );
         assert_eq!(report["initialization"]["verified_open_screen"], false);
+        assert_eq!(report["initialization"]["verified_hide_signing_in"], true);
+        assert_eq!(report["initialization"]["verified_hide_patch_notes"], false);
         assert_eq!(report["commands"][0]["command"], "Game_Start");
         assert_eq!(report["commands"][0]["child_submenu"], "Extras");
         assert_eq!(report["resources"]["restored_dds_tiles"], 5);
