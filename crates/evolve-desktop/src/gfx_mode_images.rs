@@ -173,6 +173,64 @@ mod tests {
         assert_eq!(referenced_modes(data), vec!["goliathTutorialUnfocus", "hunt"]);
     }
     #[test]
+    fn original_menu_modes_include_all_twenty_four_focus_variants() {
+        // These are the exact filenames verified against the original
+        // main_menu.gfx and the separately supplied MenuModeSelect archive.
+        // The game assets themselves are intentionally not redistributed.
+        let names = [
+            "coop", "custom", "goliathTutorial", "hunt", "markovTutorial",
+            "npe", "npeGriffin", "npeHank", "npeMarkov", "npeVal",
+            "ranked", "training",
+        ];
+        let mut authored = Vec::new();
+        for stem in names {
+            for suffix in ["", "Unfocus"] {
+                authored.extend_from_slice(VIRTUAL_PREFIX.as_bytes());
+                authored.extend_from_slice(stem.as_bytes());
+                authored.extend_from_slice(suffix.as_bytes());
+                authored.extend_from_slice(b".dds\\0");
+            }
+        }
+        let all = referenced_modes(&authored);
+        assert_eq!(all.len(), 24);
+        assert_eq!(all.iter().filter(|name| name.ends_with("Unfocus")).count(), 12);
+        for stem in names {
+            assert!(all.contains(&stem.to_owned()));
+            assert!(all.contains(&format!("{stem}Unfocus")));
+        }
+    }
+    #[test]
+    fn dxt1_and_dxt5_mode_source_dimensions_match_original_assets() {
+        // Actual source textures supplied in MenuModeSelect.zip were all
+        // 340x600. Validate the Rust DDS->PNG path for both observed
+        // compression families using generated surfaces, not game artwork.
+        let temp = tempfile::tempdir().unwrap();
+        for (fourcc, block_bytes) in [(b"DXT1", 8usize), (b"DXT5", 16usize)] {
+            let mut dds = vec![0u8; 128];
+            dds[..4].copy_from_slice(b"DDS ");
+            dds[4..8].copy_from_slice(&124u32.to_le_bytes());
+            dds[8..12].copy_from_slice(&0x21007u32.to_le_bytes());
+            dds[12..16].copy_from_slice(&600u32.to_le_bytes());
+            dds[16..20].copy_from_slice(&340u32.to_le_bytes());
+            dds[76..80].copy_from_slice(&32u32.to_le_bytes());
+            dds[80..84].copy_from_slice(&4u32.to_le_bytes());
+            dds[84..88].copy_from_slice(fourcc);
+            // 85x150 four-by-four blocks (340x600).
+            dds.resize(128 + 85 * 150 * block_bytes, 0);
+            let file = temp.path().join(format!("mode-{block_bytes}.dds"));
+            fs::write(&file, &dds).unwrap();
+            let (_info, rgba) = decode_dds_rgba(&file).unwrap();
+            assert_eq!(rgba.dimensions(), (340, 600));
+            assert_eq!(dds.len(), if block_bytes == 8 { 102128 } else { 204128 });
+            let output = temp.path().join(format!("mode-{block_bytes}.png"));
+            image::DynamicImage::ImageRgba8(rgba)
+                .save_with_format(&output, image::ImageFormat::Png)
+                .unwrap();
+            let png = fs::read(output).unwrap();
+            assert!(png.starts_with(b"\\x89PNG\\r\\n\\x1a\\n"));
+        }
+    }
+    #[test]
     fn rejects_unsafe_mode_names_and_empty_movielists() {
         for bad in ["", "..", "file.png", "a/b", "a\\b", "a:b"] {
             assert!(!safe_image_name(bad));
