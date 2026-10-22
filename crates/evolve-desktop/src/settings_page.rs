@@ -293,6 +293,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         Tab::Integration => {
             let ffdec = crate::gfx_bundled_tools::valid_ffdec(&state.preferences.ffdec_executable);
             let ruffle = crate::gfx_bundled_tools::valid_ruffle(&state.preferences.ruffle_executable);
+            let ruffle_web = crate::gfx_bundled_tools::valid_ruffle_web(&state.preferences.ruffle_web_runtime);
             column![
                 heading("INTEGRATIONS", "Configure external tools for exporting models and editing game GFX."),
                 panel(column![
@@ -334,27 +335,50 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                         .size(11).style(design::muted),
                 ].spacing(8)),
                 panel(column![
-                    text("RUFFLE · INTERACTIVE ACTIONSCRIPT PREVIEW").size(15),
+                    text("RUFFLE · GFX PREVIEW INTEGRATIONS").size(15),
+                    text("RUFFLE WEB · REQUIRED FOR LIVE BUTTONS").size(12),
+                    if let Some(path) = &ruffle_web {
+                        Element::from(text(format!("Ready: {} (JavaScript + WebAssembly detected)", path.display()))
+                            .size(12).style(design::muted))
+                    } else {
+                        Element::from(column![
+                            text("Missing Ruffle Web. Live GFX controls will not open with desktop ruffle.exe alone. Install the self-hosted Ruffle Web 0.7.1 runtime, or select its ruffle.js file with the adjacent .wasm runtime.")
+                                .size(12).style(design::muted),
+                            design::button("Install Ruffle Web")
+                                .on_press_maybe((!state.gfx_install_busy)
+                                    .then_some(Message::GfxInstallTool(crate::gfx_tool_install::Tool::RuffleWeb))),
+                        ].spacing(6))
+                    },
+                    row![
+                        design::text_input("Absolute path to Ruffle Web ruffle.js", &state.preferences.ruffle_web_runtime)
+                            .on_input(Message::GfxRuffleWebConfigChanged),
+                        design::button("Select existing…")
+                            .on_press(Message::GfxPickRuffleWeb)
+                            .style(design::secondary),
+                    ].spacing(8).align_y(iced::Center),
+                    text("Live mode uses a private localhost browser player. Ruffle Web's ruffle.js and WebAssembly files must remain in the same folder. Blank path auto-detects the bundled third_party/RuffleWeb directory.")
+                        .size(11).style(design::muted),
+                    text("RUFFLE DESKTOP · STANDALONE SWF VIEWING").size(12),
                     if let Some(path) = &ruffle {
                         Element::from(text(format!("Installed: {}", path.display()))
                             .size(12).style(design::muted))
                     } else {
                         Element::from(column![
-                            text("Not detected. Install the verified Ruffle 0.7.1 Windows x64 player (~20.5 MiB download).")
+                            text("Optional desktop Ruffle player not detected (~20.5 MiB verified download). Not required for live browser GFX controls.")
                                 .size(12).style(design::muted),
-                            design::button("Install Ruffle")
+                            design::button("Install Ruffle Desktop")
                                 .on_press_maybe((!state.gfx_install_busy)
                                     .then_some(Message::GfxInstallTool(crate::gfx_tool_install::Tool::Ruffle))),
                         ].spacing(6))
                     },
                     row![
-                        design::text_input("Absolute path to ruffle.exe", &state.preferences.ruffle_executable)
+                        design::text_input("Absolute path to desktop ruffle.exe", &state.preferences.ruffle_executable)
                             .on_input(Message::GfxRuffleConfigChanged),
                         design::button("Select existing…")
                             .on_press(Message::GfxPickRuffle)
                             .style(design::secondary),
                     ].spacing(8).align_y(iced::Center),
-                    text("Runs supported ActionScript locally; it cannot recreate Evolve's native game callbacks.")
+                    text("An installed manager under Program Files may require administrator permission to install missing integrations. You can also rerun the installer with optional GFX Tools enabled. Native Evolve game callbacks remain unavailable in Ruffle.")
                         .size(11).style(design::muted),
                 ].spacing(8)),
                 if state.gfx_install_busy {
