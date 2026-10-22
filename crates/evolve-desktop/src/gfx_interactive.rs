@@ -1202,14 +1202,41 @@ pub fn launch(
     })
 }
 
+/// Read source-verified imported font movies for diagnostics, including
+/// ordinary CWS compressed SWFs produced by the Stage 2 import graph.
+/// The bounded decoded bytes are never written back to the original movie.
+fn uncompressed_font_movie(path: &Path) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let bytes = fs::read(path).ok()?;
+    if bytes.len() < 16 || bytes.len() > MAX_DECOMPRESSED {
+        return None;
+    }
+    if &bytes[..3] == b"FWS" {
+        return (u32::from_le_bytes(bytes[4..8].try_into().ok()?) as usize == bytes.len())
+            .then_some(bytes);
+    }
+    if &bytes[..3] != b"CWS" {
+        return None;
+    }
+    let declared = u32::from_le_bytes(bytes[4..8].try_into().ok()?) as usize;
+    if !(16..=MAX_DECOMPRESSED).contains(&declared) {
+        return None;
+    }
+    let mut output = Vec::with_capacity(declared);
+    output.extend_from_slice(b"FWS");
+    output.extend_from_slice(&bytes[3..8]);
+    flate2::read::ZlibDecoder::new(&bytes[8..])
+        .take(MAX_DECOMPRESSED as u64)
+        .read_to_end(&mut output)
+        .ok()?;
+    (output.len() == declared).then_some(output)
+}
+
 /// Count original embedded SWF DefineFont definitions in the isolated font
 /// import. An actual font definition is stronger than mere path resolution,
 /// but still not proof that Ruffle reproduced Scaleform's font renderer.
 fn original_font_definitions(path: &Path) -> Option<usize> {
-    let bytes = fs::read(path).ok()?;
-    if bytes.len() < 16 || bytes.len() > MAX_DECOMPRESSED || &bytes[..3] != b"FWS" {
-        return None;
-    }
+    let bytes = uncompressed_font_movie(path)?;
     let nbits = usize::from(bytes[8] >> 3);
     if !(1..=31).contains(&nbits) {
         return None;
@@ -1248,10 +1275,7 @@ fn original_font_definitions(path: &Path) -> Option<usize> {
 /// are local to each movie: matching a name does not itself bind an imported
 /// glyph definition to a root movie TextField or prove Ruffle rendered it.
 fn original_font_inventory(path: &Path) -> Option<Vec<serde_json::Value>> {
-    let bytes = fs::read(path).ok()?;
-    if bytes.len() < 16 || bytes.len() > MAX_DECOMPRESSED || &bytes[..3] != b"FWS" {
-        return None;
-    }
+    let bytes = uncompressed_font_movie(path)?;
     let nbits = usize::from(bytes[8] >> 3);
     if !(1..=31).contains(&nbits) {
         return None;
