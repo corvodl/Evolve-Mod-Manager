@@ -952,6 +952,10 @@ struct LiveMenuCounts {
     missing: usize,
     traced_buttons: usize,
 }
+struct LiveMenuLabels<'a> {
+    source: &'a serde_json::Value,
+    text: &'a crate::gfx_menu_text::TextPatch,
+}
 
 fn write_live_menu_report(
     session: &Session,
@@ -960,8 +964,7 @@ fn write_live_menu_report(
     verified_actions: &[PreviewPreset],
     imported_movies: &[String],
     background_video: serde_json::Value,
-    localization: &serde_json::Value,
-    text_patch: &crate::gfx_menu_text::TextPatch,
+    labels: LiveMenuLabels<'_>,
 ) -> Result<(), String> {
     let entries = session
         .menu_commands
@@ -1012,11 +1015,11 @@ fn write_live_menu_report(
     let original_hide_patch_notes = verified_actions.contains(&PreviewPreset::HidePatchNotes);
     let report = serde_json::json!({
         "source": "verified same-build UI_Data/MainMenuScreen.xml",
-        "localization": localization,
+        "localization": labels.source,
         "authored_flash_text": {
-            "fields": text_patch.original_edit_fields,
-            "localized": text_patch.patched,
-            "unresolved": text_patch.unresolved,
+            "fields": labels.text.original_edit_fields,
+            "localized": labels.text.patched,
+            "unresolved": labels.text.unresolved,
             "scope": "Only original DefineEditText initial strings; dynamic ActionScript labels require native host semantics."
         },
         "fonts": font_imports,
@@ -1121,8 +1124,10 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
         &actions,
         &imported_movies,
         background_video,
-        &localization,
-        &localized_text,
+        LiveMenuLabels {
+            source: &localization,
+            text: &localized_text,
+        },
     )?;
     let live = gfx_live_web::LiveServer::start(scratch, actions, web_runtime)?;
     Ok(RunningPreview {
@@ -1234,8 +1239,10 @@ mod tests {
             &[PreviewPreset::Back],
             &["gfxfontlib_locfont.gfx".into()],
             serde_json::json!({"playable": false, "status": "missing videos.pak"}),
-            &crate::gfx_localization::menu_labels(None, None, &["@ui_STARTGAME".to_string()]),
-            &crate::gfx_menu_text::TextPatch::default(),
+            LiveMenuLabels {
+                source: &crate::gfx_localization::menu_labels(None, None, &["@ui_STARTGAME".to_string()]),
+                text: &crate::gfx_menu_text::TextPatch::default(),
+            },
         )
         .unwrap();
         let report: serde_json::Value =
