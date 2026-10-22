@@ -267,7 +267,10 @@ fn original_video(root: &Path, build: &str) -> Result<LibraryReferenceStatus, St
                 .map_err(|e| format!("Cannot verify original Goliath video member {path}: {e}"))?
             {
                 LibraryReferenceStatus::Found(found) => {
-                    if !matches.iter().any(|entry| entry.absolute_path == found.absolute_path) {
+                    if !matches
+                        .iter()
+                        .any(|entry| entry.absolute_path == found.absolute_path)
+                    {
                         matches.push(found);
                     }
                 }
@@ -275,7 +278,9 @@ fn original_video(root: &Path, build: &str) -> Result<LibraryReferenceStatus, St
                     return Err("Ambiguous source-qualified Goliath video copies".into());
                 }
                 LibraryReferenceStatus::Missing => {
-                    return Err(format!("Original Goliath video member {path} is missing or modified"));
+                    return Err(format!(
+                        "Original Goliath video member {path} is missing or modified"
+                    ));
                 }
             }
         }
@@ -516,15 +521,19 @@ mod tests {
                 "name":"videos.pak",
                 "source":"/game/videos.pak",
                 "entries":[{"path":deep,"bytes":video.len()}]
-            })).unwrap(),
-        ).unwrap();
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         fs::write(
             root.join("build-collections.json"),
             serde_json::to_vec(&json!({
                 "version":1,
                 "builds":{"stage2":{"label":"Modded Stage 2","members":{"11111111111111111111":{}}}}
-            })).unwrap(),
-        ).unwrap();
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         assert!(matches!(
             original_video(root, "Modded Stage 2").unwrap(),
             LibraryReferenceStatus::Found(found) if found.relative_path == deep
@@ -543,8 +552,10 @@ mod tests {
                 "name":"videos.pak",
                 "source":"/game/videos.pak",
                 "entries":[{"path":intro,"bytes":video.len()}]
-            })).unwrap(),
-        ).unwrap();
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         assert!(matches!(
             original_video(root, "Modded Stage 2").unwrap(),
             LibraryReferenceStatus::Missing
