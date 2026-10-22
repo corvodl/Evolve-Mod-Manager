@@ -948,9 +948,9 @@ fn stage_live_import_graph(
 }
 
 /// Stage other *source-verified* UI_Assets movies next to the original menu.
- /// These are manually browsable preview screens, not invented mappings from
- /// native MainMenuScreen.xml commands to a Flash movie or game service.
- /// Only an exact, unambiguous, matching-build virtual file is accepted.
+/// These are manually browsable preview screens, not invented mappings from
+/// native MainMenuScreen.xml commands to a Flash movie or game service.
+/// Only an exact, unambiguous, matching-build virtual file is accepted.
 fn stage_linked_screens(session: &Session, scratch: &Path) -> Vec<serde_json::Value> {
     use evolve_core::{LibraryReferenceStatus, resolve_imported_reference};
     const CANDIDATES: &[(&str, &str, &str)] = &[
