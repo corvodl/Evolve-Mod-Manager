@@ -982,6 +982,50 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                 }
             }
             GfxToolsSection::Inspector => {
+                if session.relative.eq_ignore_ascii_case("Libs/UI/main_menu.gfx") {
+                    actions = actions
+                        .push(text("ORIGINAL UI_DATA MENU COMMANDS").size(13))
+                        .push(
+                            text(session.menu_command_status.as_str())
+                                .size(11)
+                                .style(design::muted),
+                        );
+                    if !session.menu_commands.is_empty() {
+                        actions = actions.push(
+                            text("These are source-defined commands, not yet native Evolve handlers. Local submenu targets can be mapped to ActionScript; external game commands stay disabled.")
+                                .size(11)
+                                .style(design::muted),
+                        );
+                        for item in &session.menu_commands {
+                            actions = actions
+                                .push(
+                                    text(format!(
+                                        "{} · {} → {}",
+                                        item.submenu, item.label, item.command
+                                    ))
+                                    .size(11),
+                                )
+                                .push(
+                                    text(format!(
+                                        "{}{}{}",
+                                        item.outcome(),
+                                        if item.disabled_when.is_empty() {
+                                            ""
+                                        } else {
+                                            " · conditional disabled"
+                                        },
+                                        if item.hidden_when.is_empty() {
+                                            ""
+                                        } else {
+                                            " · conditional hidden"
+                                        },
+                                    ))
+                                    .size(10)
+                                    .style(design::muted),
+                                );
+                        }
+                    }
+                }
                 actions = actions.push(text("UI HIERARCHY").size(13));
                 actions = actions.push(
                     design::button(if state.gfx_live_open {
