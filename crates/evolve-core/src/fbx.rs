@@ -150,7 +150,10 @@ pub(crate) fn blender_diagnostic_tail(path: &Path) -> String {
     let Ok(size) = file.metadata().map(|m| m.len()) else {
         return "Unable to inspect Blender's diagnostic log".into();
     };
-    if file.seek(SeekFrom::Start(size.saturating_sub(MAX_BYTES))).is_err() {
+    if file
+        .seek(SeekFrom::Start(size.saturating_sub(MAX_BYTES)))
+        .is_err()
+    {
         return "Unable to seek Blender's diagnostic log".into();
     }
     let mut bytes = Vec::new();
