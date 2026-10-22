@@ -9,7 +9,7 @@ test("only CurrentMenu NPE and CustomSolo are answered, not game services", () =
     const state = Runtime.create();
     state.install(host);
     assert.deepEqual(Object.keys(host).sort(), ["CurrentMenu", "CustomSolo", "NPE"]);
-    assert.equal(host.CurrentMenu(), "Main");
+    assert.equal(host.CurrentMenu(), 4); // original MMS_ROOT
     assert.equal(host.NPE(), true);
     assert.equal(host.CustomSolo(), true);
     assert.equal(host.StartMatch, undefined);
@@ -18,16 +18,39 @@ test("only CurrentMenu NPE and CustomSolo are answered, not game services", () =
     assert.deepEqual(state.snapshot().requests, {CurrentMenu: 1, NPE: 1, CustomSolo: 1});
 });
 
-test("source menu can return the selected group to original Flash", () => {
+test("original numeric CurrentMenu switches the Flash image-button branch", () => {
     const state = Runtime.create();
     const host = {};
     state.install(host);
-    assert.equal(state.set("CurrentMenu", "Singleplayer"), true);
-    assert.equal(host.CurrentMenu(), "Singleplayer");
-    assert.equal(state.set("CurrentMenu", "Training"), true);
-    assert.equal(host.CurrentMenu(), "Training");
+    const shouldUseImageButtons = () =>
+        [Runtime.MODE_IDS.SOLO, Runtime.MODE_IDS.TUTORIALS, Runtime.MODE_IDS.NPE]
+            .includes(Number(host.CurrentMenu()));
+
+    assert.equal(shouldUseImageButtons(), false);
+    const groups = [
+        ["Singleplayer", 2], // UI_Data Training choices
+        ["Training", 2],
+        ["Tutorials", 2],
+        ["NPE", 3],
+        ["Solo", 0],
+        ["Extras", 1],
+        ["Main", 4]
+    ];
+    for (const [group, code] of groups) {
+        assert.equal(state.set("CurrentMenu", group), true);
+        assert.equal(host.CurrentMenu(), code);
+        assert.equal(shouldUseImageButtons(), [0, 2, 3].includes(code));
+        assert.equal(state.snapshot().currentMenuConstant, [
+            "MMS_SOLO", "MMS_EXTRAS", "MMS_TUTORIALS", "MMS_NPE", "MMS_ROOT"
+        ][code]);
+    }
+    assert.equal(state.set("CurrentMenu", "3"), true);
+    assert.equal(host.CurrentMenu(), 3);
+    assert.equal(state.set("CurrentMenu", -1), false);
+    assert.equal(state.set("CurrentMenu", "UnknownNativeMode"), false);
     assert.equal(state.set("CurrentMenu", "../unsafe"), false);
-    assert.equal(host.CurrentMenu(), "Training");
+    assert.equal(host.CurrentMenu(), 3);
+    assert.ok(Number.isNaN(Number("Training"))); // failed old adapter
 });
 
 test("only recognized original CustomCondition flags are evaluated", () => {
@@ -71,5 +94,9 @@ test("preview page registers host answers before loading the source SWF", () => 
     assert.match(source, /previewRuntime\.condition\(item\.hidden_when\)/);
     assert.match(source, /previewRuntime\.condition\(item\.disabled_when\)/);
     assert.match(source, /setPreviewMenu\(group\)/);
+    assert.match(source, /menuInput\.value = String\(state\.CurrentMenu\)/);
+    assert.match(source, /key === "CurrentMenu" \? Number\(control\.value\)/);
+    assert.match(page, /value="2">Training \/ Tutorials/);
+    assert.match(page, /value="3">NPE/);
     assert.doesNotMatch(source, /document\.createElement\(["'](?:canvas|img)["']\).*Training/i);
 });
