@@ -492,6 +492,8 @@ mod tests {
         assert!(get("/other-session/movie.swf", None).contains("404 Not Found"));
         assert!(get("/private-token/../test.swf", None).contains("400 Bad Request"));
         assert!(get("/private-token/ruffle/ruffle.js", None).contains("// bundled preview"));
+        assert!(get("/private-token/preview-state.js", None).contains("EvolvePreviewRuntime"));
+        assert!(get("/private-token/preview.js", None).contains("previewRuntime.install(window)"));
         assert!(get("/private-token/preview-menu.json", None).contains("404 Not Found"));
         assert!(get("/private-token/menu-background.mp4", None).contains("video/mp4"));
         assert!(get("/private-token/secret.mp4", None).contains("404 Not Found"));
