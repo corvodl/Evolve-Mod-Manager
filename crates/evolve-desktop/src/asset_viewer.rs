@@ -1784,7 +1784,8 @@ pub(super) fn export_dialog(state: &State) -> Element<'_, Message> {
             "☑ Combine meshes"
         } else {
             "☐ Combine meshes"
-        }).on_press(Message::ExportToggleCombineMeshes),
+        })
+        .on_press(Message::ExportToggleCombineMeshes),
         design::button(if state.export_dependencies {
             "☑ Export dependencies"
         } else {
