@@ -20,6 +20,7 @@ mod gfx_external_textures;
 mod gfx_interactive;
 mod gfx_layout_canvas;
 mod gfx_live_inspector;
+mod gfx_menu_map;
 mod gfx_tool_install;
 mod launcher_bridge;
 mod level_workspace;
