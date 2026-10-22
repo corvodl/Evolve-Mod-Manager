@@ -956,12 +956,17 @@ fn stage_linked_screens(session: &Session, scratch: &Path) -> Vec<serde_json::Va
     const CANDIDATES: &[(&str, &str, &str)] = &[
         ("options", "Options", "options.gfx"),
         ("challenges", "Challenges", "ChallengesPopup.gfx"),
-        ("custom-match", "Custom match options", "custom_match_options.gfx"),
+        (
+            "custom-match",
+            "Custom match options",
+            "custom_match_options.gfx",
+        ),
         ("credits", "Credits", "credits.gfx"),
     ];
-    let (Some(root), Some(build)) =
-        (session.library_root.as_deref(), session.source_build.as_deref())
-    else {
+    let (Some(root), Some(build)) = (
+        session.library_root.as_deref(),
+        session.source_build.as_deref(),
+    ) else {
         return Vec::new();
     };
     let mut screens = Vec::new();
@@ -1001,14 +1006,11 @@ fn stage_linked_screens(session: &Session, scratch: &Path) -> Vec<serde_json::Va
         }
         // Imported font/movies and their original DDS tiles are reconstructed
         // using the exact same bounded pipeline as the root preview.
-        if let Ok((_, _, _, imports, _)) =
-            stage_live_import_graph(&screen, &destination)
-        {
+        if let Ok((_, _, _, imports, _)) = stage_live_import_graph(&screen, &destination) {
             let _ = localize_imported_initial_text(&screen, &destination, &imports);
         }
-        let ui_element = gfx_external_textures::associated_ui_data(
-            &virtual_path, Some(root), Some(build),
-        );
+        let ui_element =
+            gfx_external_textures::associated_ui_data(&virtual_path, Some(root), Some(build));
         screens.push(serde_json::json!({
             "id": id,
             "title": title,
