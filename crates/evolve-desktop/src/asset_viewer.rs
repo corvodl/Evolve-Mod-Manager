@@ -715,7 +715,10 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                         .on_press(Message::GfxToggleInteractive),
                     );
                 if state.gfx_interactive_open {
-                    if session.relative.eq_ignore_ascii_case("Libs/UI/main_menu.gfx") {
+                    if session
+                        .relative
+                        .eq_ignore_ascii_case("Libs/UI/main_menu.gfx")
+                    {
                         actions = actions
                             .push(text("ORIGINAL MENU ACTIONSCRIPT").size(12))
                             .push(text("Use original root ActionScript menu handlers in an isolated Ruffle run. Each call is checked against its compiled signature; native game services remain blocked.").size(11).style(design::muted));
@@ -735,10 +738,16 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                             crate::gfx_interactive::PreviewPreset::HideChallenges,
                         ] {
                             actions = actions.push(
-                                design::button(text(format!("{} {}", 
-                                    if state.gfx_preview_preset == preset { "✓" } else { " " },
+                                design::button(text(format!(
+                                    "{} {}",
+                                    if state.gfx_preview_preset == preset {
+                                        "✓"
+                                    } else {
+                                        " "
+                                    },
                                     preset.description(),
-                                ))).on_press(Message::GfxSelectPreviewPreset(preset))
+                                )))
+                                .on_press(Message::GfxSelectPreviewPreset(preset)),
                             );
                         }
                     }
@@ -982,7 +991,10 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                 }
             }
             GfxToolsSection::Inspector => {
-                if session.relative.eq_ignore_ascii_case("Libs/UI/main_menu.gfx") {
+                if session
+                        .relative
+                        .eq_ignore_ascii_case("Libs/UI/main_menu.gfx")
+                    {
                     actions = actions
                         .push(text("ORIGINAL UI_DATA MENU COMMANDS").size(13))
                         .push(
