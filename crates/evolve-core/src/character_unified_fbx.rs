@@ -1323,7 +1323,7 @@ pub fn export_unified_cdf_fbx_options_with_glow(
             && original_materials.as_ref().is_some_and(|slots| slots.len() > 1)
         {
             return Err(format!(
-                "CDF part {name}: source MTL has multiple leaves but the mesh has no                  original subset table. Material IDs cannot safely be resolved."
+                "CDF part {name}: source MTL has multiple leaves but the mesh has no original subset table. Material IDs cannot safely be resolved."
             ));
         }
         let mut material_face_counts = std::collections::BTreeMap::<u32, u64>::new();
@@ -1337,7 +1337,7 @@ pub fn export_unified_cdf_fbx_options_with_glow(
                 && source_id as usize >= slots.len()
             {
                 return Err(format!(
-                    "CDF part {name}: subset material ID {source_id} exceeds                      original MTL leaf count {}",
+                    "CDF part {name}: subset material ID {source_id} exceeds original MTL leaf count {}",
                     slots.len()
                 ));
             }
@@ -1346,12 +1346,15 @@ pub fn export_unified_cdf_fbx_options_with_glow(
         let original_material_ids = material_face_counts
             .iter()
             .map(|(&id, &triangles)| {
-                let leaf = original_materials
+                let source_leaf = original_materials
                     .as_ref()
-                    .and_then(|slots| slots.get(id as usize))
+                    .and_then(|slots| slots.get(id as usize));
+                let leaf = source_leaf
                     .map(|slot| slot.name.as_str())
                     .unwrap_or("Source material (no MTL leaf)");
-                json!({"id":id, "triangles":triangles, "name":leaf})
+                let no_draw = source_leaf.is_some_and(|slot| slot.no_draw);
+                json!({"id":id, "triangles":triangles, "name":leaf,
+                       "no_draw":no_draw})
             })
             .collect::<Vec<_>>();
         // More than one source submaterial requires explicit source MTL and
