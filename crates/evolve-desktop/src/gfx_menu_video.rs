@@ -322,7 +322,11 @@ mod tests {
     #[test]
     fn selected_decoder_requires_explicit_absolute_bounded_executable() {
         let temp = tempfile::tempdir().unwrap();
-        let decoder = temp.path().join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
+        let decoder = temp.path().join(if cfg!(windows) {
+            "ffmpeg.exe"
+        } else {
+            "ffmpeg"
+        });
         fs::write(&decoder, b"synthetic-executable").unwrap();
         assert_eq!(
             configured_ffmpeg(decoder.to_str().unwrap()).unwrap(),
@@ -330,7 +334,9 @@ mod tests {
         );
         assert!(configured_ffmpeg("relative/ffmpeg.exe").is_err());
         assert!(configured_ffmpeg(temp.path().to_str().unwrap()).is_err());
-        assert!(configured_ffmpeg(temp.path().join("absent-ffmpeg.exe").to_str().unwrap()).is_err());
+        assert!(
+            configured_ffmpeg(temp.path().join("absent-ffmpeg.exe").to_str().unwrap()).is_err()
+        );
     }
     #[test]
     fn validates_source_signatures_and_user_derivatives() {
