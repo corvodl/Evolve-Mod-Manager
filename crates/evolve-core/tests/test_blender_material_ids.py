@@ -93,9 +93,9 @@ class SourceMaterialTests(unittest.TestCase):
             path.write_bytes(binary)
             self.assertEqual(material_records_from_glb(path), [
                 {"id": 0, "triangles": 2,
-                 "name": "Original CryEngine material ID 0"},
+                 "name": "Original CryEngine material ID 0", "no_draw": False},
                 {"id": 10, "triangles": 1,
-                 "name": "Original CryEngine material ID 10"},
+                 "name": "Original CryEngine material ID 10", "no_draw": False},
             ])
             doc["materials"][10]["name"] = "Unresolved material"
             raw = json.dumps(doc).encode()
