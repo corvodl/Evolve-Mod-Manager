@@ -4384,6 +4384,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                     .into();
                     state.gfx_session = Some(session);
+                    state.gfx_preview_preset = gfx_interactive::PreviewPreset::AsAuthored;
                     state.gfx_resource = 0;
                     state.gfx_live_snapshot = None;
                     state.gfx_layout_selected = None;
