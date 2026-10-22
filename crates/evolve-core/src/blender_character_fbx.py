@@ -273,6 +273,9 @@ def main():
     check(destination.is_file() and destination.stat().st_size >= 256,
           "FBX export failed")
     optimized = optimize_binary_fbx(destination, embed_textures=embed_textures)
+    if not embed_textures:
+        check(optimized["embedded_normal_maps"] == len(source_normal_maps),
+              "FBX lost an authored embedded normal map")
     bpy.ops.wm.read_factory_settings(use_empty=True)
     bpy.ops.import_scene.fbx(filepath=str(destination))
     result_arms = [o for o in bpy.data.objects if o.type == "ARMATURE"]
@@ -304,7 +307,7 @@ def main():
     validate_blender_meshes(result_meshes, rigged=True, embed_textures=embed_textures)
     if not embed_textures:
         check(source_normal_maps == normal_image_names(result_meshes),
-              "FBX round-trip lost an external normal-map material link")
+              "FBX round-trip lost an embedded normal-map material link")
     imported_weighted_vertices = 0
     target_bounds = []
     target_uv_loops = [[], []]

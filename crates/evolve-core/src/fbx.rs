@@ -137,129 +137,6 @@ pub(crate) fn publish_verified_binary_fbx(
     Ok(copied)
 }
 
-/// Publish a validated FBX and any source-verified external normal maps.
-/// Never publish dangling links to the temporary Blender staging directory.
-/// The FBX is published last; newly written PNGs are rolled back on error.
-pub(crate) fn publish_verified_binary_fbx_with_normals(
-    staged: &Path,
-    destination: &Path,
-    external_normals: bool,
-) -> Result<u64, FbxError> {
-    if !external_normals {
-        return publish_verified_binary_fbx(staged, destination);
-    }
-    if destination.exists() {
-        return Err(FbxError::Exists);
-    }
-    let staging_dir = staged
-        .parent()
-        .ok_or_else(|| FbxError::Invalid("Staged FBX has no parent".into()))?;
-    let source_textures = staging_dir.join("textures");
-    if !source_textures.exists() {
-        return publish_verified_binary_fbx(staged, destination);
-    }
-    if !fs::symlink_metadata(&source_textures)?.file_type().is_dir() {
-        return Err(FbxError::Invalid(
-            "Invalid staged normal map directory".into(),
-        ));
-    }
-    let stem = destination
-        .file_stem()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| FbxError::Invalid("Invalid external-normal FBX name".into()))?;
-    let mut normals = Vec::new();
-    let mut total = 0u64;
-    for entry in fs::read_dir(&source_textures)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let filename = name
-            .to_str()
-            .ok_or_else(|| FbxError::Invalid("Non-UTF8 normal map name".into()))?;
-        let prefix = format!("{stem}_normal_");
-        let suffix = filename
-            .strip_prefix(&prefix)
-            .and_then(|name| name.strip_suffix(".png"))
-            .ok_or_else(|| FbxError::Invalid("Invalid external normal map filename".into()))?;
-        if suffix.len() != 12 || !suffix.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err(FbxError::Invalid(
-                "Invalid external normal map digest".into(),
-            ));
-        }
-        let meta = fs::symlink_metadata(entry.path())?;
-        if !meta.file_type().is_file() || meta.len() < 8 || meta.len() > 64 * 1024 * 1024 {
-            return Err(FbxError::Invalid("Unsafe staged normal map".into()));
-        }
-        total = total
-            .checked_add(meta.len())
-            .ok_or_else(|| FbxError::Invalid("External normal map size overflow".into()))?;
-        if total > 256 * 1024 * 1024 || normals.len() >= 256 {
-            return Err(FbxError::Invalid("Too many external normal maps".into()));
-        }
-        let mut png = [0u8; 8];
-        File::open(entry.path())?.read_exact(&mut png)?;
-        if png != *b"\x89PNG\r\n\x1a\n" {
-            return Err(FbxError::Invalid("External normal map is not a PNG".into()));
-        }
-        normals.push((entry.path(), name));
-    }
-    if normals.is_empty() {
-        return publish_verified_binary_fbx(staged, destination);
-    }
-    let parent = destination
-        .parent()
-        .ok_or_else(|| FbxError::Invalid("FBX destination has no parent".into()))?;
-    if !parent.is_dir() || fs::symlink_metadata(parent)?.file_type().is_symlink() {
-        return Err(FbxError::Invalid("Invalid external FBX destination".into()));
-    }
-    let target_textures = parent.join("textures");
-    let created_dir = !target_textures.exists();
-    if created_dir {
-        fs::create_dir(&target_textures)?;
-    }
-    if !fs::symlink_metadata(&target_textures)?.file_type().is_dir() {
-        return Err(FbxError::Invalid(
-            "External texture directory must not be a link".into(),
-        ));
-    }
-    let mut added = Vec::new();
-    let result = (|| {
-        for (source, filename) in normals {
-            let target = target_textures.join(filename);
-            if target.exists() {
-                if fs::read(&target)? != fs::read(&source)? {
-                    return Err(FbxError::Invalid(
-                        "External normal destination contains different data".into(),
-                    ));
-                }
-                continue;
-            }
-            let mut temporary = tempfile::Builder::new()
-                .prefix(".normal-map-")
-                .tempfile_in(&target_textures)?;
-            std::io::copy(&mut File::open(&source)?, temporary.as_file_mut())?;
-            temporary.as_file_mut().sync_all()?;
-            temporary.persist_noclobber(&target).map_err(|e| {
-                if e.error.kind() == std::io::ErrorKind::AlreadyExists {
-                    FbxError::Exists
-                } else {
-                    FbxError::Io(e.error)
-                }
-            })?;
-            added.push(target);
-        }
-        publish_verified_binary_fbx(staged, destination)
-    })();
-    if result.is_err() {
-        for path in added {
-            let _ = fs::remove_file(path);
-        }
-        if created_dir {
-            let _ = fs::remove_dir(target_textures);
-        }
-    }
-    result
-}
-
 /// Execute only an explicitly supplied installed Blender executable, with a
 /// fixed bundled script. No shell, PATH lookup or downloads. Stage alongside
 /// destination, validate actual FBX signature, then publish without overwrite.
@@ -323,6 +200,10 @@ pub fn convert_glb_to_fbx_with_options(
         stage.path().join("blender_material_ids.py"),
         include_str!("blender_material_ids.py"),
     )?;
+    fs::write(
+        stage.path().join("blender_static_fbx_basis.py"),
+        include_str!("blender_static_fbx_basis.py"),
+    )?;
     let staged_fbx = stage.path().join(
         destination
             .file_name()
@@ -365,7 +246,9 @@ pub fn convert_glb_to_fbx_with_options(
             "Blender exit status: {status}"
         )));
     }
-    let size = publish_verified_binary_fbx_with_normals(&staged_fbx, destination, !embed_textures)?;
+    // Embedded normal-map Content is verified in the staged FBX by Blender's
+    // bundled postprocessor. Never publish temporary normal PNG sidecars.
+    let size = publish_verified_binary_fbx(&staged_fbx, destination)?;
     Ok(FbxReport {
         output_size: size,
         animations_included: animation.embed_verified_animations,
@@ -401,54 +284,27 @@ mod tests {
     }
 
     #[test]
-    fn external_normals_are_published_next_to_fbx() {
-        let source = tempfile::tempdir().unwrap();
-        let target = tempfile::tempdir().unwrap();
-        let source_fbx = source.path().join("emet.fbx");
-        let target_fbx = target.path().join("emet.fbx");
+    fn embedded_normal_export_publishes_only_the_fbx_file() {
+        let stage = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let source = stage.path().join("emet.fbx");
+        let destination = output.path().join("emet.fbx");
         let mut body = FBX_HEADER.to_vec();
         body.extend(std::iter::repeat_n(0u8, 512));
-        fs::write(&source_fbx, &body).unwrap();
-        let stage_textures = source.path().join("textures");
-        fs::create_dir(&stage_textures).unwrap();
-        let name = "emet_normal_123456789abc.png";
-        let png = b"\x89PNG\r\n\x1a\nsource-normal-pixels";
-        fs::write(stage_textures.join(name), png).unwrap();
-        assert_eq!(
-            publish_verified_binary_fbx_with_normals(&source_fbx, &target_fbx, true).unwrap(),
-            body.len() as u64
-        );
-        assert_eq!(fs::read(target_fbx).unwrap(), body);
-        assert_eq!(
-            fs::read(target.path().join("textures").join(name)).unwrap(),
-            png
-        );
-    }
-
-    #[test]
-    fn external_normal_collision_rejects_without_publishing() {
-        let source = tempfile::tempdir().unwrap();
-        let target = tempfile::tempdir().unwrap();
-        let source_fbx = source.path().join("emet.fbx");
-        let target_fbx = target.path().join("emet.fbx");
-        let mut body = FBX_HEADER.to_vec();
-        body.extend(std::iter::repeat_n(0u8, 512));
-        fs::write(&source_fbx, body).unwrap();
-        let name = "emet_normal_123456789abc.png";
-        fs::create_dir(source.path().join("textures")).unwrap();
-        fs::create_dir(target.path().join("textures")).unwrap();
+        fs::write(&source, &body).unwrap();
+        let textures = stage.path().join("textures");
+        fs::create_dir(&textures).unwrap();
         fs::write(
-            source.path().join("textures").join(name),
-            b"\x89PNG\r\n\x1a\nsource",
+            textures.join("emet_normal_123456789abc.png"),
+            b"\x89PNG\r\n\x1a\nsource-normal-pixels",
         )
         .unwrap();
-        fs::write(target.path().join("textures").join(name), b"conflict").unwrap();
-        assert!(publish_verified_binary_fbx_with_normals(&source_fbx, &target_fbx, true,).is_err());
-        assert!(!target_fbx.exists());
         assert_eq!(
-            fs::read(target.path().join("textures").join(name)).unwrap(),
-            b"conflict"
+            publish_verified_binary_fbx(&source, &destination).unwrap(),
+            body.len() as u64
         );
+        assert_eq!(fs::read(&destination).unwrap(), body);
+        assert!(!output.path().join("textures").exists());
     }
 
     #[test]

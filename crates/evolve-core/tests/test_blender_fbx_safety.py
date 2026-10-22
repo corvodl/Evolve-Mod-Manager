@@ -1,4 +1,5 @@
 """Dependency-free regression tests for binary FBX postprocessing."""
+import hashlib
 import pathlib
 import struct
 import sys
@@ -98,54 +99,89 @@ class FBXSafetyTests(unittest.TestCase):
                 optimize_binary_fbx(path)
             self.assertEqual(path.read_bytes(),original)
 
-    def test_external_normal_png_is_preserved_with_relative_material_links(self):
+    def test_original_normal_is_embedded_without_external_dependencies(self):
         with tempfile.TemporaryDirectory() as folder:
             root = pathlib.Path(folder)
             path = root / "emet.fbx"
             textures = root / "textures"
             textures.mkdir()
-            filename = "emet_normal_123456789abc.png"
-            (textures / filename).write_bytes(b"\x89PNG\r\n\x1a\n" + bytes(40))
-            source = "C:/Temporary/export/textures/" + filename
-            image_nodes = tuple(
-                obj(kind, id_, subtype, [
-                    node("Filename" if kind == "Video" else "FileName", string(source), 1),
-                    node("RelativeFilename", string(source), 1),
-                ])
-                for kind, id_, subtype in [
-                    ("Texture", 12, "TextureVideoClip"),
-                    ("Video", 13, "Clip"),
-                ]
+            png = b"\x89PNG\r\n\x1a\n" + b"synthetic-source-normal-map" * 5
+            filename = "emet_normal_" + hashlib.sha256(png).hexdigest()[:12] + ".png"
+            (textures / filename).write_bytes(png)
+            temp_path = "C:/Temporary/Export/" + filename
+            image_nodes = (
+                obj("Texture", 12, "TextureVideoClip", [
+                    node("FileName", string(temp_path), 1),
+                    node("RelativeFilename", string(temp_path), 1),
+                ]),
+                obj("Video", 13, "Clip", [
+                    node("Filename", string(temp_path), 1),
+                    node("RelativeFilename", string(temp_path), 1),
+                ]),
             )
             path.write_bytes(sample(extra_objects=image_nodes))
             stats = optimize_binary_fbx(path, embed_textures=False)
-            self.assertEqual(stats["external_normal_maps"], 1)
-            objs = _read_nodes(path.read_bytes())[1][0]
-            for item in objs.children:
-                if item.name in (b"Video", b"Texture"):
-                    self.assertEqual(
-                        _properties(item.get(b"Filename") or item.get(b"FileName"))[0],
-                        ("textures/" + filename).encode(),
-                    )
-                    self.assertEqual(
-                        _properties(item.get(b"RelativeFilename"))[0],
-                        ("textures/" + filename).encode(),
-                    )
+            self.assertEqual(stats["embedded_normal_maps"], 1)
+            objects = _read_nodes(path.read_bytes())[1][0]
+            videos = objects.children_named(b"Video")
+            self.assertEqual(len(videos), 1)
+            self.assertEqual(_properties(videos[0].get(b"Content"))[0], png)
+            self.assertEqual(_properties(videos[0].get(b"Filename"))[0],
+                             filename.encode("utf-8"))
+            self.assertEqual(_properties(videos[0].get(b"RelativeFilename"))[0],
+                             filename.encode("utf-8"))
+            texture = objects.children_named(b"Texture")[0]
+            self.assertEqual(_properties(texture.get(b"FileName"))[0],
+                             filename.encode("utf-8"))
+            # The PNG exists only in the exporter scratch directory. The
+            # Rust publisher must never copy this folder to user output.
             self.assertTrue((textures / filename).exists())
 
-    def test_unembedded_export_rejects_unexpected_diffuse_or_missing_png(self):
+    def test_missing_normal_map_or_diffuse_reference_fails_closed(self):
         with tempfile.TemporaryDirectory() as folder:
-            path = pathlib.Path(folder) / "pink.fbx"
+            path = pathlib.Path(folder) / "emet.fbx"
             path.write_bytes(sample(extra_objects=(
                 obj("Texture", 12, "TextureVideoClip", [
                     node("FileName", string("textures/body_diffuse.png"), 1),
                 ]),
             )))
-            old = path.read_bytes()
+            before = path.read_bytes()
             with self.assertRaisesRegex(
-                    FBXValidationError, "non-normal or missing image"):
+                    FBXValidationError, "unexpected or missing texture"):
                 optimize_binary_fbx(path, embed_textures=False)
-            self.assertEqual(old, path.read_bytes())
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_staged_normal_payload_must_match_filename_digest(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder)
+            path = root / "emet.fbx"
+            (root / "textures").mkdir()
+            name = "emet_normal_123456789abc.png"
+            (root / "textures" / name).write_bytes(
+                b"\x89PNG\r\n\x1a\n" + b"wrong hash")
+            path.write_bytes(sample(extra_objects=(
+                obj("Texture", 12, "TextureVideoClip", [
+                    node("FileName", string(name), 1),
+                ]),
+                obj("Video", 13, "Clip", [
+                    node("Filename", string(name), 1),
+                ]),
+            )))
+            before = path.read_bytes()
+            with self.assertRaisesRegex(
+                    FBXValidationError, "not its original PNG"):
+                optimize_binary_fbx(path, embed_textures=False)
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_no_normal_images_does_not_invent_embedded_media(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = pathlib.Path(folder) / "untextured.fbx"
+            path.write_bytes(sample())
+            stats = optimize_binary_fbx(path, embed_textures=False)
+            self.assertEqual(stats["embedded_normal_maps"], 0)
+            objects = _read_nodes(path.read_bytes())[1][0]
+            self.assertFalse(objects.children_named(b"Video"))
+            self.assertFalse(objects.children_named(b"Texture"))
 
 
 if __name__ == "__main__":

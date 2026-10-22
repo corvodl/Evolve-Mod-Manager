@@ -4,7 +4,7 @@
 use crate::cdf::{AssetResolution, read_cdf, resolve_cdf, resolve_virtual};
 use crate::character_assembly::select_attachments;
 use crate::character_equipment::{EquipmentOverrides, validated_equipment_overrides};
-use crate::fbx::publish_verified_binary_fbx_with_normals;
+use crate::fbx::publish_verified_binary_fbx;
 use crate::inventory::Inventory;
 use crate::library_catalog::{
     LibraryReferenceStatus, imported_library, resolve_imported_reference,
@@ -835,6 +835,26 @@ fn exact_multi_slot_materials_with_scope(
     override_mtl: Option<&str>,
     imported: Option<&ImportedTextureScope>,
 ) -> Result<Option<Vec<OriginalMaterialPng>>, String> {
+    exact_multi_slot_materials_scoped_roles(
+        root,
+        mesh_path,
+        inventory,
+        override_mtl,
+        imported,
+        true,
+    )
+}
+
+/// No-embed exports need only the authored normal DDS. They must not fail
+/// because a diffuse/emissive DDS is unindexed or lacks high mip fragments.
+fn exact_multi_slot_materials_scoped_roles(
+    root: &Path,
+    mesh_path: &Path,
+    inventory: &Inventory,
+    override_mtl: Option<&str>,
+    imported: Option<&ImportedTextureScope>,
+    include_color_maps: bool,
+) -> Result<Option<Vec<OriginalMaterialPng>>, String> {
     let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
     let Some((virtual_mtl, material)) =
         original_model_material_with_scope(&root, mesh_path, inventory, override_mtl, imported)?
@@ -861,6 +881,10 @@ fn exact_multi_slot_materials_with_scope(
                 .iter()
                 .any(|map| SOURCE_EMISSION_ROLES.contains(&map.role.as_str()));
         for map in &leaf.maps {
+            if !include_color_maps && !matches!(map.role.as_str(), "normal" | "normals" | "bumpmap")
+            {
+                continue;
+            }
             let role = match map.role.as_str() {
                 "diffuse" => 0,
                 "normal" | "normals" | "bumpmap" => 1,
@@ -1015,6 +1039,210 @@ fn authored_png(
         )
         .map_err(|e| format!("Cannot encode original DDS to PNG: {e}"))?;
     Ok(png)
+}
+
+/// A single unrigged source mesh also needs its original MTL leaf bindings.
+/// The source subset table determines which numeric ID owns each face; its
+/// authored normal DDS becomes a PNG regardless of the embed-textures toggle.
+pub(crate) fn static_model_material_glb(
+    mesh: &crate::model::RenderMesh,
+    source: &Path,
+    inventory: &Inventory,
+    embed_textures: bool,
+) -> Result<Vec<u8>, String> {
+    let root = fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
+    let scope = texture_scope(inventory);
+    let original_bytes = fs::read(source).map_err(|e| e.to_string())?;
+    let subsets = original_mesh_subsets(&original_bytes, mesh.indices.len())
+        .map_err(|e| format!("Original source material IDs: {e}"))?;
+    if subsets.is_empty() || subsets.iter().any(|&(_, _, id)| id == 255 || id >= 128) {
+        return Err("Source model has unresolved material IDs".into());
+    }
+    let authored = exact_multi_slot_materials_scoped_roles(
+        &root,
+        source,
+        inventory,
+        None,
+        scope.as_ref(),
+        embed_textures,
+    )?;
+    let original_table =
+        has_original_mesh_subset_table(&original_bytes).map_err(|e| e.to_string())?;
+    if !original_table && authored.as_ref().is_some_and(|slots| slots.len() > 1) {
+        return Err("Source has a multi-leaf MTL but no original material subset table".into());
+    }
+    let max_id = subsets.iter().map(|part| part.2).max().unwrap_or(0);
+    let mut slots = if let Some(authored) = authored {
+        if max_id as usize >= authored.len() {
+            return Err("Source material ID exceeds authored MTL leaf count".into());
+        }
+        authored
+    } else {
+        (0..=max_id)
+            .map(|id| OriginalMaterialPng {
+                name: format!("Unresolved original MTL leaf {id}"),
+                ..Default::default()
+            })
+            .collect()
+    };
+    if !embed_textures {
+        for slot in &mut slots {
+            slot.diffuse = None;
+            slot.emissive = None;
+            slot.specular = None;
+            slot.roughness = None;
+        }
+    }
+    let glb = crate::glb::geometry_glb_bytes_for_fbx(mesh)
+        .map_err(|e| format!("Original static source GLB: {e}"))?;
+    embed_original_material_slots_glb(&glb, &subsets, &slots)
+        .map_err(|e| format!("Original source materials and normal maps: {e}"))
+}
+
+/// Preserve the local CryEngine material-ID space of *each* original
+/// attachment when exporting a flattened, unrigged CDF. A slot ID of zero on
+/// Emet's face is not the same material as slot zero on his weapon. Each part
+/// therefore owns a non-overlapping material range in the combined glTF, while
+/// its original ID and authored MTL leaf are retained in the material name.
+/// The input report is generated from the exact same verified source geometry,
+/// so the recorded triangle spans must cover the complete source index buffer.
+pub(crate) fn static_cdf_material_glb(
+    mesh: &crate::model::RenderMesh,
+    report: &crate::character_assembly::AssemblyReport,
+    inventory: &Inventory,
+    embed_textures: bool,
+) -> Result<Vec<u8>, String> {
+    let root = fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
+    let scope = texture_scope(inventory);
+    let mut subsets = Vec::<(u32, u32, u32)>::new();
+    let mut slots = Vec::<OriginalMaterialPng>::new();
+    let mut cursor = 0usize;
+    let mut expected_index = 0u32;
+    if report.geometry_parts.is_empty() || report.source_parts.is_empty() {
+        return Err("CDF has no original attachment material assignments".into());
+    }
+    for (part_index, part) in report.geometry_parts.iter().enumerate() {
+        let first = cursor;
+        while cursor < report.source_parts.len() && report.source_parts[cursor].name == part.name {
+            cursor += 1;
+        }
+        let authored = &report.source_parts[first..cursor];
+        if authored.is_empty() {
+            return Err(format!(
+                "CDF part {} has no original mesh subset material IDs",
+                part.name
+            ));
+        }
+        let override_material = authored[0].material_hint.as_deref();
+        if authored
+            .iter()
+            .any(|entry| entry.material_hint.as_deref() != override_material)
+        {
+            return Err(format!(
+                "CDF part {} has conflicting original material overrides",
+                part.name
+            ));
+        }
+        let original = exact_multi_slot_materials_scoped_roles(
+            &root,
+            &part.source,
+            inventory,
+            override_material,
+            scope.as_ref(),
+            embed_textures,
+        )?;
+        let raw = fs::read(&part.source).map_err(|e| e.to_string())?;
+        let original_table =
+            has_original_mesh_subset_table(&raw).map_err(|e| format!("{}: {e}", part.name))?;
+        if !original_table && original.as_ref().is_some_and(|list| list.len() > 1) {
+            return Err(format!(
+                "CDF part {} has a multi-leaf original MTL without a source subset table",
+                part.name
+            ));
+        }
+        let max_id = authored
+            .iter()
+            .map(|entry| entry.material_slot)
+            .max()
+            .ok_or("CDF source part lost its material slots")?;
+        if max_id >= 128 || authored.iter().any(|entry| entry.material_slot == 255) {
+            return Err(format!(
+                "CDF part {} has an unresolved material ID",
+                part.name
+            ));
+        }
+        let mut leaves = if let Some(leaves) = original {
+            if max_id as usize >= leaves.len() {
+                return Err(format!(
+                    "CDF part {} uses source material ID {} outside its original MTL leaves",
+                    part.name, max_id
+                ));
+            }
+            leaves
+        } else {
+            // Preserve known numeric source IDs even if the original MTL is
+            // not indexed. No color or normal-map texture is fabricated.
+            (0..=max_id)
+                .map(|id| OriginalMaterialPng {
+                    name: format!("Unresolved MTL leaf {id}"),
+                    ..Default::default()
+                })
+                .collect::<Vec<_>>()
+        };
+        if slots
+            .len()
+            .checked_add(leaves.len())
+            .is_none_or(|n| n > 128)
+        {
+            return Err("CDF has more than 128 source material leaves".into());
+        }
+        let offset = u32::try_from(slots.len()).map_err(|_| "CDF material offset overflow")?;
+        for (id, leaf) in leaves.iter_mut().enumerate() {
+            let suffix = leaf.name.chars().take(90).collect::<String>();
+            leaf.name = format!(
+                "CDF part {part_index:03} {} | original ID {id:03} | {suffix}",
+                part.name
+            );
+            if !embed_textures {
+                // Embedded Textures OFF disables diffuse/specular/emissive
+                // embedding, NEVER original material IDs or normal maps.
+                leaf.diffuse = None;
+                leaf.emissive = None;
+                leaf.specular = None;
+                leaf.roughness = None;
+            }
+        }
+        for subset in authored {
+            if subset.first_index != expected_index
+                || subset.index_count == 0
+                || !subset.index_count.is_multiple_of(3)
+            {
+                return Err(format!(
+                    "CDF part {} has gaps or invalid original subset triangles",
+                    part.name
+                ));
+            }
+            let end = expected_index
+                .checked_add(subset.index_count)
+                .ok_or("CDF mesh index span overflow")?;
+            if end as usize > mesh.indices.len() {
+                return Err("CDF source subset exceeds combined model".into());
+            }
+            let mapped = offset
+                .checked_add(subset.material_slot)
+                .ok_or("CDF source material ID offset overflow")?;
+            subsets.push((expected_index, subset.index_count, mapped));
+            expected_index = end;
+        }
+        slots.extend(leaves);
+    }
+    if cursor != report.source_parts.len() || expected_index as usize != mesh.indices.len() {
+        return Err("CDF original material IDs do not cover all source faces".into());
+    }
+    let base =
+        crate::glb::geometry_glb_bytes_for_fbx(mesh).map_err(|e| format!("CDF source GLB: {e}"))?;
+    embed_original_material_slots_glb(&base, &subsets, &slots)
+        .map_err(|e| format!("CDF original material/normal mapping: {e}"))
 }
 
 /// Make ONE armature-bound FBX from original CDF attachments only when every
@@ -1645,8 +1873,7 @@ pub fn export_unified_cdf_fbx_options_with_glow(
     // Shares the same byte-for-byte, non-overwriting FBX publish path as
     // single-model exports. The old flow consumed the first 23 bytes while
     // verifying the signature and accidentally discarded them on copy.
-    publish_verified_binary_fbx_with_normals(&temp_fbx, destination, !embed_textures)
-        .map_err(|e| e.to_string())?;
+    publish_verified_binary_fbx(&temp_fbx, destination).map_err(|e| e.to_string())?;
     Ok(UnifiedCdfFbxReport {
         original_skeleton: skeleton_ref,
         selected_skin_set: skin_set,
@@ -2409,6 +2636,59 @@ mod tests {
             verify_embedded_source_diffuse("torso", &[(0, 3, 0), (3, 3, 1)], &textured).is_ok()
         );
         assert!(verify_embedded_source_diffuse("torso", &[(0, 3, 2)], &textured).is_err());
+    }
+
+    #[test]
+    fn unrigged_cdf_preserves_duplicate_local_material_ids_as_distinct_parts() {
+        let source = tempfile::tempdir().unwrap();
+        let root = source.path();
+        let characters = root.join("characters");
+        fs::create_dir(&characters).unwrap();
+        fs::write(
+            characters.join("body.skinm"),
+            crate::model::tests::fixture(),
+        )
+        .unwrap();
+        fs::write(
+            root.join("emet.cdf"),
+            br#"<CharacterDefinition>
+                <Model File="characters/rig.chr"/>
+                <AttachmentList>
+                  <Attachment Type="CA_SKIN" AName="body" Binding="characters/body.skin"/>
+                  <Attachment Type="CA_SKIN" AName="visor" Binding="characters/body.skin"/>
+                </AttachmentList>
+            </CharacterDefinition>"#,
+        )
+        .unwrap();
+        let inv = crate::scan_directory(root).unwrap();
+        let (mesh, report) =
+            crate::character_assembly::read_static_cdf_assembly(&root.join("emet.cdf"), &inv)
+                .unwrap();
+        assert_eq!(report.geometry_parts.len(), 2);
+        assert_eq!(report.source_parts.len(), 2);
+        assert_eq!(report.source_parts[0].material_slot, 0);
+        assert_eq!(report.source_parts[1].material_slot, 0);
+        let glb = static_cdf_material_glb(&mesh, &report, &inv, false).unwrap();
+        let bytes = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+        let doc: serde_json::Value = serde_json::from_slice(&glb[20..20 + bytes]).unwrap();
+        assert!(doc.get("skins").is_none());
+        assert_eq!(doc["materials"].as_array().unwrap().len(), 2);
+        assert_eq!(doc["meshes"][0]["primitives"].as_array().unwrap().len(), 2);
+        assert_eq!(doc["meshes"][0]["primitives"][0]["material"], 0);
+        assert_eq!(doc["meshes"][0]["primitives"][1]["material"], 1);
+        assert!(
+            doc["materials"][0]["name"]
+                .as_str()
+                .unwrap()
+                .contains("body | original ID 000")
+        );
+        assert!(
+            doc["materials"][1]["name"]
+                .as_str()
+                .unwrap()
+                .contains("visor | original ID 000")
+        );
+        assert!(doc["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"].is_null());
     }
 
     #[test]

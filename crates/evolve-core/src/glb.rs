@@ -166,6 +166,99 @@ pub fn geometry_glb_bytes(mesh: &RenderMesh) -> Result<Vec<u8>, GlbError> {
     Ok(output)
 }
 
+/// The render mesh is already in CryEngine Z-up world space. glTF specifies
+/// Y-up; Blender's glTF importer rotates Y-up to its own Z-up on import.
+/// Therefore static GLB intermediates used for FBX must encode the *opposite*
+/// basis transform, just like rigged CDF exports and the level scene assembler.
+/// Never rotate vertex positions, normals or UVs: preserving their authored
+/// bytes avoids changing seam coordinates and normal directions in-place.
+pub fn geometry_glb_bytes_for_fbx(mesh: &RenderMesh) -> Result<Vec<u8>, GlbError> {
+    add_static_fbx_basis(geometry_glb_bytes(mesh)?)
+}
+
+fn add_static_fbx_basis(data: Vec<u8>) -> Result<Vec<u8>, GlbError> {
+    if data.len() < 28 || &data[..4] != b"glTF" || &data[16..20] != b"JSON" {
+        return Err(GlbError::Invalid(
+            "Not a valid static GLB intermediate".into(),
+        ));
+    }
+    let json_len =
+        u32::from_le_bytes(data[12..16].try_into().map_err(|_| GlbError::Limits)?) as usize;
+    let json_end = 20usize.checked_add(json_len).ok_or(GlbError::Limits)?;
+    let bin_len_at = json_end;
+    let bin_header_end = json_end.checked_add(8).ok_or(GlbError::Limits)?;
+    if data.len() < bin_header_end || &data[json_end + 4..bin_header_end] != b"BIN\0" {
+        return Err(GlbError::Invalid("Static GLB is missing BIN chunk".into()));
+    }
+    let bin_len = u32::from_le_bytes(
+        data[bin_len_at..bin_len_at + 4]
+            .try_into()
+            .map_err(|_| GlbError::Limits)?,
+    ) as usize;
+    if data.len()
+        != bin_header_end
+            .checked_add(bin_len)
+            .ok_or(GlbError::Limits)?
+    {
+        return Err(GlbError::Invalid(
+            "Static GLB has invalid BIN boundaries".into(),
+        ));
+    }
+    let mut doc: serde_json::Value = serde_json::from_slice(&data[20..json_end])?;
+    let scene = doc["scene"]
+        .as_u64()
+        .ok_or_else(|| GlbError::Invalid("Static GLB lacks a default scene".into()))?
+        as usize;
+    let roots = doc["scenes"][scene]["nodes"]
+        .as_array()
+        .ok_or_else(|| GlbError::Invalid("Static GLB lacks scene root nodes".into()))?
+        .clone();
+    if roots.is_empty() {
+        return Err(GlbError::Invalid("Static GLB has no scene roots".into()));
+    }
+    let nodes = doc["nodes"]
+        .as_array_mut()
+        .ok_or_else(|| GlbError::Invalid("Static GLB lacks source mesh nodes".into()))?;
+    let basis_index = nodes.len();
+    if roots
+        .iter()
+        .any(|root| root.as_u64().is_none_or(|id| id as usize >= basis_index))
+    {
+        return Err(GlbError::Invalid(
+            "Static GLB references an invalid scene root".into(),
+        ));
+    }
+    nodes.push(json!({
+        "name":"CryEngine Z-up to glTF Y-up (static FBX)",
+        "rotation":[-std::f32::consts::FRAC_1_SQRT_2,0.0,0.0,std::f32::consts::FRAC_1_SQRT_2],
+        "children":roots
+    }));
+    doc["scenes"][scene]["nodes"] = json!([basis_index]);
+    doc["extras"]["evolve_static_fbx_basis"] = json!("cryengine_z_up_to_gltf_y_up");
+    let mut payload = serde_json::to_vec(&doc)?;
+    while !payload.len().is_multiple_of(4) {
+        payload.push(b' ');
+    }
+    let total = 28usize
+        .checked_add(payload.len())
+        .and_then(|n| n.checked_add(bin_len))
+        .ok_or(GlbError::Limits)?;
+    if total > MAX_EXPORT_BYTES || total > u32::MAX as usize {
+        return Err(GlbError::Limits);
+    }
+    let mut output = Vec::with_capacity(total);
+    output.extend_from_slice(b"glTF");
+    output.extend_from_slice(&2u32.to_le_bytes());
+    output.extend_from_slice(&(total as u32).to_le_bytes());
+    output.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    output.extend_from_slice(b"JSON");
+    output.extend_from_slice(&payload);
+    output.extend_from_slice(&(bin_len as u32).to_le_bytes());
+    output.extend_from_slice(b"BIN\0");
+    output.extend_from_slice(&data[bin_header_end..]);
+    Ok(output)
+}
+
 /// Retain verified original CryEngine subset IDs on a standalone static model.
 /// Unlike a generic geometry GLB, this creates one primitive for each authored
 /// triangle range and a material table with holes retained (e.g. source ID 10).
@@ -181,7 +274,7 @@ pub fn geometry_glb_bytes_with_original_material_ids(
             "Original source material range is unresolved".into(),
         ));
     }
-    let data = geometry_glb_bytes(mesh)?;
+    let data = geometry_glb_bytes_for_fbx(mesh)?;
     let json_len =
         u32::from_le_bytes(data[12..16].try_into().map_err(|_| GlbError::Limits)?) as usize;
     let json_end = 20usize.checked_add(json_len).ok_or(GlbError::Limits)?;
@@ -272,8 +365,14 @@ pub fn geometry_glb_bytes_with_original_material_ids(
     Ok(result)
 }
 
-pub fn export_model_glb(mesh: &RenderMesh, destination: &Path) -> Result<usize, GlbError> {
-    let data = geometry_glb_bytes(mesh)?;
+/// Dedicated static FBX intermediate. Do not use for levels, which already
+/// provide their own Z-up basis node and would be double-rotated.
+pub fn export_model_glb_for_fbx(mesh: &RenderMesh, destination: &Path) -> Result<usize, GlbError> {
+    let data = geometry_glb_bytes_for_fbx(mesh)?;
+    write_glb_new(destination, &data)
+}
+
+fn write_glb_new(destination: &Path, data: &[u8]) -> Result<usize, GlbError> {
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -285,12 +384,17 @@ pub fn export_model_glb(mesh: &RenderMesh, destination: &Path) -> Result<usize, 
                 GlbError::Io(e)
             }
         })?;
-    if let Err(e) = file.write_all(&data).and_then(|_| file.sync_all()) {
+    if let Err(e) = file.write_all(data).and_then(|_| file.sync_all()) {
         drop(file);
         let _ = fs::remove_file(destination);
         return Err(GlbError::Io(e));
     }
     Ok(data.len())
+}
+
+pub fn export_model_glb(mesh: &RenderMesh, destination: &Path) -> Result<usize, GlbError> {
+    let data = geometry_glb_bytes(mesh)?;
+    write_glb_new(destination, &data)
 }
 
 #[cfg(test)]
@@ -335,6 +439,55 @@ mod tests {
             Err(GlbError::OutputExists)
         ));
     }
+    #[test]
+    fn static_fbx_bridge_keeps_cryengine_z_up_and_original_mesh_attributes() {
+        let raw = geometry_glb_bytes(&mesh()).unwrap();
+        let corrected = geometry_glb_bytes_for_fbx(&mesh()).unwrap();
+        let raw_size = u32::from_le_bytes(raw[12..16].try_into().unwrap()) as usize;
+        let new_size = u32::from_le_bytes(corrected[12..16].try_into().unwrap()) as usize;
+        let original: serde_json::Value = serde_json::from_slice(&raw[20..20 + raw_size]).unwrap();
+        let adjusted: serde_json::Value =
+            serde_json::from_slice(&corrected[20..20 + new_size]).unwrap();
+        assert_eq!(original["scenes"][0]["nodes"], json!([0]));
+        assert_eq!(original["nodes"].as_array().unwrap().len(), 1);
+        assert_eq!(adjusted["scenes"][0]["nodes"], json!([1]));
+        assert_eq!(adjusted["nodes"][1]["children"], json!([0]));
+        assert_eq!(
+            adjusted["extras"]["evolve_static_fbx_basis"],
+            "cryengine_z_up_to_gltf_y_up"
+        );
+        // The Blender glTF loader rotates incoming Y-up to Z-up. The new
+        // basis applies its exact inverse so source CryEngine Z remains up.
+        let quat = adjusted["nodes"][1]["rotation"].as_array().unwrap();
+        let qx = quat[0].as_f64().unwrap();
+        let qw = quat[3].as_f64().unwrap();
+        assert!((qx * qx + qw * qw - 1.).abs() < 1e-6);
+        assert!((2. * qx * qw + 1.).abs() < 1e-6);
+        assert_eq!(adjusted["bufferViews"], original["bufferViews"]);
+        assert_eq!(adjusted["accessors"], original["accessors"]);
+        assert_eq!(adjusted["meshes"], original["meshes"]);
+        // Author UVs/normals/triangles and geometry buffer must be identical.
+        assert_eq!(&raw[20 + raw_size + 8..], &corrected[20 + new_size + 8..]);
+        assert_eq!(&corrected[20 + new_size + 4..20 + new_size + 8], b"BIN\0");
+    }
+
+    #[test]
+    fn z_up_static_export_does_not_change_default_level_glb_basis() {
+        let raw = geometry_glb_bytes(&mesh()).unwrap();
+        let corrected = geometry_glb_bytes_for_fbx(&mesh()).unwrap();
+        let source_len = u32::from_le_bytes(raw[12..16].try_into().unwrap()) as usize;
+        let target_len = u32::from_le_bytes(corrected[12..16].try_into().unwrap()) as usize;
+        let source: serde_json::Value = serde_json::from_slice(&raw[20..20 + source_len]).unwrap();
+        let target: serde_json::Value =
+            serde_json::from_slice(&corrected[20..20 + target_len]).unwrap();
+        // The level assembler adds its own basis; it must still receive
+        // unrotated, single-root geometry GLBs.
+        assert!(source["extras"]["evolve_static_fbx_basis"].is_null());
+        assert_eq!(source["nodes"][0]["mesh"], 0);
+        assert_eq!(target["nodes"][0]["mesh"], 0);
+        assert_eq!(source["scenes"][0]["nodes"], json!([0]));
+    }
+
     #[test]
     fn rejects_fabricated_index_or_invalid_original_uv() {
         let mut bad = mesh();

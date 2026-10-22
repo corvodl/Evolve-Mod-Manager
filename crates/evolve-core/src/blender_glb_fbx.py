@@ -12,6 +12,7 @@ from blender_material_ids import (material_records_from_glb, bind_original_mater
                                   verify_material_uv_distributions)
 from blender_fbx_safety import (prepare_export_materials, validate_blender_meshes,
                                optimize_binary_fbx, normal_image_names)
+from blender_static_fbx_basis import original_static_bounds, verify_static_world_bounds
 
 def run():
     # blender.exe --background --factory-startup --python <script> -- input.glb output.fbx 0|1
@@ -26,6 +27,7 @@ def run():
         raise RuntimeError("GLB input and FBX output required")
     if destination.exists() or source == destination:
         raise RuntimeError("Refusing existing or overlapping FBX output")
+    native_bounds = original_static_bounds(source)
     bpy.ops.object.select_all(action='SELECT')
     bpy.ops.object.delete(use_global=False)
     bpy.ops.import_scene.gltf(filepath=str(source))
@@ -39,6 +41,10 @@ def run():
     visible = [o for o in bpy.data.objects if o in visible or o in meshes]
     if not meshes:
         raise RuntimeError("Imported GLB contains no actual mesh")
+    if native_bounds is not None:
+        if any(obj.type == 'ARMATURE' for obj in visible):
+            raise RuntimeError("Static Z-up FBX geometry must not contain a rig")
+        verify_static_world_bounds(meshes, native_bounds, "glTF import")
     if not include_animation:
         # No embedded Actions or baked animation curves in default FBX export.
         for obj in bpy.data.objects:
@@ -84,10 +90,10 @@ def run():
     if not destination.is_file() or destination.stat().st_size < 256:
         raise RuntimeError("Blender did not create a valid FBX")
     optimized = optimize_binary_fbx(destination, embed_textures=embed_textures)
-    if not embed_textures and source_normal_maps:
-        if optimized["external_normal_maps"] != len(source_normal_maps):
-            raise RuntimeError("FBX lost one or more external normal-map references")
-    if source_material_ids:
+    if not embed_textures:
+        if optimized["embedded_normal_maps"] != len(source_normal_maps):
+            raise RuntimeError("FBX lost one or more embedded normal maps")
+    if source_material_ids or native_bounds is not None:
         bpy.ops.wm.read_factory_settings(use_empty=True)
         bpy.ops.import_scene.fbx(filepath=str(destination))
         arms = [o for o in bpy.data.objects if o.type == 'ARMATURE']
@@ -95,9 +101,14 @@ def run():
                   if bone.custom_shape is not None}
         roundtrip = [o for o in bpy.data.objects
                      if o.type == 'MESH' and o not in shapes]
-        verify_original_material_ids(roundtrip, [source_material_ids])
-        verify_material_uv_distributions(
-            source_material_uvs, source_material_uv_distributions(roundtrip))
+        if native_bounds is not None:
+            if arms:
+                raise RuntimeError("Unrigged FBX unexpectedly gained an armature")
+            verify_static_world_bounds(roundtrip, native_bounds, "FBX round-trip")
+        if source_material_ids:
+            verify_original_material_ids(roundtrip, [source_material_ids])
+            verify_material_uv_distributions(
+                source_material_uvs, source_material_uv_distributions(roundtrip))
     print(json.dumps({
         "fbx_optimization": optimized,
         "meshes": len(meshes),

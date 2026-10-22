@@ -1060,8 +1060,8 @@ pub(crate) struct OriginalMaterialPng {
     pub roughness: Option<Vec<u8>>,
 }
 
-/// Split ONE verified rigged GLB into original material-ID primitives, reusing
-/// the source index buffer, original UV0 and all skin joint/weight attributes.
+/// Split ONE verified GLB into original material-ID primitives, reusing
+/// the source index buffer, original UV0 and (if present) skin attributes.
 /// Each authored MTL leaf gets its own original texture set. A NoDraw leaf
 /// remains an identifiable, fully transparent material instead of moving
 /// subsequent CryEngine subset indices or deleting original geometry.
@@ -1093,16 +1093,27 @@ pub(crate) fn embed_original_material_slots_glb(
     let primitives = doc["meshes"][0]["primitives"]
         .as_array()
         .ok_or_else(|| RigError::Invalid("Rigged geometry has no primitives".into()))?;
-    if primitives.len() != 1 || doc["skins"].as_array().is_none_or(|v| v.len() != 1) {
+    if primitives.len() != 1 {
         return Err(RigError::Invalid(
-            "Expected one verified source skinned mesh".into(),
+            "Expected one verified source mesh".into(),
         ));
     }
     let base = primitives[0].clone();
-    for attr in ["POSITION", "TEXCOORD_0", "JOINTS_0", "WEIGHTS_0"] {
-        if base["attributes"][attr].as_u64().is_none() {
+    let rigged = doc["skins"]
+        .as_array()
+        .is_some_and(|skins| !skins.is_empty());
+    if rigged && doc["skins"].as_array().is_none_or(|skins| skins.len() != 1) {
+        return Err(RigError::Invalid("Unexpected source skin count".into()));
+    }
+    let attrs: &[&str] = if rigged {
+        &["POSITION", "TEXCOORD_0", "JOINTS_0", "WEIGHTS_0"]
+    } else {
+        &["POSITION", "TEXCOORD_0"]
+    };
+    for attr in attrs {
+        if base["attributes"][*attr].as_u64().is_none() {
             return Err(RigError::Invalid(
-                "Rigged GLB has incomplete source attributes".into(),
+                "Source GLB has incomplete source attributes".into(),
             ));
         }
     }
@@ -1626,6 +1637,45 @@ mod tests {
         );
         assert!(
             embed_original_material_slots_glb(&source, &[(0, 3, 0), (3, 3, 255)], &slots).is_err()
+        );
+    }
+
+    #[test]
+    fn unrigged_source_exports_normal_map_without_diffuse_or_skeleton() {
+        let mesh = RenderMesh {
+            info: crate::model::ModelInfo {
+                format: "static CDF source".into(),
+                version: 7,
+                chunk_count: 0,
+                vertex_count: 3,
+                triangle_count: 1,
+                original_uv0: true,
+                original_normals: true,
+            },
+            positions: vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]],
+            indices: vec![0, 1, 2],
+            uv0: Some(vec![[0., 0.], [1., 0.], [0., 1.]]),
+            normals: Some(vec![[0., 0., 1.]; 3]),
+        };
+        let source = crate::glb::geometry_glb_bytes_for_fbx(&mesh).unwrap();
+        let slots = [OriginalMaterialPng {
+            name: "Emet visor original material".into(),
+            normal: Some(b"\x89PNG\r\n\x1a\n".to_vec()),
+            ..Default::default()
+        }];
+        let out = embed_original_material_slots_glb(&source, &[(0, 3, 0)], &slots).unwrap();
+        let len = u32::from_le_bytes(out[12..16].try_into().unwrap()) as usize;
+        let doc: Value = serde_json::from_slice(&out[20..20 + len]).unwrap();
+        assert!(doc["skins"].is_null());
+        assert_eq!(doc["materials"].as_array().unwrap().len(), 1);
+        assert_eq!(doc["materials"][0]["normalTexture"]["index"], 0);
+        assert!(doc["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"].is_null());
+        assert_eq!(doc["images"][0]["mimeType"], "image/png");
+        assert_eq!(doc["meshes"][0]["primitives"][0]["material"], 0);
+        assert_eq!(doc["meshes"][0]["primitives"][0]["attributes"]["NORMAL"], 1);
+        assert_eq!(
+            doc["extras"]["evolve_static_fbx_basis"],
+            "cryengine_z_up_to_gltf_y_up"
         );
     }
 
