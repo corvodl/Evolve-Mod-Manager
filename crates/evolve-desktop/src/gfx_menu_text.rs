@@ -375,6 +375,37 @@ mod tests {
         );
     }
     #[test]
+    fn discovers_runtime_actionscript_strings_without_mutating_bytecode() {
+        let mut source = fixture("@ui_STARTGAME", 0x8000);
+        let mut push = vec![0u8];
+        push.extend_from_slice(b"@ui_SigningInPrompt\0");
+        push.extend_from_slice(&[0u8]);
+        push.extend_from_slice(b"not_a_localization_key\0");
+        let mut actions = vec![0x96];
+        actions.extend_from_slice(&(push.len() as u16).to_le_bytes());
+        actions.extend_from_slice(&push);
+        actions.push(0);
+        let mut tag = ((12u16 << 6) | 63).to_le_bytes().to_vec();
+        tag.extend_from_slice(&(actions.len() as u32).to_le_bytes());
+        tag.extend_from_slice(&actions);
+        let at = source.len() - 2;
+        source.splice(at..at, tag);
+        let size = source.len() as u32;
+        source[4..8].copy_from_slice(&size.to_le_bytes());
+        assert_eq!(
+            authored_keys(&source).unwrap(),
+            vec!["@ui_signinginprompt", "@ui_startgame"]
+        );
+        // Localization inventory never rewrites ActionScript instructions.
+        let (preview, patch) =
+            replace_authored_text(&source, &serde_json::json!({"translations":{
+                "ui_startgame":"PLAY", "ui_signinginprompt":"Signing in"
+            }})).unwrap();
+        assert_eq!(patch.patched, 1);
+        assert!(preview.windows(b"@ui_SigningInPrompt".len())
+            .any(|part| part == b"@ui_SigningInPrompt"));
+    }
+    #[test]
     fn rejects_corrupt_swf_and_no_unsafe_guessing() {
         assert!(authored_keys(b"FWS").is_err());
         let mut broken = fixture("@ui_Play", 0x8000);
