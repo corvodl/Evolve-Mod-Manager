@@ -255,3 +255,33 @@ and menu data, and complete clickable UI parity. Ruffle remains launched with
 `--dummy-external-interface` and denied URL navigation. The original menu
 needs an audited callback bridge for the remaining buttons; simply detecting
 a function's name does not verify every corresponding button action.
+
+
+### Source-verified local UI actions and UI_Data catalog
+
+The user-supplied original `Libs/UI/main_menu.gfx` root DoAction was analyzed
+for AVM1 `DefineFunction` and `DefineFunction2` declarations, including their
+actual argument counts. Preview-only presets now include **Back**, **Return to
+main menu**, **Show/Dismiss patch notes**, **Show/Hide news**, and **Enable/Disable
+challenge controls**, in addition to both engagement and sign-in prompt toggles.
+A preset is injected into the temporary Ruffle SWF before its first ShowFrame;
+it is rejected if the exact root function/arity is missing. Buttons can still
+depend on native state not present in Ruffle, so the injection confirms a call
+site but **not** end-to-end screen parity.
+
+**GFX Tools → Inspector** now lists menu buttons from a verified, exact-build
+`UI/MainMenuScreen.xml` in the Asset Library. It displays the command,
+submenu and conditional disabled/hidden status. This is intentionally
+read-only: e.g. `OnlineMultiplayer`, `Store`, `Exit`, and tutorial launch
+commands are game operations and never forwarded from an interactive preview.
+Entries with a `child_submenu` show the original submenu destination, but
+this alone does not prove Ruffle can reproduce the game's menu state machine.
+Missing/ambiguous UI_Data definitions fail closed rather than using button
+maps from another version. No proprietary UI_Data XML is bundled with the app.
+
+The remaining parity work is a game-independent local menu-state host that
+feeds the original ActionScript's expected arrays and events, plus a sandboxed
+replacement for native callbacks. This requires tracing the exact button
+callback and testing the associated animation frames and imported movies. The
+current standalone Ruffle desktop executable has a dummy ExternalInterface,
+so this work does **not** claim arbitrary native button commands function.
