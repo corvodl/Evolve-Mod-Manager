@@ -953,7 +953,10 @@ fn localize_imported_initial_text(
     imports: &[String],
 ) -> Result<ImportedTextCounts, String> {
     let mut result = ImportedTextCounts::default();
-    if !session.relative.eq_ignore_ascii_case("Libs/UI/main_menu.gfx") {
+    if !session
+        .relative
+        .eq_ignore_ascii_case("Libs/UI/main_menu.gfx")
+    {
         return Ok(result);
     }
     let mut keys = std::collections::BTreeSet::<String>::new();
@@ -1730,7 +1733,9 @@ mod tests {
         let mut movie = menu_fixture_arity(7);
         // Synthetic PlaceObject3: color-transform, filter-list, blend-mode.
         let payload = [0x08, 0x03, 0, 0];
-        let mut tag = ((70u16 << 6) | (payload.len() as u16)).to_le_bytes().to_vec();
+        let mut tag = ((70u16 << 6) | (payload.len() as u16))
+            .to_le_bytes()
+            .to_vec();
         tag.extend_from_slice(&payload);
         let at = movie.len() - 2;
         movie.splice(at..at, tag);
@@ -1755,7 +1760,9 @@ mod tests {
         let mut payload = vec![7, 0, 5, 0, 4]; // ID=7, layout+bold, language, name size
         payload.extend_from_slice(b"Test");
         payload.extend_from_slice(&0u16.to_le_bytes());
-        let mut tag = ((75u16 << 6) | (payload.len() as u16)).to_le_bytes().to_vec();
+        let mut tag = ((75u16 << 6) | (payload.len() as u16))
+            .to_le_bytes()
+            .to_vec();
         tag.extend_from_slice(&payload);
         let at = movie.len() - 2;
         movie.splice(at..at, tag);
