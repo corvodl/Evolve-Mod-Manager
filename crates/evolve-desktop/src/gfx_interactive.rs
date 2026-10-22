@@ -790,6 +790,7 @@ fn renderable_movie(
         flash_movie(&result.movie)?,
         result.converted,
         result.skipped,
+        result.skip_details,
     ))
 }
 fn relative_import(parent: &str, child: &str) -> Result<String, String> {
@@ -836,14 +837,14 @@ fn stage_import(
         .rsplit_once('/')
         .map(|(parent, _)| format!("{parent}/{reference}"))
         .unwrap_or_else(|| reference.to_owned());
-    let (swf, converted, skipped) = renderable_movie(&bytes, &virtual_path, &real, session)?;
+    let (swf, converted, skipped, details) = renderable_movie(&bytes, &virtual_path, &real, session)?;
     let target = output.join(reference);
     let parent = target
         .parent()
         .ok_or("Invalid imported movie destination")?;
     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     fs::write(target, swf).map_err(|e| e.to_string())?;
-    Ok(Some((converted, skipped)))
+    Ok(Some((converted, skipped, details)))
 }
 /// Follow original movie imports recursively, including font/glyph movies
 /// imported by imported font libraries. All bytes are resolved from the same
@@ -863,6 +864,7 @@ fn stage_live_import_graph(
     let mut visited = HashSet::new();
     let mut imported = Vec::<String>::new();
     let (mut restored, mut skipped, mut missing) = (0usize, 0usize, 0usize);
+    let mut skip_details = gfx_external_textures::SkipDetails::default();
     while let Some((parent, name, depth)) = pending.pop_front() {
         let relative = relative_import(&parent, &name)?;
         if !visited.insert(relative.to_ascii_lowercase()) {
@@ -873,9 +875,10 @@ fn stage_live_import_graph(
         }
         imported.push(relative.clone());
         match stage_import(session, &relative, output) {
-            Ok(Some((images, unresolved))) => {
+            Ok(Some((images, unresolved, details))) => {
                 restored += images;
                 skipped += unresolved;
+                skip_details.accumulate(&details);
             }
             Ok(None) => {
                 missing += 1;
@@ -931,7 +934,7 @@ fn stage_live_import_graph(
         }
     }
     imported.sort();
-    Ok((restored, skipped, missing, imported))
+    Ok((restored, skipped, missing, imported, skip_details))
 }
 
 #[derive(Default)]
@@ -1320,6 +1323,7 @@ struct LiveMenuCounts {
     skipped: usize,
     missing: usize,
     traced_buttons: usize,
+    bitmap_skips: gfx_external_textures::SkipDetails,
 }
 struct LiveMenuLabels<'a> {
     source: &'a serde_json::Value,
@@ -1425,6 +1429,7 @@ fn write_live_menu_report(
             "restored_dds_tiles": counts.restored,
             "instrumented_original_button_conditions": counts.traced_buttons,
             "skipped_dds_tiles": counts.skipped,
+            "bitmap_skip_details": counts.bitmap_skips,
             "missing_imported_movies": counts.missing,
             "unresolved_imports": unresolved,
             "has_source_build": session.source_build.is_some(),
@@ -1447,7 +1452,7 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
         .tempdir()
         .map_err(|e| e.to_string())?;
     let bytes = fs::read(&session.editable).map_err(|e| e.to_string())?;
-    let (swf, mut converted, mut skipped) =
+    let (swf, mut converted, mut skipped, mut bitmap_skips) =
         renderable_movie(&bytes, &session.relative, &session.source, session)?;
     let main_menu = session
         .relative
@@ -1483,8 +1488,9 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
     };
     let (movie, actions) = install_live_callbacks(&inspected, &session.relative)?;
     fs::write(scratch.path().join("movie.swf"), movie).map_err(|e| e.to_string())?;
-    let (imported_images, import_skipped, missing, imported_movies) =
+    let (imported_images, import_skipped, missing, imported_movies, imported_skips) =
         stage_live_import_graph(session, scratch.path())?;
+    bitmap_skips.accumulate(&imported_skips);
     let imported_text = localize_imported_initial_text(session, scratch.path(), &imported_movies)?;
     converted += imported_images;
     skipped += import_skipped;
@@ -1510,6 +1516,7 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
             skipped,
             missing,
             traced_buttons,
+            bitmap_skips,
         },
         &actions,
         &imported_movies,
@@ -1633,6 +1640,7 @@ mod tests {
                 skipped: 3,
                 missing: 1,
                 traced_buttons: 2,
+                bitmap_skips: gfx_external_textures::SkipDetails::default(),
             },
             &[PreviewPreset::Back, PreviewPreset::HideSigningIn],
             &["gfxfontlib_locfont.gfx".into()],
