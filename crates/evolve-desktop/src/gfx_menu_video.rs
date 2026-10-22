@@ -341,7 +341,7 @@ pub fn stage_main_menu(root: Option<&Path>, build: Option<&str>, scratch: &Path)
     let found = match original_video(root, build) {
         Ok(LibraryReferenceStatus::Found(entry)) => entry,
         Ok(LibraryReferenceStatus::Missing) => {
-            return json!({"source": base(), "status": missing_video_status(root, build)});
+            return json!({"source": base(), "playable": false, "status": missing_video_status(root, build)});
         }
         Ok(LibraryReferenceStatus::Ambiguous(_)) => {
             return json!({"source": base(), "status":
