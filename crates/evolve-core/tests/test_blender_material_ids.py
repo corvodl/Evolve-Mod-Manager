@@ -8,6 +8,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 from blender_material_ids import (
     bind_original_material_ids, parse_material_records,
     source_material_histogram, verify_original_material_ids,
+    source_material_uv_distributions, verify_material_uv_distributions,
 )
 
 
@@ -29,15 +30,33 @@ class Material:
 
 
 class Polygon:
-    def __init__(self, index):
+    def __init__(self, index, loop_start):
         self.material_index = index
         self.vertices = (0, 1, 2)
+        self.loop_indices = (loop_start, loop_start + 1, loop_start + 2)
+
+
+class UV:
+    def __init__(self, values):
+        self.uv = values
+
+
+class UVLayer:
+    def __init__(self, values):
+        self.data = [UV(value) for value in values]
 
 
 class MeshData:
     def __init__(self, materials, face_ids):
         self.materials = list(materials)
-        self.polygons = [Polygon(index) for index in face_ids]
+        self.polygons = [Polygon(index, face * 3)
+                         for face, index in enumerate(face_ids)]
+        self.loops = list(range(len(face_ids) * 3))
+        self.uv_layers = [UVLayer([
+            point for face in range(len(face_ids))
+            for point in ((face / 100., 0.), (face / 100., 0.5),
+                          (face / 100. + 0.1, 0.5))
+        ])]
 
 
 class Mesh:
@@ -101,6 +120,29 @@ class SourceMaterialTests(unittest.TestCase):
         original.data.polygons[1].material_index = 1
         with self.assertRaisesRegex(RuntimeError, "reassigned a source material ID"):
             verify_original_material_ids([original], [records])
+
+    def test_catches_material_id_uv_swap_even_when_face_counts_match(self):
+        original = Mesh("Emet", [
+            Material("CryEngine slot 000 - Body"),
+            Material("CryEngine slot 010 - Visor"),
+        ], [0, 1])
+        records = [
+            {"id": 0, "triangles": 1, "name": "Body"},
+            {"id": 10, "triangles": 1, "name": "Visor"},
+        ]
+        bind_original_material_ids([original], 0, "Emet", records)
+        source = source_material_uv_distributions([original])
+        # Two materials still have one triangle each, so simple counts would pass.
+        changed = Mesh("Emet", original.data.materials, [0, 1])
+        changed_uv = changed.data.uv_layers[0].data
+        first = [loop.uv for loop in changed_uv[:3]]
+        second = [loop.uv for loop in changed_uv[3:]]
+        for i, uv in enumerate(second + first):
+            changed_uv[i].uv = uv
+        verify_original_material_ids([changed], [records])
+        with self.assertRaisesRegex(RuntimeError, "UV corners associated"):
+            verify_material_uv_distributions(
+                source, source_material_uv_distributions([changed]))
 
     def test_missing_multi_slot_source_names_cannot_be_guessed(self):
         original = Mesh("unknown", [Material("material_001"),
