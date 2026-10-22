@@ -359,13 +359,8 @@ fn load_sheets(
     let mut duplicates = HashSet::<String>::new();
     let mut sources = Vec::<String>::new();
     for (archive_name, path) in paths {
-        let info = match resolve_imported_reference_in_archive(
-            root,
-            &path,
-            build,
-            &archive_name,
-        )
-        .map_err(|e| format!("{archive_name}: {path}: {e}"))?
+        let info = match resolve_imported_reference_in_archive(root, &path, build, &archive_name)
+            .map_err(|e| format!("{archive_name}: {path}: {e}"))?
         {
             LibraryReferenceStatus::Found(info) => info,
             LibraryReferenceStatus::Missing => {
