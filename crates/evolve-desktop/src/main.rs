@@ -20,6 +20,7 @@ mod gfx_external_textures;
 mod gfx_interactive;
 mod gfx_layout_canvas;
 mod gfx_live_inspector;
+mod gfx_menu_map;
 mod gfx_tool_install;
 mod launcher_bridge;
 mod level_workspace;
@@ -181,6 +182,7 @@ struct State {
     gfx_busy: bool,
     gfx_preview: Option<image::Handle>,
     gfx_interactive_open: bool,
+    gfx_preview_preset: gfx_interactive::PreviewPreset,
     gfx_interactive_running: Option<gfx_interactive::RunningPreview>,
     gfx_interactive_status: String,
     gfx_install_busy: bool,
@@ -188,7 +190,9 @@ struct State {
     gfx_resource: usize,
     gfx_status: String,
     gfx_layout_open: bool,
+    gfx_tools_section: GfxToolsSection,
     gfx_layout_selected: Option<usize>,
+    gfx_layer_filter: String,
     gfx_layout_x: String,
     gfx_layout_y: String,
     gfx_layout_sx: String,
@@ -383,6 +387,18 @@ enum ViewerSidebarTab {
     Inspector,
     Dependencies,
     Equipment,
+    GfxTools,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum GfxToolsSection {
+    #[default]
+    Preview,
+    Layout,
+    Scripts,
+    Resources,
+    Inspector,
+    Project,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1452,14 +1468,16 @@ enum Message {
     GfxRufflePicked(Option<PathBuf>),
     GfxToggleInteractive,
     GfxRunInteractive,
+    GfxSelectPreviewPreset(gfx_interactive::PreviewPreset),
     GfxInteractiveStarted(Result<gfx_interactive::RunningPreview, String>),
     GfxStopInteractive,
     GfxInstallTool(gfx_tool_install::Tool),
     GfxToolInstalled(gfx_tool_install::Tool, Result<PathBuf, String>),
     GfxSelectResource(usize),
-    GfxToggleLayout,
+    GfxToolsSection(GfxToolsSection),
     GfxToggleLayoutRaster,
     GfxLayoutSelect(usize),
+    GfxLayerFilterChanged(String),
     GfxLayoutDragged(usize, f32, f32),
     GfxLayoutValue(&'static str, String),
     GfxLayoutVisible(bool),
@@ -3180,7 +3198,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return update(state, Message::ViewerPreviewStaticCdf);
         }
         Message::ViewerSidebarSelect(tab) => {
-            state.viewer_sidebar_active = tab;
+            state.viewer_sidebar_active = if tab == ViewerSidebarTab::GfxTools && !state.gfx_active
+            {
+                ViewerSidebarTab::Files
+            } else {
+                tab
+            };
             if tab == ViewerSidebarTab::Animations {
                 state.viewer_sidebar_animations = true;
             } else if tab == ViewerSidebarTab::Inspector {
@@ -3193,7 +3216,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ViewerSidebarClose(tab) => {
             match tab {
-                ViewerSidebarTab::Files | ViewerSidebarTab::Equipment => {} // Permanent tool tabs.
+                ViewerSidebarTab::Files
+                | ViewerSidebarTab::Equipment
+                | ViewerSidebarTab::GfxTools => {} // Permanent context tool tabs.
                 ViewerSidebarTab::Animations => state.viewer_sidebar_animations = false,
                 ViewerSidebarTab::Inspector => state.viewer_show_inspector = false,
                 ViewerSidebarTab::Dependencies => state.viewer_sidebar_dependencies = false,
@@ -4029,12 +4054,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             // dependency metadata here left the viewer with no geometry.
             if filename.ends_with(".cdf") {
                 state.gfx_active = false;
+                if state.viewer_sidebar_active == ViewerSidebarTab::GfxTools {
+                    state.viewer_sidebar_active = ViewerSidebarTab::Files;
+                }
                 return update(state, Message::ViewerPreviewStaticCdf);
             }
             if filename.ends_with(".gfx") {
                 return update(state, Message::GfxOpenSelected);
             }
             state.gfx_active = false;
+            if state.viewer_sidebar_active == ViewerSidebarTab::GfxTools {
+                state.viewer_sidebar_active = ViewerSidebarTab::Files;
+            }
             let operation = if is_viewer_model_source(&filename) {
                 Operation::InspectIndexedModel(
                     source,
@@ -4196,6 +4227,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.gfx_layout_open = false;
             }
         }
+        Message::GfxSelectPreviewPreset(preset) => {
+            state.gfx_preview_preset = preset;
+            state.gfx_interactive_status = format!(
+                "Selected preview: {}. Launch/restart to test.",
+                preset.description()
+            );
+        }
         Message::GfxRunInteractive => {
             if state.gfx_busy || state.busy {
                 state.gfx_interactive_status =
@@ -4211,10 +4249,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.gfx_interactive_status =
                 "Preparing isolated UI_Assets and ActionScript preview...".into();
             let executable = state.preferences.ruffle_executable.clone();
+            let preset = state.gfx_preview_preset;
             return Task::perform(
                 async move {
                     tokio::task::spawn_blocking(move || {
-                        gfx_interactive::launch(&session, &executable)
+                        gfx_interactive::launch(&session, &executable, preset)
                     })
                     .await
                     .unwrap_or_else(|e| Err(format!("Ruffle preview worker stopped: {e}")))
@@ -4227,8 +4266,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             match result {
                 Ok(preview) => {
                     state.gfx_interactive_status = format!(
-                        "Ruffle window launched · {} restored DDS tiles · {} skipped · {} missing imports. Original ActionScript executes where supported; Evolve callbacks are empty.",
-                        preview.restored_images, preview.skipped_images, preview.missing_imports,
+                        "Ruffle window launched ({}) · {} restored DDS tiles · {} skipped · {} missing imports. Original ActionScript executes where supported; native Evolve callbacks remain disabled.",
+                        preview.preset.description(),
+                        preview.restored_images,
+                        preview.skipped_images,
+                        preview.missing_imports,
                     );
                     state.gfx_interactive_running = Some(preview);
                 }
@@ -4318,6 +4360,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.gfx_interactive_running = None;
             state.gfx_busy = true;
             state.gfx_active = true;
+            state.viewer_sidebar_active = ViewerSidebarTab::GfxTools;
+            state.viewer_explorer_visible = true;
+            state.gfx_tools_section = GfxToolsSection::Preview;
+            state.gfx_layout_open = false;
             state.gfx_preview = None;
             state.gfx_status =
                 "Inspecting source GFX and resolving verified same-build imports...".into();
@@ -4343,13 +4389,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                     .into();
                     state.gfx_session = Some(session);
+                    state.gfx_preview_preset = gfx_interactive::PreviewPreset::AsAuthored;
                     state.gfx_resource = 0;
                     state.gfx_live_snapshot = None;
                     state.gfx_layout_selected = None;
+                    state.gfx_layer_filter.clear();
                     state.gfx_active = true;
+                    state.viewer_sidebar_active = ViewerSidebarTab::GfxTools;
+                    state.viewer_explorer_visible = true;
                 }
                 Err(e) => {
                     state.gfx_active = false;
+                    state.viewer_sidebar_active = ViewerSidebarTab::Files;
                     state.gfx_status = format!("GFX validation failed: {e}");
                     state.status = state.gfx_status.clone();
                 }
@@ -4396,20 +4447,30 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.gfx_live_status = format!("Cannot inspect UI hierarchy: {error}");
             }
         },
-        Message::GfxToggleLayoutRaster => {
-            state.gfx_layout_show_raster = !state.gfx_layout_show_raster
-        }
-        Message::GfxToggleLayout => {
-            state.gfx_interactive_open = false;
-            state.gfx_layout_open = !state.gfx_layout_open;
+        Message::GfxToolsSection(section) => {
+            if !state.gfx_active {
+                return Task::none();
+            }
+            state.gfx_tools_section = section;
+            state.viewer_sidebar_active = ViewerSidebarTab::GfxTools;
+            state.viewer_explorer_visible = true;
+            state.gfx_layout_open = section == GfxToolsSection::Layout;
             if state.gfx_layout_open
                 && state.gfx_layout_selected.is_none()
                 && let Some(index) = state
                     .gfx_session
                     .as_ref()
-                    .and_then(|s| s.layers.iter().position(|layer| layer.editable))
+                    .and_then(|session| session.layers.iter().position(|layer| layer.editable))
             {
                 return update(state, Message::GfxLayoutSelect(index));
+            }
+        }
+        Message::GfxToggleLayoutRaster => {
+            state.gfx_layout_show_raster = !state.gfx_layout_show_raster
+        }
+        Message::GfxLayerFilterChanged(filter) => {
+            if filter.len() <= 160 {
+                state.gfx_layer_filter = filter;
             }
         }
         Message::GfxLayoutSelect(index) => {
@@ -7990,6 +8051,48 @@ mod project_edit_tests {
         );
         assert_eq!(state.viewer_queued_preview, None);
         assert_eq!(state.selected, Some(1));
+    }
+
+    #[test]
+    fn gfx_tools_is_contextual_and_switches_sections_without_sidebar_overlay() {
+        let mut state = State::default();
+        assert_eq!(state.gfx_tools_section, GfxToolsSection::Preview);
+        // Outside a GFX session the contextual tab is not selectable.
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarSelect(ViewerSidebarTab::GfxTools),
+        );
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
+        state.gfx_active = true;
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarSelect(ViewerSidebarTab::GfxTools),
+        );
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::GfxTools);
+        let _ = update(
+            &mut state,
+            Message::GfxToolsSection(GfxToolsSection::Layout),
+        );
+        assert!(state.gfx_layout_open);
+        assert!(state.viewer_explorer_visible);
+        assert_eq!(state.gfx_tools_section, GfxToolsSection::Layout);
+        let _ = update(
+            &mut state,
+            Message::GfxToolsSection(GfxToolsSection::Scripts),
+        );
+        assert_eq!(state.gfx_tools_section, GfxToolsSection::Scripts);
+        assert!(!state.gfx_layout_open);
+        let _ = update(
+            &mut state,
+            Message::GfxToolsSection(GfxToolsSection::Preview),
+        );
+        assert!(!state.gfx_layout_open);
+        // Like Files and Model Options, the contextual tab has no close button.
+        let _ = update(
+            &mut state,
+            Message::ViewerSidebarClose(ViewerSidebarTab::GfxTools),
+        );
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
     }
 
     #[test]

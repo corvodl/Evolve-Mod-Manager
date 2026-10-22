@@ -470,7 +470,17 @@ pub fn export_bundle(
             let glb = stage
                 .path()
                 .join(format!("{}.glb", output_stem(&relative)?));
-            export_model_glb(&mesh, &glb).map_err(|e| e.to_string())?;
+            if relative.to_ascii_lowercase().ends_with(".cdf") {
+                // A flattened static CDF has several source meshes; the
+                // individual source-subset IDs cannot be reconstructed after
+                // geometry assembly. Unified rigged CDF handles each part.
+                export_model_glb(&mesh, &glb).map_err(|e| e.to_string())?;
+            } else {
+                let raw = fs::read(&source).map_err(|e| e.to_string())?;
+                let mapped = crate::glb::geometry_glb_bytes_with_original_material_ids(&mesh, &raw)
+                    .map_err(|e| format!("{relative} original material IDs: {e}"))?;
+                fs::write(&glb, mapped).map_err(|e| e.to_string())?;
+            }
             convert_glb_to_fbx_with_options(
                 &options.blender,
                 &glb,

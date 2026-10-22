@@ -25,6 +25,7 @@ argon2 = "0.5"
 zeroize = "1"
 fs2 = "0.4"
 flate2 = "1"
+quick-xml = "0.38"
 
 [build-dependencies]
 winres = "0.1"

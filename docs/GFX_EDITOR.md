@@ -186,3 +186,102 @@ The protected Program Files installation may require administrator privileges,
 consistent with the manager's existing elevated Windows manifest; portable
 builds use their own executable folder. Users can always choose a manually
 installed executable without using the built-in downloader.
+
+## Docked GFX Tools workspace
+
+Opening an indexed `*.gfx` selects a contextual **GFX Tools** tab in the
+existing right-hand sidebar, beside Files and Model Options. The left/main
+pane is reserved for the **original GFX image** or draggable design canvas;
+it no longer contains a column of FFDec/Ruffle controls. The resizable
+explorer divider and its left/right placement setting still apply.
+
+GFX Tools is split into six compact sections:
+
+- **Preview:** static FFDec rendering, FFDec executable picker, standalone
+  Ruffle launch and status. Ruffle playback is separate from the static
+  viewport image.
+- **Layout:** root first-frame layer selection, raster backdrop toggle,
+  transform inputs, visibility and staged layout edits.
+- **Scripts:** FFDec ActionScript and tag XML export/rebuild commands.
+- **Resources:** verified imported GFX/SWF references and resource ID
+  replacement.
+- **Inspector:** externally captured, read-only UI hierarchy snapshots.
+- **Project:** staged GFX import, undo, editing folder, and Apply with backups.
+
+Switching between the tabs **does not apply or discard edits**. Layout
+selection activates the layout canvas; other sections return to the
+FFDec frame preview. The GFX Tools tab is available only during a GFX
+session; selecting other preview types returns to Files.
+
+### Why the front menu still needs native callbacks
+
+For `Libs/UI/main_menu.gfx`, the original GFX may create a login,
+challenge, or other front panel from game-provided state. This **cannot be
+identified from a screenshot**. The manager deliberately does not map an
+unknown button to "close" or hide an arbitrary sprite: doing so could give
+users a preview that differs from the game.
+
+Ruffle desktop is currently started with an **empty ExternalInterface**,
+so source-authored buttons requiring CryEngine's GFx host callbacks do not
+perform those game-side transitions. Static rendering can also miss fonts,
+localized text and specific external DDS symbols. A faithful close button
+requires the exact decompiled button handler and UI_Data event binding (and
+its full imported movie chain), followed by a preview-only, allowlisted
+host event simulator. Gameplay/network operations must never be executed.
+
+
+## Main menu original-ActionScript preview presets (PR #21)
+
+The original user-provided `Libs/UI/main_menu.gfx` and its `UI_Data.zip`
+were inspected before enabling preview controls. The movie includes compiled
+root-frame ActionScript references to `showEngagementPrompt` and
+`showSigningInPrompt`, and the UI definition binds `main_menu.gfx` to
+the MainMenuNew GFx element. From GFX Tools → Preview → Ruffle controls,
+select **Unmodified movie**, **Show/Dismiss engagement prompt**, or
+**Show/Dismiss sign-in prompt**, then relaunch preview.
+
+A selected preset inserts a narrowly allowlisted AVM1 function call in the
+**temporary Ruffle SWF only**, immediately before the movie's original first
+ShowFrame. The original GFX file, its resource tags, extracted project, and
+installed PAK are not modified. The movie's own ActionScript still controls
+the visible prompt; no image layer is hidden by arbitrary depth or coordinates.
+An unavailable or dynamically resolved original handler fails closed rather
+than masquerading as a functional button. Presets are not a claim that the
+native in-game button-to-handler relationship is fully traced.
+
+**Still not emulated:** Evolve game services (network, purchases, matchmaking,
+account, launcher), Scaleform native callbacks, fully populated localization
+and menu data, and complete clickable UI parity. Ruffle remains launched with
+`--dummy-external-interface` and denied URL navigation. The original menu
+needs an audited callback bridge for the remaining buttons; simply detecting
+a function's name does not verify every corresponding button action.
+
+
+### Source-verified local UI actions and UI_Data catalog
+
+The user-supplied original `Libs/UI/main_menu.gfx` root DoAction was analyzed
+for AVM1 `DefineFunction` and `DefineFunction2` declarations, including their
+actual argument counts. Preview-only presets now include **Back**, **Return to
+main menu**, **Show/Dismiss patch notes**, **Show/Hide news**, and **Enable/Disable
+challenge controls**, in addition to both engagement and sign-in prompt toggles.
+A preset is injected into the temporary Ruffle SWF before its first ShowFrame;
+it is rejected if the exact root function/arity is missing. Buttons can still
+depend on native state not present in Ruffle, so the injection confirms a call
+site but **not** end-to-end screen parity.
+
+**GFX Tools → Inspector** now lists menu buttons from a verified, exact-build
+`UI/MainMenuScreen.xml` in the Asset Library. It displays the command,
+submenu and conditional disabled/hidden status. This is intentionally
+read-only: e.g. `OnlineMultiplayer`, `Store`, `Exit`, and tutorial launch
+commands are game operations and never forwarded from an interactive preview.
+Entries with a `child_submenu` show the original submenu destination, but
+this alone does not prove Ruffle can reproduce the game's menu state machine.
+Missing/ambiguous UI_Data definitions fail closed rather than using button
+maps from another version. No proprietary UI_Data XML is bundled with the app.
+
+The remaining parity work is a game-independent local menu-state host that
+feeds the original ActionScript's expected arrays and events, plus a sandboxed
+replacement for native callbacks. This requires tracing the exact button
+callback and testing the associated animation frames and imported movies. The
+current standalone Ruffle desktop executable has a dummy ExternalInterface,
+so this work does **not** claim arbitrary native button commands function.

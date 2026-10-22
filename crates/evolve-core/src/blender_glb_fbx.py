@@ -7,6 +7,11 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from blender_uv0 import prepare_original_uv
+from blender_material_ids import (material_records_from_glb, bind_original_material_ids,
+                                  verify_original_material_ids, source_material_uv_distributions,
+                                  verify_material_uv_distributions)
+from blender_fbx_safety import (prepare_export_materials, validate_blender_meshes,
+                               optimize_binary_fbx, normal_image_names)
 
 def run():
     # blender.exe --background --factory-startup --python <script> -- input.glb output.fbx 0|1
@@ -25,7 +30,12 @@ def run():
     bpy.ops.object.delete(use_global=False)
     bpy.ops.import_scene.gltf(filepath=str(source))
     visible = [o for o in bpy.data.objects if o.type in ('MESH','ARMATURE')]
-    meshes = prepare_original_uv([o for o in visible if o.type == 'MESH'])
+    source_meshes = [o for o in visible if o.type == 'MESH']
+    source_material_ids = material_records_from_glb(source)
+    if source_material_ids:
+        bind_original_material_ids(source_meshes, 0, source.stem,
+                                   source_material_ids)
+    meshes = prepare_original_uv(source_meshes)
     visible = [o for o in bpy.data.objects if o in visible or o in meshes]
     if not meshes:
         raise RuntimeError("Imported GLB contains no actual mesh")
@@ -41,6 +51,13 @@ def run():
     for obj in meshes:
         if obj.data.uv_layers:
             obj.data.uv_layers.active_index = 0
+    if source_material_ids:
+        verify_original_material_ids(meshes, [source_material_ids])
+        source_material_uvs = source_material_uv_distributions(meshes)
+    prepare_export_materials(meshes, embed_textures, destination)
+    source_normal_maps = normal_image_names(meshes) if not embed_textures else set()
+    validate_blender_meshes(meshes, rigged=any(o.type == 'ARMATURE' for o in visible),
+                            embed_textures=embed_textures)
     bpy.ops.object.select_all(action='DESELECT')
     for obj in visible:
         obj.select_set(True)
@@ -61,12 +78,28 @@ def run():
         bake_anim_use_all_actions=include_animation,
         bake_anim_step=1.0,
         bake_anim_simplify_factor=0.0,
-        path_mode='COPY',
+        path_mode='COPY' if embed_textures else 'RELATIVE',
         embed_textures=embed_textures
     )
     if not destination.is_file() or destination.stat().st_size < 256:
         raise RuntimeError("Blender did not create a valid FBX")
+    optimized = optimize_binary_fbx(destination, embed_textures=embed_textures)
+    if not embed_textures and source_normal_maps:
+        if optimized["external_normal_maps"] != len(source_normal_maps):
+            raise RuntimeError("FBX lost one or more external normal-map references")
+    if source_material_ids:
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+        bpy.ops.import_scene.fbx(filepath=str(destination))
+        arms = [o for o in bpy.data.objects if o.type == 'ARMATURE']
+        shapes = {bone.custom_shape for arm in arms for bone in arm.pose.bones
+                  if bone.custom_shape is not None}
+        roundtrip = [o for o in bpy.data.objects
+                     if o.type == 'MESH' and o not in shapes]
+        verify_original_material_ids(roundtrip, [source_material_ids])
+        verify_material_uv_distributions(
+            source_material_uvs, source_material_uv_distributions(roundtrip))
     print(json.dumps({
+        "fbx_optimization": optimized,
         "meshes": len(meshes),
         "armatures": sum(o.type == 'ARMATURE' for o in visible),
         "animations_included": include_animation,
