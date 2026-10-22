@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from blender_uv0 import prepare_original_uv
 from blender_fbx_safety import (prepare_export_materials, validate_blender_meshes,
-                               optimize_binary_fbx)
+                               optimize_binary_fbx, normal_image_names)
 
 def run():
     # blender.exe --background --factory-startup --python <script> -- input.glb output.fbx 0|1
@@ -43,7 +43,8 @@ def run():
     for obj in meshes:
         if obj.data.uv_layers:
             obj.data.uv_layers.active_index = 0
-    prepare_export_materials(meshes, embed_textures)
+    prepare_export_materials(meshes, embed_textures, destination)
+    source_normal_maps = normal_image_names(meshes) if not embed_textures else set()
     validate_blender_meshes(meshes, rigged=any(o.type == 'ARMATURE' for o in visible),
                             embed_textures=embed_textures)
     bpy.ops.object.select_all(action='DESELECT')
@@ -66,12 +67,15 @@ def run():
         bake_anim_use_all_actions=include_animation,
         bake_anim_step=1.0,
         bake_anim_simplify_factor=0.0,
-        path_mode='COPY',
+        path_mode='COPY' if embed_textures else 'RELATIVE',
         embed_textures=embed_textures
     )
     if not destination.is_file() or destination.stat().st_size < 256:
         raise RuntimeError("Blender did not create a valid FBX")
     optimized = optimize_binary_fbx(destination, embed_textures=embed_textures)
+    if not embed_textures and source_normal_maps:
+        if optimized["external_normal_maps"] != len(source_normal_maps):
+            raise RuntimeError("FBX lost one or more external normal-map references")
     print(json.dumps({
         "fbx_optimization": optimized,
         "meshes": len(meshes),
