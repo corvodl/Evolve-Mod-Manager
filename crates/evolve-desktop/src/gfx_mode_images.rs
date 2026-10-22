@@ -212,6 +212,7 @@ mod tests {
             dds[8..12].copy_from_slice(&0x21007u32.to_le_bytes());
             dds[12..16].copy_from_slice(&600u32.to_le_bytes());
             dds[16..20].copy_from_slice(&340u32.to_le_bytes());
+            dds[28..32].copy_from_slice(&1u32.to_le_bytes());
             dds[76..80].copy_from_slice(&32u32.to_le_bytes());
             dds[80..84].copy_from_slice(&4u32.to_le_bytes());
             dds[84..88].copy_from_slice(fourcc);
