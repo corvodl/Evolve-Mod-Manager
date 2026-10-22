@@ -947,14 +947,56 @@ fn stage_live_import_graph(
     Ok((restored, skipped, missing, imported, skip_details))
 }
 
+/// Resolve only exact, same-build UI_Assets manifest entries. Original PAKs
+/// can store GFX movies at their archive root even though the game's virtual
+/// UI mount is Libs/UI. Do not search unrelated archives or guess by basename.
+fn verified_ui_asset_movie(
+    root: &Path,
+    build: &str,
+    filename: &str,
+) -> Option<evolve_core::LibraryReference> {
+    use evolve_core::LibraryReferenceStatus;
+    use evolve_core::library_catalog::resolve_imported_reference_in_archive;
+    if build.trim().is_empty()
+        || filename.is_empty()
+        || !filename.ends_with(".gfx")
+        || !filename
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'.')
+    {
+        return None;
+    }
+    let mut found = None;
+    for candidate in [
+        format!("Libs/UI/{filename}"),
+        format!("files/Libs/UI/{filename}"),
+        filename.to_owned(),
+        format!("files/{filename}"),
+    ] {
+        match resolve_imported_reference_in_archive(root, &candidate, build, "UI_Assets.pak")
+            .ok()?
+        {
+            LibraryReferenceStatus::Found(hit) => {
+                if found.is_some() {
+                    return None; // Two virtual members: refuse ambiguous source.
+                }
+                found = Some(hit);
+            }
+            LibraryReferenceStatus::Ambiguous(_) => return None,
+            LibraryReferenceStatus::Missing => {}
+        }
+    }
+    found
+}
+
 /// Stage other *source-verified* UI_Assets movies next to the original menu.
 /// These are manually browsable preview screens, not invented mappings from
 /// native MainMenuScreen.xml commands to a Flash movie or game service.
 /// Only an exact, unambiguous, matching-build virtual file is accepted.
 fn stage_linked_screens(session: &Session, scratch: &Path) -> Vec<serde_json::Value> {
-    use evolve_core::{LibraryReferenceStatus, resolve_imported_reference};
     const CANDIDATES: &[(&str, &str, &str)] = &[
         ("options", "Options", "options.gfx"),
+        ("settings", "Settings", "settings.gfx"),
         ("challenges", "Challenges", "ChallengesPopup.gfx"),
         (
             "custom-match",
@@ -971,12 +1013,10 @@ fn stage_linked_screens(session: &Session, scratch: &Path) -> Vec<serde_json::Va
     };
     let mut screens = Vec::new();
     for &(id, title, file) in CANDIDATES {
-        let virtual_path = format!("Libs/UI/{file}");
-        let Ok(LibraryReferenceStatus::Found(found)) =
-            resolve_imported_reference(root, &virtual_path, Some(build))
-        else {
+        let Some(found) = verified_ui_asset_movie(root, build, file) else {
             continue;
         };
+        let virtual_path = found.relative_path.clone();
         // A linked screen gets its own scratch hierarchy so its original
         // relative ImportAssets paths cannot collide with main_menu.gfx.
         let destination = scratch.join("screens").join(id);
@@ -1417,6 +1457,7 @@ struct LiveMenuLabels<'a> {
     imported_text: &'a ImportedTextCounts,
     render_effects: &'a serde_json::Value,
     linked_screens: &'a [serde_json::Value],
+    mode_images: &'a serde_json::Value,
 }
 
 fn write_live_menu_report(
@@ -1501,6 +1542,7 @@ fn write_live_menu_report(
         },
         "background_video": background_video,
         "linked_screens": labels.linked_screens,
+        "mode_images": labels.mode_images,
         "initialization": {
             "verified_transition_to_main_menu": initialized_in_swf,
             "verified_open_screen": original_open_screen,
@@ -1576,7 +1618,7 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
         (swf, 0)
     };
     let (movie, actions) = install_live_callbacks(&inspected, &session.relative)?;
-    fs::write(scratch.path().join("movie.swf"), movie).map_err(|e| e.to_string())?;
+    fs::write(scratch.path().join("movie.swf"), &movie).map_err(|e| e.to_string())?;
     let (imported_images, import_skipped, missing, imported_movies, imported_skips) =
         stage_live_import_graph(session, scratch.path())?;
     bitmap_skips.accumulate(&imported_skips);
@@ -1602,6 +1644,19 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
     } else {
         Vec::new()
     };
+    // Mode-selection artwork is loaded dynamically by the original
+    // ImageLoading.loadBitmap("img://...") ActionScript, not by atlas 1008/1009.
+    // Stage verified source images as PNGs for the Ruffle URL rewrite rule.
+    let mode_images = if main_menu {
+        crate::gfx_mode_images::stage(
+            session.library_root.as_deref(),
+            session.source_build.as_deref(),
+            scratch.path(),
+            &movie,
+        )
+    } else {
+        serde_json::json!({"requested": 0, "staged": 0})
+    };
     write_live_menu_report(
         session,
         scratch.path(),
@@ -1617,6 +1672,7 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
         background_video,
         LiveMenuLabels {
             linked_screens: &linked_screens,
+            mode_images: &mode_images,
             source: &localization,
             text: &localized_text,
             imported_text: &imported_text,
@@ -1637,6 +1693,38 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn linked_original_screen_can_resolve_archive_root_gfx() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let pak = root.join("UI_Assets.pak__11111111111111111111");
+        fs::create_dir_all(pak.join("files")).unwrap();
+        let movie = b"GFX synthetic source movie";
+        fs::write(pak.join("files/settings.gfx"), movie).unwrap();
+        fs::write(
+            pak.join("asset-library.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1, "name": "UI_Assets.pak", "source": "/game/UI_Assets.pak",
+                "entries": [{"path":"settings.gfx", "bytes":movie.len()}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            root.join("build-collections.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version":1,
+                "builds":{"stage-two":{"label":"Modded Stage 2","members":{"11111111111111111111":{}}}}
+            })).unwrap()
+        ).unwrap();
+        let found = verified_ui_asset_movie(root, "Modded Stage 2", "settings.gfx").unwrap();
+        assert_eq!(found.relative_path, "settings.gfx");
+        assert!(verified_ui_asset_movie(root, "2012", "settings.gfx").is_none());
+        assert!(verified_ui_asset_movie(root, "Modded Stage 2", "../settings.gfx").is_none());
+        assert!(verified_ui_asset_movie(root, "Modded Stage 2", "made_up.gfx").is_none());
+    }
+
     fn menu_fixture() -> Vec<u8> {
         menu_fixture_arity(0)
     }
@@ -1742,6 +1830,7 @@ mod tests {
             serde_json::json!({"playable": false, "status": "missing videos.pak"}),
             LiveMenuLabels {
                 linked_screens: &[],
+                mode_images: &serde_json::json!({"requested": 0, "staged": 0}),
                 source: &crate::gfx_localization::menu_labels(
                     None,
                     None,

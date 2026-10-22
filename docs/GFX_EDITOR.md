@@ -79,6 +79,26 @@ frame: ActionScript-driven states, hover/pressed transitions, runtime-generated
 text, fonts, animations and game callbacks are not executed and cannot yet
 be guaranteed pixel-identical to the live game.
 
+### Stage 2 Training mode images
+The original main_menu.gfx requests the MenuModeSelect card images at runtime
+with CryEngine's `img://Libs/UI/FlashAssets/images/MenuModeSelect/<name>.dds`
+resource scheme. Those DDS files are **not** the movie's atlas-tile tags
+1008/1009. The live Ruffle preview inspects the source movie's exact referenced
+file names, resolves each against the selected build's imported `UI_Assets.pak`
+manifest (including archive-relative mount prefixes), and temporarily converts
+validated DDS/.dds.0 entries into PNGs. The live player uses a narrow Ruffle
+URL rewrite rule for that one authored asset family, served through the isolated
+localhost preview path `runtime-images/<name>.png`. No original PAK or GFX
+is modified. Diagnostics report converted/missing/ambiguous/failed images.
+
+The imported `UI_Assets.pak` must include the source `images/MenuModeSelect`
+DDS artwork. Merely importing atlas `main_menu_I*.dds.0` textures is not
+sufficient to render the Training cards. Runtime ActionScript, Focus/Unfocus
+animation, panel backgrounds, and native CryEngine menu services still need
+live verification; restoring the files does not imply complete screen parity.
+The verified linked-screen browser separately exposes `options.gfx` and
+`settings.gfx` for comparison with the game's original Options presentation.
+
 ## Live UI inspector status
 
 The **Live UI Inspector (read-only)** validates and displays the private

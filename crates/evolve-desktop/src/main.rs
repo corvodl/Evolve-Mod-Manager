@@ -25,6 +25,7 @@ mod gfx_localization;
 mod gfx_menu_map;
 mod gfx_menu_text;
 mod gfx_menu_video;
+mod gfx_mode_images;
 mod gfx_tool_install;
 mod launcher_bridge;
 mod level_workspace;
