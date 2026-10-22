@@ -190,16 +190,17 @@ fn inject_preview_call(
         ));
     }
     let at = insert_at.ok_or("The original main-menu first frame was not found")?;
-    // AVM1 Push(name), optional Push(boolean), Push(argument count),
-    // CallFunction, Pop(return value), End.
-    let mut args = vec![0u8];
-    args.extend_from_slice(function.as_bytes());
-    args.push(0);
+    // AVM1 CallFunction pops the function name, then argument count, then
+    // arguments. Values are pushed in reverse order: arguments, count, name.
+    let mut args = Vec::new();
     if let Some(argument) = argument {
         args.extend_from_slice(&[5, u8::from(argument)]);
     }
     args.push(7);
     args.extend_from_slice(&(expected as i32).to_le_bytes());
+    args.push(0);
+    args.extend_from_slice(function.as_bytes());
+    args.push(0);
     let mut actions = vec![0x96];
     actions.extend_from_slice(&(args.len() as u16).to_le_bytes());
     actions.extend_from_slice(&args);
@@ -490,6 +491,16 @@ mod tests {
             let edited = inject_preview_call(&movie, "Libs/UI/main_menu.gfx", preset).unwrap();
             assert!(edited.len() > movie.len());
             assert_eq!(&edited[4..8], &(edited.len() as u32).to_le_bytes());
+            // The injected ActionPush must leave the function name at the top
+            // of the stack: [...optional bool, count, "function"].
+            let name = preset.script_call().unwrap().0.as_bytes();
+            let mut expected_suffix = name.to_vec();
+            expected_suffix.extend_from_slice(&[0, 0x3d, 0x17, 0]);
+            assert!(
+                edited
+                    .windows(expected_suffix.len())
+                    .any(|window| window == expected_suffix)
+            );
             assert_eq!(movie, menu_fixture()); // Source remains byte-identical.
         }
         assert!(inject_preview_call(&movie, "Other.gfx", PreviewPreset::HideEngagement).is_err());
