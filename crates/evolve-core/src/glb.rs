@@ -266,7 +266,7 @@ pub fn geometry_glb_bytes_with_original_material_ids(
     result.extend_from_slice(b"JSON");
     result.extend_from_slice(&json_bytes);
     result.extend_from_slice(&(bin.len() as u32).to_le_bytes());
-    result.extend_from_slice(b"BIN\\0");
+    result.extend_from_slice(b"BIN\0");
     result.extend_from_slice(bin);
     Ok(result)
 }
