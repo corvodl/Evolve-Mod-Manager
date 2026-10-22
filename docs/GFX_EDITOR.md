@@ -228,3 +228,30 @@ localized text and specific external DDS symbols. A faithful close button
 requires the exact decompiled button handler and UI_Data event binding (and
 its full imported movie chain), followed by a preview-only, allowlisted
 host event simulator. Gameplay/network operations must never be executed.
+
+
+## Main menu original-ActionScript preview presets (PR #21)
+
+The original user-provided `Libs/UI/main_menu.gfx` and its `UI_Data.zip`
+were inspected before enabling preview controls. The movie includes compiled
+root-frame ActionScript references to `showEngagementPrompt` and
+`showSigningInPrompt`, and the UI definition binds `main_menu.gfx` to
+the MainMenuNew GFx element. From GFX Tools → Preview → Ruffle controls,
+select **Unmodified movie**, **Show/Dismiss engagement prompt**, or
+**Show/Dismiss sign-in prompt**, then relaunch preview.
+
+A selected preset inserts a narrowly allowlisted AVM1 function call in the
+**temporary Ruffle SWF only**, immediately before the movie's original first
+ShowFrame. The original GFX file, its resource tags, extracted project, and
+installed PAK are not modified. The movie's own ActionScript still controls
+the visible prompt; no image layer is hidden by arbitrary depth or coordinates.
+An unavailable or dynamically resolved original handler fails closed rather
+than masquerading as a functional button. Presets are not a claim that the
+native in-game button-to-handler relationship is fully traced.
+
+**Still not emulated:** Evolve game services (network, purchases, matchmaking,
+account, launcher), Scaleform native callbacks, fully populated localization
+and menu data, and complete clickable UI parity. Ruffle remains launched with
+`--dummy-external-interface` and denied URL navigation. The original menu
+needs an audited callback bridge for the remaining buttons; simply detecting
+a function's name does not verify every corresponding button action.
