@@ -105,6 +105,48 @@ Runtime ActionScript callbacks, localization, buttons created in code and
 video playback cannot be faithfully rendered from a static movie.
 
 
+## Live Ruffle Web preview (PR #23)
+
+For GFX files open **GFX Tools → Preview → Ruffle controls**. **Open live preview**
+starts a single browser-based Ruffle Web player at a randomized `127.0.0.1`
+address. It serves only the isolated edited SWF, its staged imported movies and
+the SHA-256-verified selfhosted Ruffle Web distribution bundled by the optional
+GFX Tools installer task. The browser needs no CDN, no internet service, and
+never receives Evolve game process/DLL access. Desktop `ruffle.exe` remains
+available for standalone movie testing, but does not expose a live control API.
+
+Once the live player is open, clicking an ActionScript action in GFX Tools
+**uses the same running movie**; it does not patch another call into a new
+SWF, restart the window or reset the menu. Clicking an action first can also
+open the player and queue that action. The browser's footer reports one of:
+*original ActionScript callback invoked*, *callback unavailable*, or *runtime
+error*. Invocation confirms the callback returned from ActionScript; it does
+not promise an in-game visual transition if native Evolve UI_Data, game
+services, localization or imported movie states are missing. **Reset movie**
+reloads inside the same browser page.
+
+The manager registers only original first-frame, arity-verified
+`main_menu.gfx` AVM1 handlers via
+`flash.external.ExternalInterface.addCallback`. The browser calls those
+names using Ruffle's `callExternalInterface` API. If a handler cannot be
+verified, the manager rejects the command rather than pretending the button
+worked. Unmodified GFX bytes remain in the editable session; only temporary
+render-only SWF bytes receive the callback wrapper.
+
+**Security:** the preview server binds only IPv4 loopback and uses a
+randomized per-session URL; HTTP serves an allowlisted set of SWF and
+Ruffle WASM/JS assets, with no upload, file-write, game-launch, or native
+host command endpoint. Closing/stopping the session terminates the local
+server. Browser tabs opened by the system default browser may remain open
+after stopping; close them normally. Ruffle and the original movie remain
+subject to Flash emulator limitations.
+
+**Prerequisites:** choose the optional **GFX Tools** component when
+installing, which includes both Desktop Ruffle and the additional pinned
+`third_party/RuffleWeb/ruffle.js` bundle. Portable users need that bundled
+selfhosted folder alongside the application for live mode. An older installed
+Ruffle desktop executable alone cannot enable live buttons.
+
 ## Interactive ActionScript preview (experimental)
 
 The GFX pane now has separate **Design / layout editor** and
