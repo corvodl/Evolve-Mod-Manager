@@ -721,8 +721,8 @@ fn write_live_menu_report(
         "limitation": "This is a source-defined command inspector. The original SWF is unchanged. Native CryEngine game state, dynamic Scaleform UI initialization, and in-game localization are not reproduced."
     });
     let bytes = serde_json::to_vec(&report).map_err(|e| e.to_string())?;
-    if bytes.len() > 64 * 1024 {
-        return Err("Original menu definition report exceeds 64 KiB".into());
+    if bytes.len() > 512 * 1024 {
+        return Err("Original menu definition report exceeds 512 KiB".into());
     }
     fs::write(scratch.join("preview-menu.json"), bytes).map_err(|e| e.to_string())
 }
