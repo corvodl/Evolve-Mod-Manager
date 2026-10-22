@@ -414,7 +414,7 @@ def _normal_png(image):
             raise FBXValidationError(
                 "Original normal PNG not accessible: " + image.name)
         content = source.read_bytes()
-    if (not content.startswith(b"\\x89PNG\\r\\n\\x1a\\n")
+    if (not content.startswith(b"\x89PNG\r\n\x1a\n")
             or len(content) > 64 * 1024 * 1024):
         raise FBXValidationError("Source normal map is not a valid-sized PNG")
     return content
@@ -490,7 +490,7 @@ def validate_external_normal_references(objects, destination):
     a copied FBX never retains the temporary export directory.
     """
     stem = re.escape(destination.stem)
-    pattern = re.compile(r"^" + stem + r"_normal_[0-9a-f]{12}\\.png$")
+    pattern = re.compile(r"^" + stem + r"_normal_[0-9a-f]{12}\.png$")
     expected_folder = destination.parent / "textures"
     disk_files = {f.name for f in expected_folder.iterdir() if f.is_file()} if expected_folder.is_dir() else set()
     if any(not pattern.fullmatch(name) for name in disk_files):
@@ -504,7 +504,7 @@ def validate_external_normal_references(objects, destination):
         if not name_fields:
             raise FBXValidationError("External FBX image missing filename")
         for field in name_fields:
-            value = _text(field).decode("utf-8", errors="replace").replace("\\\\", "/")
+            value = _text(field).decode("utf-8", errors="replace").replace("\\", "/")
             name = value.rsplit("/", 1)[-1]
             if not pattern.fullmatch(name) or name not in disk_files:
                 raise FBXValidationError("FBX has a non-normal or missing image reference")
@@ -529,7 +529,7 @@ def normal_image_names(meshes):
                 continue
             image = _normal_image(material)
             if image is not None:
-                names.add(Path(image.filepath.replace("\\\\", "/")).name)
+                names.add(Path(image.filepath.replace("\\", "/")).name)
     return names
 
 
