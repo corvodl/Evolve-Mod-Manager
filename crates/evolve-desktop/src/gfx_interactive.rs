@@ -856,7 +856,7 @@ pub fn launch(
     fs::write(&root_movie, movie).map_err(|e| e.to_string())?;
     let mut missing = 0usize;
     for name in session.info.imports.iter().take(MAX_IMPORTS) {
-        match stage_import(session, &session.relative, name, root.path()) {
+        match stage_import(session, name, root.path()) {
             Ok(Some((images, skip))) => {
                 converted += images;
                 skipped += skip;
