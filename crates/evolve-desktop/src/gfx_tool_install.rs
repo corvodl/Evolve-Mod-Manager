@@ -16,12 +16,14 @@ const MAX_MEMBERS: usize = 4096;
 pub enum Tool {
     Ffdec,
     Ruffle,
+    RuffleWeb,
 }
 impl Tool {
     pub fn name(self) -> &'static str {
         match self {
             Self::Ffdec => "FFDec",
             Self::Ruffle => "Ruffle",
+            Self::RuffleWeb => "RuffleWeb",
         }
     }
     fn url(self) -> &'static str {
@@ -32,18 +34,23 @@ impl Tool {
             Self::Ruffle => {
                 "https://github.com/ruffle-rs/ruffle/releases/download/v0.7.1/ruffle-0.7.1-windows-x86_64.zip"
             }
+            Self::RuffleWeb => {
+                "https://github.com/ruffle-rs/ruffle/releases/download/v0.7.1/ruffle-0.7.1-web-selfhosted.zip"
+            }
         }
     }
     fn sha256(self) -> &'static str {
         match self {
             Self::Ffdec => "35f4930eb7c380afe66f2117f90b006deac0631473ad7500bb39c78f68645ecd",
             Self::Ruffle => "a5f6df9881771226e330e08a1fa7666f4caff50ddf9f2f993cdd95293edca627",
+            Self::RuffleWeb => "ef12edbee135d581a9cd523837d746da30a07a64dbf1cf472d2e472c656f4b5e",
         }
     }
     fn executable(self) -> &'static str {
         match self {
             Self::Ffdec => "ffdec-cli.exe",
             Self::Ruffle => "ruffle.exe",
+            Self::RuffleWeb => "ruffle.js",
         }
     }
 }
@@ -161,12 +168,67 @@ fn fetch_limited(
     Ok(bytes)
 }
 
+/// A Ruffle Web release can nest its runnable files under a wrapper folder.
+/// Find exactly one complete self-hosted directory, flatten it into the
+/// verified staging root, then atomically publish the complete tool directory.
+fn locate_ruffle_web(root: &Path) -> Result<PathBuf, String> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut candidate = None;
+    let mut visited = 0usize;
+    while let Some(dir) = pending.pop() {
+        visited += 1;
+        if visited > MAX_MEMBERS {
+            return Err("Ruffle Web ZIP has too many nested directories".into());
+        }
+        if dir.join("ruffle.js").is_file() {
+            if candidate.is_some() {
+                return Err("Ruffle Web ZIP has ambiguous ruffle.js directories".into());
+            }
+            candidate = Some(dir.clone());
+        }
+        for entry in fs::read_dir(&dir).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let info = fs::symlink_metadata(entry.path()).map_err(|e| e.to_string())?;
+            if info.file_type().is_symlink() {
+                return Err("Ruffle Web ZIP contains a linked path".into());
+            }
+            if info.file_type().is_dir() {
+                pending.push(entry.path());
+            }
+        }
+    }
+    let directory = candidate.ok_or("Ruffle Web ZIP does not include ruffle.js")?;
+    let has_wasm = fs::read_dir(&directory)
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .any(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("wasm"))
+                && fs::symlink_metadata(entry.path())
+                    .is_ok_and(|m| m.file_type().is_file() && m.len() > 0)
+        });
+    if !has_wasm {
+        return Err("Ruffle Web ZIP has no adjacent WebAssembly runtime".into());
+    }
+    Ok(directory)
+}
+
 /// Run only from an explicit Install click in Settings. The existing app
 /// already requires elevation and lives in Program Files when installed;
 /// place tool executables alongside it, not in a writable per-user folder.
 pub fn install(tool: Tool) -> Result<PathBuf, String> {
     if !cfg!(target_os = "windows") {
         return Err("In-app GFX tool installation is only supported on Windows".into());
+    }
+    if tool == Tool::RuffleWeb {
+        // The installed app normally lives under Program Files; users must be
+        // able to repair a missing Web runtime without elevating the manager.
+        // SHA-pinned Web assets are installed into this user's settings root.
+        let settings = crate::settings::settings_path().map_err(|e| e.to_string())?;
+        let profile = settings.parent().ok_or("No user integration directory")?;
+        return install_at(tool, profile);
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let folder = exe
@@ -214,15 +276,34 @@ fn install_at(tool: Tool, folder: &Path) -> Result<PathBuf, String> {
         .prefix(".gfx-tool-")
         .tempdir_in(&third_party)
         .map_err(|e| e.to_string())?;
-    let payload = scratch.path().join("payload");
-    fs::create_dir(&payload).map_err(|e| e.to_string())?;
-    extract_bounded(&archive_bytes, &payload)?;
+    let extracted = scratch.path().join("extracted");
+    fs::create_dir(&extracted).map_err(|e| e.to_string())?;
+    extract_bounded(&archive_bytes, &extracted)?;
+    let payload = if tool == Tool::RuffleWeb {
+        let source = locate_ruffle_web(&extracted)?;
+        let flattened = scratch.path().join("payload");
+        fs::create_dir(&flattened).map_err(|e| e.to_string())?;
+        for item in fs::read_dir(source).map_err(|e| e.to_string())? {
+            let item = item.map_err(|e| e.to_string())?;
+            let info = fs::symlink_metadata(item.path()).map_err(|e| e.to_string())?;
+            if info.file_type().is_file() {
+                fs::copy(item.path(), flattened.join(item.file_name()))
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        flattened
+    } else {
+        extracted
+    };
     validated_file(&payload, tool.executable())?;
     if tool == Tool::Ffdec {
         validated_file(&payload, "ffdec.jar")?;
         validated_file(&payload, "ffdec.exe")?;
         validated_file(&payload, "license.txt")?;
     } else {
+        if tool == Tool::RuffleWeb {
+            locate_ruffle_web(&payload)?;
+        }
         // The upstream desktop release ZIP does not always include its full
         // dependency notices. Fetch the pinned release-tagged license text.
         let license = fetch_limited(
@@ -274,6 +355,20 @@ mod tests {
             PathBuf::from("ffdec-cli.exe")
         );
         assert!(checked_member("lib/extension.jar").is_ok());
+    }
+    #[test]
+    fn web_runtime_requires_one_js_and_adjacent_nonempty_wasm() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = tmp.path().join("upstream/web");
+        fs::create_dir_all(&parent).unwrap();
+        fs::write(parent.join("ruffle.js"), b"js").unwrap();
+        assert!(locate_ruffle_web(tmp.path()).is_err());
+        fs::write(parent.join("core.wasm"), b"wasm").unwrap();
+        assert_eq!(locate_ruffle_web(tmp.path()).unwrap(), parent);
+        let other = tmp.path().join("duplicate");
+        fs::create_dir(&other).unwrap();
+        fs::write(other.join("ruffle.js"), b"duplicate").unwrap();
+        assert!(locate_ruffle_web(tmp.path()).is_err());
     }
     #[test]
     fn refuses_wrong_hash() {

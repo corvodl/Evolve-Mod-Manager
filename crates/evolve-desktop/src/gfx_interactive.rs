@@ -671,7 +671,7 @@ pub fn launch(
 
 /// A persistent browser-based Ruffle preview. All selected controls use
 /// an allowlisted live ExternalInterface callback instead of patch/restart.
-pub fn launch_live(session: &Session) -> Result<RunningPreview, String> {
+pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPreview, String> {
     let scratch = tempfile::Builder::new()
         .prefix("evolve-gfx-live-")
         .tempdir()
@@ -692,7 +692,7 @@ pub fn launch_live(session: &Session) -> Result<RunningPreview, String> {
             Err(error) => return Err(format!("Imported Scaleform movie {name}: {error}")),
         }
     }
-    let live = gfx_live_web::LiveServer::start(scratch, actions)?;
+    let live = gfx_live_web::LiveServer::start(scratch, actions, web_runtime)?;
     Ok(RunningPreview {
         process: None,
         live: Some(Arc::new(live)),
