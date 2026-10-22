@@ -335,6 +335,20 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                         .size(11).style(design::muted),
                 ].spacing(8)),
                 panel(column![
+                    text("ORIGINAL MAIN-MENU VIDEO · OPTIONAL FFMPEG").size(15),
+                    text("The Stage 2 Goliath background is a CRI USM in videos.pak. Select a trusted compatible ffmpeg.exe to convert the verified source in scratch storage without a console window. No game files are modified. If no decoder is configured, an adjacent mainmenu_goliath.preview.mp4 or .webm can be used.")
+                        .size(12).style(design::muted),
+                    row![
+                        design::text_input("Absolute path to ffmpeg.exe", &state.preferences.gfx_ffmpeg_executable)
+                            .on_input(Message::GfxFfmpegConfigChanged),
+                        design::button("Select existing…")
+                            .on_press(Message::GfxPickFfmpeg)
+                            .style(design::secondary),
+                    ].spacing(8).align_y(iced::Center),
+                    text("FFmpeg must be installed separately and support your original USM codec; this does not download or launch an unselected executable.")
+                        .size(11).style(design::muted),
+                ].spacing(8)),
+                panel(column![
                     text("RUFFLE · GFX PREVIEW INTEGRATIONS").size(15),
                     text("RUFFLE WEB · REQUIRED FOR LIVE BUTTONS").size(12),
                     if let Some(path) = &ruffle_web {

@@ -1202,14 +1202,41 @@ pub fn launch(
     })
 }
 
+/// Read source-verified imported font movies for diagnostics, including
+/// ordinary CWS compressed SWFs produced by the Stage 2 import graph.
+/// The bounded decoded bytes are never written back to the original movie.
+fn uncompressed_font_movie(path: &Path) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let bytes = fs::read(path).ok()?;
+    if bytes.len() < 16 || bytes.len() > MAX_DECOMPRESSED {
+        return None;
+    }
+    if &bytes[..3] == b"FWS" {
+        return (u32::from_le_bytes(bytes[4..8].try_into().ok()?) as usize == bytes.len())
+            .then_some(bytes);
+    }
+    if &bytes[..3] != b"CWS" {
+        return None;
+    }
+    let declared = u32::from_le_bytes(bytes[4..8].try_into().ok()?) as usize;
+    if !(16..=MAX_DECOMPRESSED).contains(&declared) {
+        return None;
+    }
+    let mut output = Vec::with_capacity(declared);
+    output.extend_from_slice(b"FWS");
+    output.extend_from_slice(&bytes[3..8]);
+    flate2::read::ZlibDecoder::new(&bytes[8..])
+        .take(MAX_DECOMPRESSED as u64)
+        .read_to_end(&mut output)
+        .ok()?;
+    (output.len() == declared).then_some(output)
+}
+
 /// Count original embedded SWF DefineFont definitions in the isolated font
 /// import. An actual font definition is stronger than mere path resolution,
 /// but still not proof that Ruffle reproduced Scaleform's font renderer.
 fn original_font_definitions(path: &Path) -> Option<usize> {
-    let bytes = fs::read(path).ok()?;
-    if bytes.len() < 16 || bytes.len() > MAX_DECOMPRESSED || &bytes[..3] != b"FWS" {
-        return None;
-    }
+    let bytes = uncompressed_font_movie(path)?;
     let nbits = usize::from(bytes[8] >> 3);
     if !(1..=31).contains(&nbits) {
         return None;
@@ -1248,10 +1275,7 @@ fn original_font_definitions(path: &Path) -> Option<usize> {
 /// are local to each movie: matching a name does not itself bind an imported
 /// glyph definition to a root movie TextField or prove Ruffle rendered it.
 fn original_font_inventory(path: &Path) -> Option<Vec<serde_json::Value>> {
-    let bytes = fs::read(path).ok()?;
-    if bytes.len() < 16 || bytes.len() > MAX_DECOMPRESSED || &bytes[..3] != b"FWS" {
-        return None;
-    }
+    let bytes = uncompressed_font_movie(path)?;
     let nbits = usize::from(bytes[8] >> 3);
     if !(1..=31).contains(&nbits) {
         return None;
@@ -1577,7 +1601,11 @@ fn write_live_menu_report(
 
 /// A persistent browser-based Ruffle preview. All selected controls use
 /// an allowlisted live ExternalInterface callback instead of patch/restart.
-pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPreview, String> {
+pub fn launch_live(
+    session: &Session,
+    web_runtime: &str,
+    ffmpeg_executable: &str,
+) -> Result<RunningPreview, String> {
     let scratch = tempfile::Builder::new()
         .prefix("evolve-gfx-live-")
         .tempdir()
@@ -1635,6 +1663,7 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
             session.library_root.as_deref(),
             session.source_build.as_deref(),
             scratch.path(),
+            ffmpeg_executable,
         )
     } else {
         serde_json::json!({"playable": false, "status": "Not the Stage 2 main menu"})
@@ -1995,6 +2024,21 @@ mod tests {
         assert_eq!(source[0]["glyphs"], 0);
         assert_eq!(source[0]["bold"], true);
         assert_eq!(source[0]["italic"], false);
+        assert_eq!(original_font_definitions(&path), Some(1));
+        // The importer can preserve a compressed CWS wrapper. Inventory
+        // must decode that original format without rewriting game sources.
+        let raw = fs::read(&path).unwrap();
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        use std::io::Write;
+        encoder.write_all(&raw[8..]).unwrap();
+        let mut compressed = b"CWS".to_vec();
+        compressed.extend_from_slice(&raw[3..8]);
+        compressed.extend(encoder.finish().unwrap());
+        let compressed_path = directory.path().join("font-compressed.swf");
+        fs::write(&compressed_path, compressed).unwrap();
+        assert_eq!(original_font_definitions(&compressed_path), Some(1));
+        assert_eq!(original_font_inventory(&compressed_path).unwrap(), source);
     }
 
     #[test]

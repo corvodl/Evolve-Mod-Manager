@@ -21,7 +21,8 @@
             ...originalButtonEvents.map((event, index) => makeText("li",
                 event.kind === "fscommand"
                     ? "#" + (index + 1) + " FSCommand " + event.command +
-                      " (" + event.arguments + ") · blocked"
+                      " (" + event.arguments + ") · " +
+                      (event.disposition === "local-only" ? "verified local submenu" : "blocked")
                     : "#" + (index + 1) + " original button " + event.button_id +
                       " · flags " + event.condition_flags + " · native mapping unverified"))
         );
@@ -31,6 +32,9 @@
     let navigateSourceGroup = () => false;
     let navigateSourceBack = () => false;
     let openVerifiedScreen = () => false;
+    // Native game commands never execute in the local browser. The source
+    // UI_Data manifest can, however, identify a unique UI-only submenu.
+    let routeVerifiedLocalCommand = () => false;
     document.getElementById("source-back").addEventListener("click", () => {
         navigateSourceBack();
     });
@@ -330,11 +334,19 @@
                     arguments: String(args).slice(0, 90),
                     disposition: "blocked"
                 };
+                // Only original UI_Data child_submenu entries are eligible,
+                // never a native match/tutorial, game service, or FSCommand
+                // supplied by an unknown movie.
+                if (routeVerifiedLocalCommand(event.command)) {
+                    event.disposition = "local-only";
+                }
                 originalButtonEvents.push(event);
                 if (originalButtonEvents.length > 64) originalButtonEvents.shift();
                 renderOriginalEvents();
-                show("Movie requested native FSCommand " + event.command +
-                     " (" + event.arguments + "); blocked in preview.", true);
+                if (event.disposition === "blocked") {
+                    show("Movie requested native FSCommand " + event.command +
+                         " (" + event.arguments + "); blocked in preview.", true);
+                }
             });
         }
         if (typeof player.ruffle().setTraceObserver === "function") {
@@ -364,6 +376,92 @@
         // Ruffle's allowScriptAccess mechanism.
         const report = await sourceLoad;
         const hasVideo = configureMainMenuVideo(report);
+        const auditButton = document.getElementById("audit-assets");
+        auditButton.disabled = !report;
+        auditButton.addEventListener("click", async () => {
+            if (!report || auditButton.disabled) return;
+            auditButton.disabled = true;
+            try {
+                const staged = report.mode_images?.staged_names;
+                const names = Array.isArray(staged)
+                    ? staged.filter(name => typeof name === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(name)).slice(0, 64)
+                    : [];
+                let decoded = 0;
+                const failures = [];
+                // The report's staged count alone does not prove that the
+                // browser can fetch/decode those same-build DDS derivatives.
+                await Promise.all(names.map(async name => {
+                    try {
+                        const response = await fetch("./runtime-images/" + name + ".png", {cache: "no-store"});
+                        if (!response.ok || !String(response.headers.get("content-type")).includes("image/png")) {
+                            throw new Error("HTTP " + response.status);
+                        }
+                        const bytes = await response.arrayBuffer();
+                        const view = new DataView(bytes);
+                        if (bytes.byteLength < 24 || view.getUint32(0, false) !== 0x89504e47 ||
+                            view.getUint32(4, false) !== 0x0d0a1a0a) {
+                            throw new Error("invalid PNG signature");
+                        }
+                        const width = view.getUint32(16, false);
+                        const height = view.getUint32(20, false);
+                        if (width === 0 || height === 0 || width > 8192 || height > 8192) {
+                            throw new Error("invalid PNG dimensions");
+                        }
+                        // Validate actual browser pixel decoding, not just a
+                        // recognizable PNG signature/header.
+                        const blob = new Blob([bytes], {type: "image/png"});
+                        if (typeof createImageBitmap === "function") {
+                            const bitmap = await createImageBitmap(blob);
+                            try {
+                                if (bitmap.width !== width || bitmap.height !== height) {
+                                    throw new Error("decoded dimensions disagree with PNG");
+                                }
+                            } finally {
+                                bitmap.close();
+                            }
+                        } else {
+                            const url = URL.createObjectURL(blob);
+                            try {
+                                const image = new Image();
+                                image.src = url;
+                                await image.decode();
+                                if (image.naturalWidth !== width || image.naturalHeight !== height) {
+                                    throw new Error("decoded dimensions disagree with PNG");
+                                }
+                            } finally {
+                                URL.revokeObjectURL(url);
+                            }
+                        }
+                        decoded++;
+                    } catch (error) {
+                        failures.push(name + ": " + String(error).slice(0, 80));
+                    }
+                }));
+                const meta = player.ruffle().metadata || {};
+                const stageDimensions = String(meta.width || "?") + "x" + String(meta.height || "?");
+                const video = document.getElementById("background-video");
+                const state = report.background_video || {};
+                const playback = state.playable === true
+                    ? "readyState=" + video.readyState + ", size=" +
+                      (video.videoWidth || 0) + "x" + (video.videoHeight || 0) +
+                      ", paused=" + String(video.paused) + ", error=" +
+                      (video.error?.code || "none")
+                    : String(state.status || "source unavailable");
+                const fonts = (Array.isArray(report.fonts) ? report.fonts : []);
+                const knownFonts = fonts.filter(item => Number(item.define_font_tags || 0) > 0).length;
+                const text = "Ruffle source stage " + stageDimensions + "; browser PNG images " +
+                    decoded + "/" + names.length + "; embedded Flash bitmap linkages " +
+                    Number(report.mode_images?.flash_bitmap_linkages || 0) +
+                    "; recognized font libraries " + knownFonts + "/" + fonts.length +
+                    "; Goliath video " + playback +
+                    (failures.length ? "; asset fetch/decode errors: " + failures.slice(0, 5).join("; ") : "");
+                const entry = makeText("li", text);
+                document.getElementById("resource-status").prepend(entry);
+                show(text, failures.length > 0 || (names.length > 0 && decoded !== names.length));
+            } finally {
+                auditButton.disabled = false;
+            }
+        });
         const notice = document.getElementById("preview-notice");
         const reasons = [];
         if (!hasVideo && report?.background_video?.source?.source_archive === "videos.pak") {
@@ -511,6 +609,25 @@
                 show("Original goBack failed: " + String(error), true);
                 return false;
             }
+        };
+        // Local routing is strictly tied to one visible, enabled, exact source
+        // UI_Data command in the CURRENT original submenu. This never turns a
+        // source FSCommand into a native game-service invocation.
+        routeVerifiedLocalCommand = command => {
+            const current = sourceMenuStack[sourceMenuStack.length - 1];
+            const eligible = sourceRows.filter(item =>
+                item.submenu === current &&
+                item.command === command &&
+                typeof item.child_submenu === "string" &&
+                groups.has(item.child_submenu) &&
+                item.child_submenu !== current &&
+                !item.disabled_when && !item.hidden_when &&
+                (!item.platform || String(item.platform).toLowerCase() === "pc")
+            );
+            if (eligible.length !== 1) return false;
+            if (!pushOriginalSourceMenu(eligible[0].child_submenu)) return false;
+            updateSourceGroup(eligible[0].child_submenu);
+            return true;
         };
         // The inspector is metadata; transition only after the movie accepts
         // the verified original push/goBack handler. Never route native commands.
