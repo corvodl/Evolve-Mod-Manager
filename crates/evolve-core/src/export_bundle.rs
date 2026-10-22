@@ -485,7 +485,10 @@ pub fn export_bundle(
                 fs::write(&glb, mapped).map_err(|e| e.to_string())?;
             } else {
                 let mapped = crate::character_unified_fbx::static_model_material_glb(
-                    &mesh, &source, inventory, options.embed_textures,
+                    &mesh,
+                    &source,
+                    inventory,
+                    options.embed_textures,
                 )
                 .map_err(|e| format!("{relative} original material and normal maps: {e}"))?;
                 fs::write(&glb, mapped).map_err(|e| e.to_string())?;
