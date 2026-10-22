@@ -4250,13 +4250,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::GfxRunInteractive => {
-            if state
-                .gfx_interactive_running
-                .as_ref()
-                .is_some_and(|p| p.is_running())
+            if let Some(player) = state.gfx_interactive_running.as_ref()
+                && player.is_running()
             {
-                state.gfx_interactive_status =
-                    "Live preview is already open. Menu actions update without restarting.".into();
+                state.gfx_interactive_status = match player.reopen_live() {
+                    Ok(()) => "Reopened the same local preview URL; the movie server was not restarted.".into(),
+                    Err(reason) => format!("Cannot reopen live GFX preview: {reason}"),
+                };
                 return Task::none();
             }
             if state.gfx_busy || state.busy {
