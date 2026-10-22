@@ -1324,6 +1324,8 @@ struct LiveMenuCounts {
 struct LiveMenuLabels<'a> {
     source: &'a serde_json::Value,
     text: &'a crate::gfx_menu_text::TextPatch,
+    imported_text: &'a ImportedTextCounts,
+    render_effects: &'a serde_json::Value,
 }
 
 fn write_live_menu_report(
@@ -1334,8 +1336,6 @@ fn write_live_menu_report(
     imported_movies: &[String],
     background_video: serde_json::Value,
     labels: LiveMenuLabels<'_>,
-    imported_text: &ImportedTextCounts,
-    render_effects: &serde_json::Value,
 ) -> Result<(), String> {
     let entries = session
         .menu_commands
@@ -1398,13 +1398,13 @@ fn write_live_menu_report(
             "scope": "Only original DefineEditText initial strings; dynamic ActionScript labels require native host semantics."
         },
         "fonts": font_imports,
-        "render_effects": render_effects,
+        "render_effects": labels.render_effects,
         "imported_flash_text": {
-            "movies": imported_text.movies,
-            "localized": imported_text.localized,
-            "unresolved": imported_text.unresolved,
-            "fields": imported_text.fields,
-            "unreadable_or_unsupported": imported_text.skipped,
+            "movies": labels.imported_text.movies,
+            "localized": labels.imported_text.localized,
+            "unresolved": labels.imported_text.unresolved,
+            "fields": labels.imported_text.fields,
+            "unreadable_or_unsupported": labels.imported_text.skipped,
             "scope": "Only source-authored DefineEditText initial strings in imported SWF previews; dynamic assignments remain unresolved."
         },
         "background_video": background_video,
@@ -1515,9 +1515,9 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
         LiveMenuLabels {
             source: &localization,
             text: &localized_text,
+            imported_text: &imported_text,
+            render_effects: &render_effects,
         },
-        &imported_text,
-        &render_effects,
     )?;
     let live = gfx_live_web::LiveServer::start(scratch, actions, web_runtime)?;
     Ok(RunningPreview {
@@ -1642,9 +1642,9 @@ mod tests {
                     &["@ui_STARTGAME".to_string()],
                 ),
                 text: &crate::gfx_menu_text::TextPatch::default(),
+                imported_text: &ImportedTextCounts::default(),
+                render_effects: &serde_json::json!({"status":"No source rendering effects verified"}),
             },
-            &ImportedTextCounts::default(),
-            &serde_json::json!({"status":"No source rendering effects verified"}),
         )
         .unwrap();
         let report: serde_json::Value =
