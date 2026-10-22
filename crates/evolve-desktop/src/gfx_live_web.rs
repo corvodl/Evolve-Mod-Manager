@@ -9,14 +9,13 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 const MAX_REQUEST: usize = 12 * 1024;
 const MAX_STATIC_ASSET: u64 = 64 * 1024 * 1024;
 const MAX_SWF_ASSET: u64 = 40 * 1024 * 1024;
-const MAX_STATUS: usize = 220;
 
 pub struct LiveServer {
     active: Arc<AtomicBool>,
