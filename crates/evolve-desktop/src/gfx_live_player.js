@@ -17,6 +17,12 @@
     document.getElementById("source-close").addEventListener("click", () => toggleSource(false));
     const originalButtonEvents = [];
     let previewReport = null;
+    let updateSourceGroup = () => {};
+    let navigateSourceGroup = () => false;
+    let navigateSourceBack = () => false;
+    document.getElementById("source-back").addEventListener("click", () => {
+        navigateSourceBack();
+    });
     const copyEvents = document.getElementById("copy-events");
     copyEvents.addEventListener("click", () => {
         const trace = JSON.stringify({
@@ -52,9 +58,17 @@
         const showGroup = (group) => {
             list.replaceChildren();
             groupTitle.textContent = group;
-            for (const entry of entries.filter(item => item.submenu === group)) {
+            for (const entry of entries.filter(item =>
+                item.submenu === group &&
+                (!item.platform || String(item.platform).toLowerCase() === "pc") &&
+                !item.hidden_when
+            )) {
                 const target = String(entry.child_submenu || "");
-                const isLocal = groups.has(target) && target !== group;
+                const isLocal = groups.has(target) && target !== group &&
+                    !entry.disabled_when && entries.some(row =>
+                        row.submenu === target &&
+                        (!row.platform || String(row.platform).toLowerCase() === "pc") &&
+                        !row.hidden_when);
                 const label = String(entry.label || entry.command || "(unnamed source entry)");
                 const translated = label.charAt(0) === "@"
                     ? translations[label.slice(1).toLowerCase()] : undefined;
@@ -69,17 +83,19 @@
                 button.disabled = !isLocal;
                 if (isLocal) {
                     button.dataset.sourceSubmenu = target;
-                    button.addEventListener("click", () => showGroup(target));
+                    button.addEventListener("click", () => {
+                        if (navigateSourceGroup(target)) showGroup(target);
+                    });
                 }
                 list.appendChild(button);
             }
             back.hidden = group === "Main";
         };
+        updateSourceGroup = showGroup;
         if (entries.length) {
             navigation.hidden = false;
             const initial = groups.has("Main") ? "Main" : entries[0].submenu;
-            back.addEventListener("click", () => showGroup(initial));
-            showGroup(initial);
+             showGroup(initial);
         } else {
             navigation.hidden = true;
         }
@@ -256,7 +272,8 @@
         const canGoBack = report?.initialization?.verified_go_back === true;
         const sourceMenuStack = ["Main"];
         const pushOriginalSourceMenu = group => {
-            if (!canPushSubmenu || !groups.has(group) || !rowsForGroup(group).length) {
+            if (!canPushSubmenu || !groups.has(group) || !rowsForGroup(group).length ||
+                sourceMenuStack.length >= 32 || group === sourceMenuStack[sourceMenuStack.length - 1]) {
                 show("Original submenu has no verified, visible source rows.", true);
                 return false;
             }
@@ -279,6 +296,7 @@
                 const result = player.ruffle().callExternalInterface("evolvePreview_goBack");
                 if (result !== true) throw new Error("Original goBack unavailable");
                 sourceMenuStack.pop();
+                updateSourceGroup(sourceMenuStack[sourceMenuStack.length - 1]);
                 show("Original Flash goBack invoked. Visual transition requires Ruffle verification.");
                 return true;
             } catch (error) {
@@ -286,18 +304,10 @@
                 return false;
             }
         };
-        // The inspector is source metadata, not a replacement rendered menu.
-        // Only locally sourced child menus may push the movie's own state.
-        document.getElementById("source-back").addEventListener("click", () => {
-            goBackOriginalSourceMenu();
-        });
-        const sourceList = document.getElementById("source-buttons");
-        sourceList.addEventListener("click", event => {
-            const button = event.target.closest("button[data-source-submenu]");
-            if (button && sourceList.contains(button)) {
-                pushOriginalSourceMenu(button.dataset.sourceSubmenu);
-            }
-        });
+        // The inspector is metadata; transition only after the movie accepts
+        // the verified original push/goBack handler. Never route native commands.
+        navigateSourceGroup = pushOriginalSourceMenu;
+        navigateSourceBack = goBackOriginalSourceMenu;
         const initializeOriginal = async (automatic) => {
             if (!canInitialize) {
                 show("No supported source-verified menu lifecycle was found.", true);
@@ -310,6 +320,8 @@
                 try {
                     const result = player.ruffle().callExternalInterface("evolvePreview_" + originalStartup, menuData, menuLabels);
                     if (result === true) {
+                        sourceMenuStack.splice(1);
+                        updateSourceGroup("Main");
                         show((automatic ? "Automatic" : "Manual") +
                             " original " + originalStartup + " invoked with source menu rows. Offline preview state; game services remain unavailable.");
                         return;
