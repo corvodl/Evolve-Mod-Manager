@@ -72,6 +72,7 @@ pub(crate) fn stage(
     let names = referenced_modes(authored_movie);
     let requested = names.len();
     let mut staged = 0usize;
+    let mut staged_names = Vec::new();
     let mut missing = Vec::new();
     let mut ambiguous = Vec::new();
     let mut failed = Vec::new();
@@ -155,11 +156,13 @@ pub(crate) fn stage(
         total_pixels += pixels;
         total_bytes += size;
         staged += 1;
+        staged_names.push(name);
     }
     json!({
         "source_archive": PAK,
         "requested": requested,
         "staged": staged,
+        "staged_names": staged_names,
         "missing": missing,
         "ambiguous_or_invalid_manifest": ambiguous,
         "decode_or_budget_failures": failed,
