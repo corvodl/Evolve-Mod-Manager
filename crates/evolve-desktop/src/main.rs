@@ -4866,6 +4866,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.gfx_status = format!("FFDec editing failed: {e}");
                 }
             }
+            if let Some(index) = state.viewer_queued_preview.take()
+                && state.selected == Some(index)
+            {
+                return update(state, Message::ViewerPreviewSelected);
+            }
         }
         Message::PreferenceDensity => {
             state.preferences.ui_density = if state.preferences.ui_density == "Compact" {
@@ -8297,7 +8302,7 @@ mod project_edit_tests {
 
     #[test]
     fn switching_from_gfx_to_dds_or_other_file_unpins_gfx_tools() {
-        for target in ["image.dds", "notes.txt"] {
+        for target in ["image.dds", "character.cdf", "notes.txt"] {
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join("main_menu.gfx"), b"invalid fixture").unwrap();
             std::fs::write(dir.path().join(target), b"invalid fixture").unwrap();
