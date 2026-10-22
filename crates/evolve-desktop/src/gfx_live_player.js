@@ -16,6 +16,16 @@
     sourceButton.addEventListener("click", () => toggleSource(sourcePanel.hidden));
     document.getElementById("source-close").addEventListener("click", () => toggleSource(false));
     const originalButtonEvents = [];
+    const renderOriginalEvents = () => {
+        document.getElementById("button-events").replaceChildren(
+            ...originalButtonEvents.map((event, index) => makeText("li",
+                event.kind === "fscommand"
+                    ? "#" + (index + 1) + " FSCommand " + event.command +
+                      " (" + event.arguments + ") · blocked"
+                    : "#" + (index + 1) + " original button " + event.button_id +
+                      " · flags " + event.condition_flags + " · native mapping unverified"))
+        );
+    };
     let previewReport = null;
     let updateSourceGroup = () => {};
     let navigateSourceGroup = () => false;
@@ -28,7 +38,7 @@
         const trace = JSON.stringify({
             format: "evolve-original-button-events-v1",
             events: originalButtonEvents,
-            note: "IDs and flags are observed original SWF events, not verified native commands."
+            note: "Original SWF button IDs and native FSCommand requests are observed only; native execution is blocked."
         }, null, 2);
         if (navigator.clipboard && navigator.clipboard.writeText) {
             navigator.clipboard.writeText(trace)
@@ -127,8 +137,22 @@
                 + " · " + (Number.isInteger(font.define_font_tags)
                     ? String(font.define_font_tags) + " original font definitions"
                     : "font definitions not verified")
-                + " (" + String(font.source) + "). Binding and glyph selection unverified.");
+                + " (" + String(font.source) + ").");
+            for (const def of (Array.isArray(font.font_definitions) ? font.font_definitions : []).slice(0, 12)) {
+                messages.push("  Original font #" + String(def.font_id) + ": " +
+                    String(def.font_name || "(unnamed)") + ", " +
+                    String(def.glyphs ?? "unknown") + " glyphs" +
+                    (def.bold ? ", bold" : "") + (def.italic ? ", italic" : "") +
+                    ". Runtime font alias/selection unverified.");
+            }
         }
+        const nestedText = report.imported_flash_text || {};
+        messages.push("Nested GFX source-authored edit text: " +
+            Number(nestedText.localized || 0) + " localized, " +
+            Number(nestedText.unresolved || 0) + " unresolved across " +
+            Number(nestedText.movies || 0) + " imported movies" +
+            " (" + Number(nestedText.unreadable_or_unsupported || 0) + " unsupported). " +
+            "Later ActionScript text assignments are not translated.");
         const video = report.background_video || {};
         messages.push("Main-menu motion background: " +
             String(video.status || "Original video source not inspected"));
@@ -190,8 +214,17 @@
         // DO NOT execute game commands from an untrusted or modded SWF.
         if (typeof player.ruffle().addFSCommandHandler === "function") {
             player.ruffle().addFSCommandHandler((command, args) => {
-                show("Movie requested native FSCommand " + String(command).slice(0, 90)
-                     + " (" + String(args).slice(0, 90) + "); blocked in preview.", true);
+                const event = {
+                    kind: "fscommand",
+                    command: String(command).slice(0, 90),
+                    arguments: String(args).slice(0, 90),
+                    disposition: "blocked"
+                };
+                originalButtonEvents.push(event);
+                if (originalButtonEvents.length > 64) originalButtonEvents.shift();
+                renderOriginalEvents();
+                show("Movie requested native FSCommand " + event.command +
+                     " (" + event.arguments + "); blocked in preview.", true);
             });
         }
         if (typeof player.ruffle().setTraceObserver === "function") {
@@ -202,13 +235,13 @@
                     const id = Number(parts[1]), flags = Number(parts[2]);
                     if (Number.isInteger(id) && id >= 0 && id <= 65535 &&
                         Number.isInteger(flags) && flags >= 0 && flags <= 65535) {
-                        originalButtonEvents.push({ button_id: id, condition_flags: flags });
+                        originalButtonEvents.push({
+                            kind: "swf_button",
+                            button_id: id,
+                            condition_flags: flags
+                        });
                         if (originalButtonEvents.length > 64) originalButtonEvents.shift();
-                        document.getElementById("button-events").replaceChildren(
-                            ...originalButtonEvents.map((event, i) =>
-                                makeText("li", "#" + (i + 1) + " button " + event.button_id +
-                                    " · flags " + event.condition_flags + " · native mapping unverified"))
-                        );
+                        renderOriginalEvents();
                     }
                     show("Original Flash button " + (parts[1] || "?") + " fired condition " + (parts[2] || "?") + ". Native handler mapping remains unverified.");
                 } else if (/error|missing|undefined|failed/i.test(line)) {
