@@ -32,7 +32,10 @@ main { position:relative; overflow:hidden; }
 #source-panel h3 { font-size:12px; margin:16px 0 6px; color:#f3a6a8; }
 #source-panel p,#source-panel li { font-size:12px; line-height:1.5; color:#bcc0c9; }
 #source-panel ul { padding-left:18px; margin:5px 0; }
-#source-buttons { display:flex; flex-direction:column; gap:7px; }
+#source-buttons, #linked-screen-buttons { display:flex; flex-direction:column; gap:7px; }
+#linked-screen-buttons button { text-align:left; background:#363942; border:1px solid #515661; }
+#linked-screen-buttons button:hover { background:#595c68; }
+#linked-screen-buttons small { display:block; margin-top:4px; color:#adb0b9; }
 #source-buttons button { text-align:left; background:#363942; border:1px solid #515661; }
 #source-buttons button:disabled { opacity:.67; cursor:not-allowed; }
 #source-buttons button:not(:disabled):hover { background:#595c68; }
@@ -58,6 +61,7 @@ button:hover { background:#bb353c; }
 <button id="initialize" type="button" disabled title="Requires a source-verified original openScreen or transitionToMainMenu callback">Initialize original menu</button>
 <button id="dismiss-overlay" type="button" disabled title="Requires the original verified hidePatchNotes callback">Dismiss original Patch Notes</button>
 <button id="dismiss-signin" type="button" disabled title="Requires the original verified showSigningInPrompt(bool) function">Dismiss sign-in prompt</button>
+<button id="linked-screen-back" type="button" hidden>Back to original main menu</button>
 <button id="reset" type="button">Reset movie</button>
 </div>
 </header>
@@ -77,6 +81,9 @@ button:hover { background:#bb353c; }
 <h3 id="source-section">Main</h3>
 <div id="source-buttons"></div>
 </div>
+<h3>Other original GFX screens</h3>
+<p>Source-qualified UI_Assets movies open in their own isolated Ruffle layer. These are manual previews, not verified native menu-command mappings.</p>
+<div id="linked-screen-buttons"></div>
 <h3>Verified English localization</h3>
 <p id="localization-status">Checking exact-build text_ui resources…</p>
 <ul id="localization-unresolved"></ul>
