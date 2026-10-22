@@ -90,6 +90,51 @@ class FBXSafetyTests(unittest.TestCase):
                              before_geo.children[0].props)
             self.assertEqual(_validate_geometry(after),1)
 
+    def test_rocky_omitted_zero_influence_cluster_arrays(self):
+        # Blender can omit Indexes and Weights entirely for unused joints.
+        # Those deformers must be removed without stripping weighted ones.
+        variants = (
+            [],
+            [node("Indexes", array("i", []), 1)],
+            [node("Weights", array("d", []), 1)],
+        )
+        for children in variants:
+            with self.subTest(children=len(children)), tempfile.TemporaryDirectory() as folder:
+                path = pathlib.Path(folder) / "rocky3.fbx"
+                # Replace the ordinary empty cluster in a real binary-FBX
+                # serialization while retaining the populated cluster.
+                version, roots, footer = _read_nodes(sample())
+                objects = roots[0]
+                cluster = next(o for o in objects.children_named(b"Deformer")
+                               if _properties(o)[0] == 3)
+                cluster.children = children
+                cluster.terminator = bool(children)
+                path.write_bytes(_write_nodes(version, roots, footer))
+                stats = optimize_binary_fbx(path)
+                self.assertEqual(stats["weighted_clusters"], 1)
+                self.assertEqual(stats["removed_empty_clusters"], 1)
+                survivors = _read_nodes(path.read_bytes())[1][0].children_named(b"Deformer")
+                self.assertEqual({ _properties(o)[0] for o in survivors }, {2, 4})
+
+    def test_rocky_partial_weight_data_is_not_silently_discarded(self):
+        variants = (
+            [node("Indexes", array("i", [0]), 1)],
+            [node("Weights", array("d", [1.0]), 1)],
+        )
+        for children in variants:
+            with self.subTest(children=children[0].name), tempfile.TemporaryDirectory() as folder:
+                path = pathlib.Path(folder) / "rocky3.fbx"
+                version, roots, footer = _read_nodes(sample())
+                cluster = next(o for o in roots[0].children_named(b"Deformer")
+                               if _properties(o)[0] == 3)
+                cluster.children = children
+                cluster.terminator = True
+                original = _write_nodes(version, roots, footer)
+                path.write_bytes(original)
+                with self.assertRaisesRegex(FBXValidationError, "missing indices/weights"):
+                    optimize_binary_fbx(path)
+                self.assertEqual(path.read_bytes(), original)
+
     def test_rejects_invalid_uv_index_without_touching_file(self):
         with tempfile.TemporaryDirectory() as folder:
             path = pathlib.Path(folder)/"bad.fbx"

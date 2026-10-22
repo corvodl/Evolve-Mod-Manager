@@ -241,7 +241,15 @@ def _validate_geometry(objects):
 def _cluster_weights(cluster):
     indices_node, weights_node = cluster.get(b"Indexes"), cluster.get(b"Weights")
     if indices_node is None or weights_node is None:
-        raise FBXValidationError("FBX cluster missing indices/weights")
+        # Blender sometimes omits both arrays for a bone with zero vertex
+        # influences (notably in historical 2012 multi-rig characters).
+        # One omitted array is also harmless only if its partner is empty.
+        # Never interpret a nonempty array as an unweighted cluster.
+        if indices_node is not None and _numeric_array(indices_node, {b"i", b"l"}):
+            raise FBXValidationError("FBX cluster missing indices/weights")
+        if weights_node is not None and _numeric_array(weights_node, {b"d", b"f"}):
+            raise FBXValidationError("FBX cluster missing indices/weights")
+        return 0, False
     indices = _numeric_array(indices_node, {b"i", b"l"})
     weights = _numeric_array(weights_node, {b"d", b"f"})
     if len(indices) != len(weights):
