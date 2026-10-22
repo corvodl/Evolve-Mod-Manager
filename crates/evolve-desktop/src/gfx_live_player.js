@@ -143,7 +143,8 @@
                     String(def.font_name || "(unnamed)") + ", " +
                     String(def.glyphs ?? "unknown") + " glyphs" +
                     (def.bold ? ", bold" : "") + (def.italic ? ", italic" : "") +
-                    ". Runtime font alias/selection unverified.");
+                    (def.postscript_name ? ", full name " + String(def.postscript_name) : "") +
+                    ". Runtime font binding/selection unverified.");
             }
         }
         const nestedText = report.imported_flash_text || {};
@@ -153,6 +154,14 @@
             Number(nestedText.movies || 0) + " imported movies" +
             " (" + Number(nestedText.unreadable_or_unsupported || 0) + " unsupported). " +
             "Later ActionScript text assignments are not translated.");
+        const renderFlags = report.render_effects || {};
+        messages.push("Source Flash display-list effects: " +
+            Number(renderFlags.authored_color_transforms || 0) + " color transforms, " +
+            Number(renderFlags.authored_filter_lists || 0) + " filter lists, " +
+            Number(renderFlags.authored_blend_modes || 0) + " blend-mode placements" +
+            " (" + Number(renderFlags.nested_sprites || 0) + " nested sprites). " +
+            (renderFlags.partial ? "Static effect inventory incomplete." :
+                "Ruffle output and runtime Scaleform effects not visually verified."));
         const video = report.background_video || {};
         messages.push("Main-menu motion background: " +
             String(video.status || "Original video source not inspected"));
