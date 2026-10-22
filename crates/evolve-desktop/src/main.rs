@@ -1470,7 +1470,7 @@ enum Message {
     ViewerToggleFolder(String),
     ViewerPreviewSelected,
     GfxOpenSelected,
-    GfxOpened(Result<gfx_editor::Session, String>),
+    GfxOpened(PathBuf, Result<gfx_editor::Session, String>),
     GfxConfigChanged(String),
     GfxPickBackend,
     GfxBackendPicked(Option<PathBuf>),
@@ -3609,6 +3609,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.selected = state.file_selection.primary_after(index);
             // A newer selection always supersedes an earlier queued preview.
             state.viewer_queued_preview = None;
+            // Selecting a different file immediately leaves GFX mode. Do not
+            // leave the GFX viewport pinned while the model/DDS worker loads,
+            // or let a late GFX completion restore it over the new selection.
+            if !state.keyboard_modifiers.shift()
+                && !state.keyboard_modifiers.control()
+                && !state
+                    .selected
+                    .and_then(|selected| state.inventory.as_ref()?.entries.get(selected))
+                    .is_some_and(|entry| entry.relative_path.to_ascii_lowercase().ends_with(".gfx"))
+            {
+                state.gfx_active = false;
+                if state.viewer_sidebar_active == ViewerSidebarTab::GfxTools {
+                    state.viewer_sidebar_active = ViewerSidebarTab::Files;
+                }
+            }
             // A normal single click previews immediately, like the Qt file
             // editor. Shift/Ctrl remain pure multi-select gestures.
             if !state.keyboard_modifiers.shift()
@@ -3627,7 +3642,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .is_some_and(|entry| {
                         entry.relative_path.to_ascii_lowercase().ends_with(".cdf")
                     });
-                if state.busy {
+                let is_gfx = state
+                    .inventory
+                    .as_ref()
+                    .and_then(|inv| inv.entries.get(index))
+                    .is_some_and(|entry| {
+                        entry.relative_path.to_ascii_lowercase().ends_with(".gfx")
+                    });
+                if state.busy || (is_gfx && state.gfx_busy) {
                     state.viewer_queued_preview = Some(index);
                     state.status = "Preview queued: the latest selected asset will load when the current operation finishes.".into();
                     return Task::none();
@@ -3636,6 +3658,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state,
                     if is_cdf {
                         Message::ViewerPreviewStaticCdf
+                    } else if is_gfx {
+                        Message::GfxOpenSelected
                     } else {
                         Message::ViewerPreviewSelected
                     },
@@ -3719,6 +3743,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return update(state, Message::ViewerPreviewStaticCdf);
         }
         Message::ViewerPreviewStaticCdf => {
+            // CDF assemblies can be opened directly from virtual explorer
+            // entries, bypassing ViewerSelectFile and ViewerPreviewSelected.
+            // They must also leave the GFX workspace immediately.
+            state.gfx_active = false;
+            if state.viewer_sidebar_active == ViewerSidebarTab::GfxTools {
+                state.viewer_sidebar_active = ViewerSidebarTab::Files;
+            }
             if state.busy {
                 state.viewer_queued_preview = state.selected;
                 state.status =
@@ -4405,6 +4436,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.gfx_interactive_status = format!("Interactive preview failed: {error}")
                 }
             }
+            if let Some(index) = state.viewer_queued_preview.take()
+                && state.selected == Some(index)
+            {
+                return update(state, Message::ViewerPreviewSelected);
+            }
         }
         Message::GfxStopInteractive => {
             state.gfx_interactive_running = None;
@@ -4422,7 +4458,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::GfxOpenSelected => {
             if state.gfx_busy {
-                state.status = "GFX edit is still running; wait for FFDec to finish.".into();
+                state.viewer_queued_preview = state.selected;
+                state.status =
+                    "GFX preview queued until the current GFX operation finishes.".into();
                 return Task::none();
             }
             let source = match verified_viewer_file(state) {
@@ -4446,6 +4484,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if let Some(current) = &state.gfx_session {
                 if current.source == source {
                     state.gfx_active = true;
+                    state.viewer_sidebar_active = ViewerSidebarTab::GfxTools;
+                    state.viewer_explorer_visible = true;
+                    state.gfx_tools_section = GfxToolsSection::Preview;
                     return Task::none();
                 }
                 if current.edits > 0 && !current.applied {
@@ -4485,6 +4526,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 })
             });
             state.gfx_interactive_running = None;
+            state.gfx_session = None;
             state.gfx_busy = true;
             state.gfx_active = true;
             state.viewer_sidebar_active = ViewerSidebarTab::GfxTools;
@@ -4494,6 +4536,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.gfx_preview = None;
             state.gfx_status =
                 "Inspecting source GFX and resolving verified same-build imports...".into();
+            let requested_source = source.clone();
             return Task::perform(
                 async move {
                     tokio::task::spawn_blocking(move || {
@@ -4502,11 +4545,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .await
                     .unwrap_or_else(|e| Err(e.to_string()))
                 },
-                Message::GfxOpened,
+                move |result| Message::GfxOpened(requested_source.clone(), result),
             );
         }
-        Message::GfxOpened(result) => {
+        Message::GfxOpened(source, result) => {
             state.gfx_busy = false;
+            // The user may have clicked a model/DDS or a second GFX while
+            // this movie was being inspected. Only the still-selected
+            // original is permitted to take control of the viewer.
+            if verified_viewer_file(state).ok().as_ref() != Some(&source) {
+                if let Some(index) = state.viewer_queued_preview.take()
+                    && state.selected == Some(index)
+                {
+                    return update(state, Message::ViewerPreviewSelected);
+                }
+                return Task::none();
+            }
             match result {
                 Ok(session) => {
                     state.gfx_status = if session.project.is_some() {
@@ -4524,13 +4578,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.gfx_active = true;
                     state.viewer_sidebar_active = ViewerSidebarTab::GfxTools;
                     state.viewer_explorer_visible = true;
+                    state.status = "GFX opened in the viewer. Use GFX Tools to render or launch the interactive preview.".into();
                 }
                 Err(e) => {
-                    state.gfx_active = false;
-                    state.viewer_sidebar_active = ViewerSidebarTab::Files;
+                    // Keep errors in the correct workspace rather than
+                    // displaying the misleading 3D 'No model loaded' panel.
+                    state.gfx_session = None;
+                    state.gfx_active = true;
+                    state.viewer_sidebar_active = ViewerSidebarTab::GfxTools;
                     state.gfx_status = format!("GFX validation failed: {e}");
                     state.status = state.gfx_status.clone();
                 }
+            }
+            if let Some(index) = state.viewer_queued_preview.take()
+                && state.selected == Some(index)
+            {
+                return update(state, Message::ViewerPreviewSelected);
             }
         }
         Message::GfxToggleLiveInspector => {
@@ -4814,6 +4877,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Err(e) => {
                     state.gfx_status = format!("FFDec editing failed: {e}");
                 }
+            }
+            if let Some(index) = state.viewer_queued_preview.take()
+                && state.selected == Some(index)
+            {
+                return update(state, Message::ViewerPreviewSelected);
             }
         }
         Message::PreferenceDensity => {
@@ -8187,6 +8255,164 @@ mod project_edit_tests {
         );
         assert_eq!(state.viewer_queued_preview, None);
         assert_eq!(state.selected, Some(1));
+    }
+
+    #[test]
+    fn selecting_gfx_opens_gfx_workspace_instead_of_3d_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main_menu.gfx"), b"invalid fixture").unwrap();
+        let mut state = State {
+            inventory: Some(scan_directory(dir.path()).unwrap()),
+            ..State::default()
+        };
+        refresh_viewer_rows(&mut state);
+        let _task = update(&mut state, Message::ViewerSelectFile(0));
+        assert!(state.gfx_active, "GFX selection must activate GFX viewport");
+        assert!(state.gfx_busy, "GFX inspection must be asynchronous");
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::GfxTools);
+        assert!(!state.busy, "GFX should not enter the model worker");
+    }
+
+    #[test]
+    fn switching_from_gfx_to_model_restores_viewer_even_after_late_gfx_result() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main_menu.gfx"), b"invalid fixture").unwrap();
+        std::fs::write(dir.path().join("hunter.skin"), b"invalid mesh").unwrap();
+        let inventory = scan_directory(dir.path()).unwrap();
+        let gfx = inventory
+            .entries
+            .iter()
+            .position(|entry| entry.relative_path == "main_menu.gfx")
+            .unwrap();
+        let mesh = inventory
+            .entries
+            .iter()
+            .position(|entry| entry.relative_path == "hunter.skin")
+            .unwrap();
+        let original = std::fs::canonicalize(dir.path().join("main_menu.gfx")).unwrap();
+        let mut state = State {
+            inventory: Some(inventory),
+            ..State::default()
+        };
+        refresh_viewer_rows(&mut state);
+        let _ = update(&mut state, Message::ViewerSelectFile(gfx));
+        assert!(state.gfx_active);
+        let _ = update(&mut state, Message::ViewerSelectFile(mesh));
+        assert!(!state.gfx_active);
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
+        assert!(state.busy, "model preview must launch normally");
+        let _ = update(
+            &mut state,
+            Message::GfxOpened(original, Err("stale".into())),
+        );
+        assert!(
+            !state.gfx_active,
+            "old GFX completion cannot steal the viewport"
+        );
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
+    }
+
+    #[test]
+    fn direct_cdf_assembly_preview_leaves_gfx_even_when_worker_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("character.cdf"), b"<CharacterDefinition/>").unwrap();
+        let mut state = State {
+            inventory: Some(scan_directory(dir.path()).unwrap()),
+            selected: Some(0),
+            gfx_active: true,
+            busy: true,
+            viewer_sidebar_active: ViewerSidebarTab::GfxTools,
+            ..State::default()
+        };
+        let _ = update(&mut state, Message::ViewerPreviewStaticCdf);
+        assert!(!state.gfx_active);
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
+        assert_eq!(state.viewer_queued_preview, Some(0));
+    }
+
+    #[test]
+    fn switching_from_gfx_to_dds_or_other_file_unpins_gfx_tools() {
+        for target in ["image.dds", "character.cdf", "notes.txt"] {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("main_menu.gfx"), b"invalid fixture").unwrap();
+            std::fs::write(dir.path().join(target), b"invalid fixture").unwrap();
+            let inventory = scan_directory(dir.path()).unwrap();
+            let gfx = inventory
+                .entries
+                .iter()
+                .position(|entry| entry.relative_path == "main_menu.gfx")
+                .unwrap();
+            let other = inventory
+                .entries
+                .iter()
+                .position(|entry| entry.relative_path == target)
+                .unwrap();
+            let mut state = State {
+                inventory: Some(inventory),
+                ..State::default()
+            };
+            refresh_viewer_rows(&mut state);
+            let _ = update(&mut state, Message::ViewerSelectFile(gfx));
+            assert!(state.gfx_active);
+            let _ = update(&mut state, Message::ViewerSelectFile(other));
+            assert!(!state.gfx_active, "GFX must be dismissed for {target}");
+            assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
+        }
+    }
+
+    #[test]
+    fn second_gfx_selection_waits_for_prior_open_then_loads_latest() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("first.gfx"), b"invalid fixture").unwrap();
+        std::fs::write(dir.path().join("second.gfx"), b"invalid fixture").unwrap();
+        let inventory = scan_directory(dir.path()).unwrap();
+        let first = inventory
+            .entries
+            .iter()
+            .position(|entry| entry.relative_path == "first.gfx")
+            .unwrap();
+        let second = inventory
+            .entries
+            .iter()
+            .position(|entry| entry.relative_path == "second.gfx")
+            .unwrap();
+        let old_source = std::fs::canonicalize(dir.path().join("first.gfx")).unwrap();
+        let mut state = State {
+            inventory: Some(inventory),
+            ..State::default()
+        };
+        refresh_viewer_rows(&mut state);
+        let _ = update(&mut state, Message::ViewerSelectFile(first));
+        assert!(state.gfx_busy);
+        let _ = update(&mut state, Message::ViewerSelectFile(second));
+        assert_eq!(state.viewer_queued_preview, Some(second));
+        let _ = update(
+            &mut state,
+            Message::GfxOpened(old_source, Err("stale".into())),
+        );
+        assert!(state.gfx_busy, "newest GFX opens after stale result");
+        assert_eq!(state.viewer_queued_preview, None);
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::GfxTools);
+    }
+
+    #[test]
+    fn invalid_gfx_keeps_gfx_error_visible_instead_of_3d_placeholder() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main_menu.gfx"), b"invalid fixture").unwrap();
+        let mut state = State {
+            inventory: Some(scan_directory(dir.path()).unwrap()),
+            ..State::default()
+        };
+        refresh_viewer_rows(&mut state);
+        let source = std::fs::canonicalize(dir.path().join("main_menu.gfx")).unwrap();
+        let _ = update(&mut state, Message::ViewerSelectFile(0));
+        let _ = update(
+            &mut state,
+            Message::GfxOpened(source, Err("synthetic error".into())),
+        );
+        assert!(state.gfx_active);
+        assert!(state.gfx_status.contains("synthetic error"));
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::GfxTools);
     }
 
     #[test]

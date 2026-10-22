@@ -1141,11 +1141,23 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
     } else {
         actions = actions
             .push(
-                text("Select a .gfx in Files to inspect or edit it.")
-                    .size(12)
+                text(if state.gfx_busy {
+                    "Loading selected GFX..."
+                } else {
+                    "Select a .gfx in Files to inspect or edit it."
+                })
+                .size(12)
+                .style(design::muted),
+            )
+            .push(
+                text(state.gfx_status.as_str())
+                    .size(11)
                     .style(design::muted),
             )
-            .push(design::button("Inspect selected GFX").on_press(Message::GfxOpenSelected));
+            .push(
+                design::button("Inspect selected GFX")
+                    .on_press_maybe((!state.gfx_busy).then_some(Message::GfxOpenSelected)),
+            );
     }
     scrollable(panel(actions.padding(12)).width(Fill))
         .height(Fill)
@@ -1205,8 +1217,14 @@ fn gfx_viewport(state: &State) -> Element<'_, Message> {
             .height(Fill)
             .into()
     } else {
-        text("Render a GFX frame from GFX Tools → Preview. The original Ruffle interactive window opens separately.")
-            .size(12).style(design::muted).into()
+        text(if state.gfx_busy || state.gfx_session.is_none() {
+            state.gfx_status.as_str()
+        } else {
+            "GFX loaded. Use GFX Tools → Preview to render a frame or open the interactive Ruffle player."
+        })
+        .size(12)
+        .style(design::muted)
+        .into()
     };
     container(surface)
         .center(Fill)
