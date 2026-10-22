@@ -1,7 +1,7 @@
 //! Local-only HTTP bridge for Ruffle Web's live ExternalInterface API.
 //! Only preverified original menu handlers can be queued from GFX Tools.
 //! No native CryEngine callbacks, game process, file writes, or arbitrary URLs.
-use crate::gfx_interactive::PreviewPreset;
+use crate::{gfx_bundled_tools, gfx_interactive::PreviewPreset};
 use serde_json::json;
 use std::fs;
 use std::io::{Read, Write};
@@ -38,27 +38,24 @@ impl LiveServer {
     pub fn start(
         scratch: tempfile::TempDir,
         supported: Vec<PreviewPreset>,
+        runtime: &str,
     ) -> Result<Self, String> {
         // This is the pin-verified Ruffle WASM bundle shipped with GFX Tools.
         // Desktop Ruffle does not implement browser-side ExternalInterface RPC.
         let app = std::env::current_exe().map_err(|e| e.to_string())?;
-        let bundle = app
+        let app_folder = app.parent().ok_or("No executable directory")?;
+        let js = gfx_bundled_tools::detected_ruffle_web(runtime, app_folder)
+            .ok_or_else(|| {
+                if !runtime.trim().is_empty() {
+                    "Selected Ruffle Web path is incomplete or invalid. Settings → Integrations → Ruffle Web needs ruffle.js and its adjacent .wasm file.".to_string()
+                } else {
+                    "Ruffle Web is not installed. Go to Settings → Integrations → Ruffle → Install Ruffle Web, or select an existing ruffle.js with its adjacent .wasm file.".to_string()
+                }
+            })?;
+        let bundle = js
             .parent()
-            .ok_or("No executable directory")?
-            .join("third_party")
-            .join("RuffleWeb");
-        let bundle = fs::canonicalize(&bundle).map_err(|_| {
-            "Live GFX controls need the optional Ruffle Web tools. Reinstall with GFX Tools selected.".to_string()
-        })?;
-        let js = bundle.join("ruffle.js");
-        if !js.is_file()
-            || fs::symlink_metadata(&js)
-                .map_err(|e| e.to_string())?
-                .file_type()
-                .is_symlink()
-        {
-            return Err("Verified Ruffle Web runtime is missing ruffle.js".into());
-        }
+            .ok_or("Ruffle Web ruffle.js has no runtime folder")?
+            .to_path_buf();
         let token = scratch
             .path()
             .file_name()
