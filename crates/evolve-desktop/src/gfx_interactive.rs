@@ -357,27 +357,84 @@ pub(crate) fn install_live_callbacks(
             .iter()
             .filter_map(|actions| defined_function_arity(actions, function))
             .collect::<Vec<_>>();
-        if found.is_empty() || found.iter().any(|&count| count != expected) {
+        let populated_menu = function == "openScreen"
+            && !found.is_empty()
+            && found.iter().all(|&count| count == 7)
+            && [
+                ("clearMenuState", 1),
+                ("pushMenuState", 0),
+                ("transitionToMainMenu", 0),
+            ]
+            .iter()
+            .all(|(name, arity)| {
+                let matches = chunks
+                    .iter()
+                    .filter_map(|a| defined_function_arity(a, name))
+                    .collect::<Vec<_>>();
+                !matches.is_empty() && matches.iter().all(|n| n == arity)
+            });
+        if !populated_menu && (found.is_empty() || found.iter().any(|&count| count != expected)) {
             continue;
         }
         let method = format!("evolvePreview_{}", function);
         let wrapper = format!("evolveCallback_{}", function);
         // DefineFunction(wrapper, optional boolean parameter) body.
         let mut body = Vec::new();
-        if argument.is_some() {
-            avm1_push_string(&mut body, "value")?;
-            body.push(0x1c); // GetVariable
+        if populated_menu {
+            // Source MainMenu.xml + main_menu.gfx define this seven-argument
+            // lifecycle. Values describe an offline preview, not game state.
+            avm1_push_boolean(&mut body, false);
+            avm1_push_i32(&mut body, 1);
+            avm1_push_string(&mut body, "clearMenuState")?;
+            body.extend_from_slice(&[0x3d, 0x17]);
+            avm1_push_string(&mut body, "menuButtonData")?;
+            avm1_push_string(&mut body, "menuData")?;
+            body.push(0x1c);
+            body.push(0x1d); // SetVariable: original pending menu array.
+            // The original layout compares these labels to choose featured
+            // button dimensions. Translate both sides of that comparison.
+            for (target, key) in [
+                ("MODE_NAME_PLAY", "play"),
+                ("MODE_NAME_TRAINING", "training"),
+            ] {
+                avm1_push_string(&mut body, target)?;
+                avm1_push_string(&mut body, "menuLabels")?;
+                body.push(0x1c);
+                avm1_push_string(&mut body, key)?;
+                body.extend_from_slice(&[0x4e, 0x1d]);
+            }
+            avm1_push_boolean(&mut body, false); // showNews
+            avm1_push_string(&mut body, "")?; // background_video: separately staged
+            avm1_push_boolean(&mut body, true); // cinematic already playing
+            for _ in 0..4 {
+                avm1_push_boolean(&mut body, false);
+            }
+            avm1_push_i32(&mut body, 7);
+            avm1_push_string(&mut body, "openScreen")?;
+            body.extend_from_slice(&[0x3d, 0x17]);
+            for callback in ["pushMenuState", "transitionToMainMenu"] {
+                avm1_push_i32(&mut body, 0);
+                avm1_push_string(&mut body, callback)?;
+                body.extend_from_slice(&[0x3d, 0x17]);
+            }
+        } else {
+            if argument.is_some() {
+                avm1_push_string(&mut body, "value")?;
+                body.push(0x1c);
+            }
+            avm1_push_i32(&mut body, expected as i32);
+            avm1_push_string(&mut body, function)?;
+            body.extend_from_slice(&[0x3d, 0x17]);
         }
-        avm1_push_i32(&mut body, expected as i32);
-        avm1_push_string(&mut body, function)?;
-        body.extend_from_slice(&[0x3d, 0x17]); // CallFunction, Pop result
         avm1_push_boolean(&mut body, true);
         body.extend_from_slice(&[0x3e, 0]); // Return(true), End
         let mut def = Vec::new();
         def.extend_from_slice(wrapper.as_bytes());
         def.push(0);
-        def.extend_from_slice(&(expected as u16).to_le_bytes());
-        if expected == 1 {
+        def.extend_from_slice(&((if populated_menu { 2 } else { expected }) as u16).to_le_bytes());
+        if populated_menu {
+            def.extend_from_slice(b"menuData\0menuLabels\0");
+        } else if expected == 1 {
             def.extend_from_slice(b"value\0");
         }
         def.extend_from_slice(&(body.len() as u16).to_le_bytes());
@@ -402,6 +459,46 @@ pub(crate) fn install_live_callbacks(
         emitted.push(0x4e); // GetMember
         avm1_push_string(&mut emitted, "addCallback")?;
         emitted.extend_from_slice(&[0x52, 0x17]); // CallMethod; Pop
+        // UI-local submenu navigation retains the original movie's
+        // pushMenuState implementation. It is exposed only after exact
+        // first-frame verification of the seven-argument main-menu lifecycle.
+        // No native ExternalInterface game command is bound or executed.
+        if populated_menu {
+            let mut submenu_body = Vec::new();
+            avm1_push_string(&mut submenu_body, "menuButtonData")?;
+            avm1_push_string(&mut submenu_body, "menuData")?;
+            submenu_body.push(0x1c); // GetVariable: supplied source rows
+            submenu_body.push(0x1d); // SetVariable: original pending rows
+            avm1_push_i32(&mut submenu_body, 0);
+            avm1_push_string(&mut submenu_body, "pushMenuState")?;
+            submenu_body.extend_from_slice(&[0x3d, 0x17]); // CallFunction, Pop
+            avm1_push_boolean(&mut submenu_body, true);
+            submenu_body.extend_from_slice(&[0x3e, 0]); // Return, End
+
+            let mut submenu_def = b"evolveCallback_pushSourceMenu\0".to_vec();
+            submenu_def.extend_from_slice(&1u16.to_le_bytes());
+            submenu_def.extend_from_slice(b"menuData\0");
+            submenu_def.extend_from_slice(&(submenu_body.len() as u16).to_le_bytes());
+            emitted.push(0x9b); // DefineFunction
+            emitted.extend_from_slice(&(submenu_def.len() as u16).to_le_bytes());
+            emitted.extend_from_slice(&submenu_def);
+            emitted.extend_from_slice(&submenu_body);
+
+            avm1_push_string(&mut emitted, "evolveCallback_pushSourceMenu")?;
+            emitted.push(0x1c); // GetVariable: wrapper
+            avm1_push_string(&mut emitted, "_root")?;
+            emitted.push(0x1c);
+            avm1_push_string(&mut emitted, "evolvePreview_pushSourceMenu")?;
+            avm1_push_i32(&mut emitted, 3);
+            avm1_push_string(&mut emitted, "flash")?;
+            emitted.push(0x1c);
+            avm1_push_string(&mut emitted, "external")?;
+            emitted.push(0x4e);
+            avm1_push_string(&mut emitted, "ExternalInterface")?;
+            emitted.push(0x4e);
+            avm1_push_string(&mut emitted, "addCallback")?;
+            emitted.extend_from_slice(&[0x52, 0x17]); // CallMethod, Pop
+        }
         allowed.push(*preset);
     }
     if emitted.is_empty() {
@@ -695,9 +792,26 @@ fn renderable_movie(
         result.skipped,
     ))
 }
+fn relative_import(parent: &str, child: &str) -> Result<String, String> {
+    // A parent is a directory, not a .gfx/.swf file. Validate the path
+    // segments by appending a synthetic file name for the shared validator.
+    if (!parent.is_empty() && !safe_import(&format!("{parent}/source.gfx"))) || !safe_import(child)
+    {
+        return Err("Unsafe Scaleform import reference".into());
+    }
+    let relative = if parent.is_empty() {
+        child.to_owned()
+    } else {
+        format!("{parent}/{child}")
+    };
+    if !safe_import(&relative) || relative.len() > 1024 {
+        return Err("Nested Scaleform import exceeds safe path constraints".into());
+    }
+    Ok(relative)
+}
+
 fn stage_import(
     session: &Session,
-    virtual_movie: &str,
     reference: &str,
     output: &Path,
 ) -> Result<Option<(usize, usize)>, String> {
@@ -717,12 +831,12 @@ fn stage_import(
         return Err("Imported movie is not a regular bounded file".into());
     }
     let bytes = fs::read(&real).map_err(|e| e.to_string())?;
-    let virtual_path = virtual_movie
+    let virtual_path = session
+        .relative
         .rsplit_once('/')
         .map(|(parent, _)| format!("{parent}/{reference}"))
         .unwrap_or_else(|| reference.to_owned());
-    let (swf, converted, skipped) =
-        renderable_movie(&bytes, &virtual_path, &session.source, session)?;
+    let (swf, converted, skipped) = renderable_movie(&bytes, &virtual_path, &real, session)?;
     let target = output.join(reference);
     let parent = target
         .parent()
@@ -744,20 +858,21 @@ fn stage_live_import_graph(
         .imports
         .iter()
         .cloned()
-        .map(|name| (name, 0usize))
+        .map(|name| (String::new(), name, 0usize))
         .collect::<VecDeque<_>>();
     let mut visited = HashSet::new();
     let mut imported = Vec::<String>::new();
     let (mut restored, mut skipped, mut missing) = (0usize, 0usize, 0usize);
-    while let Some((name, depth)) = pending.pop_front() {
-        if !visited.insert(name.to_ascii_lowercase()) {
+    while let Some((parent, name, depth)) = pending.pop_front() {
+        let relative = relative_import(&parent, &name)?;
+        if !visited.insert(relative.to_ascii_lowercase()) {
             continue;
         }
         if visited.len() > MAX_IMPORTS {
             return Err("Original GFX import graph exceeds 128 linked movies".into());
         }
-        imported.push(name.clone());
-        match stage_import(session, &session.relative, &name, output) {
+        imported.push(relative.clone());
+        match stage_import(session, &relative, output) {
             Ok(Some((images, unresolved))) => {
                 restored += images;
                 skipped += unresolved;
@@ -771,7 +886,7 @@ fn stage_live_import_graph(
         if depth >= 3 {
             continue;
         }
-        let source = session.folder.path().join(&name);
+        let source = session.folder.path().join(&relative);
         let Ok(mut original) = fs::read(&source) else {
             continue;
         };
@@ -796,22 +911,103 @@ fn stage_live_import_graph(
         let virtual_path = session
             .relative
             .rsplit_once('/')
-            .map(|(parent, _)| format!("{parent}/{name}"))
-            .unwrap_or_else(|| name.clone());
+            .map(|(base, _)| format!("{base}/{relative}"))
+            .unwrap_or_else(|| relative.clone());
+        let next_parent = relative
+            .rsplit_once('/')
+            .map(|(folder, _)| folder.to_owned())
+            .unwrap_or_default();
+        let source_parent = session.folder.path().join(&next_parent);
         crate::gfx_dependencies::stage_imports(
             &details.imports,
             &virtual_path,
             &source,
-            session.folder.path(),
+            &source_parent,
             session.library_root.as_deref(),
             session.source_build.as_deref(),
         )?;
         for child in details.imports {
-            pending.push_back((child, depth + 1));
+            pending.push_back((next_parent.clone(), child, depth + 1));
         }
     }
     imported.sort();
     Ok((restored, skipped, missing, imported))
+}
+
+#[derive(Default)]
+struct ImportedTextCounts {
+    movies: usize,
+    localized: usize,
+    unresolved: usize,
+    fields: usize,
+    skipped: usize,
+}
+
+/// The root menu's translation pass cannot see the initial strings in nested
+/// source movies. Resolve these keys from the exact selected build and patch
+/// only the imported, temporary SWF copies; do not alter runtime ActionScript
+/// assignments, source files, font libraries or game installation contents.
+fn localize_imported_initial_text(
+    session: &Session,
+    root: &Path,
+    imports: &[String],
+) -> Result<ImportedTextCounts, String> {
+    let mut result = ImportedTextCounts::default();
+    if !session
+        .relative
+        .eq_ignore_ascii_case("Libs/UI/main_menu.gfx")
+    {
+        return Ok(result);
+    }
+    let mut keys = std::collections::BTreeSet::<String>::new();
+    for name in imports {
+        if !safe_import(name) {
+            return Err("Unsafe imported movie localization path".into());
+        }
+        let source = root.join(name);
+        if !source.is_file() {
+            continue;
+        }
+        let bytes = fs::read(&source).map_err(|e| e.to_string())?;
+        match crate::gfx_menu_text::authored_keys(&bytes) {
+            Ok(found) => {
+                keys.extend(found);
+                if keys.len() > 1024 {
+                    return Err("Imported menu translation requests exceed supported bounds".into());
+                }
+            }
+            Err(_) => result.skipped += 1,
+        }
+    }
+    if keys.is_empty() {
+        return Ok(result);
+    }
+    let keys = keys.into_iter().collect::<Vec<_>>();
+    let localization = crate::gfx_localization::menu_labels(
+        session.library_root.as_deref(),
+        session.source_build.as_deref(),
+        &keys,
+    );
+    for name in imports {
+        let target = root.join(name);
+        if !target.is_file() {
+            continue;
+        }
+        let bytes = fs::read(&target).map_err(|e| e.to_string())?;
+        match crate::gfx_menu_text::replace_authored_text(&bytes, &localization) {
+            Ok((patched, changes)) => {
+                result.movies += 1;
+                result.localized += changes.patched;
+                result.unresolved += changes.unresolved;
+                result.fields += changes.original_edit_fields;
+                if changes.patched > 0 {
+                    fs::write(target, patched).map_err(|e| e.to_string())?;
+                }
+            }
+            Err(_) => result.skipped += 1,
+        }
+    }
+    Ok(result)
 }
 
 /// Start a distinct Ruffle window on a temporary, validated copy of the GFX.
@@ -840,7 +1036,7 @@ pub fn launch(
     fs::write(&root_movie, movie).map_err(|e| e.to_string())?;
     let mut missing = 0usize;
     for name in session.info.imports.iter().take(MAX_IMPORTS) {
-        match stage_import(session, &session.relative, name, root.path()) {
+        match stage_import(session, name, root.path()) {
             Ok(Some((images, skip))) => {
                 converted += images;
                 skipped += skip;
@@ -919,6 +1115,202 @@ fn original_font_definitions(path: &Path) -> Option<usize> {
     None
 }
 
+/// Return source-authored font identities from an imported SWF. Font IDs
+/// are local to each movie: matching a name does not itself bind an imported
+/// glyph definition to a root movie TextField or prove Ruffle rendered it.
+fn original_font_inventory(path: &Path) -> Option<Vec<serde_json::Value>> {
+    let bytes = fs::read(path).ok()?;
+    if bytes.len() < 16 || bytes.len() > MAX_DECOMPRESSED || &bytes[..3] != b"FWS" {
+        return None;
+    }
+    let nbits = usize::from(bytes[8] >> 3);
+    if !(1..=31).contains(&nbits) {
+        return None;
+    }
+    let mut cursor = 8 + (5 + 4 * nbits).div_ceil(8) + 4;
+    let mut inventory = Vec::new();
+    let mut tags = 0usize;
+    while cursor + 2 <= bytes.len() && tags < 80_000 {
+        let header = u16::from_le_bytes([bytes[cursor], bytes[cursor + 1]]);
+        cursor += 2;
+        let kind = header >> 6;
+        let mut len = usize::from(header & 63);
+        if len == 63 {
+            if cursor + 4 > bytes.len() {
+                return None;
+            }
+            len = u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().ok()?) as usize;
+            cursor += 4;
+        }
+        if len > bytes.len() - cursor {
+            return None;
+        }
+        let tag = &bytes[cursor..cursor + len];
+        if matches!(kind, 48 | 75) && tag.len() >= 7 {
+            let id = u16::from_le_bytes([tag[0], tag[1]]);
+            let flags = tag[2];
+            let name_len = usize::from(tag[4]);
+            if 5 + name_len + 2 > tag.len() || name_len > 128 {
+                return None;
+            }
+            let name = std::str::from_utf8(&tag[5..5 + name_len]).ok()?;
+            if name.chars().any(char::is_control) {
+                return None;
+            }
+            let glyphs = u16::from_le_bytes([tag[5 + name_len], tag[6 + name_len]]);
+            inventory.push(serde_json::json!({
+                "font_id": id,
+                "font_name": name,
+                "glyphs": glyphs,
+                "define_font_tag": kind,
+                "bold": flags & 1 != 0,
+                "italic": flags & 2 != 0
+            }));
+        } else if kind == 10 && tag.len() >= 2 {
+            inventory.push(serde_json::json!({
+                "font_id": u16::from_le_bytes([tag[0], tag[1]]),
+                "font_name": null,
+                "glyphs": null,
+                "define_font_tag": kind
+            }));
+        } else if kind == 91 && tag.len() >= 4 {
+            let id = u16::from_le_bytes([tag[0], tag[1]]);
+            let name_end = tag[3..].iter().position(|b| *b == 0)?;
+            let name = std::str::from_utf8(&tag[3..3 + name_end]).ok()?;
+            if name.len() > 128 || name.chars().any(char::is_control) {
+                return None;
+            }
+            inventory.push(serde_json::json!({
+                "font_id": id,
+                "font_name": name,
+                "glyphs": null,
+                "define_font_tag": kind
+            }));
+        }
+        // DefineFontName (88) is the source PostScript/full-name alias for
+        // a font ID within this movie, not a system-font substitution request.
+        if kind == 88 && tag.len() >= 4 {
+            let id = u16::from_le_bytes([tag[0], tag[1]]);
+            let end = tag[2..].iter().position(|b| *b == 0)?;
+            let alias = std::str::from_utf8(&tag[2..2 + end]).ok()?;
+            if alias.len() > 128 || alias.chars().any(char::is_control) {
+                return None;
+            }
+            for font in &mut inventory {
+                if font["font_id"].as_u64() == Some(u64::from(id)) {
+                    font["postscript_name"] = serde_json::json!(alias);
+                }
+            }
+        }
+        if inventory.len() > 128 {
+            return None;
+        }
+        cursor += len;
+        tags += 1;
+        if kind == 0 {
+            return (cursor == bytes.len()).then_some(inventory);
+        }
+    }
+    None
+}
+
+/// Count SWF-authored display-list effect *flags*, including nested sprites.
+/// This is an evidence inventory, not a substitute for the Scaleform
+/// renderer: per-frame ActionScript color changes, CryEngine shader passes,
+/// and Ruffle's actual pixel output require independent capture/verification.
+fn source_render_effect_inventory(movie: &[u8]) -> serde_json::Value {
+    #[derive(Default)]
+    struct Counters {
+        placements: usize,
+        color_transforms: usize,
+        filter_lists: usize,
+        blend_modes: usize,
+        sprites: usize,
+        incomplete: bool,
+    }
+    fn walk(bytes: &[u8], mut at: usize, depth: usize, stats: &mut Counters) -> bool {
+        if depth > 8 {
+            stats.incomplete = true;
+            return true;
+        }
+        let mut tags = 0usize;
+        while at + 2 <= bytes.len() && tags < 80_000 {
+            let header = u16::from_le_bytes([bytes[at], bytes[at + 1]]);
+            at += 2;
+            let kind = header >> 6;
+            let mut size = usize::from(header & 63);
+            if size == 63 {
+                if at + 4 > bytes.len() {
+                    return false;
+                }
+                size = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+                at += 4;
+            }
+            if size > bytes.len() - at {
+                return false;
+            }
+            let tag = &bytes[at..at + size];
+            match kind {
+                26 if !tag.is_empty() => {
+                    stats.placements += 1;
+                    if tag[0] & 0x08 != 0 {
+                        stats.color_transforms += 1;
+                    }
+                }
+                70 if tag.len() >= 2 => {
+                    stats.placements += 1;
+                    if tag[0] & 0x08 != 0 {
+                        stats.color_transforms += 1;
+                    }
+                    if tag[1] & 0x01 != 0 {
+                        stats.filter_lists += 1;
+                    }
+                    if tag[1] & 0x02 != 0 {
+                        stats.blend_modes += 1;
+                    }
+                }
+                39 if tag.len() >= 4 => {
+                    stats.sprites += 1;
+                    if !walk(&tag[4..], 0, depth + 1, stats) {
+                        return false;
+                    }
+                }
+                _ => {}
+            }
+            at += size;
+            tags += 1;
+            if kind == 0 {
+                return at == bytes.len();
+            }
+        }
+        false
+    }
+    if movie.len() < 20 || movie.len() > MAX_DECOMPRESSED || &movie[..3] != b"FWS" {
+        return serde_json::json!({"status": "Source SWF unavailable or not uncompressed"});
+    }
+    let nbits = usize::from(movie[8] >> 3);
+    if !(1..=31).contains(&nbits) {
+        return serde_json::json!({"status": "Invalid original SWF frame bounds"});
+    }
+    let start = 8 + (5 + 4 * nbits).div_ceil(8) + 4;
+    if start > movie.len() {
+        return serde_json::json!({"status": "Truncated original SWF header"});
+    }
+    let mut counters = Counters::default();
+    let valid = walk(movie, start, 0, &mut counters);
+    serde_json::json!({
+        "status": if valid { "SWF flags inventoried" } else { "Malformed SWF tags" },
+        "partial": counters.incomplete || !valid,
+        "placement_count": counters.placements,
+        "authored_color_transforms": counters.color_transforms,
+        "authored_filter_lists": counters.filter_lists,
+        "authored_blend_modes": counters.blend_modes,
+        "nested_sprites": counters.sprites,
+        "runtime_verified": false,
+        "note": "Static authored tags only. Original dynamic color multipliers, noise, post effects, and Ruffle pixels remain unverified."
+    })
+}
+
 /// Serialize *source-defined* UI_Data commands for an optional live browser
 /// inspector. These do not become fabricated SWF display-list nodes. Commands
 /// that require CryEngine remain read-only; only known child submenu links can
@@ -929,6 +1321,12 @@ struct LiveMenuCounts {
     missing: usize,
     traced_buttons: usize,
 }
+struct LiveMenuLabels<'a> {
+    source: &'a serde_json::Value,
+    text: &'a crate::gfx_menu_text::TextPatch,
+    imported_text: &'a ImportedTextCounts,
+    render_effects: &'a serde_json::Value,
+}
 
 fn write_live_menu_report(
     session: &Session,
@@ -936,6 +1334,8 @@ fn write_live_menu_report(
     counts: LiveMenuCounts,
     verified_actions: &[PreviewPreset],
     imported_movies: &[String],
+    background_video: serde_json::Value,
+    labels: LiveMenuLabels<'_>,
 ) -> Result<(), String> {
     let entries = session
         .menu_commands
@@ -948,7 +1348,8 @@ fn write_live_menu_report(
                 "command": item.command,
                 "child_submenu": item.child_submenu,
                 "disabled_when": item.disabled_when,
-                "hidden_when": item.hidden_when
+                "hidden_when": item.hidden_when,
+                "platform": item.platform
             })
         })
         .collect::<Vec<_>>();
@@ -963,16 +1364,6 @@ fn write_live_menu_report(
         .take(128)
         .map(|item| item.reference.as_str())
         .collect::<Vec<_>>();
-    let label_tokens = session
-        .menu_commands
-        .iter()
-        .map(|entry| entry.label.clone())
-        .collect::<Vec<_>>();
-    let localization = crate::gfx_localization::menu_labels(
-        session.library_root.as_deref(),
-        session.source_build.as_deref(),
-        &label_tokens,
-    );
     // Imported font movies remain original same-build assets; resolving an
     // import does not prove Ruffle supports its Scaleform glyph tags.
     let font_imports = imported_movies
@@ -983,23 +1374,46 @@ fn write_live_menu_report(
                 .dependencies
                 .iter()
                 .find(|entry| entry.reference.eq_ignore_ascii_case(name));
+            let font_path = scratch.join(name);
+            let inventory = original_font_inventory(&font_path);
             serde_json::json!({
                 "movie": name,
-                "staged": scratch.join(name).is_file(),
-                "define_font_tags": original_font_definitions(&scratch.join(name)),
+                "staged": font_path.is_file(),
+                "define_font_tags": original_font_definitions(&font_path),
+                "font_definitions": inventory,
                 "source": found.map_or("Source-defined nested import", |dependency| dependency.outcome.as_str())
             })
         })
         .collect::<Vec<_>>();
     let initialized_in_swf = verified_actions.contains(&PreviewPreset::ReturnToMainMenu);
     let original_open_screen = verified_actions.contains(&PreviewPreset::OpenScreen);
+    let original_hide_patch_notes = verified_actions.contains(&PreviewPreset::HidePatchNotes);
     let report = serde_json::json!({
         "source": "verified same-build UI_Data/MainMenuScreen.xml",
-        "localization": localization,
+        "localization": labels.source,
+        "authored_flash_text": {
+            "fields": labels.text.original_edit_fields,
+            "localized": labels.text.patched,
+            "unresolved": labels.text.unresolved,
+            "scope": "Only original DefineEditText initial strings; dynamic ActionScript labels require native host semantics."
+        },
         "fonts": font_imports,
+        "render_effects": labels.render_effects,
+        "imported_flash_text": {
+            "movies": labels.imported_text.movies,
+            "localized": labels.imported_text.localized,
+            "unresolved": labels.imported_text.unresolved,
+            "fields": labels.imported_text.fields,
+            "unreadable_or_unsupported": labels.imported_text.skipped,
+            "scope": "Only source-authored DefineEditText initial strings in imported SWF previews; dynamic assignments remain unresolved."
+        },
+        "background_video": background_video,
         "initialization": {
             "verified_transition_to_main_menu": initialized_in_swf,
             "verified_open_screen": original_open_screen,
+            "verified_source_submenus": original_open_screen,
+            "verified_go_back": verified_actions.contains(&PreviewPreset::Back),
+            "verified_hide_patch_notes": original_hide_patch_notes,
             "native_cryengine_host_available": false,
             "status": "Only original verified ActionScript handlers may initialize local menu state. Native game state is unavailable."
         },
@@ -1033,8 +1447,30 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
     let bytes = fs::read(&session.editable).map_err(|e| e.to_string())?;
     let (swf, mut converted, mut skipped) =
         renderable_movie(&bytes, &session.relative, &session.source, session)?;
+    let main_menu = session
+        .relative
+        .eq_ignore_ascii_case("Libs/UI/main_menu.gfx");
+    let mut lookup_tokens = session
+        .menu_commands
+        .iter()
+        .map(|row| row.label.clone())
+        .collect::<Vec<_>>();
+    if main_menu {
+        lookup_tokens.extend(crate::gfx_menu_text::authored_keys(&swf)?);
+    }
+    let localization = crate::gfx_localization::menu_labels(
+        session.library_root.as_deref(),
+        session.source_build.as_deref(),
+        &lookup_tokens,
+    );
+    let (swf, localized_text) = if main_menu {
+        crate::gfx_menu_text::replace_authored_text(&swf, &localization)?
+    } else {
+        (swf, crate::gfx_menu_text::TextPatch::default())
+    };
     // Trace authored SWF button handlers before registering the original
     // live callbacks. No synthesized UI or native handler mapping is added.
+    let render_effects = source_render_effect_inventory(&swf);
     let (inspected, traced_buttons) = if session
         .relative
         .eq_ignore_ascii_case("Libs/UI/main_menu.gfx")
@@ -1047,8 +1483,23 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
     fs::write(scratch.path().join("movie.swf"), movie).map_err(|e| e.to_string())?;
     let (imported_images, import_skipped, missing, imported_movies) =
         stage_live_import_graph(session, scratch.path())?;
+    let imported_text = localize_imported_initial_text(session, scratch.path(), &imported_movies)?;
     converted += imported_images;
     skipped += import_skipped;
+    // The original Stage 2 background is CRI USM in videos.pak; it is not
+    // supposed to be reconstructed as a static Flash fill.
+    let background_video = if session
+        .relative
+        .eq_ignore_ascii_case("Libs/UI/main_menu.gfx")
+    {
+        crate::gfx_menu_video::stage_main_menu(
+            session.library_root.as_deref(),
+            session.source_build.as_deref(),
+            scratch.path(),
+        )
+    } else {
+        serde_json::json!({"playable": false, "status": "Not the Stage 2 main menu"})
+    };
     write_live_menu_report(
         session,
         scratch.path(),
@@ -1060,6 +1511,13 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
         },
         &actions,
         &imported_movies,
+        background_video,
+        LiveMenuLabels {
+            source: &localization,
+            text: &localized_text,
+            imported_text: &imported_text,
+            render_effects: &render_effects,
+        },
     )?;
     let live = gfx_live_web::LiveServer::start(scratch, actions, web_runtime)?;
     Ok(RunningPreview {
@@ -1076,6 +1534,9 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
 mod tests {
     use super::*;
     fn menu_fixture() -> Vec<u8> {
+        menu_fixture_arity(0)
+    }
+    fn menu_fixture_arity(open_arity: u16) -> Vec<u8> {
         // Synthetic AVM1 DefineFunction root script (no original Evolve assets).
         let mut movie = b"FWS\x0f".to_vec();
         movie.extend_from_slice(&[0; 4]);
@@ -1100,7 +1561,9 @@ mod tests {
         movie.extend_from_slice(&1u16.to_le_bytes());
         let mut action = Vec::new();
         for (name, params) in [
-            ("openScreen", 0u16),
+            ("openScreen", open_arity),
+            ("clearMenuState", 1),
+            ("pushMenuState", 0),
             ("showEngagementPrompt", 1u16),
             ("transitionToMainMenu", 0),
             ("goBack", 0),
@@ -1152,6 +1615,7 @@ mod tests {
                 child_submenu: "Extras".into(),
                 disabled_when: String::new(),
                 hidden_when: String::new(),
+                platform: String::new(),
             }],
             menu_command_status: "1 verified original menu entry".into(),
             library_root: None,
@@ -1170,12 +1634,25 @@ mod tests {
             },
             &[PreviewPreset::Back],
             &["gfxfontlib_locfont.gfx".into()],
+            serde_json::json!({"playable": false, "status": "missing videos.pak"}),
+            LiveMenuLabels {
+                source: &crate::gfx_localization::menu_labels(
+                    None,
+                    None,
+                    &["@ui_STARTGAME".to_string()],
+                ),
+                text: &crate::gfx_menu_text::TextPatch::default(),
+                imported_text: &ImportedTextCounts::default(),
+                render_effects: &serde_json::json!({"status":"No source rendering effects verified"}),
+            },
         )
         .unwrap();
         let report: serde_json::Value =
             serde_json::from_slice(&fs::read(folder.path().join("preview-menu.json")).unwrap())
                 .unwrap();
         assert_eq!(report["commands"][0]["label"], "@ui_STARTGAME");
+        assert_eq!(report["background_video"]["playable"], false);
+        assert_eq!(report["authored_flash_text"]["localized"], 0);
         assert_eq!(report["localization"]["unresolved"][0], "ui_startgame");
         assert_eq!(
             report["initialization"]["native_cryengine_host_available"],
@@ -1251,6 +1728,102 @@ mod tests {
         let pos = at + 6 + 3;
         corrupted[pos..pos + 2].copy_from_slice(&u16::MAX.to_le_bytes());
         assert!(trace_original_button_actions(&corrupted).is_err());
+    }
+
+    #[test]
+    fn source_effect_inventory_counts_authored_flags_without_claiming_visual_parity() {
+        let mut movie = menu_fixture_arity(7);
+        // Synthetic PlaceObject3: color-transform, filter-list, blend-mode.
+        let payload = [0x08, 0x03, 0, 0];
+        let mut tag = ((70u16 << 6) | (payload.len() as u16))
+            .to_le_bytes()
+            .to_vec();
+        tag.extend_from_slice(&payload);
+        let at = movie.len() - 2;
+        movie.splice(at..at, tag);
+        let size = movie.len() as u32;
+        movie[4..8].copy_from_slice(&size.to_le_bytes());
+        let inventory = source_render_effect_inventory(&movie);
+        assert_eq!(inventory["status"], "SWF flags inventoried");
+        assert_eq!(inventory["authored_color_transforms"], 1);
+        assert_eq!(inventory["authored_filter_lists"], 1);
+        assert_eq!(inventory["authored_blend_modes"], 1);
+        assert_eq!(inventory["runtime_verified"], false);
+        // Do not accept an incomplete or corrupt authored tag stream as proof.
+        movie.pop();
+        assert_eq!(source_render_effect_inventory(&movie)["partial"], true);
+    }
+
+    #[test]
+    fn original_font_inventory_preserves_source_name_glyphs_and_flags() {
+        let mut movie = menu_fixture_arity(7);
+        // Insert a synthetic DefineFont3 before the original SWF end tag.
+        // The glyph count is zero: this tests safe metadata extraction only.
+        let mut payload = vec![7, 0, 5, 0, 4]; // ID=7, layout+bold, language, name size
+        payload.extend_from_slice(b"Test");
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        let mut tag = ((75u16 << 6) | (payload.len() as u16))
+            .to_le_bytes()
+            .to_vec();
+        tag.extend_from_slice(&payload);
+        let at = movie.len() - 2;
+        movie.splice(at..at, tag);
+        let size = movie.len() as u32;
+        movie[4..8].copy_from_slice(&size.to_le_bytes());
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("font.swf");
+        fs::write(&path, movie).unwrap();
+        let source = original_font_inventory(&path).unwrap();
+        assert_eq!(source.len(), 1);
+        assert_eq!(source[0]["font_id"], 7);
+        assert_eq!(source[0]["font_name"], "Test");
+        assert_eq!(source[0]["glyphs"], 0);
+        assert_eq!(source[0]["bold"], true);
+        assert_eq!(source[0]["italic"], false);
+    }
+
+    #[test]
+    fn seven_argument_menu_uses_original_population_and_lifecycle() {
+        let original = menu_fixture_arity(7);
+        let (patched, allowed) =
+            install_live_callbacks(&original, "Libs/UI/main_menu.gfx").unwrap();
+        assert!(allowed.contains(&PreviewPreset::OpenScreen));
+        for name in [
+            "menuButtonData",
+            "menuLabels",
+            "MODE_NAME_TRAINING",
+            "evolvePreview_pushSourceMenu",
+            "evolveCallback_pushSourceMenu",
+        ] {
+            assert!(patched.windows(name.len()).any(|w| w == name.as_bytes()));
+        }
+        for unsupported in [2, 6, 8] {
+            let (_, allowed) =
+                install_live_callbacks(&menu_fixture_arity(unsupported), "Libs/UI/main_menu.gfx")
+                    .unwrap();
+            assert!(!allowed.contains(&PreviewPreset::OpenScreen));
+        }
+        assert_eq!(original, menu_fixture_arity(7));
+    }
+
+    #[test]
+    #[ignore = "read-only local game acceptance; set EVOLVE_GFX_SOURCE and EVOLVE_GFX_PREVIEW_OUT"]
+    fn real_menu_bootstrap_acceptance() {
+        let source = std::env::var("EVOLVE_GFX_SOURCE").unwrap();
+        let output = std::env::var("EVOLVE_GFX_PREVIEW_OUT").unwrap();
+        let bytes = fs::read(&source).unwrap();
+        let movie = flash_movie(&bytes).unwrap();
+        let (patched, allowed) = install_live_callbacks(&movie, "Libs/UI/main_menu.gfx").unwrap();
+        assert!(allowed.contains(&PreviewPreset::OpenScreen));
+        use std::io::Write;
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(output)
+            .unwrap()
+            .write_all(&patched)
+            .unwrap();
+        assert_eq!(fs::read(source).unwrap(), bytes);
     }
 
     #[test]
@@ -1334,6 +1907,24 @@ mod tests {
         let action = b"\x96\x12\x00\x00showPatchNotes\x00";
         assert_eq!(defined_function_arity(action, "showPatchNotes"), None);
         assert_eq!(defined_function_arity(&[0x9b, 0x01, 0x00, 0], "a"), None);
+    }
+    #[test]
+    fn nested_imports_keep_original_relative_parent_and_reject_escape() {
+        assert_eq!(
+            relative_import("", "fonts/main.gfx").unwrap(),
+            "fonts/main.gfx"
+        );
+        assert_eq!(
+            relative_import("fonts", "glyphs.gfx").unwrap(),
+            "fonts/glyphs.gfx"
+        );
+        assert_eq!(
+            relative_import("ui/icons", "main.swf").unwrap(),
+            "ui/icons/main.swf"
+        );
+        assert!(relative_import("../ui", "font.gfx").is_err());
+        assert!(relative_import("fonts", "../hidden.gfx").is_err());
+        assert!(relative_import("icons", "C:/private.swf").is_err());
     }
     #[test]
     fn refuses_untrusted_runtimes_and_import_paths() {

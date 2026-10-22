@@ -361,3 +361,71 @@ replacement for native callbacks. This requires tracing the exact button
 callback and testing the associated animation frames and imported movies. The
 current standalone Ruffle desktop executable has a dummy ExternalInterface,
 so this work does **not** claim arbitrary native button commands function.
+
+## Stage 2 original moving main-menu background
+
+The full Evolve Stage 2 menu reference shows **two distinct layers**:
+the original CRI video `Libs/UI/FlashAssets/videos/main_menu.usm` in `videos.pak`,
+and `Libs/UI/main_menu.gfx` for the Flash menu, pop-ups, and controls.
+A red strip with an empty scroll area is likely part of the *Patch Notes*
+overlay, not the Daily Sign In window. We do not synthesize the Glacial
+Behemoth artwork as a placeholder for the original motion video.
+
+In the isolated Ruffle Web preview:
+
+1. Import the same-build **videos.pak** into the manager Asset Library and
+   select its build alongside `main_menu.gfx`.
+2. Because browsers cannot directly play proprietary CRI USM containers, a
+   separate browser video is required. Create `main_menu.preview.mp4` or
+   `main_menu.preview.webm` alongside the extracted original
+   `main_menu.usm`, **or** explicitly set `EVOLVE_GFX_FFMPEG` to the full
+   absolute path of a trusted modern `ffmpeg.exe` and relaunch the manager.
+   Only the exact-build source video is passed to this decoder. FFmpeg must
+   support the original CRI USM variant and H.264 encoding. This is best-effort,
+   not a replacement for CryEngine's built-in movie decoder.
+3. On success, the preview stores a bounded, temporary `menu-background.mp4`
+   or `menu-background.webm` and loops it **muted** beneath Ruffle's
+   `wmode: transparent` Flash viewport. The original USM and all PAKs
+   stay unchanged, and no video leaves the machine.
+4. The source inspector reports missing archives, unsupported video formats,
+   decoder issues, and whether the original motion layer is playable.
+   Without a verified source or browser derivative, the preview stays black.
+   It never infers the background from an unrelated static texture.
+
+The video layer does **not** fix missing source-defined navigation labels,
+font registration, news/profile data, or game-only native callbacks. The menu
+and Patch Notes overlay still require separate ActionScript/runtime validation.
+
+## Source-backed main-menu text and original UI lifecycle (stacked after video preview)
+
+The Ruffle preview now performs a bounded pass over the **original SWF
+DefineEditText initial values**, not arbitrary rendered pixels or screenshot
+coordinates. Keys such as `@ui_STARTGAME` are matched only against values
+from the selected build's verified English `text_ui_*.xml` sheets. Matching
+source-authored text fields receive the verified translation in the isolated
+temporary `movie.swf` only; original `.gfx`, PAKs and ActionScript opcodes
+remain unchanged. Unknown/missing/composite labels stay untouched. GFX Tools
+reports how many original edit fields were found, how many were localized,
+and how many keys remain unresolved. This **does not** translate dynamically
+created TextFields, variable assignments, HTML markup, or game-side data.
+
+The original nested Scaleform font/navigation GFX imports are now resolved
+relative to the movie that declared each import (rather than the root menu
+movie). Imports remain checked for safe paths and must exist in the selected
+build's same-folder extraction or verified Asset Library. Imported font
+glyph rendering still depends on Ruffle supporting the original SWF tags.
+
+If the source GFX registers a verified `hidePatchNotes` method, the live
+preview exposes **Dismiss original Patch Notes** without a restart. A successful
+call proves invocation of the original ActionScript wrapper, not that the
+CryEngine game state or UI services were reproduced. If no verified method
+is present, the control stays disabled. The original `openScreen` and
+`transitionToMainMenu` entry points remain optional source-verified calls,
+not guessed host initialization.
+
+Remaining parity checks with the authentic build:
+- Main menu without the Patch Notes overlay, original navigation labels,
+  highlight transitions, news carousel and buttons
+- Correct embedded/imported font library glyphs versus the game's renderer
+- Native game-owned UI data (profile, challenges, store, rewards, patch notes)
+- Actual source button-to-native handler mapping and complete runtime behavior
