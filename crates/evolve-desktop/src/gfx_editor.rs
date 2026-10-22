@@ -2,6 +2,7 @@
 //! No operation modifies original PAKs, libraries or the game installation.
 use crate::gfx_dependencies::{self, Dependency};
 use crate::gfx_external_textures;
+use crate::gfx_menu_map;
 use crate::modding_projects::{self, ProjectRow};
 use evolve_core::gfx::{GfxInfo, MAX_SOURCE, inspect_gfx};
 use evolve_core::gfx_layout::{LayoutEdit, StaticLayer, edit_first_frame, static_layers};
