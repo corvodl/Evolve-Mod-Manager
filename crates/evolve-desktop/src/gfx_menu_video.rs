@@ -49,7 +49,9 @@ fn is_browser_video(path: &Path, ext: &str) -> Result<bool, String> {
 /// the original USM, not replacements for the source movie or proof of game
 /// codec parity. Never follow a symlink out of the verified USM parent.
 fn sidecar(original: &Path, scratch: &Path) -> Result<Option<&'static str>, String> {
-    let parent = original.parent().ok_or("Original video has no parent folder")?;
+    let parent = original
+        .parent()
+        .ok_or("Original video has no parent folder")?;
     let safe_parent = fs::canonicalize(parent).map_err(|e| e.to_string())?;
     for (source_name, target_name, extension) in [
         ("main_menu.preview.mp4", "menu-background.mp4", "mp4"),
@@ -62,7 +64,9 @@ fn sidecar(original: &Path, scratch: &Path) -> Result<Option<&'static str>, Stri
         plain_file(&candidate, MAX_BROWSER_VIDEO)?;
         let real = fs::canonicalize(&candidate).map_err(|e| e.to_string())?;
         if !real.starts_with(&safe_parent) || !is_browser_video(&real, extension)? {
-            return Err(format!("Invalid original-video preview derivative: {source_name}"));
+            return Err(format!(
+                "Invalid original-video preview derivative: {source_name}"
+            ));
         }
         let target = scratch.join(target_name);
         fs::copy(real, &target).map_err(|e| e.to_string())?;
@@ -83,7 +87,11 @@ fn configured_ffmpeg() -> Result<Option<PathBuf>, String> {
     if !path.is_absolute() {
         return Err("EVOLVE_GFX_FFMPEG must be an absolute path".into());
     }
-    if cfg!(windows) && !path.file_name().is_some_and(|name| name.eq_ignore_ascii_case("ffmpeg.exe")) {
+    if cfg!(windows)
+        && !path
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("ffmpeg.exe"))
+    {
         return Err("The configured decoder must be ffmpeg.exe".into());
     }
     plain_file(&path, 512 * 1024 * 1024)?;
@@ -98,13 +106,32 @@ fn transcode(original: &Path, scratch: &Path, ffmpeg: &Path) -> Result<&'static 
     let mut child = Command::new(ffmpeg)
         .arg("-hide_banner")
         .arg("-nostdin")
-        .arg("-loglevel").arg("error")
+        .arg("-loglevel")
+        .arg("error")
         .arg("-y")
-        .arg("-i").arg(original)
-        .args(["-map", "0:v:0", "-an", "-c:v", "libx264",
-               "-preset", "veryfast", "-crf", "27", "-pix_fmt", "yuv420p",
-               "-vf", "scale=1280:-2", "-t", "90", "-fs", "62914560",
-               "-movflags", "+faststart"])
+        .arg("-i")
+        .arg(original)
+        .args([
+            "-map",
+            "0:v:0",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "27",
+            "-pix_fmt",
+            "yuv420p",
+            "-vf",
+            "scale=1280:-2",
+            "-t",
+            "90",
+            "-fs",
+            "62914560",
+            "-movflags",
+            "+faststart",
+        ])
         .arg(&target)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -122,7 +149,9 @@ fn transcode(original: &Path, scratch: &Path, ffmpeg: &Path) -> Result<&'static 
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = fs::remove_file(&target);
-                return Err("Background video conversion exceeded the 45-second preview limit".into());
+                return Err(
+                    "Background video conversion exceeded the 45-second preview limit".into(),
+                );
             }
             Err(error) => {
                 let _ = child.kill();
@@ -146,11 +175,13 @@ fn transcode(original: &Path, scratch: &Path, ffmpeg: &Path) -> Result<&'static 
 /// Report only relative, known preview filenames to the browser. Missing
 /// video never blocks GFX editing or fabricates static monster artwork.
 pub fn stage_main_menu(root: Option<&Path>, build: Option<&str>, scratch: &Path) -> Value {
-    let base = || json!({
-        "source_archive": ORIGINAL_PAK,
-        "source_member": ORIGINAL_MEMBER,
-        "playable": false
-    });
+    let base = || {
+        json!({
+            "source_archive": ORIGINAL_PAK,
+            "source_member": ORIGINAL_MEMBER,
+            "playable": false
+        })
+    };
     let (Some(root), Some(build)) = (root, build) else {
         return json!({"source": base(), "status":
             "Import same-build videos.pak to the Asset Library and select the source build before previewing the original main-menu background."});
@@ -158,22 +189,35 @@ pub fn stage_main_menu(root: Option<&Path>, build: Option<&str>, scratch: &Path)
     if build.trim().is_empty() {
         return json!({"source": base(), "status": "Select a verified source build for the original background video."});
     }
-    let found = match resolve_imported_reference_in_archive(root, ORIGINAL_MEMBER, build, ORIGINAL_PAK) {
+    let found = match resolve_imported_reference_in_archive(
+        root,
+        ORIGINAL_MEMBER,
+        build,
+        ORIGINAL_PAK,
+    ) {
         Ok(LibraryReferenceStatus::Found(entry)) => entry,
-        Ok(LibraryReferenceStatus::Missing) => return json!({"source": base(), "status":
-            "Original Libs/UI/FlashAssets/videos/main_menu.usm is not imported from videos.pak for this build."}),
-        Ok(LibraryReferenceStatus::Ambiguous(_)) => return json!({"source": base(), "status":
-            "Ambiguous same-build original main-menu videos; choose one source PAK before rendering."}),
-        Err(error) => return json!({"source": base(), "status": format!("Original video source resolution failed: {error}")}),
+        Ok(LibraryReferenceStatus::Missing) => {
+            return json!({"source": base(), "status":
+            "Original Libs/UI/FlashAssets/videos/main_menu.usm is not imported from videos.pak for this build."});
+        }
+        Ok(LibraryReferenceStatus::Ambiguous(_)) => {
+            return json!({"source": base(), "status":
+            "Ambiguous same-build original main-menu videos; choose one source PAK before rendering."});
+        }
+        Err(error) => {
+            return json!({"source": base(), "status": format!("Original video source resolution failed: {error}")});
+        }
     };
     let original = Path::new(&found.absolute_path);
     if let Err(error) = plain_file(original, MAX_USM) {
         return json!({"source": base(), "status": format!("Original main-menu video rejected: {error}")});
     }
     match is_usm(original) {
-        Ok(true) => {},
-        _ => return json!({"source": base(), "status":
-            "Original main-menu video does not have a CRI USM CRID header; refusing fallback artwork."}),
+        Ok(true) => {}
+        _ => {
+            return json!({"source": base(), "status":
+            "Original main-menu video does not have a CRI USM CRID header; refusing fallback artwork."});
+        }
     }
     let playback = match sidecar(original, scratch) {
         Ok(Some(file)) => Ok((file, "user-provided browser video derived from original USM")),
@@ -193,7 +237,7 @@ pub fn stage_main_menu(root: Option<&Path>, build: Option<&str>, scratch: &Path)
             "mode": mode,
             "status": "Original main-menu background video staged separately behind transparent Ruffle UI."
         }),
-        Err(status) => json!({"source": base(), "playable": false, "status": status})
+        Err(status) => json!({"source": base(), "playable": false, "status": status}),
     }
 }
 
@@ -208,10 +252,24 @@ mod tests {
         assert!(is_usm(&original).unwrap());
         let target = tempfile::tempdir().unwrap();
         assert!(sidecar(&original, target.path()).unwrap().is_none());
-        fs::write(folder.path().join("main_menu.preview.mp4"), b"\0\0\0\x18ftypisom").unwrap();
-        assert_eq!(sidecar(&original, target.path()).unwrap(), Some("menu-background.mp4"));
-        assert_eq!(fs::read(target.path().join("menu-background.mp4")).unwrap(), b"\0\0\0\x18ftypisom");
-        fs::write(folder.path().join("main_menu.preview.mp4"), b"not-a-mp4-file").unwrap();
+        fs::write(
+            folder.path().join("main_menu.preview.mp4"),
+            b"\0\0\0\x18ftypisom",
+        )
+        .unwrap();
+        assert_eq!(
+            sidecar(&original, target.path()).unwrap(),
+            Some("menu-background.mp4")
+        );
+        assert_eq!(
+            fs::read(target.path().join("menu-background.mp4")).unwrap(),
+            b"\0\0\0\x18ftypisom"
+        );
+        fs::write(
+            folder.path().join("main_menu.preview.mp4"),
+            b"not-a-mp4-file",
+        )
+        .unwrap();
         assert!(sidecar(&original, target.path()).is_err());
     }
     #[test]
