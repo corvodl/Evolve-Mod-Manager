@@ -68,6 +68,7 @@
                 button.title = (translated ? label + " · " : "") + explanation;
                 button.disabled = !isLocal;
                 if (isLocal) {
+                    button.dataset.sourceSubmenu = target;
                     button.addEventListener("click", () => showGroup(target));
                 }
                 list.appendChild(button);
@@ -236,14 +237,61 @@
         // stay disabled. These are original Flash buttons, not HTML substitutes.
         const translate = key => (report.localization?.translations || {})[key.replace(/^@/, "").toLowerCase()] || key;
         const menuLabels = {play: translate("@ui_mp_OnlineGame"), training: translate("@ui_Training")};
-        const menuData = (report.commands || []).filter(item =>
-            item.submenu === "Main" && (!item.platform || item.platform === "pc") && !item.hidden_when
+        const sourceRows = Array.isArray(report.commands) ? report.commands : [];
+        const groups = new Set(sourceRows.map(item => item.submenu));
+        const rowsForGroup = group => sourceRows.filter(item =>
+            item.submenu === group && (!item.platform || String(item.platform).toLowerCase() === "pc")
+            && !item.hidden_when
         ).slice(0, 128).map(item => ({
-            displayName: (report.localization?.translations || {})[String(item.label).replace(/^@/, "").toLowerCase()] || item.label,
+            displayName: translate(String(item.label || "")),
             command: item.command, isEnabled: !item.disabled_when,
             isDisabledOnSignIn: Boolean(item.disabled_when), isNew: false,
             isSelectableWhenDisabled: false, setStatListArray: []
         }));
+        const menuData = rowsForGroup("Main");
+        const canPushSubmenu = report?.initialization?.verified_source_submenus === true;
+        const canGoBack = report?.initialization?.verified_go_back === true;
+        const sourceMenuStack = ["Main"];
+        const pushOriginalSourceMenu = group => {
+            if (!canPushSubmenu || !groups.has(group) || !rowsForGroup(group).length) {
+                show("Original submenu has no verified, visible source rows.", true);
+                return false;
+            }
+            try {
+                const result = player.ruffle().callExternalInterface(
+                    "evolvePreview_pushSourceMenu", rowsForGroup(group));
+                if (result !== true) throw new Error("Flash callback unavailable");
+                sourceMenuStack.push(group);
+                show("Original Flash menu state pushed: " + group +
+                     ". Native game-service commands remain disabled.");
+                return true;
+            } catch (error) {
+                show("Original submenu transition failed: " + String(error), true);
+                return false;
+            }
+        };
+        const goBackOriginalSourceMenu = () => {
+            if (!canGoBack || sourceMenuStack.length < 2) return false;
+            try {
+                const result = player.ruffle().callExternalInterface("evolvePreview_goBack");
+                if (result !== true) throw new Error("Original goBack unavailable");
+                sourceMenuStack.pop();
+                show("Original Flash goBack invoked. Visual transition requires Ruffle verification.");
+                return true;
+            } catch (error) {
+                show("Original goBack failed: " + String(error), true);
+                return false;
+            }
+        };
+        // The inspector is source metadata, not a replacement rendered menu.
+        // Only locally sourced child menus may push the movie's own state.
+        const sourceList = document.getElementById("source-buttons");
+        sourceList.addEventListener("click", event => {
+            const button = event.target.closest("button[data-source-submenu]");
+            if (button && sourceList.contains(button)) {
+                pushOriginalSourceMenu(button.dataset.sourceSubmenu);
+            }
+        });
         const initializeOriginal = async (automatic) => {
             if (!canInitialize) {
                 show("No supported source-verified menu lifecycle was found.", true);
