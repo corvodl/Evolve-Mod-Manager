@@ -261,9 +261,10 @@ fn original_video(root: &Path, build: &str) -> Result<LibraryReferenceStatus, St
     // fixed authored paths. Accept only a *unique*, exact main_menu.usm
     // basename from the same verified videos.pak; never choose the first
     // similar-looking clip.
-    if matches.is_empty() {
-        if let Some(paths) = imported_video_members(root, build)? {
-            for path in paths
+    if matches.is_empty()
+        && let Some(paths) = imported_video_members(root, build)?
+    {
+        for path in paths
                 .into_iter()
                 .filter(|name| is_named_main_menu_usm(name))
             {
@@ -290,7 +291,6 @@ fn original_video(root: &Path, build: &str) -> Result<LibraryReferenceStatus, St
                     }
                 }
             }
-        }
     }
     Ok(match matches.len() {
         0 => LibraryReferenceStatus::Missing,
