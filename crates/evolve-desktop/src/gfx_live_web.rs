@@ -500,7 +500,11 @@ mod tests {
             let web = tempfile::tempdir().unwrap();
             fs::write(src.path().join("movie.swf"), b"FWSsynthetic").unwrap();
             fs::create_dir_all(src.path().join("runtime-images")).unwrap();
-            fs::write(src.path().join("runtime-images/hunt.png"), b"png original DDS conversion").unwrap();
+            fs::write(
+                src.path().join("runtime-images/hunt.png"),
+                b"png original DDS conversion",
+            )
+            .unwrap();
             fs::write(
                 src.path().join("menu-background.mp4"),
                 b"\0\0\0\x18ftypisom",
@@ -547,8 +551,13 @@ mod tests {
         assert!(mode.contains("200 OK"));
         assert!(mode.contains("image/png"));
         assert!(mode.contains("png original DDS conversion"));
-        assert!(get("/private-token/img/Libs/UI/FlashAssets/images/News/news.dds", None)
-            .contains("404 Not Found"));
+        assert!(
+            get(
+                "/private-token/img/Libs/UI/FlashAssets/images/News/news.dds",
+                None
+            )
+            .contains("404 Not Found")
+        );
         assert!(get("/private-token/secret.mp4", None).contains("404 Not Found"));
     }
 
