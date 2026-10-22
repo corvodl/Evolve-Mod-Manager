@@ -459,6 +459,46 @@ pub(crate) fn install_live_callbacks(
         emitted.push(0x4e); // GetMember
         avm1_push_string(&mut emitted, "addCallback")?;
         emitted.extend_from_slice(&[0x52, 0x17]); // CallMethod; Pop
+        // UI-local submenu navigation retains the original movie's
+        // pushMenuState implementation. It is exposed only after exact
+        // first-frame verification of the seven-argument main-menu lifecycle.
+        // No native ExternalInterface game command is bound or executed.
+        if populated_menu {
+            let mut submenu_body = Vec::new();
+            avm1_push_string(&mut submenu_body, "menuButtonData")?;
+            avm1_push_string(&mut submenu_body, "menuData")?;
+            submenu_body.push(0x1c); // GetVariable: supplied source rows
+            submenu_body.push(0x1d); // SetVariable: original pending rows
+            avm1_push_i32(&mut submenu_body, 0);
+            avm1_push_string(&mut submenu_body, "pushMenuState")?;
+            submenu_body.extend_from_slice(&[0x3d, 0x17]); // CallFunction, Pop
+            avm1_push_boolean(&mut submenu_body, true);
+            submenu_body.extend_from_slice(&[0x3e, 0]); // Return, End
+
+            let mut submenu_def = b"evolveCallback_pushSourceMenu\0".to_vec();
+            submenu_def.extend_from_slice(&1u16.to_le_bytes());
+            submenu_def.extend_from_slice(b"menuData\0");
+            submenu_def.extend_from_slice(&(submenu_body.len() as u16).to_le_bytes());
+            emitted.push(0x9b); // DefineFunction
+            emitted.extend_from_slice(&(submenu_def.len() as u16).to_le_bytes());
+            emitted.extend_from_slice(&submenu_def);
+            emitted.extend_from_slice(&submenu_body);
+
+            avm1_push_string(&mut emitted, "evolveCallback_pushSourceMenu")?;
+            emitted.push(0x1c); // GetVariable: wrapper
+            avm1_push_string(&mut emitted, "_root")?;
+            emitted.push(0x1c);
+            avm1_push_string(&mut emitted, "evolvePreview_pushSourceMenu")?;
+            avm1_push_i32(&mut emitted, 3);
+            avm1_push_string(&mut emitted, "flash")?;
+            emitted.push(0x1c);
+            avm1_push_string(&mut emitted, "external")?;
+            emitted.push(0x4e);
+            avm1_push_string(&mut emitted, "ExternalInterface")?;
+            emitted.push(0x4e);
+            avm1_push_string(&mut emitted, "addCallback")?;
+            emitted.extend_from_slice(&[0x52, 0x17]); // CallMethod, Pop
+        }
         allowed.push(*preset);
     }
     if emitted.is_empty() {
@@ -1085,6 +1125,8 @@ fn write_live_menu_report(
         "initialization": {
             "verified_transition_to_main_menu": initialized_in_swf,
             "verified_open_screen": original_open_screen,
+            "verified_source_submenus": original_open_screen,
+            "verified_go_back": verified_actions.contains(&PreviewPreset::Back),
             "verified_hide_patch_notes": original_hide_patch_notes,
             "native_cryengine_host_available": false,
             "status": "Only original verified ActionScript handlers may initialize local menu state. Native game state is unavailable."
@@ -1402,7 +1444,13 @@ mod tests {
         let (patched, allowed) =
             install_live_callbacks(&original, "Libs/UI/main_menu.gfx").unwrap();
         assert!(allowed.contains(&PreviewPreset::OpenScreen));
-        for name in ["menuButtonData", "menuLabels", "MODE_NAME_TRAINING"] {
+        for name in [
+            "menuButtonData",
+            "menuLabels",
+            "MODE_NAME_TRAINING",
+            "evolvePreview_pushSourceMenu",
+            "evolveCallback_pushSourceMenu",
+        ] {
             assert!(patched.windows(name.len()).any(|w| w == name.as_bytes()));
         }
         for unsupported in [2, 6, 8] {
