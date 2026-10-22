@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from blender_uv0 import prepare_original_uv
+from blender_fbx_safety import (prepare_export_materials, validate_blender_meshes,
+                               optimize_binary_fbx)
 
 def run():
     # blender.exe --background --factory-startup --python <script> -- input.glb output.fbx 0|1
@@ -41,6 +43,9 @@ def run():
     for obj in meshes:
         if obj.data.uv_layers:
             obj.data.uv_layers.active_index = 0
+    prepare_export_materials(meshes, embed_textures)
+    validate_blender_meshes(meshes, rigged=any(o.type == 'ARMATURE' for o in visible),
+                            embed_textures=embed_textures)
     bpy.ops.object.select_all(action='DESELECT')
     for obj in visible:
         obj.select_set(True)
@@ -66,7 +71,9 @@ def run():
     )
     if not destination.is_file() or destination.stat().st_size < 256:
         raise RuntimeError("Blender did not create a valid FBX")
+    optimized = optimize_binary_fbx(destination, embed_textures=embed_textures)
     print(json.dumps({
+        "fbx_optimization": optimized,
         "meshes": len(meshes),
         "armatures": sum(o.type == 'ARMATURE' for o in visible),
         "animations_included": include_animation,
