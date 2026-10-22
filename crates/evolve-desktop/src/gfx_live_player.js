@@ -263,6 +263,19 @@
         // Ruffle's allowScriptAccess mechanism.
         const report = await sourceLoad;
         const hasVideo = configureMainMenuVideo(report);
+        const notice = document.getElementById("preview-notice");
+        const reasons = [];
+        if (!hasVideo && report?.background_video?.source?.source_archive === "videos.pak") {
+            reasons.push("Original moving menu background not displayed: " +
+                String(report.background_video.status ||
+                       "the original videos.pak source could not be prepared."));
+        }
+        const unresolved = report?.localization?.unresolved;
+        if (Array.isArray(unresolved) && unresolved.includes("ui_signinginprompt")) {
+            reasons.push("@ui_SigningInPrompt is untranslated. Verify same-build English UI strings; dynamic ActionScript text may also depend on the native game host.");
+        }
+        notice.textContent = reasons.join("\n");
+        notice.hidden = reasons.length === 0;
         // Ruffle's transparent window mode composites the original Flash
         // display list over the separately decoded looping game background.
         // An absent video keeps the default opaque, black diagnostic view.
@@ -306,6 +319,23 @@
         const dismissOverlay = document.getElementById("dismiss-overlay");
         const canDismissPatchNotes = report?.initialization?.verified_hide_patch_notes === true;
         dismissOverlay.disabled = !canDismissPatchNotes;
+        const dismissSignin = document.getElementById("dismiss-signin");
+        const canDismissSignin = report?.initialization?.verified_hide_signing_in === true;
+        dismissSignin.disabled = !canDismissSignin;
+        dismissSignin.addEventListener("click", () => {
+            if (!canDismissSignin) return;
+            try {
+                // Invoke only the source-verified UI-local ActionScript function.
+                // Never simulate game authentication or register native services.
+                const result = player.ruffle().callExternalInterface(
+                    "evolvePreview_showSigningInPrompt", false);
+                show(result === true
+                    ? "Called original showSigningInPrompt(false); inspect Flash for the transition."
+                    : "Original sign-in dismissal was unavailable at runtime.", result !== true);
+            } catch (error) {
+                show("Original sign-in dismissal raised: " + String(error), true);
+            }
+        });
         dismissOverlay.addEventListener("click", () => {
             if (!canDismissPatchNotes) return;
             try {
