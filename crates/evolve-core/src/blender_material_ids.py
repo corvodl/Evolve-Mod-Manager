@@ -40,6 +40,7 @@ def material_records_from_glb(path):
     meshes = document.get("meshes", [])
     tagged, untagged = 0, 0
     totals = Counter()
+    authored_no_draw = {}
     for mesh in meshes:
         for primitive in mesh.get("primitives", []):
             index = primitive.get("material")
@@ -55,13 +56,21 @@ def material_records_from_glb(path):
             _check(type(count) is int and count > 0 and count % 3 == 0,
                    "invalid CryEngine primitive triangle count")
             totals[identity] += count // 3
+            invisible = (material.get("alphaMode") == "BLEND"
+                         and material.get("pbrMetallicRoughness", {})
+                         .get("baseColorFactor", [1, 1, 1, 1])[-1] == 0)
+            _check(identity not in authored_no_draw or
+                   authored_no_draw[identity] == invisible,
+                   "inconsistent NoDraw visibility for source material ID")
+            authored_no_draw[identity] = invisible
             tagged += 1
     _check(not (tagged and untagged),
            "some material primitives have no verifiable source ID")
     if not tagged:
         return None
     return [{"id": identity, "triangles": triangles,
-             "name": "Original CryEngine material ID " + str(identity)}
+             "name": "Original CryEngine material ID " + str(identity),
+             "no_draw": authored_no_draw[identity]}
             for identity, triangles in sorted(totals.items())]
 
 
