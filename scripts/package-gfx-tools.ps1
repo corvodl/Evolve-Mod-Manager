@@ -28,13 +28,17 @@ function Get-VerifiedArchive {
 
 $ffdecZip = Get-VerifiedArchive -Uri 'https://github.com/jindrapetrik/jpexs-decompiler/releases/download/version26.3.0/ffdec_26.3.0.zip' -ExpectedHash '35f4930eb7c380afe66f2117f90b006deac0631473ad7500bb39c78f68645ecd' -Filename 'ffdec_26.3.0.zip'
 $ruffleZip = Get-VerifiedArchive -Uri 'https://github.com/ruffle-rs/ruffle/releases/download/v0.7.1/ruffle-0.7.1-windows-x86_64.zip' -ExpectedHash 'a5f6df9881771226e330e08a1fa7666f4caff50ddf9f2f993cdd95293edca627' -Filename 'ruffle-0.7.1-windows-x86_64.zip'
+$ruffleWebZip = Get-VerifiedArchive -Uri 'https://github.com/ruffle-rs/ruffle/releases/download/v0.7.1/ruffle-0.7.1-web-selfhosted.zip' -ExpectedHash 'ef12edbee135d581a9cd523837d746da30a07a64dbf1cf472d2e472c656f4b5e' -Filename 'ruffle-0.7.1-web-selfhosted.zip'
 
 $ffdecExtracted = Join-Path $temp 'ffdec'
 $ruffleExtracted = Join-Path $temp 'ruffle'
+$ruffleWebExtracted = Join-Path $temp 'ruffle-web'
 if (Test-Path $ffdecExtracted) { Remove-Item $ffdecExtracted -Recurse -Force }
 if (Test-Path $ruffleExtracted) { Remove-Item $ruffleExtracted -Recurse -Force }
+if (Test-Path $ruffleWebExtracted) { Remove-Item $ruffleWebExtracted -Recurse -Force }
 Expand-Archive -LiteralPath $ffdecZip -DestinationPath $ffdecExtracted
 Expand-Archive -LiteralPath $ruffleZip -DestinationPath $ruffleExtracted
+Expand-Archive -LiteralPath $ruffleWebZip -DestinationPath $ruffleWebExtracted
 
 # Copy the whole FFDec distribution, including JARs, libraries and license.
 $cli = Get-ChildItem $ffdecExtracted -Recurse -File -Filter 'ffdec-cli.exe' | Select-Object -First 1
@@ -61,14 +65,27 @@ if (Test-Path $ruffleDest) { Remove-Item $ruffleDest -Recurse -Force }
 New-Item -ItemType Directory -Path $ruffleDest -Force | Out-Null
 Copy-Item -Path (Join-Path $ruffleExe.Directory.FullName '*') -Destination $ruffleDest -Recurse -Force
 
+# Ruffle Web is the only runtime with a live JavaScript ExternalInterface API.
+# Bundle it separately from Ruffle Desktop for isolated, local-browser previews.
+$ruffleWebJs = Get-ChildItem $ruffleWebExtracted -Recurse -File -Filter 'ruffle.js' | Select-Object -First 1
+if (-not $ruffleWebJs) { throw 'Verified Ruffle Web archive contains no ruffle.js.' }
+$ruffleWebSource = $ruffleWebJs.Directory.FullName
+$ruffleWebWasm = Get-ChildItem $ruffleWebSource -File -Filter '*.wasm' | Select-Object -First 1
+if (-not $ruffleWebWasm) { throw 'Verified Ruffle Web archive lacks the WebAssembly runtime.' }
+$ruffleWebDest = Join-Path $target 'RuffleWeb'
+if (Test-Path $ruffleWebDest) { Remove-Item $ruffleWebDest -Recurse -Force }
+New-Item -ItemType Directory -Path $ruffleWebDest -Force | Out-Null
+Copy-Item -Path (Join-Path $ruffleWebSource '*') -Destination $ruffleWebDest -Recurse -Force
+
 # Include upstream dependency notices in the redistribution.
 Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/ruffle-rs/ruffle/v0.7.1/LICENSE.md' -OutFile (Join-Path $ruffleDest 'LICENSE.md')
+Copy-Item -LiteralPath (Join-Path $ruffleDest 'LICENSE.md') -Destination (Join-Path $ruffleWebDest 'LICENSE.md') -Force
 if ((Get-Item (Join-Path $ruffleDest 'LICENSE.md')).Length -lt 100) {
     throw 'Ruffle LICENSE.md is missing or unexpectedly small.'
 }
 $manifest = @"
 Pinned GFX tools, installed only when the GFX tools option is selected.
-Ruffle v0.7.1: https://github.com/ruffle-rs/ruffle/releases/tag/v0.7.1
+Ruffle Desktop + Web v0.7.1: https://github.com/ruffle-rs/ruffle/releases/tag/v0.7.1
 FFDec v26.3.0: https://github.com/jindrapetrik/jpexs-decompiler/releases/tag/version26.3.0
 
 These are independent upstream projects and not part of Evolve Mod Manager.

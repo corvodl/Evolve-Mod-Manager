@@ -106,8 +106,12 @@ jobs:
             "Kala Armor Reducer extra emissive coefficient adjusted from 4x to 2x to match its previously verified 0.5x slider appearance at the new default 1x.",
             "Nightly 15: includes PR #20 experimental GFX viewer and editing work: source-build UI_Assets DDS atlas reconstruction, native GFX layout editing, external Ruffle ActionScript preview, and FFDec integration.",
             "Nightly 16: merges PR #21 GFX Tools sidebar and original main_menu.gfx ActionScript preview actions, including isolated menu prompts, navigation controls, and verified UI_Data command inspection.",
+            "Nightly 17 (PR #22): corrected CryEngine Z-up to glTF Y-up basis for unrigged static model and CDF FBX export without reauthoring UVs or mesh normals.",
+            "FBX export reconstructs original per-attachment CryEngine material IDs, retains NoDraw slots, neutral untextured diffuse, and embeds source-verified normal maps directly inside each FBX even with texture embedding OFF. No external normal PNG sidecars.",
+            "Nightly 17 (PR #23): GFX Tools adds a persistent isolated Ruffle Web browser preview with source-verified live original ActionScript callback dispatch, menu action sections, explicit unsupported-handler feedback, and movie reset without restarting the preview server.",
+            "The installer GFX Tools option includes SHA256-verified Ruffle Web alongside desktop Ruffle and FFDec. A portable build without bundled third-party tools cannot use live GFX preview until the verified web runtime is available.",
             "FBX: material-ID preservation from original CryEngine mesh subsets (including sparse IDs and NoDraw), face-count and UV-per-material checks, and safer rig cluster/bind-pose optimization.",
-            "FBX: unembedded character models retain verified tangent-space normal maps as external PNGs in the textures folder; diffuse materials remain neutral white when texture embedding is disabled.",
+            "FBX: tangent-space normal maps are embedded in FBX regardless of the optional diffuse/other texture embedding switch. Untextured diffuse materials remain neutral white.",
             "Exporter validates original armatures, weights, UV0, material assignments, and normal-map links; original CryEngine native callback/runtime parity still needs verification.",
 
             "Settings > Integrations now detects Ruffle and FFDec or offers explicit verified installation; installer adds optional preselected GFX tools. FFDec may require Java. Portable ZIP excludes bundled third-party tools.",

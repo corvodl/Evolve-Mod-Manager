@@ -25,7 +25,8 @@ jobs:
           ./scripts/package-gfx-tools.ps1
           foreach ($relative in @(
             'FFDec/ffdec-cli.exe', 'FFDec/ffdec.exe', 'FFDec/ffdec.jar',
-            'Ruffle/ruffle.exe', 'Ruffle/LICENSE.md', 'THIRD_PARTY_TOOLS.txt'
+            'Ruffle/ruffle.exe', 'Ruffle/LICENSE.md', 'RuffleWeb/ruffle.js',
+            'RuffleWeb/LICENSE.md', 'THIRD_PARTY_TOOLS.txt'
           )) {
             $path = Join-Path 'dist/third_party' $relative
             if (!(Test-Path $path -PathType Leaf)) { throw "Missing GFX component: $path" }
