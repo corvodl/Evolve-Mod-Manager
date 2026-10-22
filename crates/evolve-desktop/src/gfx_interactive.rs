@@ -134,6 +134,121 @@ fn defined_function_arity(actions: &[u8], name: &str) -> Option<usize> {
     arity
 }
 
+/// Instrument only original DefineButton2 condition actions in the isolated
+/// uncompressed preview movie. This reports the ACTUAL SWF button ID/condition
+/// when Ruffle executes it; it does not guess a CryEngine command or intercept
+/// native services. A trace precedes each original action stream without
+/// changing its internal relative branch offsets.
+fn trace_original_button_actions(swf: &[u8]) -> Result<(Vec<u8>, usize), String> {
+    if swf.len() < 24 || swf.len() > MAX_DECOMPRESSED || &swf[..3] != b"FWS" {
+        return Err("Button tracing requires a checked uncompressed SWF".into());
+    }
+    if u32::from_le_bytes(swf[4..8].try_into().unwrap()) as usize != swf.len() {
+        return Err("Button tracing found a mismatched SWF length".into());
+    }
+    let nbits = usize::from(swf[8] >> 3);
+    if !(1..=31).contains(&nbits) {
+        return Err("Button tracing found an invalid frame RECT".into());
+    }
+    let start = 8 + (5 + 4 * nbits).div_ceil(8) + 4;
+    if start > swf.len() {
+        return Err("Button tracing found a truncated frame header".into());
+    }
+    let mut output = swf[..start].to_vec();
+    let mut cursor = start;
+    let mut tag_count = 0usize;
+    let mut action_count = 0usize;
+    while cursor + 2 <= swf.len() {
+        let tag_start = cursor;
+        let header = u16::from_le_bytes(swf[cursor..cursor + 2].try_into().unwrap());
+        cursor += 2;
+        let code = header >> 6;
+        let mut length = usize::from(header & 63);
+        if length == 63 {
+            if cursor + 4 > swf.len() {
+                return Err("Truncated SWF tag during button tracing".into());
+            }
+            length = u32::from_le_bytes(swf[cursor..cursor + 4].try_into().unwrap()) as usize;
+            cursor += 4;
+        }
+        if length > swf.len() - cursor || tag_count >= 80_000 {
+            return Err("Invalid or excessive SWF tags during button tracing".into());
+        }
+        let tag = &swf[cursor..cursor + length];
+        let tag_end = cursor + length;
+        cursor = tag_end;
+        tag_count += 1;
+        if code == 34 {
+            if tag.len() < 5 {
+                return Err("Truncated original DefineButton2 tag".into());
+            }
+            let offset = usize::from(u16::from_le_bytes([tag[3], tag[4]]));
+            if offset == 0 {
+                output.extend_from_slice(&swf[tag_start..tag_end]);
+                continue;
+            }
+            let action_start = 3usize.saturating_add(offset);
+            if action_start + 4 > tag.len() {
+                return Err("Invalid original DefineButton2 action offset".into());
+            }
+            let button_id = u16::from_le_bytes([tag[0], tag[1]]);
+            let mut modified = tag[..action_start].to_vec();
+            let mut pos = action_start;
+            loop {
+                if pos + 4 > tag.len() || action_count >= 1024 {
+                    return Err("Invalid or excessive original button conditions".into());
+                }
+                let declared = usize::from(u16::from_le_bytes([tag[pos], tag[pos + 1]]));
+                let end = if declared == 0 { tag.len() } else { pos + declared };
+                if end > tag.len() || end <= pos + 4 {
+                    return Err("Truncated original button condition actions".into());
+                }
+                let condition = u16::from_le_bytes([tag[pos + 2], tag[pos + 3]]);
+                let message = format!("evolve-button:{button_id}:{condition}");
+                let mut trace = Vec::new();
+                avm1_push_string(&mut trace, &message)?;
+                trace.push(0x26); // ActionTrace consumes the pushed original ID.
+                let new_size = if declared == 0 {
+                    0
+                } else {
+                    declared + trace.len()
+                };
+                if new_size > usize::from(u16::MAX) {
+                    return Err("Traced button condition exceeds SWF limits".into());
+                }
+                modified.extend_from_slice(&(new_size as u16).to_le_bytes());
+                modified.extend_from_slice(&tag[pos + 2..pos + 4]);
+                modified.extend_from_slice(&trace);
+                modified.extend_from_slice(&tag[pos + 4..end]);
+                action_count += 1;
+                pos = end;
+                if declared == 0 {
+                    break;
+                }
+                if pos == tag.len() {
+                    return Err("Non-final original button condition has no terminator".into());
+                }
+            }
+            output.extend_from_slice(&((34u16 << 6) | 63).to_le_bytes());
+            output.extend_from_slice(&(modified.len() as u32).to_le_bytes());
+            output.extend_from_slice(&modified);
+        } else {
+            output.extend_from_slice(&swf[tag_start..tag_end]);
+        }
+        if output.len() > MAX_DECOMPRESSED {
+            return Err("Button diagnostics exceed isolated SWF size limit".into());
+        }
+        if code == 0 {
+            break;
+        }
+    }
+    if cursor != swf.len() {
+        return Err("Trailing or incomplete SWF tags during button tracing".into());
+    }
+    output[4..8].copy_from_slice(&(output.len() as u32).to_le_bytes());
+    Ok((output, action_count))
+}
+
 /// Register an allowlisted bridge on the original *first* frame, after the
 /// movie has declared its root functions. Unlike the old one-shot patch, the
 /// callback is invoked later through Ruffle Web's ExternalInterface in a
@@ -679,6 +794,7 @@ fn write_live_menu_report(
     restored: usize,
     skipped: usize,
     missing: usize,
+    traced_buttons: usize,
 ) -> Result<(), String> {
     let entries = session
         .menu_commands
@@ -712,6 +828,7 @@ fn write_live_menu_report(
         "commands": entries,
         "resources": {
             "restored_dds_tiles": restored,
+            "instrumented_original_button_conditions": traced_buttons,
             "skipped_dds_tiles": skipped,
             "missing_imported_movies": missing,
             "unresolved_imports": unresolved,
@@ -737,7 +854,14 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
     let bytes = fs::read(&session.editable).map_err(|e| e.to_string())?;
     let (swf, mut converted, mut skipped) =
         renderable_movie(&bytes, &session.relative, &session.source, session)?;
-    let (movie, actions) = install_live_callbacks(&swf, &session.relative)?;
+    // Trace authored SWF button handlers before registering the original
+    // live callbacks. No synthesized UI or native handler mapping is added.
+    let (inspected, traced_buttons) = if session.relative.eq_ignore_ascii_case("Libs/UI/main_menu.gfx") {
+        trace_original_button_actions(&swf)?
+    } else {
+        (swf, 0)
+    };
+    let (movie, actions) = install_live_callbacks(&inspected, &session.relative)?;
     fs::write(scratch.path().join("movie.swf"), movie).map_err(|e| e.to_string())?;
     let mut missing = 0usize;
     for name in session.info.imports.iter().take(MAX_IMPORTS) {
@@ -750,7 +874,7 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
             Err(error) => return Err(format!("Imported Scaleform movie {name}: {error}")),
         }
     }
-    write_live_menu_report(session, scratch.path(), converted, skipped, missing)?;
+    write_live_menu_report(session, scratch.path(), converted, skipped, missing, traced_buttons)?;
     let live = gfx_live_web::LiveServer::start(scratch, actions, web_runtime)?;
     Ok(RunningPreview {
         process: None,
@@ -831,7 +955,7 @@ mod tests {
             edits: 0,
             applied: false,
         };
-        write_live_menu_report(&session, folder.path(), 5, 3, 1).unwrap();
+        write_live_menu_report(&session, folder.path(), 5, 3, 1, 2).unwrap();
         let report: serde_json::Value =
             serde_json::from_slice(&fs::read(folder.path().join("preview-menu.json")).unwrap())
                 .unwrap();
@@ -839,6 +963,7 @@ mod tests {
         assert_eq!(report["commands"][0]["command"], "Game_Start");
         assert_eq!(report["commands"][0]["child_submenu"], "Extras");
         assert_eq!(report["resources"]["restored_dds_tiles"], 5);
+        assert_eq!(report["resources"]["instrumented_original_button_conditions"], 2);
         assert_eq!(report["resources"]["skipped_dds_tiles"], 3);
         assert_eq!(report["resources"]["missing_imported_movies"], 1);
         assert_eq!(
@@ -855,6 +980,40 @@ mod tests {
             assert_ne!(preset.script_call().unwrap().0, "Game_Start");
         }
     }
+    #[test]
+    fn traces_original_button_actions_without_displacing_authored_bytecode() {
+        let mut movie = menu_fixture();
+        let show = (1u16 << 6).to_le_bytes();
+        let at = movie.windows(2).rposition(|window| window == show).unwrap();
+        let button = [
+            17, 0, // original character ID
+            0, // TrackAsMenu
+            4, 0, // ActionOffset, measured from this field
+            0, // terminating ButtonRecord
+            0, 0, // final ButtonCondActionSize
+            1, 0, // original event condition
+            0x96, 3, 0, 0, b'x', 0, // original ActionPush("x")
+            0x26, 0, // original trace and EndAction
+        ];
+        let mut tag = ((34u16 << 6) | 63).to_le_bytes().to_vec();
+        tag.extend_from_slice(&(button.len() as u32).to_le_bytes());
+        tag.extend_from_slice(&button);
+        movie.splice(at..at, tag);
+        movie[4..8].copy_from_slice(&(movie.len() as u32).to_le_bytes());
+        let source = movie.clone();
+        let (traced, count) = trace_original_button_actions(&movie).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(movie, source); // Source byte-identical.
+        assert!(traced.windows(b"evolve-button:17:1".len()).any(|w| w == b"evolve-button:17:1"));
+        assert!(traced.windows(6).any(|w| w == [0x96, 3, 0, 0, b'x', 0]));
+        assert_eq!(traced.len(), u32::from_le_bytes(traced[4..8].try_into().unwrap()) as usize);
+        let mut corrupted = movie;
+        // The source's ActionOffset must be checked before instrumentation.
+        let pos = at + 6 + 3;
+        corrupted[pos..pos + 2].copy_from_slice(&u16::MAX.to_le_bytes());
+        assert!(trace_original_button_actions(&corrupted).is_err());
+    }
+
     #[test]
     fn verified_live_callbacks_use_registered_original_handlers_without_restarting() {
         let movie = menu_fixture();
