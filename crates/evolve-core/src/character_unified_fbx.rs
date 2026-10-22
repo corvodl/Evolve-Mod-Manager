@@ -1017,6 +1017,63 @@ fn authored_png(
     Ok(png)
 }
 
+/// A single unrigged source mesh also needs its original MTL leaf bindings.
+/// The source subset table determines which numeric ID owns each face; its
+/// authored normal DDS becomes a PNG regardless of the embed-textures toggle.
+pub(crate) fn static_model_material_glb(
+    mesh: &crate::model::RenderMesh,
+    source: &Path,
+    inventory: &Inventory,
+    embed_textures: bool,
+) -> Result<Vec<u8>, String> {
+    let root = fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
+    let scope = texture_scope(inventory);
+    let original_bytes = fs::read(source).map_err(|e| e.to_string())?;
+    let subsets = original_mesh_subsets(&original_bytes, mesh.indices.len())
+        .map_err(|e| format!("Original source material IDs: {e}"))?;
+    if subsets.is_empty() || subsets.iter().any(|&(_, _, id)| id == 255 || id >= 128) {
+        return Err("Source model has unresolved material IDs".into());
+    }
+    let authored = exact_multi_slot_materials_with_scope(
+        &root,
+        source,
+        inventory,
+        None,
+        scope.as_ref(),
+    )?;
+    let original_table = has_original_mesh_subset_table(&original_bytes)
+        .map_err(|e| e.to_string())?;
+    if !original_table && authored.as_ref().is_some_and(|slots| slots.len() > 1) {
+        return Err("Source has a multi-leaf MTL but no original material subset table".into());
+    }
+    let max_id = subsets.iter().map(|part| part.2).max().unwrap_or(0);
+    let mut slots = if let Some(authored) = authored {
+        if max_id as usize >= authored.len() {
+            return Err("Source material ID exceeds authored MTL leaf count".into());
+        }
+        authored
+    } else {
+        (0..=max_id)
+            .map(|id| OriginalMaterialPng {
+                name: format!("Unresolved original MTL leaf {id}"),
+                ..Default::default()
+            })
+            .collect()
+    };
+    if !embed_textures {
+        for slot in &mut slots {
+            slot.diffuse = None;
+            slot.emissive = None;
+            slot.specular = None;
+            slot.roughness = None;
+        }
+    }
+    let glb = crate::glb::geometry_glb_bytes_for_fbx(mesh)
+        .map_err(|e| format!("Original static source GLB: {e}"))?;
+    embed_original_material_slots_glb(&glb, &subsets, &slots)
+        .map_err(|e| format!("Original source materials and normal maps: {e}"))
+}
+
 /// Preserve the local CryEngine material-ID space of *each* original
 /// attachment when exporting a flattened, unrigged CDF. A slot ID of zero on
 /// Emet's face is not the same material as slot zero on his weapon. Each part
