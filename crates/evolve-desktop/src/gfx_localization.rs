@@ -2,7 +2,11 @@
 //! Never substitutes an English guess for an unavailable game string or
 //! writes back to a PAK, movie, or imported Asset Library.
 use evolve_core::{LibraryReferenceStatus, imported_library, resolve_imported_reference};
-use quick_xml::{Reader, escape::unescape, events::{BytesStart, Event}};
+use quick_xml::{
+    Reader,
+    escape::unescape,
+    events::{BytesStart, Event},
+};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -146,7 +150,8 @@ fn parse_sheet(bytes: &[u8], wanted: &HashSet<String>) -> Result<HashMap<String,
                 native_strings = true;
             }
             Ok(Event::Start(event))
-                if in_strings && xml_name(event.name().as_ref()).eq_ignore_ascii_case(b"String") =>
+                if in_strings
+                    && xml_name(event.name().as_ref()).eq_ignore_ascii_case(b"String") =>
             {
                 rows += 1;
                 consume_native_string(&event, &reader, wanted, &mut found)?;
@@ -405,21 +410,28 @@ mod tests {
         .collect();
         let translations = parse_sheet(xml, &wanted).unwrap();
         assert_eq!(translations.len(), 4);
-        assert_eq!(translations["ui_signinginprompt"], "SIGNING IN. PLEASE WAIT...");
+        assert_eq!(
+            translations["ui_signinginprompt"],
+            "SIGNING IN. PLEASE WAIT..."
+        );
         assert_eq!(translations["ui_mp_onlinegame"], "PLAY");
         assert_eq!(translations["ui_custom"], "A & B");
         assert_eq!(translations["ui_credits_trs_hdr1"], "TURTLE ROCK STUDIOS");
         assert!(!translations.contains_key("ui_long_not_requested"));
-        assert!(parse_sheet(
-            b"<!DOCTYPE Strings><Strings><String name='ui_a' value='no'/></Strings>",
-            &wanted,
-        )
-        .is_err());
-        assert!(parse_sheet(
-            b"<Strings><String name='ui_mp_onlinegame' value='&unknown;'/></Strings>",
-            &wanted,
-        )
-        .is_err());
+        assert!(
+            parse_sheet(
+                b"<!DOCTYPE Strings><Strings><String name='ui_a' value='no'/></Strings>",
+                &wanted,
+            )
+            .is_err()
+        );
+        assert!(
+            parse_sheet(
+                b"<Strings><String name='ui_mp_onlinegame' value='&unknown;'/></Strings>",
+                &wanted,
+            )
+            .is_err()
+        );
     }
     #[test]
     fn resolves_usa_en_archive_only_in_matching_library_build() {
@@ -468,7 +480,10 @@ mod tests {
         ];
         let result = menu_labels(Some(root), Some("Modded Stage 2"), &keys);
         assert_eq!(result["translations"]["ui_options"], "OPTIONS");
-        assert_eq!(result["translations"]["ui_signinginprompt"], "SIGNING IN. PLEASE WAIT...");
+        assert_eq!(
+            result["translations"]["ui_signinginprompt"],
+            "SIGNING IN. PLEASE WAIT..."
+        );
         assert_eq!(result["sources"].as_array().unwrap().len(), 1);
         let wrong = menu_labels(Some(root), Some("2012 Legacy"), &keys);
         assert_eq!(wrong["translations"].as_object().unwrap().len(), 0);
