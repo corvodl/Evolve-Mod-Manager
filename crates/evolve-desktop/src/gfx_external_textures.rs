@@ -346,7 +346,12 @@ pub fn prepare_preview(
             built_in.insert(id);
         }
     }
-    if mappings.is_empty() || atlases.is_empty() {
+    if mappings.is_empty() {
+        return Ok(result);
+    }
+    if atlases.is_empty() {
+        result.skipped = mappings.len();
+        result.skip_details.invalid_tile = mappings.len();
         return Ok(result);
     }
     let mut converted = HashMap::<u16, Vec<u8>>::new();
@@ -482,6 +487,30 @@ pub fn prepare_preview(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preview_skip_diagnostics_preserve_independent_causes_and_safe_paths() {
+        let mut first = SkipDetails {
+            missing_source: 2,
+            preview_limit: 3,
+            missing_paths: vec!["Libs/UI/main_menu_I9.dds".into()],
+            ..Default::default()
+        };
+        let second = SkipDetails {
+            missing_source: 1,
+            invalid_tile: 4,
+            missing_paths: vec![
+                "Libs/UI/main_menu_I9.dds".into(),
+                "Libs/UI/main_menu_I10.dds".into(),
+            ],
+            ..Default::default()
+        };
+        first.accumulate(&second);
+        assert_eq!(first.missing_source, 3);
+        assert_eq!(first.preview_limit, 3);
+        assert_eq!(first.invalid_tile, 4);
+        assert_eq!(first.missing_paths.len(), 2);
+        assert_eq!(first.missing_paths[1], "Libs/UI/main_menu_I10.dds");
+    }
     #[test]
     fn atlas_path_is_scoped_to_gfx_and_rejects_traversal() {
         assert_eq!(
