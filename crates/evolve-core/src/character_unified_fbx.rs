@@ -836,7 +836,12 @@ fn exact_multi_slot_materials_with_scope(
     imported: Option<&ImportedTextureScope>,
 ) -> Result<Option<Vec<OriginalMaterialPng>>, String> {
     exact_multi_slot_materials_scoped_roles(
-        root, mesh_path, inventory, override_mtl, imported, true,
+        root,
+        mesh_path,
+        inventory,
+        override_mtl,
+        imported,
+        true,
     )
 }
 
@@ -876,8 +881,7 @@ fn exact_multi_slot_materials_scoped_roles(
                 .iter()
                 .any(|map| SOURCE_EMISSION_ROLES.contains(&map.role.as_str()));
         for map in &leaf.maps {
-            if !include_color_maps
-                && !matches!(map.role.as_str(), "normal" | "normals" | "bumpmap")
+            if !include_color_maps && !matches!(map.role.as_str(), "normal" | "normals" | "bumpmap")
             {
                 continue;
             }
@@ -1055,7 +1059,12 @@ pub(crate) fn static_model_material_glb(
         return Err("Source model has unresolved material IDs".into());
     }
     let authored = exact_multi_slot_materials_scoped_roles(
-        &root, source, inventory, None, scope.as_ref(), embed_textures,
+        &root,
+        source,
+        inventory,
+        None,
+        scope.as_ref(),
+        embed_textures,
     )?;
     let original_table =
         has_original_mesh_subset_table(&original_bytes).map_err(|e| e.to_string())?;
@@ -1135,7 +1144,12 @@ pub(crate) fn static_cdf_material_glb(
             ));
         }
         let original = exact_multi_slot_materials_scoped_roles(
-            &root, &part.source, inventory, override_material, scope.as_ref(), embed_textures,
+            &root,
+            &part.source,
+            inventory,
+            override_material,
+            scope.as_ref(),
+            embed_textures,
         )?;
         let raw = fs::read(&part.source).map_err(|e| e.to_string())?;
         let original_table =
