@@ -285,6 +285,9 @@
         };
         // The inspector is source metadata, not a replacement rendered menu.
         // Only locally sourced child menus may push the movie's own state.
+        document.getElementById("source-back").addEventListener("click", () => {
+            goBackOriginalSourceMenu();
+        });
         const sourceList = document.getElementById("source-buttons");
         sourceList.addEventListener("click", event => {
             const button = event.target.closest("button[data-source-submenu]");
@@ -326,6 +329,7 @@
         }
         document.getElementById("reset").addEventListener("click", () => {
             player.ruffle().reload().then(async () => {
+                sourceMenuStack.splice(1);
                 show("Movie reset in the same window.");
                 if (canInitialize) await initializeOriginal(true);
             }).catch(e => show("Movie reset failed: " + String(e), true));
@@ -340,6 +344,7 @@
                 const action = await response.json();
                 if (action.kind === "reload") {
                     await player.ruffle().reload();
+                    sourceMenuStack.splice(1);
                     show("Movie reset in this window.");
                 } else if (action.kind === "call") {
                     const args = action.arg === null ? [] : [action.arg];
