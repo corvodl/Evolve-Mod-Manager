@@ -1017,6 +1017,148 @@ fn authored_png(
     Ok(png)
 }
 
+/// Preserve the local CryEngine material-ID space of *each* original
+/// attachment when exporting a flattened, unrigged CDF. A slot ID of zero on
+/// Emet's face is not the same material as slot zero on his weapon. Each part
+/// therefore owns a non-overlapping material range in the combined glTF, while
+/// its original ID and authored MTL leaf are retained in the material name.
+/// The input report is generated from the exact same verified source geometry,
+/// so the recorded triangle spans must cover the complete source index buffer.
+pub(crate) fn static_cdf_material_glb(
+    mesh: &crate::model::RenderMesh,
+    report: &crate::character_assembly::AssemblyReport,
+    inventory: &Inventory,
+    embed_textures: bool,
+) -> Result<Vec<u8>, String> {
+    let root = fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
+    let scope = texture_scope(inventory);
+    let mut subsets = Vec::<(u32, u32, u32)>::new();
+    let mut slots = Vec::<OriginalMaterialPng>::new();
+    let mut cursor = 0usize;
+    let mut expected_index = 0u32;
+    if report.geometry_parts.is_empty() || report.source_parts.is_empty() {
+        return Err("CDF has no original attachment material assignments".into());
+    }
+    for (part_index, part) in report.geometry_parts.iter().enumerate() {
+        let first = cursor;
+        while cursor < report.source_parts.len()
+            && report.source_parts[cursor].name == part.name
+        {
+            cursor += 1;
+        }
+        let authored = &report.source_parts[first..cursor];
+        if authored.is_empty() {
+            return Err(format!(
+                "CDF part {} has no original mesh subset material IDs",
+                part.name
+            ));
+        }
+        let override_material = authored[0].material_hint.as_deref();
+        if authored.iter().any(|entry| entry.material_hint.as_deref() != override_material) {
+            return Err(format!(
+                "CDF part {} has conflicting original material overrides",
+                part.name
+            ));
+        }
+        let original = exact_multi_slot_materials_with_scope(
+            &root,
+            &part.source,
+            inventory,
+            override_material,
+            scope.as_ref(),
+        )?;
+        let raw = fs::read(&part.source).map_err(|e| e.to_string())?;
+        let original_table = has_original_mesh_subset_table(&raw)
+            .map_err(|e| format!("{}: {e}", part.name))?;
+        if !original_table && original.as_ref().is_some_and(|list| list.len() > 1) {
+            return Err(format!(
+                "CDF part {} has a multi-leaf original MTL without a source subset table",
+                part.name
+            ));
+        }
+        let max_id = authored
+            .iter()
+            .map(|entry| entry.material_slot)
+            .max()
+            .ok_or("CDF source part lost its material slots")?;
+        if max_id >= 128
+            || authored.iter().any(|entry| entry.material_slot == 255)
+        {
+            return Err(format!("CDF part {} has an unresolved material ID", part.name));
+        }
+        let mut leaves = if let Some(leaves) = original {
+            if max_id as usize >= leaves.len() {
+                return Err(format!(
+                    "CDF part {} uses source material ID {} outside its original MTL leaves",
+                    part.name, max_id
+                ));
+            }
+            leaves
+        } else {
+            // Preserve known numeric source IDs even if the original MTL is
+            // not indexed. No color or normal-map texture is fabricated.
+            (0..=max_id)
+                .map(|id| OriginalMaterialPng {
+                    name: format!("Unresolved MTL leaf {id}"),
+                    ..Default::default()
+                })
+                .collect::<Vec<_>>()
+        };
+        if slots.len().checked_add(leaves.len()).is_none_or(|n| n > 128) {
+            return Err("CDF has more than 128 source material leaves".into());
+        }
+        let offset = u32::try_from(slots.len())
+            .map_err(|_| "CDF material offset overflow")?;
+        for (id, leaf) in leaves.iter_mut().enumerate() {
+            let suffix = leaf.name.chars().take(90).collect::<String>();
+            leaf.name = format!(
+                "CDF part {part_index:03} {} | original ID {id:03} | {suffix}",
+                part.name
+            );
+            if !embed_textures {
+                // Embedded Textures OFF disables diffuse/specular/emissive
+                // embedding, NEVER original material IDs or normal maps.
+                leaf.diffuse = None;
+                leaf.emissive = None;
+                leaf.specular = None;
+                leaf.roughness = None;
+            }
+        }
+        for subset in authored {
+            if subset.first_index != expected_index
+                || subset.index_count == 0
+                || !subset.index_count.is_multiple_of(3)
+            {
+                return Err(format!(
+                    "CDF part {} has gaps or invalid original subset triangles",
+                    part.name
+                ));
+            }
+            let end = expected_index
+                .checked_add(subset.index_count)
+                .ok_or("CDF mesh index span overflow")?;
+            if end as usize > mesh.indices.len() {
+                return Err("CDF source subset exceeds combined model".into());
+            }
+            let mapped = offset
+                .checked_add(subset.material_slot)
+                .ok_or("CDF source material ID offset overflow")?;
+            subsets.push((expected_index, subset.index_count, mapped));
+            expected_index = end;
+        }
+        slots.extend(leaves);
+    }
+    if cursor != report.source_parts.len()
+        || expected_index as usize != mesh.indices.len()
+    {
+        return Err("CDF original material IDs do not cover all source faces".into());
+    }
+    let base = crate::glb::geometry_glb_bytes_for_fbx(mesh)
+        .map_err(|e| format!("CDF source GLB: {e}"))?;
+    embed_original_material_slots_glb(&base, &subsets, &slots)
+        .map_err(|e| format!("CDF original material/normal mapping: {e}"))
+}
+
 /// Make ONE armature-bound FBX from original CDF attachments only when every
 /// decoded mesh has verified native skeleton weights and original UV0.
 /// A separate, explicitly selected compatible CAF is opt-in. No automatic
