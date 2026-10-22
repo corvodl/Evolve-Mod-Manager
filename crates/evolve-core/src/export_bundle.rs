@@ -476,7 +476,10 @@ pub fn export_bundle(
                 // preserves CryEngine MTL leaf IDs and authored normal maps
                 // even when the FBX does not have a skeleton or embedded DDS.
                 let mapped = crate::character_unified_fbx::static_cdf_material_glb(
-                    &mesh, report, inventory, options.embed_textures,
+                    &mesh,
+                    report,
+                    inventory,
+                    options.embed_textures,
                 )
                 .map_err(|e| format!("{relative} source material and normal maps: {e}"))?;
                 fs::write(&glb, mapped).map_err(|e| e.to_string())?;
