@@ -481,9 +481,10 @@ pub fn export_bundle(
                 .map_err(|e| format!("{relative} source material and normal maps: {e}"))?;
                 fs::write(&glb, mapped).map_err(|e| e.to_string())?;
             } else {
-                let raw = fs::read(&source).map_err(|e| e.to_string())?;
-                let mapped = crate::glb::geometry_glb_bytes_with_original_material_ids(&mesh, &raw)
-                    .map_err(|e| format!("{relative} original material IDs: {e}"))?;
+                let mapped = crate::character_unified_fbx::static_model_material_glb(
+                    &mesh, &source, inventory, options.embed_textures,
+                )
+                .map_err(|e| format!("{relative} original material and normal maps: {e}"))?;
                 fs::write(&glb, mapped).map_err(|e| e.to_string())?;
             }
             convert_glb_to_fbx_with_options(
