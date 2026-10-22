@@ -832,10 +832,9 @@ mod tests {
             applied: false,
         };
         write_live_menu_report(&session, folder.path(), 5, 3, 1).unwrap();
-        let report: serde_json::Value = serde_json::from_slice(
-            &fs::read(folder.path().join("preview-menu.json")).unwrap(),
-        )
-        .unwrap();
+        let report: serde_json::Value =
+            serde_json::from_slice(&fs::read(folder.path().join("preview-menu.json")).unwrap())
+                .unwrap();
         assert_eq!(report["commands"][0]["label"], "@ui_STARTGAME");
         assert_eq!(report["commands"][0]["command"], "Game_Start");
         assert_eq!(report["commands"][0]["child_submenu"], "Extras");
