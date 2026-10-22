@@ -273,6 +273,30 @@
             wmode: hasVideo ? "transparent" : "opaque",
             backgroundColor: hasVideo ? null : "#000000"
         });
+        // Ruffle uses the source SWF stage dimensions (not the containing
+        // browser window). Keep the independently decoded original video and
+        // the transparent Flash display list in the *same* fitted rectangle,
+        // avoiding differing crop/letterbox behavior on non-16:9 windows.
+        const composition = document.getElementById("composition");
+        const hostStage = document.querySelector("main");
+        const fitSourceStage = () => {
+            const source = player.ruffle().metadata;
+            const width = Number(source?.width), height = Number(source?.height);
+            const bounds = hostStage.getBoundingClientRect();
+            if (!Number.isFinite(width) || !Number.isFinite(height) ||
+                width <= 0 || height <= 0 || bounds.width <= 0 || bounds.height <= 0) {
+                return;
+            }
+            const factor = Math.min(bounds.width / width, bounds.height / height);
+            composition.style.width = Math.round(width * factor) + "px";
+            composition.style.height = Math.round(height * factor) + "px";
+        };
+        fitSourceStage();
+        if (typeof ResizeObserver === "function") {
+            new ResizeObserver(fitSourceStage).observe(hostStage);
+        } else {
+            window.addEventListener("resize", fitSourceStage);
+        }
         const initButton = document.getElementById("initialize");
         const canOpenScreen = report?.initialization?.verified_open_screen === true;
         const canReturnToMain = report?.initialization?.verified_transition_to_main_menu === true;
