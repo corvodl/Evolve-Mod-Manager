@@ -114,9 +114,7 @@ fn defined_function_arity(actions: &[u8], name: &str) -> Option<usize> {
             return None;
         }
         offset += body_length;
-        let Some(end) = payload.iter().position(|b| *b == 0) else {
-            return None;
-        };
+        let end = payload.iter().position(|b| *b == 0)?;
         if &payload[..end] != name.as_bytes() {
             continue;
         }
@@ -180,12 +178,11 @@ fn inject_preview_call(
         if size > swf.len() - cursor {
             return Err("Truncated main-menu tag data".into());
         }
-        if code == 12 {
-            if let Some(n) = defined_function_arity(&swf[cursor..cursor + size], function) {
-                if arity.replace(n).is_some_and(|old| old != n) {
-                    return Err("Conflicting main-menu function declarations".into());
-                }
-            }
+        if code == 12
+            && let Some(n) = defined_function_arity(&swf[cursor..cursor + size], function)
+            && arity.replace(n).is_some_and(|old| old != n)
+        {
+            return Err("Conflicting main-menu function declarations".into());
         }
         if code == 1 {
             insert_at = Some(tag_start);
