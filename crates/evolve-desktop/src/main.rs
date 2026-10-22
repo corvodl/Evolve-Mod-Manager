@@ -226,6 +226,7 @@ struct State {
     export_folder_name: String,
     export_rigged: bool,
     export_embed_textures: bool,
+    export_combine_meshes: bool,
     export_dependencies: bool,
     auto_idle_pending: Option<PathBuf>,
     auto_play_native_caf: bool,
@@ -1509,6 +1510,7 @@ enum Message {
     ExportToggleFile(usize),
     ExportToggleRigged,
     ExportToggleEmbedded,
+    ExportToggleCombineMeshes,
     ExportToggleDependencies,
     ExportBegin,
     ExportBrowse(&'static str),
@@ -3858,6 +3860,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ExportToggleRigged => state.export_rigged = !state.export_rigged,
         Message::ExportToggleEmbedded => state.export_embed_textures = !state.export_embed_textures,
+        Message::ExportToggleCombineMeshes => state.export_combine_meshes = !state.export_combine_meshes,
         Message::ExportToggleDependencies => {
             state.export_dependencies = !state.export_dependencies;
         }
@@ -3960,6 +3963,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 rigged: state.export_rigged,
                 embed_textures: state.export_embed_textures,
                 export_dependencies: state.export_dependencies,
+                combine_meshes: state.export_combine_meshes,
                 equipment,
                 full_armor_glow: state.full_armor_glow && export_matches_viewport,
                 damage_blend_percent: if export_matches_viewport {
