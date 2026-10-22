@@ -375,11 +375,7 @@ pub fn prepare_preview(
         };
         let [x0, y0, x1, y1] = tile.rectangle;
         let crop_pixels = u64::from(x1.saturating_sub(x0)) * u64::from(y1.saturating_sub(y0));
-        if x0 >= x1
-            || y0 >= y1
-            || x1 > atlas.width
-            || y1 > atlas.height
-        {
+        if x0 >= x1 || y0 >= y1 || x1 > atlas.width || y1 > atlas.height {
             result.skipped += 1;
             result.skip_details.invalid_tile += 1;
             continue;
@@ -401,9 +397,15 @@ pub fn prepare_preview(
                 result.skipped += 1;
                 result.skip_details.missing_source += 1;
                 if result.skip_details.missing_paths.len() < 12
-                    && !result.skip_details.missing_paths.contains(&atlas.virtual_path)
+                    && !result
+                        .skip_details
+                        .missing_paths
+                        .contains(&atlas.virtual_path)
                 {
-                    result.skip_details.missing_paths.push(atlas.virtual_path.clone());
+                    result
+                        .skip_details
+                        .missing_paths
+                        .push(atlas.virtual_path.clone());
                 }
                 continue;
             };
