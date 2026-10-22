@@ -12,6 +12,135 @@ use std::sync::{Arc, Mutex};
 const MAX_PLAYER_BYTES: u64 = 350 * 1024 * 1024;
 const MAX_IMPORTS: usize = 128;
 
+/// Preview-only calls backed by the original Stage 2 MainMenu UI_Data
+/// declaration and the matching ActionScript constant pool. These do not
+/// execute native gameplay/online/purchase callbacks.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PreviewPreset {
+    #[default]
+    AsAuthored,
+    ShowEngagement,
+    HideEngagement,
+    ShowSigningIn,
+    HideSigningIn,
+}
+
+impl PreviewPreset {
+    fn script_call(self) -> Option<(&'static str, bool)> {
+        match self {
+            Self::AsAuthored => None,
+            Self::ShowEngagement => Some(("showEngagementPrompt", true)),
+            Self::HideEngagement => Some(("showEngagementPrompt", false)),
+            Self::ShowSigningIn => Some(("showSigningInPrompt", true)),
+            Self::HideSigningIn => Some(("showSigningInPrompt", false)),
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::AsAuthored => "Unmodified movie",
+            Self::ShowEngagement => "Show engagement prompt",
+            Self::HideEngagement => "Dismiss engagement prompt",
+            Self::ShowSigningIn => "Show sign-in prompt",
+            Self::HideSigningIn => "Dismiss sign-in prompt",
+        }
+    }
+}
+
+/// Add one ActionScript 2 call to a *temporary* uncompressed Ruffle SWF.
+/// The original movie, project and game files are never edited. The call
+/// runs after the movie's original root-frame actions, prior to ShowFrame.
+/// Ruffle's dummy ExternalInterface continues to block native game actions.
+fn inject_preview_call(
+    swf: &[u8],
+    virtual_movie: &str,
+    preset: PreviewPreset,
+) -> Result<Vec<u8>, String> {
+    let Some((function, argument)) = preset.script_call() else {
+        return Ok(swf.to_vec());
+    };
+    if !virtual_movie.eq_ignore_ascii_case("Libs/UI/main_menu.gfx") {
+        return Err("Prompt controls are only defined for the original main_menu.gfx".into());
+    }
+    if swf.len() < 24 || swf.len() > MAX_DECOMPRESSED || &swf[..3] != b"FWS" {
+        return Err("Prompt testing requires an uncompressed, bounded main-menu preview".into());
+    }
+    if usize::try_from(u32::from_le_bytes(swf[4..8].try_into().unwrap())).ok()
+        != Some(swf.len())
+    {
+        return Err("Incorrect preview SWF length".into());
+    }
+    let nbits = usize::from(swf[8] >> 3);
+    if !(1..=31).contains(&nbits) {
+        return Err("Bad frame bounds in the main-menu movie".into());
+    }
+    let mut cursor = 8 + (5 + 4 * nbits).div_ceil(8) + 4;
+    let name = format!("{function}\0");
+    let mut observed_function = false;
+    let mut insert_at = None;
+    let mut tags = 0usize;
+    while cursor + 2 <= swf.len() {
+        let tag_start = cursor;
+        let header = u16::from_le_bytes(swf[cursor..cursor + 2].try_into().unwrap());
+        cursor += 2;
+        let code = header >> 6;
+        let mut size = usize::from(header & 63);
+        if size == 63 {
+            if cursor + 4 > swf.len() {
+                return Err("Truncated main-menu long tag".into());
+            }
+            size = u32::from_le_bytes(swf[cursor..cursor + 4].try_into().unwrap()) as usize;
+            cursor += 4;
+        }
+        if size > swf.len() - cursor {
+            return Err("Truncated main-menu tag data".into());
+        }
+        if code == 12
+            && swf[cursor..cursor + size]
+                .windows(name.len())
+                .any(|window| window == name.as_bytes())
+        {
+            observed_function = true;
+        }
+        if code == 1 && observed_function {
+            insert_at = Some(tag_start);
+            break;
+        }
+        tags += 1;
+        if tags > 80_000 || code == 0 {
+            break;
+        }
+        cursor += size;
+    }
+    let at = insert_at.ok_or(
+        "Cannot verify the original ActionScript function before its first frame",
+    )?;
+    // AVM1: Push(function name), Push(boolean), Push(1 argument),
+    // CallFunction, Pop(return value), End.
+    let mut args = vec![0u8];
+    args.extend_from_slice(function.as_bytes());
+    args.push(0);
+    args.extend_from_slice(&[5, u8::from(argument), 7]);
+    args.extend_from_slice(&1i32.to_le_bytes());
+    let mut actions = vec![0x96];
+    actions.extend_from_slice(&(args.len() as u16).to_le_bytes());
+    actions.extend_from_slice(&args);
+    actions.extend_from_slice(&[0x3d, 0x17, 0]);
+    let mut tag = ((12u16 << 6) | 63).to_le_bytes().to_vec();
+    tag.extend_from_slice(&(actions.len() as u32).to_le_bytes());
+    tag.extend_from_slice(&actions);
+    let new_len = swf.len() + tag.len();
+    if new_len > MAX_DECOMPRESSED {
+        return Err("Prompt-initialized preview exceeds the SWF size limit".into());
+    }
+    let mut output = Vec::with_capacity(new_len);
+    output.extend_from_slice(&swf[..at]);
+    output.extend_from_slice(&tag);
+    output.extend_from_slice(&swf[at..]);
+    output[4..8].copy_from_slice(&(new_len as u32).to_le_bytes());
+    Ok(output)
+}
+
 #[derive(Debug)]
 struct ProcessOwner {
     child: Mutex<Child>,
@@ -31,6 +160,7 @@ pub struct RunningPreview {
     pub restored_images: usize,
     pub skipped_images: usize,
     pub missing_imports: usize,
+    pub preset: PreviewPreset,
 }
 impl RunningPreview {
     pub fn is_running(&self) -> bool {
@@ -174,7 +304,11 @@ fn stage_import(
 /// emulated; Ruffle's empty interface is used rather than routing any
 /// original game action to an installed client or unrestricted filesystem.
 /// The live process and preview directory are owned by RunningPreview.
-pub fn launch(session: &Session, ruffle_exe: &str) -> Result<RunningPreview, String> {
+pub fn launch(
+    session: &Session,
+    ruffle_exe: &str,
+    preset: PreviewPreset,
+) -> Result<RunningPreview, String> {
     let binary = executable(ruffle_exe)?;
     let root = tempfile::Builder::new()
         .prefix("evolve-gfx-interactive-")
@@ -184,7 +318,8 @@ pub fn launch(session: &Session, ruffle_exe: &str) -> Result<RunningPreview, Str
     let (swf, mut converted, mut skipped) =
         renderable_movie(&input, &session.relative, &session.source, session)?;
     let root_movie = root.path().join("movie.swf");
-    fs::write(&root_movie, swf).map_err(|e| e.to_string())?;
+    let movie = inject_preview_call(&swf, &session.relative, preset)?;
+    fs::write(&root_movie, movie).map_err(|e| e.to_string())?;
     let mut missing = 0usize;
     for name in session.info.imports.iter().take(MAX_IMPORTS) {
         match stage_import(session, &session.relative, name, root.path()) {
@@ -219,12 +354,54 @@ pub fn launch(session: &Session, ruffle_exe: &str) -> Result<RunningPreview, Str
         restored_images: converted,
         skipped_images: skipped,
         missing_imports: missing,
+        preset,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preview_prompt_injection_is_allowlisted_and_does_not_mutate_source() {
+        let name = b"showEngagementPrompt\0";
+        // Valid SWF header, RECT, FPS/frame count, one original DoAction,
+        // ShowFrame and End. This is a synthetic test, never game content.
+        let mut movie = b"FWS\x0f".to_vec();
+        movie.extend_from_slice(&[0; 4]);
+        movie.extend_from_slice(&[0x08, 0x00]); // RECT with nbits=1
+        movie.extend_from_slice(&[0, 30, 1, 0]); // frame rate/count
+        let mut action = vec![0x96, (name.len() + 1) as u8, 0, 0];
+        action.extend_from_slice(name);
+        action.push(0);
+        movie.extend_from_slice(&((12u16 << 6) | 63).to_le_bytes());
+        movie.extend_from_slice(&(action.len() as u32).to_le_bytes());
+        movie.extend_from_slice(&action);
+        movie.extend_from_slice(&(1u16 << 6).to_le_bytes());
+        movie.extend_from_slice(&0u16.to_le_bytes());
+        let n = movie.len() as u32;
+        movie[4..8].copy_from_slice(&n.to_le_bytes());
+        let original = movie.clone();
+        assert_eq!(
+            inject_preview_call(&movie, "Libs/UI/main_menu.gfx", PreviewPreset::AsAuthored)
+                .unwrap(),
+            original
+        );
+        let edited = inject_preview_call(
+            &movie, "Libs/UI/main_menu.gfx", PreviewPreset::HideEngagement,
+        )
+        .unwrap();
+        assert!(edited.len() > original.len());
+        assert_eq!(movie, original);
+        assert_eq!(&edited[4..8], &(edited.len() as u32).to_le_bytes());
+        assert!(edited.windows(b"showEngagementPrompt".len())
+            .filter(|w| *w == b"showEngagementPrompt").count() >= 2);
+        assert!(inject_preview_call(
+            &original, "Other.gfx", PreviewPreset::HideEngagement
+        ).is_err());
+        assert!(inject_preview_call(
+            &original, "Libs/UI/main_menu.gfx", PreviewPreset::HideSigningIn
+        ).is_err()); // No matching original function in this fixture.
+    }
     #[test]
     fn refuses_untrusted_runtimes_and_import_paths() {
         assert!(executable("ruffle.exe").is_err());
