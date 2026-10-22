@@ -13,16 +13,19 @@ from blender_material_ids import (material_records_from_glb, bind_original_mater
 from blender_fbx_safety import (prepare_export_materials, validate_blender_meshes,
                                optimize_binary_fbx, normal_image_names)
 from blender_static_fbx_basis import original_static_bounds, verify_static_world_bounds
+from blender_export_hierarchy import (original_part_labels, name_static_meshes,
+                                      character_root, combine_source_meshes)
 
 def run():
-    # blender.exe --background --factory-startup --python <script> -- input.glb output.fbx 0|1
+    # Blender script flags: source.glb output.fbx animate embed combine
     argv = sys.argv[sys.argv.index("--") + 1:]
-    if len(argv) != 4 or argv[2] not in ("0", "1") or argv[3] not in ("0", "1"):
-        raise RuntimeError("Expected GLB, FBX, animation and texture embedding flags")
+    if (len(argv) != 5 or any(flag not in ("0", "1") for flag in argv[2:])):
+        raise RuntimeError("Expected GLB, FBX, animation, embedding and combine flags")
     source = Path(argv[0]).resolve(strict=True)
     destination = Path(argv[1]).absolute()
     include_animation = argv[2] == "1"
     embed_textures = argv[3] == "1"
+    combine_meshes = argv[4] == "1"
     if source.suffix.casefold() != ".glb" or destination.suffix.casefold() != ".fbx":
         raise RuntimeError("GLB input and FBX output required")
     if destination.exists() or source == destination:
@@ -60,6 +63,16 @@ def run():
     if source_material_ids:
         verify_original_material_ids(meshes, [source_material_ids])
         source_material_uvs = source_material_uv_distributions(meshes)
+    root_name = name_static_meshes(meshes, source.stem, original_part_labels(source))
+    if combine_meshes:
+        meshes, _ = combine_source_meshes(meshes, root_name=root_name)
+        if source_material_ids:
+            verify_original_material_ids(meshes, [source_material_ids])
+            verify_material_uv_distributions(
+                source_material_uvs, source_material_uv_distributions(meshes))
+    armatures = [obj for obj in visible if obj.type == "ARMATURE"]
+    export_root = character_root(root_name, meshes, armatures)
+    visible = armatures + meshes + [export_root]
     prepare_export_materials(meshes, embed_textures, destination)
     source_normal_maps = normal_image_names(meshes) if not embed_textures else set()
     validate_blender_meshes(meshes, rigged=any(o.type == 'ARMATURE' for o in visible),
@@ -120,6 +133,8 @@ def run():
         "meshes": exported_mesh_count,
         "armatures": exported_armature_count,
         "animations_included": include_animation,
+        "character_root": root_name,
+        "combined_meshes": combine_meshes,
         "output_bytes": destination.stat().st_size
     }))
 
