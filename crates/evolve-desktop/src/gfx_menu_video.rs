@@ -220,7 +220,7 @@ fn imported_video_members(root: &Path, build: &str) -> Result<Option<Vec<String>
             let lower = name.to_ascii_lowercase();
             [".usm", ".bik", ".mp4", ".webm"]
                 .iter()
-                .any(|suffix| lower.ends_with(suffix))
+                .any(|suffix| lower.ends_with(*suffix))
         })
         .collect::<Vec<_>>();
     Ok(Some(paths))
@@ -458,6 +458,29 @@ mod tests {
         );
         assert_eq!(result["source"]["source_archive"], ORIGINAL_PAK);
         assert_eq!(result["playable"], false);
+
+        // Rename the same verified member in the fixture to prove diagnostics
+        // report the archive's actual video filename rather than guessed paths.
+        let renamed = "Movies/Stage2/FlashAssets/videos/intro.usm";
+        fs::rename(&source, folder.join("files").join(renamed)).unwrap();
+        fs::write(
+            folder.join("asset-library.json"),
+            serde_json::to_vec(&json!({
+                "version": 1,
+                "name": "videos.pak",
+                "source": "/game/videos.pak",
+                "entries": [{"path": renamed, "bytes": data.len()}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let missing = stage_main_menu(Some(root), Some("Modded Stage 2"), scratch.path());
+        assert_eq!(missing["playable"], false);
+        assert!(missing["status"].as_str().unwrap().contains(renamed));
+        assert!(matches!(
+            original_video(root, "Modded Stage 2").unwrap(),
+            LibraryReferenceStatus::Missing
+        ));
     }
     #[test]
     fn missing_build_never_fabricates_a_background() {
