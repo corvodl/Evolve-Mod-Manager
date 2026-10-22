@@ -266,9 +266,9 @@ def optimize_binary_fbx(path, embed_textures=True):
     if objects is None or connections is None:
         raise FBXValidationError("Missing FBX object/connection tables")
     meshes = _validate_geometry(objects)
-    external_normals = 0
+    embedded_normals = 0
     if not embed_textures:
-        external_normals = validate_external_normal_references(objects, path)
+        embedded_normals = embed_verified_normal_maps(objects, path)
 
     clusters = [obj for obj in objects.children_named(b"Deformer")
                 if len(_properties(obj)) >= 3 and _properties(obj)[2] == b"Cluster"]
@@ -340,6 +340,8 @@ def optimize_binary_fbx(path, embed_textures=True):
         raise FBXValidationError("FBX version changed during optimization")
     check_objects = next(n for n in check_roots if n.name == b"Objects")
     _validate_geometry(check_objects)
+    if not embed_textures:
+        verify_embedded_normal_media(check_objects, embedded_normals)
     surviving = [c for c in check_objects.children_named(b"Deformer")
                  if len(_properties(c)) >= 3 and _properties(c)[2] == b"Cluster"]
     if len(surviving) != active_clusters or any(not _cluster_weights(c)[1] for c in surviving):
@@ -360,7 +362,7 @@ def optimize_binary_fbx(path, embed_textures=True):
     return {"meshes": meshes, "weighted_clusters": active_clusters,
             "removed_empty_clusters": len(clusters) - active_clusters,
             "merged_bind_poses": len(poses) - len(pose_groups),
-            "external_normal_maps": external_normals}
+            "embedded_normal_maps": embedded_normals}
 
 
 def _connected_ids(connections):
@@ -423,16 +425,16 @@ def _normal_png(image):
 
 
 def prepare_export_materials(meshes, embed_textures, destination=None):
-    """When diffuse embedding is off, still export original normals externally.
+    """Keep original normal maps inside FBX, even in neutral-white exports.
 
-    The FBX and its normal maps are initially staged together; Rust publishes
-    PNGs to destination/textures before publishing the FBX itself.
+    Staged PNG files are *temporary input* to the FBX media postprocessor.
+    Only the final FBX is published; the staging folder is discarded.
     """
     import bpy
     destination = Path(destination) if destination else None
     saved = {}
     if not embed_textures and destination is None:
-        raise FBXValidationError("External normal export needs a staged destination")
+        raise FBXValidationError("Embedded normal staging needs an FBX destination")
     for mesh in meshes:
         for material in mesh.data.materials:
             if material is None:
@@ -489,41 +491,90 @@ def prepare_export_materials(meshes, embed_textures, destination=None):
     return len(saved)
 
 
-def validate_external_normal_references(objects, destination):
-    """All non-embedded FBX image links must be staged relative normal PNGs.
+def embed_verified_normal_maps(objects, destination):
+    """Embed only authored normal maps, even when other textures are disabled.
 
-    Rewrite absolute paths in both FBX FileName and RelativeFilename fields so
-    a copied FBX never retains the temporary export directory.
+    Blender exports neutral materials with their normal map image nodes.
+    Embed the source-verified staged PNGs as FBX Video.Content bytes, rather
+    than requiring any texture files beside the delivered FBX. Exact image
+    hashes and normal-only filenames are checked before rewriting media refs.
     """
     stem = re.escape(destination.stem)
-    pattern = re.compile(r"^" + stem + r"_normal_[0-9a-f]{12}\.png$")
-    expected_folder = destination.parent / "textures"
-    disk_files = {f.name for f in expected_folder.iterdir() if f.is_file()} if expected_folder.is_dir() else set()
-    if any(not pattern.fullmatch(name) for name in disk_files):
-        raise FBXValidationError("Unexpected file in staged normal-map folder")
-    references = set()
-    for image_node in objects.children:
-        if image_node.name not in (b"Texture", b"Video"):
+    pattern = re.compile(r"^" + stem + r"_normal_([0-9a-f]{12})\.png$")
+    stage = destination.parent / "textures"
+    media = {}
+    if stage.exists():
+        if not stage.is_dir() or stage.is_symlink():
+            raise FBXValidationError("Invalid staged normal-map folder")
+        for file in stage.iterdir():
+            match = pattern.fullmatch(file.name)
+            if (not match or not file.is_file() or file.is_symlink()
+                    or file.stat().st_size > 64 * 1024 * 1024):
+                raise FBXValidationError("Unexpected staged normal-map file")
+            png = file.read_bytes()
+            if (not png.startswith(b"\x89PNG\r\n\x1a\n")
+                    or hashlib.sha256(png).hexdigest()[:12] != match.group(1)):
+                raise FBXValidationError("Staged normal map is not its original PNG")
+            media[file.name] = png
+    videos, textures = set(), set()
+    for node in objects.children:
+        if node.name not in (b"Texture", b"Video"):
             continue
-        name_fields = [n for n in image_node.children
-                       if n.name in (b"FileName", b"Filename", b"RelativeFilename")]
-        if not name_fields:
-            raise FBXValidationError("External FBX image missing filename")
-        for field in name_fields:
-            value = _text(field).decode("utf-8", errors="replace").replace("\\", "/")
-            name = value.rsplit("/", 1)[-1]
-            if not pattern.fullmatch(name) or name not in disk_files:
-                raise FBXValidationError("FBX has a non-normal or missing image reference")
-            references.add(name)
-            rel = ("textures/" + name).encode("utf-8")
-            field.props = b"S" + struct.pack("<I", len(rel)) + rel
+        filenames = [child for child in node.children
+                     if child.name in (b"Filename", b"FileName", b"RelativeFilename")]
+        if not filenames:
+            raise FBXValidationError("FBX image has no source normal-map filename")
+        names = set()
+        for field in filenames:
+            path = _text(field).decode("utf-8", errors="replace").replace("\\", "/")
+            name = path.rsplit("/", 1)[-1]
+            if name not in media:
+                raise FBXValidationError("FBX contains an unexpected or missing texture")
+            names.add(name)
+        if len(names) != 1:
+            raise FBXValidationError("FBX normal-map media filenames disagree")
+        name = names.pop()
+        # Embedded media should not refer to an absolute temporary directory.
+        for field in filenames:
+            label = name.encode("utf-8")
+            field.props = b"S" + struct.pack("<I", len(label)) + label
             field.count = 1
-        content = image_node.get(b"Content")
-        if content is not None and any(isinstance(p, bytes) and p for p in _properties(content)):
-            raise FBXValidationError("External FBX accidentally embeds image data")
-    if references != disk_files:
-        raise FBXValidationError("Missing normal link or unreferenced normal PNG in FBX")
-    return len(references)
+        if node.name == b"Texture":
+            textures.add(name)
+            continue
+        if name in videos:
+            raise FBXValidationError("Duplicate FBX Video for one normal map")
+        videos.add(name)
+        content_nodes = node.children_named(b"Content")
+        if len(content_nodes) > 1:
+            raise FBXValidationError("Ambiguous embedded FBX media Content")
+        png = media[name]
+        encoded = b"R" + struct.pack("<I", len(png)) + png
+        if content_nodes:
+            content_nodes[0].props = encoded
+            content_nodes[0].count = 1
+        else:
+            node.children.append(Node(b"Content", encoded, 1))
+            node.terminator = True
+    if videos != set(media) or textures != set(media):
+        raise FBXValidationError("FBX normal map lacks an image or texture binding")
+    return len(media)
+
+
+def verify_embedded_normal_media(objects, count):
+    """Check actual serialized FBX Video.Content bytes, not disk links."""
+    videos = objects.children_named(b"Video")
+    if len(videos) != count:
+        raise FBXValidationError("Embedded normal-map count changed")
+    for video in videos:
+        contents = video.children_named(b"Content")
+        if len(contents) != 1:
+            raise FBXValidationError("FBX normal map is not embedded")
+        props = _properties(contents[0])
+        if (len(props) != 1 or not isinstance(props[0], bytes)
+                or not props[0].startswith(b"\x89PNG\r\n\x1a\n")):
+            raise FBXValidationError("FBX lacks valid embedded normal-map PNG bytes")
+
 
 
 def normal_image_names(meshes):
@@ -584,4 +635,4 @@ def validate_blender_meshes(meshes, *, rigged=False, embed_textures=True):
                 if allowed is not None:
                     import bpy
                     if not Path(bpy.path.abspath(allowed.filepath)).is_file():
-                        raise FBXValidationError("Linked external normal map missing")
+                        raise FBXValidationError("Staged embedded normal-map input missing")
