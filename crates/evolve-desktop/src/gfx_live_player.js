@@ -371,6 +371,67 @@
         // Ruffle's allowScriptAccess mechanism.
         const report = await sourceLoad;
         const hasVideo = configureMainMenuVideo(report);
+        const auditButton = document.getElementById("audit-assets");
+        auditButton.disabled = !report;
+        auditButton.addEventListener("click", async () => {
+            if (!report || auditButton.disabled) return;
+            auditButton.disabled = true;
+            try {
+                const staged = report.mode_images?.staged_names;
+                const names = Array.isArray(staged)
+                    ? staged.filter(name => typeof name === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(name)).slice(0, 64)
+                    : [];
+                let decoded = 0;
+                const failures = [];
+                // The report's staged count alone does not prove that the
+                // browser can fetch/decode those same-build DDS derivatives.
+                await Promise.all(names.map(async name => {
+                    try {
+                        const response = await fetch("./runtime-images/" + name + ".png", {cache: "no-store"});
+                        if (!response.ok || !String(response.headers.get("content-type")).includes("image/png")) {
+                            throw new Error("HTTP " + response.status);
+                        }
+                        const bytes = await response.arrayBuffer();
+                        const view = new DataView(bytes);
+                        if (bytes.byteLength < 24 || view.getUint32(0, false) !== 0x89504e47 ||
+                            view.getUint32(4, false) !== 0x0d0a1a0a) {
+                            throw new Error("invalid PNG signature");
+                        }
+                        const width = view.getUint32(16, false);
+                        const height = view.getUint32(20, false);
+                        if (width === 0 || height === 0 || width > 8192 || height > 8192) {
+                            throw new Error("invalid PNG dimensions");
+                        }
+                        decoded++;
+                    } catch (error) {
+                        failures.push(name + ": " + String(error).slice(0, 80));
+                    }
+                }));
+                const meta = player.ruffle().metadata || {};
+                const stageDimensions = String(meta.width || "?") + "x" + String(meta.height || "?");
+                const video = document.getElementById("background-video");
+                const state = report.background_video || {};
+                const playback = state.playable === true
+                    ? "readyState=" + video.readyState + ", size=" +
+                      (video.videoWidth || 0) + "x" + (video.videoHeight || 0) +
+                      ", paused=" + String(video.paused) + ", error=" +
+                      (video.error?.code || "none")
+                    : String(state.status || "source unavailable");
+                const fonts = (Array.isArray(report.fonts) ? report.fonts : []);
+                const knownFonts = fonts.filter(item => Number(item.define_font_tags || 0) > 0).length;
+                const text = "Ruffle source stage " + stageDimensions + "; browser PNG images " +
+                    decoded + "/" + names.length + "; embedded Flash bitmap linkages " +
+                    Number(report.mode_images?.flash_bitmap_linkages || 0) +
+                    "; recognized font libraries " + knownFonts + "/" + fonts.length +
+                    "; Goliath video " + playback +
+                    (failures.length ? "; asset fetch/decode errors: " + failures.slice(0, 5).join("; ") : "");
+                const entry = makeText("li", text);
+                document.getElementById("resource-status").prepend(entry);
+                show(text, failures.length > 0 || (names.length > 0 && decoded !== names.length));
+            } finally {
+                auditButton.disabled = false;
+            }
+        });
         const notice = document.getElementById("preview-notice");
         const reasons = [];
         if (!hasVideo && report?.background_video?.source?.source_archive === "videos.pak") {
