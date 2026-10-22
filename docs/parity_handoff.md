@@ -2,6 +2,74 @@
 
 Updated: **2026-10-20** · Repository: `corvodl/Evolve-Mod-Manager` · Working PR: **#6** on `feature/blender-viewport-cdf-autoload`, based on PR #5's `feature/pr5-combined-viewer-preview`. This document is a resumable engineering checklist, **not** a claim of production parity. See [PARITY.md](PARITY.md) for the broader feature matrix.
 
+## October 22 — source-backed GFX parity continuation after submenu wiring
+
+Branch: `feature/gfx-main-menu-text-init`, draft PR #29. This pass builds on
+`f19500f` (core and desktop CI succeeded; portable-preview job skipped).
+All source game GFX, USM, fonts and localization archives remain read-only;
+only the isolated Ruffle copies and optional inspector metadata are changed.
+
+### Implemented since `f19500f`
+
+- **Original submenu synchronization** (`f948c35`): removed duplicate
+  inspector click handlers. Source-navigation UI advances only after the
+  original `evolvePreview_pushSourceMenu` callback returns `true`;
+  `goBack` restores the previous local inspector group only after the
+  original callback returns `true`. PC/unscoped source visibility and
+  disabled gating are enforced consistently. The stack has a 32-deep cap,
+  and original menu reinitialization resets it.
+- **Imported-movie localization** (`1a9a458`): walks up to 128 already
+  staged, same-source GFX/SWF imports, collects at most 1024 source-authored
+  `DefineEditText` initial `@key` tokens and performs one exact-build
+  localization lookup. Rewrites only matching initial strings in
+  temporary imported copies. Reports imported field, localized, unresolved
+  and unsupported counts. Does **not** translate arbitrary later
+  `TextField.text` assignments or override the original
+  `gfx.utils.Locale.getTranslatedString` bytecode.
+- **Font/source binding evidence** (`acf706b`, `9b6f59f`):
+  reads bounded embedded DefineFont/DefineFont2/DefineFont3/DefineFont4
+  names, IDs, bold/italic flags and glyph counts, plus exact
+  `DefineFontName` full-name aliases. IDs are scoped to their source
+  movie. The live inspector exposes this evidence; a successful font
+  import does not prove Ruffle chose that glyph library for every field.
+- **Native command observation** (`948fa31`):
+  retains original SWF DefineButton2 ID/condition tracing, adds a
+  bounded read-only trace of FSCommand names/arguments, and keeps all
+  game-service execution disabled. A button SWF ID is *not* the same as
+  the XML command or an authoritative game callback mapping.
+- **Scaleform effects inspection** (`6ac89af`, `8ebd0b9`):
+  recursively inventories original SWF PlaceObject2/PlaceObject3
+  color-transform, filter-list and blend-mode flags, including nested
+  DefineSprite timelines. This does **not** implement missing GPU filter,
+  noise, glow, native color-multiplier or CryEngine postprocessing paths.
+- **Stage/background compositing** (`e30fdb4`, `29190c4`):
+  positions the source-derived browser-playable USM video and the
+  transparent Ruffle stage in one shared fitted rectangle, using
+  Ruffle's actual SWF metadata width/height and container resize.
+  This avoids independently cropping or letterboxing the two layers
+  in unusual window aspect ratios; pixel/animation parity remains unverified.
+
+### Strict remaining acceptance gates
+
+1. Check final-head GitHub Actions Linux core, Windows desktop
+   compile/Clippy/tests and applicable portable preview; do not borrow
+   success from earlier commits. Test new synthetic original font and
+   source effect tag cases. Validate emitted submenu AVM1 callback with FFDec.
+2. Execute the actual main-menu movie and its nested imports in Ruffle;
+   capture original and Ruffle frames at identical resolution, language,
+   time and state. Verify original button press/rollover navigation, submenu
+   stack depth, back/reset, patch notes, background video crop and
+   source-authored effects.
+3. Dynamic ActionScript translation and actual font alias/glyph binding
+   need separate first-frame/source-script proof, as do original native
+   button-to-UI-local-handler mappings. Do not map SWF character IDs to
+   XML row commands by order and do not silently enable online,
+   launch, store, exit, profiles or credentials.
+4. Original Scaleform glow/color-transform rendering fidelity and
+   CryEngine shader passes remain unimplemented where Ruffle diverges.
+   The static effect inventory is diagnostic evidence, not equivalence.
+   Do not merge, release or claim pixel-identical visuals on this evidence.
+
 ## October 22 — continued original Flash submenu navigation (PR #29)
 
 From `afd8d0d`, the original `openScreen(7)` and `pushMenuState(0)`
