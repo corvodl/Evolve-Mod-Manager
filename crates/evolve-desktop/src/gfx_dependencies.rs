@@ -209,6 +209,72 @@ mod tests {
         assert_eq!(&swf_import(&bytes, "effects.gfx")[..3], b"GFX");
     }
     #[test]
+    fn source_qualified_usa_en_font_import_preserves_verified_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        let folder = library.join("USA-EN_xml.pak__11111111111111111111");
+        fs::create_dir_all(folder.join("files/files")).unwrap();
+        let original_font = b"GFX__original_font_movie";
+        fs::write(folder.join("files/files/gfxfontlib_locfont.gfx"), original_font).unwrap();
+        fs::write(
+            folder.join("asset-library.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "name": "USA-EN_xml.pak",
+                "source": "/verified/USA-EN_xml.pak",
+                "entries": [{
+                    "path": "files/gfxfontlib_locfont.gfx",
+                    "bytes": original_font.len()
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            library.join("build-collections.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "builds": {
+                    "stage-two": {
+                        "label": "Modded Stage 2",
+                        "members": {"11111111111111111111": {}}
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let source = temp.path().join("main_menu.gfx");
+        fs::write(&source, b"GFX__source_menu___").unwrap();
+        let scratch = temp.path().join("preview");
+        fs::create_dir(&scratch).unwrap();
+        let found = stage_imports(
+            &["gfxfontlib_locfont.gfx".to_owned()],
+            "Libs/UI/main_menu.gfx",
+            &source,
+            &scratch,
+            Some(&library),
+            Some("Modded Stage 2"),
+        )
+        .unwrap();
+        assert_eq!(found.len(), 1);
+        assert!(found[0].outcome.contains("USA-EN_xml.pak"));
+        assert_eq!(
+            fs::read(scratch.join("gfxfontlib_locfont.gfx")).unwrap(),
+            original_font
+        );
+        let other = stage_imports(
+            &["gfxfontlib_locfont.gfx".to_owned()],
+            "Libs/UI/main_menu.gfx",
+            &source,
+            &scratch,
+            Some(&library),
+            Some("Legacy 2012"),
+        )
+        .unwrap();
+        assert!(!other[0].outcome.contains("original font"));
+    }
+    #[test]
     fn refuses_unsafe_imports_and_fails_closed_without_build() {
         assert!(!valid("../other.gfx"));
         let dir = tempfile::tempdir().unwrap();
