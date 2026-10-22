@@ -154,8 +154,98 @@ where
     Ok(dest)
 }
 
-/// Extract keys directly from the movie's authored edit-text initial values,
-/// not from guessed navigation order or screenshots.
+/// Read only typed AVM1 ActionPush string constants, including the bodies of
+/// ordinary DefineFunction actions. These original bytes are useful for
+/// discovering runtime-assigned @ui_ keys without assuming screen labels.
+/// Do not change original instruction lengths, jumps or authored bytecode.
+fn avm1_localization_keys(actions: &[u8], depth: usize, keys: &mut BTreeSet<String>) {
+    if depth > 4 || actions.len() > MAX_DECOMPRESSED {
+        return;
+    }
+    let mut at = 0usize;
+    let mut count = 0usize;
+    while at < actions.len() && count < 32_000 && keys.len() < 256 {
+        let code = actions[at];
+        at += 1;
+        if code == 0 {
+            break;
+        }
+        let size = if code >= 0x80 {
+            let Some(bytes) = actions.get(at..at + 2) else { break };
+            at += 2;
+            usize::from(u16::from_le_bytes([bytes[0], bytes[1]]))
+        } else {
+            0
+        };
+        let Some(end) = at.checked_add(size).filter(|&end| end <= actions.len()) else {
+            break;
+        };
+        let payload = &actions[at..end];
+        if code == 0x96 {
+            let mut p = 0usize;
+            while p < payload.len() {
+                let ty = payload[p];
+                p += 1;
+                if ty == 0 {
+                    let Some(stop) = zstring_end(payload, p) else { break };
+                    if let Ok(value) = std::str::from_utf8(&payload[p..stop])
+                        && value.to_ascii_lowercase().starts_with("@ui_")
+                        && let Some(key) = label(value)
+                    {
+                        keys.insert(format!("@{key}"));
+                    }
+                    p = stop + 1;
+                    continue;
+                }
+                let skip = match ty {
+                    1 | 7 => 4,
+                    2 | 3 => 0,
+                    4 | 5 | 8 => 1,
+                    6 => 8,
+                    9 => 2,
+                    _ => break,
+                };
+                let Some(next) = p.checked_add(skip).filter(|&next| next <= payload.len()) else {
+                    break;
+                };
+                p = next;
+            }
+        } else if code == 0x9b && depth < 4 {
+            // DefineFunction: functionName\0, parameter count, parameter
+            // names, codeSize and the authored function bytecode.
+            if let Some(name_end) = zstring_end(payload, 0) {
+                let mut p = name_end + 1;
+                if let Some(count_bytes) = payload.get(p..p + 2) {
+                    let parameters = u16::from_le_bytes([count_bytes[0], count_bytes[1]]);
+                    p += 2;
+                    let mut valid = true;
+                    for _ in 0..parameters {
+                        if let Some(end) = zstring_end(payload, p) {
+                            p = end + 1;
+                        } else {
+                            valid = false;
+                            break;
+                        }
+                    }
+                    if valid && let Some(size_bytes) = payload.get(p..p + 2) {
+                        let code_size = usize::from(u16::from_le_bytes([
+                            size_bytes[0], size_bytes[1],
+                        ]));
+                        p += 2;
+                        if let Some(body) = payload.get(p..p.saturating_add(code_size)) {
+                            avm1_localization_keys(body, depth + 1, keys);
+                        }
+                    }
+                }
+            }
+        }
+        at = end;
+        count += 1;
+    }
+}
+
+/// Extract keys from original edit-text initial values and typed AVM1
+/// script strings; all translations remain source-qualified and exact-build.
 pub fn authored_keys(swf: &[u8]) -> Result<Vec<String>, String> {
     let mut keys = BTreeSet::new();
     let _ = walk(swf, |kind, tag| {
@@ -165,6 +255,11 @@ pub fn authored_keys(swf: &[u8]) -> Result<Vec<String>, String> {
             && let Some(key) = label(raw)
         {
             keys.insert(format!("@{key}"));
+        }
+        if kind == 12 {
+            avm1_localization_keys(tag, 0, &mut keys);
+        } else if kind == 59 && tag.len() >= 2 {
+            avm1_localization_keys(&tag[2..], 0, &mut keys);
         }
         Ok(tag.to_vec())
     })?;
