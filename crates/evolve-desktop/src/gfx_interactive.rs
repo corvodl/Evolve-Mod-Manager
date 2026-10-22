@@ -766,7 +766,7 @@ fn renderable_movie(
     virtual_movie: &str,
     source: &Path,
     session: &Session,
-) -> Result<(Vec<u8>, usize, usize), String> {
+) -> Result<(Vec<u8>, usize, usize, gfx_external_textures::SkipDetails), String> {
     // Use the exact same verified atlas reconstruction as the FFDec preview.
     // Ruffle can then rasterize preserved bitmap-fill shapes and run supported
     // AVM1/AVM2 actions in the original script tags.
@@ -815,7 +815,7 @@ fn stage_import(
     session: &Session,
     reference: &str,
     output: &Path,
-) -> Result<Option<(usize, usize)>, String> {
+) -> Result<Option<(usize, usize, gfx_external_textures::SkipDetails)>, String> {
     if !safe_import(reference) || reference.eq_ignore_ascii_case("movie.swf") {
         return Err("The movie contains an unsafe or colliding GFX/SWF import".into());
     }
@@ -853,7 +853,7 @@ fn stage_import(
 fn stage_live_import_graph(
     session: &Session,
     output: &Path,
-) -> Result<(usize, usize, usize, Vec<String>), String> {
+) -> Result<(usize, usize, usize, Vec<String>, gfx_external_textures::SkipDetails), String> {
     let mut pending = session
         .info
         .imports
@@ -1032,7 +1032,7 @@ pub fn launch(
         .tempdir()
         .map_err(|e| e.to_string())?;
     let input = fs::read(&session.editable).map_err(|e| e.to_string())?;
-    let (swf, mut converted, mut skipped) =
+    let (swf, mut converted, mut skipped, _) =
         renderable_movie(&input, &session.relative, &session.source, session)?;
     let root_movie = root.path().join("movie.swf");
     let movie = inject_preview_call(&swf, &session.relative, preset)?;
@@ -1040,7 +1040,7 @@ pub fn launch(
     let mut missing = 0usize;
     for name in session.info.imports.iter().take(MAX_IMPORTS) {
         match stage_import(session, name, root.path()) {
-            Ok(Some((images, skip))) => {
+            Ok(Some((images, skip, _))) => {
                 converted += images;
                 skipped += skip;
             }
