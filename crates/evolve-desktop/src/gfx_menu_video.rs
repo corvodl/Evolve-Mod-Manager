@@ -507,7 +507,7 @@ mod tests {
         let intro = "Movies/Stage2/front_end/intro.usm";
         let source = folder.join("files").join(deep);
         fs::create_dir_all(source.parent().unwrap()).unwrap();
-        let video = b"CRID\\0\\0\\0\\0\\0\\0\\0\\0";
+        let video = b"CRID\0\0\0\0\0\0\0\0";
         fs::write(&source, video).unwrap();
         fs::write(
             folder.join("asset-library.json"),
@@ -522,7 +522,7 @@ mod tests {
             root.join("build-collections.json"),
             serde_json::to_vec(&json!({
                 "version":1,
-                "builds":{"stage2":{"label":"Modded Stage 2","members":{id:{}}}}
+                "builds":{"stage2":{"label":"Modded Stage 2","members":{"11111111111111111111":{}}}}
             })).unwrap(),
         ).unwrap();
         assert!(matches!(
