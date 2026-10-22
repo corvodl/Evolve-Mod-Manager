@@ -202,13 +202,24 @@ pub fn convert_glb_to_fbx_with_options(
     animation: AnimationPolicy,
     embed_textures: bool,
 ) -> Result<FbxReport, FbxError> {
-    convert_glb_to_fbx_with_layout(blender, source, destination, animation, embed_textures, false)
+    convert_glb_to_fbx_with_layout(
+        blender,
+        source,
+        destination,
+        animation,
+        embed_textures,
+        false,
+    )
 }
 
 /// Preserve original parts by default; optionally join meshes within their verified rig.
 pub fn convert_glb_to_fbx_with_layout(
-    blender: &Path, source: &Path, destination: &Path,
-    animation: AnimationPolicy, embed_textures: bool, combine_meshes: bool,
+    blender: &Path,
+    source: &Path,
+    destination: &Path,
+    animation: AnimationPolicy,
+    embed_textures: bool,
+    combine_meshes: bool,
 ) -> Result<FbxReport, FbxError> {
     validate_glb_source(source, animation)?;
     let blender_meta = fs::symlink_metadata(blender)?;
@@ -257,8 +268,10 @@ pub fn convert_glb_to_fbx_with_layout(
         stage.path().join("blender_static_fbx_basis.py"),
         include_str!("blender_static_fbx_basis.py"),
     )?;
-    fs::write(stage.path().join("blender_export_hierarchy.py"),
-              include_str!("blender_export_hierarchy.py"))?;
+    fs::write(
+        stage.path().join("blender_export_hierarchy.py"),
+        include_str!("blender_export_hierarchy.py"),
+    )?;
     let staged_fbx = stage.path().join(
         destination
             .file_name()
@@ -282,7 +295,7 @@ pub fn convert_glb_to_fbx_with_layout(
         } else {
             "0"
         })
-.arg(if embed_textures { "1" } else { "0" })
+        .arg(if embed_textures { "1" } else { "0" })
         .arg(if combine_meshes { "1" } else { "0" })
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
