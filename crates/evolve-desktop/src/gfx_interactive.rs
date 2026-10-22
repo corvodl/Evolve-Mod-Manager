@@ -923,13 +923,17 @@ fn original_font_definitions(path: &Path) -> Option<usize> {
 /// inspector. These do not become fabricated SWF display-list nodes. Commands
 /// that require CryEngine remain read-only; only known child submenu links can
 /// be traversed locally. This is diagnostics, NOT native menu emulation.
-fn write_live_menu_report(
-    session: &Session,
-    scratch: &Path,
+struct LiveMenuCounts {
     restored: usize,
     skipped: usize,
     missing: usize,
     traced_buttons: usize,
+}
+
+fn write_live_menu_report(
+    session: &Session,
+    scratch: &Path,
+    counts: LiveMenuCounts,
     verified_actions: &[PreviewPreset],
     imported_movies: &[String],
 ) -> Result<(), String> {
@@ -971,9 +975,7 @@ fn write_live_menu_report(
     );
     // Imported font movies remain original same-build assets; resolving an
     // import does not prove Ruffle supports its Scaleform glyph tags.
-    let font_imports = session
-        .info
-        .imports
+    let font_imports = imported_movies
         .iter()
         .filter(|name| name.to_ascii_lowercase().contains("font"))
         .map(|name| {
@@ -1004,10 +1006,10 @@ fn write_live_menu_report(
         "menu_status": session.menu_command_status,
         "commands": entries,
         "resources": {
-            "restored_dds_tiles": restored,
-            "instrumented_original_button_conditions": traced_buttons,
-            "skipped_dds_tiles": skipped,
-            "missing_imported_movies": missing,
+            "restored_dds_tiles": counts.restored,
+            "instrumented_original_button_conditions": counts.traced_buttons,
+            "skipped_dds_tiles": counts.skipped,
+            "missing_imported_movies": counts.missing,
             "unresolved_imports": unresolved,
             "has_source_build": session.source_build.is_some(),
             "has_asset_library": session.library_root.is_some()
@@ -1050,10 +1052,12 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
     write_live_menu_report(
         session,
         scratch.path(),
-        converted,
-        skipped,
-        missing,
-        traced_buttons,
+        LiveMenuCounts {
+            restored: converted,
+            skipped,
+            missing,
+            traced_buttons,
+        },
         &actions,
         &imported_movies,
     )?;
@@ -1141,10 +1145,12 @@ mod tests {
         write_live_menu_report(
             &session,
             folder.path(),
-            5,
-            3,
-            1,
-            2,
+            LiveMenuCounts {
+                restored: 5,
+                skipped: 3,
+                missing: 1,
+                traced_buttons: 2,
+            },
             &[PreviewPreset::Back],
             &["gfxfontlib_locfont.gfx".into()],
         )
