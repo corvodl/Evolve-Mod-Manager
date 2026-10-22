@@ -1571,6 +1571,11 @@ pub fn export_unified_cdf_fbx_options_with_glow(
         include_str!("blender_fbx_safety.py"),
     )
     .map_err(|e| e.to_string())?;
+    fs::write(
+        work.path().join("blender_material_ids.py"),
+        include_str!("blender_material_ids.py"),
+    )
+    .map_err(|e| e.to_string())?;
     let temp_fbx = work.path().join(
         destination
             .file_name()
