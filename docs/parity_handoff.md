@@ -30,6 +30,16 @@ game commands remain disabled. The local state tracker reports direct
 host query counts to distinguish a called adapter from a nonworking
 Flash query.
 
+The pinned Ruffle Web v0.7.1 runtime evaluates Flash-to-JavaScript
+`ExternalInterface.call` names using a JavaScript Function constructor.
+The isolated loopback preview therefore allows `'unsafe-eval'` in its CSP
+in addition to the existing WASM exception; this is deliberately not
+enabled in the main desktop application or any public remote host.
+Because this broadens what a modified GFX can execute in the local
+browser, do not treat this as a general-purpose sandbox for untrusted
+Flash files. The preview still serves only its private-token scratch
+content and allows no native game-service bridge.
+
 **Still unverified:** The exact original ExternalInterface invocation
 used by `shouldUseImageButtons()` to request `CurrentMenu` has not
 been established from its decompiled ActionScript. Registering functions
