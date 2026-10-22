@@ -2011,10 +2011,8 @@ mod tests {
         // The importer can preserve a compressed CWS wrapper. Inventory
         // must decode that original format without rewriting game sources.
         let raw = fs::read(&path).unwrap();
-        let mut encoder = flate2::write::ZlibEncoder::new(
-            Vec::new(),
-            flate2::Compression::default(),
-        );
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
         use std::io::Write;
         encoder.write_all(&raw[8..]).unwrap();
         let mut compressed = b"CWS".to_vec();
