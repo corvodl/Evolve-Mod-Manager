@@ -695,7 +695,9 @@ fn write_live_menu_report(
             })
         })
         .collect::<Vec<_>>();
-    let unresolved = session.dependencies.iter()
+    let unresolved = session
+        .dependencies
+        .iter()
         .filter(|item| {
             item.outcome.contains("Missing")
                 || item.outcome.contains("unavailable")
