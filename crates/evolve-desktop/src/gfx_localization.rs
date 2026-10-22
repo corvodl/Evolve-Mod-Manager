@@ -463,6 +463,75 @@ mod tests {
         );
     }
     #[test]
+    fn two_same_build_language_archives_with_the_same_member_path_are_not_discarded() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        for (id, archive, xml) in [
+            (
+                "11111111111111111111",
+                "USA-EN_xml.pak",
+                br#"<Strings><Category name="Common"><String name="ui_Options" value="OPTIONS"/></Category></Strings>"#.as_slice(),
+            ),
+            (
+                "22222222222222222222",
+                "English_XML.pak",
+                br#"<Strings><Category name="Common"><String name="ui_Training" value="TRAINING"/></Category></Strings>"#.as_slice(),
+            ),
+        ] {
+            let folder = root.join(format!("{archive}__{id}"));
+            fs::create_dir_all(folder.join("files/files")).unwrap();
+            fs::write(folder.join("files/files/text_ui_menus.xml"), xml).unwrap();
+            fs::write(
+                folder.join("asset-library.json"),
+                serde_json::to_vec(&json!({
+                    "version": 1,
+                    "name": archive,
+                    "source": format!("/original/{archive}"),
+                    "entries": [{
+                        "path": "files/text_ui_menus.xml",
+                        "bytes": xml.len()
+                    }]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        fs::write(
+            root.join("build-collections.json"),
+            serde_json::to_vec(&json!({
+                "version": 1,
+                "builds": {
+                    "stage-two": {
+                        "label": "Modded Stage 2",
+                        "members": {
+                            "11111111111111111111": {},
+                            "22222222222222222222": {}
+                        }
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            evolve_core::resolve_imported_reference(
+                root,
+                "files/text_ui_menus.xml",
+                Some("Modded Stage 2")
+            )
+            .unwrap(),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+        let report = menu_labels(
+            Some(root),
+            Some("Modded Stage 2"),
+            &["@ui_Options".to_owned(), "@ui_Training".to_owned()],
+        );
+        assert_eq!(report["translations"]["ui_options"], "OPTIONS");
+        assert_eq!(report["translations"]["ui_training"], "TRAINING");
+        assert_eq!(report["sources"].as_array().unwrap().len(), 2);
+    }
+    #[test]
     fn resolves_usa_en_archive_only_in_matching_library_build() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
