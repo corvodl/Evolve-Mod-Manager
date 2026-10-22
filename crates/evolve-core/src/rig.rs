@@ -1099,7 +1099,9 @@ pub(crate) fn embed_original_material_slots_glb(
         ));
     }
     let base = primitives[0].clone();
-    let rigged = doc["skins"].as_array().is_some_and(|skins| !skins.is_empty());
+    let rigged = doc["skins"]
+        .as_array()
+        .is_some_and(|skins| !skins.is_empty());
     if rigged && doc["skins"].as_array().is_none_or(|skins| skins.len() != 1) {
         return Err(RigError::Invalid("Unexpected source skin count".into()));
     }
