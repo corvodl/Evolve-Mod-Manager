@@ -62,6 +62,7 @@
         const resource = document.getElementById("resource-status");
         const messages = [
             "DDS tiles restored: " + Number(stats.restored_dds_tiles || 0),
+            "Original SWF button conditions instrumented: " + Number(stats.instrumented_original_button_conditions || 0),
             "DDS tiles unresolved/skipped: " + Number(stats.skipped_dds_tiles || 0),
             "Missing imported GFX/SWF movies: " + Number(stats.missing_imported_movies || 0),
             "Same-build Asset Library: " + (stats.has_asset_library ? "configured" : "not configured"),
@@ -102,7 +103,10 @@
         if (typeof player.ruffle().setTraceObserver === "function") {
             player.ruffle().setTraceObserver(message => {
                 const line = String(message).slice(0, 240);
-                if (/error|missing|undefined|failed/i.test(line)) {
+                if (line.startsWith("evolve-button:")) {
+                    const parts = line.split(":");
+                    show("Original Flash button " + (parts[1] || "?") + " fired condition " + (parts[2] || "?") + ". Inspect the original ActionScript and UI_Data for its command; no native action was invoked.");
+                } else if (/error|missing|undefined|failed/i.test(line)) {
                     show("Original ActionScript trace: " + line, true);
                 }
             });
@@ -116,7 +120,7 @@
             autoplay: "on",
             backgroundColor: "#000000"
         });
-        show("Ready. GFX Tools buttons apply to this running preview without restarting it.");
+        show("Ready. Click original Flash controls to trace verified button IDs and conditions. Game-owned initialization remains unavailable.");
         document.getElementById("reset").addEventListener("click", () => {
             player.ruffle().reload().then(() => show("Movie reset in the same window."))
                 .catch(e => show("Movie reset failed: " + String(e), true));
