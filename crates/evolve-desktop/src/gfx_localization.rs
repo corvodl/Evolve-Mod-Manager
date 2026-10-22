@@ -134,7 +134,7 @@ fn parse_sheet(bytes: &[u8], wanted: &HashSet<String>) -> Result<HashMap<String,
                     "amp" => "&".to_owned(),
                     "lt" => "<".to_owned(),
                     "gt" => ">".to_owned(),
-                    "quot" => "\\"".to_owned(),
+                    "quot" => char::from(34u8).to_string(),
                     "apos" => "'".to_owned(),
                     _ => event
                         .resolve_char_ref()
