@@ -4,7 +4,7 @@
 use crate::cdf::{AssetResolution, read_cdf, resolve_cdf, resolve_virtual};
 use crate::character_assembly::select_attachments;
 use crate::character_equipment::{EquipmentOverrides, validated_equipment_overrides};
-use crate::fbx::publish_verified_binary_fbx_with_normals;
+use crate::fbx::publish_verified_binary_fbx;
 use crate::inventory::Inventory;
 use crate::library_catalog::{
     LibraryReferenceStatus, imported_library, resolve_imported_reference,
@@ -1873,8 +1873,7 @@ pub fn export_unified_cdf_fbx_options_with_glow(
     // Shares the same byte-for-byte, non-overwriting FBX publish path as
     // single-model exports. The old flow consumed the first 23 bytes while
     // verifying the signature and accidentally discarded them on copy.
-    publish_verified_binary_fbx_with_normals(&temp_fbx, destination, !embed_textures)
-        .map_err(|e| e.to_string())?;
+    publish_verified_binary_fbx(&temp_fbx, destination).map_err(|e| e.to_string())?;
     Ok(UnifiedCdfFbxReport {
         original_skeleton: skeleton_ref,
         selected_skin_set: skin_set,
