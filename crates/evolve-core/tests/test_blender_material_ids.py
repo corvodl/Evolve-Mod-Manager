@@ -1,6 +1,9 @@
 """Source CryEngine material ID integrity without needing Blender or game files."""
+import json
 import pathlib
+import struct
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
@@ -9,6 +12,7 @@ from blender_material_ids import (
     bind_original_material_ids, parse_material_records,
     source_material_histogram, verify_original_material_ids,
     source_material_uv_distributions, verify_material_uv_distributions,
+    material_records_from_glb,
 )
 
 
@@ -66,6 +70,43 @@ class Mesh:
 
 
 class SourceMaterialTests(unittest.TestCase):
+    def test_static_glb_source_ids_survive_sparse_material_array(self):
+        doc = {
+            "asset": {"version": "2.0"},
+            "materials": [
+                {"name": ("CryEngine slot %03d - Original material ID %d" % (i, i))}
+                for i in range(11)
+            ],
+            "accessors": [{"count": 6}, {"count": 3}],
+            "meshes": [{"primitives": [
+                {"material": 0, "indices": 0},
+                {"material": 10, "indices": 1},
+            ]}],
+        }
+        raw = json.dumps(doc).encode()
+        raw += b" " * ((-len(raw)) % 4)
+        binary = (b"glTF" + struct.pack("<I", 2)
+                  + struct.pack("<I", 20 + len(raw))
+                  + struct.pack("<I", len(raw)) + b"JSON" + raw)
+        with tempfile.TemporaryDirectory() as folder:
+            path = pathlib.Path(folder) / "original.glb"
+            path.write_bytes(binary)
+            self.assertEqual(material_records_from_glb(path), [
+                {"id": 0, "triangles": 2,
+                 "name": "Original CryEngine material ID 0"},
+                {"id": 10, "triangles": 1,
+                 "name": "Original CryEngine material ID 10"},
+            ])
+            doc["materials"][10]["name"] = "Unresolved material"
+            raw = json.dumps(doc).encode()
+            raw += b" " * ((-len(raw)) % 4)
+            path.write_bytes(
+                b"glTF" + struct.pack("<I", 2) +
+                struct.pack("<I", 20 + len(raw)) +
+                struct.pack("<I", len(raw)) + b"JSON" + raw)
+            with self.assertRaisesRegex(RuntimeError, "no verifiable source ID"):
+                material_records_from_glb(path)
+
     def test_sparse_2012_equipment_id_remains_ten(self):
         mesh = Mesh("historical", [
             Material("CryEngine slot 000 - Body"),
