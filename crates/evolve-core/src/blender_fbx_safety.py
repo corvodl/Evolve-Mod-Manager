@@ -439,6 +439,9 @@ def prepare_export_materials(meshes, embed_textures, destination=None):
                 continue
             if not embed_textures:
                 source_normal = _normal_image(material)
+                # A CryEngine NoDraw material still occupies its original ID
+                # but must remain invisible even in neutral-white exports.
+                no_draw = bool(material.get("evolve_source_no_draw", False))
                 separate = None
                 if source_normal is not None:
                     png = _normal_png(source_normal)
@@ -455,13 +458,14 @@ def prepare_export_materials(meshes, embed_textures, destination=None):
                         separate = bpy.data.images.load(str(image_path), check_existing=True)
                         separate.colorspace_settings.name = "Non-Color"
                         saved[filename] = separate
-                material.diffuse_color = (1.0, 1.0, 1.0, 1.0)
+                material.diffuse_color = (1.0, 1.0, 1.0, 0.0 if no_draw else 1.0)
                 material.use_nodes = True
                 tree = material.node_tree
                 tree.nodes.clear()
                 output = tree.nodes.new("ShaderNodeOutputMaterial")
                 surface = tree.nodes.new("ShaderNodeBsdfPrincipled")
                 surface.inputs["Base Color"].default_value = (1., 1., 1., 1.)
+                surface.inputs["Alpha"].default_value = 0.0 if no_draw else 1.0
                 surface.inputs["Metallic"].default_value = 0.
                 surface.inputs["Roughness"].default_value = .5
                 tree.links.new(surface.outputs["BSDF"], output.inputs["Surface"])
