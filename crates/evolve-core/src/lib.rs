@@ -86,8 +86,8 @@ pub use dependency_graph::{
 };
 pub use export_bundle::{ExportBundleOptions, ExportBundleReport, export_bundle};
 pub use fbx::{
-    FbxError, FbxReport, convert_glb_to_fbx, convert_glb_to_fbx_with_options,
-    convert_glb_to_fbx_with_layout, validate_glb_source,
+    FbxError, FbxReport, convert_glb_to_fbx, convert_glb_to_fbx_with_layout,
+    convert_glb_to_fbx_with_options, validate_glb_source,
 };
 pub use gfx::{GfxError, GfxInfo, GfxResource, inspect_gfx};
 pub use gfx_layout::{LayoutEdit, StaticLayer, edit_first_frame, static_layers};
