@@ -10,6 +10,8 @@ import traceback
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from blender_uv0 import prepare_original_uv
+from blender_fbx_safety import (prepare_export_materials, validate_blender_meshes,
+                               optimize_binary_fbx)
 
 def check(condition, reason):
     if not condition:
@@ -223,6 +225,8 @@ def main():
               "selected embedded textures but no original diffuse image reached Blender")
         verify_part_diffuse_coverage(meshes, parts, "GLB to Blender")
     check(len(meshes) <= 1024, "unbounded material fragment count")
+    prepare_export_materials(meshes, embed_textures)
+    validate_blender_meshes(meshes, rigged=True, embed_textures=embed_textures)
     bone_count = sum(len(arm.data.bones) for arm in armatures)
     # Keep primitive strings: read_factory_settings destroys the original
     # Blender objects before validation of the re-imported FBX.
@@ -255,6 +259,7 @@ def main():
         path_mode="COPY", embed_textures=embed_textures)
     check(destination.is_file() and destination.stat().st_size >= 256,
           "FBX export failed")
+    optimized = optimize_binary_fbx(destination, embed_textures=embed_textures)
     bpy.ops.wm.read_factory_settings(use_empty=True)
     bpy.ops.import_scene.fbx(filepath=str(destination))
     result_arms = [o for o in bpy.data.objects if o.type == "ARMATURE"]
@@ -279,6 +284,7 @@ def main():
         verify_part_diffuse_coverage(result_meshes, parts, "FBX round-trip")
     if animate:
         check(bool(bpy.data.actions), "FBX round-trip lost the verified CAF Action")
+    validate_blender_meshes(result_meshes, rigged=True, embed_textures=embed_textures)
     imported_weighted_vertices = 0
     target_bounds = []
     target_uv_loops = [[], []]
@@ -316,7 +322,7 @@ def main():
                       "meshes": len(result_meshes), "display_shapes_excluded": len(display_shapes),
                       "weighted_vertices": imported_weighted_vertices,
                       "uv_loops": len(target_uv_loops[0]),
-                      "bytes": destination.stat().st_size}
+                      "bytes": destination.stat().st_size, "fbx_optimization": optimized}
     (manifest_path.parent / "verified-export.json").write_text(
         json.dumps(verified), encoding="utf-8")
     print(json.dumps(verified))
