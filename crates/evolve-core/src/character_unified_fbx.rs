@@ -2648,11 +2648,9 @@ mod tests {
         )
         .unwrap();
         let inv = crate::scan_directory(root).unwrap();
-        let (mesh, report) = crate::character_assembly::read_static_cdf_assembly(
-            &root.join("emet.cdf"),
-            &inv,
-        )
-        .unwrap();
+        let (mesh, report) =
+            crate::character_assembly::read_static_cdf_assembly(&root.join("emet.cdf"), &inv)
+                .unwrap();
         assert_eq!(report.geometry_parts.len(), 2);
         assert_eq!(report.source_parts.len(), 2);
         assert_eq!(report.source_parts[0].material_slot, 0);
@@ -2665,10 +2663,18 @@ mod tests {
         assert_eq!(doc["meshes"][0]["primitives"].as_array().unwrap().len(), 2);
         assert_eq!(doc["meshes"][0]["primitives"][0]["material"], 0);
         assert_eq!(doc["meshes"][0]["primitives"][1]["material"], 1);
-        assert!(doc["materials"][0]["name"]
-            .as_str().unwrap().contains("body | original ID 000"));
-        assert!(doc["materials"][1]["name"]
-            .as_str().unwrap().contains("visor | original ID 000"));
+        assert!(
+            doc["materials"][0]["name"]
+                .as_str()
+                .unwrap()
+                .contains("body | original ID 000")
+        );
+        assert!(
+            doc["materials"][1]["name"]
+                .as_str()
+                .unwrap()
+                .contains("visor | original ID 000")
+        );
         assert!(doc["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"].is_null());
     }
 
