@@ -1780,6 +1780,12 @@ pub(super) fn export_dialog(state: &State) -> Element<'_, Message> {
             "☐ Embedded textures"
         })
         .on_press(Message::ExportToggleEmbedded),
+        design::button(if state.export_combine_meshes {
+            "☑ Combine meshes"
+        } else {
+            "☐ Combine meshes"
+        })
+        .on_press(Message::ExportToggleCombineMeshes),
         design::button(if state.export_dependencies {
             "☑ Export dependencies"
         } else {
@@ -1800,6 +1806,7 @@ pub(super) fn export_dialog(state: &State) -> Element<'_, Message> {
             .on_input(Message::ExportFilterChanged),
         scrollable(picker).height(Length::Fixed(295.0)),
         flags,
+        text("FBX creates a character hierarchy with named original parts. Combine meshes is optional; distinct historical armatures stay separate.").size(11).style(design::muted),
         text(if state.export_embed_textures {
             "Embedded textures selected: FBX export verifies source diffuse images on every visible CDF part."
         } else {
