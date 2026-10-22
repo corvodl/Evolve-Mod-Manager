@@ -669,6 +669,62 @@ pub fn launch(
     })
 }
 
+/// Serialize *source-defined* UI_Data commands for an optional live browser
+/// inspector. These do not become fabricated SWF display-list nodes. Commands
+/// that require CryEngine remain read-only; only known child submenu links can
+/// be traversed locally. This is diagnostics, NOT native menu emulation.
+fn write_live_menu_report(
+    session: &Session,
+    scratch: &Path,
+    restored: usize,
+    skipped: usize,
+    missing: usize,
+) -> Result<(), String> {
+    let entries = session
+        .menu_commands
+        .iter()
+        .take(128)
+        .map(|item| {
+            serde_json::json!({
+                "submenu": item.submenu,
+                "label": item.label,
+                "command": item.command,
+                "child_submenu": item.child_submenu,
+                "disabled_when": item.disabled_when,
+                "hidden_when": item.hidden_when
+            })
+        })
+        .collect::<Vec<_>>();
+    let unresolved = session.dependencies.iter()
+        .filter(|item| {
+            item.outcome.contains("Missing")
+                || item.outcome.contains("unavailable")
+                || item.outcome.contains("Ambiguous")
+        })
+        .take(128)
+        .map(|item| item.reference.as_str())
+        .collect::<Vec<_>>();
+    let report = serde_json::json!({
+        "source": "verified same-build UI_Data/MainMenuScreen.xml",
+        "menu_status": session.menu_command_status,
+        "commands": entries,
+        "resources": {
+            "restored_dds_tiles": restored,
+            "skipped_dds_tiles": skipped,
+            "missing_imported_movies": missing,
+            "unresolved_imports": unresolved,
+            "has_source_build": session.source_build.is_some(),
+            "has_asset_library": session.library_root.is_some()
+        },
+        "limitation": "This is a source-defined command inspector. The original SWF is unchanged. Native CryEngine game state, dynamic Scaleform UI initialization, and in-game localization are not reproduced."
+    });
+    let bytes = serde_json::to_vec(&report).map_err(|e| e.to_string())?;
+    if bytes.len() > 64 * 1024 {
+        return Err("Original menu definition report exceeds 64 KiB".into());
+    }
+    fs::write(scratch.join("preview-menu.json"), bytes).map_err(|e| e.to_string())
+}
+
 /// A persistent browser-based Ruffle preview. All selected controls use
 /// an allowlisted live ExternalInterface callback instead of patch/restart.
 pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPreview, String> {
@@ -692,6 +748,7 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
             Err(error) => return Err(format!("Imported Scaleform movie {name}: {error}")),
         }
     }
+    write_live_menu_report(session, scratch.path(), converted, skipped, missing)?;
     let live = gfx_live_web::LiveServer::start(scratch, actions, web_runtime)?;
     Ok(RunningPreview {
         process: None,
@@ -740,6 +797,23 @@ mod tests {
         movie
     }
 
+    #[test]
+    fn ui_data_browser_report_never_fabricates_movie_handlers() {
+        let report = serde_json::json!({
+            "submenu":"Main","label":"@ui_STARTGAME","command":"Game_Start",
+            "child_submenu":"","disabled_when":"","hidden_when":""
+        });
+        assert_eq!(report["label"], "@ui_STARTGAME");
+        // Source-defined commands must NEVER be forwarded into the callback
+        // whitelist: only validated AVM1 handlers may dispatch in Ruffle.
+        for preset in [
+            PreviewPreset::ShowEngagement,
+            PreviewPreset::HideEngagement,
+            PreviewPreset::Back,
+        ] {
+            assert_ne!(preset.script_call().unwrap().0, "Game_Start");
+        }
+    }
     #[test]
     fn verified_live_callbacks_use_registered_original_handlers_without_restarting() {
         let movie = menu_fixture();
