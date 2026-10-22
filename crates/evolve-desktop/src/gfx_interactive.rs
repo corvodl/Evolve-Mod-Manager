@@ -955,6 +955,7 @@ fn stage_linked_screens(session: &Session, scratch: &Path) -> Vec<serde_json::Va
     use evolve_core::{LibraryReferenceStatus, resolve_imported_reference};
     const CANDIDATES: &[(&str, &str, &str)] = &[
         ("options", "Options", "options.gfx"),
+        ("settings", "Settings", "settings.gfx"),
         ("challenges", "Challenges", "ChallengesPopup.gfx"),
         (
             "custom-match",
