@@ -44,6 +44,9 @@ pub struct Preferences {
     pub ffdec_executable: String,
     /// Optional separately-installed Ruffle desktop player for ActionScript previews.
     pub ruffle_executable: String,
+    /// Optional self-hosted Ruffle Web ruffle.js for persistent live GFX controls.
+    /// Separate from the standalone desktop ruffle.exe executable.
+    pub ruffle_web_runtime: String,
     pub experimental_updates: bool,
     /// Separate opt-in for prerelease Nightly builds.
     pub nightly_updates: bool,
@@ -90,6 +93,7 @@ impl Default for Preferences {
             blender_executable: String::new(),
             ffdec_executable: String::new(),
             ruffle_executable: String::new(),
+            ruffle_web_runtime: String::new(),
             experimental_updates: false,
             nightly_updates: env!("CARGO_PKG_VERSION").contains("-nightly."),
             automatic_update_checks: true,
@@ -215,6 +219,7 @@ impl Preferences {
             &self.blender_executable,
             &self.ffdec_executable,
             &self.ruffle_executable,
+            &self.ruffle_web_runtime,
         ] {
             if path.len() > 4096 || path.contains('\0') {
                 return Err(SettingsError::InvalidValue);
