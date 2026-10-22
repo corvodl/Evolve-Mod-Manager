@@ -4254,7 +4254,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 && player.is_running()
             {
                 state.gfx_interactive_status = match player.reopen_live() {
-                    Ok(()) => "Reopened the same local preview URL; the movie server was not restarted.".into(),
+                    Ok(()) => {
+                        "Reopened the same local preview URL; the movie server was not restarted."
+                            .into()
+                    }
                     Err(reason) => format!("Cannot reopen live GFX preview: {reason}"),
                 };
                 return Task::none();
