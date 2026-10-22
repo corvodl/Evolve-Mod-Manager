@@ -947,6 +947,82 @@ fn stage_live_import_graph(
     Ok((restored, skipped, missing, imported, skip_details))
 }
 
+/// Stage other *source-verified* UI_Assets movies next to the original menu.
+/// These are manually browsable preview screens, not invented mappings from
+/// native MainMenuScreen.xml commands to a Flash movie or game service.
+/// Only an exact, unambiguous, matching-build virtual file is accepted.
+fn stage_linked_screens(session: &Session, scratch: &Path) -> Vec<serde_json::Value> {
+    use evolve_core::{LibraryReferenceStatus, resolve_imported_reference};
+    const CANDIDATES: &[(&str, &str, &str)] = &[
+        ("options", "Options", "options.gfx"),
+        ("challenges", "Challenges", "ChallengesPopup.gfx"),
+        (
+            "custom-match",
+            "Custom match options",
+            "custom_match_options.gfx",
+        ),
+        ("credits", "Credits", "credits.gfx"),
+    ];
+    let (Some(root), Some(build)) = (
+        session.library_root.as_deref(),
+        session.source_build.as_deref(),
+    ) else {
+        return Vec::new();
+    };
+    let mut screens = Vec::new();
+    for &(id, title, file) in CANDIDATES {
+        let virtual_path = format!("Libs/UI/{file}");
+        let Ok(LibraryReferenceStatus::Found(found)) =
+            resolve_imported_reference(root, &virtual_path, Some(build))
+        else {
+            continue;
+        };
+        // A linked screen gets its own scratch hierarchy so its original
+        // relative ImportAssets paths cannot collide with main_menu.gfx.
+        let destination = scratch.join("screens").join(id);
+        let screen = match crate::gfx_editor::create(
+            PathBuf::from(found.absolute_path),
+            virtual_path.clone(),
+            None,
+            Some(root.to_path_buf()),
+            Some(build.to_owned()),
+        ) {
+            Ok(screen) => screen,
+            Err(_) => continue,
+        };
+        let Ok(bytes) = fs::read(&screen.editable) else {
+            continue;
+        };
+        let Ok((movie, _restored, _skipped, _bitmap_details)) =
+            renderable_movie(&bytes, &screen.relative, &screen.source, &screen)
+        else {
+            continue;
+        };
+        if fs::create_dir_all(&destination).is_err() {
+            continue;
+        }
+        if fs::write(destination.join("movie.swf"), movie).is_err() {
+            continue;
+        }
+        // Imported font/movies and their original DDS tiles are reconstructed
+        // using the exact same bounded pipeline as the root preview.
+        if let Ok((_, _, _, imports, _)) = stage_live_import_graph(&screen, &destination) {
+            let _ = localize_imported_initial_text(&screen, &destination, &imports);
+        }
+        let ui_element =
+            gfx_external_textures::associated_ui_data(&virtual_path, Some(root), Some(build));
+        screens.push(serde_json::json!({
+            "id": id,
+            "title": title,
+            "movie": format!("screens/{id}/movie.swf"),
+            "virtual_source": virtual_path,
+            "ui_element": ui_element,
+            "verification": "Exact same-build Asset Library member; native screen routing not verified."
+        }));
+    }
+    screens
+}
+
 #[derive(Default)]
 struct ImportedTextCounts {
     movies: usize,
@@ -1340,6 +1416,7 @@ struct LiveMenuLabels<'a> {
     text: &'a crate::gfx_menu_text::TextPatch,
     imported_text: &'a ImportedTextCounts,
     render_effects: &'a serde_json::Value,
+    linked_screens: &'a [serde_json::Value],
 }
 
 fn write_live_menu_report(
@@ -1423,6 +1500,7 @@ fn write_live_menu_report(
             "scope": "Only source-authored DefineEditText initial strings in imported SWF previews; dynamic assignments remain unresolved."
         },
         "background_video": background_video,
+        "linked_screens": labels.linked_screens,
         "initialization": {
             "verified_transition_to_main_menu": initialized_in_swf,
             "verified_open_screen": original_open_screen,
@@ -1519,6 +1597,11 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
     } else {
         serde_json::json!({"playable": false, "status": "Not the Stage 2 main menu"})
     };
+    let linked_screens = if main_menu {
+        stage_linked_screens(session, scratch.path())
+    } else {
+        Vec::new()
+    };
     write_live_menu_report(
         session,
         scratch.path(),
@@ -1533,6 +1616,7 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
         &imported_movies,
         background_video,
         LiveMenuLabels {
+            linked_screens: &linked_screens,
             source: &localization,
             text: &localized_text,
             imported_text: &imported_text,
@@ -1657,6 +1741,7 @@ mod tests {
             &["gfxfontlib_locfont.gfx".into()],
             serde_json::json!({"playable": false, "status": "missing videos.pak"}),
             LiveMenuLabels {
+                linked_screens: &[],
                 source: &crate::gfx_localization::menu_labels(
                     None,
                     None,
@@ -1672,6 +1757,7 @@ mod tests {
             serde_json::from_slice(&fs::read(folder.path().join("preview-menu.json")).unwrap())
                 .unwrap();
         assert_eq!(report["commands"][0]["label"], "@ui_STARTGAME");
+        assert!(report["linked_screens"].as_array().unwrap().is_empty());
         assert_eq!(report["background_video"]["playable"], false);
         assert_eq!(report["authored_flash_text"]["localized"], 0);
         assert_eq!(report["localization"]["unresolved"][0], "ui_startgame");

@@ -275,6 +275,13 @@ fn ffdec_command(config: &str) -> Result<Command, String> {
 }
 fn run_cli(config: &str, folder: &Path, arguments: &[String]) -> Result<(), String> {
     let mut cmd = ffdec_command(config)?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // FFDec's explicit Open GUI command remains visible. Only CLI work,
+        // including "Render frame", is console-less.
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
     let mut child = cmd
         .arg("-cli")
         .arg("-onerror")

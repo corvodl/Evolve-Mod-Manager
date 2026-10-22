@@ -1827,7 +1827,13 @@ pub fn export_unified_cdf_fbx_options_with_glow(
     let log = work.path().join("blender-character-export.log");
     let stdout = fs::File::create(&log).map_err(|e| e.to_string())?;
     let stderr = stdout.try_clone().map_err(|e| e.to_string())?;
-    let mut child = Command::new(blender)
+    let mut command = Command::new(blender);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut child = command
         .arg("--background")
         .arg("--factory-startup")
         .arg("--python-exit-code")

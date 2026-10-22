@@ -1879,8 +1879,12 @@ fn native_export_picker(kind: &str) -> Option<PathBuf> {
         } else {
             r#"Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.OpenFileDialog; $d.Title='Select existing source file'; if($d.ShowDialog() -eq 'OK') { [Console]::Write($d.FileName) }"#
         };
-        let output = std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-STA", "-Command", script])
+        let mut picker = std::process::Command::new("powershell.exe");
+        use std::os::windows::process::CommandExt;
+        // Hide the PowerShell console, not the actual native WinForms picker.
+        picker.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        let output = picker
+            .args(["-NoProfile", "-NonInteractive", "-STA", "-Command", script])
             .output()
             .ok()?;
         if !output.status.success() {

@@ -270,7 +270,7 @@ fn resolve_image(
 
 /// UI_Data maps UIElement definitions to movies, and declares preloads.
 /// Neither is permitted to invent a canvas position for a texture.
-fn associated_ui_data(
+pub(crate) fn associated_ui_data(
     movie: &str,
     library_root: Option<&Path>,
     build: Option<&str>,

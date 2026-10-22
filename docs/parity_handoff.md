@@ -47,6 +47,41 @@ and `background_video.status`, verify the source
 same frame against live CryEngine output. Preserve the original sign-in
 text, never invent a translation, and keep the GFX bytes read-only.
 
+## October 22 — linked original GFX screen previews and silent CLI tools
+
+- A same-build screen catalog now tries exact, unambiguous `Libs/UI/*.gfx`
+  references for original `options.gfx`, `ChallengesPopup.gfx`,
+  `custom_match_options.gfx` and `credits.gfx`. An entry appears only
+  when its exact-source Asset Library reference exists and a bounded Ruffle
+  movie can be staged. Source `UI/UIElements/<Name>.xml` evidence is
+  reported when available, not invented.
+- Original linked movies are previewed manually from **Other original GFX
+  screens** in the live inspector, with bounded source-relative imported
+  assets and DDS atlas reconstruction. A separate Ruffle instance replaces
+  the visible view; Back restores the **same** original menu player rather
+  than restarting or fabricating its game state. Native FSCommands remain
+  blocked. **This is a source screen browser, not original native command
+  routing**: `GoToSettings`, `OpenChallenges`, `Credits` etc. must
+  remain unbound until source XML and original native contracts prove which
+  UI element and handler each command activates.
+- Export folder/file selection still uses the native WinForms picker, but
+  launches PowerShell with Windows `CREATE_NO_WINDOW`. Background Blender
+  processes (both general FBX and character assembly pipelines) use the
+  same flag and continue writing bounded diagnostic logs; FFDec CLI
+  conversions/frame previews suppress the console while explicit **Open
+  FFDec GUI** continues to show the full application.
+- The manager uses Iced 0.14 with a wgpu canvas, not an embedded browser
+  surface. Full *interactive* Ruffle in the native GFX viewport requires a
+  separately integrated WebView2/wry or supported texture-sharing input
+  bridge, including mouse/keyboard focus and DPI lifecycle. The standalone
+  loopback browser remains the working live preview. The manager's existing
+  static FFDec frame preview still works inside Iced; do not claim
+  interactive in-viewport parity on a static frame.
+
+Verification: source-qualified links, submenu and Back in Windows Ruffle,
+DDS/import and UIElement metadata, Windows CLI window suppression, both
+CI jobs, and Windows packaged binaries remain necessary before release.
+
 ## October 22 — source-backed GFX parity continuation after submenu wiring
 
 Branch: `feature/gfx-main-menu-text-init`, draft PR #29. This pass builds on

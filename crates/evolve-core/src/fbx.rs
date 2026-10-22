@@ -280,7 +280,13 @@ pub fn convert_glb_to_fbx_with_layout(
     let log = stage.path().join("blender-export.log");
     let stdout = File::create(&log)?;
     let stderr = stdout.try_clone()?;
-    let mut child = Command::new(blender)
+    let mut command = Command::new(blender);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut child = command
         .arg("--background")
         .arg("--factory-startup")
         .arg("--python-exit-code")
