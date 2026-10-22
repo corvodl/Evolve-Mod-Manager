@@ -90,11 +90,14 @@ fn sidecar(original: &Path, scratch: &Path) -> Result<Option<&'static str>, Stri
 /// point EVOLVE_GFX_FFMPEG to an absolute, regular executable they trust.
 /// It is invoked without a shell and only on an exact-build verified source.
 /// This preview derivative is muted by default; it does not alter game PAKs.
-fn configured_ffmpeg() -> Result<Option<PathBuf>, String> {
-    let Some(override_path) = env::var_os("EVOLVE_GFX_FFMPEG") else {
+fn configured_ffmpeg(configured: &str) -> Result<Option<PathBuf>, String> {
+    let path = if !configured.trim().is_empty() {
+        PathBuf::from(configured.trim())
+    } else if let Some(override_path) = env::var_os("EVOLVE_GFX_FFMPEG") {
+        PathBuf::from(override_path)
+    } else {
         return Ok(None);
     };
-    let path = PathBuf::from(override_path);
     if !path.is_absolute() {
         return Err("EVOLVE_GFX_FFMPEG must be an absolute path".into());
     }
@@ -239,7 +242,12 @@ fn missing_video_status(root: &Path, build: &str) -> &'static str {
 
 /// Report only relative, known preview filenames to the browser. Missing
 /// video never blocks GFX editing or fabricates static monster artwork.
-pub fn stage_main_menu(root: Option<&Path>, build: Option<&str>, scratch: &Path) -> Value {
+pub fn stage_main_menu(
+    root: Option<&Path>,
+    build: Option<&str>,
+    scratch: &Path,
+    configured_decoder: &str,
+) -> Value {
     let base = || {
         json!({
             "source_archive": ORIGINAL_PAK,
@@ -286,10 +294,10 @@ pub fn stage_main_menu(root: Option<&Path>, build: Option<&str>, scratch: &Path)
     }
     let playback = match sidecar(original, scratch) {
         Ok(Some(file)) => Ok((file, "user-provided browser video derived from original USM")),
-        Ok(None) => match configured_ffmpeg() {
+        Ok(None) => match configured_ffmpeg(configured_decoder) {
             Ok(Some(binary)) => transcode(original, scratch, &binary)
                 .map(|file| (file, "locally converted original USM")),
-            Ok(None) => Err("Original CRI USM found. To show its moving background in Ruffle, put mainmenu_goliath.preview.mp4 beside extracted mainmenu_goliath.usm, or set EVOLVE_GFX_FFMPEG to the absolute path of a compatible FFmpeg executable.".to_owned()),
+            Ok(None) => Err("Original CRI USM found. To show its moving background in Ruffle, put mainmenu_goliath.preview.mp4 beside extracted mainmenu_goliath.usm, or select a compatible FFmpeg executable in Settings > Integrations.".to_owned()),
             Err(error) => Err(format!("Original USM found but FFmpeg selection is invalid: {error}")),
         },
         Err(error) => Err(format!("Original USM found but preview derivative was rejected: {error}")),
@@ -389,7 +397,7 @@ mod tests {
             LibraryReferenceStatus::Missing
         ));
         let scratch = tempfile::tempdir().unwrap();
-        let result = stage_main_menu(Some(root), Some("Modded Stage 2"), scratch.path());
+        let result = stage_main_menu(Some(root), Some("Modded Stage 2"), scratch.path(), "");
         assert!(
             result["status"].as_str().unwrap().contains("FFmpeg")
                 || result["status"]
@@ -404,7 +412,7 @@ mod tests {
     #[test]
     fn missing_build_never_fabricates_a_background() {
         let temp = tempfile::tempdir().unwrap();
-        let status = stage_main_menu(None, None, temp.path());
+        let status = stage_main_menu(None, None, temp.path(), "");
         assert_eq!(status["source"]["source_archive"], "videos.pak");
         assert_eq!(status["playable"], serde_json::Value::Null);
         assert!(!temp.path().join("menu-background.mp4").exists());
