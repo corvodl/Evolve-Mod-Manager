@@ -183,7 +183,23 @@ fn avm1_localization_keys(actions: &[u8], depth: usize, keys: &mut BTreeSet<Stri
             break;
         };
         let payload = &actions[at..end];
-        if code == 0x96 {
+        if code == 0x88 && payload.len() >= 2 {
+            // ActionConstantPool stores string literals addressed by later
+            // Push Constant8/Constant16 opcodes. The original menu frequently
+            // stores localization keys in this table instead of inline Push.
+            let count = usize::from(u16::from_le_bytes([payload[0], payload[1]]));
+            let mut p = 2usize;
+            for _ in 0..count.min(2048) {
+                let Some(stop) = zstring_end(payload, p) else { break };
+                if let Ok(value) = std::str::from_utf8(&payload[p..stop])
+                    && value.to_ascii_lowercase().starts_with("@ui_")
+                    && let Some(key) = label(value)
+                {
+                    keys.insert(format!("@{key}"));
+                }
+                p = stop + 1;
+            }
+        } else if code == 0x96 {
             let mut p = 0usize;
             while p < payload.len() {
                 let ty = payload[p];
@@ -213,6 +229,36 @@ fn avm1_localization_keys(actions: &[u8], depth: usize, keys: &mut BTreeSet<Stri
                     break;
                 };
                 p = next;
+            }
+        } else if code == 0x8e && depth < 4 {
+            // DefineFunction2: name, parameter count, register count, flags,
+            // registered parameter names, then an isolated AVM1 action body.
+            if let Some(name_end) = zstring_end(payload, 0) {
+                let mut p = name_end + 1;
+                if let Some(header) = payload.get(p..p + 5) {
+                    let parameters = usize::from(u16::from_le_bytes([header[0], header[1]]));
+                    p += 5;
+                    let mut valid = true;
+                    for _ in 0..parameters {
+                        if p >= payload.len() {
+                            valid = false;
+                            break;
+                        }
+                        if let Some(end) = zstring_end(payload, p + 1) {
+                            p = end + 1;
+                        } else {
+                            valid = false;
+                            break;
+                        }
+                    }
+                    if valid && let Some(size) = payload.get(p..p + 2) {
+                        let code_size = usize::from(u16::from_le_bytes([size[0], size[1]]));
+                        p += 2;
+                        if let Some(body) = payload.get(p..p.saturating_add(code_size)) {
+                            avm1_localization_keys(body, depth + 1, keys);
+                        }
+                    }
+                }
             }
         } else if code == 0x9b && depth < 4 {
             // DefineFunction: functionName\0, parameter count, parameter
