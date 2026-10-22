@@ -23,6 +23,7 @@ mod gfx_live_inspector;
 mod gfx_live_web;
 mod gfx_localization;
 mod gfx_menu_map;
+mod gfx_menu_text;
 mod gfx_menu_video;
 mod gfx_tool_install;
 mod launcher_bridge;
