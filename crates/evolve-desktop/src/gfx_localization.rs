@@ -157,7 +157,8 @@ fn parse_sheet(bytes: &[u8], wanted: &HashSet<String>) -> Result<HashMap<String,
                 consume_native_string(&event, &reader, wanted, &mut found)?;
             }
             Ok(Event::Empty(event))
-                if in_strings && xml_name(event.name().as_ref()).eq_ignore_ascii_case(b"String") =>
+                if in_strings
+                    && xml_name(event.name().as_ref()).eq_ignore_ascii_case(b"String") =>
             {
                 rows += 1;
                 consume_native_string(&event, &reader, wanted, &mut found)?;
