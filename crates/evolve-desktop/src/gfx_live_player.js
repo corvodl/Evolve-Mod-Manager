@@ -274,10 +274,35 @@
         const runtime = window.RufflePlayer.newest();
         const player = runtime.createPlayer();
         const stageElement = document.getElementById("stage");
+        const videoElement = document.getElementById("background-video");
+        // The CRI USM derivative is visual background only. All pointer
+        // interaction belongs to the original Flash movie above it.
+        videoElement.style.pointerEvents = "none";
+        player.style.pointerEvents = "auto";
         stageElement.appendChild(player);
         const linkedBack = document.getElementById("linked-screen-back");
-        const videoElement = document.getElementById("background-video");
         let linkedPlayer = null;
+        // Count actual DOM pointer delivery, not inferred Flash button
+        // activation. A failed hover with pointer delivery confirmed points
+        // toward Ruffle's SWF hit testing/ActionScript rather than the video.
+        const pointerInput = {overComposition: 0, overRuffle: 0, downRuffle: 0, lastTarget: ""};
+        const reachesPlayer = event => {
+            const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+            return path.includes(player) || event.target === player ||
+                (event.target instanceof Node && player.contains(event.target));
+        };
+        document.getElementById("composition").addEventListener("pointermove", event => {
+            if (linkedPlayer) return;
+            pointerInput.overComposition = Math.min(1000000, pointerInput.overComposition + 1);
+            if (reachesPlayer(event)) {
+                pointerInput.overRuffle = Math.min(1000000, pointerInput.overRuffle + 1);
+            } else {
+                pointerInput.lastTarget = String(event.target?.id || event.target?.localName || "unknown");
+            }
+        }, {capture: true, passive: true});
+        player.addEventListener("pointerdown", () => {
+            pointerInput.downRuffle = Math.min(1000000, pointerInput.downRuffle + 1);
+        }, {capture: true, passive: true});
         const returnToOriginalMenu = () => {
             if (!linkedPlayer) return false;
             linkedPlayer.remove();
@@ -308,6 +333,8 @@
                     url: "./" + screen.movie,
                     allowScriptAccess: false,
                     autoplay: "on",
+                    unmuteOverlay: "hidden",
+                    splashScreen: false,
                     wmode: "opaque",
                     backgroundColor: "#000000"
                 });
@@ -454,6 +481,10 @@
                     Number(report.mode_images?.flash_bitmap_linkages || 0) +
                     "; recognized font libraries " + knownFonts + "/" + fonts.length +
                     "; Goliath video " + playback +
+                    "; mouse input (composition/Ruffle/down) " +
+                    pointerInput.overComposition + "/" + pointerInput.overRuffle + "/" +
+                    pointerInput.downRuffle +
+                    (pointerInput.lastTarget ? "; last non-Ruffle target " + pointerInput.lastTarget : "") +
                     (failures.length ? "; asset fetch/decode errors: " + failures.slice(0, 5).join("; ") : "");
                 const entry = makeText("li", text);
                 document.getElementById("resource-status").prepend(entry);
@@ -485,8 +516,15 @@
             url: "./movie.swf",
             allowScriptAccess: true,
             autoplay: "on",
+            // With autoplay and a muted background movie, Ruffle may show
+            // its own click-to-unmute/splash overlay above the Flash canvas.
+            // Do not let player chrome consume rollover/hover hit tests.
+            unmuteOverlay: "hidden",
+            splashScreen: false,
             wmode: hasVideo ? "transparent" : "opaque",
             backgroundColor: hasVideo ? null : "#000000",
+            scale: "showAll",
+            letterbox: "on",
             // CryEngine implements img:// for dynamic menu card artwork.
             // Ruffle supports URL rewriting; only the specific original
             // MenuModeSelect DDS family is mapped to source-verified PNG copies
