@@ -800,6 +800,7 @@ fn write_live_menu_report(
     skipped: usize,
     missing: usize,
     traced_buttons: usize,
+    verified_actions: &[PreviewPreset],
 ) -> Result<(), String> {
     let entries = session
         .menu_commands
@@ -827,8 +828,36 @@ fn write_live_menu_report(
         .take(128)
         .map(|item| item.reference.as_str())
         .collect::<Vec<_>>();
+    let label_tokens = session.menu_commands.iter()
+        .map(|entry| entry.label.clone()).collect::<Vec<_>>();
+    let localization = crate::gfx_localization::menu_labels(
+        session.library_root.as_deref(),
+        session.source_build.as_deref(),
+        &label_tokens,
+    );
+    // Imported font movies remain original same-build assets; resolving an
+    // import does not prove Ruffle supports its Scaleform glyph tags.
+    let font_imports = session.info.imports.iter()
+        .filter(|name| name.to_ascii_lowercase().contains("font"))
+        .map(|name| {
+            let found = session.dependencies.iter().find(|entry|
+                entry.reference.eq_ignore_ascii_case(name));
+            serde_json::json!({
+                "movie": name,
+                "staged": scratch.join(name).is_file(),
+                "source": found.map_or("Not resolved", |dependency| dependency.outcome.as_str())
+            })
+        }).collect::<Vec<_>>();
+    let initialized_in_swf = verified_actions.contains(&PreviewPreset::ReturnToMainMenu);
     let report = serde_json::json!({
         "source": "verified same-build UI_Data/MainMenuScreen.xml",
+        "localization": localization,
+        "fonts": font_imports,
+        "initialization": {
+            "verified_transition_to_main_menu": initialized_in_swf,
+            "native_cryengine_host_available": false,
+            "status": "Only original verified ActionScript handlers may initialize local menu state. Native game state is unavailable."
+        },
         "menu_status": session.menu_command_status,
         "commands": entries,
         "resources": {
@@ -889,6 +918,7 @@ pub fn launch_live(session: &Session, web_runtime: &str) -> Result<RunningPrevie
         skipped,
         missing,
         traced_buttons,
+        &actions,
     )?;
     let live = gfx_live_web::LiveServer::start(scratch, actions, web_runtime)?;
     Ok(RunningPreview {
@@ -970,11 +1000,14 @@ mod tests {
             edits: 0,
             applied: false,
         };
-        write_live_menu_report(&session, folder.path(), 5, 3, 1, 2).unwrap();
+        write_live_menu_report(&session, folder.path(), 5, 3, 1, 2, &[PreviewPreset::Back]).unwrap();
         let report: serde_json::Value =
             serde_json::from_slice(&fs::read(folder.path().join("preview-menu.json")).unwrap())
                 .unwrap();
         assert_eq!(report["commands"][0]["label"], "@ui_STARTGAME");
+        assert_eq!(report["localization"]["unresolved"][0], "ui_startgame");
+        assert_eq!(report["initialization"]["native_cryengine_host_available"], false);
+        assert_eq!(report["initialization"]["verified_transition_to_main_menu"], false);
         assert_eq!(report["commands"][0]["command"], "Game_Start");
         assert_eq!(report["commands"][0]["child_submenu"], "Extras");
         assert_eq!(report["resources"]["restored_dds_tiles"], 5);
