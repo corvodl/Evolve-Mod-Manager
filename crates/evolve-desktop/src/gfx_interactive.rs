@@ -837,7 +837,8 @@ fn stage_import(
         .rsplit_once('/')
         .map(|(parent, _)| format!("{parent}/{reference}"))
         .unwrap_or_else(|| reference.to_owned());
-    let (swf, converted, skipped, details) = renderable_movie(&bytes, &virtual_path, &real, session)?;
+    let (swf, converted, skipped, details) =
+        renderable_movie(&bytes, &virtual_path, &real, session)?;
     let target = output.join(reference);
     let parent = target
         .parent()
@@ -853,7 +854,16 @@ fn stage_import(
 fn stage_live_import_graph(
     session: &Session,
     output: &Path,
-) -> Result<(usize, usize, usize, Vec<String>, gfx_external_textures::SkipDetails), String> {
+) -> Result<
+    (
+        usize,
+        usize,
+        usize,
+        Vec<String>,
+        gfx_external_textures::SkipDetails,
+    ),
+    String,
+> {
     let mut pending = session
         .info
         .imports
