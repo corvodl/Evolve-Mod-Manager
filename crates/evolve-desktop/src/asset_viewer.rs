@@ -715,6 +715,25 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                         .on_press(Message::GfxToggleInteractive),
                     );
                 if state.gfx_interactive_open {
+                    if session.relative.eq_ignore_ascii_case("Libs/UI/main_menu.gfx") {
+                        actions = actions
+                            .push(text("ORIGINAL MENU ACTIONSCRIPT").size(12))
+                            .push(text("Test verified prompt functions in an isolated Ruffle run. These options never call game services or modify the source movie.").size(11).style(design::muted));
+                        for preset in [
+                            crate::gfx_interactive::PreviewPreset::AsAuthored,
+                            crate::gfx_interactive::PreviewPreset::HideEngagement,
+                            crate::gfx_interactive::PreviewPreset::ShowEngagement,
+                            crate::gfx_interactive::PreviewPreset::HideSigningIn,
+                            crate::gfx_interactive::PreviewPreset::ShowSigningIn,
+                        ] {
+                            actions = actions.push(
+                                design::button(text(format!("{} {}", 
+                                    if state.gfx_preview_preset == preset { "✓" } else { " " },
+                                    preset.description(),
+                                ))).on_press(Message::GfxSelectPreviewPreset(preset))
+                            );
+                        }
+                    }
                     actions = actions
                         .push(
                             text_input("Path to ruffle.exe", &state.preferences.ruffle_executable)
@@ -758,7 +777,7 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                         );
                 }
                 actions = actions.push(
-                    text("Interactive preview runs original ActionScript where supported. Evolve's native menu callbacks are not emulated: the front prompt's close button needs its real callback identified before it can dismiss the original layer.")
+                    text("Interactive preview runs original ActionScript where supported. Main-menu prompt presets call named original ActionScript functions; native gameplay and service callbacks remain unavailable.")
                         .size(11).style(design::muted)
                 );
             }
