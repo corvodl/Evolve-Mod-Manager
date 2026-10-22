@@ -29,7 +29,6 @@ fn has_movie_budget(original: usize, encoded_so_far: usize, next: usize) -> bool
         .is_some_and(|n| n <= MAX_DECOMPRESSED)
 }
 
-
 #[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct SkipDetails {
     pub missing_source: usize,
