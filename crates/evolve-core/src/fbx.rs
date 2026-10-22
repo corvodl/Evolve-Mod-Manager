@@ -323,6 +323,10 @@ pub fn convert_glb_to_fbx_with_options(
         stage.path().join("blender_material_ids.py"),
         include_str!("blender_material_ids.py"),
     )?;
+    fs::write(
+        stage.path().join("blender_static_fbx_basis.py"),
+        include_str!("blender_static_fbx_basis.py"),
+    )?;
     let staged_fbx = stage.path().join(
         destination
             .file_name()
