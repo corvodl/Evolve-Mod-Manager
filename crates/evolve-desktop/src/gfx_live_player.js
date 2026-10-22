@@ -31,6 +31,9 @@
     let navigateSourceGroup = () => false;
     let navigateSourceBack = () => false;
     let openVerifiedScreen = () => false;
+    // Native game commands never execute in the local browser. The source
+    // UI_Data manifest can, however, identify a unique UI-only submenu.
+    let routeVerifiedLocalCommand = () => false;
     document.getElementById("source-back").addEventListener("click", () => {
         navigateSourceBack();
     });
@@ -326,11 +329,19 @@
                     arguments: String(args).slice(0, 90),
                     disposition: "blocked"
                 };
+                // Only original UI_Data child_submenu entries are eligible,
+                // never a native match/tutorial, game service, or FSCommand
+                // supplied by an unknown movie.
+                if (routeVerifiedLocalCommand(event.command)) {
+                    event.disposition = "local-only";
+                }
                 originalButtonEvents.push(event);
                 if (originalButtonEvents.length > 64) originalButtonEvents.shift();
                 renderOriginalEvents();
-                show("Movie requested native FSCommand " + event.command +
-                     " (" + event.arguments + "); blocked in preview.", true);
+                if (event.disposition === "blocked") {
+                    show("Movie requested native FSCommand " + event.command +
+                         " (" + event.arguments + "); blocked in preview.", true);
+                }
             });
         }
         if (typeof player.ruffle().setTraceObserver === "function") {
@@ -507,6 +518,25 @@
                 show("Original goBack failed: " + String(error), true);
                 return false;
             }
+        };
+        // Local routing is strictly tied to one visible, enabled, exact source
+        // UI_Data command in the CURRENT original submenu. This never turns a
+        // source FSCommand into a native game-service invocation.
+        routeVerifiedLocalCommand = command => {
+            const current = sourceMenuStack[sourceMenuStack.length - 1];
+            const eligible = sourceRows.filter(item =>
+                item.submenu === current &&
+                item.command === command &&
+                typeof item.child_submenu === "string" &&
+                groups.has(item.child_submenu) &&
+                item.child_submenu !== current &&
+                !item.disabled_when && !item.hidden_when &&
+                (!item.platform || String(item.platform).toLowerCase() === "pc")
+            );
+            if (eligible.length !== 1) return false;
+            if (!pushOriginalSourceMenu(eligible[0].child_submenu)) return false;
+            updateSourceGroup(eligible[0].child_submenu);
+            return true;
         };
         // The inspector is metadata; transition only after the movie accepts
         // the verified original push/goBack handler. Never route native commands.
