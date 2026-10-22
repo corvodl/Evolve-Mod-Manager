@@ -1111,6 +1111,90 @@ fn original_font_definitions(path: &Path) -> Option<usize> {
     None
 }
 
+/// Return source-authored font identities from an imported SWF. Font IDs
+/// are local to each movie: matching a name does not itself bind an imported
+/// glyph definition to a root movie TextField or prove Ruffle rendered it.
+fn original_font_inventory(path: &Path) -> Option<Vec<serde_json::Value>> {
+    let bytes = fs::read(path).ok()?;
+    if bytes.len() < 16 || bytes.len() > MAX_DECOMPRESSED || &bytes[..3] != b"FWS" {
+        return None;
+    }
+    let nbits = usize::from(bytes[8] >> 3);
+    if !(1..=31).contains(&nbits) {
+        return None;
+    }
+    let mut cursor = 8 + (5 + 4 * nbits).div_ceil(8) + 4;
+    let mut inventory = Vec::new();
+    let mut tags = 0usize;
+    while cursor + 2 <= bytes.len() && tags < 80_000 {
+        let header = u16::from_le_bytes([bytes[cursor], bytes[cursor + 1]]);
+        cursor += 2;
+        let kind = header >> 6;
+        let mut len = usize::from(header & 63);
+        if len == 63 {
+            if cursor + 4 > bytes.len() {
+                return None;
+            }
+            len = u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().ok()?) as usize;
+            cursor += 4;
+        }
+        if len > bytes.len() - cursor {
+            return None;
+        }
+        let tag = &bytes[cursor..cursor + len];
+        if matches!(kind, 48 | 75) && tag.len() >= 7 {
+            let id = u16::from_le_bytes([tag[0], tag[1]]);
+            let flags = tag[2];
+            let name_len = usize::from(tag[4]);
+            if 5 + name_len + 2 > tag.len() || name_len > 128 {
+                return None;
+            }
+            let name = std::str::from_utf8(&tag[5..5 + name_len]).ok()?;
+            if name.chars().any(char::is_control) {
+                return None;
+            }
+            let glyphs = u16::from_le_bytes([tag[5 + name_len], tag[6 + name_len]]);
+            inventory.push(serde_json::json!({
+                "font_id": id,
+                "font_name": name,
+                "glyphs": glyphs,
+                "define_font_tag": kind,
+                "bold": flags & 1 != 0,
+                "italic": flags & 2 != 0
+            }));
+        } else if kind == 10 && tag.len() >= 2 {
+            inventory.push(serde_json::json!({
+                "font_id": u16::from_le_bytes([tag[0], tag[1]]),
+                "font_name": null,
+                "glyphs": null,
+                "define_font_tag": kind
+            }));
+        } else if kind == 91 && tag.len() >= 4 {
+            let id = u16::from_le_bytes([tag[0], tag[1]]);
+            let name_end = tag[3..].iter().position(|b| *b == 0)?;
+            let name = std::str::from_utf8(&tag[3..3 + name_end]).ok()?;
+            if name.len() > 128 || name.chars().any(char::is_control) {
+                return None;
+            }
+            inventory.push(serde_json::json!({
+                "font_id": id,
+                "font_name": name,
+                "glyphs": null,
+                "define_font_tag": kind
+            }));
+        }
+        if inventory.len() > 128 {
+            return None;
+        }
+        cursor += len;
+        tags += 1;
+        if kind == 0 {
+            return (cursor == bytes.len()).then_some(inventory);
+        }
+    }
+    None
+}
+
 /// Serialize *source-defined* UI_Data commands for an optional live browser
 /// inspector. These do not become fabricated SWF display-list nodes. Commands
 /// that require CryEngine remain read-only; only known child submenu links can
@@ -1173,10 +1257,13 @@ fn write_live_menu_report(
                 .dependencies
                 .iter()
                 .find(|entry| entry.reference.eq_ignore_ascii_case(name));
+            let font_path = scratch.join(name);
+            let inventory = original_font_inventory(&font_path);
             serde_json::json!({
                 "movie": name,
-                "staged": scratch.join(name).is_file(),
-                "define_font_tags": original_font_definitions(&scratch.join(name)),
+                "staged": font_path.is_file(),
+                "define_font_tags": original_font_definitions(&font_path),
+                "font_definitions": inventory,
                 "source": found.map_or("Source-defined nested import", |dependency| dependency.outcome.as_str())
             })
         })
@@ -1519,6 +1606,32 @@ mod tests {
         let pos = at + 6 + 3;
         corrupted[pos..pos + 2].copy_from_slice(&u16::MAX.to_le_bytes());
         assert!(trace_original_button_actions(&corrupted).is_err());
+    }
+
+    #[test]
+    fn original_font_inventory_preserves_source_name_glyphs_and_flags() {
+        let mut movie = menu_fixture_arity(7);
+        // Insert a synthetic DefineFont3 before the original SWF end tag.
+        // The glyph count is zero: this tests safe metadata extraction only.
+        let mut payload = vec![7, 0, 5, 0, 4]; // ID=7, layout+bold, language, name size
+        payload.extend_from_slice(b"Test");
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        let mut tag = ((75u16 << 6) | (payload.len() as u16)).to_le_bytes().to_vec();
+        tag.extend_from_slice(&payload);
+        let at = movie.len() - 2;
+        movie.splice(at..at, tag);
+        let size = movie.len() as u32;
+        movie[4..8].copy_from_slice(&size.to_le_bytes());
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("font.swf");
+        fs::write(&path, movie).unwrap();
+        let source = original_font_inventory(&path).unwrap();
+        assert_eq!(source.len(), 1);
+        assert_eq!(source[0]["font_id"], 7);
+        assert_eq!(source[0]["font_name"], "Test");
+        assert_eq!(source[0]["glyphs"], 0);
+        assert_eq!(source[0]["bold"], true);
+        assert_eq!(source[0]["italic"], false);
     }
 
     #[test]
