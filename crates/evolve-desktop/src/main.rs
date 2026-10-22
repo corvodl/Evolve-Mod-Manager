@@ -4194,9 +4194,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         "{} installed. {}",
                         tool.name(),
                         match tool {
-                            gfx_tool_install::Tool::Ffdec => "A compatible Java runtime may also be required.",
-                            gfx_tool_install::Tool::Ruffle => "Standalone desktop Ruffle is ready. Live GFX buttons require Ruffle Web separately.",
-                            gfx_tool_install::Tool::RuffleWeb => "Live GFX preview is ready. Open GFX Tools to use the persistent browser player.",
+                            gfx_tool_install::Tool::Ffdec =>
+                                "A compatible Java runtime may also be required.",
+                            gfx_tool_install::Tool::Ruffle =>
+                                "Standalone desktop Ruffle is ready. Live GFX buttons require Ruffle Web separately.",
+                            gfx_tool_install::Tool::RuffleWeb =>
+                                "Live GFX preview is ready. Open GFX Tools to use the persistent browser player.",
                         },
                     );
                     persist_preferences(state);
@@ -4313,9 +4316,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let web_runtime = state.preferences.ruffle_web_runtime.clone();
             return Task::perform(
                 async move {
-                    tokio::task::spawn_blocking(move || gfx_interactive::launch_live(&session, &web_runtime))
-                        .await
-                        .unwrap_or_else(|e| Err(format!("Ruffle preview worker stopped: {e}")))
+                    tokio::task::spawn_blocking(move || {
+                        gfx_interactive::launch_live(&session, &web_runtime)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Ruffle preview worker stopped: {e}")))
                 },
                 Message::GfxInteractiveStarted,
             );
