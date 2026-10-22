@@ -4429,6 +4429,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.gfx_interactive_status = format!("Interactive preview failed: {error}")
                 }
             }
+            if let Some(index) = state.viewer_queued_preview.take()
+                && state.selected == Some(index)
+            {
+                return update(state, Message::ViewerPreviewSelected);
+            }
         }
         Message::GfxStopInteractive => {
             state.gfx_interactive_running = None;
@@ -8328,6 +8333,38 @@ mod project_edit_tests {
             assert!(!state.gfx_active, "GFX must be dismissed for {target}");
             assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::Files);
         }
+    }
+
+    #[test]
+    fn second_gfx_selection_waits_for_prior_open_then_loads_latest() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("first.gfx"), b"invalid fixture").unwrap();
+        std::fs::write(dir.path().join("second.gfx"), b"invalid fixture").unwrap();
+        let inventory = scan_directory(dir.path()).unwrap();
+        let first = inventory
+            .entries
+            .iter()
+            .position(|entry| entry.relative_path == "first.gfx")
+            .unwrap();
+        let second = inventory
+            .entries
+            .iter()
+            .position(|entry| entry.relative_path == "second.gfx")
+            .unwrap();
+        let old_source = std::fs::canonicalize(dir.path().join("first.gfx")).unwrap();
+        let mut state = State {
+            inventory: Some(inventory),
+            ..State::default()
+        };
+        refresh_viewer_rows(&mut state);
+        let _ = update(&mut state, Message::ViewerSelectFile(first));
+        assert!(state.gfx_busy);
+        let _ = update(&mut state, Message::ViewerSelectFile(second));
+        assert_eq!(state.viewer_queued_preview, Some(second));
+        let _ = update(&mut state, Message::GfxOpened(old_source, Err("stale".into())));
+        assert!(state.gfx_busy, "newest GFX opens after stale result");
+        assert_eq!(state.viewer_queued_preview, None);
+        assert_eq!(state.viewer_sidebar_active, ViewerSidebarTab::GfxTools);
     }
 
     #[test]
