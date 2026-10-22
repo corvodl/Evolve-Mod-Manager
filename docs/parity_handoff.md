@@ -25,6 +25,22 @@ localization report, the notice also calls out the missing translation.
 These are **diagnostics and a verified UI-local action**, not a full
 rendering fix or complete native main-menu initialization.
 
+Additional follow-up based on the resource diagnostic screenshot: the Asset
+Library is configured but the GFX source build is unavailable; 61 bitmap tiles
+were restored, **350 were skipped for unknown individual reasons**, one
+nested movie is missing, and the main-menu video is not source-qualified.
+The previous summary of all 350 as missing source files would be incorrect.
+
+The editor now attempts to identify a build when one and only one library
+build contains an exact virtual movie path with byte-for-byte identical
+original GFX data. Cross-build identical copies, ambiguous members, and
+missing manifests intentionally remain unselected. Nothing is identified
+by basename or game version guess. The preview now reports separate bitmap
+skip counts for missing DDS source, preview pixel/tile limits, invalid
+atlas rectangles/definitions, duplicate/already defined bitmap IDs, and
+DDS decoder failures. It includes up to twelve original virtual DDS names
+for the missing-source category. Existing safety limits remain enforced.
+
 Still required: inspect the user's `preview-menu.json` resource counts
 and `background_video.status`, verify the source
 `showSigningInPrompt(false)` visual transition in Ruffle, and compare the
