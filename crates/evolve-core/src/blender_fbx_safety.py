@@ -546,8 +546,9 @@ def embed_verified_normal_maps(objects, destination):
         if node.name == b"Texture":
             textures.add(name)
             continue
-        if name in videos:
-            raise FBXValidationError("Duplicate FBX Video for one normal map")
+        # Blender can serialize one Video object per material instance even
+        # when multiple materials share the same underlying normal image.
+        # Embed and validate every Video, but count distinct source images.
         videos.add(name)
         content_nodes = node.children_named(b"Content")
         if len(content_nodes) > 1:
@@ -568,8 +569,7 @@ def embed_verified_normal_maps(objects, destination):
 def verify_embedded_normal_media(objects, count):
     """Check actual serialized FBX Video.Content bytes, not disk links."""
     videos = objects.children_named(b"Video")
-    if len(videos) != count:
-        raise FBXValidationError("Embedded normal-map count changed")
+    found = {}
     for video in videos:
         contents = video.children_named(b"Content")
         if len(contents) != 1:
@@ -578,6 +578,21 @@ def verify_embedded_normal_media(objects, count):
         if (len(props) != 1 or not isinstance(props[0], bytes)
                 or not props[0].startswith(b"\x89PNG\r\n\x1a\n")):
             raise FBXValidationError("FBX lacks valid embedded normal-map PNG bytes")
+        names = [child for child in video.children
+                 if child.name in (b"Filename", b"FileName", b"RelativeFilename")]
+        if not names:
+            raise FBXValidationError("Embedded normal map lost its filename")
+        filename = _text(names[0]).decode("utf-8", errors="replace")
+        if not filename.endswith(".png") or "/" in filename or "\\" in filename:
+            raise FBXValidationError("Embedded normal map has unsafe media name")
+        digest = filename.rsplit("_normal_", 1)[-1].removesuffix(".png")
+        if len(digest) != 12 or hashlib.sha256(props[0]).hexdigest()[:12] != digest:
+            raise FBXValidationError("Embedded normal-map payload hash mismatch")
+        if filename in found and found[filename] != props[0]:
+            raise FBXValidationError("Duplicate normal images have inconsistent embedded bytes")
+        found[filename] = props[0]
+    if len(found) != count:
+        raise FBXValidationError("Embedded normal-map identity count changed")
 
 
 

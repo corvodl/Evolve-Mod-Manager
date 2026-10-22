@@ -1814,6 +1814,9 @@ pub fn export_unified_cdf_fbx_options_with_glow(
             .file_name()
             .ok_or("FBX output file name missing")?,
     );
+    let log = work.path().join("blender-character-export.log");
+    let stdout = fs::File::create(&log).map_err(|e| e.to_string())?;
+    let stderr = stdout.try_clone().map_err(|e| e.to_string())?;
     let mut child = Command::new(blender)
         .arg("--background")
         .arg("--factory-startup")
@@ -1824,15 +1827,20 @@ pub fn export_unified_cdf_fbx_options_with_glow(
         .arg("--")
         .arg(&manifest)
         .arg(&temp_fbx)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
         .spawn()
         .map_err(|e| e.to_string())?;
     let start = Instant::now();
     loop {
         match child.try_wait().map_err(|e| e.to_string())? {
             Some(status) if status.success() => break,
-            Some(status) => return Err(format!("Blender character validation failed: {status}")),
+            Some(status) => {
+                return Err(format!(
+                    "Blender character validation failed: {status}. Blender diagnostic:\n{}",
+                    crate::fbx::blender_diagnostic_tail(&log)
+                ));
+            }
             None if start.elapsed() > Duration::from_secs(1800) => {
                 let _ = child.kill();
                 let _ = child.wait();

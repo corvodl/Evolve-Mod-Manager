@@ -137,6 +137,41 @@ class FBXSafetyTests(unittest.TestCase):
             # Rust publisher must never copy this folder to user output.
             self.assertTrue((textures / filename).exists())
 
+    def test_duplicate_fbx_video_records_share_one_embedded_normal(self):
+        # Blender frequently exports one Video per material, even when the
+        # materials reference the same original source normal image.
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder)
+            path = root / "emet.fbx"
+            (root / "textures").mkdir()
+            png = b"\x89PNG\r\n\x1a\n" + b"same-authored-normal-for-two-materials" * 4
+            name = "emet_normal_" + hashlib.sha256(png).hexdigest()[:12] + ".png"
+            (root / "textures" / name).write_bytes(png)
+            image_nodes = (
+                obj("Texture", 12, "TextureVideoClip", [
+                    node("FileName", string(name), 1),
+                ]),
+                obj("Video", 13, "Clip", [
+                    node("Filename", string("C:/export/" + name), 1),
+                ]),
+                obj("Texture", 14, "TextureVideoClip", [
+                    node("FileName", string(name), 1),
+                ]),
+                obj("Video", 15, "Clip", [
+                    node("Filename", string("textures/" + name), 1),
+                ]),
+            )
+            path.write_bytes(sample(extra_objects=image_nodes))
+            stats = optimize_binary_fbx(path, embed_textures=False)
+            self.assertEqual(stats["embedded_normal_maps"], 1)
+            objects = _read_nodes(path.read_bytes())[1][0]
+            videos = objects.children_named(b"Video")
+            self.assertEqual(len(videos), 2)
+            for video in videos:
+                self.assertEqual(_properties(video.get(b"Content"))[0], png)
+                self.assertEqual(_properties(video.get(b"Filename"))[0],
+                                 name.encode("utf-8"))
+
     def test_missing_normal_map_or_diffuse_reference_fails_closed(self):
         with tempfile.TemporaryDirectory() as folder:
             path = pathlib.Path(folder) / "emet.fbx"
