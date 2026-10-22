@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
+// Retained for the isolated desktop fallback and parser regression tests.
+#[allow(dead_code)]
 const MAX_PLAYER_BYTES: u64 = 350 * 1024 * 1024;
 const MAX_IMPORTS: usize = 128;
 
@@ -319,6 +321,8 @@ fn avm1_push_boolean(actions: &mut Vec<u8>, value: bool) {
 /// Insert one validated, UI-local original ActionScript call into a
 /// temporary uncompressed Ruffle SWF. Never touch source GFX or call game
 /// services. A function must be declared at the root before ShowFrame.
+// Legacy one-shot action injector retained for regression tests only.
+#[allow(dead_code)]
 fn inject_preview_call(
     swf: &[u8],
     virtual_movie: &str,
@@ -435,6 +439,8 @@ pub struct RunningPreview {
     pub restored_images: usize,
     pub skipped_images: usize,
     pub missing_imports: usize,
+    // Historical one-shot preset for the standalone desktop fallback.
+    #[allow(dead_code)]
     pub preset: PreviewPreset,
 }
 impl RunningPreview {
@@ -470,6 +476,8 @@ impl RunningPreview {
             .dispatch(preset)
     }
 }
+// Desktop Ruffle path validation is retained for fallback compatibility.
+#[allow(dead_code)]
 fn executable(path: &str) -> Result<PathBuf, String> {
     let candidate = Path::new(path.trim());
     if !candidate.is_absolute()
@@ -604,6 +612,8 @@ fn stage_import(
 /// emulated; Ruffle's empty interface is used rather than routing any
 /// original game action to an installed client or unrestricted filesystem.
 /// The live process and preview directory are owned by RunningPreview.
+// Legacy standalone Ruffle desktop runner: live controls use launch_live instead.
+#[allow(dead_code)]
 pub fn launch(
     session: &Session,
     ruffle_exe: &str,
