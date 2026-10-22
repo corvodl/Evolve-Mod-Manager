@@ -176,17 +176,14 @@ pub fn geometry_glb_bytes_with_original_material_ids(
 ) -> Result<Vec<u8>, GlbError> {
     let ranges = crate::model::original_mesh_subsets(source_bytes, mesh.indices.len())
         .map_err(|e| GlbError::Invalid(format!("Cannot resolve original material IDs: {e}")))?;
-    if ranges.is_empty()
-        || ranges.iter().any(|&(_, _, id)| id == 255 || id >= 128)
-    {
+    if ranges.is_empty() || ranges.iter().any(|&(_, _, id)| id == 255 || id >= 128) {
         return Err(GlbError::Invalid(
             "Original source material range is unresolved".into(),
         ));
     }
     let data = geometry_glb_bytes(mesh)?;
-    let json_len = u32::from_le_bytes(
-        data[12..16].try_into().map_err(|_| GlbError::Limits)?,
-    ) as usize;
+    let json_len =
+        u32::from_le_bytes(data[12..16].try_into().map_err(|_| GlbError::Limits)?) as usize;
     let json_end = 20usize.checked_add(json_len).ok_or(GlbError::Limits)?;
     let mut document: serde_json::Value =
         serde_json::from_slice(data.get(20..json_end).ok_or(GlbError::Limits)?)?;
@@ -215,7 +212,9 @@ pub fn geometry_glb_bytes_with_original_material_ids(
     let mut cursor = 0u32;
     for (first, count, material_id) in ranges {
         let end = first.checked_add(count).ok_or(GlbError::Limits)?;
-        if first != cursor || count == 0 || !count.is_multiple_of(3)
+        if first != cursor
+            || count == 0
+            || !count.is_multiple_of(3)
             || end as usize > mesh.indices.len()
         {
             return Err(GlbError::Invalid(
@@ -223,7 +222,9 @@ pub fn geometry_glb_bytes_with_original_material_ids(
             ));
         }
         let mut primitive = original.clone();
-        let accessors = document["accessors"].as_array_mut().ok_or(GlbError::Limits)?;
+        let accessors = document["accessors"]
+            .as_array_mut()
+            .ok_or(GlbError::Limits)?;
         let offset = accessors.len();
         accessors.push(json!({
             "bufferView":view, "byteOffset":u64::from(first)*4,
