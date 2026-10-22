@@ -1,7 +1,8 @@
 //! Exact-build CryEngine text_ui_*.xml lookup for *preview diagnostics*.
 //! Never substitutes an English guess for an unavailable game string or
 //! writes back to a PAK, movie, or imported Asset Library.
-use evolve_core::{LibraryReferenceStatus, imported_library, resolve_imported_reference};
+use evolve_core::library_catalog::resolve_imported_reference_in_archive;
+use evolve_core::{LibraryReferenceStatus, imported_library};
 use quick_xml::{
     Reader,
     escape::unescape,
@@ -314,10 +315,17 @@ fn load_sheets(
     wanted: &HashSet<String>,
 ) -> Result<LocalizationSheets, String> {
     let library = imported_library(root).map_err(|e| e.to_string())?;
-    let mut paths = HashSet::<String>::new();
+    // Preserve the source archive identity. Looking up the member path
+    // globally can report Ambiguous when multiple same-build language PAKs
+    // contain text_ui_menus.xml, even though each archive itself is verified.
+    let mut paths = HashSet::<(String, String)>::new();
+    let mut usa_en_found = false;
     for archive in &library.archives {
         if !archive.builds.iter().any(|label| label == build) {
             continue;
+        }
+        if archive.name.eq_ignore_ascii_case("USA-EN_xml.pak") {
+            usa_en_found = true;
         }
         let manifest_path = Path::new(&archive.directory).join("asset-library.json");
         let data = regular(&manifest_path, MAX_MANIFEST)?;
@@ -333,9 +341,14 @@ fn load_sheets(
             if let Some(name) = entry["path"].as_str()
                 && relevant_path(name, &archive.name, language)
             {
-                paths.insert(name.to_owned());
+                paths.insert((archive.name.clone(), name.to_owned()));
             }
         }
+    }
+    if paths.is_empty() && usa_en_found {
+        return Err(
+            "USA-EN_xml.pak is assigned to this build, but its extracted manifest has no supported text_ui_*.xml entries".into(),
+        );
     }
     if paths.len() > MAX_FILES {
         return Err("Too many same-build localization sheets".into());
@@ -345,11 +358,21 @@ fn load_sheets(
     let mut values = HashMap::<String, String>::new();
     let mut duplicates = HashSet::<String>::new();
     let mut sources = Vec::<String>::new();
-    for path in paths {
-        let LibraryReferenceStatus::Found(info) =
-            resolve_imported_reference(root, &path, Some(build)).map_err(|e| e.to_string())?
-        else {
-            continue;
+    for (archive_name, path) in paths {
+        let info = match resolve_imported_reference_in_archive(root, &path, build, &archive_name)
+            .map_err(|e| format!("{archive_name}: {path}: {e}"))?
+        {
+            LibraryReferenceStatus::Found(info) => info,
+            LibraryReferenceStatus::Missing => {
+                return Err(format!(
+                    "Selected-build localization entry is missing or modified: {archive_name}: {path}"
+                ));
+            }
+            LibraryReferenceStatus::Ambiguous(_) => {
+                return Err(format!(
+                    "Multiple matching localization archives in this build: {archive_name}: {path}"
+                ));
+            }
         };
         let bytes = regular(Path::new(&info.absolute_path), MAX_XML)?;
         let table = parse_sheet(&bytes, wanted)?;
@@ -433,6 +456,75 @@ mod tests {
             )
             .is_err()
         );
+    }
+    #[test]
+    fn two_same_build_language_archives_with_the_same_member_path_are_not_discarded() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        for (id, archive, xml) in [
+            (
+                "11111111111111111111",
+                "USA-EN_xml.pak",
+                br#"<Strings><Category name="Common"><String name="ui_Options" value="OPTIONS"/></Category></Strings>"#.as_slice(),
+            ),
+            (
+                "22222222222222222222",
+                "English_XML.pak",
+                br#"<Strings><Category name="Common"><String name="ui_Training" value="TRAINING"/></Category></Strings>"#.as_slice(),
+            ),
+        ] {
+            let folder = root.join(format!("{archive}__{id}"));
+            fs::create_dir_all(folder.join("files/files")).unwrap();
+            fs::write(folder.join("files/files/text_ui_menus.xml"), xml).unwrap();
+            fs::write(
+                folder.join("asset-library.json"),
+                serde_json::to_vec(&json!({
+                    "version": 1,
+                    "name": archive,
+                    "source": format!("/original/{archive}"),
+                    "entries": [{
+                        "path": "files/text_ui_menus.xml",
+                        "bytes": xml.len()
+                    }]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        fs::write(
+            root.join("build-collections.json"),
+            serde_json::to_vec(&json!({
+                "version": 1,
+                "builds": {
+                    "stage-two": {
+                        "label": "Modded Stage 2",
+                        "members": {
+                            "11111111111111111111": {},
+                            "22222222222222222222": {}
+                        }
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            evolve_core::resolve_imported_reference(
+                root,
+                "files/text_ui_menus.xml",
+                Some("Modded Stage 2")
+            )
+            .unwrap(),
+            LibraryReferenceStatus::Ambiguous(_)
+        ));
+        let report = menu_labels(
+            Some(root),
+            Some("Modded Stage 2"),
+            &["@ui_Options".to_owned(), "@ui_Training".to_owned()],
+        );
+        assert_eq!(report["translations"]["ui_options"], "OPTIONS");
+        assert_eq!(report["translations"]["ui_training"], "TRAINING");
+        assert_eq!(report["sources"].as_array().unwrap().len(), 2);
     }
     #[test]
     fn resolves_usa_en_archive_only_in_matching_library_build() {

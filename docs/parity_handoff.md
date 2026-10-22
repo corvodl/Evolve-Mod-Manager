@@ -47,6 +47,37 @@ and `background_video.status`, verify the source
 same frame against live CryEngine output. Preserve the original sign-in
 text, never invent a translation, and keep the GFX bytes read-only.
 
+## October 22 — verified Stage 2 archive present but 0 English sheets
+
+The user confirmed `USA-EN_xml.pak` is visible under **Asset
+Library → By Build → Modded Stage 2**, not just All Assets. Thus an
+unassigned archive is *not* the explanation for the existing live-preview
+report `0 verified English UI keys from 0 exact-build localization sheets`.
+
+The localization loader previously collected virtual XML member paths and
+then resolved each path against **all** PAKs in the selected build. A path
+such as `files/text_ui_menus.xml` in two archives becomes globally
+ambiguous and was silently skipped, producing a misleading zero-sheet
+status. It now retains each candidate's archive name and uses the
+archive-scoped **same-build** resolver for each XML. Conflicting values
+across verified sheets still fail closed for that key; identical values
+can be reused. Ambiguous duplicate copies of the *same archive name*
+and missing/modified extracted members now return precise errors instead
+of disappearing silently. A Stage 2 `USA-EN_xml.pak` with no compatible
+XML manifest entries now has an explicit diagnostic.
+
+Regression coverage includes two original-build language PAK manifests
+sharing the exact `files/text_ui_menus.xml` virtual path, which the prior
+global resolver considered ambiguous. This is a concrete code defect, but
+without the user's actual `asset-library.json` and preview JSON it remains
+to be established whether that collision is the sole runtime cause.
+
+Existing preview sessions are snapshots. After updating the manager and
+importing/refreshing a PAK, reopen the GFX editor and start a new live
+preview so the cached build and localization tables are regenerated.
+Runtime ActionScript-assigned `@ui_` strings and font glyph binding remain
+separate unfinished work.
+
 ## October 22 — inspected USA-EN_xml.pak: original English menu text
 
 The provided `USA-EN_xml.pak` is a **standard unencrypted ZIP PAK**, with
