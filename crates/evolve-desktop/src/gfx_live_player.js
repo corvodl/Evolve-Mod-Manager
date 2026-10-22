@@ -104,6 +104,12 @@
                 + (font.staged ? "original source staged" : "original source missing")
                 + " (" + String(font.source) + "). Rendering compatibility unverified.");
         }
+        const video = report.background_video || {};
+        messages.push("Main-menu motion background: " +
+            String(video.status || "Original video source not inspected"));
+        if (video.playable) {
+            messages.push("Video playback source: " + String(video.mode || "browser video"));
+        }
         messages.push("Native CryEngine initialization: unavailable.");
         for (const name of (Array.isArray(stats.unresolved_imports)
             ? stats.unresolved_imports.slice(0, 16) : [])) {
@@ -112,6 +118,27 @@
         resource.replaceChildren(...messages.map(item => makeText("li", item)));
         document.getElementById("source-limits").textContent =
             String(report.limitation || "Full CryEngine menu initialization is not available.");
+    }
+    // Separate CRI USM video from the authored Flash display list. This
+    // supports only a verified same-build, locally staged browser derivative.
+    // Missing video must remain missing rather than showing guessed artwork.
+    function configureMainMenuVideo(report) {
+        const video = document.getElementById("background-video");
+        const state = report?.background_video || {};
+        if (state.playable !== true ||
+            !["menu-background.mp4", "menu-background.webm"].includes(state.file)) {
+            video.hidden = true;
+            return false;
+        }
+        video.addEventListener("error", () =>
+            show("Original main-menu background video could not play in this browser.", true),
+            { once: true });
+        video.src = "./" + state.file;
+        video.hidden = false;
+        video.play().catch(error => {
+            show("Background video playback needs browser permission: " + String(error), true);
+        });
+        return true;
     }
     const sourceLoad = fetch("./preview-menu.json", { cache: "no-store" })
         .then(res => {
@@ -163,13 +190,18 @@
         // Only trusted isolated source GFX previews are used here. No service
         // globals are exposed; the movie can access the page only through
         // Ruffle's allowScriptAccess mechanism.
+        const report = await sourceLoad;
+        const hasVideo = configureMainMenuVideo(report);
+        // Ruffle's transparent window mode composites the original Flash
+        // display list over the separately decoded looping game background.
+        // An absent video keeps the default opaque, black diagnostic view.
         await player.ruffle().load({
             url: "./movie.swf",
             allowScriptAccess: true,
             autoplay: "on",
-            backgroundColor: "#000000"
+            wmode: hasVideo ? "transparent" : "opaque",
+            backgroundColor: hasVideo ? null : "#000000"
         });
-        const report = await sourceLoad;
         const initButton = document.getElementById("initialize");
         const canOpenScreen = report?.initialization?.verified_open_screen === true;
         const canReturnToMain = report?.initialization?.verified_transition_to_main_menu === true;
