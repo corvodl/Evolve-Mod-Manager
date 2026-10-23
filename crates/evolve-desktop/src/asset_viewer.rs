@@ -637,10 +637,11 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
         row![
             gfx_nav_section(state, "Preview", GfxToolsSection::Preview),
             gfx_nav_section(state, "Layout", GfxToolsSection::Layout),
-            gfx_nav_section(state, "Scripts", GfxToolsSection::Scripts),
+            gfx_nav_section(state, "Featured", GfxToolsSection::Featured),
         ]
         .spacing(5),
         row![
+            gfx_nav_section(state, "Scripts", GfxToolsSection::Scripts),
             gfx_nav_section(state, "Resources", GfxToolsSection::Resources),
             gfx_nav_section(state, "Inspector", GfxToolsSection::Inspector),
             gfx_nav_section(state, "Project", GfxToolsSection::Project),
@@ -920,6 +921,52 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                                 ),
                             );
                     }
+                }
+            }
+            GfxToolsSection::Featured => {
+                actions = actions
+                    .push(text("FEATURED PROMOTION").size(13))
+                    .push(text("Edit the original main-menu promotion: title, TRY/BUY buttons, or the entire offer. Hiding/removing uses a frame guard so rotating offers cannot simply re-show it.").size(11).style(design::muted));
+                if !session.relative.eq_ignore_ascii_case("Libs/UI/main_menu.gfx") {
+                    actions = actions.push(text("Open Libs/UI/main_menu.gfx to edit featured promotion controls.").size(11).style(design::muted));
+                } else if session.project.is_none() {
+                    actions = actions.push(text("Open the GFX from an editable Mod Project. Asset Library movies remain read-only.").size(11).style(design::muted));
+                } else {
+                    use crate::gfx_featured_promo::{Mode, Target};
+                    actions = actions.push(text("CHOOSE TARGET").size(12));
+                    for target in [Target::All, Target::Title, Target::Try, Target::Buy] {
+                        actions = actions.push(
+                            design::button(text(format!(
+                                "{} {}",
+                                if state.gfx_featured_target == target { "●" } else { "○" },
+                                target.label()
+                            )))
+                            .on_press(Message::GfxFeaturedTarget(target))
+                        );
+                    }
+                    actions = actions
+                        .push(text("PERSISTENT VISIBILITY / REMOVAL").size(12))
+                        .push(row![
+                            design::button("Hide every time").on_press_maybe(
+                                (!state.gfx_busy).then_some(Message::GfxFeaturedStage(Mode::Hide))
+                            ),
+                            design::button("Remove / disable every time").on_press_maybe(
+                                (!state.gfx_busy).then_some(Message::GfxFeaturedStage(Mode::Remove))
+                            ),
+                        ].spacing(4))
+                        .push(text("Removal hides all targeted clips on every frame and disables/removes dynamically attached controls where supported. Static timeline definitions are preserved.").size(11).style(design::muted))
+                        .push(text("RUNTIME TEXT REPLACEMENT").size(12))
+                        .push(text_input(
+                            "Enter replacement for title, TRY, or BUY…",
+                            &state.gfx_featured_text,
+                        ).on_input(Message::GfxFeaturedText).padding(8))
+                        .push(design::button("Stage persistent text edit").on_press_maybe(
+                            (!state.gfx_busy
+                                && state.gfx_featured_target != Target::All
+                                && !state.gfx_featured_text.is_empty())
+                                .then_some(Message::GfxFeaturedStage(Mode::Text))
+                        ))
+                        .push(text("Each action is staged in an isolated session via FFDec. Undo before changing the same target; Apply to Mod Project commits the staged GFX only after validation. In-game offline verification is still required.").size(11).style(design::muted));
                 }
             }
             GfxToolsSection::Scripts => {
