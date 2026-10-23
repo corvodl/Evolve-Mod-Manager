@@ -100,7 +100,7 @@ pub(super) fn inspect(game_root: &str) -> Snapshot {
 
 /// Requires explicit hexadecimal input; never treats untrusted decimal text
 /// as a pointer. Reject excessively long or invalid pointer chains.
-fn parse_hex(value: &str) -> Result<usize, String> {
+pub(super) fn parse_hex(value: &str) -> Result<usize, String> {
     let value = value.trim();
     let digits = value
         .strip_prefix("0x")
