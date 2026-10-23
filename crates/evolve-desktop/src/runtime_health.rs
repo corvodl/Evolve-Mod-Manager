@@ -89,8 +89,8 @@ fn initial_candidates(
     expected: Option<f64>,
 ) -> Vec<Candidate> {
     let mut found = Vec::new();
-    for (index, chunk) in bytes.chunks_exact(4).enumerate().take(MAX_CANDIDATES) {
-        let raw = u32::from_le_bytes(chunk.try_into().unwrap());
+    for (index, chunk) in bytes.as_chunks::<4>().0.iter().enumerate().take(MAX_CANDIDATES) {
+        let raw = u32::from_le_bytes(*chunk);
         let Some(value) = numeric(kind, raw) else {
             continue;
         };
