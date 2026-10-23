@@ -8,33 +8,57 @@ pub enum Target {
     Buy,
 }
 impl Default for Target {
-    fn default() -> Self { Self::All }
+    fn default() -> Self {
+        Self::All
+    }
 }
 impl Target {
     pub fn label(self) -> &'static str {
-        match self { Self::All => "Entire promotion", Self::Title => "Featured title",
-            Self::Try => "TRY button", Self::Buy => "BUY button" }
+        match self {
+            Self::All => "Entire promotion",
+            Self::Title => "Featured title",
+            Self::Try => "TRY button",
+            Self::Buy => "BUY button",
+        }
     }
     fn key(self) -> &'static str {
-        match self { Self::All => "all", Self::Title => "title",
-            Self::Try => "try", Self::Buy => "buy" }
+        match self {
+            Self::All => "all",
+            Self::Title => "title",
+            Self::Try => "try",
+            Self::Buy => "buy",
+        }
     }
     fn members(self) -> &'static [&'static str] {
         match self {
             Self::Title => &["mcFeatureTitle"],
             Self::Try => &["mcFeatureTry", "mcFeatureButtonTry"],
             Self::Buy => &["mcFeatureBuy", "mcFeatureButtonBuy"],
-            Self::All => &["mcFeatureTitle", "mcFeatureBuy", "mcFeatureTry",
-                "mcFeatureBg", "mcFeatureFocus", "mcFeatureButtonBuy",
-                "mcFeatureButtonTry", "mcHighlightFeaturedMount"],
+            Self::All => &[
+                "mcFeatureTitle",
+                "mcFeatureBuy",
+                "mcFeatureTry",
+                "mcFeatureBg",
+                "mcFeatureFocus",
+                "mcFeatureButtonBuy",
+                "mcFeatureButtonTry",
+                "mcHighlightFeaturedMount",
+            ],
         }
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Mode { Hide, Remove, Text }
+pub enum Mode {
+    Hide,
+    Remove,
+    Text,
+}
 fn quote(value: &str) -> Result<String, String> {
-    if value.is_empty() || value.chars().count() > 160 || value.trim() != value ||
-        value.chars().any(|c| c.is_control()) {
+    if value.is_empty()
+        || value.chars().count() > 160
+        || value.trim() != value
+        || value.chars().any(|c| c.is_control())
+    {
         return Err("Enter 1–160 printable characters with no surrounding whitespace".into());
     }
     // Serialize a string literal, never interpolate user text as ActionScript.
@@ -44,8 +68,12 @@ fn actions(target: Target, mode: Mode, text: &str, prefix: &str) -> Result<Strin
     if mode == Mode::Text && target == Target::All {
         return Err("Choose the featured title, TRY or BUY before replacing text".into());
     }
-    let value = if mode == Mode::Text { Some(quote(text)?) } else {
-        if !text.is_empty() { return Err("Text is only valid for the text-edit action".into()); }
+    let value = if mode == Mode::Text {
+        Some(quote(text)?)
+    } else {
+        if !text.is_empty() {
+            return Err("Text is only valid for the text-edit action".into());
+        }
         None
     };
     let mut out = String::new();
@@ -56,16 +84,32 @@ fn actions(target: Target, mode: Mode, text: &str, prefix: &str) -> Result<Strin
                 out += &format!("{prefix}    menu.{member}._visible = false;\n");
                 if mode == Mode::Remove {
                     out += &format!("{prefix}    menu.{member}.enabled = false;\n");
-                    out += &format!("{prefix}    if (menu.{member}.text != undefined) menu.{member}.text = \"\";\n");
-                    out += &format!("{prefix}    if (menu.{member}.removeMovieClip != undefined) menu.{member}.removeMovieClip();\n");
+                    out += &format!(
+                        "{prefix}    if (menu.{member}.text != undefined) menu.{member}.text = \"\";\n"
+                    );
+                    out += &format!(
+                        "{prefix}    if (menu.{member}.removeMovieClip != undefined) menu.{member}.removeMovieClip();\n"
+                    );
                 }
             }
             Mode::Text => {
                 let value = value.as_ref().unwrap();
                 out += &format!("{prefix}    menu.{member}._visible = true;\n");
-                out += &format!("{prefix}    if (menu.{member}.text != undefined) menu.{member}.text = {value};\n");
-                for field in ["txtTitle", "txtText", "txtLabel", "txtTry", "txtBuy", "label", "textField"] {
-                    out += &format!("{prefix}    if (menu.{member}.{field} != undefined && menu.{member}.{field}.text != undefined) menu.{member}.{field}.text = {value};\n");
+                out += &format!(
+                    "{prefix}    if (menu.{member}.text != undefined) menu.{member}.text = {value};\n"
+                );
+                for field in [
+                    "txtTitle",
+                    "txtText",
+                    "txtLabel",
+                    "txtTry",
+                    "txtBuy",
+                    "label",
+                    "textField",
+                ] {
+                    out += &format!(
+                        "{prefix}    if (menu.{member}.{field} != undefined && menu.{member}.{field}.text != undefined) menu.{member}.{field}.text = {value};\n"
+                    );
                 }
             }
         }
@@ -75,11 +119,19 @@ fn actions(target: Target, mode: Mode, text: &str, prefix: &str) -> Result<Strin
 }
 /// Find exactly one authored setFeatured body, skipping quoted strings and comments.
 fn blocks(source: &str) -> Result<(usize, usize), String> {
-    let patterns = ["function setFeatured(", "setFeatured = function(", "setFeatured=function("];
-    let starts: Vec<usize> = patterns.iter().flat_map(|pattern|
-        source.match_indices(pattern).map(|(i, _)| i)).collect();
+    let patterns = [
+        "function setFeatured(",
+        "setFeatured = function(",
+        "setFeatured=function(",
+    ];
+    let starts: Vec<usize> = patterns
+        .iter()
+        .flat_map(|pattern| source.match_indices(pattern).map(|(i, _)| i))
+        .collect();
     if starts.len() != 1 {
-        return Err("Expected exactly one original setFeatured function; use FFDec manually".into());
+        return Err(
+            "Expected exactly one original setFeatured function; use FFDec manually".into(),
+        );
     }
     let after = &source[starts[0]..];
     let open = starts[0] + after.find('{').ok_or("Missing original setFeatured body")?;
@@ -91,20 +143,37 @@ fn blocks(source: &str) -> Result<(usize, usize), String> {
         let c = bytes[i];
         let next = bytes.get(i + 1).copied().unwrap_or_default();
         if state == 3 {
-            if c == b'\n' { state = 0; }
+            if c == b'\n' {
+                state = 0;
+            }
         } else if state == 4 {
-            if c == b'*' && next == b'/' { state = 0; i += 1; }
+            if c == b'*' && next == b'/' {
+                state = 0;
+                i += 1;
+            }
         } else if state == 1 || state == 2 {
-            if c == b'\\' { i += 1; }
-            else if (state == 1 && c == b'\'') || (state == 2 && c == b'"') { state = 0; }
-        } else if c == b'/' && next == b'/' { state = 3; i += 1; }
-        else if c == b'/' && next == b'*' { state = 4; i += 1; }
-        else if c == b'\'' { state = 1; }
-        else if c == b'"' { state = 2; }
-        else if c == b'{' { depth += 1; }
-        else if c == b'}' {
+            if c == b'\\' {
+                i += 1;
+            } else if (state == 1 && c == b'\'') || (state == 2 && c == b'"') {
+                state = 0;
+            }
+        } else if c == b'/' && next == b'/' {
+            state = 3;
+            i += 1;
+        } else if c == b'/' && next == b'*' {
+            state = 4;
+            i += 1;
+        } else if c == b'\'' {
+            state = 1;
+        } else if c == b'"' {
+            state = 2;
+        } else if c == b'{' {
+            depth += 1;
+        } else if c == b'}' {
             depth -= 1;
-            if depth == 0 { return Ok((open, i)); }
+            if depth == 0 {
+                return Ok((open, i));
+            }
         }
         i += 1;
     }
@@ -124,8 +193,10 @@ pub fn patch(source: &str, mode: Mode, target: Target, text: &str) -> Result<Str
         return Err("A preset already edits this target; Undo before replacing it".into());
     }
     if target == Target::All {
-        if ["title", "try", "buy"].iter().any(|key|
-            source.contains(&format!("{MARKER}{key}"))) {
+        if ["title", "try", "buy"]
+            .iter()
+            .any(|key| source.contains(&format!("{MARKER}{key}")))
+        {
             return Err("Individual promotion edits are staged; Undo before editing all".into());
         }
     } else if source.contains(&format!("{MARKER}all")) {
@@ -141,7 +212,9 @@ pub fn patch(source: &str, mode: Mode, target: Target, text: &str) -> Result<Str
     let body = &source[start..end];
     let original = &body[..body.find(&format!("var {MARKER}")).unwrap_or(body.len())];
     if original.contains("return;") {
-        return Err("Original setFeatured contains an early return; manual FFDec editing required".into());
+        return Err(
+            "Original setFeatured contains an early return; manual FFDec editing required".into(),
+        );
     }
     let guard_name = format!("__evolveFeaturedPromoGuard_{}", target.key());
     let once = actions(target, mode, text, "        ")?;
@@ -164,7 +237,8 @@ mod tests {
     _root.mcFeatureTitle.text = info.name;
 }
 "#;
-    #[test] fn persistent_removal_for_all_instances() {
+    #[test]
+    fn persistent_removal_for_all_instances() {
         let result = patch(ORIGINAL, Mode::Remove, Target::All, "").unwrap();
         assert!(result.contains("guardClip.onEnterFrame = function()"));
         assert!(result.contains("menu.mcFeatureTry._visible = false"));
@@ -173,8 +247,9 @@ mod tests {
         assert!(!result.contains("setInterval("));
         assert!(patch(&result, Mode::Remove, Target::All, "").is_err());
     }
-    #[test] fn persistent_custom_text_and_independent_controls() {
-        let a = patch(ORIGINAL, Mode::Text, Target::Title, "GLACIAL \"MOD\"" ).unwrap();
+    #[test]
+    fn persistent_custom_text_and_independent_controls() {
+        let a = patch(ORIGINAL, Mode::Text, Target::Title, "GLACIAL \"MOD\"").unwrap();
         assert!(a.contains("menu.mcFeatureTitle.text = \"GLACIAL \\\"MOD\\\"\""));
         assert!(a.contains("guardClip.onEnterFrame = function()"));
         let b = patch(&a, Mode::Remove, Target::Try, "").unwrap();
@@ -182,11 +257,28 @@ mod tests {
         assert!(!b.contains("menu.mcFeatureTitle.enabled = false"));
         assert!(patch(&b, Mode::Remove, Target::All, "").is_err());
     }
-    #[test] fn guards_invalid_and_ambiguous_scripts() {
+    #[test]
+    fn guards_invalid_and_ambiguous_scripts() {
         assert!(patch(ORIGINAL, Mode::Text, Target::All, "text").is_err());
         assert!(patch(ORIGINAL, Mode::Text, Target::Title, "bad\ntext").is_err());
-        assert!(patch(&(ORIGINAL.to_owned() + ORIGINAL), Mode::Hide, Target::All, "").is_err());
-        assert!(patch("function setFeatured() { if (x) return; }", Mode::Hide, Target::All, "").is_err());
+        assert!(
+            patch(
+                &(ORIGINAL.to_owned() + ORIGINAL),
+                Mode::Hide,
+                Target::All,
+                ""
+            )
+            .is_err()
+        );
+        assert!(
+            patch(
+                "function setFeatured() { if (x) return; }",
+                Mode::Hide,
+                Target::All,
+                ""
+            )
+            .is_err()
+        );
         assert!(patch("function setFeatured() {", Mode::Hide, Target::All, "").is_err());
     }
 }
