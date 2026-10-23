@@ -4,6 +4,7 @@
 //! specific four-byte baseline; applying always requires fresh authorization.
 use crate::runtime_armor;
 use crate::runtime_memory::{self, Snapshot};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const MIN_USER_ADDRESS: usize = 0x10000;
 const MAX_USER_ADDRESS: usize = 0x0000_7FFF_FFFF_FFFC;
@@ -203,7 +204,9 @@ pub(super) fn apply(
     probe: Probe,
     desired: &str,
     confirmed: bool,
+    cancel: &AtomicBool,
 ) -> Result<WriteResult, String> {
+    if cancel.load(Ordering::Relaxed) { return Err("Offline live edit was canceled".into()); }
     let next = value(desired)?;
     validate_address(probe.address)?;
     let pid = verify_session(snapshot, game_root, confirmed)?;
@@ -212,6 +215,7 @@ pub(super) fn apply(
     }
     validate_baseline(probe.expected_bits, current_bits(pid, probe.address)?)?;
     verify_session(snapshot, game_root, confirmed)?;
+    if cancel.load(Ordering::Relaxed) { return Err("Offline live edit canceled before write".into()); }
     write_four(pid, probe.address, probe.expected_bits, next.to_bits())?;
     let observed = current_bits(pid, probe.address)?;
     if observed != next.to_bits() {
@@ -237,6 +241,7 @@ pub(super) fn apply(
     _: Probe,
     _: &str,
     _: bool,
+    _: &AtomicBool,
 ) -> Result<WriteResult, String> {
     Err("Offline Float32 edits require Windows".into())
 }
