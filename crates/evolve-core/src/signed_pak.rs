@@ -1271,10 +1271,8 @@ mod tests {
         let case_catalog = crate::library_catalog::imported_library(&case_library).unwrap();
         assert_eq!(case_catalog.archives.len(), 1);
         let case_manifest: serde_json::Value = serde_json::from_slice(
-            &fs::read(
-                Path::new(&case_catalog.archives[0].directory).join("asset-library.json"),
-            )
-            .unwrap(),
+            &fs::read(Path::new(&case_catalog.archives[0].directory).join("asset-library.json"))
+                .unwrap(),
         )
         .unwrap();
         assert_eq!(case_manifest["name"], "Sample.pak");
