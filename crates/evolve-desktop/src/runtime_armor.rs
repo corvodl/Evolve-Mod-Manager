@@ -45,13 +45,21 @@ impl Scan {
     pub fn describe(&self) -> String {
         let mut description = format!(
             "Stage 2 Goliath armor (Float32): {} candidate(s), {} pages sampled. Damage passes: {}; feed passes: {}; stable passes: {}. READ ONLY.",
-            self.candidates.len(), self.pages_read, self.damage_steps, self.feed_steps, self.stable_steps
+            self.candidates.len(),
+            self.pages_read,
+            self.damage_steps,
+            self.feed_steps,
+            self.stable_steps
         );
         for candidate in self.candidates.iter().take(12) {
-            description.push_str(&format!("\n0x{:X}: {:.3}", candidate.address, candidate.value));
+            description.push_str(&format!(
+                "\n0x{:X}: {:.3}",
+                candidate.address, candidate.value
+            ));
         }
         if self.candidates.len() > 12 {
-            description.push_str("\nShowing 12 candidates. Alternate damage, stable and feeding filters.");
+            description
+                .push_str("\nShowing 12 candidates. Alternate damage, stable and feeding filters.");
         }
         if self.ready() {
             description.push_str("\nBehavior verified across damage and feeding. Address is session-local; actor class is not independently verified. Live read enabled.");
@@ -116,7 +124,10 @@ fn ps(command: &str) -> Result<String, String> {
     if !out.status.success() {
         return Err(format!(
             "Windows memory query failed: {}",
-            String::from_utf8_lossy(&out.stderr).chars().take(300).collect::<String>()
+            String::from_utf8_lossy(&out.stderr)
+                .chars()
+                .take(300)
+                .collect::<String>()
         ));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -141,7 +152,9 @@ fn offline_guard(pid: u32, confirmed: bool) -> Result<(), String> {
 
 #[cfg(windows)]
 fn verify_process(snapshot: &Snapshot, game_root: &str) -> Result<u32, String> {
-    let pid = snapshot.pid.ok_or("Detect a unique running Evolve.exe first")?;
+    let pid = snapshot
+        .pid
+        .ok_or("Detect a unique running Evolve.exe first")?;
     if runtime_memory::inspect(game_root).pid != Some(pid) {
         return Err("Evolve restarted or PID changed. Candidate addresses discarded.".into());
     }
@@ -152,7 +165,8 @@ fn verify_process(snapshot: &Snapshot, game_root: &str) -> Result<u32, String> {
 /// code. PowerShell compiles a query-only Win32 wrapper in its own process.
 #[cfg(windows)]
 fn regions(pid: u32) -> Result<Vec<(usize, usize)>, String> {
-    let script = format!(r#"
+    let script = format!(
+        r#"
 $ErrorActionPreference='Stop'
 Add-Type -TypeDefinition @'
 using System;
@@ -203,7 +217,8 @@ public static class EvolveReadOnlyRegions {{
 }}
 '@
 [EvolveReadOnlyRegions]::List({pid})
-"#);
+"#
+    );
     let region_list = parse_regions(&ps(&script)?)?;
     if region_list.is_empty() {
         return Err("No committed writable regions returned. Check Evolve process access.".into());
@@ -222,7 +237,8 @@ pub(super) fn discover(
     offline_guard(pid, offline_confirmed)?;
     let regions = regions(pid)?;
     let handle: read_process_memory::ProcessHandle = pid
-        .try_into().map_err(|e| format!("Cannot open game read-only: {e}"))?;
+        .try_into()
+        .map_err(|e| format!("Cannot open game read-only: {e}"))?;
     let mut candidates = Vec::new();
     let mut bytes_scanned = 0_u64;
     let mut pages_read = 0_usize;
@@ -235,16 +251,21 @@ pub(super) fn discover(
             let next = READ_CHUNK.min(length - offset);
             bytes_scanned = bytes_scanned.saturating_add(next as u64);
             if bytes_scanned > MAX_SCAN_BYTES {
-                return Err("Memory scan reached its 8 GiB safety limit; no partial result accepted".into());
+                return Err(
+                    "Memory scan reached its 8 GiB safety limit; no partial result accepted".into(),
+                );
             }
             if let Some(address) = base.checked_add(offset)
                 && let Ok(bytes) = read_process_memory::copy_address(address, next, &handle)
             {
-                pages_read += (bytes.len() + PAGE - 1) / PAGE;
-                for (i, part) in bytes.chunks_exact(4).enumerate() {
+                pages_read += bytes.len().div_ceil(PAGE);
+                for (i, part) in bytes.as_chunks::<4>().0.iter().enumerate() {
                     let value = f32::from_le_bytes(part.try_into().unwrap());
                     if armor_initial(value) {
-                        candidates.push(Candidate { address: address + i * 4, value });
+                        candidates.push(Candidate {
+                            address: address + i * 4,
+                            value,
+                        });
                         if candidates.len() > MAX_CANDIDATES {
                             return Err("Over 300000 near-full armor candidates; refine the initial tolerance before scanning again".into());
                         }
@@ -285,7 +306,8 @@ pub(super) fn refine(
         return Err("Take armor damage and filter Damage before feeding".into());
     }
     let handle: read_process_memory::ProcessHandle = pid
-        .try_into().map_err(|e| format!("Cannot open game read-only: {e}"))?;
+        .try_into()
+        .map_err(|e| format!("Cannot open game read-only: {e}"))?;
     let mut surviving = Vec::new();
     let mut i = 0;
     while i < previous.candidates.len() {
@@ -304,7 +326,10 @@ pub(super) fn refine(
             }) {
                 let value = f32::from_le_bytes(raw.try_into().unwrap());
                 if matches_step(prior.value, value, step) {
-                    surviving.push(Candidate { address: prior.address, value });
+                    surviving.push(Candidate {
+                        address: prior.address,
+                        value,
+                    });
                 }
             }
             i += 1;
@@ -330,14 +355,17 @@ pub(super) fn monitor(
     scan: &Scan,
     offline_confirmed: bool,
 ) -> Result<Option<f32>, String> {
-    let Some(address) = scan.address() else { return Ok(None); };
+    let Some(address) = scan.address() else {
+        return Ok(None);
+    };
     let pid = verify_process(snapshot, game_root)?;
     if pid != scan.pid {
         return Err("Game restarted; armor address is stale".into());
     }
     offline_guard(pid, offline_confirmed)?;
     let handle: read_process_memory::ProcessHandle = pid
-        .try_into().map_err(|e| format!("Cannot open game read-only: {e}"))?;
+        .try_into()
+        .map_err(|e| format!("Cannot open game read-only: {e}"))?;
     let raw = read_process_memory::copy_address(address, 4, &handle)
         .map_err(|e| format!("Armor address unreadable: {e}"))?;
     let value = f32::from_le_bytes(raw.as_slice().try_into().map_err(|_| "Short armor read")?);
@@ -352,7 +380,14 @@ pub(super) fn discover(_: &Snapshot, _: &str, _: bool, _: &AtomicBool) -> Result
     Err("Stage 2 armor detection requires Windows".into())
 }
 #[cfg(not(windows))]
-pub(super) fn refine(_: &Snapshot, _: &str, _: Scan, _: Step, _: bool, _: &AtomicBool) -> Result<Scan, String> {
+pub(super) fn refine(
+    _: &Snapshot,
+    _: &str,
+    _: Scan,
+    _: Step,
+    _: bool,
+    _: &AtomicBool,
+) -> Result<Scan, String> {
     Err("Stage 2 armor detection requires Windows".into())
 }
 #[cfg(not(windows))]
@@ -392,7 +427,10 @@ mod tests {
 
     #[test]
     fn live_armor_requires_a_damage_and_feed_match() {
-        let candidate = Candidate { address: 0x20000000, value: 997.0 };
+        let candidate = Candidate {
+            address: 0x20000000,
+            value: 997.0,
+        };
         let scan = Scan {
             pid: 123,
             candidates: vec![candidate],
@@ -403,7 +441,10 @@ mod tests {
         };
         assert!(!scan.ready());
         assert!(scan.address().is_none());
-        let ready = Scan { feed_steps: 1, ..scan };
+        let ready = Scan {
+            feed_steps: 1,
+            ..scan
+        };
         assert!(ready.ready());
         assert_eq!(ready.address(), Some(0x20000000));
     }
