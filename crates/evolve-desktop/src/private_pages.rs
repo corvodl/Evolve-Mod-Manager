@@ -347,6 +347,12 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
                     design::button("Preview character").on_press(Message::PreviewRuntimePhase3(super::runtime_experiments::Phase3Action::SwapCharacter)),
                     design::button("Preview ability").on_press(Message::PreviewRuntimePhase3(super::runtime_experiments::Phase3Action::Ability)),
                 ].spacing(8),
+                text("Engine signature probe / read-only").size(16),
+                text("Search exactly 4 KiB from the manual address above for a Ghidra-style byte signature (AA BB ?? CC). Candidate addresses require verification in the actual game build.").size(12).style(design::muted),
+                design::text_input("AOB signature, e.g. 48 8B ?? ?? 89", &state.runtime_signature)
+                    .on_input(Message::RuntimeSignatureChanged),
+                design::button("Scan 4 KiB for signature")
+                    .on_press_maybe((!state.runtime_checking && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some()).then_some(Message::RuntimeScanSignature)),
                 text(state.runtime_plan_result.as_str()).size(12).style(design::muted),
                 design::button("Lock developer area").on_press(Message::LockDeveloper),
             ].spacing(12)),
