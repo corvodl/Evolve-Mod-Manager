@@ -7,6 +7,9 @@ pub enum Target {
     Try,
     Buy,
 }
+impl Default for Target {
+    fn default() -> Self { Self::All }
+}
 impl Target {
     pub fn label(self) -> &'static str {
         match self { Self::All => "Entire promotion", Self::Title => "Featured title",
