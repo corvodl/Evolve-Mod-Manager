@@ -60,25 +60,26 @@ fn hex_address(input: &str) -> Result<u64, String> {
 }
 
 fn bounded_float(input: &str, label: &str, min: f32, max: f32) -> Result<f32, String> {
-    let value: f32 = input.trim().parse().map_err(|_| format!("Invalid {label} number"))?;
+    let value: f32 = input
+        .trim()
+        .parse()
+        .map_err(|_| format!("Invalid {label} number"))?;
     if !value.is_finite() || value < min || value > max {
-        return Err(format!("{label} must be finite and between {min} and {max}"));
+        return Err(format!(
+            "{label} must be finite and between {min} and {max}"
+        ));
     }
     Ok(value)
 }
 
 fn serialized_value(kind: Phase2Action, input: &str) -> Result<Vec<u8>, String> {
     match kind {
-        Phase2Action::Health => Ok(
-            bounded_float(input, "Health", 0.0, 100_000.0)?
-                .to_le_bytes()
-                .to_vec(),
-        ),
-        Phase2Action::Cooldown => Ok(
-            bounded_float(input, "Cooldown", 0.0, 3_600.0)?
-                .to_le_bytes()
-                .to_vec(),
-        ),
+        Phase2Action::Health => Ok(bounded_float(input, "Health", 0.0, 100_000.0)?
+            .to_le_bytes()
+            .to_vec()),
+        Phase2Action::Cooldown => Ok(bounded_float(input, "Cooldown", 0.0, 3_600.0)?
+            .to_le_bytes()
+            .to_vec()),
         Phase2Action::Teleport => {
             let parts = input.split(',').map(str::trim).collect::<Vec<_>>();
             if parts.len() != 3 {
@@ -131,7 +132,11 @@ pub(super) fn preview_phase2(
         "{} preview (NOT APPLIED)\nTarget: 0x{at:016X}\nSuggested value bytes (little-endian): {}\nProcess detected: {}\nBlocked: live actor identity and field offset for this exact build are unknown; offline-only session is unverified; no baseline/restore journal exists. This preview does not write memory.",
         kind.label(),
         hex_bytes(&bytes),
-        if process_detected { "yes (unverified)" } else { "no" }
+        if process_detected {
+            "yes (unverified)"
+        } else {
+            "no"
+        }
     ))
 }
 
@@ -141,7 +146,9 @@ fn identifier(input: &str) -> Result<&str, String> {
         || name.len() > 64
         || !name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
     {
-        return Err("Provide an engine class identifier (1-64 ASCII letters, digits or underscores)".into());
+        return Err(
+            "Provide an engine class identifier (1-64 ASCII letters, digits or underscores)".into(),
+        );
     }
     Ok(name)
 }
@@ -196,7 +203,12 @@ mod tests {
 
     #[test]
     fn teleport_and_equipment_require_bounded_inputs() {
-        assert_eq!(serialized_value(Phase2Action::Teleport, "1,2,3").unwrap().len(), 12);
+        assert_eq!(
+            serialized_value(Phase2Action::Teleport, "1,2,3")
+                .unwrap()
+                .len(),
+            12
+        );
         assert!(serialized_value(Phase2Action::Teleport, "1,2").is_err());
         assert!(serialized_value(Phase2Action::Teleport, "0,inf,0").is_err());
         assert!(serialized_value(Phase2Action::Equip, "0x10003").is_err());
@@ -217,7 +229,15 @@ mod tests {
         assert!(preview_phase3(Phase3Action::Spawn, "Goliath,2").is_ok());
         assert!(preview_phase3(Phase3Action::Spawn, "Tyrant,200").is_err());
         assert!(preview_phase3(Phase3Action::Spawn, "../Goliath").is_err());
-        assert!(preview_phase3(Phase3Action::SwapCharacter, "Markov").unwrap().contains("NOT EXECUTED"));
-        assert!(preview_phase3(Phase3Action::Ability, "LightningGun").unwrap().contains("No engine function"));
+        assert!(
+            preview_phase3(Phase3Action::SwapCharacter, "Markov")
+                .unwrap()
+                .contains("NOT EXECUTED")
+        );
+        assert!(
+            preview_phase3(Phase3Action::Ability, "LightningGun")
+                .unwrap()
+                .contains("No engine function")
+        );
     }
 }
