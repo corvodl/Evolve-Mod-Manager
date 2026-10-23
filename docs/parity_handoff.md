@@ -1,5 +1,13 @@
 # Public Rust manager parity — continuation notes
 
+## 2026-10-22 — Developer runtime phases (PR #54)
+
+- Phase 1 now has an opt-in, password-gated external Evolve.exe discovery and read-only 32-byte hex/pointer-chain inspector using a safe Windows process-memory API. No automatic game offsets are guessed. Multiple processes block selection, and the process is rechecked before and after each read. This is a developer diagnostic, not a functioning health/inventory inspector yet.
+- Phase 2 is explicitly locked: health, cooldown, teleport and weapon-reference edits require verified game/build layouts, provable offline-only session gating, recoverable writes, and reset/revalidation on match transition. No memory writes implemented.
+- Phase 3 is research-only: native spawn, actor switching, custom abilities and RMI/engine calls are not supported. No native hooks, DLL injection or network traffic are performed.
+- Real Windows game-process acceptance and CI remain required. The presence of Evolve.exe alone does not prove offline state or running binary identity; do not enable writes based solely on PID/name.
+
+
 Updated: **2026-10-20** · Repository: `corvodl/Evolve-Mod-Manager` · Working PR: **#6** on `feature/blender-viewport-cdf-autoload`, based on PR #5's `feature/pr5-combined-viewer-preview`. This document is a resumable engineering checklist, **not** a claim of production parity. See [PARITY.md](PARITY.md) for the broader feature matrix.
 
 ## 2026-10-23 — original Training cards: PNG URL suffix and live request audit
