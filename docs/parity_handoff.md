@@ -101,6 +101,35 @@ not yet an end-to-end visual confirmation; if the image branch runs but
 is still blank, inspect the original image-loader symbol instances and
 Ruffle bitmap linkage rather than revisiting numeric game-state IDs.
 
+## 2026-10-22 — private-style Asset Library full-collection importer
+
+The public Iced Asset Library previously exposed a typed-path popover and only
+scanned up to 64 PAK files directly inside the selected folder. It did not
+provide the private Qt manager's multi-select file picker or full-game
+recursive import with a preview/confirmation step.
+
+The Asset Library now offers native **Add PAK files…** (multi-file) and
+**Import ALL PAKs from folder…** pickers in an expanded in-page workflow.
+Folder discovery is opt-in and traverses nested directories up to 16 levels,
+with a hard 4,096-PAK ceiling and a bounded directory-entry count. Sources
+inside the library, source symlinks, and linked directories are excluded.
+The review panel lists the number of candidates, packed bytes and already
+imported sources before the user confirms. No source bytes are modified by
+the scan. Imports reuse the original public/custom RSA verification and
+atomic one-archive commit path, with per-file failure reporting and
+pre-existing verified archives reused.
+
+A cancel request stops **between archives**, retaining completed imports;
+the UI refreshes the counter periodically through the existing pulse.
+This initial parity pass does **not** claim within-PAK cancellation or
+streamed byte-level progress; those are separate from the verified archive
+importer and require a cancellable extraction API. The current public
+importer handles **signed Stage 2 PAKs**; the private manager's separate
+legacy ZIP/2012 importer and arbitrary build registration are still
+not ported by this UI change, and there is no implicit cross-build
+signing or modification of original game files. Choosing a collection
+is not a request to launch or install the game.
+
 ## 2026-10-22 — original Training image cards: preview runtime state
 
 The source `Libs/UI/main_menu.gfx` already contains the original
