@@ -1278,15 +1278,14 @@ mod tests {
         assert_eq!(case_manifest["name"], "Sample.pak");
         assert_eq!(case_manifest["signed_name"], "sample.pak");
         assert_eq!(case_manifest["verification"], "rsa-pss");
-        assert_eq!(
+        assert!(
             crate::library_import::import_signed_library_pak_with_keys(
                 &case_library,
                 &differently_cased,
                 std::slice::from_ref(&key),
             )
             .unwrap()
-            .already_imported,
-            true
+            .already_imported
         );
         assert_eq!(fs::read(&differently_cased).unwrap(), bytes);
 
