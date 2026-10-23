@@ -1,7 +1,9 @@
 //! Local-only HTTP bridge for Ruffle Web's live ExternalInterface API.
 //! Only preverified original menu handlers can be queued from GFX Tools.
 //! No native CryEngine callbacks, game process, file writes, or arbitrary URLs.
-use crate::{gfx_bundled_tools, gfx_interactive::PreviewPreset, gfx_menu_video::SubmenuVideoCatalog};
+use crate::{
+    gfx_bundled_tools, gfx_interactive::PreviewPreset, gfx_menu_video::SubmenuVideoCatalog,
+};
 use serde_json::json;
 use std::fs;
 use std::io::{Read, Write};
@@ -80,7 +82,17 @@ impl LiveServer {
         let files = scratch.path().to_path_buf();
         let worker = thread::Builder::new()
             .name("isolated-gfx-web-preview".into())
-            .spawn(move || serve(listener, files, bundle, token, receiver, live, submenu_videos))
+            .spawn(move || {
+                serve(
+                    listener,
+                    files,
+                    bundle,
+                    token,
+                    receiver,
+                    live,
+                    submenu_videos,
+                )
+            })
             .map_err(|e| e.to_string())?;
         let url = format!(
             "http://127.0.0.1:{port}/{}/",
@@ -174,7 +186,14 @@ fn serve(
                 let _ = stream.set_read_timeout(Some(Duration::from_millis(650)));
                 // Ruffle Web WASM binaries can be several MiB; don't truncate slow local loads.
                 let _ = stream.set_write_timeout(Some(Duration::from_secs(15)));
-                respond(&mut stream, &root, &bundle, &token, &receiver, &submenu_videos);
+                respond(
+                    &mut stream,
+                    &root,
+                    &bundle,
+                    &token,
+                    &receiver,
+                    &submenu_videos,
+                );
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(50));
@@ -313,8 +332,10 @@ fn respond(
             );
         }
         path if path.starts_with("submenu-video/") && path.ends_with(".json") => {
-            let key = path.strip_prefix("submenu-video/")
-                .and_then(|value| value.strip_suffix(".json")).unwrap_or("");
+            let key = path
+                .strip_prefix("submenu-video/")
+                .and_then(|value| value.strip_suffix(".json"))
+                .unwrap_or("");
             // Key lookup is a fixed whitelist from the original GFX.
             // Never accept a filesystem name or URI from the movie.
             let state = submenu_videos.stage(key, root);
@@ -322,7 +343,11 @@ fn respond(
             send(stream, 200, "application/json; charset=utf-8", &payload);
         }
         path if safe_submenu_video_asset(path) => {
-            let mime = if path.ends_with(".mp4") { "video/mp4" } else { "video/webm" };
+            let mime = if path.ends_with(".mp4") {
+                "video/mp4"
+            } else {
+                "video/webm"
+            };
             serve_file(stream, &root.join(path), root, MAX_STATIC_ASSET, mime);
         }
         "menu-background.mp4" | "menu-background.webm" => {
@@ -503,8 +528,14 @@ mod tests {
                 if let Some(preset) = action {
                     sender.send(preset).unwrap();
                 }
-                respond(&mut socket, &source, &bundle, "private-token", &received,
-                    &SubmenuVideoCatalog::default());
+                respond(
+                    &mut socket,
+                    &source,
+                    &bundle,
+                    "private-token",
+                    &received,
+                    &SubmenuVideoCatalog::default(),
+                );
             });
             let mut client = TcpStream::connect(destination).unwrap();
             client.write_all(request.as_bytes()).unwrap();
@@ -527,10 +558,11 @@ mod tests {
         assert!(get("/private-token/preview-menu.json", None).contains("404 Not Found"));
         assert!(get("/private-token/menu-background.mp4", None).contains("video/mp4"));
         assert!(get("/private-token/secret.mp4", None).contains("404 Not Found"));
-        assert!(get("/private-token/submenu-video/modeselect.json", None)
-            .contains("not present"));
-        assert!(get("/private-token/submenu-video/../../../secret.json", None)
-            .contains("400 Bad Request"));
+        assert!(get("/private-token/submenu-video/modeselect.json", None).contains("not present"));
+        assert!(
+            get("/private-token/submenu-video/../../../secret.json", None)
+                .contains("400 Bad Request")
+        );
         assert!(!safe_submenu_video_asset("submenu-video-unknown.mp4"));
         assert!(safe_submenu_video_asset("submenu-video-modeselect.mp4"));
         assert!(safe_submenu_video_asset("submenu-video-options.webm"));
