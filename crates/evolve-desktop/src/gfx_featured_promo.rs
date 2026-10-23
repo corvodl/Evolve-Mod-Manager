@@ -117,17 +117,36 @@ fn actions(target: Target, mode: Mode, text: &str, prefix: &str) -> Result<Strin
     }
     Ok(out)
 }
+/// Recognize authored AVM1 function forms with ordinary whitespace between
+/// tokens rather than relying on FFDec using one particular print format.
+/// This is a candidate scan only; ambiguous definitions are rejected below.
+fn definitions(source: &str) -> Vec<usize> {
+    let mut offsets = Vec::new();
+    for (at, _) in source.match_indices("setFeatured") {
+        let before = source[..at].trim_end_matches(char::is_whitespace);
+        let after = source[at + "setFeatured".len()..].trim_start_matches(char::is_whitespace);
+        let named_function = before.ends_with("function")
+            && before[..before.len() - "function".len()]
+                .chars()
+                .last()
+                .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_')
+            && after.starts_with('(');
+        let assigned_function = after.strip_prefix('=')
+            .map(str::trim_start)
+            .and_then(|remaining| remaining.strip_prefix("function"))
+            .is_some_and(|remaining| remaining.trim_start().starts_with('('));
+        if named_function || assigned_function {
+            offsets.push(at);
+        }
+    }
+    offsets
+}
+pub fn has_definition(source: &str) -> bool {
+    !definitions(source).is_empty()
+}
 /// Find exactly one authored setFeatured body, skipping quoted strings and comments.
 fn blocks(source: &str) -> Result<(usize, usize), String> {
-    let patterns = [
-        "function setFeatured(",
-        "setFeatured = function(",
-        "setFeatured=function(",
-    ];
-    let starts: Vec<usize> = patterns
-        .iter()
-        .flat_map(|pattern| source.match_indices(pattern).map(|(i, _)| i))
-        .collect();
+    let starts = definitions(source);
     if starts.len() != 1 {
         return Err(
             "Expected exactly one original setFeatured function; use FFDec manually".into(),
@@ -256,6 +275,18 @@ mod tests {
         assert!(b.contains("menu.mcFeatureTry.enabled = false"));
         assert!(!b.contains("menu.mcFeatureTitle.enabled = false"));
         assert!(patch(&b, Mode::Remove, Target::All, "").is_err());
+    }
+    #[test]
+    fn accepts_ffdec_whitespace_in_featured_signature() {
+        for candidate in [
+            "function setFeatured (info) { _root.mcFeatureTitle.text = info; }",
+            "setFeatured = function (info) { _root.mcFeatureTitle.text = info; };",
+            "setFeatured=function(info) { _root.mcFeatureTitle.text = info; };",
+        ] {
+            assert!(has_definition(candidate));
+            assert!(patch(candidate, Mode::Hide, Target::Title, "").is_ok());
+        }
+        assert!(!has_definition("function another() { setFeatured(); }"));
     }
     #[test]
     fn guards_invalid_and_ambiguous_scripts() {
