@@ -672,6 +672,55 @@ pub fn import_library_plan_with_keys(
 mod tests {
     use super::*;
     #[test]
+    fn zip_compatible_legacy_import_does_not_require_rsa_keys() {
+        use std::io::Write as _;
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("LegacyGame.pak");
+        let library = temp.path().join("library");
+        fs::create_dir(&library).unwrap();
+        let mut zip = zip::ZipWriter::new(File::create(&source).unwrap());
+        zip.start_file("Models/example.cdf", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"<Character/>").unwrap();
+        zip.finish().unwrap();
+        let original = fs::read(&source).unwrap();
+
+        assert!(!has_stage2_signature_trailer(&source).unwrap());
+        let imported = import_signed_library_pak_with_keys(&library, &source, &[]).unwrap();
+        assert_eq!(imported.files, 1);
+        assert!(!imported.already_imported);
+        let snapshot = imported_library(&library).unwrap();
+        let archive = snapshot.archives.iter().find(|a| a.id == imported.id).unwrap();
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(Path::new(&archive.directory).join("asset-library.json")).unwrap()
+        ).unwrap();
+        assert_eq!(manifest["archive_format"], "legacy-zip");
+        assert_eq!(manifest["verification"], "zip-crc32");
+        assert!(manifest["public_key_sha256"].is_null());
+        assert_eq!(fs::read(&source).unwrap(), original);
+        assert!(import_signed_library_pak_with_keys(&library, &source, &[])
+            .unwrap().already_imported);
+    }
+
+    #[test]
+    fn signed_marker_cannot_fallback_to_unsigned_zip_import() {
+        use std::io::Write as _;
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("SignedCandidate.pak");
+        let library = temp.path().join("library");
+        fs::create_dir(&library).unwrap();
+        let mut zip = zip::ZipWriter::new(File::create(&source).unwrap());
+        zip.start_file("foo.txt", zip::write::SimpleFileOptions::default()).unwrap();
+        zip.write_all(b"data").unwrap();
+        zip.set_raw_comment(vec![0u8; 2320]);
+        zip.finish().unwrap();
+        assert!(has_stage2_signature_trailer(&source).unwrap());
+        assert!(import_signed_library_pak_with_keys(&library, &source, &[])
+            .unwrap_err().contains("requires an RSA"));
+        assert!(imported_library(&library).unwrap().archives.is_empty());
+    }
+
+    #[test]
     fn recursive_collection_scan_finds_nested_paks_but_not_links_or_other_extensions() {
         let temp = tempfile::tempdir().unwrap();
         let library = temp.path().join("library");
