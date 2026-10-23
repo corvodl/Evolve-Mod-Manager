@@ -314,6 +314,7 @@
         }
         const runtime = window.RufflePlayer.newest();
         const player = runtime.createPlayer();
+        let requestOriginalVideo = async () => {};
         const stageElement = document.getElementById("stage");
         const videoElement = document.getElementById("background-video");
         // The CRI USM derivative is visual background only. All pointer
@@ -434,6 +435,10 @@
                         renderOriginalEvents();
                     }
                     show("Original Flash button " + (parts[1] || "?") + " fired condition " + (parts[2] || "?") + ". Native handler mapping remains unverified.");
+                } else if (line.startsWith("evolve-video:")) {
+                    // The original movie called updateVideo(name). Its wrapper
+                    // traced the exact name, without changing the Flash function.
+                    void requestOriginalVideo(line.slice("evolve-video:".length), "original ActionScript");
                 } else if (/error|missing|undefined|failed/i.test(line)) {
                     show("Original ActionScript trace: " + line, true);
                 }
@@ -444,6 +449,80 @@
         // Ruffle's allowScriptAccess mechanism.
         const report = await sourceLoad;
         const hasVideo = configureMainMenuVideo(report);
+        const submenuEntries = report?.background_video?.submenus?.entries || {};
+        const videoRequests = new Set(["modeselect", "options", "founderspopup", "arena", "hunt"]);
+        const videoElementSource = document.getElementById("background-video");
+        let videoSequence = 0;
+        const playVideoState = (state) => {
+            const file = String(state?.file || "");
+            if (!state || state.playable !== true ||
+                !/^(?:menu-background|submenu-video-(?:modeselect|options|founderspopup|arena|hunt))\.(?:mp4|webm)$/.test(file)) {
+                videoElementSource.pause();
+                videoElementSource.removeAttribute("src");
+                videoElementSource.load();
+                videoElementSource.hidden = true;
+                return false;
+            }
+            if (!videoElementSource.src.endsWith("/" + file)) {
+                videoElementSource.pause();
+                videoElementSource.src = "./" + file;
+                videoElementSource.load();
+            }
+            if (!linkedPlayer) videoElementSource.hidden = false;
+            videoElementSource.play().catch(error => {
+                show("Original background video playback blocked: " + String(error), true);
+            });
+            return true;
+        };
+        const menuVideoForGroup = group => {
+            const key = String(group || "").toLowerCase();
+            if (["training", "tutorials", "singleplayer", "npe"].includes(key)) return "modeselect";
+            if (key === "options" || key === "settings") return "options";
+            if (key === "founderspopup" || key === "founders") return "founderspopup";
+            if (key === "arena" || key === "hunt") return key;
+            if (key === "main" || key === "root" || key === "extras") return "main";
+            return null;
+        };
+        requestOriginalVideo = async (name, source = "original source menu") => {
+            const key = String(name || "").trim().toLowerCase();
+            const sequence = ++videoSequence;
+            if (["main", "mainmenu", "root", "mainmenu_goliath"].includes(key)) {
+                const restored = playVideoState(report.background_video);
+                if (!restored) show("Original Goliath video is unavailable; no replacement chosen.", true);
+                return restored;
+            }
+            if (!videoRequests.has(key)) {
+                show("Original menu requested an unsupported background '" +
+                     key.slice(0, 60) + "'. No substitute video selected.", true);
+                return false;
+            }
+            // Never retain a stale Goliath frame while waiting for a requested
+            // original clip, and never choose a guessed ambient/character video.
+            videoElementSource.pause();
+            videoElementSource.hidden = true;
+            try {
+                const response = await fetch("./submenu-video/" + key + ".json", {cache: "no-store"});
+                if (!response.ok) throw new Error("Local original-video endpoint unavailable");
+                const state = await response.json();
+                if (sequence !== videoSequence) return false; // A later menu request won.
+                if (!playVideoState(state)) {
+                    show(key + ": " + String(state.status || "Original submenu video is unavailable"), true);
+                    return false;
+                }
+                show("Background switched to " + key + " from " + source +
+                     " using " + String(state.source?.source_member || "verified videos.pak") + ".");
+                return true;
+            } catch (error) {
+                if (sequence === videoSequence) {
+                    show("Cannot play original " + key + " background: " + String(error), true);
+                }
+                return false;
+            }
+        };
+        const followSourceVideo = group => {
+            const key = menuVideoForGroup(group);
+            if (key) void requestOriginalVideo(key, "source menu transition");
+        };
         const auditButton = document.getElementById("audit-assets");
         auditButton.disabled = !report;
         auditButton.addEventListener("click", async () => {
@@ -567,8 +646,10 @@
             // Do not let player chrome consume rollover/hover hit tests.
             unmuteOverlay: "hidden",
             splashScreen: false,
-            wmode: hasVideo ? "transparent" : "opaque",
-            backgroundColor: hasVideo ? null : "#000000",
+            wmode: (hasVideo || Number(report?.background_video?.submenus?.available) > 0) ?
+                "transparent" : "opaque",
+            backgroundColor: (hasVideo || Number(report?.background_video?.submenus?.available) > 0) ?
+                null : "#000000",
             scale: "showAll",
             letterbox: "on",
             // CryEngine implements img:// for dynamic menu card artwork.
@@ -676,6 +757,7 @@
                     "evolvePreview_pushSourceMenu", rowsForGroup(group));
                 if (result !== true) throw new Error("Flash callback unavailable");
                 sourceMenuStack.push(group);
+                followSourceVideo(group);
                 show("Original Flash menu state pushed: " + group +
                      ". Native game-service commands remain disabled.");
                 return true;
@@ -694,6 +776,7 @@
                 if (result !== true) throw new Error("Original goBack unavailable");
                 sourceMenuStack.pop();
                 updateSourceGroup(sourceMenuStack[sourceMenuStack.length - 1]);
+                followSourceVideo(sourceMenuStack[sourceMenuStack.length - 1]);
                 show("Original Flash goBack invoked. Visual transition requires Ruffle verification.");
                 return true;
             } catch (error) {
@@ -741,6 +824,7 @@
                         sourceMenuStack.splice(1);
                         setPreviewMenu("Main");
                         updateSourceGroup("Main");
+                        followSourceVideo("Main");
                         show((automatic ? "Automatic" : "Manual") +
                             " original " + originalStartup + " invoked with source menu rows. Offline preview state; game services remain unavailable.");
                         return;
@@ -766,6 +850,7 @@
             player.ruffle().reload().then(async () => {
                 sourceMenuStack.splice(1);
                 setPreviewMenu("Main");
+                followSourceVideo("Main");
                 show("Movie reset in the same window.");
                 if (canInitialize) await initializeOriginal(true);
             }).catch(e => show("Movie reset failed: " + String(e), true));
@@ -783,6 +868,7 @@
                     await player.ruffle().reload();
                     sourceMenuStack.splice(1);
                     setPreviewMenu("Main");
+                    followSourceVideo("Main");
                     show("Movie reset in this window.");
                 } else if (action.kind === "call") {
                     returnToOriginalMenu();
