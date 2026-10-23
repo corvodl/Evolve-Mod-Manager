@@ -589,7 +589,10 @@ pub(crate) fn submenu_catalog(
                 );
             }
             Err(error) => {
-                status.insert(key.to_owned(), json!({"available": false, "status": error.to_string()}));
+                status.insert(
+                    key.to_owned(),
+                    json!({"available": false, "status": error.to_string()}),
+                );
             }
         }
     }
