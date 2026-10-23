@@ -1,3 +1,10 @@
+## Developer health candidate discovery (next PR after Nightly 39)
+
+- Add read-only, process-bound health candidate finding inside a **single 4 KiB page containing a user-specified address**. It decodes float32 or unsigned 4-byte integer fields, with optional exact expected health and subsequent Decreased/Unchanged/Increased/Changed refinements as combat health changes. Maximum 1024 initial aligned candidates, first 20 shown. The old Python inspector provides the reference approach, not validated Stage 2 actor offsets.
+- Query the actual running Evolve.exe executable path on Windows instead of assuming `bin64_SteamRetail/Evolve.exe` under a configured game root. Query its module base when permitted and accept `Evolve.exe+0xOFFSET` syntax in the read-only inspector and bounded scanners. Missing module-base information fails closed for that syntax.
+- This is **candidate detection**, not automatic actor/class recognition. No stable actor signatures, struct layouts, health offsets, or authenticated offline session verifier are available yet. Matching a decreasing value cannot prove it belongs to the monster. Real offline Evolve tests and version-specific class/health identification remain necessary.
+- No writes, memory injection, spawn commands, persistent memory results, or network activity are added. All candidates are invalidated after process re-detection, address/value edits or developer locking. Windows acceptance still pending.
+
 # Public Rust manager parity — continuation notes
 
 ## 2026-10-23 — Developer runtime phase 2/3 previews (new PR)
