@@ -726,6 +726,52 @@ mod tests {
         assert!(missing["status"].as_str().unwrap().contains(intro));
     }
     #[test]
+    fn exact_submenu_members_are_discovered_and_switched_without_guessing() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let id = "11111111111111111111";
+        let folder = root.join(format!("videos.pak__{id}"));
+        let front = folder.join("files/front_end");
+        fs::create_dir_all(&front).unwrap();
+        let usm = b"CRID\0\0\0\0\0\0\0\0";
+        fs::write(front.join("lobby.usm"), usm).unwrap();
+        fs::write(front.join("options.usm"), usm).unwrap();
+        fs::write(front.join("mainmenu_kraken.usm"), usm).unwrap();
+        fs::write(front.join("lobby.preview.mp4"), b"\0\0\0\x18ftypisom").unwrap();
+        fs::write(folder.join("asset-library.json"), serde_json::to_vec(&json!({
+            "version": 1, "name": "videos.pak", "source": "/game/videos.pak",
+            "entries": [
+                {"path": "front_end/lobby.usm", "bytes": usm.len()},
+                {"path": "front_end/options.usm", "bytes": usm.len()},
+                {"path": "front_end/mainmenu_kraken.usm", "bytes": usm.len()}
+            ]
+        })).unwrap()).unwrap();
+        fs::write(root.join("build-collections.json"), serde_json::to_vec(&json!({
+            "version": 1, "builds": {"stage2": {
+                "label": "Modded Stage 2",
+                "members": {id: {}}
+            }}
+        })).unwrap()).unwrap();
+        let (summary, catalog) = submenu_catalog(Some(root), Some("Modded Stage 2"), "");
+        assert_eq!(summary["available"], 2);
+        assert_eq!(summary["entries"]["modeselect"]["available"], true);
+        assert_eq!(summary["entries"]["options"]["available"], true);
+        assert_eq!(summary["entries"]["arena"]["available"], false);
+        let scratch = tempfile::tempdir().unwrap();
+        let mode = catalog.stage("modeselect", scratch.path());
+        assert_eq!(mode["playable"], true);
+        assert_eq!(mode["file"], "submenu-video-modeselect.mp4");
+        assert_eq!(fs::read(scratch.path().join("submenu-video-modeselect.mp4")).unwrap(),
+            b"\0\0\0\x18ftypisom");
+        assert_eq!(catalog.stage("options", scratch.path())["playable"], false);
+        assert_eq!(catalog.stage("arena", scratch.path())["playable"], false);
+        assert_eq!(catalog.stage("mainmenu_kraken", scratch.path())["playable"], false);
+        assert_eq!(catalog.stage("../secrets", scratch.path())["playable"], false);
+        let (wrong_build, _) = submenu_catalog(Some(root), Some("Legacy"), "");
+        assert_eq!(wrong_build["available"], 0);
+    }
+
+    #[test]
     fn missing_build_never_fabricates_a_background() {
         let temp = tempfile::tempdir().unwrap();
         let status = stage_main_menu(None, None, temp.path(), "");
