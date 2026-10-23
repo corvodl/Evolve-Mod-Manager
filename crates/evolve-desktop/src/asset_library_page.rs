@@ -184,56 +184,89 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 .size(12).style(design::muted),
         ].spacing(10);
         if picking {
-            importer = importer.push(text("Scanning selected files and building the import preview…")
-                .size(13).style(design::muted));
+            importer = importer.push(
+                text("Scanning selected files and building the import preview…")
+                    .size(13)
+                    .style(design::muted),
+            );
         }
         if let Some(plan) = &state.library_import_plan {
-            importer = importer.push(text(format!(
-                "{} PAKs found  •  {:.2} GiB packed  •  {} previously imported",
-                plan.files.len(), plan.packed_bytes as f64 / 1_073_741_824.0,
-                plan.already_imported,
-            )).size(14));
+            importer = importer.push(
+                text(format!(
+                    "{} PAKs found  •  {:.2} GiB packed  •  {} previously imported",
+                    plan.files.len(),
+                    plan.packed_bytes as f64 / 1_073_741_824.0,
+                    plan.already_imported,
+                ))
+                .size(14),
+            );
             let mut filenames = column![];
             for path in plan.files.iter().take(10) {
-                filenames = filenames.push(text(path.display().to_string())
-                    .size(11).style(design::muted));
+                filenames = filenames.push(
+                    text(path.display().to_string())
+                        .size(11)
+                        .style(design::muted),
+                );
             }
             if plan.files.len() > 10 {
-                filenames = filenames.push(text(format!(
-                    "… plus {} more PAKs", plan.files.len() - 10,
-                )).size(12).style(design::muted));
+                filenames = filenames.push(
+                    text(format!("… plus {} more PAKs", plan.files.len() - 10,))
+                        .size(12)
+                        .style(design::muted),
+                );
             }
-            importer = importer.push(container(filenames.spacing(3))
-                .padding(8).width(Fill).style(|theme| container::Style {
-                    background: Some(Background::Color(design::field(theme))),
-                    ..container::Style::default()
-                }));
+            importer = importer.push(
+                container(filenames.spacing(3))
+                    .padding(8)
+                    .width(Fill)
+                    .style(|theme| container::Style {
+                        background: Some(Background::Color(design::field(theme))),
+                        ..container::Style::default()
+                    }),
+            );
             importer = importer.push(
                 row![
                     design::button(format!("Confirm import of {} PAKs", plan.files.len()))
                         .style(design::primary)
                         .on_press_maybe((!disabled).then_some(Message::LibraryImportStart)),
                     text("Large full-game imports can use significant disk space.")
-                        .size(12).style(design::muted),
-                ].spacing(12)
+                        .size(12)
+                        .style(design::muted),
+                ]
+                .spacing(12),
             );
         }
         if importing {
-            let count = state.library_import_progress.as_ref()
-                .map_or(0, |progress| progress.load(std::sync::atomic::Ordering::Relaxed));
-            let total = state.library_import_plan.as_ref().map_or(0, |plan| plan.files.len());
-            importer = importer.push(row![
-                text(format!("Importing: {count} / {total} archives completed")).size(13),
-                design::button("Cancel after current PAK")
-                    .on_press(Message::LibraryImportCancel),
-            ].spacing(12));
+            let count = state
+                .library_import_progress
+                .as_ref()
+                .map_or(0, |progress| {
+                    progress.load(std::sync::atomic::Ordering::Relaxed)
+                });
+            let total = state
+                .library_import_plan
+                .as_ref()
+                .map_or(0, |plan| plan.files.len());
+            importer = importer.push(
+                row![
+                    text(format!("Importing: {count} / {total} archives completed")).size(13),
+                    design::button("Cancel after current PAK")
+                        .on_press(Message::LibraryImportCancel),
+                ]
+                .spacing(12),
+            );
         }
-        importer = importer.push(row![
-            design::button("Manage Asset Library storage").style(design::text_button)
-                .on_press_maybe((!disabled).then_some(Message::OpenLibrarySettings)),
-            design::button("Advanced archive tools in Modding").style(design::text_button)
-                .on_press(Message::Navigate(Page::Files)),
-        ].spacing(8));
+        importer = importer.push(
+            row![
+                design::button("Manage Asset Library storage")
+                    .style(design::text_button)
+                    .on_press_maybe((!disabled).then_some(Message::OpenLibrarySettings)),
+                design::button("Advanced archive tools in Modding")
+                    .style(design::text_button)
+                    .on_press(Message::Navigate(Page::Files)),
+            ]
+            .spacing(8),
+        );
         layout = layout.push(panel(container(importer.spacing(8)).padding(14)));
     }
 
