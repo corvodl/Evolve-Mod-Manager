@@ -1,3 +1,11 @@
+## Original featured promotion and Training submenu visibility (diagnostic follow-up)
+
+The main menu now renders its original PLAY/TRAINING/CHALLENGES/OPTIONS/EXTRAS/EXIT text with the Goliath background. The empty outlined controls at bottom right belong to the featured promotion. The unmodified ActionScript preview does not have the game's original live `setFeatured` offer payload or account/network initialization, so source-authored outlines can exist without their title or TRY/BUY content. The Featured Hide/Remove/Text modifications are **opt-in project edits only**; they must never silently apply to the default source preview. Do not fabricate an offer or assume a data source from these screenshots alone.
+
+Training still reports 24 staged PNGs and zero requests from the source `MovieClipLoader`. To distinguish `shouldUseImageButtons` refusing its menu branch from `setupMenuBtns` never constructing the image clips, the temporary same-build Flash now exposes two *read-only* source-verified probes: the original `shouldUseImageButtons()` result, and pending `menuButtonData.length`. **Check preview assets** prints those values alongside the original request counters and active UI_Data group. It neither starts a match nor changes original game/PAK assets. Image data staging was already successful and should not be repeated without proof of an actual image request/decode failure.
+
+This is diagnostic instrumentation, not confirmation that Training cards or featured content now display. Use the resulting branch/row/request counts in the actual Ruffle build to choose the next fix: original menu population/clip construction versus image-loader callbacks. Native game promotion data remains unavailable.
+
 # Scaleform GFX editing and layout previews
 
 The public Rust/Iced manager uses the private Qt manager's GFX editor as the
