@@ -45,7 +45,7 @@ impl Probe {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct WriteResult {
     pub address: usize,
     pub previous: f32,
