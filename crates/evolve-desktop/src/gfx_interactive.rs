@@ -1766,12 +1766,9 @@ pub fn launch_live(
         // Real card clips are loaded with MovieClipLoader, not ExportAssets.
         // Convert only the verified card URL suffixes to a browser-decodable
         // PNG in this temporary SWF, preserving authored focus/hover logic.
-        let (browser_movie, png_paths) = gfx_external_textures::route_mode_image_png_paths(
-            &routed_movie,
-            &names,
-        )?;
-        fs::write(scratch.path().join("movie.swf"), &browser_movie)
-            .map_err(|e| e.to_string())?;
+        let (browser_movie, png_paths) =
+            gfx_external_textures::route_mode_image_png_paths(&routed_movie, &names)?;
+        fs::write(scratch.path().join("movie.swf"), &browser_movie).map_err(|e| e.to_string())?;
         mode_images["flash_bitmap_linkages"] = serde_json::json!(linkages);
         mode_images["flash_linkage_skips"] = serde_json::json!(skipped_linkages);
         mode_images["source_movieclip_url_rewrites"] = serde_json::json!(loadclip_urls);
