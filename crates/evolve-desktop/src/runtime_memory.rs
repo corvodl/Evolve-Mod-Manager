@@ -17,12 +17,13 @@ fn parse_tasklist(output: &str) -> Vec<u32> {
         // /FO CSV quotes the image name and PID; never parse the localized
         // memory-usage field (which may contain thousands separators).
         let columns: Vec<&str> = line.trim().split('"').collect();
-        if columns.len() > 4 && columns[1].eq_ignore_ascii_case("Evolve.exe") {
-            if let Ok(pid) = columns[3].parse::<u32>() {
-                if pid != 0 && !pids.contains(&pid) {
-                    pids.push(pid);
-                }
-            }
+        if columns.len() > 4
+            && columns[1].eq_ignore_ascii_case("Evolve.exe")
+            && let Ok(pid) = columns[3].parse::<u32>()
+            && pid != 0
+            && !pids.contains(&pid)
+        {
+            pids.push(pid);
         }
     }
     pids
@@ -234,7 +235,7 @@ mod tests {
         assert!(parse_hex("0xZZ").is_err());
         assert_eq!(parse_offsets("0x10,0x20").unwrap(), vec![16, 32]);
         assert!(parse_offsets("0x10,").is_err());
-        assert!(parse_offsets(&vec!["0x10"; 9].join(",")).is_err());
+        assert!(parse_offsets(&["0x10"; 9].join(",")).is_err());
         assert!(parse_offsets("0x10001").is_err());
     }
 
