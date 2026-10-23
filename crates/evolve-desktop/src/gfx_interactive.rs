@@ -1960,6 +1960,7 @@ mod tests {
             ("openScreen", open_arity),
             ("clearMenuState", 1),
             ("pushMenuState", 0),
+            ("shouldUseImageButtons", 0),
             ("showEngagementPrompt", 1u16),
             ("transitionToMainMenu", 0),
             ("goBack", 0),
@@ -2211,6 +2212,8 @@ mod tests {
             "MODE_NAME_TRAINING",
             "evolvePreview_pushSourceMenu",
             "evolveCallback_pushSourceMenu",
+            "evolvePreview_probeImageButtons",
+            "evolvePreview_probeMenuRows",
         ] {
             assert!(patched.windows(name.len()).any(|w| w == name.as_bytes()));
         }
