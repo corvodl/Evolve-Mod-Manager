@@ -36,7 +36,10 @@ pub(super) fn find_aob(
     if bytes.len() > MAX_WINDOW {
         return Err("Signature search cannot exceed 256 KiB".into());
     }
-    if signature.is_empty() || signature.len() > MAX_PATTERN || signature.iter().all(Option::is_none) {
+    if signature.is_empty()
+        || signature.len() > MAX_PATTERN
+        || signature.iter().all(Option::is_none)
+    {
         return Err("Invalid signature".into());
     }
     if signature.len() > bytes.len() {
@@ -44,7 +47,11 @@ pub(super) fn find_aob(
     }
     let mut hits = Vec::new();
     for i in 0..=bytes.len() - signature.len() {
-        if signature.iter().enumerate().all(|(j, expected)| expected.is_none_or(|v| bytes[i + j] == v)) {
+        if signature
+            .iter()
+            .enumerate()
+            .all(|(j, expected)| expected.is_none_or(|v| bytes[i + j] == v))
+        {
             let at = base.checked_add(i).ok_or("Address overflow")?;
             hits.push(at);
             if hits.len() == MAX_RESULTS {
@@ -79,7 +86,10 @@ mod tests {
     #[test]
     fn result_count_is_limited_and_address_overflow_fails_closed() {
         let pattern = parse_aob("00").unwrap();
-        assert_eq!(find_aob(&vec![0; 400], 0x1000, &pattern).unwrap().len(), 256);
+        assert_eq!(
+            find_aob(&vec![0; 400], 0x1000, &pattern).unwrap().len(),
+            256
+        );
         assert!(find_aob(&[0, 0], usize::MAX, &pattern).is_err());
     }
 }
