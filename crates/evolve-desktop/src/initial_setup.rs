@@ -106,11 +106,19 @@ fn relative_paks(game: &Path) -> Result<Vec<(String, PathBuf, u64)>, String> {
             if kind.is_dir() {
                 stack.push((entry.path(), depth + 1));
             } else if kind.is_file()
-                && entry.path().extension().is_some_and(|ext| ext.eq_ignore_ascii_case("pak"))
+                && entry
+                    .path()
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("pak"))
             {
                 let relative = entry.path().strip_prefix(game).map_err(|e| e.to_string())?;
-                let virtual_path = relative.to_str().ok_or("Non-UTF8 PAK path")?.replace('\\', "/");
-                if virtual_path.split('/').any(|p| p.is_empty() || p == "." || p == "..")
+                let virtual_path = relative
+                    .to_str()
+                    .ok_or("Non-UTF8 PAK path")?
+                    .replace('\\', "/");
+                if virtual_path
+                    .split('/')
+                    .any(|p| p.is_empty() || p == "." || p == "..")
                     || !seen.insert(virtual_path.to_ascii_lowercase())
                 {
                     return Err(format!("Unsafe or case-colliding PAK path: {virtual_path}"));
@@ -182,7 +190,9 @@ pub fn create(
     let original_shim = game.join("bin64_SteamRetail").join("inject.dll");
     let shim = fs::read(&original_shim).map_err(|e| e.to_string())?;
     if shim.len() != 4096 {
-        return Err("Installed inject.dll has an unsupported size; no signing setup created".into());
+        return Err(
+            "Installed inject.dll has an unsupported size; no signing setup created".into(),
+        );
     }
     let original_key = &shim[0x870..0x870 + 140];
     // RSA decoding and DER re-encoding are checked by prepare_client_hook.
@@ -209,7 +219,8 @@ pub fn create(
         .checked_mul(if keep_original_snapshots { 2 } else { 1 })
         .and_then(|size| size.checked_add(MIN_FREE_RESERVE))
         .ok_or("Estimated signing-stage disk requirement overflow")?;
-    let free = available_space(&storage).map_err(|e| format!("Cannot check free disk space: {e}"))?;
+    let free =
+        available_space(&storage).map_err(|e| format!("Cannot check free disk space: {e}"))?;
     if free < required {
         return Err(format!(
             "First-run signing setup requires {:.1} GiB free including a 1 GiB reserve; {:.1} GiB available. Disable optional original snapshots or choose another Mod Data Location.",
@@ -252,14 +263,17 @@ pub fn create(
                 if fs::copy(source, &target).map_err(|e| e.to_string())? != *bytes
                     || sha256(&target)? != original_sha
                 {
-                    return Err(format!("Original snapshot changed while copying {relative}"));
+                    return Err(format!(
+                        "Original snapshot changed while copying {relative}"
+                    ));
                 }
                 target
             } else {
                 source.clone()
             };
             let basename = Path::new(relative)
-                .file_name().and_then(|p| p.to_str())
+                .file_name()
+                .and_then(|p| p.to_str())
                 .ok_or("Invalid original PAK name")?;
             let kind = if inspect_signed_pak(&authored, &original_public, basename).is_ok() {
                 let destination = stage.join("paks").join(relative);
@@ -300,12 +314,8 @@ pub fn create(
             return Err("No signed Stage 2 PAKs were found in the installed game".into());
         }
         let shim_dst = stage.join("inject-custom.dll");
-        let shim_report = prepare_client_hook(
-            &original_shim,
-            &original_public,
-            &public,
-            &shim_dst,
-        ).map_err(|e| format!("Custom offline injector preparation failed: {e}"))?;
+        let shim_report = prepare_client_hook(&original_shim, &original_public, &public, &shim_dst)
+            .map_err(|e| format!("Custom offline injector preparation failed: {e}"))?;
         json_new(
             &stage.join("rekey_plan.json"),
             &serde_json::json!({
@@ -353,7 +363,9 @@ pub fn create(
         // original/custom PAK signatures. Do not trust a created manifest.
         let verified = launcher_bridge::inspect_existing_launcher(&stage, &swap)?;
         if verified.archive_count != signed || verified.game != game {
-            return Err("Generated setup failed final private-launcher compatibility checks".into());
+            return Err(
+                "Generated setup failed final private-launcher compatibility checks".into(),
+            );
         }
         json_new(
             &output.join("refresh_report.json"),
@@ -387,7 +399,12 @@ pub fn create(
         });
         let _ = json_new(&output.join("setup_incomplete.json"), &report);
     }
-    result.map_err(|error| format!("{error}. Incomplete local setup retained at {}", output.display()))
+    result.map_err(|error| {
+        format!(
+            "{error}. Incomplete local setup retained at {}",
+            output.display()
+        )
+    })
 }
 
 #[cfg(test)]
