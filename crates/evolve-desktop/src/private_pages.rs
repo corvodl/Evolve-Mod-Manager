@@ -323,11 +323,46 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
                     .on_press_maybe((!state.runtime_checking).then_some(Message::RuntimeDetect)),
                 text(state.runtime_snapshot.as_ref().map(|s| s.status.as_str()).unwrap_or("Not scanned")).size(12).style(design::muted),
                 text(state.runtime_snapshot.as_ref().map(|s| s.executable.as_str()).unwrap_or("Executable not checked")).size(12).style(design::muted),
-                design::text_input("Address (0x...)", &state.runtime_address).on_input(Message::RuntimeAddressChanged),
+                design::text_input("Address (0x... or Evolve.exe+0x...)", &state.runtime_address).on_input(Message::RuntimeAddressChanged),
                 design::text_input("Pointer offsets (optional: 0x10,0x20)", &state.runtime_offsets).on_input(Message::RuntimeOffsetsChanged),
                 design::button("Read 32 bytes")
                     .on_press_maybe((!state.runtime_checking && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some()).then_some(Message::RuntimeRead)),
                 text(state.runtime_result.as_str()).size(12).style(design::muted),
+                text("Stage 2 Goliath armor / guided Float32 finder").size(16),
+                text("Read-only full-process search for values near the observed internal full-armor scale of ~1000. Requires full armor at the first scan. No debugger, pointer scan, injection, or memory writes. Match verification is behavioral, not an actor identity guarantee.").size(12).style(design::muted),
+                iced::widget::checkbox(state.armor_offline_confirmed).label("I am in a local OFFLINE match; disable when online").on_toggle(Message::ArmorOfflineChanged),
+                design::button("Find full-armor Float32 candidates")
+                    .on_press_maybe((state.armor_offline_confirmed && !state.runtime_checking && state.runtime_snapshot.as_ref().and_then(|s|s.pid).is_some()).then_some(Message::ArmorBegin)),
+                text("After the scan: lose armor and press Damage; stand with constant armor and press Stable; feed to restore armor and press Feed. Keep armor below maximum when feeding.").size(12).style(design::muted),
+                row![
+                    design::button("Damage").on_press_maybe((state.armor_offline_confirmed && !state.runtime_checking && state.armor_scan.is_some()).then_some(Message::ArmorRefine(super::runtime_armor::Step::Damage))),
+                    design::button("Stable").on_press_maybe((state.armor_offline_confirmed && !state.runtime_checking && state.armor_scan.is_some()).then_some(Message::ArmorRefine(super::runtime_armor::Step::Stable))),
+                    design::button("Feed").on_press_maybe((state.armor_offline_confirmed && !state.runtime_checking && state.armor_scan.is_some()).then_some(Message::ArmorRefine(super::runtime_armor::Step::Feed))),
+                ].spacing(8),
+                text(state.armor_report.as_str()).size(12).style(design::muted),
+                text(state.armor_live.map(|v|format!("Live armor (internal units): {v:.2}")).unwrap_or_else(||"Live armor: awaiting verified candidate".into())).size(13),
+                text("Health candidates  /  Read-only").size(16),
+                text("Uses the hexadecimal address above to inspect one containing 4 KiB page. It cannot identify actors or find health across the entire game yet. Optional expected HP narrows initial candidates; blank starts an unknown-value scan. Use only in an offline match.").size(12).style(design::muted),
+                design::text_input("Expected health (optional, e.g. 1500)", &state.runtime_health_value)
+                    .on_input(Message::RuntimeHealthValueChanged),
+                row![
+                    design::button("Find Float candidates")
+                        .on_press_maybe((!state.runtime_checking && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some()).then_some(Message::RuntimeHealthStart(super::runtime_health::Kind::Float))),
+                    design::button("Find 4-Byte candidates")
+                        .on_press_maybe((!state.runtime_checking && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some()).then_some(Message::RuntimeHealthStart(super::runtime_health::Kind::Integer))),
+                ].spacing(8),
+                text("Take damage in-game, then narrow candidates with Decreased. Use Unchanged when no damage occurred. Candidates are NOT confirmed health or actors.").size(12).style(design::muted),
+                row![
+                    design::button("Decreased")
+                        .on_press_maybe((!state.runtime_checking && state.runtime_health_scan.is_some()).then_some(Message::RuntimeHealthRefine(super::runtime_health::Filter::Decreased))),
+                    design::button("Unchanged")
+                        .on_press_maybe((!state.runtime_checking && state.runtime_health_scan.is_some()).then_some(Message::RuntimeHealthRefine(super::runtime_health::Filter::Unchanged))),
+                    design::button("Increased")
+                        .on_press_maybe((!state.runtime_checking && state.runtime_health_scan.is_some()).then_some(Message::RuntimeHealthRefine(super::runtime_health::Filter::Increased))),
+                    design::button("Changed")
+                        .on_press_maybe((!state.runtime_checking && state.runtime_health_scan.is_some()).then_some(Message::RuntimeHealthRefine(super::runtime_health::Filter::Changed))),
+                ].spacing(8),
+                text(state.runtime_health_report.as_str()).size(12).style(design::muted),
                 text("Phase 2  /  Offline runtime controls").size(16),
                 text("Preview typed field changes against a manually entered address above. Health/cooldowns are f32, teleport is X,Y,Z and weapon reference is 0x... . These are BYTE PREVIEWS ONLY; live edits remain locked until verified offline and exact-build actor layouts are available.").size(12).style(design::muted),
                 design::text_input("Desired value (e.g. 100000 / 0 / 1,2,3 / 0x10008)", &state.runtime_phase2_value)

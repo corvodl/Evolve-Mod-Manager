@@ -38,7 +38,9 @@ mod modding_page;
 mod modding_projects;
 mod orientation_gizmo;
 mod private_pages;
+mod runtime_armor;
 mod runtime_experiments;
+mod runtime_health;
 mod runtime_memory;
 mod runtime_signatures;
 mod selection;
@@ -338,6 +340,16 @@ struct State {
     runtime_address: String,
     runtime_offsets: String,
     runtime_result: String,
+    runtime_health_value: String,
+    runtime_health_scan: Option<runtime_health::Scan>,
+    runtime_health_report: String,
+    armor_scan: Option<runtime_armor::Scan>,
+    armor_report: String,
+    armor_offline_confirmed: bool,
+    armor_live: Option<f32>,
+    armor_cancel: Option<Arc<AtomicBool>>,
+    armor_generation: u64,
+    armor_pid_seen: Option<u32>,
     runtime_phase2_value: String,
     runtime_phase3_value: String,
     runtime_signature: String,
@@ -1603,6 +1615,19 @@ enum Message {
     RuntimeOffsetsChanged(String),
     RuntimeRead,
     RuntimeReadFinished(Result<String, String>),
+    RuntimeHealthValueChanged(String),
+    RuntimeHealthStart(runtime_health::Kind),
+    RuntimeHealthStarted(Result<runtime_health::Scan, String>),
+    RuntimeHealthRefine(runtime_health::Filter),
+    RuntimeHealthRefined(Result<runtime_health::Scan, String>),
+    ArmorOfflineChanged(bool),
+    ArmorBegin,
+    ArmorRefine(runtime_armor::Step),
+    ArmorResult(u64, Result<runtime_armor::Scan, String>),
+    ArmorPulse,
+    ArmorRecoveryPoll,
+    ArmorRecovered(Option<u32>),
+    ArmorLive(u64, Result<Option<f32>, String>),
     RuntimePhase2ValueChanged(String),
     RuntimePhase3ValueChanged(String),
     RuntimeSignatureChanged(String),
@@ -2995,11 +3020,192 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::RuntimeAddressChanged(value) => {
             if state.developer_unlocked && value.len() <= 32 {
                 state.runtime_address = value;
+                state.runtime_health_scan = None;
+                state.runtime_health_report.clear();
             }
         }
         Message::RuntimeOffsetsChanged(value) => {
             if state.developer_unlocked && value.len() <= 128 {
                 state.runtime_offsets = value;
+            }
+        }
+        Message::ArmorOfflineChanged(confirmed) => {
+            state.armor_offline_confirmed = confirmed;
+            if confirmed {
+                state.armor_pid_seen = state.runtime_snapshot.as_ref().and_then(|s| s.pid);
+            }
+            if !confirmed {
+                if let Some(cancel) = &state.armor_cancel {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+                state.armor_cancel = None;
+                state.armor_scan = None;
+                state.armor_live = None;
+                state.armor_generation = state.armor_generation.wrapping_add(1);
+                state.armor_report =
+                    "Offline authorization withdrawn; armor monitoring stopped.".into();
+            }
+        }
+        Message::ArmorBegin => {
+            if !state.developer_unlocked || state.runtime_checking || !state.armor_offline_confirmed
+            {
+                return Task::none();
+            }
+            let Some(snapshot) = state.runtime_snapshot.clone() else {
+                return Task::none();
+            };
+            state.runtime_checking = true;
+            state.armor_scan = None;
+            state.armor_live = None;
+            state.armor_report = "Scanning writable Float32 memory (bounded to 8 GiB)...".into();
+            state.armor_generation = state.armor_generation.wrapping_add(1);
+            let generation = state.armor_generation;
+            let cancel = Arc::new(AtomicBool::new(false));
+            state.armor_cancel = Some(cancel.clone());
+            let root = state.preferences.game_storage_root.clone();
+            return Task::perform(
+                async move {
+                    let result = tokio::task::spawn_blocking(move || {
+                        runtime_armor::discover(&snapshot, &root, true, &cancel)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Armor worker failed: {e}")));
+                    (generation, result)
+                },
+                |(g, result)| Message::ArmorResult(g, result),
+            );
+        }
+        Message::ArmorRefine(step) => {
+            if !state.developer_unlocked || state.runtime_checking || !state.armor_offline_confirmed
+            {
+                return Task::none();
+            }
+            let (Some(snapshot), Some(previous)) =
+                (state.runtime_snapshot.clone(), state.armor_scan.clone())
+            else {
+                return Task::none();
+            };
+            state.runtime_checking = true;
+            state.armor_report = "Filtering armor candidates...".into();
+            let generation = state.armor_generation;
+            let cancel = Arc::new(AtomicBool::new(false));
+            state.armor_cancel = Some(cancel.clone());
+            let root = state.preferences.game_storage_root.clone();
+            return Task::perform(
+                async move {
+                    let result = tokio::task::spawn_blocking(move || {
+                        runtime_armor::refine(&snapshot, &root, previous, step, true, &cancel)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Armor filter failed: {e}")));
+                    (generation, result)
+                },
+                |(g, result)| Message::ArmorResult(g, result),
+            );
+        }
+        Message::ArmorResult(generation, result) => {
+            if generation != state.armor_generation
+                || !state.developer_unlocked
+                || !state.armor_offline_confirmed
+            {
+                return Task::none();
+            }
+            state.runtime_checking = false;
+            state.armor_cancel = None;
+            match result {
+                Ok(scan) => {
+                    state.armor_report = scan.describe();
+                    state.armor_scan = Some(scan);
+                }
+                Err(e) => {
+                    state.armor_scan = None;
+                    state.armor_live = None;
+                    state.armor_report = e;
+                }
+            }
+        }
+        Message::ArmorRecoveryPoll => {
+            if !state.developer_unlocked || !state.armor_offline_confirmed || state.runtime_checking
+            {
+                return Task::none();
+            }
+            let root = state.preferences.game_storage_root.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || runtime_memory::inspect(&root).pid)
+                        .await
+                        .unwrap_or(None)
+                },
+                Message::ArmorRecovered,
+            );
+        }
+        Message::ArmorRecovered(pid) => {
+            if !state.developer_unlocked || !state.armor_offline_confirmed || state.runtime_checking
+            {
+                return Task::none();
+            }
+            if state.armor_pid_seen == pid {
+                return Task::none();
+            }
+            state.armor_pid_seen = pid;
+            if let Some(cancel) = &state.armor_cancel {
+                cancel.store(true, Ordering::Relaxed);
+            }
+            state.armor_cancel = None;
+            state.armor_scan = None;
+            state.armor_live = None;
+            state.armor_generation = state.armor_generation.wrapping_add(1);
+            state.armor_report = "Evolve process changed. Looking for the new instance; refill Stage 1 Goliath armor before calibration.".into();
+            return Task::done(Message::RuntimeDetect);
+        }
+        Message::ArmorPulse => {
+            if !state.developer_unlocked || !state.armor_offline_confirmed || state.runtime_checking
+            {
+                return Task::none();
+            }
+            let Some(scan) = state.armor_scan.as_ref() else {
+                return Task::none();
+            };
+            if !scan.ready() {
+                return Task::none();
+            }
+            let (Some(snapshot), Some(scan)) =
+                (state.runtime_snapshot.clone(), state.armor_scan.clone())
+            else {
+                return Task::none();
+            };
+            let root = state.preferences.game_storage_root.clone();
+            let generation = state.armor_generation;
+            state.runtime_checking = true;
+            return Task::perform(
+                async move {
+                    let r = tokio::task::spawn_blocking(move || {
+                        runtime_armor::monitor(&snapshot, &root, &scan, true)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Armor monitoring failed: {e}")));
+                    (generation, r)
+                },
+                |(g, r)| Message::ArmorLive(g, r),
+            );
+        }
+        Message::ArmorLive(generation, result) => {
+            if generation != state.armor_generation
+                || !state.developer_unlocked
+                || !state.armor_offline_confirmed
+            {
+                return Task::none();
+            }
+            state.runtime_checking = false;
+            match result {
+                Ok(value) => state.armor_live = value,
+                Err(error) => {
+                    state.armor_live = None;
+                    state.armor_scan = None;
+                    state.armor_report = format!(
+                        "Armor address invalid ({error}). Redetect and run a fresh scan after restart."
+                    );
+                }
             }
         }
         Message::RuntimeDetect => {
@@ -3009,6 +3215,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.runtime_checking = true;
             state.runtime_snapshot = None;
             state.runtime_result.clear();
+            state.runtime_health_scan = None;
+            state.runtime_health_report.clear();
+            if let Some(cancel) = &state.armor_cancel {
+                cancel.store(true, Ordering::Relaxed);
+            }
+            state.armor_cancel = None;
+            state.armor_scan = None;
+            state.armor_live = None;
+            state.armor_generation = state.armor_generation.wrapping_add(1);
+            state.armor_report = "Process re-detection: armor candidates reset.".into();
             let root = state.preferences.game_storage_root.clone();
             return Task::perform(
                 async move {
@@ -3018,6 +3234,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             pid: None,
                             status: format!("Process detection failed: {e}"),
                             executable: "Unknown".into(),
+                            module_base: None,
                         })
                 },
                 Message::RuntimeDetected,
@@ -3026,7 +3243,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::RuntimeDetected(snapshot) => {
             state.runtime_checking = false;
             if state.developer_unlocked {
+                state.armor_pid_seen = snapshot.pid;
+                let auto = state.armor_offline_confirmed && snapshot.pid.is_some();
                 state.runtime_snapshot = Some(snapshot);
+                if auto {
+                    return Task::done(Message::ArmorBegin);
+                }
             }
         }
         Message::RuntimeRead => {
@@ -3056,6 +3278,92 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.runtime_checking = false;
             if state.developer_unlocked {
                 state.runtime_result = result.unwrap_or_else(|error| error);
+            }
+        }
+        Message::RuntimeHealthValueChanged(value) => {
+            if state.developer_unlocked && value.len() <= 32 {
+                state.runtime_health_value = value;
+                state.runtime_health_scan = None;
+                state.runtime_health_report.clear();
+            }
+        }
+        Message::RuntimeHealthStart(kind) => {
+            if !state.developer_unlocked || state.runtime_checking {
+                return Task::none();
+            }
+            let Some(snapshot) = state.runtime_snapshot.clone() else {
+                return Task::none();
+            };
+            state.runtime_checking = true;
+            state.runtime_health_scan = None;
+            state.runtime_health_report = "Scanning one read-only 4 KiB page...".into();
+            let root = state.preferences.game_storage_root.clone();
+            let address = state.runtime_address.clone();
+            let expected = state.runtime_health_value.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        runtime_health::start(&snapshot, &root, &address, &expected, kind)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Health candidate scan failed: {e}")))
+                },
+                Message::RuntimeHealthStarted,
+            );
+        }
+        Message::RuntimeHealthStarted(result) => {
+            state.runtime_checking = false;
+            if state.developer_unlocked {
+                match result {
+                    Ok(scan) => {
+                        state.runtime_health_report = scan.describe();
+                        state.runtime_health_scan = Some(scan);
+                    }
+                    Err(error) => {
+                        state.runtime_health_scan = None;
+                        state.runtime_health_report = format!("Health candidate scan: {error}");
+                    }
+                }
+            }
+        }
+        Message::RuntimeHealthRefine(filter) => {
+            if !state.developer_unlocked || state.runtime_checking {
+                return Task::none();
+            }
+            let Some(snapshot) = state.runtime_snapshot.clone() else {
+                return Task::none();
+            };
+            let Some(previous) = state.runtime_health_scan.clone() else {
+                return Task::none();
+            };
+            state.runtime_checking = true;
+            state.runtime_health_report =
+                "Filtering candidates against new in-game values...".into();
+            let root = state.preferences.game_storage_root.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        runtime_health::refine(&snapshot, &root, previous, filter)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Health refinement failed: {e}")))
+                },
+                Message::RuntimeHealthRefined,
+            );
+        }
+        Message::RuntimeHealthRefined(result) => {
+            state.runtime_checking = false;
+            if state.developer_unlocked {
+                match result {
+                    Ok(scan) => {
+                        state.runtime_health_report = scan.describe();
+                        state.runtime_health_scan = Some(scan);
+                    }
+                    Err(error) => {
+                        state.runtime_health_scan = None;
+                        state.runtime_health_report = format!("Health refinement: {error}");
+                    }
+                }
             }
         }
         Message::RuntimePhase2ValueChanged(value) => {
@@ -3128,7 +3436,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .unwrap_or_else(|error| format!("Phase 3 preview rejected: {error}"));
         }
         Message::LockDeveloper => {
+            if let Some(cancel) = &state.armor_cancel {
+                cancel.store(true, Ordering::Relaxed);
+            }
+            state.armor_cancel = None;
+            state.armor_scan = None;
+            state.armor_offline_confirmed = false;
+            state.armor_pid_seen = None;
+            state.armor_live = None;
+            state.armor_report.clear();
+            state.armor_generation = state.armor_generation.wrapping_add(1);
             state.runtime_snapshot = None;
+            state.runtime_health_scan = None;
+            state.runtime_health_value.clear();
+            state.runtime_health_report.clear();
             state.runtime_address.clear();
             state.runtime_offsets.clear();
             state.runtime_result.clear();
@@ -8451,7 +8772,23 @@ impl Desktop {
         } else {
             Subscription::none()
         };
+        let armor_recovery = if self.state.developer_unlocked && self.state.armor_offline_confirmed
+        {
+            iced::time::every(Duration::from_secs(5)).map(|_| Message::ArmorRecoveryPoll)
+        } else {
+            Subscription::none()
+        };
+        let armor_pulse = if self.state.developer_unlocked
+            && self.state.armor_offline_confirmed
+            && self.state.armor_scan.as_ref().is_some_and(|s| s.ready())
+        {
+            iced::time::every(Duration::from_secs(2)).map(|_| Message::ArmorPulse)
+        } else {
+            Subscription::none()
+        };
         Subscription::batch([
+            armor_recovery,
+            armor_pulse,
             playback,
             startup,
             scan_progress,

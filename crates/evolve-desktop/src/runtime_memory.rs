@@ -9,6 +9,47 @@ pub(super) struct Snapshot {
     pub pid: Option<u32>,
     pub status: String,
     pub executable: String,
+    pub module_base: Option<usize>,
+}
+
+/// The GUI's configured game root might be portable, outdated or different
+/// from the running build. Query Windows for the actual running image; no game
+/// memory is modified. Access to MainModule can fail without elevation.
+#[cfg(windows)]
+fn running_image(pid: u32) -> (Option<String>, Option<usize>) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let query = format!(
+        "$p=Get-Process -Id {pid} -ErrorAction Stop; if ($p.Path) {{ Write-Output ('PATH=' + $p.Path) }}; try {{ if ($p.MainModule) {{ Write-Output ('BASE=0x' + $p.MainModule.BaseAddress.ToInt64().ToString('X')) }} }} catch {{ }}"
+    );
+    let result = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &query])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+    let Ok(result) = result else {
+        return (None, None);
+    };
+    if !result.status.success() {
+        return (None, None);
+    }
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let path = stdout
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("PATH="))
+        .filter(|path| {
+            Path::new(path)
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("Evolve.exe"))
+        })
+        .map(str::to_owned);
+    if path.is_none() {
+        return (None, None);
+    }
+    let base = stdout
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("BASE="))
+        .and_then(|value| parse_hex(value).ok());
+    (path, base)
 }
 
 fn parse_tasklist(output: &str) -> Vec<u32> {
@@ -57,14 +98,21 @@ pub(super) fn inspect(game_root: &str) -> Snapshot {
                         pid: None,
                         status: "No Evolve.exe process detected".into(),
                         executable,
+                        module_base: None,
                     },
-                    [pid] => Snapshot {
-                        pid: Some(*pid),
-                        status: format!(
-                            "Evolve.exe PID {pid} detected. Read-only inspection; offline status and exact executable identity NOT verified."
-                        ),
-                        executable,
-                    },
+                    [pid] => {
+                        let (running, base) = running_image(*pid);
+                        Snapshot {
+                            pid: Some(*pid),
+                            status: format!(
+                                "Evolve.exe PID {pid} detected. Read-only inspection; offline state and executable build NOT verified."
+                            ),
+                            executable: running
+                                .map(|path| format!("Actual running executable: {path}"))
+                                .unwrap_or(executable),
+                            module_base: base,
+                        }
+                    }
                     _ => Snapshot {
                         pid: None,
                         status: format!(
@@ -72,6 +120,7 @@ pub(super) fn inspect(game_root: &str) -> Snapshot {
                             pids.len()
                         ),
                         executable,
+                        module_base: None,
                     },
                 }
             }
@@ -79,11 +128,13 @@ pub(super) fn inspect(game_root: &str) -> Snapshot {
                 pid: None,
                 status: format!("Process discovery unavailable (exit {})", output.status),
                 executable,
+                module_base: None,
             },
             Err(error) => Snapshot {
                 pid: None,
                 status: format!("Process discovery unavailable: {error}"),
                 executable,
+                module_base: None,
             },
         }
     }
@@ -94,13 +145,14 @@ pub(super) fn inspect(game_root: &str) -> Snapshot {
             pid: None,
             status: "External Evolve memory inspection requires Windows".into(),
             executable,
+            module_base: None,
         }
     }
 }
 
 /// Requires explicit hexadecimal input; never treats untrusted decimal text
 /// as a pointer. Reject excessively long or invalid pointer chains.
-fn parse_hex(value: &str) -> Result<usize, String> {
+pub(super) fn parse_hex(value: &str) -> Result<usize, String> {
     let value = value.trim();
     let digits = value
         .strip_prefix("0x")
@@ -110,6 +162,21 @@ fn parse_hex(value: &str) -> Result<usize, String> {
         return Err("Invalid hexadecimal address".into());
     }
     usize::from_str_radix(digits, 16).map_err(|_| "Address does not fit this platform".into())
+}
+
+pub(super) fn resolve_address(snapshot: &Snapshot, value: &str) -> Result<usize, String> {
+    let trimmed = value.trim();
+    let Some(offset) = trimmed
+        .strip_prefix("Evolve.exe+")
+        .or_else(|| trimmed.strip_prefix("evolve.exe+"))
+    else {
+        return parse_hex(trimmed);
+    };
+    let base = snapshot.module_base.ok_or(
+        "Running executable module base unavailable; use an absolute address or check process permissions"
+    )?;
+    base.checked_add(parse_hex(offset)?)
+        .ok_or("Module-relative address overflow".into())
 }
 
 fn parse_offsets(text: &str) -> Result<Vec<usize>, String> {
@@ -169,7 +236,7 @@ pub(super) fn read(
     if current.pid != Some(pid) {
         return Err("Evolve process changed; detect again before reading".into());
     }
-    let base = parse_hex(address)?;
+    let base = resolve_address(snapshot, address)?;
     if base < 0x1_0000 {
         return Err("Address is below the allowed user-mode range".into());
     }
@@ -233,7 +300,7 @@ pub(super) fn scan_signature(
     if inspect(game_root).pid != Some(pid) {
         return Err("Process changed; detect Evolve again".into());
     }
-    let base = parse_hex(address)?;
+    let base = resolve_address(snapshot, address)?;
     if base < 0x10000 {
         return Err("Invalid user-mode address".into());
     }
@@ -279,6 +346,26 @@ mod tests {
         let output = "\"Evolve.exe\",\"5432\",\"Console\",\"1\",\"42,000 K\"\n\"other.exe\",\"100\",\"Console\",\"1\",\"3 K\"";
         assert_eq!(parse_tasklist(output), vec![5432]);
         assert!(parse_tasklist("INFO: No tasks are running").is_empty());
+    }
+
+    #[test]
+    fn module_relative_addresses_require_verified_module_base() {
+        let snapshot = Snapshot {
+            pid: Some(1234),
+            status: String::new(),
+            executable: String::new(),
+            module_base: Some(0x100000),
+        };
+        assert_eq!(
+            resolve_address(&snapshot, "Evolve.exe+0x1234").unwrap(),
+            0x101234
+        );
+        assert_eq!(resolve_address(&snapshot, "0x20000").unwrap(), 0x20000);
+        let absent = Snapshot {
+            module_base: None,
+            ..snapshot
+        };
+        assert!(resolve_address(&absent, "Evolve.exe+0x100").is_err());
     }
 
     #[test]
