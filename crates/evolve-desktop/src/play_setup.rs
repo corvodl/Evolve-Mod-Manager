@@ -22,7 +22,8 @@ pub fn game_root(input: &str) -> Result<PathBuf, String> {
         .file_name()
         .is_some_and(|name| name.eq_ignore_ascii_case("bin64_SteamRetail"))
     {
-        path.parent().ok_or("Game executable folder has no parent")?
+        path.parent()
+            .ok_or("Game executable folder has no parent")?
     } else {
         path
     };
@@ -30,8 +31,7 @@ pub fn game_root(input: &str) -> Result<PathBuf, String> {
         || !regular(&root.join("bin64_SteamRetail/inject.dll"))
     {
         return Err(
-            "Select EvolveGame (or bin64_SteamRetail) containing Evolve.exe and inject.dll"
-                .into(),
+            "Select EvolveGame (or bin64_SteamRetail) containing Evolve.exe and inject.dll".into(),
         );
     }
     fs::canonicalize(root).map_err(|e| format!("Cannot inspect installed game: {e}"))
@@ -90,8 +90,8 @@ pub fn configure_existing_helper(
     if bytes.len() > 4 * 1024 * 1024 {
         return Err("Signing stage plan is oversized".into());
     }
-    let plan: Value = serde_json::from_slice(&bytes)
-        .map_err(|e| format!("Invalid signing stage plan: {e}"))?;
+    let plan: Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("Invalid signing stage plan: {e}"))?;
     let recorded = plan["source_root"]
         .as_str()
         .ok_or("Signing stage does not record an installed game root")?;
@@ -106,12 +106,14 @@ pub fn configure_existing_helper(
         if data.len() > 4 * 1024 * 1024 {
             return Err("Swap journal is oversized; restore the original game files first".into());
         }
-        let state: Value = serde_json::from_slice(&data)
-            .map_err(|e| format!("Invalid swap journal: {e}"))?;
+        let state: Value =
+            serde_json::from_slice(&data).map_err(|e| format!("Invalid swap journal: {e}"))?;
         if !matches!(state["phase"].as_str(), Some("prepared" | "restored")) {
             return Err("Swap journal is active or interrupted. Restore original game files before changing the configured client.".into());
         }
-        let files = state["files"].as_array().ok_or("Swap journal has no file list")?;
+        let files = state["files"]
+            .as_array()
+            .ok_or("Swap journal has no file list")?;
         if files.iter().any(|item| {
             item["backup"]
                 .as_str()
@@ -259,9 +261,11 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({"source_root":other})).unwrap(),
         )
         .unwrap();
-        assert!(configure_existing_helper(&game, &temp.path().join("client.exe"), &stage, &swap)
-            .unwrap_err()
-            .contains("different game"));
+        assert!(
+            configure_existing_helper(&game, &temp.path().join("client.exe"), &stage, &swap)
+                .unwrap_err()
+                .contains("different game")
+        );
         assert!(!swap.join("launcher_config.json").exists());
     }
 
