@@ -65,7 +65,7 @@ fn value(input: &str) -> Result<f32, String> {
 }
 
 fn validate_address(at: usize) -> Result<(), String> {
-    if !(MIN_USER_ADDRESS..=MAX_USER_ADDRESS).contains(&at) || at % 4 != 0 {
+    if !(MIN_USER_ADDRESS..=MAX_USER_ADDRESS).contains(&at) || !at.is_multiple_of(4) {
         return Err("Address must be a 4-byte-aligned 64-bit user-mode address".into());
     }
     Ok(())
