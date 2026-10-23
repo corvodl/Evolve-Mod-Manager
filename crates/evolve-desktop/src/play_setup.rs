@@ -168,7 +168,7 @@ pub fn configure_existing_helper(
     Ok(())
 }
 
-fn audit_backup_files(game: &Path) -> Result<(), String> {
+pub(super) fn audit_backup_files(game: &Path) -> Result<(), String> {
     let mut stack = vec![(game.to_path_buf(), 0usize)];
     let mut checked = 0usize;
     while let Some((dir, depth)) = stack.pop() {
