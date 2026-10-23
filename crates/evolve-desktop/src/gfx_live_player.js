@@ -264,6 +264,11 @@
         if (video.playable) {
             messages.push("Video playback source: " + String(video.mode || "browser video"));
         }
+        for (const [key, entry] of Object.entries(video.submenus?.entries || {})) {
+            messages.push("Original " + key + " video: " +
+                (entry.available === true ? "verified " + String(entry.source_member || "") :
+                 String(entry.status || "not present")));
+        }
         messages.push("In-movie localized static Flash labels: " +
             Number(report.authored_flash_text?.localized || 0) + " / " +
             Number(report.authored_flash_text?.fields || 0) +
@@ -324,6 +329,7 @@
         stageElement.appendChild(player);
         const linkedBack = document.getElementById("linked-screen-back");
         let linkedPlayer = null;
+        let linkedVideoKey = null;
         // Count actual DOM pointer delivery, not inferred Flash button
         // activation. A failed hover with pointer delivery confirmed points
         // toward Ruffle's SWF hit testing/ActionScript rather than the video.
@@ -349,7 +355,9 @@
             if (!linkedPlayer) return false;
             linkedPlayer.remove();
             linkedPlayer = null;
+            linkedVideoKey = null;
             player.hidden = false;
+            void requestOriginalVideo("main", "returning from linked GFX");
             videoElement.hidden = !videoElement.src;
             linkedBack.hidden = true;
             show("Returned to the original main-menu instance; its ActionScript state was not reset.");
@@ -362,6 +370,11 @@
                 return false;
             }
             returnToOriginalMenu();
+            // Some source-qualified linked GFX (notably Options) uses the
+            // original front-end background behind a transparent Flash stage.
+            linkedVideoKey = String(screen.id || "").toLowerCase() === "options"
+                ? "options" : null;
+            if (linkedVideoKey) void requestOriginalVideo(linkedVideoKey, "linked original GFX");
             const candidate = runtime.createPlayer();
             stageElement.appendChild(candidate);
             try {
@@ -377,18 +390,20 @@
                     autoplay: "on",
                     unmuteOverlay: "hidden",
                     splashScreen: false,
-                    wmode: "opaque",
-                    backgroundColor: "#000000"
+                    wmode: linkedVideoKey ? "transparent" : "opaque",
+                    backgroundColor: linkedVideoKey ? null : "#000000"
                 });
                 linkedPlayer = candidate;
                 player.hidden = true;
-                videoElement.hidden = true;
+                videoElement.hidden = !linkedVideoKey || !videoElement.src;
                 linkedBack.hidden = false;
                 show("Previewing verified " + String(screen.title) +
                      ". Original native CryEngine screen lifecycle is unavailable.");
                 return true;
             } catch (error) {
                 candidate.remove();
+                linkedVideoKey = null;
+                void requestOriginalVideo("main", "linked GFX failed");
                 show("Cannot open source movie: " + String(error), true);
                 return false;
             }
@@ -468,7 +483,7 @@
                 videoElementSource.src = "./" + file;
                 videoElementSource.load();
             }
-            if (!linkedPlayer) videoElementSource.hidden = false;
+            if (!linkedPlayer || linkedVideoKey) videoElementSource.hidden = false;
             videoElementSource.play().catch(error => {
                 show("Original background video playback blocked: " + String(error), true);
             });
