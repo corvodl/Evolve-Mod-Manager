@@ -2632,11 +2632,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 ),
             );
         }
-        Message::LibraryPickFiles | Message::LibraryPickFolder => {
+        kind @ (Message::LibraryPickFiles | Message::LibraryPickFolder) => {
             if state.busy || state.library_import_scanning {
                 return Task::none();
             }
-            let folder = matches!(message, Message::LibraryPickFolder);
+            let folder = matches!(kind, Message::LibraryPickFolder);
             state.library_import_scanning = true;
             state.library_import_plan = None;
             state.library_show_configuration = true;
