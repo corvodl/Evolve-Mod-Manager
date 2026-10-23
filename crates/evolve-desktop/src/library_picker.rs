@@ -16,9 +16,9 @@ pub(crate) fn choose_sources(folder: bool) -> Result<Option<Vec<PathBuf>>, Strin
     #[cfg(target_os = "windows")]
     {
         let script = if folder {
-            r#"[Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false); Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description='Choose EvolveGame or a folder of PAKs (subfolders included)'; if($d.ShowDialog() -eq 'OK') { [Console]::WriteLine($d.SelectedPath) }"#
+            r#"[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description='Choose EvolveGame or a folder of PAKs (subfolders included)'; if($d.ShowDialog() -eq 'OK') { [Console]::WriteLine($d.SelectedPath) }"#
         } else {
-            r#"[Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false); Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.OpenFileDialog; $d.Title='Select one or more Evolve PAK archives'; $d.Filter='Evolve PAK files (*.pak)|*.pak'; $d.Multiselect=$true; if($d.ShowDialog() -eq 'OK') { $d.FileNames | ForEach-Object { [Console]::WriteLine($_) } }"#
+            r#"[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.OpenFileDialog; $d.Title='Select one or more Evolve PAK archives'; $d.Filter='Evolve PAK files (*.pak)|*.pak'; $d.Multiselect=$true; if($d.ShowDialog() -eq 'OK') { $d.FileNames | ForEach-Object { [Console]::WriteLine($_) } }"#
         };
         use std::os::windows::process::CommandExt;
         let mut command = std::process::Command::new("powershell.exe");
