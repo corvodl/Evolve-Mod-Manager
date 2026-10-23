@@ -246,10 +246,10 @@ pub(super) fn scan_signature(
     }
     let mut report = format!("Signature candidates: {} in 4 KiB, PID {pid}. Read-only; validate across game restarts.", matches.len());
     for at in matches.iter().take(16) {
-        report.push_str(&format!("\\n0x{at:016X}"));
+        report.push_str(&format!("\n0x{at:016X}"));
     }
     if matches.len() > 16 {
-        report.push_str("\\nAdditional matches omitted from display.");
+        report.push_str("\nAdditional matches omitted from display.");
     }
     Ok(report)
 }
