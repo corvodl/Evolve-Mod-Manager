@@ -217,6 +217,59 @@ pub(super) fn read(
     Err("External memory inspection requires Windows".into())
 }
 
+/// Scan a single bounded 4 KiB window at a manually selected address.
+/// Matches are candidate locations only; no pointer or class is assumed.
+/// Rechecks the process before and after scanning to avoid stale PID reuse.
+#[cfg(windows)]
+pub(super) fn scan_signature(
+    snapshot: &Snapshot,
+    game_root: &str,
+    address: &str,
+    pattern: &str,
+) -> Result<String, String> {
+    let pid = snapshot
+        .pid
+        .ok_or("Detect exactly one Evolve process first")?;
+    if inspect(game_root).pid != Some(pid) {
+        return Err("Process changed; detect Evolve again".into());
+    }
+    let base = parse_hex(address)?;
+    if base < 0x10000 {
+        return Err("Invalid user-mode address".into());
+    }
+    let pattern = crate::runtime_signatures::parse_aob(pattern)?;
+    let handle: read_process_memory::ProcessHandle = pid
+        .try_into()
+        .map_err(|error| format!("Unable to open Evolve read-only: {error}"))?;
+    let bytes = read_process_memory::copy_address(base, 4096, &handle)
+        .map_err(|error| format!("Cannot read full 4 KiB window: {error}"))?;
+    let matches = crate::runtime_signatures::find_aob(&bytes, base, &pattern)?;
+    if inspect(game_root).pid != Some(pid) {
+        return Err("Process changed during search; discarded".into());
+    }
+    let mut report = format!(
+        "Signature candidates: {} in 4 KiB, PID {pid}. Read-only; validate across game restarts.",
+        matches.len()
+    );
+    for at in matches.iter().take(16) {
+        report.push_str(&format!("\n0x{at:016X}"));
+    }
+    if matches.len() > 16 {
+        report.push_str("\nAdditional matches omitted from display.");
+    }
+    Ok(report)
+}
+
+#[cfg(not(windows))]
+pub(super) fn scan_signature(
+    _snapshot: &Snapshot,
+    _game_root: &str,
+    _address: &str,
+    _pattern: &str,
+) -> Result<String, String> {
+    Err("Windows-only process signatures".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

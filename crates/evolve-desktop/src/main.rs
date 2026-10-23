@@ -38,7 +38,9 @@ mod modding_page;
 mod modding_projects;
 mod orientation_gizmo;
 mod private_pages;
+mod runtime_experiments;
 mod runtime_memory;
+mod runtime_signatures;
 mod selection;
 mod settings;
 mod settings_page;
@@ -336,6 +338,10 @@ struct State {
     runtime_address: String,
     runtime_offsets: String,
     runtime_result: String,
+    runtime_phase2_value: String,
+    runtime_phase3_value: String,
+    runtime_signature: String,
+    runtime_plan_result: String,
     show_advanced_tools: bool,
     activity_log: Vec<String>,
     health_expanded: bool,
@@ -1597,6 +1603,13 @@ enum Message {
     RuntimeOffsetsChanged(String),
     RuntimeRead,
     RuntimeReadFinished(Result<String, String>),
+    RuntimePhase2ValueChanged(String),
+    RuntimePhase3ValueChanged(String),
+    RuntimeSignatureChanged(String),
+    RuntimeScanSignature,
+    RuntimeSignatureScanned(Result<String, String>),
+    PreviewRuntimePhase2(runtime_experiments::Phase2Action),
+    PreviewRuntimePhase3(runtime_experiments::Phase3Action),
     InputChanged(String),
     OutputChanged(String),
     ReplacementsChanged(String),
@@ -3045,11 +3058,84 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.runtime_result = result.unwrap_or_else(|error| error);
             }
         }
+        Message::RuntimePhase2ValueChanged(value) => {
+            if state.developer_unlocked && value.len() <= 128 {
+                state.runtime_phase2_value = value;
+            }
+        }
+        Message::RuntimePhase3ValueChanged(value) => {
+            if state.developer_unlocked && value.len() <= 128 {
+                state.runtime_phase3_value = value;
+            }
+        }
+        Message::RuntimeSignatureChanged(value) => {
+            if state.developer_unlocked && value.len() <= 512 {
+                state.runtime_signature = value;
+            }
+        }
+        Message::RuntimeScanSignature => {
+            if !state.developer_unlocked || state.runtime_checking {
+                return Task::none();
+            }
+            let Some(snapshot) = state.runtime_snapshot.clone() else {
+                return Task::none();
+            };
+            state.runtime_checking = true;
+            state.runtime_plan_result = "Scanning a bounded read-only window...".into();
+            let root = state.preferences.game_storage_root.clone();
+            let address = state.runtime_address.clone();
+            let pattern = state.runtime_signature.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        runtime_memory::scan_signature(&snapshot, &root, &address, &pattern)
+                    })
+                    .await
+                    .unwrap_or_else(|error| Err(format!("AOB scan failed: {error}")))
+                },
+                Message::RuntimeSignatureScanned,
+            );
+        }
+        Message::RuntimeSignatureScanned(result) => {
+            state.runtime_checking = false;
+            if state.developer_unlocked {
+                state.runtime_plan_result = result.unwrap_or_else(|error| error);
+            }
+        }
+        Message::PreviewRuntimePhase2(kind) => {
+            if !state.developer_unlocked {
+                return Task::none();
+            }
+            let seen = state
+                .runtime_snapshot
+                .as_ref()
+                .and_then(|s| s.pid)
+                .is_some();
+            state.runtime_plan_result = runtime_experiments::preview_phase2(
+                kind,
+                &state.runtime_address,
+                &state.runtime_phase2_value,
+                seen,
+            )
+            .unwrap_or_else(|error| format!("Phase 2 preview rejected: {error}"));
+        }
+        Message::PreviewRuntimePhase3(kind) => {
+            if !state.developer_unlocked {
+                return Task::none();
+            }
+            state.runtime_plan_result =
+                runtime_experiments::preview_phase3(kind, &state.runtime_phase3_value)
+                    .unwrap_or_else(|error| format!("Phase 3 preview rejected: {error}"));
+        }
         Message::LockDeveloper => {
             state.runtime_snapshot = None;
             state.runtime_address.clear();
             state.runtime_offsets.clear();
             state.runtime_result.clear();
+            state.runtime_phase2_value.clear();
+            state.runtime_phase3_value.clear();
+            state.runtime_signature.clear();
+            state.runtime_plan_result.clear();
             state.developer_unlocked = false;
             state.developer_checking = false;
             state.developer_password.clear();
