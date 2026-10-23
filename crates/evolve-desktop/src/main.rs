@@ -12,6 +12,7 @@ mod blender_install;
 mod crash_diagnostics;
 mod design;
 mod developer_auth;
+mod runtime_memory;
 mod explorer_tree;
 mod gfx_bundled_tools;
 mod gfx_dependencies;
@@ -330,6 +331,11 @@ struct State {
     developer_unlocked: bool,
     developer_attempts: u8,
     developer_checking: bool,
+    runtime_snapshot: Option<runtime_memory::Snapshot>,
+    runtime_checking: bool,
+    runtime_address: String,
+    runtime_offsets: String,
+    runtime_result: String,
     show_advanced_tools: bool,
     activity_log: Vec<String>,
     health_expanded: bool,
@@ -1585,6 +1591,12 @@ enum Message {
     UnlockDeveloper,
     DeveloperChecked(bool),
     LockDeveloper,
+    RuntimeDetect,
+    RuntimeDetected(runtime_memory::Snapshot),
+    RuntimeAddressChanged(String),
+    RuntimeOffsetsChanged(String),
+    RuntimeRead,
+    RuntimeReadFinished(Result<String, String>),
     InputChanged(String),
     OutputChanged(String),
     ReplacementsChanged(String),
@@ -2967,7 +2979,43 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.developer_password = value;
             }
         }
+        Message::RuntimeAddressChanged(value) => {
+            if state.developer_unlocked && value.len() <= 32 { state.runtime_address = value; }
+        }
+        Message::RuntimeOffsetsChanged(value) => {
+            if state.developer_unlocked && value.len() <= 128 { state.runtime_offsets = value; }
+        }
+        Message::RuntimeDetect => {
+            if !state.developer_unlocked || state.runtime_checking { return Task::none(); }
+            state.runtime_checking = true;
+            state.runtime_snapshot = None;
+            state.runtime_result.clear();
+            let root = state.preferences.game_storage_root.clone();
+            return Task::perform(async move { tokio::task::spawn_blocking(move || runtime_memory::inspect(&root)).await.unwrap_or_else(|e| runtime_memory::Snapshot { pid: None, status: format!("Process detection failed: {e}"), executable: "Unknown".into() }) }, Message::RuntimeDetected);
+        }
+        Message::RuntimeDetected(snapshot) => {
+            state.runtime_checking = false;
+            if state.developer_unlocked { state.runtime_snapshot = Some(snapshot); }
+        }
+        Message::RuntimeRead => {
+            if !state.developer_unlocked || state.runtime_checking { return Task::none(); }
+            let Some(snapshot) = state.runtime_snapshot.clone() else { return Task::none(); };
+            state.runtime_checking = true;
+            state.runtime_result = "Reading...".into();
+            let root = state.preferences.game_storage_root.clone();
+            let address = state.runtime_address.clone();
+            let offsets = state.runtime_offsets.clone();
+            return Task::perform(async move { tokio::task::spawn_blocking(move || runtime_memory::read(&snapshot, &root, &address, &offsets)).await.unwrap_or_else(|e| Err(format!("Memory inspection failed: {e}"))) }, Message::RuntimeReadFinished);
+        }
+        Message::RuntimeReadFinished(result) => {
+            state.runtime_checking = false;
+            if state.developer_unlocked { state.runtime_result = result.unwrap_or_else(|error| error); }
+        }
         Message::LockDeveloper => {
+            state.runtime_snapshot = None;
+            state.runtime_address.clear();
+            state.runtime_offsets.clear();
+            state.runtime_result.clear();
             state.developer_unlocked = false;
             state.developer_checking = false;
             state.developer_password.clear();
