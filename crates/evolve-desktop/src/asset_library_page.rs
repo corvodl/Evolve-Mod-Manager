@@ -226,7 +226,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             );
             importer = importer.push(
                 row![
-                    design::button(format!("Confirm import of {} PAKs", plan.files.len()))
+                    design::button(text(format!("Confirm import of {} PAKs", plan.files.len())))
                         .style(design::primary)
                         .on_press_maybe((!disabled).then_some(Message::LibraryImportStart)),
                     text("Large full-game imports can use significant disk space.")
