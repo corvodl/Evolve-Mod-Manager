@@ -919,7 +919,8 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                                     (layer.editable && !state.gfx_busy)
                                         .then_some(Message::GfxStageLayout),
                                 ),
-                            );
+                            )
+                            .push(text("For static first-frame elements, toggle Hidden and Stage to remove that placement. Timeline-recreated items need a persistent ActionScript edit, such as the Featured tab.").size(11).style(design::muted));
                     }
                 }
             }
@@ -1042,6 +1043,22 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                         actions.push(design::button("Replace selected resource…").on_press_maybe(
                             (!state.gfx_busy).then_some(Message::GfxPickReplacement),
                         ));
+                    if info.resources.get(state.gfx_resource)
+                        .is_some_and(|resource| resource.kind == "text")
+                    {
+                        actions = actions
+                            .push(text("EDIT SELECTED TEXT RESOURCE").size(12))
+                            .push(text_input("Replacement UTF-8 text", &state.gfx_resource_text)
+                                .on_input(Message::GfxResourceTextChanged)
+                                .padding(8))
+                            .push(design::button("Stage text resource edit").on_press_maybe(
+                                (!state.gfx_busy
+                                    && !state.gfx_resource_text.is_empty()
+                                    && session.project.is_some())
+                                    .then_some(Message::GfxResourceTextStage)
+                            ))
+                            .push(text("Changes the selected original text resource by character ID through FFDec. Runtime-created ActionScript text is separate. Undo or Apply to Mod Project.").size(11).style(design::muted));
+                    }
                 }
                 if !info.imports.is_empty() {
                     actions = actions.push(
