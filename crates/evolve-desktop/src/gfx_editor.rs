@@ -643,10 +643,7 @@ pub fn run(
                             .is_some_and(|ext| ext.eq_ignore_ascii_case("as"))
                     {
                         let input = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-                        if input.contains("function setFeatured(")
-                            || input.contains("setFeatured = function(")
-                            || input.contains("setFeatured=function(")
-                        {
+                        if gfx_featured_promo::has_definition(&input) {
                             matches.push((path, input));
                         }
                     } else {
