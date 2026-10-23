@@ -251,8 +251,11 @@
                 "Flash bitmap linkages embedded: " +
                 Number(modeImages.flash_bitmap_linkages || 0) + "; " +
                 Number(modeImages.flash_linkage_skips || 0) +
-                " linkage skips. Scaleform native img:// rendering still needs live verification; " +
-                "other CryEngine img:// image families remain unavailable.");
+                " linkage skips. Original MovieClipLoader.loadClip URL redirects: " +
+                Number(modeImages.source_movieclip_url_rewrites || 0) +
+                ". Direct source img:// card images are served as isolated original-derived PNGs; " +
+                "Ruffle image decoding and hover visuals still need live verification. " +
+                "Other CryEngine img:// families remain unavailable.");
             for (const key of ["missing", "ambiguous_or_invalid_manifest", "decode_or_budget_failures"]) {
                 const rows = Array.isArray(modeImages[key]) ? modeImages[key] : [];
                 if (rows.length) messages.push("Mode DDS " + key + ": " + rows.slice(0, 12).join(", "));
