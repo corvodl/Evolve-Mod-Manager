@@ -198,7 +198,7 @@ pub(super) fn start(
     kind: Kind,
 ) -> Result<Scan, String> {
     let pid = snapshot.pid.ok_or("Detect Evolve first")?;
-    let address = runtime_memory::parse_hex(address)?;
+    let address = runtime_memory::resolve_address(snapshot, address)?;
     if address < 0x10000 {
         return Err("Start with a readable 0x-prefixed in-game address".into());
     }
