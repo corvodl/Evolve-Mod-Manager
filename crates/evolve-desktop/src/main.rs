@@ -5985,7 +5985,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     ),
                 );
             }
-            state.status = "Verifying original game files before starting the normal client without mods…".into();
+            state.status =
+                "Verifying original game files before starting the normal client without mods…"
+                    .into();
             return launch(
                 state,
                 Operation::LaunchCleanClient(
@@ -8212,12 +8214,18 @@ fn view(state: &State) -> Element<'_, Message> {
     .height(20);
     let lower = column![
         tooltip(
-            design::button(play_mods_icon).width(46).height(40).on_press(Message::PlayWithMods),
+            design::button(play_mods_icon)
+                .width(46)
+                .height(40)
+                .on_press(Message::PlayWithMods),
             text("Play with Mods").size(11),
             tooltip::Position::Right
         ),
         tooltip(
-            design::button(play_clean_icon).width(46).height(40).on_press(Message::PlayWithoutMods),
+            design::button(play_clean_icon)
+                .width(46)
+                .height(40)
+                .on_press(Message::PlayWithoutMods),
             text("Play without Mods").size(11),
             tooltip::Position::Right
         ),
@@ -8777,23 +8785,19 @@ fn initial_state() -> State {
             result.preferences.client_executable = client;
         }
     }
-    if result.preferences.stage.trim().is_empty()
-        || result.preferences.swap.trim().is_empty()
-    {
+    if result.preferences.stage.trim().is_empty() || result.preferences.swap.trim().is_empty() {
         if let Ok(settings) = settings_path() {
             if let Some(profile) = settings.parent() {
                 let setup = profile.join("Data").join("Setup");
                 if result.preferences.stage.trim().is_empty()
                     && setup.join("staged/rekey_plan.json").is_file()
                 {
-                    result.preferences.stage =
-                        setup.join("staged").to_string_lossy().into_owned();
+                    result.preferences.stage = setup.join("staged").to_string_lossy().into_owned();
                 }
                 if result.preferences.swap.trim().is_empty()
                     && setup.join("swap/controlled_swap.py").is_file()
                 {
-                    result.preferences.swap =
-                        setup.join("swap").to_string_lossy().into_owned();
+                    result.preferences.swap = setup.join("swap").to_string_lossy().into_owned();
                 }
             }
         }
