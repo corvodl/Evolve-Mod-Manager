@@ -78,7 +78,7 @@
         for (const row of fonts) {
             const path = String(row?.movie || "");
             if (row?.staged !== true || Number(row?.define_font_tags || 0) < 1 ||
-                !/^[A-Za-z0-9_./-]{1,256}\.swf$/i.test(path) ||
+                !/^[A-Za-z0-9_./-]{1,256}\.(?:swf|gfx)$/i.test(path) ||
                 path.startsWith("/") || path.split("/").some(part =>
                     part === "" || part === "." || part === "..") ||
                 sources.includes(path) || sources.length >= 16) continue;
