@@ -45,6 +45,7 @@ pub enum Action {
     ReloadGui,
     ImportGfx(PathBuf),
     ReplaceResource { index: usize, replacement: PathBuf },
+    ReplaceText { index: usize, text: String },
     ExportXml,
     ImportXml,
     ExportScripts,
@@ -469,6 +470,35 @@ pub fn run(
                 "Rebuilt {} resource #{} through FFDec; project unchanged.",
                 tag.kind, tag.id
             )
+        }
+        Action::ReplaceText { index, text } => {
+            let tag = session.info.resources.get(index)
+                .ok_or("Select an original text resource")?;
+            if tag.kind != "text" {
+                return Err("Direct text editing requires a selected existing text resource".into());
+            }
+            if session.project.is_none() {
+                return Err("Asset Library movies are read-only; open an editable Mod Project".into());
+            }
+            if text.is_empty() || text.len() > 4096 || text.contains('\0')
+                || text.chars().any(|c| c.is_control() && c != '\n' && c != '\t')
+            {
+                return Err("Enter 1–4096 printable UTF-8 bytes (newlines allowed)".into());
+            }
+            let before = root.join("text-before.gfx");
+            let replacement = root.join("replacement-text.txt");
+            let output = root.join("text-rebuilt.gfx");
+            fs::write(&replacement, &text).map_err(|e| e.to_string())?;
+            fs::copy(&session.editable, &before).map_err(|e| e.to_string())?;
+            run_cli(configured, &root, &[
+                "-replace".into(),
+                before.display().to_string(),
+                output.display().to_string(),
+                tag.id.to_string(),
+                replacement.display().to_string(),
+            ])?;
+            import_compiled(&mut session, &output)?;
+            format!("Staged text resource #{} replacement; Undo or Apply to Mod Project.", tag.id)
         }
         Action::ExportXml => {
             let target = root.join("edited-tags.xml");
