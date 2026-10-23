@@ -1,16 +1,12 @@
 //! Guarded, undoable featured-promotion ActionScript presets for main_menu.gfx.
 //! Only a private FFDec export is edited; no game, PAK or Library originals change.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Target {
+    #[default]
     All,
     Title,
     Try,
     Buy,
-}
-impl Default for Target {
-    fn default() -> Self {
-        Self::All
-    }
 }
 impl Target {
     pub fn label(self) -> &'static str {
