@@ -341,6 +341,20 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
                 ].spacing(8),
                 text(state.armor_report.as_str()).size(12).style(design::muted),
                 text(state.armor_live.map(|v|format!("Live armor (internal units): {v:.2}")).unwrap_or_else(||"Live armor: awaiting verified candidate".into())).size(13),
+                text("Offline live Float32 editing  /  Experimental").size(16),
+                text("Writes EXACTLY four bytes to a freshly read address, once per button press. Requires Developer unlock, offline confirmation above and a second explicit enable switch. Use only in an isolated offline match. Wrong addresses or values can crash Evolve. No value freezing, pointer editing, teleport, injection or auto-write. TCP detection is best-effort and is not proof of offline mode.").size(12).style(design::muted),
+                iced::widget::checkbox(state.live_edit_enabled).label("Enable experimental offline Float32 writes (I accept the risk)").on_toggle(Message::LiveEditEnabled),
+                row![
+                    design::button("Read verified Goliath armor")
+                        .on_press_maybe((state.live_edit_enabled && state.armor_offline_confirmed && !state.live_edit_busy && !state.runtime_checking && state.armor_scan.as_ref().is_some_and(|s|s.ready())).then_some(Message::LiveEditProbe(super::runtime_live::Source::VerifiedArmor))),
+                    design::button("Read manual Float32 address")
+                        .on_press_maybe((state.live_edit_enabled && state.armor_offline_confirmed && !state.live_edit_busy && !state.runtime_checking && state.runtime_snapshot.as_ref().and_then(|s|s.pid).is_some()).then_some(Message::LiveEditProbe(super::runtime_live::Source::ManualFloat))),
+                ].spacing(8),
+                text("The manual address uses the Address field above, not pointer offsets. Confirm the Float32 value matches your in-game stat before writing. Health/cooldown addresses are not automatically identified.").size(12).style(design::muted),
+                design::text_input("New Float32 value (0 to 100000)", &state.live_edit_value).on_input(Message::LiveEditValueChanged),
+                design::button(if state.live_edit_busy { "Editing..." } else { "Write Float32 once" })
+                    .on_press_maybe((state.live_edit_enabled && state.armor_offline_confirmed && !state.live_edit_busy && !state.runtime_checking && state.live_edit_probe.is_some() && !state.live_edit_value.trim().is_empty()).then_some(Message::LiveEditApply)),
+                text(state.live_edit_report.as_str()).size(12).style(design::muted),
                 text("Health candidates  /  Read-only").size(16),
                 text("Uses the hexadecimal address above to inspect one containing 4 KiB page. It cannot identify actors or find health across the entire game yet. Optional expected HP narrows initial candidates; blank starts an unknown-value scan. Use only in an offline match.").size(12).style(design::muted),
                 design::text_input("Expected health (optional, e.g. 1500)", &state.runtime_health_value)
