@@ -253,7 +253,9 @@
                 Number(modeImages.flash_linkage_skips || 0) +
                 " linkage skips. Original MovieClipLoader.loadClip URL redirects: " +
                 Number(modeImages.source_movieclip_url_rewrites || 0) +
-                ". Direct source img:// card images are served as isolated original-derived PNGs; " +
+                "; verified MovieClipLoader filenames changed to PNG: " +
+                Number(modeImages.source_movieclip_png_paths || 0) +
+                ". Original card requests are served by the isolated PNG endpoint; " +
                 "Ruffle image decoding and hover visuals still need live verification. " +
                 "Other CryEngine img:// families remain unavailable.");
             for (const key of ["missing", "ambiguous_or_invalid_manifest", "decode_or_budget_failures"]) {
@@ -612,11 +614,29 @@
                       ", paused=" + String(video.paused) + ", error=" +
                       (video.error?.code || "none")
                     : String(state.status || "source unavailable");
+                // These are real requests made by the original AVM1
+                // MovieClipLoader; merely staging 24 files is not proof that
+                // ActionScript requested or loaded any of them.
+                let cardRequests = null;
+                try {
+                    const result = await fetch("./mode-card-requests.json", {cache: "no-store"});
+                    if (result.ok) cardRequests = await result.json();
+                } catch (_) {
+                    // Absence of endpoint is explicitly reported below.
+                }
+                const cardStatus = cardRequests
+                    ? String(cardRequests.requested || 0) + " requested / " +
+                      String(cardRequests.served || 0) + " served / " +
+                      String(cardRequests.failed || 0) + " failed; latest " +
+                      (Array.isArray(cardRequests.recent) ?
+                        cardRequests.recent.slice(-4).join(", ") : "none")
+                    : "request tracking unavailable";
                 const fonts = (Array.isArray(report.fonts) ? report.fonts : []);
                 const knownFonts = fonts.filter(item => Number(item.define_font_tags || 0) > 0).length;
                 const text = "Ruffle source stage " + stageDimensions + "; browser PNG images " +
                     decoded + "/" + names.length + "; embedded Flash bitmap linkages " +
                     Number(report.mode_images?.flash_bitmap_linkages || 0) +
+                    "; original Flash card loads " + cardStatus +
                     "; recognized font libraries " + knownFonts + "/" + fonts.length +
                     "; Goliath video " + playback +
                     "; local host query counts CurrentMenu/NPE/CustomSolo " +
@@ -631,7 +651,10 @@
                 refreshPreviewStateStatus();
                 const entry = makeText("li", text);
                 document.getElementById("resource-status").prepend(entry);
-                show(text, failures.length > 0 || (names.length > 0 && decoded !== names.length));
+                show(text, failures.length > 0 ||
+                    (names.length > 0 && decoded !== names.length) ||
+                    (Number(report.mode_images?.requested || 0) > 0 &&
+                     cardRequests?.requested === 0));
             } finally {
                 auditButton.disabled = false;
             }
