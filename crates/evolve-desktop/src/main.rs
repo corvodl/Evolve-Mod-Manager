@@ -349,6 +349,7 @@ struct State {
     armor_live: Option<f32>,
     armor_cancel: Option<Arc<AtomicBool>>,
     armor_generation: u64,
+    armor_pid_seen: Option<u32>,
     runtime_phase2_value: String,
     runtime_phase3_value: String,
     runtime_signature: String,
@@ -1624,6 +1625,8 @@ enum Message {
     ArmorRefine(runtime_armor::Step),
     ArmorResult(u64, Result<runtime_armor::Scan, String>),
     ArmorPulse,
+    ArmorRecoveryPoll,
+    ArmorRecovered(Option<u32>),
     ArmorLive(u64, Result<Option<f32>, String>),
     RuntimePhase2ValueChanged(String),
     RuntimePhase3ValueChanged(String),
@@ -3028,6 +3031,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ArmorOfflineChanged(confirmed) => {
             state.armor_offline_confirmed = confirmed;
+            if confirmed { state.armor_pid_seen = state.runtime_snapshot.as_ref().and_then(|s|s.pid); }
             if !confirmed {
                 if let Some(cancel) = &state.armor_cancel { cancel.store(true, Ordering::Relaxed); }
                 state.armor_cancel = None;
@@ -3076,6 +3080,25 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Ok(scan) => { state.armor_report = scan.describe(); state.armor_scan = Some(scan); }
                 Err(e) => { state.armor_scan = None; state.armor_live = None; state.armor_report = e; }
             }
+        }
+        Message::ArmorRecoveryPoll => {
+            if !state.developer_unlocked || !state.armor_offline_confirmed || state.runtime_checking { return Task::none(); }
+            let root = state.preferences.game_storage_root.clone();
+            return Task::perform(async move {
+                tokio::task::spawn_blocking(move || runtime_memory::inspect(&root).pid).await.unwrap_or(None)
+            }, Message::ArmorRecovered);
+        }
+        Message::ArmorRecovered(pid) => {
+            if !state.developer_unlocked || !state.armor_offline_confirmed || state.runtime_checking { return Task::none(); }
+            if state.armor_pid_seen == pid { return Task::none(); }
+            state.armor_pid_seen = pid;
+            if let Some(cancel) = &state.armor_cancel { cancel.store(true, Ordering::Relaxed); }
+            state.armor_cancel = None;
+            state.armor_scan = None;
+            state.armor_live = None;
+            state.armor_generation = state.armor_generation.wrapping_add(1);
+            state.armor_report = "Evolve process changed. Looking for the new instance; refill Stage 1 Goliath armor before calibration.".into();
+            return Task::done(Message::RuntimeDetect);
         }
         Message::ArmorPulse => {
             if !state.developer_unlocked || !state.armor_offline_confirmed || state.runtime_checking { return Task::none(); }
@@ -3135,7 +3158,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::RuntimeDetected(snapshot) => {
             state.runtime_checking = false;
             if state.developer_unlocked {
+                state.armor_pid_seen = snapshot.pid;
+                let auto = state.armor_offline_confirmed && snapshot.pid.is_some();
                 state.runtime_snapshot = Some(snapshot);
+                if auto { return Task::done(Message::ArmorBegin); }
             }
         }
         Message::RuntimeRead => {
@@ -3327,6 +3353,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.armor_cancel = None;
             state.armor_scan = None;
             state.armor_offline_confirmed = false;
+            state.armor_pid_seen = None;
             state.armor_live = None;
             state.armor_report.clear();
             state.armor_generation = state.armor_generation.wrapping_add(1);
@@ -8656,10 +8683,14 @@ impl Desktop {
         } else {
             Subscription::none()
         };
+        let armor_recovery = if self.state.developer_unlocked && self.state.armor_offline_confirmed {
+            iced::time::every(Duration::from_secs(5)).map(|_| Message::ArmorRecoveryPoll)
+        } else { Subscription::none() };
         let armor_pulse = if self.state.developer_unlocked && self.state.armor_offline_confirmed && self.state.armor_scan.as_ref().is_some_and(|s| s.ready()) {
             iced::time::every(Duration::from_secs(2)).map(|_| Message::ArmorPulse)
         } else { Subscription::none() };
         Subscription::batch([
+            armor_recovery,
             armor_pulse,
             playback,
             startup,
