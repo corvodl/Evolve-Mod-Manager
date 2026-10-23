@@ -150,19 +150,35 @@ pub fn create(
     )?;
     play_setup::audit_backup_files(&game)?;
     let rows = relative_paks(&game)?;
+    let launcher_folder = client.parent().ok_or("Client has no containing folder")?;
+    // Check the resolved destination *before* creating directories, so a
+    // mistaken Mod Data Location cannot create setup files in the game/client
+    // tree, including when its existing parent is a symlink.
+    if !storage.is_absolute()
+        || storage.components().any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return Err("Mod Data Location must be an absolute path without .. components".into());
+    }
+    let mut ancestor = storage;
+    while !ancestor.exists() {
+        ancestor = ancestor.parent().ok_or("Mod Data Location has no existing parent")?;
+    }
+    let trailing = storage.strip_prefix(ancestor).map_err(|e| e.to_string())?;
+    let proposed = fs::canonicalize(ancestor)
+        .map_err(|e| format!("Cannot inspect Mod Data Location's parent: {e}"))?
+        .join(trailing);
+    if proposed.starts_with(&game)
+        || game.starts_with(&proposed)
+        || proposed.starts_with(launcher_folder)
+        || launcher_folder.starts_with(&proposed)
+    {
+        return Err("Mod Data Location must be separate from the installed game and client".into());
+    }
     if !storage.is_dir() {
         fs::create_dir_all(storage).map_err(|e| format!("Cannot create Game Storage: {e}"))?;
     }
     let storage = fs::canonicalize(storage)
         .map_err(|e| format!("Cannot inspect Game Storage: {e}"))?;
-    let launcher_folder = client.parent().ok_or("Client has no containing folder")?;
-    if storage.starts_with(&game)
-        || game.starts_with(&storage)
-        || storage.starts_with(launcher_folder)
-        || launcher_folder.starts_with(&storage)
-    {
-        return Err("Mod Data Location must be separate from the installed game and client".into());
-    }
     let original_shim = game.join("bin64_SteamRetail").join("inject.dll");
     let shim = fs::read(&original_shim).map_err(|e| e.to_string())?;
     if shim.len() != 4096 {
@@ -387,6 +403,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn setup_inventory_refuses_symlinks_and_case_collisions() {
         let dir = tempfile::tempdir().unwrap();
