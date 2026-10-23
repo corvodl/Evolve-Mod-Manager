@@ -53,7 +53,7 @@ fn hex_address(input: &str) -> Result<u64, String> {
         return Err("Invalid hexadecimal address".into());
     }
     let address = u64::from_str_radix(value, 16).map_err(|_| "Address exceeds u64")?;
-    if address < 0x1_0000 || address > 0x0000_7FFF_FFFF_FFFF {
+    if !(0x1_0000..=0x0000_7FFF_FFFF_FFFF).contains(&address) {
         return Err("Address is outside the supported 64-bit user address range".into());
     }
     Ok(address)
