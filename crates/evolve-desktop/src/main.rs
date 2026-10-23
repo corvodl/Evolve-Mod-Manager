@@ -196,6 +196,7 @@ struct State {
     gfx_install_busy: bool,
     gfx_install_status: String,
     gfx_resource: usize,
+    gfx_resource_text: String,
     gfx_status: String,
     gfx_layout_open: bool,
     gfx_tools_section: GfxToolsSection,
@@ -1510,6 +1511,8 @@ enum Message {
     GfxInstallTool(gfx_tool_install::Tool),
     GfxToolInstalled(gfx_tool_install::Tool, Result<PathBuf, String>),
     GfxSelectResource(usize),
+    GfxResourceTextChanged(String),
+    GfxResourceTextStage,
     GfxToolsSection(GfxToolsSection),
     GfxToggleLayoutRaster,
     GfxLayoutSelect(usize),
@@ -4735,6 +4738,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.gfx_live_status = format!("Cannot inspect UI hierarchy: {error}");
             }
         },
+        Message::GfxResourceTextChanged(value) => {
+            if value.len() <= 4096 && !value.contains('\0') {
+                state.gfx_resource_text = value;
+            }
+        }
+        Message::GfxResourceTextStage => {
+            let Some(index) = state.gfx_session.as_ref()
+                .and_then(|session| session.info.resources.get(state.gfx_resource))
+                .filter(|resource| resource.kind == "text")
+                .map(|_| state.gfx_resource) else {
+                state.gfx_status = "Select an original text resource first.".into();
+                return Task::none();
+            };
+            return update(state, Message::GfxAction(gfx_editor::Action::ReplaceText {
+                index, text: state.gfx_resource_text.clone(),
+            }));
+        }
         Message::GfxToolsSection(section) => {
             if !state.gfx_active {
                 return Task::none();
