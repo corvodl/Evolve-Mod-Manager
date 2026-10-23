@@ -753,8 +753,12 @@ pub(crate) fn route_mode_image_png_paths(
     }
     let valid_names = verified_names
         .iter()
-        .filter(|name| (1..=64).contains(&name.len())
-            && name.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-')))
+        .filter(|name| {
+            (1..=64).contains(&name.len())
+                && name
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+        })
         .collect::<Vec<_>>();
     let (header, records) = tags(swf)?;
     let mut output = swf[..header].to_vec();
@@ -806,17 +810,18 @@ mod tests {
         let length = original.len() as u32;
         original[4..8].copy_from_slice(&length.to_le_bytes());
         let pristine = original.clone();
-        let (patched, count) =
-            route_mode_image_png_paths(&original, &["training".into()]).unwrap();
+        let (patched, count) = route_mode_image_png_paths(&original, &["training".into()]).unwrap();
         assert_eq!(count, 1);
         assert_eq!(original, pristine);
         assert_eq!(patched.len(), original.len());
-        assert!(patched.windows(b"MenuModeSelect/training.png\0".len())
-            .any(|v| v == b"MenuModeSelect/training.png\0"));
+        assert!(
+            patched
+                .windows(b"MenuModeSelect/training.png\0".len())
+                .any(|v| v == b"MenuModeSelect/training.png\0")
+        );
         assert!(patched.windows(unrelated.len()).any(|v| v == unrelated));
         assert!(patched.windows(missing.len()).any(|v| v == missing));
-        let (second, count) =
-            route_mode_image_png_paths(&patched, &["training".into()]).unwrap();
+        let (second, count) = route_mode_image_png_paths(&patched, &["training".into()]).unwrap();
         assert_eq!(count, 0);
         assert_eq!(second, patched);
     }
