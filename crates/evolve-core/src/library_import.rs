@@ -735,7 +735,7 @@ mod tests {
         zip.start_file("foo.txt", zip::write::SimpleFileOptions::default())
             .unwrap();
         zip.write_all(b"data").unwrap();
-        zip.set_raw_comment(vec![0u8; 2320]);
+        zip.set_raw_comment(vec![0u8; 2320].into_boxed_slice());
         zip.finish().unwrap();
         assert!(has_stage2_signature_trailer(&source).unwrap());
         assert!(
