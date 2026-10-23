@@ -507,7 +507,8 @@ pub(crate) fn install_live_callbacks(
     // through ActionTrace, and then call the original unmodified handler.
     // This is installed after the source movie defines updateVideo, and only
     // when its exact first-frame argument count has been verified.
-    let video_arity = chunks.iter()
+    let video_arity = chunks
+        .iter()
         .filter_map(|actions| defined_function_arity(actions, "updateVideo"))
         .collect::<Vec<_>>();
     if !video_arity.is_empty() && video_arity.iter().all(|&count| count == 1) {
@@ -1716,7 +1717,10 @@ pub fn launch_live(
             ffmpeg_executable,
         )
     } else {
-        (serde_json::json!({"available": 0}), crate::gfx_menu_video::SubmenuVideoCatalog::default())
+        (
+            serde_json::json!({"available": 0}),
+            crate::gfx_menu_video::SubmenuVideoCatalog::default(),
+        )
     };
     background_video["submenus"] = submenu_manifest;
     let linked_screens = if main_menu {
