@@ -928,8 +928,15 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                 actions = actions
                     .push(text("FEATURED PROMOTION").size(13))
                     .push(text("Edit the original main-menu promotion: title, TRY/BUY buttons, or the entire offer. Hiding/removing uses a frame guard so rotating offers cannot simply re-show it.").size(11).style(design::muted));
-                if !session.relative.eq_ignore_ascii_case("Libs/UI/main_menu.gfx") {
-                    actions = actions.push(text("Open Libs/UI/main_menu.gfx to edit featured promotion controls.").size(11).style(design::muted));
+                if !session
+                    .relative
+                    .eq_ignore_ascii_case("Libs/UI/main_menu.gfx")
+                {
+                    actions = actions.push(
+                        text("Open Libs/UI/main_menu.gfx to edit featured promotion controls.")
+                            .size(11)
+                            .style(design::muted),
+                    );
                 } else if session.project.is_none() {
                     actions = actions.push(text("Open the GFX from an editable Mod Project. Asset Library movies remain read-only.").size(11).style(design::muted));
                 } else {
@@ -939,10 +946,14 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                         actions = actions.push(
                             design::button(text(format!(
                                 "{} {}",
-                                if state.gfx_featured_target == target { "●" } else { "○" },
+                                if state.gfx_featured_target == target {
+                                    "●"
+                                } else {
+                                    "○"
+                                },
                                 target.label()
                             )))
-                            .on_press(Message::GfxFeaturedTarget(target))
+                            .on_press(Message::GfxFeaturedTarget(target)),
                         );
                     }
                     actions = actions
@@ -1043,7 +1054,9 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                         actions.push(design::button("Replace selected resource…").on_press_maybe(
                             (!state.gfx_busy).then_some(Message::GfxPickReplacement),
                         ));
-                    if info.resources.get(state.gfx_resource)
+                    if info
+                        .resources
+                        .get(state.gfx_resource)
                         .is_some_and(|resource| resource.kind == "text")
                     {
                         actions = actions
