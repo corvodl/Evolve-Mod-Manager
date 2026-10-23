@@ -71,7 +71,7 @@ impl Scan {
         description
     }
 
-    fn address(&self) -> Option<usize> {
+    pub(super) fn verified_address(&self) -> Option<usize> {
         self.ready().then(|| self.candidates[0].address)
     }
 }
@@ -137,7 +137,7 @@ fn ps(command: &str) -> Result<String, String> {
 /// when Windows reports an established non-local TCP peer owned by Evolve.
 /// UDP and external game-service state cannot be conclusively checked here.
 #[cfg(windows)]
-fn offline_guard(pid: u32, confirmed: bool) -> Result<(), String> {
+pub(super) fn offline_guard(pid: u32, confirmed: bool) -> Result<(), String> {
     if !confirmed {
         return Err("Confirm a strictly offline, local match before scanning.".into());
     }
@@ -355,7 +355,7 @@ pub(super) fn monitor(
     scan: &Scan,
     offline_confirmed: bool,
 ) -> Result<Option<f32>, String> {
-    let Some(address) = scan.address() else {
+    let Some(address) = scan.verified_address() else {
         return Ok(None);
     };
     let pid = verify_process(snapshot, game_root)?;
@@ -440,12 +440,12 @@ mod tests {
             pages_read: 1,
         };
         assert!(!scan.ready());
-        assert!(scan.address().is_none());
+        assert!(scan.verified_address().is_none());
         let ready = Scan {
             feed_steps: 1,
             ..scan
         };
         assert!(ready.ready());
-        assert_eq!(ready.address(), Some(0x20000000));
+        assert_eq!(ready.verified_address(), Some(0x20000000));
     }
 }
