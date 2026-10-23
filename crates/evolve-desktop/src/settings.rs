@@ -31,6 +31,10 @@ pub struct Preferences {
     pub show_activity_on_tasks: bool,
     /// On by default for both portable and installed builds. Can be disabled in Advanced.
     pub crash_logging_enabled: bool,
+    /// Installed EvolveGame root (bin64_SteamRetail is accepted in setup).
+    pub game_installation: String,
+    /// Normal Modded Evolve launcher EXE selected by the user.
+    pub client_executable: String,
     pub stage: String,
     pub swap: String,
     pub projects: String,
@@ -83,6 +87,8 @@ impl Default for Preferences {
             keep_original_snapshots: true,
             show_activity_on_tasks: true,
             crash_logging_enabled: true,
+            game_installation: String::new(),
+            client_executable: String::new(),
             stage: String::new(),
             swap: String::new(),
             projects: String::new(),
