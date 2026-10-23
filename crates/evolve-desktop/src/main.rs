@@ -3067,22 +3067,26 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if !state.developer_unlocked {
                 return Task::none();
             }
-            let seen = state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some();
+            let seen = state
+                .runtime_snapshot
+                .as_ref()
+                .and_then(|s| s.pid)
+                .is_some();
             state.runtime_plan_result = runtime_experiments::preview_phase2(
                 kind,
                 &state.runtime_address,
                 &state.runtime_phase2_value,
                 seen,
-            ).unwrap_or_else(|error| format!("Phase 2 preview rejected: {error}"));
+            )
+            .unwrap_or_else(|error| format!("Phase 2 preview rejected: {error}"));
         }
         Message::PreviewRuntimePhase3(kind) => {
             if !state.developer_unlocked {
                 return Task::none();
             }
-            state.runtime_plan_result = runtime_experiments::preview_phase3(
-                kind,
-                &state.runtime_phase3_value,
-            ).unwrap_or_else(|error| format!("Phase 3 preview rejected: {error}"));
+            state.runtime_plan_result =
+                runtime_experiments::preview_phase3(kind, &state.runtime_phase3_value)
+                    .unwrap_or_else(|error| format!("Phase 3 preview rejected: {error}"));
         }
         Message::LockDeveloper => {
             state.runtime_snapshot = None;
