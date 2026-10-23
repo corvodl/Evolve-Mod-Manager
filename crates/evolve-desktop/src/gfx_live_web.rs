@@ -44,7 +44,6 @@ impl ModeCardRequests {
     }
 }
 
-
 pub struct LiveServer {
     active: Arc<AtomicBool>,
     queued: mpsc::Sender<PreviewPreset>,
@@ -355,16 +354,20 @@ fn respond(
                 "served": mode_requests.served,
                 "failed": mode_requests.failed,
                 "recent": mode_requests.recent
-            }).to_string();
-            send(stream, 200, "application/json; charset=utf-8", body.as_bytes());
+            })
+            .to_string();
+            send(
+                stream,
+                200,
+                "application/json; charset=utf-8",
+                body.as_bytes(),
+            );
         }
         path if original_mode_image_request(path).is_some() => {
             // Ruffle's image loader requests PNG suffixes after the scratch
             // SWF rewrite. Source DDS files stay untouched.
             let png = original_mode_image_request(path).expect("matched exact mode URL");
-            let served = serve_file(
-                stream, &root.join(png), root, 12 * 1024 * 1024, "image/png"
-            );
+            let served = serve_file(stream, &root.join(png), root, 12 * 1024 * 1024, "image/png");
             mode_requests.record(path, served);
         }
         path if safe_mode_image_asset(path) => {
@@ -444,7 +447,9 @@ fn original_mode_image_request(path: &str) -> Option<String> {
     let file = path.strip_prefix("img/Libs/UI/FlashAssets/images/MenuModeSelect/")?;
     // Keep the old DDS extension only for compatibility with source
     // versions predating the scratch-only .png action-string rewrite.
-    let stem = file.strip_suffix(".png").or_else(|| file.strip_suffix(".dds"))?;
+    let stem = file
+        .strip_suffix(".png")
+        .or_else(|| file.strip_suffix(".dds"))?;
     let png = format!("runtime-images/{stem}.png");
     safe_mode_image_asset(&png).then_some(png)
 }
