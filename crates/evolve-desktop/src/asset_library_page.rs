@@ -162,25 +162,76 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     ].spacing(10);
 
     if state.library_show_configuration {
-        layout = layout.push(panel(container(column![
+        let picking = state.library_import_scanning;
+        let importing = state.library_import_cancel.is_some();
+        let disabled = picking || state.busy;
+        let mut importer = column![
             row![
-                text("IMPORT SIGNED STAGE 2 PAKS").size(14),
+                text("IMPORT PAKS INTO ASSET LIBRARY").size(16),
                 space().width(Fill),
-                design::button("Close").on_press(Message::LibraryToggleConfiguration).style(design::text_button),
+                design::button("Close").style(design::text_button)
+                    .on_press_maybe((!disabled).then_some(Message::LibraryToggleConfiguration)),
             ].spacing(8),
-            text("The Asset Library location is detected automatically. Select one signed .pak or a directory containing up to 64 .pak files. Imports authenticate each PAK using the bundled original public RSA key and any configured original/custom public keys. Original archives are not modified.")
+            text("Choose multiple signed PAKs or an entire EvolveGame/source folder. Folder scans include subfolders (up to 4,096 PAKs, 16 levels), as in the private manager. You can review the count before importing. Original game archives remain untouched.")
                 .size(12).style(design::muted),
             row![
-                design::text_input("Stage 2 .pak file or folder path...", &state.library_import_source)
-                    .on_input(Message::LibraryImportSourceChanged).width(Fill),
-                design::button("Import selected PAK(s)").style(design::primary)
-                    .on_press(Message::LibraryImportStart),
-            ].spacing(8),
-            row![
-                design::button("Manage storage location in Settings").on_press(Message::OpenLibrarySettings).style(design::text_button),
-                design::button("Advanced archive tools in Modding").on_press(Message::Navigate(Page::Files)).style(design::text_button),
-            ].spacing(8),
-        ].spacing(8)).padding(12)));
+                design::button("Add PAK files…").style(design::secondary)
+                    .on_press_maybe((!disabled).then_some(Message::LibraryPickFiles)),
+                design::button("Import ALL PAKs from folder…").style(design::secondary)
+                    .on_press_maybe((!disabled).then_some(Message::LibraryPickFolder)),
+            ].spacing(10),
+            text("Each PAK is independently verified using the bundled original public key and configured public keys. Existing complete imports are reused. A corrupt or incompatible archive will be reported without discarding successful imports.")
+                .size(12).style(design::muted),
+        ].spacing(10);
+        if picking {
+            importer = importer.push(text("Scanning selected files and building the import preview…")
+                .size(13).style(design::muted));
+        }
+        if let Some(plan) = &state.library_import_plan {
+            importer = importer.push(text(format!(
+                "{} PAKs found  •  {:.2} GiB packed  •  {} previously imported",
+                plan.files.len(), plan.packed_bytes as f64 / 1_073_741_824.0,
+                plan.already_imported,
+            )).size(14));
+            let mut filenames = column![];
+            for path in plan.files.iter().take(10) {
+                filenames = filenames.push(text(path.display().to_string())
+                    .size(11).style(design::muted));
+            }
+            if plan.files.len() > 10 {
+                filenames = filenames.push(text(format!(
+                    "… plus {} more PAKs", plan.files.len() - 10,
+                )).size(12).style(design::muted));
+            }
+            importer = importer.push(container(filenames.spacing(3))
+                .padding(8).width(Fill).style(design::field_panel));
+            importer = importer.push(
+                row![
+                    design::button(format!("Confirm import of {} PAKs", plan.files.len()))
+                        .style(design::primary)
+                        .on_press_maybe((!disabled).then_some(Message::LibraryImportStart)),
+                    text("Large full-game imports can use significant disk space.")
+                        .size(12).style(design::muted),
+                ].spacing(12)
+            );
+        }
+        if importing {
+            let count = state.library_import_progress.as_ref()
+                .map_or(0, |progress| progress.load(std::sync::atomic::Ordering::Relaxed));
+            let total = state.library_import_plan.as_ref().map_or(0, |plan| plan.files.len());
+            importer = importer.push(row![
+                text(format!("Importing: {count} / {total} archives completed")).size(13),
+                design::button("Cancel after current PAK")
+                    .on_press(Message::LibraryImportCancel),
+            ].spacing(12));
+        }
+        importer = importer.push(row![
+            design::button("Manage Asset Library storage").style(design::text_button)
+                .on_press_maybe((!disabled).then_some(Message::OpenLibrarySettings)),
+            design::button("Advanced archive tools in Modding").style(design::text_button)
+                .on_press(Message::Navigate(Page::Files)),
+        ].spacing(8));
+        layout = layout.push(panel(container(importer.spacing(8)).padding(14)));
     }
 
     let by_build = state.library_by_build;
