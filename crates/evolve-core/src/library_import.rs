@@ -1,7 +1,7 @@
-//! Opt-in, fail-closed Stage 2 Asset Library importer.
+//! Opt-in, format-aware Asset Library importer for ZIP-compatible legacy and signed Stage 2 PAKs.
 //! Compatible with the Qt manager's version-one AssetLibrary manifests.
 //! No source PAK or previously imported library directory is modified.
-use crate::archive::safe_member_name;
+use crate::archive::{extract_legacy_pak, inspect_legacy_pak, safe_member_name};
 use crate::cryxml::xml_bytes;
 use crate::library_catalog::{imported_archive_files, imported_library};
 use crate::signed_pak::extract_signed_pak;
@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashSet, VecDeque};
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -97,12 +97,56 @@ fn sha_file(file: &Path) -> Result<String, String> {
     Ok(format!("{:x}", hash.finalize()))
 }
 
-/// Import a user-selected signed/encrypted Stage 2 PAK. Normal ZIP and legacy
-/// PAK imports remain separate until their complete workflow is ported.
+/// A verified signed CryPAK must never be silently retried as an unsigned ZIP.
+/// Signature-trailer detection is a routing hint, not authentication; the full
+/// RSA check remains mandatory in the signed extraction path.
+fn has_stage2_signature_trailer(source: &Path) -> Result<bool, String> {
+    let metadata = fs::symlink_metadata(source).map_err(|e| e.to_string())?;
+    if !metadata.file_type().is_file() {
+        return Err("Select a regular, non-linked PAK file".into());
+    }
+    if metadata.len() < 22 {
+        return Ok(false);
+    }
+    let len = metadata.len().min(65_557) as usize;
+    let mut file = File::open(source).map_err(|e| e.to_string())?;
+    file.seek(SeekFrom::End(-(len as i64)))
+        .map_err(|e| e.to_string())?;
+    let mut tail = vec![0u8; len];
+    file.read_exact(&mut tail).map_err(|e| e.to_string())?;
+    for offset in (0..=len - 22).rev() {
+        if &tail[offset..offset + 4] != b"PK\x05\x06" {
+            continue;
+        }
+        let comment_len = u16::from_le_bytes([tail[offset + 20], tail[offset + 21]]) as usize;
+        if offset + 22 + comment_len != len {
+            continue;
+        }
+        let header = tail.get(offset + 22..offset + 28);
+        return Ok(comment_len == 2320 || header == Some(b"\x06\x00\x00\x00\x01\x03".as_slice()));
+    }
+    Ok(false)
+}
+
+#[derive(Clone, Copy)]
+enum ImportFormat<'a> {
+    Signed(&'a Path),
+    LegacyZip,
+}
+
+/// Retained signed-only entrypoint for explicit cryptographic workflows.
 pub fn import_signed_library_pak(
     root: &Path,
     source: &Path,
     public_key: &Path,
+) -> Result<LibraryImportReport, String> {
+    import_library_pak(root, source, ImportFormat::Signed(public_key))
+}
+
+fn import_library_pak(
+    root: &Path,
+    source: &Path,
+    format: ImportFormat<'_>,
 ) -> Result<LibraryImportReport, String> {
     let root_meta = fs::symlink_metadata(root)
         .map_err(|_| "Select an existing local AssetLibrary directory first".to_owned())?;
@@ -121,18 +165,23 @@ pub fn import_signed_library_pak(
         .and_then(|name| name.to_str())
         .ok_or("Source PAK name is not valid Unicode")?;
     if basename.len() > 240 || !basename.to_ascii_lowercase().ends_with(".pak") {
-        return Err("Select a Stage 2 .pak file".into());
+        return Err("Select a .pak file".into());
     }
-    let public_meta = fs::symlink_metadata(public_key).map_err(|e| e.to_string())?;
-    if !public_meta.file_type().is_file() || public_meta.len() > 8192 {
-        return Err("Use an existing local, regular RSA verification key".into());
-    }
+    let public_key = match format {
+        ImportFormat::Signed(key) => {
+            let meta = fs::symlink_metadata(key).map_err(|e| e.to_string())?;
+            if !meta.file_type().is_file() || meta.len() > 8192 {
+                return Err("Use an existing local, regular RSA verification key".into());
+            }
+            Some(fs::canonicalize(key).map_err(|e| e.to_string())?)
+        }
+        ImportFormat::LegacyZip => None,
+    };
     let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
     let source = fs::canonicalize(source).map_err(|e| e.to_string())?;
     if source.starts_with(&root) {
         return Err("Cannot import a PAK already inside the Asset Library".into());
     }
-    let public_key = fs::canonicalize(public_key).map_err(|e| e.to_string())?;
     let before = sha_file(&source)?;
     let id = archive_id(basename, &before);
     let name = archive_directory(basename, &id);
@@ -199,23 +248,36 @@ pub fn import_signed_library_pak(
         .tempdir_in(&root)
         .map_err(|e| e.to_string())?;
     let extracted = work.path().join("files");
-    let info = extract_signed_pak(&source, &public_key, basename, &extracted)
-        .map_err(|e| e.to_string())?;
-    if info.entries.is_empty() {
-        return Err("Signed PAK did not contain any supported entries".into());
+    let (entries, archive_format, verification): (Vec<(String, u64)>, &str, &str) =
+        match public_key.as_deref() {
+            Some(key) => {
+                let info = extract_signed_pak(&source, key, basename, &extracted)
+                    .map_err(|e| e.to_string())?;
+                (info.entries.into_iter().map(|entry| (entry.path, entry.size)).collect(),
+                    "signed-crypak", "rsa-pss")
+            }
+            None => {
+                let info = extract_legacy_pak(&source, &extracted)
+                    .map_err(|e| e.to_string())?;
+                (info.entries.into_iter().map(|entry| (entry.path, entry.size)).collect(),
+                    "legacy-zip", "zip-crc32")
+            }
+        };
+    if entries.is_empty() {
+        return Err("PAK did not contain any supported entries".into());
     }
-    let mut records = Vec::with_capacity(info.entries.len());
+    let mut records = Vec::with_capacity(entries.len());
     let mut seen = HashSet::new();
     let mut total = 0u64;
-    for entry in &info.entries {
-        let name = safe_member_name(&entry.path).map_err(|e| e.to_string())?;
+    for (member_path, member_size) in &entries {
+        let name = safe_member_name(member_path).map_err(|e| e.to_string())?;
         if !seen.insert(name.to_ascii_lowercase()) {
-            return Err("Signed PAK has a case-insensitive duplicate member name".into());
+            return Err("PAK has a case-insensitive duplicate member name".into());
         }
         let file = extracted.join(&name);
         let original_meta = fs::symlink_metadata(&file).map_err(|e| e.to_string())?;
-        if !original_meta.file_type().is_file() || original_meta.len() != entry.size {
-            return Err("Extracted signed file length is incorrect".into());
+        if !original_meta.file_type().is_file() || original_meta.len() != *member_size {
+            return Err("Extracted PAK member length is incorrect".into());
         }
         let mut converted = false;
         if original_meta.len() >= 8 && original_meta.len() <= XML_LIMIT as u64 {
@@ -260,14 +322,15 @@ pub fn import_signed_library_pak(
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
         .as_secs();
+    let key_hash = public_key.as_deref().map(sha_file).transpose()?;
     let manifest = serde_json::json!({
         "version": 1, "name": basename, "signed_name": basename,
         "source": source.to_string_lossy(),
         "source_sha256": before, "source_size": source_meta.len(),
         "source_mtime_ns": source_mtime_ns,
-        "public_key_sha256": sha_file(&public_key)?,
-        "archive_format": "signed-crypak",
-        "verification": "rsa-pss", "imported_at": imported_at,
+        "public_key_sha256": key_hash,
+        "archive_format": archive_format,
+        "verification": verification, "imported_at": imported_at,
         "extracted_bytes": total, "warnings": [], "entries": records,
     });
     let mut file = fs::OpenOptions::new()
@@ -298,15 +361,23 @@ pub fn import_signed_library_pak(
     })
 }
 
-/// Authenticate each archive with every candidate public key before extraction.
-/// Original-game and custom-signed PAKs may be imported in one selection.
+/// Auto-route ZIP-compatible legacy archives without RSA; authenticate signed
+/// Stage 2 archives using candidate keys. Unsupported formats stay fail-closed.
 pub fn import_signed_library_pak_with_keys(
     root: &Path,
     source: &Path,
     public_keys: &[PathBuf],
 ) -> Result<LibraryImportReport, String> {
+    if !has_stage2_signature_trailer(source)? {
+        return match inspect_legacy_pak(source) {
+            Ok(_) => import_library_pak(root, source, ImportFormat::LegacyZip),
+            Err(error) => Err(format!(
+                "Unsupported or corrupt PAK (not ZIP-compatible legacy or recognized signed CryPAK): {error}"
+            )),
+        };
+    }
     if public_keys.is_empty() {
-        return Err("No RSA public verification keys were available".into());
+        return Err("Signed CryPAK requires an RSA verification key".into());
     }
     let basename = source
         .file_name()
@@ -335,8 +406,8 @@ pub fn import_signed_library_pak_with_keys(
 ///
 /// Directory selection does not recurse, follow symlinks, or silently treat
 /// unrelated files as archives. At most 64 signed archives are attempted per
-/// explicit request. An individual bad signature is reported without hiding
-/// any successful, independently verified imports.
+/// explicit request. An individual bad signature or unsupported legacy format
+/// is reported without hiding any successful, independently verified imports.
 pub fn import_signed_library_selection(
     root: &Path,
     source: &Path,
@@ -559,8 +630,9 @@ pub fn scan_library_import_sources(
 }
 
 /// Import the displayed, explicit preview selection, preserving completed
-/// verified PAKs if the user cancels between archives. The source files and
-/// existing imports are never modified; every archive is authenticated.
+/// imported PAKs if the user cancels between archives. The source files and
+/// existing imports are never modified; signed files require RSA verification,
+/// and ZIP-compatible files require CRC validation.
 pub fn import_library_plan_with_keys(
     library_root: &Path,
     plan: &LibraryImportPlan,
