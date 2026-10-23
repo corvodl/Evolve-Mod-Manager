@@ -682,9 +682,108 @@ pub(crate) fn embed_mode_bitmap_linkages(
     Ok((output, embedded, skipped))
 }
 
+/// Redirect only the original main_menu.gfx ImageLoading.loadBitmap() URL
+/// prefix in a *temporary* FWS to an isolated local preview route.
+///
+/// The actual AVM1 class calls MovieClipLoader.loadClip("img://" + virtual
+/// DDS path, target). That loader does not use BitmapData.loadBitmap or
+/// SWF ExportAssets linkages. Because "./img/" has exactly the same byte
+/// length as "img://", we can patch its constant-pool entry in place without
+/// altering any compiled ActionScript instructions or original game files.
+/// The loopback server serves this *exact* MenuModeSelect virtual path from
+/// the already verified, staged PNG derivative only.
+pub(crate) fn route_mode_image_loadclip_urls(swf: &[u8]) -> Result<(Vec<u8>, usize), String> {
+    if swf.len() > MAX_DECOMPRESSED || swf.len() < 12 || !swf.starts_with(b"FWS") {
+        return Err("Mode image loadClip routing requires a bounded FWS".into());
+    }
+    if u32::try_from(swf.len()).ok() != Some(u32::from_le_bytes(swf[4..8].try_into().unwrap())) {
+        return Err("Mode image loadClip routing requires an exact SWF length".into());
+    }
+    let (header, records) = tags(swf)?;
+    let mut output = swf[..header].to_vec();
+    let mut rewritten = 0usize;
+    for tag in records {
+        let mut data = tag.data;
+        if tag.code == 59
+            && data
+                .windows(b"ImageLoading\0".len())
+                .any(|s| s == b"ImageLoading\0")
+            && data
+                .windows(b"loadBitmap\0".len())
+                .any(|s| s == b"loadBitmap\0")
+        {
+            for at in 0..data.len().saturating_sub(b"img://\0".len() - 1) {
+                if &data[at..at + b"img://\0".len()] == b"img://\0" {
+                    data[at..at + b"./img/\0".len()].copy_from_slice(b"./img/\0");
+                    rewritten += 1;
+                }
+            }
+        }
+        encode_tag(tag.code, &data, &mut output);
+    }
+    if rewritten > 1 {
+        return Err("Ambiguous original ImageLoading img:// rewrite".into());
+    }
+    if rewritten == 0 {
+        return Ok((swf.to_vec(), 0));
+    }
+    if output.len() != swf.len() {
+        return Err("Source image URL rewrite unexpectedly changed SWF length".into());
+    }
+    let final_length = output.len() as u32;
+    output[4..8].copy_from_slice(&final_length.to_le_bytes());
+    Ok((output, rewritten))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn routes_only_compiled_imageloading_movieclip_urls_without_touching_original() {
+        // Synthetic SWF with a source-like ImageLoading constant pool.
+        let mut original = b"FWS\x08".to_vec();
+        original.extend(0u32.to_le_bytes());
+        original.extend([0x08, 0, 0, 12, 1, 0]);
+        let mut init_action = vec![1, 0]; // DoInitAction sprite ID
+        init_action.extend(b"ImageLoading\0loadBitmap\0img://\0");
+        encode_tag(59, &init_action, &mut original);
+        encode_tag(1, &[], &mut original);
+        encode_tag(0, &[], &mut original);
+        let length = original.len() as u32;
+        original[4..8].copy_from_slice(&length.to_le_bytes());
+        let pristine = original.clone();
+        let (patched, count) = route_mode_image_loadclip_urls(&original).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(original, pristine);
+        assert_eq!(patched.len(), original.len());
+        assert!(patched.windows(b"./img/\0".len()).any(|v| v == b"./img/\0"));
+        assert!(!patched.windows(b"img://\0".len()).any(|v| v == b"img://\0"));
+        assert_eq!(&patched[4..8], &(patched.len() as u32).to_le_bytes());
+
+        let (patched_again, count) = route_mode_image_loadclip_urls(&patched).unwrap();
+        assert_eq!(count, 0);
+        assert_eq!(patched_again, patched);
+    }
+
+    #[test]
+    fn img_protocol_outside_original_imageloading_is_untouched() {
+        let mut source = b"FWS\x08".to_vec();
+        source.extend(0u32.to_le_bytes());
+        source.extend([0x08, 0, 0, 12, 1, 0]);
+        encode_tag(
+            59,
+            b"\x01\x00DifferentClass\0loadBitmap\0img://\0",
+            &mut source,
+        );
+        encode_tag(1, &[], &mut source);
+        encode_tag(0, &[], &mut source);
+        let length = source.len() as u32;
+        source[4..8].copy_from_slice(&length.to_le_bytes());
+        let (untouched, count) = route_mode_image_loadclip_urls(&source).unwrap();
+        assert_eq!(count, 0);
+        assert_eq!(untouched, source);
+    }
+
     #[test]
     fn preview_bitmap_budgets_allow_large_original_menus_but_not_oversized_swf() {
         assert!(has_movie_budget(500_000, 10_000_000, 3_000_000));

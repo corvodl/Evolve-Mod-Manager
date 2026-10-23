@@ -1699,9 +1699,19 @@ pub fn launch_live(
         // the verified same-build artwork without modifying game assets.
         let (linked_movie, linkages, skipped_linkages) =
             gfx_external_textures::embed_mode_bitmap_linkages(&movie, scratch.path(), &names)?;
-        fs::write(scratch.path().join("movie.swf"), &linked_movie).map_err(|e| e.to_string())?;
+        // The original ImageLoading class uses MovieClipLoader.loadClip with
+        // img:// DDS URLs. BitmapData ExportAssets linkages cannot satisfy
+        // that call. Rewrite its single source-owned URL prefix only in the
+        // isolated scratch SWF and serve verified PNGs at that virtual path.
+        let (routed_movie, loadclip_urls) = if names.is_empty() {
+            (linked_movie, 0)
+        } else {
+            gfx_external_textures::route_mode_image_loadclip_urls(&linked_movie)?
+        };
+        fs::write(scratch.path().join("movie.swf"), &routed_movie).map_err(|e| e.to_string())?;
         mode_images["flash_bitmap_linkages"] = serde_json::json!(linkages);
         mode_images["flash_linkage_skips"] = serde_json::json!(skipped_linkages);
+        mode_images["source_movieclip_url_rewrites"] = serde_json::json!(loadclip_urls);
     }
     write_live_menu_report(
         session,
