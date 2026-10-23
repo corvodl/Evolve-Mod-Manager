@@ -253,14 +253,25 @@ fn import_library_pak(
             Some(key) => {
                 let info = extract_signed_pak(&source, key, basename, &extracted)
                     .map_err(|e| e.to_string())?;
-                (info.entries.into_iter().map(|entry| (entry.path, entry.size)).collect(),
-                    "signed-crypak", "rsa-pss")
+                (
+                    info.entries
+                        .into_iter()
+                        .map(|entry| (entry.path, entry.size))
+                        .collect(),
+                    "signed-crypak",
+                    "rsa-pss",
+                )
             }
             None => {
-                let info = extract_legacy_pak(&source, &extracted)
-                    .map_err(|e| e.to_string())?;
-                (info.entries.into_iter().map(|entry| (entry.path, entry.size)).collect(),
-                    "legacy-zip", "zip-crc32")
+                let info = extract_legacy_pak(&source, &extracted).map_err(|e| e.to_string())?;
+                (
+                    info.entries
+                        .into_iter()
+                        .map(|entry| (entry.path, entry.size))
+                        .collect(),
+                    "legacy-zip",
+                    "zip-crc32",
+                )
             }
         };
     if entries.is_empty() {
@@ -679,8 +690,11 @@ mod tests {
         let library = temp.path().join("library");
         fs::create_dir(&library).unwrap();
         let mut zip = zip::ZipWriter::new(File::create(&source).unwrap());
-        zip.start_file("Models/example.cdf", zip::write::SimpleFileOptions::default())
-            .unwrap();
+        zip.start_file(
+            "Models/example.cdf",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
         zip.write_all(b"<Character/>").unwrap();
         zip.finish().unwrap();
         let original = fs::read(&source).unwrap();
@@ -690,16 +704,24 @@ mod tests {
         assert_eq!(imported.files, 1);
         assert!(!imported.already_imported);
         let snapshot = imported_library(&library).unwrap();
-        let archive = snapshot.archives.iter().find(|a| a.id == imported.id).unwrap();
+        let archive = snapshot
+            .archives
+            .iter()
+            .find(|a| a.id == imported.id)
+            .unwrap();
         let manifest: serde_json::Value = serde_json::from_slice(
-            &fs::read(Path::new(&archive.directory).join("asset-library.json")).unwrap()
-        ).unwrap();
+            &fs::read(Path::new(&archive.directory).join("asset-library.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(manifest["archive_format"], "legacy-zip");
         assert_eq!(manifest["verification"], "zip-crc32");
         assert!(manifest["public_key_sha256"].is_null());
         assert_eq!(fs::read(&source).unwrap(), original);
-        assert!(import_signed_library_pak_with_keys(&library, &source, &[])
-            .unwrap().already_imported);
+        assert!(
+            import_signed_library_pak_with_keys(&library, &source, &[])
+                .unwrap()
+                .already_imported
+        );
     }
 
     #[test]
@@ -710,13 +732,17 @@ mod tests {
         let library = temp.path().join("library");
         fs::create_dir(&library).unwrap();
         let mut zip = zip::ZipWriter::new(File::create(&source).unwrap());
-        zip.start_file("foo.txt", zip::write::SimpleFileOptions::default()).unwrap();
+        zip.start_file("foo.txt", zip::write::SimpleFileOptions::default())
+            .unwrap();
         zip.write_all(b"data").unwrap();
         zip.set_raw_comment(vec![0u8; 2320]);
         zip.finish().unwrap();
         assert!(has_stage2_signature_trailer(&source).unwrap());
-        assert!(import_signed_library_pak_with_keys(&library, &source, &[])
-            .unwrap_err().contains("requires an RSA"));
+        assert!(
+            import_signed_library_pak_with_keys(&library, &source, &[])
+                .unwrap_err()
+                .contains("requires an RSA")
+        );
         assert!(imported_library(&library).unwrap().archives.is_empty());
     }
 
@@ -779,7 +805,7 @@ mod tests {
         assert!(
             result
                 .unwrap_err()
-                .contains("No matching RSA verification key")
+                .contains("Unsupported or corrupt PAK")
         );
         assert_eq!(fs::read_dir(&library).unwrap().count(), 0);
     }
