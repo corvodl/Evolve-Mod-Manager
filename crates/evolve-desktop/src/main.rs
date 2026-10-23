@@ -16,6 +16,7 @@ mod explorer_tree;
 mod gfx_bundled_tools;
 mod gfx_dependencies;
 mod gfx_editor;
+mod gfx_featured_promo;
 mod gfx_external_textures;
 mod gfx_interactive;
 mod gfx_layout_canvas;
@@ -207,6 +208,8 @@ struct State {
     gfx_layout_rotation: String,
     gfx_layout_visible: bool,
     gfx_layout_show_raster: bool,
+    gfx_featured_target: gfx_featured_promo::Target,
+    gfx_featured_text: String,
     gfx_live_open: bool,
     gfx_live_status: String,
     gfx_live_snapshot: Option<gfx_live_inspector::UiSnapshot>,
@@ -408,6 +411,7 @@ enum GfxToolsSection {
     #[default]
     Preview,
     Layout,
+    Featured,
     Scripts,
     Resources,
     Inspector,
@@ -1514,6 +1518,9 @@ enum Message {
     GfxLayoutValue(&'static str, String),
     GfxLayoutVisible(bool),
     GfxStageLayout,
+    GfxFeaturedTarget(gfx_featured_promo::Target),
+    GfxFeaturedText(String),
+    GfxFeaturedStage(gfx_featured_promo::Mode),
     GfxToggleLiveInspector,
     GfxImportUiSnapshot,
     GfxUiSnapshotPicked(Option<PathBuf>),
@@ -4828,6 +4835,30 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     visible: state.gfx_layout_visible,
                 })),
             );
+        }
+        Message::GfxFeaturedTarget(target) => {
+            state.gfx_featured_target = target;
+        }
+        Message::GfxFeaturedText(value) => {
+            if value.chars().count() <= 160 && !value.chars().any(|c| c.is_control()) {
+                state.gfx_featured_text = value;
+            }
+        }
+        Message::GfxFeaturedStage(mode) => {
+            if state.gfx_session.as_ref().is_none_or(|session|
+                !session.relative.eq_ignore_ascii_case("Libs/UI/main_menu.gfx")) {
+                state.gfx_status = "Open Libs/UI/main_menu.gfx to edit the featured promotion.".into();
+                return Task::none();
+            }
+            return update(state, Message::GfxAction(gfx_editor::Action::Featured {
+                mode,
+                target: state.gfx_featured_target,
+                text: if mode == gfx_featured_promo::Mode::Text {
+                    state.gfx_featured_text.clone()
+                } else {
+                    String::new()
+                },
+            }));
         }
         Message::GfxPickReplacement => {
             return Task::perform(
