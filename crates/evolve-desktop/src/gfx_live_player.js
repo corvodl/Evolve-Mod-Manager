@@ -81,7 +81,7 @@
                 !/^[A-Za-z0-9_./-]{1,256}\.(?:swf|gfx)$/i.test(path) ||
                 path.startsWith("/") || path.split("/").some(part =>
                     part === "" || part === "." || part === "..") ||
-                sources.includes(path) || sources.length >= 16) continue;
+                sources.includes("./" + path) || sources.length >= 16) continue;
             sources.push("./" + path);
         }
         return sources;
