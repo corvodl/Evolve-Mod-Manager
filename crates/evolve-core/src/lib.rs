@@ -103,7 +103,8 @@ pub use library_catalog::{
     describe_archive, imported_archive_files, imported_library, resolve_imported_reference,
 };
 pub use library_import::{
-    LibraryBatchImportReport, LibraryImportFailure, LibraryImportReport, import_signed_library_pak,
+    LibraryBatchImportReport, LibraryImportFailure, LibraryImportPlan, LibraryImportReport,
+    import_library_plan_with_keys, scan_library_import_sources, import_signed_library_pak,
     import_signed_library_pak_with_keys, import_signed_library_selection,
     import_signed_library_selection_with_keys,
 };
