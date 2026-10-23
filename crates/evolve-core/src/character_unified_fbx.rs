@@ -178,6 +178,7 @@ const SOURCE_EMISSION_ROLES: &[&str] = &[
 #[derive(Default)]
 struct AuthoredMaps {
     diffuse: Option<PathBuf>,
+    opaque_2012_diffuse: bool,
     normal: Option<PathBuf>,
     emissive: Option<PathBuf>,
     specular: Option<PathBuf>,
@@ -742,6 +743,42 @@ fn original_model_material_with_scope(
     Ok(None)
 }
 
+/// 2012 render meshes have CryTek 0x745 headers. Stage 2 CrChF DDS alpha
+/// semantics must not change when fixing legacy character exports.
+fn historical_2012_crytek_mesh(path: &Path) -> Result<bool, String> {
+    use std::io::{ErrorKind, Read};
+    let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut header = [0u8; 16];
+    if let Err(error) = file.read_exact(&mut header) {
+        if error.kind() == ErrorKind::UnexpectedEof {
+            return Ok(false);
+        }
+        return Err(format!("Cannot read source mesh version: {error}"));
+    }
+    Ok(header.starts_with(b"CryTek\\0\\0")
+        && u32::from_le_bytes(header[12..16].try_into().unwrap()) == 0x745)
+}
+
+/// Original 2012 character diffuse DDS alpha may pack gloss/emissive data.
+/// Only opaque-authored MTL leaves may discard that *diffuse* alpha for the
+/// glTF/Blender material. Explicit opacity maps and translucent leaves remain
+/// transparent; NoDraw is still handled as a zero-opacity material.
+fn opaque_historical_2012_diffuse(
+    legacy_2012: bool,
+    leaf: &crate::materials::MaterialSlot,
+) -> bool {
+    legacy_2012
+        && !leaf.shader.eq_ignore_ascii_case("NoDraw")
+        && leaf.opacity.unwrap_or(1.0) >= 0.999
+        && !leaf.maps.iter().any(|map| map.role == "opacity")
+}
+
+fn make_diffuse_opaque(rgba: &mut image::RgbaImage) {
+    for pixel in rgba.pixels_mut() {
+        pixel[3] = 255;
+    }
+}
+
 /// Resolve actual MTL texture roles, never the first same-named DDS found
 /// somewhere else. Multiple submaterials need the original subset map and
 /// are left untextured rather than painted with an incorrect atlas.
@@ -761,6 +798,7 @@ fn exact_single_slot_maps_with_scope(
     override_mtl: Option<&str>,
     imported: Option<&ImportedTextureScope>,
 ) -> Result<AuthoredMaps, String> {
+    let legacy_2012 = historical_2012_crytek_mesh(mesh_path)?;
     let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
     let Some((candidate, material)) =
         original_model_material_with_scope(&root, mesh_path, inventory, override_mtl, imported)?
@@ -775,6 +813,7 @@ fn exact_single_slot_maps_with_scope(
     let mut maps = AuthoredMaps::default();
     let mut used_roles = HashSet::new();
     let leaf = &document.slots[0];
+    maps.opaque_2012_diffuse = opaque_historical_2012_diffuse(legacy_2012, leaf);
     let legacy_decal = leaf.shader.eq_ignore_ascii_case("Illum")
         && !leaf.alpha_glow
         && leaf.glow_amount.is_some_and(|amount| amount > 0.0)
@@ -855,6 +894,7 @@ fn exact_multi_slot_materials_scoped_roles(
     imported: Option<&ImportedTextureScope>,
     include_color_maps: bool,
 ) -> Result<Option<Vec<OriginalMaterialPng>>, String> {
+    let legacy_2012 = historical_2012_crytek_mesh(mesh_path)?;
     let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
     let Some((virtual_mtl, material)) =
         original_model_material_with_scope(&root, mesh_path, inventory, override_mtl, imported)?
@@ -917,7 +957,12 @@ fn exact_multi_slot_materials_scoped_roles(
             *target = Some(if role == 4 {
                 authored_roughness_png(&file, imported)?
             } else {
-                authored_png(&file, role == 1, imported)?
+                authored_png(
+                    &file,
+                    role == 1,
+                    imported,
+                    role == 0 && opaque_historical_2012_diffuse(legacy_2012, leaf),
+                )?
             });
         }
         slots.push(slot);
@@ -1016,6 +1061,7 @@ fn authored_png(
     path: &Path,
     normal_map: bool,
     imported: Option<&ImportedTextureScope>,
+    opaque_diffuse: bool,
 ) -> Result<Vec<u8>, String> {
     let (info, mut rgba) = decode_original_mip(path, imported)?;
     if normal_map && info.format == crate::dds::DdsFormat::Bc5 {
@@ -1028,6 +1074,9 @@ fn authored_png(
             px[2] = (((z + 1.0) * 0.5) * 255.0).round().clamp(0.0, 255.0) as u8;
             px[3] = 255;
         }
+    }
+    if opaque_diffuse {
+        make_diffuse_opaque(&mut rgba);
     }
     let mut png = Vec::new();
     image::codecs::png::PngEncoder::new(&mut png)
@@ -1385,7 +1434,7 @@ pub fn export_unified_cdf_fbx_options_with_glow(
         let path = monster_glow_path(source, inventory)?
             .ok_or("No exact full-armor glow DDS belongs to this monster and build")?;
         Some(
-            authored_png(&path, false, imported.as_ref())
+            authored_png(&path, false, imported.as_ref(), false)
                 .map_err(|e| format!("Full-armor glow DDS: {e}"))?,
         )
     } else {
@@ -1668,7 +1717,7 @@ pub fn export_unified_cdf_fbx_options_with_glow(
             let mut diffuse = maps
                 .diffuse
                 .as_deref()
-                .map(|f| authored_png(f, false, imported.as_ref()))
+                .map(|f| authored_png(f, false, imported.as_ref(), maps.opaque_2012_diffuse))
                 .transpose()?;
             if damage_blend_percent > 0
                 && monster_dir.as_deref().is_some_and(|owner| {
@@ -1700,7 +1749,7 @@ pub fn export_unified_cdf_fbx_options_with_glow(
             let normal = maps
                 .normal
                 .as_deref()
-                .map(|f| authored_png(f, true, imported.as_ref()))
+                .map(|f| authored_png(f, true, imported.as_ref(), false))
                 .transpose()?;
             let mut emissive = maps
                 .emissive
