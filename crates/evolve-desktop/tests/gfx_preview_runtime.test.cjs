@@ -129,3 +129,22 @@ test("same-build Ruffle font sources accept only bounded staged SWF/GFX imports"
     assert.match(script, /const closedPrompt = dismissOriginalSignin\(\)/);
     assert.doesNotMatch(script, /window\.StartMatch\s*=/);
 });
+
+test("missing Training art audit reads original Flash branch and menu population, never invents cards", () => {
+    const js = readFileSync(join(__dirname, "../src/gfx_live_player.js"), "utf8");
+    const rust = readFileSync(join(__dirname, "../src/gfx_interactive.rs"), "utf8");
+    assert.match(js, /evolvePreview_probeImageButtons/);
+    assert.match(js, /evolvePreview_probeMenuRows/);
+    assert.match(js, /cardRequests\?\.requested === 0/);
+    assert.match(js, /image branch is ON but no ImageLoading\.loadBitmap URL was requested/);
+    assert.match(rust, /defined_function_arity\(actions, "shouldUseImageButtons"\)/);
+    assert.match(rust, /evolveCallback_probeImageButtons/);
+    assert.match(rust, /evolveCallback_probeMenuRows/);
+    assert.doesNotMatch(js, /createElement\("img"\).*MenuModeSelect/);
+});
+
+test("unmodified live menu identifies featured promotion host-data gap rather than hiding it", () => {
+    const js = readFileSync(join(__dirname, "../src/gfx_live_player.js"), "utf8");
+    assert.match(js, /Featured promotion: the authored title\/TRY\/BUY outlines exist/);
+    assert.match(js, /never applies the optional Featured removal preset/);
+});
