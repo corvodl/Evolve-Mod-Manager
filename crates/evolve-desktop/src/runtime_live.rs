@@ -73,14 +73,18 @@ fn validate_address(at: usize) -> Result<(), String> {
 
 fn validate_baseline(expected: u32, current: u32) -> Result<(), String> {
     if current != expected {
-        return Err("Value changed since it was read. Read current Float32 again before writing.".into());
+        return Err(
+            "Value changed since it was read. Read current Float32 again before writing.".into(),
+        );
     }
     Ok(())
 }
 
 #[cfg(windows)]
 fn verify_session(snapshot: &Snapshot, game_root: &str, confirmed: bool) -> Result<u32, String> {
-    let pid = snapshot.pid.ok_or("Detect one running Evolve.exe process")?;
+    let pid = snapshot
+        .pid
+        .ok_or("Detect one running Evolve.exe process")?;
     let current = runtime_memory::inspect(game_root);
     if current.pid != Some(pid) {
         return Err("Evolve restarted; old addresses cannot be edited".into());
@@ -103,7 +107,10 @@ fn current_bits(pid: u32, at: usize) -> Result<u32, String> {
         .map_err(|e| format!("Could not open Evolve for read access: {e}"))?;
     let bytes = read_process_memory::copy_address(at, 4, &handle)
         .map_err(|e| format!("Cannot read Float32 address: {e}"))?;
-    let raw: [u8; 4] = bytes.as_slice().try_into().map_err(|_| "Incomplete Float32 read")?;
+    let raw: [u8; 4] = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| "Incomplete Float32 read")?;
     Ok(u32::from_le_bytes(raw))
 }
 
@@ -120,7 +127,9 @@ pub(super) fn probe(
     let raw = current_bits(pid, address)?;
     let previous = f32::from_bits(raw);
     if !previous.is_finite() || previous.abs() > 150_000.0 {
-        return Err("Float32 at this address is nonfinite or implausible; refusing to arm it".into());
+        return Err(
+            "Float32 at this address is nonfinite or implausible; refusing to arm it".into(),
+        );
     }
     verify_session(snapshot, game_root, confirmed)?;
     Ok(Probe {
@@ -206,7 +215,9 @@ pub(super) fn apply(
     confirmed: bool,
     cancel: &AtomicBool,
 ) -> Result<WriteResult, String> {
-    if cancel.load(Ordering::Relaxed) { return Err("Offline live edit was canceled".into()); }
+    if cancel.load(Ordering::Relaxed) {
+        return Err("Offline live edit was canceled".into());
+    }
     let next = value(desired)?;
     validate_address(probe.address)?;
     let pid = verify_session(snapshot, game_root, confirmed)?;
@@ -215,7 +226,9 @@ pub(super) fn apply(
     }
     validate_baseline(probe.expected_bits, current_bits(pid, probe.address)?)?;
     verify_session(snapshot, game_root, confirmed)?;
-    if cancel.load(Ordering::Relaxed) { return Err("Offline live edit canceled before write".into()); }
+    if cancel.load(Ordering::Relaxed) {
+        return Err("Offline live edit canceled before write".into());
+    }
     write_four(pid, probe.address, probe.expected_bits, next.to_bits())?;
     let observed = current_bits(pid, probe.address)?;
     if observed != next.to_bits() {
