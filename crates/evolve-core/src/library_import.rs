@@ -610,14 +610,14 @@ mod tests {
         fs::write(source.join("nested/more/other.PAK"), b"nested").unwrap();
         fs::write(source.join("nested/text.txt"), b"ignore").unwrap();
         let non_recursive =
-            scan_library_import_sources(&library, &[source.clone()], false).unwrap();
+            scan_library_import_sources(&library, std::slice::from_ref(&source), false).unwrap();
         assert_eq!(non_recursive.files.len(), 1);
-        let recursive = scan_library_import_sources(&library, &[source.clone()], true).unwrap();
+        let recursive = scan_library_import_sources(&library, std::slice::from_ref(&source), true).unwrap();
         assert_eq!(recursive.files.len(), 2);
         assert_eq!(recursive.packed_bytes, 10);
         assert_eq!(recursive.already_imported, 0);
         assert_eq!(recursive.files[0].file_name().unwrap(), "other.PAK");
-        assert!(scan_library_import_sources(&library, &[library.clone()], true).is_err());
+        assert!(scan_library_import_sources(&library, std::slice::from_ref(&library), true).is_err());
         assert!(
             scan_library_import_sources(&library, &[source.join("nested/text.txt")], false)
                 .is_err()
