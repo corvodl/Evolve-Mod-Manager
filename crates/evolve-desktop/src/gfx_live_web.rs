@@ -320,6 +320,13 @@ fn respond(
                 mime,
             );
         }
+        path if original_mode_image_request(path).is_some() => {
+            // Temporary same-build DDS conversion, retrieved by the original
+            // Flash ImageLoading MovieClipLoader.loadClip() path. Only this
+            // exact virtual MenuModeSelect namespace is accessible.
+            let png = original_mode_image_request(path).expect("matched exact mode URL");
+            serve_file(stream, &root.join(png), root, 12 * 1024 * 1024, "image/png");
+        }
         path if safe_mode_image_asset(path) => {
             // These are PNG derivatives of exact-build source DDS files.
             // Never expose raw .dds, user files, or an arbitrary image folder.
@@ -389,6 +396,15 @@ fn safe_asset(name: &str) -> bool {
             || name.ends_with(".wasm")
             || name.ends_with(".json")
             || name.ends_with(".map"))
+}
+/// Resolve only original mode-card DDS virtual names to their authenticated
+/// converted PNGs already present in this isolated preview scratch directory.
+/// The video, arbitrary img:// namespaces and source game assets are not served.
+fn original_mode_image_request(path: &str) -> Option<String> {
+    let file = path.strip_prefix("img/Libs/UI/FlashAssets/images/MenuModeSelect/")?;
+    let stem = file.strip_suffix(".dds")?;
+    let png = format!("runtime-images/{stem}.png");
+    safe_mode_image_asset(&png).then_some(png)
 }
 fn safe_mode_image_asset(name: &str) -> bool {
     let Some(file) = name.strip_prefix("runtime-images/") else {
@@ -488,6 +504,26 @@ mod tests {
         }
     }
     #[test]
+    fn only_verified_mode_card_virtual_paths_map_to_staged_pngs() {
+        assert_eq!(
+            original_mode_image_request(
+                "img/Libs/UI/FlashAssets/images/MenuModeSelect/goliathTutorial.dds"
+            ),
+            Some("runtime-images/goliathTutorial.png".into())
+        );
+        for path in [
+            "img/Libs/UI/FlashAssets/images/MenuModeSelect/../secret.dds",
+            "img/Libs/UI/FlashAssets/images/News/news_img1.dds",
+            "img/Libs/UI/FlashAssets/images/MenuModeSelect/x.png",
+            "img/Libs/UI/FlashAssets/images/MenuModeSelect/hunt%2Fsecret.dds",
+            "img/Libs/UI/FlashAssets/images/MenuModeSelect//hunt.dds",
+            "img/Libs/UI/FlashAssets/images/MenuModeSelect/C:.dds",
+            "img/../../runtime-images/hunt.dds",
+        ] {
+            assert_eq!(original_mode_image_request(path), None, "{path}");
+        }
+    }
+    #[test]
     fn rejects_remote_or_unbounded_asset_paths() {
         assert!(safe_asset("ruffle.js"));
         assert!(safe_asset("core.ruffle.ab12.wasm"));
@@ -511,6 +547,12 @@ mod tests {
             let src = tempfile::tempdir().unwrap();
             let web = tempfile::tempdir().unwrap();
             fs::write(src.path().join("movie.swf"), b"FWSsynthetic").unwrap();
+            fs::create_dir_all(src.path().join("runtime-images")).unwrap();
+            fs::write(
+                src.path().join("runtime-images/hunt.png"),
+                b"png original DDS conversion",
+            )
+            .unwrap();
             fs::write(
                 src.path().join("menu-background.mp4"),
                 b"\0\0\0\x18ftypisom",
