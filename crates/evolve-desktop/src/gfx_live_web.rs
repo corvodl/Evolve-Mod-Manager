@@ -19,6 +19,32 @@ const MAX_REQUEST: usize = 12 * 1024;
 const MAX_STATIC_ASSET: u64 = 64 * 1024 * 1024;
 const MAX_SWF_ASSET: u64 = 40 * 1024 * 1024;
 
+/// Counts requests from the actual Flash MovieClipLoader, not mere PNG
+/// staging. Served/missing and the bounded recent names help distinguish
+/// a failed card load from a movie display-list/visibility issue.
+#[derive(Default)]
+struct ModeCardRequests {
+    requested: usize,
+    served: usize,
+    failed: usize,
+    recent: Vec<String>,
+}
+impl ModeCardRequests {
+    fn record(&mut self, path: &str, ok: bool) {
+        self.requested = self.requested.saturating_add(1);
+        if ok {
+            self.served = self.served.saturating_add(1);
+        } else {
+            self.failed = self.failed.saturating_add(1);
+        }
+        if self.recent.len() == 12 {
+            self.recent.remove(0);
+        }
+        self.recent.push(path.to_owned());
+    }
+}
+
+
 pub struct LiveServer {
     active: Arc<AtomicBool>,
     queued: mpsc::Sender<PreviewPreset>,
@@ -177,6 +203,7 @@ fn serve(
     active: Arc<AtomicBool>,
     submenu_videos: SubmenuVideoCatalog,
 ) {
+    let mut mode_requests = ModeCardRequests::default();
     while active.load(Ordering::Acquire) {
         match listener.accept() {
             Ok((mut stream, addr)) => {
@@ -193,6 +220,7 @@ fn serve(
                     &token,
                     &receiver,
                     &submenu_videos,
+                    &mut mode_requests,
                 );
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -210,6 +238,7 @@ fn respond(
     token: &str,
     receiver: &mpsc::Receiver<PreviewPreset>,
     submenu_videos: &SubmenuVideoCatalog,
+    mode_requests: &mut ModeCardRequests,
 ) {
     let mut buffer = [0u8; MAX_REQUEST];
     let Ok(amount) = stream.read(&mut buffer) else {
@@ -320,12 +349,23 @@ fn respond(
                 mime,
             );
         }
+        "mode-card-requests.json" => {
+            let body = json!({
+                "requested": mode_requests.requested,
+                "served": mode_requests.served,
+                "failed": mode_requests.failed,
+                "recent": mode_requests.recent
+            }).to_string();
+            send(stream, 200, "application/json; charset=utf-8", body.as_bytes());
+        }
         path if original_mode_image_request(path).is_some() => {
-            // Temporary same-build DDS conversion, retrieved by the original
-            // Flash ImageLoading MovieClipLoader.loadClip() path. Only this
-            // exact virtual MenuModeSelect namespace is accessible.
+            // Ruffle's image loader requests PNG suffixes after the scratch
+            // SWF rewrite. Source DDS files stay untouched.
             let png = original_mode_image_request(path).expect("matched exact mode URL");
-            serve_file(stream, &root.join(png), root, 12 * 1024 * 1024, "image/png");
+            let served = serve_file(
+                stream, &root.join(png), root, 12 * 1024 * 1024, "image/png"
+            );
+            mode_requests.record(path, served);
         }
         path if safe_mode_image_asset(path) => {
             // These are PNG derivatives of exact-build source DDS files.
@@ -402,7 +442,9 @@ fn safe_asset(name: &str) -> bool {
 /// The video, arbitrary img:// namespaces and source game assets are not served.
 fn original_mode_image_request(path: &str) -> Option<String> {
     let file = path.strip_prefix("img/Libs/UI/FlashAssets/images/MenuModeSelect/")?;
-    let stem = file.strip_suffix(".dds")?;
+    // Keep the old DDS extension only for compatibility with source
+    // versions predating the scratch-only .png action-string rewrite.
+    let stem = file.strip_suffix(".png").or_else(|| file.strip_suffix(".dds"))?;
     let png = format!("runtime-images/{stem}.png");
     safe_mode_image_asset(&png).then_some(png)
 }
@@ -427,23 +469,23 @@ fn safe_import_asset(name: &str) -> bool {
             .all(|part| !part.is_empty() && part != "." && part != "..")
         && (name.ends_with(".swf") || name.ends_with(".gfx"))
 }
-fn serve_file(stream: &mut TcpStream, path: &Path, base: &Path, limit: u64, mime: &str) {
+fn serve_file(stream: &mut TcpStream, path: &Path, base: &Path, limit: u64, mime: &str) -> bool {
     let Ok(real) = fs::canonicalize(path) else {
         send(stream, 404, "text/plain", b"Preview file missing");
-        return;
+        return false;
     };
     // On Windows canonicalize() returns the verbatim \\?\\ form, while
     // TempDir::path() may be a regular drive path. Compare like with like.
     let Ok(canonical_base) = fs::canonicalize(base) else {
         send(stream, 404, "text/plain", b"Preview root unavailable");
-        return;
+        return false;
     };
     if !real.starts_with(&canonical_base) {
         send(stream, 403, "text/plain", b"Asset outside preview root");
-        return;
+        return false;
     }
     let Ok(metadata) = fs::symlink_metadata(path) else {
-        return;
+        return false;
     };
     if !metadata.file_type().is_file() || metadata.len() > limit {
         send(
@@ -452,11 +494,17 @@ fn serve_file(stream: &mut TcpStream, path: &Path, base: &Path, limit: u64, mime
             "text/plain",
             b"Preview asset is not a bounded file",
         );
-        return;
+        return false;
     }
     match fs::read(real) {
-        Ok(data) => send(stream, 200, mime, &data),
-        Err(_) => send(stream, 404, "text/plain", b"Unable to read preview file"),
+        Ok(data) => {
+            send(stream, 200, mime, &data);
+            true
+        }
+        Err(_) => {
+            send(stream, 404, "text/plain", b"Unable to read preview file");
+            false
+        }
     }
 }
 // Ruffle Web v0.7.1 implements ActionScript ExternalInterface.call with
@@ -507,14 +555,14 @@ mod tests {
     fn only_verified_mode_card_virtual_paths_map_to_staged_pngs() {
         assert_eq!(
             original_mode_image_request(
-                "img/Libs/UI/FlashAssets/images/MenuModeSelect/goliathTutorial.dds"
+                "img/Libs/UI/FlashAssets/images/MenuModeSelect/goliathTutorial.png"
             ),
             Some("runtime-images/goliathTutorial.png".into())
         );
         for path in [
             "img/Libs/UI/FlashAssets/images/MenuModeSelect/../secret.dds",
             "img/Libs/UI/FlashAssets/images/News/news_img1.dds",
-            "img/Libs/UI/FlashAssets/images/MenuModeSelect/x.png",
+            "img/Libs/UI/FlashAssets/images/MenuModeSelect/x.gif",
             "img/Libs/UI/FlashAssets/images/MenuModeSelect/hunt%2Fsecret.dds",
             "img/Libs/UI/FlashAssets/images/MenuModeSelect//hunt.dds",
             "img/Libs/UI/FlashAssets/images/MenuModeSelect/C:.dds",
@@ -577,6 +625,7 @@ mod tests {
                     "private-token",
                     &received,
                     &SubmenuVideoCatalog::default(),
+                    &mut ModeCardRequests::default(),
                 );
             });
             let mut client = TcpStream::connect(destination).unwrap();
@@ -600,7 +649,7 @@ mod tests {
         assert!(get("/private-token/preview-menu.json", None).contains("404 Not Found"));
         assert!(get("/private-token/menu-background.mp4", None).contains("video/mp4"));
         let mode = get(
-            "/private-token/img/Libs/UI/FlashAssets/images/MenuModeSelect/hunt.dds",
+            "/private-token/img/Libs/UI/FlashAssets/images/MenuModeSelect/hunt.png",
             None,
         );
         assert!(mode.contains("200 OK"));
