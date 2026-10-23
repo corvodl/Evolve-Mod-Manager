@@ -39,6 +39,7 @@ mod modding_projects;
 mod orientation_gizmo;
 mod private_pages;
 mod runtime_experiments;
+mod runtime_health;
 mod runtime_memory;
 mod runtime_signatures;
 mod selection;
@@ -338,6 +339,9 @@ struct State {
     runtime_address: String,
     runtime_offsets: String,
     runtime_result: String,
+    runtime_health_value: String,
+    runtime_health_scan: Option<runtime_health::Scan>,
+    runtime_health_report: String,
     runtime_phase2_value: String,
     runtime_phase3_value: String,
     runtime_signature: String,
@@ -1603,6 +1607,11 @@ enum Message {
     RuntimeOffsetsChanged(String),
     RuntimeRead,
     RuntimeReadFinished(Result<String, String>),
+    RuntimeHealthValueChanged(String),
+    RuntimeHealthStart(runtime_health::Kind),
+    RuntimeHealthStarted(Result<runtime_health::Scan, String>),
+    RuntimeHealthRefine(runtime_health::Filter),
+    RuntimeHealthRefined(Result<runtime_health::Scan, String>),
     RuntimePhase2ValueChanged(String),
     RuntimePhase3ValueChanged(String),
     RuntimeSignatureChanged(String),
@@ -2995,6 +3004,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::RuntimeAddressChanged(value) => {
             if state.developer_unlocked && value.len() <= 32 {
                 state.runtime_address = value;
+                state.runtime_health_scan = None;
+                state.runtime_health_report.clear();
             }
         }
         Message::RuntimeOffsetsChanged(value) => {
@@ -3009,6 +3020,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.runtime_checking = true;
             state.runtime_snapshot = None;
             state.runtime_result.clear();
+            state.runtime_health_scan = None;
+            state.runtime_health_report.clear();
             let root = state.preferences.game_storage_root.clone();
             return Task::perform(
                 async move {
@@ -3056,6 +3069,91 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.runtime_checking = false;
             if state.developer_unlocked {
                 state.runtime_result = result.unwrap_or_else(|error| error);
+            }
+        }
+        Message::RuntimeHealthValueChanged(value) => {
+            if state.developer_unlocked && value.len() <= 32 {
+                state.runtime_health_value = value;
+                state.runtime_health_scan = None;
+                state.runtime_health_report.clear();
+            }
+        }
+        Message::RuntimeHealthStart(kind) => {
+            if !state.developer_unlocked || state.runtime_checking {
+                return Task::none();
+            }
+            let Some(snapshot) = state.runtime_snapshot.clone() else {
+                return Task::none();
+            };
+            state.runtime_checking = true;
+            state.runtime_health_scan = None;
+            state.runtime_health_report = "Scanning one read-only 4 KiB page...".into();
+            let root = state.preferences.game_storage_root.clone();
+            let address = state.runtime_address.clone();
+            let expected = state.runtime_health_value.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        runtime_health::start(&snapshot, &root, &address, &expected, kind)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Health candidate scan failed: {e}")))
+                },
+                Message::RuntimeHealthStarted,
+            );
+        }
+        Message::RuntimeHealthStarted(result) => {
+            state.runtime_checking = false;
+            if state.developer_unlocked {
+                match result {
+                    Ok(scan) => {
+                        state.runtime_health_report = scan.describe();
+                        state.runtime_health_scan = Some(scan);
+                    }
+                    Err(error) => {
+                        state.runtime_health_scan = None;
+                        state.runtime_health_report = format!("Health candidate scan: {error}");
+                    }
+                }
+            }
+        }
+        Message::RuntimeHealthRefine(filter) => {
+            if !state.developer_unlocked || state.runtime_checking {
+                return Task::none();
+            }
+            let Some(snapshot) = state.runtime_snapshot.clone() else {
+                return Task::none();
+            };
+            let Some(previous) = state.runtime_health_scan.clone() else {
+                return Task::none();
+            };
+            state.runtime_checking = true;
+            state.runtime_health_report = "Filtering candidates against new in-game values...".into();
+            let root = state.preferences.game_storage_root.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        runtime_health::refine(&snapshot, &root, previous, filter)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Health refinement failed: {e}")))
+                },
+                Message::RuntimeHealthRefined,
+            );
+        }
+        Message::RuntimeHealthRefined(result) => {
+            state.runtime_checking = false;
+            if state.developer_unlocked {
+                match result {
+                    Ok(scan) => {
+                        state.runtime_health_report = scan.describe();
+                        state.runtime_health_scan = Some(scan);
+                    }
+                    Err(error) => {
+                        state.runtime_health_scan = None;
+                        state.runtime_health_report = format!("Health refinement: {error}");
+                    }
+                }
             }
         }
         Message::RuntimePhase2ValueChanged(value) => {
@@ -3129,6 +3227,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LockDeveloper => {
             state.runtime_snapshot = None;
+            state.runtime_health_scan = None;
+            state.runtime_health_value.clear();
+            state.runtime_health_report.clear();
             state.runtime_address.clear();
             state.runtime_offsets.clear();
             state.runtime_result.clear();
