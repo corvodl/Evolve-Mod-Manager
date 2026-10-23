@@ -32,6 +32,70 @@ fn mib(bytes: u64) -> String {
     format!("{:.1} GiB", bytes as f64 / 1_073_741_824.0)
 }
 
+fn game_client_setup(state: &State) -> Element<'_, Message> {
+    let paths_ok = crate::play_setup::validate_paths(
+        &state.preferences.game_installation,
+        &state.preferences.client_executable,
+    )
+    .is_ok();
+    panel(
+        column![
+            heading(
+                "SET UP MANAGER / INSTALLED GAME",
+                "Choose your installed EvolveGame directory and the normal Modded Evolve launcher. These locations are saved per user."
+            ),
+            text("Game location (EvolveGame or bin64_SteamRetail)").size(12),
+            row![
+                design::text_input(
+                    r"C:\Games\ModdedEvolve\EvolveGame\bin64_SteamRetail",
+                    &state.preferences.game_installation,
+                )
+                .on_input(Message::PreferenceGameInstall),
+                design::button("Browse…")
+                    .on_press(Message::PickGameInstallation)
+                    .style(design::secondary),
+            ]
+            .spacing(8),
+            text("Client executable").size(12),
+            row![
+                design::text_input(
+                    r"C:\Users\billn\AppData\Local\Programs\Modded Evolve\ModdedEvolveLauncher.exe",
+                    &state.preferences.client_executable,
+                )
+                .on_input(Message::PreferenceClientExecutable),
+                design::button("Browse…")
+                    .on_press(Message::PickClientExecutable)
+                    .style(design::secondary),
+            ]
+            .spacing(8),
+            text(if paths_ok {
+                "Installed game and launcher found. Modded play also requires an existing verified signing stage and recovery helper."
+            } else {
+                "Missing or unverified installation paths. Browse to both locations, then save."
+            })
+            .size(12)
+            .style(design::muted),
+            row![
+                design::button("Save Game & Client")
+                    .on_press(Message::SaveGameSetup)
+                    .style(design::primary),
+                design::button("Play with Mods")
+                    .on_press(Message::PlayWithMods)
+                    .style(design::secondary),
+                design::button("Play without Mods")
+                    .on_press(Message::PlayWithoutMods)
+                    .style(design::secondary),
+            ]
+            .spacing(8),
+            text("Modded play uses the original private-controlled swap and post-game restoration. It does not create signing keys or silently swap game files during setup.")
+                .size(11)
+                .style(design::muted),
+        ]
+        .spacing(9),
+    )
+    .into()
+}
+
 fn storage(state: &State) -> Element<'_, Message> {
     let root = state.preferences.game_storage_root.as_str();
     let buckets = state
@@ -139,7 +203,7 @@ fn storage(state: &State) -> Element<'_, Message> {
             Element::<Message>::from(space().height(Length::Fixed(1.0)))
         },
         row![
-            design::button("Set Up Manager").on_press(Message::Navigate(Page::Files)).style(design::primary).width(Fill),
+            design::button("Set Up Manager").on_press(Message::SaveGameSetup).style(design::primary).width(Fill),
             design::button("Check Setup").on_press(Message::StartStageStatus).style(design::secondary).width(Fill),
             design::button("Open Projects").on_press(Message::Navigate(Page::Files)).style(design::secondary).width(Fill),
             design::button("Save Settings").on_press(Message::SavePreferences).style(design::secondary).width(Fill),
@@ -426,6 +490,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         ].spacing(8)),
         ].spacing(12).into(),
         Tab::Storage => column![
+        game_client_setup(state),
         heading("GAME STORAGE", "Review disk usage and configure future setups without changing active recovery files."),
         storage(state),
         heading("ASSET LIBRARY", "Keep extracted reference PAKs available across Modding, models and levels."),
