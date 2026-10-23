@@ -2069,7 +2069,17 @@ fn launch(state: &mut State, operation: Operation) -> Task<Message> {
     if !matches!(&operation, Operation::BuildStaticCdf(..)) {
         state.viewer_load_progress = None;
     }
-    state.status = "Working on explicitly selected local files...".into();
+    state.status = match &operation {
+        Operation::StartExistingOfflineLauncher(..) => {
+            "Verifying original PAKs and preparing the offline launcher hook. The normal client will open after preparation; press Play only after the hook is ready."
+                .into()
+        }
+        Operation::LaunchCleanClient(..) => {
+            "Checking that original PAKs and the recovery journal are clean before opening the normal client..."
+                .into()
+        }
+        _ => "Working on explicitly selected local files...".into(),
+    };
     Task::perform(
         async move {
             tokio::task::spawn_blocking(move || operation.execute())
@@ -7919,7 +7929,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::OfflineLauncherStarted(count, id)) => {
                     state.status = format!(
-                        "Private launcher CreateProcessW hook READY (helper PID {id}) for {count} signed PAKs + matching custom RSA hook. The actual swap occurs only when the exact game launch is intercepted; watch rust-launch-bridge.log and auto-restore.log for swap/restoration. CryEngine mount is NOT yet verified."
+                        "Offline launch is READY (helper PID {id}) for {count} signed PAKs + matching custom RSA hook. In the opened Modded Evolve client, press Play to launch Evolve.exe. The original PAKs are replaced only when the helper verifies that exact game-creation event; originals are restored after Evolve.exe and the client both close. See rust-launch-bridge.log and auto-restore.log for confirmation. Actual game mount remains unverified."
                     );
                     state.page = Some(Page::Home);
                 }
