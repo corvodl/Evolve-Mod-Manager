@@ -192,7 +192,7 @@
         }
         const statusText = String(localization.status || "No localization manifest available");
         document.getElementById("localization-status").textContent = statusText
-            + " (source menu inspector only; does not rewrite Flash text fields).";
+            + " (verified English source; temporary static Flash text fields are localized, but later ActionScript assignments still require the game's native host).";
         const notFound = Array.isArray(localization.unresolved) ? localization.unresolved : [];
         document.getElementById("localization-unresolved").replaceChildren(
             ...notFound.slice(0, 30).map(item => makeText("li", "Unresolved: @" + String(item)))
