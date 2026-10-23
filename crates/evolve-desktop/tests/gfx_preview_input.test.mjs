@@ -21,7 +21,7 @@ test("video remains behind the Ruffle stage and cannot intercept hover", () => {
 test("main-menu Ruffle playback does not put click-to-unmute UI over Flash buttons", () => {
     assert.match(script, /unmuteOverlay:\s*"hidden"/);
     assert.match(script, /splashScreen:\s*false/);
-    assert.match(script, /wmode:\s*hasVideo\s*\?\s*"transparent"\s*:\s*"opaque"/);
+    assert.match(script, /wmode:\s*\(hasVideo\s*\|\|\s*Number\(report\?\.background_video\?\.submenus\?\.available\)\s*>\s*0\)\s*\?\s*"transparent"\s*:\s*"opaque"/);
     assert.match(script, /letterbox:\s*"on"/);
     assert.match(script, /scale:\s*"showAll"/);
 });
@@ -31,4 +31,14 @@ test("input health audit counts pointer delivery without injecting fake SWF even
     assert.match(script, /pointerInput\.overComposition/);
     assert.match(script, /pointerInput\.overRuffle/);
     assert.match(script, /pointerInput\.downRuffle/);
+});
+
+test("original submenu video transitions preserve Ruffle hover ownership", () => {
+    assert.match(script, /evolve-video:/);
+    assert.match(script, /requestOriginalVideo\(line\.slice/);
+    assert.match(script, /\.\/submenu-video\/"/);
+    assert.match(script, /videoRequests = new Set\(\["modeselect", "options", "founderspopup", "arena", "hunt"\]\)/);
+    assert.match(script, /followSourceVideo\(sourceMenuStack\[sourceMenuStack\.length - 1\]\)/);
+    assert.match(script, /videoElementSource\.pause\(\)/);
+    assert.match(script, /videoElementSource\.hidden = true/);
 });
