@@ -22,6 +22,7 @@ semver = "1"
 sha2 = "0.10"
 zip = { version = "=2.4.1", default-features = false, features = ["deflate"] }
 argon2 = "0.5"
+read-process-memory = "0.1"
 zeroize = "1"
 fs2 = "0.4"
 flate2 = "1"
