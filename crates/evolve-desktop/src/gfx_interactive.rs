@@ -2149,6 +2149,26 @@ mod tests {
                     .unwrap();
             assert!(!allowed.contains(&PreviewPreset::OpenScreen));
         }
+        // The wrapper used to invoke transitionToMainMenu straight after
+        // creating the original menu, which could immediately hide it.
+        let name = b"evolveCallback_openScreen\0";
+        let offset = patched
+            .windows(name.len())
+            .position(|bytes| bytes == name)
+            .unwrap()
+            + name.len();
+        assert_eq!(&patched[offset..offset + 2], &2u16.to_le_bytes());
+        let names = b"menuData\0menuLabels\0";
+        assert_eq!(&patched[offset + 2..offset + 2 + names.len()], names);
+        let size_at = offset + 2 + names.len();
+        let length = usize::from(u16::from_le_bytes(
+            patched[size_at..size_at + 2].try_into().unwrap(),
+        ));
+        let body = &patched[size_at + 2..size_at + 2 + length];
+        assert!(body.windows(b"pushMenuState".len()).any(|w| w == b"pushMenuState"));
+        assert!(!body
+            .windows(b"transitionToMainMenu".len())
+            .any(|w| w == b"transitionToMainMenu"));
         assert_eq!(original, menu_fixture_arity(7));
     }
 
