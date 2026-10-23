@@ -2,6 +2,45 @@
 
 Updated: **2026-10-20** · Repository: `corvodl/Evolve-Mod-Manager` · Working PR: **#6** on `feature/blender-viewport-cdf-autoload`, based on PR #5's `feature/pr5-combined-viewer-preview`. This document is a resumable engineering checklist, **not** a claim of production parity. See [PARITY.md](PARITY.md) for the broader feature matrix.
 
+## 2026-10-22 — original front-end video transitions in Ruffle preview
+
+The main-menu preview now supports the original Flash `updateVideo(name)`
+request rather than leaving the Goliath movie looping behind every screen.
+The temporary first-frame AVM1 instrumentation verifies an exact one-argument
+`updateVideo`, saves the original handler, traces `evolve-video:<name>`, and
+then invokes the unchanged handler. Ruffle Web listens for this trace and
+switches its independently decoded, non-interactive video layer. Verified
+local UI_Data submenu push/goBack controls also request the corresponding
+video, including returning to the original default Goliath background.
+
+The menu uses its known `FrontEndVideoList` mapping only:
+`modeselect -> lobby.usm`, `options -> options.usm`,
+`founderspopup -> FoundersPopup.usm`,
+`arena -> front_end_arena.usm`, and
+`hunt -> front_end_hunt.usm`. Sources must be unique regular CRID
+files within the selected build's verified imported `videos.pak`
+`front_end` namespace. The large `mainmenu_<character>.usm` family is
+never used as an alternate fallback. Missing Arena/Hunt video names stay
+missing rather than switching to unrelated `videos/ambient` clips.
+
+The new loopback video endpoint converts only the requested video, on
+demand, with a configured FFmpeg executable or reads a verified
+`<source-stem>.preview.mp4`/`.webm` sidecar beside that source.
+Staged derivatives stay in an isolated temp directory; no copyrighted
+USMs are committed, returned by HTTP, or modified. Video requests and
+previews are keyed by a fixed whitelist. Browser request ordering protects
+against a slow older conversion overwriting a newly selected screen.
+Unavailable sources or invalid decoders emit an explicit diagnostic,
+not a simulated placeholder background.
+
+**Remaining verification:** Source runtime `updateVideo` instrumentation
+needs actual main_menu.gfx/Ruffle playback confirmation. The server currently
+handles conversion synchronously with its bounded timeout; it can make the
+local preview temporarily slow on the first request for a large clip.
+Native game services, account and matchmaking state, and sound from USM
+remain deliberately outside this preview. The fallback UI_Data navigation
+path does not claim native menu-command parity.
+
 ## 2026-10-22 — Stage 2 image-card blocker traced to numeric CurrentMenu
 
 Recovered the user's original `main_menu.gfx` directly from the previously
