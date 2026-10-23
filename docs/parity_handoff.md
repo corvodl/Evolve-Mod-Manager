@@ -5,7 +5,7 @@
 - Developer page now allows bounded, typed *previews* for health (float), cooldown (float), teleport (three floats), and weapon reference (aligned u64). It validates hexadecimal addresses and reports the proposed little-endian bytes without ever modifying the game. This is an implementation aid for verifying unknown game layouts, not a functional memory editor.
 - Phase 3 supplies strict, bounded input validation for proposed entity spawning (1-32), character selection and ability identifiers. It produces inert previews with explicit missing engine class/authority prerequisites; it cannot execute engine functions.
 - These tools explicitly fail closed until trusted exact-build actor pointers, an offline-only session guarantee, baseline compare-and-restore transactions and engine class initialization are available. No DLL injection, game write, RMI transmission or live spawning is performed.
-- Tests cover finite/range checks, bad pointers, class identifiers, excessive spawn counts and non-execution. Actual Evolve in-game acceptance remains outstanding.
+- Added private-manager-compatible Ghidra AOB signature matching (including ?? wildcards, overlapping matches and bounded results), exposed as an opt-in 4 KiB read-only Evolve process window scan. These are candidate addresses only and not proof of valid engine functions.\n- Tests cover finite/range checks, bad pointers, class identifiers, excessive spawn counts, signature bounds, and non-execution. Actual Evolve in-game acceptance remains outstanding.
 
 ## 2026-10-22 — Developer runtime phases (PR #54)
 
