@@ -357,6 +357,7 @@ struct State {
     live_edit_report: String,
     live_edit_probe: Option<runtime_live::Probe>,
     live_edit_generation: u64,
+    live_edit_cancel: Option<Arc<AtomicBool>>,
     runtime_phase2_value: String,
     runtime_phase3_value: String,
     runtime_signature: String,
@@ -3035,6 +3036,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.runtime_address = value;
                 state.runtime_health_scan = None;
                 state.runtime_health_report.clear();
+                if let Some(cancel) = &state.live_edit_cancel { cancel.store(true, Ordering::Relaxed); }
+                state.live_edit_cancel = None;
+                state.live_edit_busy = false;
                 state.live_edit_probe = None;
                 state.live_edit_report = "Manual address changed. Read the Float32 value again before any write.".into();
                 state.live_edit_generation = state.live_edit_generation.wrapping_add(1);
@@ -3047,7 +3051,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LiveEditEnabled(armed) => {
             if !state.developer_unlocked { return Task::none(); }
-            state.live_edit_enabled = armed && state.armor_offline_confirmed && !state.live_edit_busy;
+            if let Some(cancel) = &state.live_edit_cancel { cancel.store(true, Ordering::Relaxed); }
+            state.live_edit_cancel = None;
+            state.live_edit_busy = false;
+            state.live_edit_enabled = armed && state.armor_offline_confirmed;
             state.live_edit_probe = None;
             state.live_edit_generation = state.live_edit_generation.wrapping_add(1);
             state.live_edit_report = if state.live_edit_enabled {
@@ -3074,6 +3081,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let root = state.preferences.game_storage_root.clone();
             state.live_edit_probe = None;
             state.live_edit_busy = true;
+            state.live_edit_cancel = Some(Arc::new(AtomicBool::new(false)));
             state.live_edit_report = "Reading current Float32 at the selected address...".into();
             let generation = state.live_edit_generation;
             return Task::perform(async move {
@@ -3084,6 +3092,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::LiveEditProbed(generation,result) => {
             if generation != state.live_edit_generation || !state.developer_unlocked || !state.live_edit_enabled || !state.armor_offline_confirmed { return Task::none(); }
             state.live_edit_busy = false;
+            state.live_edit_cancel = None;
             match result {
                 Ok(probe) => {
                     state.live_edit_report = probe.describe();
@@ -3100,14 +3109,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.live_edit_busy = true;
             state.live_edit_report = "Checking current baseline, offline status, then writing one Float32...".into();
             let generation = state.live_edit_generation;
+            let cancel = Arc::new(AtomicBool::new(false));
+            state.live_edit_cancel = Some(cancel.clone());
             return Task::perform(async move {
-                let result = tokio::task::spawn_blocking(move || runtime_live::apply(&snapshot,&root,probe,&desired,true)).await.unwrap_or_else(|e| Err(format!("Write worker failed: {e}")));
+                let result = tokio::task::spawn_blocking(move || runtime_live::apply(&snapshot,&root,probe,&desired,true,&cancel)).await.unwrap_or_else(|e| Err(format!("Write worker failed: {e}")));
+
                 (generation,result)
             }, |(generation,result)| Message::LiveEditApplied(generation,result));
         }
         Message::LiveEditApplied(generation,result) => {
             if generation != state.live_edit_generation || !state.developer_unlocked || !state.live_edit_enabled || !state.armor_offline_confirmed { return Task::none(); }
             state.live_edit_busy = false;
+            state.live_edit_cancel = None;
             state.live_edit_probe = None;
             state.live_edit_report = match result {
                 Ok(result) => format!("One-shot Float32 write confirmed at 0x{:X}: {:.4} -> {:.4}. Read again before further edits.",result.address,result.previous,result.applied),
@@ -3121,6 +3134,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             if !confirmed {
                 state.live_edit_enabled = false;
+                if let Some(cancel) = &state.live_edit_cancel { cancel.store(true, Ordering::Relaxed); }
+                state.live_edit_cancel = None;
                 state.live_edit_probe = None;
                 state.live_edit_generation = state.live_edit_generation.wrapping_add(1);
                 state.live_edit_busy = false;
@@ -3239,6 +3254,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             state.armor_pid_seen = pid;
             state.live_edit_enabled = false;
+            if let Some(cancel) = &state.live_edit_cancel { cancel.store(true, Ordering::Relaxed); }
+            state.live_edit_cancel = None;
             state.live_edit_busy = false;
             state.live_edit_probe = None;
             state.live_edit_generation = state.live_edit_generation.wrapping_add(1);
@@ -3537,6 +3554,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LockDeveloper => {
             state.live_edit_enabled = false;
+            if let Some(cancel) = &state.live_edit_cancel { cancel.store(true, Ordering::Relaxed); }
+            state.live_edit_cancel = None;
             state.live_edit_busy = false;
             state.live_edit_probe = None;
             state.live_edit_value.clear();
