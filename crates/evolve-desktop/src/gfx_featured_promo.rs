@@ -135,7 +135,12 @@ pub fn patch(source: &str, mode: Mode, target: Target, text: &str) -> Result<Str
         return Err("Unsupported earlier promotion patch detected; Undo first".into());
     }
     let (start, _) = blocks(source)?;
-    if source[start..end].contains("return;") {
+    // A previous guard contains an intentional early return for destroyed
+    // menu instances. Only inspect the original function body, not an
+    // independently staged preset's nested onEnterFrame handler.
+    let body = &source[start..end];
+    let original = &body[..body.find(&format!("var {MARKER}")).unwrap_or(body.len())];
+    if original.contains("return;") {
         return Err("Original setFeatured contains an early return; manual FFDec editing required".into());
     }
     let guard_name = format!("__evolveFeaturedPromoGuard_{}", target.key());
