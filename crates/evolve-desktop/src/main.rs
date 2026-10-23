@@ -40,6 +40,7 @@ mod orientation_gizmo;
 mod private_pages;
 mod runtime_experiments;
 mod runtime_health;
+mod runtime_armor;
 mod runtime_memory;
 mod runtime_signatures;
 mod selection;
@@ -342,6 +343,12 @@ struct State {
     runtime_health_value: String,
     runtime_health_scan: Option<runtime_health::Scan>,
     runtime_health_report: String,
+    armor_scan: Option<runtime_armor::Scan>,
+    armor_report: String,
+    armor_offline_confirmed: bool,
+    armor_live: Option<f32>,
+    armor_cancel: Option<Arc<AtomicBool>>,
+    armor_generation: u64,
     runtime_phase2_value: String,
     runtime_phase3_value: String,
     runtime_signature: String,
@@ -1612,6 +1619,12 @@ enum Message {
     RuntimeHealthStarted(Result<runtime_health::Scan, String>),
     RuntimeHealthRefine(runtime_health::Filter),
     RuntimeHealthRefined(Result<runtime_health::Scan, String>),
+    ArmorOfflineChanged(bool),
+    ArmorBegin,
+    ArmorRefine(runtime_armor::Step),
+    ArmorResult(u64, Result<runtime_armor::Scan, String>),
+    ArmorPulse,
+    ArmorLive(u64, Result<Option<f32>, String>),
     RuntimePhase2ValueChanged(String),
     RuntimePhase3ValueChanged(String),
     RuntimeSignatureChanged(String),
@@ -3013,6 +3026,82 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.runtime_offsets = value;
             }
         }
+        Message::ArmorOfflineChanged(confirmed) => {
+            state.armor_offline_confirmed = confirmed;
+            if !confirmed {
+                if let Some(cancel) = &state.armor_cancel { cancel.store(true, Ordering::Relaxed); }
+                state.armor_cancel = None;
+                state.armor_scan = None;
+                state.armor_live = None;
+                state.armor_generation = state.armor_generation.wrapping_add(1);
+                state.armor_report = "Offline authorization withdrawn; armor monitoring stopped.".into();
+            }
+        }
+        Message::ArmorBegin => {
+            if !state.developer_unlocked || state.runtime_checking || !state.armor_offline_confirmed { return Task::none(); }
+            let Some(snapshot) = state.runtime_snapshot.clone() else { return Task::none(); };
+            state.runtime_checking = true;
+            state.armor_scan = None;
+            state.armor_live = None;
+            state.armor_report = "Scanning writable Float32 memory (bounded to 8 GiB)...".into();
+            state.armor_generation = state.armor_generation.wrapping_add(1);
+            let generation = state.armor_generation;
+            let cancel = Arc::new(AtomicBool::new(false));
+            state.armor_cancel = Some(cancel.clone());
+            let root = state.preferences.game_storage_root.clone();
+            return Task::perform(async move {
+                let result = tokio::task::spawn_blocking(move || runtime_armor::discover(&snapshot, &root, true, &cancel)).await.unwrap_or_else(|e| Err(format!("Armor worker failed: {e}")));
+                (generation,result)
+            }, |(g,result)| Message::ArmorResult(g,result));
+        }
+        Message::ArmorRefine(step) => {
+            if !state.developer_unlocked || state.runtime_checking || !state.armor_offline_confirmed { return Task::none(); }
+            let (Some(snapshot),Some(previous)) = (state.runtime_snapshot.clone(), state.armor_scan.clone()) else { return Task::none(); };
+            state.runtime_checking = true;
+            state.armor_report = "Filtering armor candidates...".into();
+            let generation = state.armor_generation;
+            let cancel = Arc::new(AtomicBool::new(false));
+            state.armor_cancel = Some(cancel.clone());
+            let root = state.preferences.game_storage_root.clone();
+            return Task::perform(async move {
+                let result = tokio::task::spawn_blocking(move || runtime_armor::refine(&snapshot, &root, previous, step, true, &cancel)).await.unwrap_or_else(|e| Err(format!("Armor filter failed: {e}")));
+                (generation,result)
+            }, |(g,result)| Message::ArmorResult(g,result));
+        }
+        Message::ArmorResult(generation,result) => {
+            if generation != state.armor_generation || !state.developer_unlocked || !state.armor_offline_confirmed { return Task::none(); }
+            state.runtime_checking = false;
+            state.armor_cancel = None;
+            match result {
+                Ok(scan) => { state.armor_report = scan.describe(); state.armor_scan = Some(scan); }
+                Err(e) => { state.armor_scan = None; state.armor_live = None; state.armor_report = e; }
+            }
+        }
+        Message::ArmorPulse => {
+            if !state.developer_unlocked || !state.armor_offline_confirmed || state.runtime_checking { return Task::none(); }
+            let Some(scan) = state.armor_scan.as_ref() else { return Task::none(); };
+            if !scan.ready() { return Task::none(); }
+            let (Some(snapshot),Some(scan)) = (state.runtime_snapshot.clone(),state.armor_scan.clone()) else { return Task::none(); };
+            let root = state.preferences.game_storage_root.clone();
+            let generation = state.armor_generation;
+            state.runtime_checking = true;
+            return Task::perform(async move {
+                let r = tokio::task::spawn_blocking(move || runtime_armor::monitor(&snapshot,&root,&scan,true)).await.unwrap_or_else(|e| Err(format!("Armor monitoring failed: {e}")));
+                (generation,r)
+            }, |(g,r)| Message::ArmorLive(g,r));
+        }
+        Message::ArmorLive(generation,result) => {
+            if generation != state.armor_generation || !state.developer_unlocked || !state.armor_offline_confirmed { return Task::none(); }
+            state.runtime_checking = false;
+            match result {
+                Ok(value) => state.armor_live = value,
+                Err(error) => {
+                    state.armor_live = None;
+                    state.armor_scan = None;
+                    state.armor_report = format!("Armor address invalid ({error}). Redetect and run a fresh scan after restart.");
+                }
+            }
+        }
         Message::RuntimeDetect => {
             if !state.developer_unlocked || state.runtime_checking {
                 return Task::none();
@@ -3022,6 +3111,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.runtime_result.clear();
             state.runtime_health_scan = None;
             state.runtime_health_report.clear();
+            if let Some(cancel) = &state.armor_cancel { cancel.store(true, Ordering::Relaxed); }
+            state.armor_cancel = None;
+            state.armor_scan = None;
+            state.armor_live = None;
+            state.armor_generation = state.armor_generation.wrapping_add(1);
+            state.armor_report = "Process re-detection: armor candidates reset.".into();
             let root = state.preferences.game_storage_root.clone();
             return Task::perform(
                 async move {
@@ -3228,6 +3323,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .unwrap_or_else(|error| format!("Phase 3 preview rejected: {error}"));
         }
         Message::LockDeveloper => {
+            if let Some(cancel) = &state.armor_cancel { cancel.store(true, Ordering::Relaxed); }
+            state.armor_cancel = None;
+            state.armor_scan = None;
+            state.armor_offline_confirmed = false;
+            state.armor_live = None;
+            state.armor_report.clear();
+            state.armor_generation = state.armor_generation.wrapping_add(1);
             state.runtime_snapshot = None;
             state.runtime_health_scan = None;
             state.runtime_health_value.clear();
@@ -8554,7 +8656,11 @@ impl Desktop {
         } else {
             Subscription::none()
         };
+        let armor_pulse = if self.state.developer_unlocked && self.state.armor_offline_confirmed && self.state.armor_scan.as_ref().is_some_and(|s| s.ready()) {
+            iced::time::every(Duration::from_secs(2)).map(|_| Message::ArmorPulse)
+        } else { Subscription::none() };
         Subscription::batch([
+            armor_pulse,
             playback,
             startup,
             scan_progress,
