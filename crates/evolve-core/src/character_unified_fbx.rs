@@ -755,7 +755,7 @@ fn historical_2012_crytek_mesh(path: &Path) -> Result<bool, String> {
         }
         return Err(format!("Cannot read source mesh version: {error}"));
     }
-    Ok(header.starts_with(b"CryTek\\0\\0")
+    Ok(header.starts_with(b"CryTek\0\0")
         && u32::from_le_bytes(header[12..16].try_into().unwrap()) == 0x745)
 }
 
@@ -1754,7 +1754,7 @@ pub fn export_unified_cdf_fbx_options_with_glow(
             let mut emissive = maps
                 .emissive
                 .as_deref()
-                .map(|f| authored_png(f, false, imported.as_ref()))
+                .map(|f| authored_png(f, false, imported.as_ref(), false))
                 .transpose()?;
             if let (Some(glow), Some(owner)) = (&glow_png, &monster_dir)
                 && diffuse.is_some()
@@ -1772,7 +1772,7 @@ pub fn export_unified_cdf_fbx_options_with_glow(
             let specular = maps
                 .specular
                 .as_deref()
-                .map(|f| authored_png(f, false, imported.as_ref()))
+                .map(|f| authored_png(f, false, imported.as_ref(), false))
                 .transpose()?;
             let roughness = maps
                 .gloss
@@ -1963,6 +1963,56 @@ pub fn export_unified_cdf_fbx_options_with_glow(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn historical_2012_rocky3_diffuse_alpha_is_packed_not_visibility() {
+        let temp = tempfile::tempdir().unwrap();
+        let mesh = temp.path().join("rocky3.skinm");
+        let mut old_header = [0u8; 16];
+        old_header[..8].copy_from_slice(b"CryTek\0\0");
+        old_header[12..16].copy_from_slice(&0x745u32.to_le_bytes());
+        fs::write(&mesh, old_header).unwrap();
+        assert!(historical_2012_crytek_mesh(&mesh).unwrap());
+        old_header[..5].copy_from_slice(b"CrChF");
+        fs::write(&mesh, old_header).unwrap();
+        assert!(!historical_2012_crytek_mesh(&mesh).unwrap());
+
+        let opaque = crate::materials::MaterialSlot {
+            name: "rocky3 body".into(),
+            shader: "Illum".into(),
+            maps: vec![],
+            opacity: Some(1.0),
+            glow_amount: None,
+            alpha_glow: false,
+            diffuse_tint: None,
+            decal_tex_mod: None,
+        };
+        assert!(opaque_historical_2012_diffuse(true, &opaque));
+        assert!(!opaque_historical_2012_diffuse(false, &opaque));
+        let mut diffuse = image::RgbaImage::from_raw(
+            2, 1, vec![38, 72, 116, 0, 190, 85, 32, 16],
+        ).unwrap();
+        make_diffuse_opaque(&mut diffuse);
+        assert_eq!(diffuse.as_raw(), &[38, 72, 116, 255, 190, 85, 32, 255]);
+
+        let translucent = crate::materials::MaterialSlot {
+            opacity: Some(0.4),
+            ..opaque.clone()
+        };
+        assert!(!opaque_historical_2012_diffuse(true, &translucent));
+        let masked = crate::materials::MaterialSlot {
+            maps: vec![crate::materials::TextureReference {
+                role: "opacity".into(), path: "mask.dds".into(),
+            }],
+            ..opaque.clone()
+        };
+        assert!(!opaque_historical_2012_diffuse(true, &masked));
+        let nodraw = crate::materials::MaterialSlot {
+            shader: "NoDraw".into(),
+            ..opaque
+        };
+        assert!(!opaque_historical_2012_diffuse(true, &nodraw));
+    }
 
     #[test]
     fn empty_and_escaping_parts_are_rejected() {
