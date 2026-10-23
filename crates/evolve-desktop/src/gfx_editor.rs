@@ -44,17 +44,29 @@ pub enum Action {
     OpenGui,
     ReloadGui,
     ImportGfx(PathBuf),
-    ReplaceResource { index: usize, replacement: PathBuf },
-    ReplaceText { index: usize, text: String },
+    ReplaceResource {
+        index: usize,
+        replacement: PathBuf,
+    },
+    ReplaceText {
+        index: usize,
+        text: String,
+    },
     ExportXml,
     ImportXml,
     ExportScripts,
     ImportScripts,
     Undo,
-    Apply { projects_root: PathBuf },
+    Apply {
+        projects_root: PathBuf,
+    },
     PreviewFrame,
     StageLayout(LayoutEdit),
-    Featured { mode: FeaturedMode, target: FeaturedTarget, text: String },
+    Featured {
+        mode: FeaturedMode,
+        target: FeaturedTarget,
+        text: String,
+    },
 }
 
 fn digest(bytes: &[u8]) -> String {
@@ -472,16 +484,27 @@ pub fn run(
             )
         }
         Action::ReplaceText { index, text } => {
-            let tag = session.info.resources.get(index)
+            let tag = session
+                .info
+                .resources
+                .get(index)
                 .ok_or("Select an original text resource")?;
             if tag.kind != "text" {
-                return Err("Direct text editing requires a selected existing text resource".into());
+                return Err(
+                    "Direct text editing requires a selected existing text resource".into(),
+                );
             }
             if session.project.is_none() {
-                return Err("Asset Library movies are read-only; open an editable Mod Project".into());
+                return Err(
+                    "Asset Library movies are read-only; open an editable Mod Project".into(),
+                );
             }
-            if text.is_empty() || text.len() > 4096 || text.contains('\0')
-                || text.chars().any(|c| c.is_control() && c != '\n' && c != '\t')
+            if text.is_empty()
+                || text.len() > 4096
+                || text.contains('\0')
+                || text
+                    .chars()
+                    .any(|c| c.is_control() && c != '\n' && c != '\t')
             {
                 return Err("Enter 1–4096 printable UTF-8 bytes (newlines allowed)".into());
             }
@@ -490,15 +513,22 @@ pub fn run(
             let output = root.join("text-rebuilt.gfx");
             fs::write(&replacement, &text).map_err(|e| e.to_string())?;
             fs::copy(&session.editable, &before).map_err(|e| e.to_string())?;
-            run_cli(configured, &root, &[
-                "-replace".into(),
-                before.display().to_string(),
-                output.display().to_string(),
-                tag.id.to_string(),
-                replacement.display().to_string(),
-            ])?;
+            run_cli(
+                configured,
+                &root,
+                &[
+                    "-replace".into(),
+                    before.display().to_string(),
+                    output.display().to_string(),
+                    tag.id.to_string(),
+                    replacement.display().to_string(),
+                ],
+            )?;
             import_compiled(&mut session, &output)?;
-            format!("Staged text resource #{} replacement; Undo or Apply to Mod Project.", tag.id)
+            format!(
+                "Staged text resource #{} replacement; Undo or Apply to Mod Project.",
+                tag.id
+            )
         }
         Action::ExportXml => {
             let target = root.join("edited-tags.xml");
@@ -559,8 +589,13 @@ pub fn run(
             "Compiled edited ActionScript; staged only in private GFX session.".to_owned()
         }
         Action::Featured { mode, target, text } => {
-            if !session.relative.eq_ignore_ascii_case("Libs/UI/main_menu.gfx") {
-                return Err("Featured promotion editing is only available for Libs/UI/main_menu.gfx".into());
+            if !session
+                .relative
+                .eq_ignore_ascii_case("Libs/UI/main_menu.gfx")
+            {
+                return Err(
+                    "Featured promotion editing is only available for Libs/UI/main_menu.gfx".into(),
+                );
             }
             if session.project.is_none() {
                 return Err("Open main_menu.gfx from an editable Mod Project first; Asset Library files are read-only".into());
@@ -574,11 +609,16 @@ pub fn run(
                 .map_err(|e| e.to_string())?;
             let scripts = work.path().join("scripts");
             fs::create_dir(&scripts).map_err(|e| e.to_string())?;
-            run_cli(configured, work.path(), &[
-                "-export".into(), "script".into(),
-                scripts.display().to_string(),
-                session.editable.display().to_string()
-            ])?;
+            run_cli(
+                configured,
+                work.path(),
+                &[
+                    "-export".into(),
+                    "script".into(),
+                    scripts.display().to_string(),
+                    session.editable.display().to_string(),
+                ],
+            )?;
             validate_script_tree(&scripts)?;
             let mut pending = vec![scripts.clone()];
             let mut matches = Vec::new();
@@ -588,13 +628,18 @@ pub fn run(
                     let entry = entry.map_err(|e| e.to_string())?;
                     let path = entry.path();
                     let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-                    if !fs::canonicalize(&path).map_err(|e| e.to_string())?.starts_with(&canonical) {
+                    if !fs::canonicalize(&path)
+                        .map_err(|e| e.to_string())?
+                        .starts_with(&canonical)
+                    {
                         return Err("ActionScript source escaped the private workspace".into());
                     }
                     if metadata.file_type().is_dir() {
                         pending.push(path);
                     } else if metadata.file_type().is_file()
-                        && path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("as"))
+                        && path
+                            .extension()
+                            .is_some_and(|ext| ext.eq_ignore_ascii_case("as"))
                     {
                         let input = fs::read_to_string(&path).map_err(|e| e.to_string())?;
                         if input.contains("function setFeatured(")
@@ -609,7 +654,9 @@ pub fn run(
                 }
             }
             if matches.len() != 1 {
-                return Err("Expected exactly one exported setFeatured script; no changes staged".into());
+                return Err(
+                    "Expected exactly one exported setFeatured script; no changes staged".into(),
+                );
             }
             let (script_path, original) = matches.pop().unwrap();
             let edited = gfx_featured_promo::patch(&original, mode, target, &text)?;
@@ -617,12 +664,16 @@ pub fn run(
             let before = work.path().join("before.gfx");
             fs::copy(&session.editable, &before).map_err(|e| e.to_string())?;
             let output = work.path().join("rebuilt.gfx");
-            run_cli(configured, work.path(), &[
-                "-importScript".into(),
-                before.display().to_string(),
-                output.display().to_string(),
-                scripts.display().to_string()
-            ])?;
+            run_cli(
+                configured,
+                work.path(),
+                &[
+                    "-importScript".into(),
+                    before.display().to_string(),
+                    output.display().to_string(),
+                    scripts.display().to_string(),
+                ],
+            )?;
             regular(&output, MAX_SOURCE as u64)?;
             let (rebuilt, _) = read_gfx(&output)?;
             stage(&mut session, &rebuilt)?;
