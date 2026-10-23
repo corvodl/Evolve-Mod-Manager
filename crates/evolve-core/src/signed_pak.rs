@@ -700,7 +700,9 @@ pub fn generate_local_signing_keys(folder: &Path) -> Result<(), SignedPakError> 
         .map_err(|_| SignedPakError::Crypto("unable to generate local RSA keys".into()))?;
     let public = RsaPublicKey::from(&private);
     if public.size() != RSA_BYTES {
-        return Err(SignedPakError::Crypto("unexpected local RSA key size".into()));
+        return Err(SignedPakError::Crypto(
+            "unexpected local RSA key size".into(),
+        ));
     }
     let pem = private
         .to_pkcs1_pem(LineEnding::LF)
@@ -709,14 +711,19 @@ pub fn generate_local_signing_keys(folder: &Path) -> Result<(), SignedPakError> 
         .to_pkcs1_der()
         .map_err(|_| SignedPakError::Crypto("cannot encode local RSA public key".into()))?;
     if der.as_bytes().len() != 140 {
-        return Err(SignedPakError::Crypto("expected 140-byte PKCS#1 public key".into()));
+        return Err(SignedPakError::Crypto(
+            "expected 140-byte PKCS#1 public key".into(),
+        ));
     }
     for (name, bytes) in [
         ("private_key.pem", pem.as_bytes()),
         ("public_key.bin", der.as_bytes()),
     ] {
         let path = folder.join(name);
-        let mut file = OpenOptions::new().create_new(true).write(true).open(&path)?;
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)?;
         file.write_all(bytes)?;
         file.sync_all()?;
     }
