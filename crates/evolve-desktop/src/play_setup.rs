@@ -309,8 +309,16 @@ mod tests {
             br#"{"phase":"swapped","files":[]}"#,
         )
         .unwrap();
-        assert!(configure_existing_helper(&game, &dir.path().join("ModdedEvolveLauncher.exe"), &stage, &swap)
-            .unwrap_err().contains("active or interrupted"));
+        assert!(
+            configure_existing_helper(
+                &game,
+                &dir.path().join("ModdedEvolveLauncher.exe"),
+                &stage,
+                &swap
+            )
+            .unwrap_err()
+            .contains("active or interrupted")
+        );
         assert!(!swap.join("launcher_config.json").exists());
     }
 
