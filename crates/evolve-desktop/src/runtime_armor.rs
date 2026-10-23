@@ -71,7 +71,7 @@ impl Scan {
         description
     }
 
-    fn address(&self) -> Option<usize> {
+    pub(super) fn verified_address(&self) -> Option<usize> {
         self.ready().then(|| self.candidates[0].address)
     }
 }
@@ -137,7 +137,7 @@ fn ps(command: &str) -> Result<String, String> {
 /// when Windows reports an established non-local TCP peer owned by Evolve.
 /// UDP and external game-service state cannot be conclusively checked here.
 #[cfg(windows)]
-fn offline_guard(pid: u32, confirmed: bool) -> Result<(), String> {
+pub(super) fn offline_guard(pid: u32, confirmed: bool) -> Result<(), String> {
     if !confirmed {
         return Err("Confirm a strictly offline, local match before scanning.".into());
     }
