@@ -3031,6 +3031,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             pid: None,
                             status: format!("Process detection failed: {e}"),
                             executable: "Unknown".into(),
+                            module_base: None,
                         })
                 },
                 Message::RuntimeDetected,
