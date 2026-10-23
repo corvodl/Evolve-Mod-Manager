@@ -38,6 +38,7 @@ mod modding_page;
 mod modding_projects;
 mod orientation_gizmo;
 mod private_pages;
+mod runtime_experiments;
 mod runtime_memory;
 mod selection;
 mod settings;
@@ -336,6 +337,9 @@ struct State {
     runtime_address: String,
     runtime_offsets: String,
     runtime_result: String,
+    runtime_phase2_value: String,
+    runtime_phase3_value: String,
+    runtime_plan_result: String,
     show_advanced_tools: bool,
     activity_log: Vec<String>,
     health_expanded: bool,
@@ -1597,6 +1601,10 @@ enum Message {
     RuntimeOffsetsChanged(String),
     RuntimeRead,
     RuntimeReadFinished(Result<String, String>),
+    RuntimePhase2ValueChanged(String),
+    RuntimePhase3ValueChanged(String),
+    PreviewRuntimePhase2(runtime_experiments::Phase2Action),
+    PreviewRuntimePhase3(runtime_experiments::Phase3Action),
     InputChanged(String),
     OutputChanged(String),
     ReplacementsChanged(String),
@@ -3045,11 +3053,45 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.runtime_result = result.unwrap_or_else(|error| error);
             }
         }
+        Message::RuntimePhase2ValueChanged(value) => {
+            if state.developer_unlocked && value.len() <= 128 {
+                state.runtime_phase2_value = value;
+            }
+        }
+        Message::RuntimePhase3ValueChanged(value) => {
+            if state.developer_unlocked && value.len() <= 128 {
+                state.runtime_phase3_value = value;
+            }
+        }
+        Message::PreviewRuntimePhase2(kind) => {
+            if !state.developer_unlocked {
+                return Task::none();
+            }
+            let seen = state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some();
+            state.runtime_plan_result = runtime_experiments::preview_phase2(
+                kind,
+                &state.runtime_address,
+                &state.runtime_phase2_value,
+                seen,
+            ).unwrap_or_else(|error| format!("Phase 2 preview rejected: {error}"));
+        }
+        Message::PreviewRuntimePhase3(kind) => {
+            if !state.developer_unlocked {
+                return Task::none();
+            }
+            state.runtime_plan_result = runtime_experiments::preview_phase3(
+                kind,
+                &state.runtime_phase3_value,
+            ).unwrap_or_else(|error| format!("Phase 3 preview rejected: {error}"));
+        }
         Message::LockDeveloper => {
             state.runtime_snapshot = None;
             state.runtime_address.clear();
             state.runtime_offsets.clear();
             state.runtime_result.clear();
+            state.runtime_phase2_value.clear();
+            state.runtime_phase3_value.clear();
+            state.runtime_plan_result.clear();
             state.developer_unlocked = false;
             state.developer_checking = false;
             state.developer_password.clear();
