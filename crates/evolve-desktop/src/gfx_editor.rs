@@ -2,6 +2,7 @@
 //! No operation modifies original PAKs, libraries or the game installation.
 use crate::gfx_dependencies::{self, Dependency};
 use crate::gfx_external_textures;
+use crate::gfx_featured_promo::{self, Mode as FeaturedMode, Target as FeaturedTarget};
 use crate::gfx_menu_map;
 use crate::modding_projects::{self, ProjectRow};
 use evolve_core::gfx::{GfxInfo, MAX_SOURCE, inspect_gfx};
@@ -52,6 +53,7 @@ pub enum Action {
     Apply { projects_root: PathBuf },
     PreviewFrame,
     StageLayout(LayoutEdit),
+    Featured { mode: FeaturedMode, target: FeaturedTarget, text: String },
 }
 
 fn digest(bytes: &[u8]) -> String {
@@ -525,6 +527,84 @@ pub fn run(
             run_cli(configured, &root, &args)?;
             import_compiled(&mut session, &output)?;
             "Compiled edited ActionScript; staged only in private GFX session.".to_owned()
+        }
+        Action::Featured { mode, target, text } => {
+            if !session.relative.eq_ignore_ascii_case("Libs/UI/main_menu.gfx") {
+                return Err("Featured promotion editing is only available for Libs/UI/main_menu.gfx".into());
+            }
+            if session.project.is_none() {
+                return Err("Open main_menu.gfx from an editable Mod Project first; Asset Library files are read-only".into());
+            }
+            // FFDec operates exclusively on a new temporary session copy, not
+            // on the source movie or game installation. Each script is checked
+            // before it can be compiled and staged with the normal Undo path.
+            let work = tempfile::Builder::new()
+                .prefix("featured-promo-")
+                .tempdir_in(&root)
+                .map_err(|e| e.to_string())?;
+            let scripts = work.path().join("scripts");
+            fs::create_dir(&scripts).map_err(|e| e.to_string())?;
+            run_cli(configured, work.path(), &[
+                "-export".into(), "script".into(),
+                scripts.display().to_string(),
+                session.editable.display().to_string()
+            ])?;
+            validate_script_tree(&scripts)?;
+            let mut pending = vec![scripts.clone()];
+            let mut matches = Vec::new();
+            let canonical = fs::canonicalize(&scripts).map_err(|e| e.to_string())?;
+            while let Some(folder) = pending.pop() {
+                for entry in fs::read_dir(&folder).map_err(|e| e.to_string())? {
+                    let entry = entry.map_err(|e| e.to_string())?;
+                    let path = entry.path();
+                    let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+                    if !fs::canonicalize(&path).map_err(|e| e.to_string())?.starts_with(&canonical) {
+                        return Err("ActionScript source escaped the private workspace".into());
+                    }
+                    if metadata.file_type().is_dir() {
+                        pending.push(path);
+                    } else if metadata.file_type().is_file()
+                        && path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("as"))
+                    {
+                        let input = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+                        if input.contains("function setFeatured(")
+                            || input.contains("setFeatured = function(")
+                            || input.contains("setFeatured=function(")
+                        {
+                            matches.push((path, input));
+                        }
+                    } else {
+                        return Err("Unexpected ActionScript export member".into());
+                    }
+                }
+            }
+            if matches.len() != 1 {
+                return Err("Expected exactly one exported setFeatured script; no changes staged".into());
+            }
+            let (script_path, original) = matches.pop().unwrap();
+            let edited = gfx_featured_promo::patch(&original, mode, target, &text)?;
+            fs::write(&script_path, edited).map_err(|e| e.to_string())?;
+            let before = work.path().join("before.gfx");
+            fs::copy(&session.editable, &before).map_err(|e| e.to_string())?;
+            let output = work.path().join("rebuilt.gfx");
+            run_cli(configured, work.path(), &[
+                "-importScript".into(),
+                before.display().to_string(),
+                output.display().to_string(),
+                scripts.display().to_string()
+            ])?;
+            regular(&output, MAX_SOURCE as u64)?;
+            let (rebuilt, _) = read_gfx(&output)?;
+            stage(&mut session, &rebuilt)?;
+            format!(
+                "Staged persistent featured-promotion {} for {}. Rotating offers are rechecked on each frame; Undo or Apply to Mod Project. Offline game verification remains necessary.",
+                match mode {
+                    FeaturedMode::Hide => "hide",
+                    FeaturedMode::Remove => "remove/disable",
+                    FeaturedMode::Text => "text replacement",
+                },
+                target.label()
+            )
         }
         Action::StageLayout(edit) => {
             let (before, _) = read_gfx(&session.editable)?;
