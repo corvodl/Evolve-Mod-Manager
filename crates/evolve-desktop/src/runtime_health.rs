@@ -163,10 +163,15 @@ impl Scan {
             }
         }
         if sorted.len() > 20 {
-            lines.push("Only the first 20 are shown. Re-scan after taking damage to narrow results.".into());
+            lines.push(
+                "Only the first 20 are shown. Re-scan after taking damage to narrow results."
+                    .into(),
+            );
         }
         if sorted.is_empty() {
-            lines.push("No matches remain. Start a fresh scan with another page or value type.".into());
+            lines.push(
+                "No matches remain. Start a fresh scan with another page or value type.".into(),
+            );
         }
         lines.join("\n")
     }
@@ -291,7 +296,10 @@ mod tests {
         assert!(parsed_expected("-1", Kind::Float).is_err());
         assert!(parsed_expected("1.5", Kind::Integer).is_err());
         let raw = [1000_u32.to_le_bytes(), 600_u32.to_le_bytes()].concat();
-        assert_eq!(initial_candidates(&raw, 0x10000, Kind::Integer, Some(600.0)).len(), 1);
+        assert_eq!(
+            initial_candidates(&raw, 0x10000, Kind::Integer, Some(600.0)).len(),
+            1
+        );
         assert!(initial_candidates(&[0, 1], 0x10000, Kind::Integer, None).is_empty());
     }
 
@@ -301,9 +309,16 @@ mod tests {
             pid: 1,
             page_base: 0x10000,
             kind: Kind::Float,
-            candidates: vec![Candidate { address: 0x10FFC, raw: 100.0_f32.to_bits() }],
+            candidates: vec![Candidate {
+                address: 0x10FFC,
+                raw: 100.0_f32.to_bits(),
+            }],
         };
         let short = vec![0; 4];
-        assert!(filter_candidates(&scan, &short, Filter::Decreased).candidates.is_empty());
+        assert!(
+            filter_candidates(&scan, &short, Filter::Decreased)
+                .candidates
+                .is_empty()
+        );
     }
 }
