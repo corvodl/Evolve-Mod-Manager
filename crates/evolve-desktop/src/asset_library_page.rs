@@ -204,7 +204,10 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 )).size(12).style(design::muted));
             }
             importer = importer.push(container(filenames.spacing(3))
-                .padding(8).width(Fill).style(design::field_panel));
+                .padding(8).width(Fill).style(|theme| container::Style {
+                    background: Some(Background::Color(design::field(theme))),
+                    ..container::Style::default()
+                }));
             importer = importer.push(
                 row![
                     design::button(format!("Confirm import of {} PAKs", plan.files.len()))
