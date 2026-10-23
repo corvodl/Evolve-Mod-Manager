@@ -416,7 +416,8 @@
                     unmuteOverlay: "hidden",
                     splashScreen: false,
                     wmode: linkedVideoKey ? "transparent" : "opaque",
-                    backgroundColor: linkedVideoKey ? null : "#000000"
+                    backgroundColor: linkedVideoKey ? null : "#000000",
+                    fontSources: verifiedFontSources(screen)
                 });
                 linkedPlayer = candidate;
                 player.hidden = true;
