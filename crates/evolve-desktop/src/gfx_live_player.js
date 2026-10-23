@@ -298,6 +298,7 @@
             Number(report.authored_flash_text?.localized || 0) + " / " +
             Number(report.authored_flash_text?.fields || 0) +
             "; dynamically created native labels not substituted.");
+        messages.push("Featured promotion: the authored title/TRY/BUY outlines exist, but text and offer contents require the game's original setFeatured data/initialization. An unmodified source preview never applies the optional Featured removal preset or invents a promotional offer.");
         messages.push("Native CryEngine initialization: unavailable.");
         for (const name of (Array.isArray(stats.unresolved_imports)
             ? stats.unresolved_imports.slice(0, 16) : [])) {
@@ -652,12 +653,41 @@
                       (Array.isArray(cardRequests.recent) ?
                         cardRequests.recent.slice(-4).join(", ") : "none")
                     : "request tracking unavailable";
+                // The source-verified AVM1 image decision is independent of
+                // whether a browser PNG is readable. A zero network count
+                // with a false decision indicates menu-state/lifecycle work;
+                // a true decision with zero requests indicates no loader
+                // invocation, not an image-format problem.
+                let imageBranch = "unavailable";
+                let sourceRowCount = "unavailable";
+                try {
+                    const branch = player.ruffle().callExternalInterface(
+                        "evolvePreview_probeImageButtons");
+                    if (branch === true || branch === false) imageBranch = String(branch);
+                } catch (_) { /* Original function absent in this build. */ }
+                try {
+                    const rows = player.ruffle().callExternalInterface(
+                        "evolvePreview_probeMenuRows");
+                    if (Number.isInteger(rows) && rows >= 0 && rows <= 512) {
+                        sourceRowCount = String(rows);
+                    }
+                } catch (_) { /* Original menu population not verified. */ }
+                const menuDiagnosis = "Flash shouldUseImageButtons=" + imageBranch +
+                    "; pending source menu rows=" + sourceRowCount +
+                    "; source UI_Data group=" + currentSourceGroup() +
+                    (cardRequests?.requested === 0 ? (
+                        imageBranch === "false"
+                            ? "; image menu branch is OFF; verify menu CurrentMenu during submenu initialization"
+                            : imageBranch === "true"
+                                ? "; image branch is ON but no ImageLoading.loadBitmap URL was requested; inspect setupMenuBtns/data initialization"
+                                : "; Flash branch unavailable; inspect original submenu initialization"
+                    ) : "");
                 const fonts = (Array.isArray(report.fonts) ? report.fonts : []);
                 const knownFonts = fonts.filter(item => Number(item.define_font_tags || 0) > 0).length;
                 const text = "Ruffle source stage " + stageDimensions + "; browser PNG images " +
                     decoded + "/" + names.length + "; embedded Flash bitmap linkages " +
                     Number(report.mode_images?.flash_bitmap_linkages || 0) +
-                    "; original Flash card loads " + cardStatus +
+                    "; original Flash card loads " + cardStatus + "; " + menuDiagnosis +
                     "; recognized font libraries " + knownFonts + "/" + fonts.length +
                     "; Goliath video " + playback +
                     "; local host query counts CurrentMenu/NPE/CustomSolo " +
