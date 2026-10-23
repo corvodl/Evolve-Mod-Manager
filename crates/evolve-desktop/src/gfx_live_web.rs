@@ -599,6 +599,20 @@ mod tests {
         assert!(get("/private-token/preview.js", None).contains("previewRuntime.install(window)"));
         assert!(get("/private-token/preview-menu.json", None).contains("404 Not Found"));
         assert!(get("/private-token/menu-background.mp4", None).contains("video/mp4"));
+        let mode = get(
+            "/private-token/img/Libs/UI/FlashAssets/images/MenuModeSelect/hunt.dds",
+            None,
+        );
+        assert!(mode.contains("200 OK"));
+        assert!(mode.contains("image/png"));
+        assert!(mode.contains("png original DDS conversion"));
+        assert!(
+            get(
+                "/private-token/img/Libs/UI/FlashAssets/images/News/news.dds",
+                None
+            )
+            .contains("404 Not Found")
+        );
         assert!(get("/private-token/secret.mp4", None).contains("404 Not Found"));
         assert!(get("/private-token/submenu-video/modeselect.json", None).contains("not present"));
         assert!(
