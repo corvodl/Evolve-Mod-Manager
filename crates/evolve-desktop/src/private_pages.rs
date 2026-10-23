@@ -317,7 +317,21 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
             text("Developer").size(24),
             surface(column![
                 text("Authorized developer access").size(17),
-                text("Private diagnostic and memory tooling has not been ported to this Rust build.").size(13).style(design::muted),
+                text("Phase 1  /  External memory inspector").size(16),
+                text("Injection-free, read-only. Detect one Evolve.exe process on demand; inspect 32 bytes at an explicit hex address or a validated pointer chain. Offsets are not bundled. Process identity and offline status cannot yet be independently verified.").size(12).style(design::muted),
+                design::button(if state.runtime_checking { "Inspecting..." } else { "Detect Evolve process" })
+                    .on_press_maybe((!state.runtime_checking).then_some(Message::RuntimeDetect)),
+                text(state.runtime_snapshot.as_ref().map(|s| s.status.as_str()).unwrap_or("Not scanned")).size(12).style(design::muted),
+                text(state.runtime_snapshot.as_ref().map(|s| s.executable.as_str()).unwrap_or("Executable not checked")).size(12).style(design::muted),
+                design::text_input("Address (0x...)", &state.runtime_address).on_input(Message::RuntimeAddressChanged),
+                design::text_input("Pointer offsets (optional: 0x10,0x20)", &state.runtime_offsets).on_input(Message::RuntimeOffsetsChanged),
+                design::button("Read 32 bytes")
+                    .on_press_maybe((!state.runtime_checking && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some()).then_some(Message::RuntimeRead)),
+                text(state.runtime_result.as_str()).size(12).style(design::muted),
+                text("Phase 2  /  Offline runtime controls").size(16),
+                text("Health, cooldowns, teleports, and weapon-reference changes: LOCKED. Requires verified build-specific layouts, validated offline state, reversible writes, and match-transition revalidation. No writes are shipped.").size(12).style(design::muted),
+                text("Phase 3  /  Advanced engine operations").size(16),
+                text("Entity spawning, full character swaps, custom abilities, and native engine calls: RESEARCH ONLY. No injection, native function execution, or RMI commands are enabled.").size(12).style(design::muted),
                 design::button("Lock developer area").on_press(Message::LockDeveloper),
             ].spacing(12)),
         ].spacing(13).padding(12).into()

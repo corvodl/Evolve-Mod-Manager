@@ -1253,6 +1253,42 @@ mod tests {
         let report = inspect_signed_pak(&archive, &key, "sample.pak").unwrap();
         assert!(report.signature_verified);
         assert_eq!(report.entries.len(), 1);
+        // The private manager retries lowercase signed names. Physical archive
+        // casing must not invalidate an otherwise authentic RSA-signed CryPAK.
+        let differently_cased = root.path().join("Sample.pak");
+        fs::write(&differently_cased, &bytes).unwrap();
+        assert!(inspect_signed_pak(&differently_cased, &key, "Sample.pak").is_err());
+        assert!(inspect_signed_pak(&differently_cased, &key, "sample.pak").is_ok());
+        let case_library = root.path().join("CasefoldLibrary");
+        fs::create_dir(&case_library).unwrap();
+        let case_report = crate::library_import::import_signed_library_pak_with_keys(
+            &case_library,
+            &differently_cased,
+            std::slice::from_ref(&key),
+        )
+        .unwrap();
+        assert_eq!(case_report.files, 1);
+        let case_catalog = crate::library_catalog::imported_library(&case_library).unwrap();
+        assert_eq!(case_catalog.archives.len(), 1);
+        let case_manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(Path::new(&case_catalog.archives[0].directory).join("asset-library.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(case_manifest["name"], "Sample.pak");
+        assert_eq!(case_manifest["signed_name"], "sample.pak");
+        assert_eq!(case_manifest["verification"], "rsa-pss");
+        assert!(
+            crate::library_import::import_signed_library_pak_with_keys(
+                &case_library,
+                &differently_cased,
+                std::slice::from_ref(&key),
+            )
+            .unwrap()
+            .already_imported
+        );
+        assert_eq!(fs::read(&differently_cased).unwrap(), bytes);
+
         let extracted = root.path().join("unpacked");
         extract_signed_pak(&archive, &key, "sample.pak", &extracted).unwrap();
         assert_eq!(fs::read(extracted.join("example.caf")).unwrap(), payload);

@@ -2,6 +2,7 @@ const {test} = require("node:test");
 const assert = require("node:assert/strict");
 const {readFileSync} = require("node:fs");
 const {join} = require("node:path");
+const {runInNewContext} = require("node:vm");
 const Runtime = require("../src/gfx_preview_runtime.js");
 
 test("only CurrentMenu NPE and CustomSolo are answered, not game services", () => {
@@ -99,4 +100,32 @@ test("preview page registers host answers before loading the source SWF", () => 
     assert.match(page, /value="2">Training \/ Tutorials/);
     assert.match(page, /value="3">NPE/);
     assert.doesNotMatch(source, /document\.createElement\(["'](?:canvas|img)["']\).*Training/i);
+});
+
+
+test("same-build Ruffle font sources accept only bounded staged SWF/GFX imports", () => {
+    const script = readFileSync(join(__dirname, "../src/gfx_live_player.js"), "utf8");
+    const begin = script.indexOf("const verifiedFontSources = (report) => {");
+    const end = script.indexOf("\n    };", begin);
+    assert.ok(begin >= 0 && end > begin, "original font source guard exists");
+    const callback = runInNewContext(
+        script.slice(begin, end + "\n    };".length) + "\nverifiedFontSources;"
+    );
+    const sources = callback({
+        fonts: [
+            {movie: "fonts/locfont.gfx", staged: true, define_font_tags: 5},
+            {movie: "fonts/glyphs.swf", staged: true, define_font_tags: 1},
+            {movie: "fonts/locfont.gfx", staged: true, define_font_tags: 5},
+            {movie: "fonts/missing.gfx", staged: false, define_font_tags: 3},
+            {movie: "../outside.swf", staged: true, define_font_tags: 1},
+            {movie: "https://example.com/bad.swf", staged: true, define_font_tags: 1},
+            {movie: "/absolute.swf", staged: true, define_font_tags: 1},
+            {movie: "fonts/empty.swf", staged: true, define_font_tags: 0}
+        ]
+    });
+    assert.deepEqual(Array.from(sources), ["./fonts/locfont.gfx", "./fonts/glyphs.swf"]);
+    assert.match(script, /fontSources: verifiedFontSources\(report\)/);
+    assert.match(script, /fontSources: verifiedFontSources\(screen\)/);
+    assert.match(script, /const closedPrompt = dismissOriginalSignin\(\)/);
+    assert.doesNotMatch(script, /window\.StartMatch\s*=/);
 });

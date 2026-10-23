@@ -130,7 +130,7 @@ fn has_stage2_signature_trailer(source: &Path) -> Result<bool, String> {
 
 #[derive(Clone, Copy)]
 enum ImportFormat<'a> {
-    Signed(&'a Path),
+    Signed(&'a Path, &'a str),
     LegacyZip,
 }
 
@@ -140,7 +140,11 @@ pub fn import_signed_library_pak(
     source: &Path,
     public_key: &Path,
 ) -> Result<LibraryImportReport, String> {
-    import_library_pak(root, source, ImportFormat::Signed(public_key))
+    let basename = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("Source PAK name is not valid Unicode")?;
+    import_library_pak(root, source, ImportFormat::Signed(public_key, basename))
 }
 
 fn import_library_pak(
@@ -167,8 +171,12 @@ fn import_library_pak(
     if basename.len() > 240 || !basename.to_ascii_lowercase().ends_with(".pak") {
         return Err("Select a .pak file".into());
     }
+    let signed_name = match format {
+        ImportFormat::Signed(_, name) => name,
+        ImportFormat::LegacyZip => basename,
+    };
     let public_key = match format {
-        ImportFormat::Signed(key) => {
+        ImportFormat::Signed(key, _) => {
             let meta = fs::symlink_metadata(key).map_err(|e| e.to_string())?;
             if !meta.file_type().is_file() || meta.len() > 8192 {
                 return Err("Use an existing local, regular RSA verification key".into());
@@ -251,7 +259,7 @@ fn import_library_pak(
     let (entries, archive_format, verification): (Vec<(String, u64)>, &str, &str) =
         match public_key.as_deref() {
             Some(key) => {
-                let info = extract_signed_pak(&source, key, basename, &extracted)
+                let info = extract_signed_pak(&source, key, signed_name, &extracted)
                     .map_err(|e| e.to_string())?;
                 (
                     info.entries
@@ -335,7 +343,7 @@ fn import_library_pak(
         .as_secs();
     let key_hash = public_key.as_deref().map(sha_file).transpose()?;
     let manifest = serde_json::json!({
-        "version": 1, "name": basename, "signed_name": basename,
+        "version": 1, "name": basename, "signed_name": signed_name,
         "source": source.to_string_lossy(),
         "source_sha256": before, "source_size": source_meta.len(),
         "source_mtime_ns": source_mtime_ns,
@@ -394,21 +402,43 @@ pub fn import_signed_library_pak_with_keys(
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or("Source PAK name is not valid Unicode")?;
+    // Retail CryPAK signatures authenticate the original filename bytes.
+    // The private manager accepts the physical basename and then its lowercase
+    // spelling (e.g. Engine.pak versus engine.pak). Do not rename a source
+    // archive or weaken the signature check to make either variant pass.
+    let lowercase = basename.to_ascii_lowercase();
+    let signed_names = if lowercase == basename {
+        vec![basename]
+    } else {
+        vec![basename, lowercase.as_str()]
+    };
     let mut errors = Vec::new();
     for key in public_keys {
-        match crate::signed_pak::inspect_signed_pak(source, key, basename) {
-            Ok(_) => return import_signed_library_pak(root, source, key),
-            Err(err) => errors.push(format!(
-                "{}: {err}",
-                key.file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("RSA public key")
-            )),
+        let mut variants = Vec::new();
+        for signed_name in &signed_names {
+            match crate::signed_pak::inspect_signed_pak(source, key, signed_name) {
+                Ok(_) => {
+                    return import_library_pak(
+                        root,
+                        source,
+                        ImportFormat::Signed(key, signed_name),
+                    );
+                }
+                Err(err) => variants.push(format!("{signed_name}: {err}")),
+            }
         }
+        errors.push(format!(
+            "{}: {}",
+            key.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("RSA public key"),
+            variants.join(" | ")
+        ));
     }
     Err(format!(
-        "No matching RSA verification key for {basename} ({} attempted): {}",
+        "No matching RSA verification key/signature for {basename} ({} keys, {} signed-name variants attempted): {}",
         public_keys.len(),
+        signed_names.len(),
         errors.join("; ")
     ))
 }

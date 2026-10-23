@@ -69,6 +69,23 @@
         );
     };
     let previewReport = null;
+    // Ruffle Web cannot read fonts installed on the host. The original
+    // same-build imported font SWFs are already staged by the dependency
+    // graph; explicitly load only their validated, session-local URLs.
+    const verifiedFontSources = (report) => {
+        const fonts = Array.isArray(report?.fonts) ? report.fonts : [];
+        const sources = [];
+        for (const row of fonts) {
+            const path = String(row?.movie || "");
+            if (row?.staged !== true || Number(row?.define_font_tags || 0) < 1 ||
+                !/^[A-Za-z0-9_./-]{1,256}\.(?:swf|gfx)$/i.test(path) ||
+                path.startsWith("/") || path.split("/").some(part =>
+                    part === "" || part === "." || part === "..") ||
+                sources.includes("./" + path) || sources.length >= 16) continue;
+            sources.push("./" + path);
+        }
+        return sources;
+    };
     let updateSourceGroup = () => {};
     let navigateSourceGroup = () => false;
     let navigateSourceBack = () => false;
@@ -175,7 +192,7 @@
         }
         const statusText = String(localization.status || "No localization manifest available");
         document.getElementById("localization-status").textContent = statusText
-            + " (source menu inspector only; does not rewrite Flash text fields).";
+            + " (verified English source; temporary static Flash text fields are localized, but later ActionScript assignments still require the game's native host).";
         const notFound = Array.isArray(localization.unresolved) ? localization.unresolved : [];
         document.getElementById("localization-unresolved").replaceChildren(
             ...notFound.slice(0, 30).map(item => makeText("li", "Unresolved: @" + String(item)))
@@ -186,8 +203,11 @@
             " localized, " + Number(flashText.unresolved || 0) + " unresolved (" +
             Number(flashText.fields || 0) + " original edit fields).";
         const stats = report.resources || {};
+        const fontSources = verifiedFontSources(report);
         const resource = document.getElementById("resource-status");
         const messages = [
+            "Ruffle verified SWF font sources configured: " + fontSources.length +
+                " (device-font fallback; exact glyph mapping still requires visual verification).",
             "DDS tiles restored: " + Number(stats.restored_dds_tiles || 0),
             "Original SWF button conditions instrumented: " + Number(stats.instrumented_original_button_conditions || 0),
             "DDS tiles skipped (not necessarily missing): " + Number(stats.skipped_dds_tiles || 0),
@@ -396,7 +416,8 @@
                     unmuteOverlay: "hidden",
                     splashScreen: false,
                     wmode: linkedVideoKey ? "transparent" : "opaque",
-                    backgroundColor: linkedVideoKey ? null : "#000000"
+                    backgroundColor: linkedVideoKey ? null : "#000000",
+                    fontSources: verifiedFontSources(screen)
                 });
                 linkedPlayer = candidate;
                 player.hidden = true;
@@ -693,6 +714,9 @@
                 null : "#000000",
             scale: "showAll",
             letterbox: "on",
+            // These are source-verified SWF font libraries, not arbitrary OS
+            // font files. Ruffle registers their embedded fonts as device fonts.
+            fontSources: verifiedFontSources(report),
             // CryEngine implements img:// for dynamic menu card artwork.
             // Ruffle supports URL rewriting; only the specific original
             // MenuModeSelect DDS family is mapped to source-verified PNG copies
@@ -738,19 +762,22 @@
         const dismissSignin = document.getElementById("dismiss-signin");
         const canDismissSignin = report?.initialization?.verified_hide_signing_in === true;
         dismissSignin.disabled = !canDismissSignin;
-        dismissSignin.addEventListener("click", () => {
-            if (!canDismissSignin) return;
+        const dismissOriginalSignin = () => {
+            if (!canDismissSignin) return false;
             try {
-                // Invoke only the source-verified UI-local ActionScript function.
-                // Never simulate game authentication or register native services.
-                const result = player.ruffle().callExternalInterface(
-                    "evolvePreview_showSigningInPrompt", false);
-                show(result === true
-                    ? "Called original showSigningInPrompt(false); inspect Flash for the transition."
-                    : "Original sign-in dismissal was unavailable at runtime.", result !== true);
-            } catch (error) {
-                show("Original sign-in dismissal raised: " + String(error), true);
+                // Only the source-authenticated display toggle is available:
+                // never emulate game login status or native authentication.
+                return player.ruffle().callExternalInterface(
+                    "evolvePreview_showSigningInPrompt", false) === true;
+            } catch (_) {
+                return false;
             }
+        };
+        dismissSignin.addEventListener("click", () => {
+            const dismissed = dismissOriginalSignin();
+            show(dismissed
+                ? "Called original showSigningInPrompt(false); inspect Flash for the transition."
+                : "Original sign-in dismissal was unavailable at runtime.", !dismissed);
         });
         dismissOverlay.addEventListener("click", () => {
             if (!canDismissPatchNotes) return;
@@ -866,8 +893,15 @@
                         setPreviewMenu("Main");
                         updateSourceGroup("Main");
                         followSourceVideo("Main");
+                        // The offline preview has no game authentication host.
+                        // Close only the original UI-local sign-in overlay after
+                        // creating source-defined menu rows. This never claims
+                        // that native login succeeded.
+                        const closedPrompt = dismissOriginalSignin();
                         show((automatic ? "Automatic" : "Manual") +
-                            " original " + originalStartup + " invoked with source menu rows. Offline preview state; game services remain unavailable.");
+                            " original " + originalStartup + " invoked with source menu rows. " +
+                            (closedPrompt ? "Source sign-in overlay dismissal requested. " : "") +
+                            "Offline preview state; game services remain unavailable.");
                         return;
                     }
                 } catch (e) {

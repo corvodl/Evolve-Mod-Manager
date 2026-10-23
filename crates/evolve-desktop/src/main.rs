@@ -17,6 +17,7 @@ mod gfx_bundled_tools;
 mod gfx_dependencies;
 mod gfx_editor;
 mod gfx_external_textures;
+mod gfx_featured_promo;
 mod gfx_interactive;
 mod gfx_layout_canvas;
 mod gfx_live_inspector;
@@ -37,6 +38,7 @@ mod modding_page;
 mod modding_projects;
 mod orientation_gizmo;
 mod private_pages;
+mod runtime_memory;
 mod selection;
 mod settings;
 mod settings_page;
@@ -195,6 +197,7 @@ struct State {
     gfx_install_busy: bool,
     gfx_install_status: String,
     gfx_resource: usize,
+    gfx_resource_text: String,
     gfx_status: String,
     gfx_layout_open: bool,
     gfx_tools_section: GfxToolsSection,
@@ -207,6 +210,8 @@ struct State {
     gfx_layout_rotation: String,
     gfx_layout_visible: bool,
     gfx_layout_show_raster: bool,
+    gfx_featured_target: gfx_featured_promo::Target,
+    gfx_featured_text: String,
     gfx_live_open: bool,
     gfx_live_status: String,
     gfx_live_snapshot: Option<gfx_live_inspector::UiSnapshot>,
@@ -326,6 +331,11 @@ struct State {
     developer_unlocked: bool,
     developer_attempts: u8,
     developer_checking: bool,
+    runtime_snapshot: Option<runtime_memory::Snapshot>,
+    runtime_checking: bool,
+    runtime_address: String,
+    runtime_offsets: String,
+    runtime_result: String,
     show_advanced_tools: bool,
     activity_log: Vec<String>,
     health_expanded: bool,
@@ -408,6 +418,7 @@ enum GfxToolsSection {
     #[default]
     Preview,
     Layout,
+    Featured,
     Scripts,
     Resources,
     Inspector,
@@ -1506,6 +1517,8 @@ enum Message {
     GfxInstallTool(gfx_tool_install::Tool),
     GfxToolInstalled(gfx_tool_install::Tool, Result<PathBuf, String>),
     GfxSelectResource(usize),
+    GfxResourceTextChanged(String),
+    GfxResourceTextStage,
     GfxToolsSection(GfxToolsSection),
     GfxToggleLayoutRaster,
     GfxLayoutSelect(usize),
@@ -1514,6 +1527,9 @@ enum Message {
     GfxLayoutValue(&'static str, String),
     GfxLayoutVisible(bool),
     GfxStageLayout,
+    GfxFeaturedTarget(gfx_featured_promo::Target),
+    GfxFeaturedText(String),
+    GfxFeaturedStage(gfx_featured_promo::Mode),
     GfxToggleLiveInspector,
     GfxImportUiSnapshot,
     GfxUiSnapshotPicked(Option<PathBuf>),
@@ -1575,6 +1591,12 @@ enum Message {
     UnlockDeveloper,
     DeveloperChecked(bool),
     LockDeveloper,
+    RuntimeDetect,
+    RuntimeDetected(runtime_memory::Snapshot),
+    RuntimeAddressChanged(String),
+    RuntimeOffsetsChanged(String),
+    RuntimeRead,
+    RuntimeReadFinished(Result<String, String>),
     InputChanged(String),
     OutputChanged(String),
     ReplacementsChanged(String),
@@ -2957,7 +2979,77 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.developer_password = value;
             }
         }
+        Message::RuntimeAddressChanged(value) => {
+            if state.developer_unlocked && value.len() <= 32 {
+                state.runtime_address = value;
+            }
+        }
+        Message::RuntimeOffsetsChanged(value) => {
+            if state.developer_unlocked && value.len() <= 128 {
+                state.runtime_offsets = value;
+            }
+        }
+        Message::RuntimeDetect => {
+            if !state.developer_unlocked || state.runtime_checking {
+                return Task::none();
+            }
+            state.runtime_checking = true;
+            state.runtime_snapshot = None;
+            state.runtime_result.clear();
+            let root = state.preferences.game_storage_root.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || runtime_memory::inspect(&root))
+                        .await
+                        .unwrap_or_else(|e| runtime_memory::Snapshot {
+                            pid: None,
+                            status: format!("Process detection failed: {e}"),
+                            executable: "Unknown".into(),
+                        })
+                },
+                Message::RuntimeDetected,
+            );
+        }
+        Message::RuntimeDetected(snapshot) => {
+            state.runtime_checking = false;
+            if state.developer_unlocked {
+                state.runtime_snapshot = Some(snapshot);
+            }
+        }
+        Message::RuntimeRead => {
+            if !state.developer_unlocked || state.runtime_checking {
+                return Task::none();
+            }
+            let Some(snapshot) = state.runtime_snapshot.clone() else {
+                return Task::none();
+            };
+            state.runtime_checking = true;
+            state.runtime_result = "Reading...".into();
+            let root = state.preferences.game_storage_root.clone();
+            let address = state.runtime_address.clone();
+            let offsets = state.runtime_offsets.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        runtime_memory::read(&snapshot, &root, &address, &offsets)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Memory inspection failed: {e}")))
+                },
+                Message::RuntimeReadFinished,
+            );
+        }
+        Message::RuntimeReadFinished(result) => {
+            state.runtime_checking = false;
+            if state.developer_unlocked {
+                state.runtime_result = result.unwrap_or_else(|error| error);
+            }
+        }
         Message::LockDeveloper => {
+            state.runtime_snapshot = None;
+            state.runtime_address.clear();
+            state.runtime_offsets.clear();
+            state.runtime_result.clear();
             state.developer_unlocked = false;
             state.developer_checking = false;
             state.developer_password.clear();
@@ -4728,6 +4820,30 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.gfx_live_status = format!("Cannot inspect UI hierarchy: {error}");
             }
         },
+        Message::GfxResourceTextChanged(value) => {
+            if value.len() <= 4096 && !value.contains('\0') {
+                state.gfx_resource_text = value;
+            }
+        }
+        Message::GfxResourceTextStage => {
+            let Some(index) = state
+                .gfx_session
+                .as_ref()
+                .and_then(|session| session.info.resources.get(state.gfx_resource))
+                .filter(|resource| resource.kind == "text")
+                .map(|_| state.gfx_resource)
+            else {
+                state.gfx_status = "Select an original text resource first.".into();
+                return Task::none();
+            };
+            return update(
+                state,
+                Message::GfxAction(gfx_editor::Action::ReplaceText {
+                    index,
+                    text: state.gfx_resource_text.clone(),
+                }),
+            );
+        }
         Message::GfxToolsSection(section) => {
             if !state.gfx_active {
                 return Task::none();
@@ -4827,6 +4943,37 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     rotation,
                     visible: state.gfx_layout_visible,
                 })),
+            );
+        }
+        Message::GfxFeaturedTarget(target) => {
+            state.gfx_featured_target = target;
+        }
+        Message::GfxFeaturedText(value) => {
+            if value.chars().count() <= 160 && !value.chars().any(|c| c.is_control()) {
+                state.gfx_featured_text = value;
+            }
+        }
+        Message::GfxFeaturedStage(mode) => {
+            if state.gfx_session.as_ref().is_none_or(|session| {
+                !session
+                    .relative
+                    .eq_ignore_ascii_case("Libs/UI/main_menu.gfx")
+            }) {
+                state.gfx_status =
+                    "Open Libs/UI/main_menu.gfx to edit the featured promotion.".into();
+                return Task::none();
+            }
+            return update(
+                state,
+                Message::GfxAction(gfx_editor::Action::Featured {
+                    mode,
+                    target: state.gfx_featured_target,
+                    text: if mode == gfx_featured_promo::Mode::Text {
+                        state.gfx_featured_text.clone()
+                    } else {
+                        String::new()
+                    },
+                }),
             );
         }
         Message::GfxPickReplacement => {

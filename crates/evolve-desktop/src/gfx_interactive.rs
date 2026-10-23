@@ -412,11 +412,13 @@ pub(crate) fn install_live_callbacks(
             avm1_push_i32(&mut body, 7);
             avm1_push_string(&mut body, "openScreen")?;
             body.extend_from_slice(&[0x3d, 0x17]);
-            for callback in ["pushMenuState", "transitionToMainMenu"] {
-                avm1_push_i32(&mut body, 0);
-                avm1_push_string(&mut body, callback)?;
-                body.extend_from_slice(&[0x3d, 0x17]);
-            }
+            // openScreen populates the original source-defined menu before
+            // pushMenuState displays it. transitionToMainMenu is a separate
+            // original navigation operation; calling it immediately after
+            // opening the populated root can clear/hide those fresh controls.
+            avm1_push_i32(&mut body, 0);
+            avm1_push_string(&mut body, "pushMenuState")?;
+            body.extend_from_slice(&[0x3d, 0x17]);
         } else {
             if argument.is_some() {
                 avm1_push_string(&mut body, "value")?;
@@ -1085,8 +1087,24 @@ fn stage_linked_screens(session: &Session, scratch: &Path) -> Vec<serde_json::Va
         }
         // Imported font/movies and their original DDS tiles are reconstructed
         // using the exact same bounded pipeline as the root preview.
+        let mut fonts = Vec::<serde_json::Value>::new();
         if let Ok((_, _, _, imports, _)) = stage_live_import_graph(&screen, &destination) {
             let _ = localize_imported_initial_text(&screen, &destination, &imports);
+            for relative in imports
+                .iter()
+                .filter(|p| p.to_ascii_lowercase().contains("font"))
+            {
+                let font = destination.join(relative);
+                if let Some(count) = original_font_definitions(&font)
+                    && count > 0
+                {
+                    fonts.push(serde_json::json!({
+                        "movie": format!("screens/{id}/{relative}"),
+                        "staged": true,
+                        "define_font_tags": count
+                    }));
+                }
+            }
         }
         let ui_element =
             gfx_external_textures::associated_ui_data(&virtual_path, Some(root), Some(build));
@@ -1094,6 +1112,7 @@ fn stage_linked_screens(session: &Session, scratch: &Path) -> Vec<serde_json::Va
             "id": id,
             "title": title,
             "movie": format!("screens/{id}/movie.swf"),
+            "fonts": fonts,
             "virtual_source": virtual_path,
             "ui_element": ui_element,
             "verification": "Exact same-build Asset Library member; native screen routing not verified."
@@ -2133,6 +2152,31 @@ mod tests {
                     .unwrap();
             assert!(!allowed.contains(&PreviewPreset::OpenScreen));
         }
+        // The wrapper used to invoke transitionToMainMenu straight after
+        // creating the original menu, which could immediately hide it.
+        let name = b"evolveCallback_openScreen\0";
+        let offset = patched
+            .windows(name.len())
+            .position(|bytes| bytes == name)
+            .unwrap()
+            + name.len();
+        assert_eq!(&patched[offset..offset + 2], &2u16.to_le_bytes());
+        let names = b"menuData\0menuLabels\0";
+        assert_eq!(&patched[offset + 2..offset + 2 + names.len()], names);
+        let size_at = offset + 2 + names.len();
+        let length = usize::from(u16::from_le_bytes(
+            patched[size_at..size_at + 2].try_into().unwrap(),
+        ));
+        let body = &patched[size_at + 2..size_at + 2 + length];
+        assert!(
+            body.windows(b"pushMenuState".len())
+                .any(|w| w == b"pushMenuState")
+        );
+        assert!(
+            !body
+                .windows(b"transitionToMainMenu".len())
+                .any(|w| w == b"transitionToMainMenu")
+        );
         assert_eq!(original, menu_fixture_arity(7));
     }
 
