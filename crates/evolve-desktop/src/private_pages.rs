@@ -313,7 +313,7 @@ pub(super) fn credits() -> Element<'static, Message> {
 
 pub(super) fn developer(state: &State) -> Element<'_, Message> {
     if state.developer_unlocked {
-        column![
+        scrollable(column![
             text("Developer").size(24),
             surface(column![
                 text("Authorized developer access").size(17),
@@ -329,12 +329,28 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
                     .on_press_maybe((!state.runtime_checking && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some()).then_some(Message::RuntimeRead)),
                 text(state.runtime_result.as_str()).size(12).style(design::muted),
                 text("Phase 2  /  Offline runtime controls").size(16),
-                text("Health, cooldowns, teleports, and weapon-reference changes: LOCKED. Requires verified build-specific layouts, validated offline state, reversible writes, and match-transition revalidation. No writes are shipped.").size(12).style(design::muted),
+                text("Preview typed field changes against a manually entered address above. Health/cooldowns are f32, teleport is X,Y,Z and weapon reference is 0x... . These are BYTE PREVIEWS ONLY; live edits remain locked until verified offline and exact-build actor layouts are available.").size(12).style(design::muted),
+                design::text_input("Desired value (e.g. 100000 / 0 / 1,2,3 / 0x10008)", &state.runtime_phase2_value)
+                    .on_input(Message::RuntimePhase2ValueChanged),
+                row![
+                    design::button("Preview health").on_press(Message::PreviewRuntimePhase2(super::runtime_experiments::Phase2Action::Health)),
+                    design::button("Preview cooldown").on_press(Message::PreviewRuntimePhase2(super::runtime_experiments::Phase2Action::Cooldown)),
+                    design::button("Preview teleport").on_press(Message::PreviewRuntimePhase2(super::runtime_experiments::Phase2Action::Teleport)),
+                    design::button("Preview weapon").on_press(Message::PreviewRuntimePhase2(super::runtime_experiments::Phase2Action::Equip)),
+                ].spacing(8),
                 text("Phase 3  /  Advanced engine operations").size(16),
-                text("Entity spawning, full character swaps, custom abilities, and native engine calls: RESEARCH ONLY. No injection, native function execution, or RMI commands are enabled.").size(12).style(design::muted),
+                text("Preview candidate engine class operations. Spawns accept ClassName,Count (up to 32). Character swaps and abilities accept a single identifier. This validates inputs only: no injection, entity creation, native function execution, or RMI calls.").size(12).style(design::muted),
+                design::text_input("Class/ability identifier (e.g. Goliath,2)", &state.runtime_phase3_value)
+                    .on_input(Message::RuntimePhase3ValueChanged),
+                row![
+                    design::button("Preview spawn").on_press(Message::PreviewRuntimePhase3(super::runtime_experiments::Phase3Action::Spawn)),
+                    design::button("Preview character").on_press(Message::PreviewRuntimePhase3(super::runtime_experiments::Phase3Action::SwapCharacter)),
+                    design::button("Preview ability").on_press(Message::PreviewRuntimePhase3(super::runtime_experiments::Phase3Action::Ability)),
+                ].spacing(8),
+                text(state.runtime_plan_result.as_str()).size(12).style(design::muted),
                 design::button("Lock developer area").on_press(Message::LockDeveloper),
             ].spacing(12)),
-        ].spacing(13).padding(12).into()
+        ].spacing(13).padding(12)).height(Fill).into()
     } else {
         column![
             text("Developer").size(24),
