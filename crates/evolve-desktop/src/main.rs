@@ -29,8 +29,8 @@ mod gfx_mode_images;
 mod gfx_tool_install;
 mod guided_modding;
 mod launcher_bridge;
-mod library_picker;
 mod level_workspace;
+mod library_picker;
 mod menu_popup;
 mod modding_keys;
 mod modding_page;
@@ -55,23 +55,22 @@ use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph,
     EquipmentOverrides, EquipmentSlot, HookPairReport, ImportedLibrary, ImportedPak, Inventory,
-    KalaTubingState, LevelScene, LibraryBatchImportReport, LibraryImportPlan, LibraryReferenceStatus, MaterialReport,
-    ModProfile, ModelInfo, NativeCafMotion, PakHookPairReport, PakInventory, ProfileCatalog,
-    ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo, StageTransaction, TerrainInfo,
-    VerifiedCafAssembly, VerifiedCafSkin, add_mod_to_profile, apply_profile_stage, apply_stage_pak,
-    batch_stage_status, compare_assets, convert_glb_to_fbx, convert_original_motion,
-    create_mod_profile, decode_dds_rgba, discover_equipment, export_dds_png,
-    export_level_scene_glb, export_rigged_character_fbx_textured_animated,
-    export_rigged_character_glb, extract_legacy_pak, extract_signed_pak,
-    import_library_plan_with_keys, import_stage_pak, imported_archive_files,
+    KalaTubingState, LevelScene, LibraryBatchImportReport, LibraryImportPlan,
+    LibraryReferenceStatus, MaterialReport, ModProfile, ModelInfo, NativeCafMotion,
+    PakHookPairReport, PakInventory, ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh,
+    RigReport, SignedPakInfo, StageTransaction, TerrainInfo, VerifiedCafAssembly, VerifiedCafSkin,
+    add_mod_to_profile, apply_profile_stage, apply_stage_pak, batch_stage_status, compare_assets,
+    convert_glb_to_fbx, convert_original_motion, create_mod_profile, decode_dds_rgba,
+    discover_equipment, export_dds_png, export_level_scene_glb,
+    export_rigged_character_fbx_textured_animated, export_rigged_character_glb, extract_legacy_pak,
+    extract_signed_pak, import_library_plan_with_keys, import_stage_pak, imported_archive_files,
     imported_library, initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak,
     inspect_pak_hook_pair, inspect_signed_pak, list_mod_profiles, load_level_scene,
     material_texture_candidates, plan_mod_profile, prepare_client_hook, read_cdf, read_material,
     read_model, read_native_caf, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry,
     resign_signed_pak, resolve_cdf, resolve_imported_reference, resolve_materials,
     restore_profile_stage, restore_stage, scan_directory, scan_directory_with_progress,
-    scan_library_import_sources,
-    stage_status,
+    scan_library_import_sources, stage_status,
 };
 use iced::widget::{
     canvas, column, container, image, row, scrollable, shader, slider, space, svg, text, tooltip,
@@ -433,7 +432,11 @@ enum Operation {
     UnpackRawProject(PathBuf, PathBuf, PathBuf),
     LoadImportedLibrary(PathBuf),
     ImportSignedLibraryPlan(
-        PathBuf, LibraryImportPlan, PathBuf, Arc<AtomicBool>, Arc<AtomicUsize>,
+        PathBuf,
+        LibraryImportPlan,
+        PathBuf,
+        Arc<AtomicBool>,
+        Arc<AtomicUsize>,
     ),
     OpenImportedPak(ImportedPak),
     CreateProjectFromLibrary(ImportedPak, PathBuf, PathBuf),
@@ -689,7 +692,11 @@ impl Operation {
                 // Keep the original signed-archive authentication path.
                 let keys = modding_keys::archive_verification_keys(&stage)?;
                 let report = import_library_plan_with_keys(
-                    &root, &plan, &keys.paths, &cancelled, &progress
+                    &root,
+                    &plan,
+                    &keys.paths,
+                    &cancelled,
+                    &progress,
                 )?;
                 let catalog = imported_library(&root).map_err(|e| e.to_string())?;
                 Ok(Completed::ImportedSignedLibrary(report, catalog))
@@ -2645,21 +2652,31 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             } else {
                 "Choose one or more signed PAK archives to import.".into()
             };
-            return Task::perform(async move {
-                tokio::task::spawn_blocking(move || library_picker::choose_sources(folder))
-                    .await.map_err(|e| format!("Archive picker failed: {e}"))?
-            }, Message::LibrarySourcesPicked);
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || library_picker::choose_sources(folder))
+                        .await
+                        .map_err(|e| format!("Archive picker failed: {e}"))?
+                },
+                Message::LibrarySourcesPicked,
+            );
         }
         Message::LibrarySourcesPicked(result) => {
             match result {
                 Ok(Some(selected)) => {
                     let library = PathBuf::from(&state.library_root);
-                    state.status = "Checking PAK sources and preparing a read-only import summary...".into();
-                    return Task::perform(async move {
-                        tokio::task::spawn_blocking(move || {
-                            scan_library_import_sources(&library, &selected, true)
-                        }).await.map_err(|e| format!("Collection scan failed: {e}"))?
-                    }, Message::LibraryImportScanned);
+                    state.status =
+                        "Checking PAK sources and preparing a read-only import summary...".into();
+                    return Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || {
+                                scan_library_import_sources(&library, &selected, true)
+                            })
+                            .await
+                            .map_err(|e| format!("Collection scan failed: {e}"))?
+                        },
+                        Message::LibraryImportScanned,
+                    );
                 }
                 Ok(None) => state.status = "Archive selection canceled; nothing imported.".into(),
                 Err(error) => state.status = format!("Archive selection failed: {error}"),
@@ -2672,7 +2689,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Ok(plan) => {
                     state.status = format!(
                         "Import preview: {} verified candidate PAKs, {:.1} GiB packed; {} previously imported. Confirm to begin.",
-                        plan.files.len(), plan.packed_bytes as f64 / 1_073_741_824.0,
+                        plan.files.len(),
+                        plan.packed_bytes as f64 / 1_073_741_824.0,
                         plan.already_imported,
                     );
                     state.library_import_plan = Some(plan);
@@ -2711,7 +2729,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::LibraryImportCancel => {
             if let Some(cancelled) = &state.library_import_cancel {
                 cancelled.store(true, Ordering::Relaxed);
-                state.status = "Stopping after the current archive; completed PAK imports are retained.".into();
+                state.status =
+                    "Stopping after the current archive; completed PAK imports are retained."
+                        .into();
             }
         }
         Message::SettingsTab(tab) => state.settings_tab = tab,
@@ -5992,9 +6012,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return launch(state, Operation::ExportPng(source, output));
         }
         Message::Finished(result) => {
-            let import_was_cancelled = state.library_import_cancel.as_ref()
+            let import_was_cancelled = state
+                .library_import_cancel
+                .as_ref()
                 .is_some_and(|flag| flag.load(Ordering::Relaxed));
-            let import_completion = state.library_import_progress.as_ref()
+            let import_completion = state
+                .library_import_progress
+                .as_ref()
                 .map(|counter| counter.load(Ordering::Relaxed));
             state.library_import_cancel = None;
             state.library_import_progress = None;
@@ -6123,9 +6147,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .join("; ");
                     state.status = format!(
                         "Asset Library import: {added} new, {already} already verified, {failed} failed{}{}. Originals unchanged.{}",
-                        if import_was_cancelled { " (canceled after current archive)" } else { "" },
+                        if import_was_cancelled {
+                            " (canceled after current archive)"
+                        } else {
+                            ""
+                        },
                         import_completion.map_or(String::new(), |n| format!(" ({n} processed)")),
-                        if details.is_empty() { String::new() } else { format!(" {details}") }
+                        if details.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" {details}")
+                        }
                     );
                     state.library_root = catalog.root.clone();
                     state.preferences.asset_library_root = catalog.root.clone();
