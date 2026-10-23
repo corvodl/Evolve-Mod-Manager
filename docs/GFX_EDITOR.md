@@ -55,6 +55,44 @@ Use **Visual GFX layout editor** in the GFX pane:
 A passing synthetic binary-roundtrip test establishes conservative tag editing,
 **not** a successful in-game Evolve Scaleform layout result.
 
+## Featured promotion and element editing
+
+**GFX Tools → Featured** is available for `Libs/UI/main_menu.gfx` opened
+from an editable Mod Project. Select **Entire promotion**, **Featured title**,
+**TRY button**, or **BUY button**, then stage one of:
+
+- **Hide every time** — keeps the chosen original clips invisible.
+- **Remove / disable every time** — also disables controls, blanks existing text
+  fields, and calls `removeMovieClip` when the game created a dynamic clip.
+  Static timeline definitions are retained as a safe fallback.
+- **Stage persistent text edit** — replaces supported original title/TRY/BUY
+  text properties, including common child text fields. The replacement is
+  applied again after subsequent promotion rotations.
+
+This ports the private manager's menu-scoped `onEnterFrame` guard: a small
+invisible child clip rechecks the original target every display frame. It does
+not replace `_root.onEnterFrame`, install global timers, or execute native
+game-service commands. The original `setFeatured` function must be uniquely
+identified from FFDec's exported ActionScript. An unsupported build or
+ambiguous function is an error, not an inferred edit. Different promo targets
+may be staged independently; Undo before replacing a preset for the same
+target. If the menu is destroyed/recreated, the guard belongs to that menu
+instance and is reinstalled when its `setFeatured` runs.
+
+**GFX Tools → Resources** additionally permits direct replacement of a
+selected original **text** resource by character ID, using FFDec's existing
+resource replacement workflow. The **Layout** section still supports
+selecting, moving, scaling, rotating, and hiding unambiguous first-frame root
+placements. Static placement hiding affects only that frame; items the movie
+recreates require a verified runtime edit, rather than a guessed static tag
+rewrite. Advanced ActionScript and tag XML remain editable through FFDec.
+
+All changes are staged in an isolated GFX workspace with the standard **Undo**
+and explicit **Apply to Mod Project** commands. Original PAKs and the installed
+game are left untouched. Synthetic tests validate the generated guard and
+staging behavior; **real Stage 2 in-game verification is still required**
+across menu reopening and multiple featured-offer/video rotations.
+
 ## Dependency-aware FFDec rendering
 
 Imported GFX/SWF movies are copied into the temporary FFDec directory only
@@ -289,16 +327,16 @@ pane is reserved for the **original GFX image** or draggable design canvas;
 it no longer contains a column of FFDec/Ruffle controls. The resizable
 explorer divider and its left/right placement setting still apply.
 
-GFX Tools is split into six compact sections:
+GFX Tools is split into seven compact sections:
 
 - **Preview:** static FFDec rendering, FFDec executable picker, standalone
   Ruffle launch and status. Ruffle playback is separate from the static
   viewport image.
 - **Layout:** root first-frame layer selection, raster backdrop toggle,
   transform inputs, visibility and staged layout edits.
-- **Scripts:** FFDec ActionScript and tag XML export/rebuild commands.
-- **Resources:** verified imported GFX/SWF references and resource ID
-  replacement.
+- **Featured:** persistent hide/remove/text controls for the original main-menu promotional offer, backed by FFDec.\n- **Scripts:** FFDec ActionScript and tag XML export/rebuild commands.
+- **Resources:** verified imported GFX/SWF references, resource ID
+  replacement, and direct existing text-resource editing.
 - **Inspector:** externally captured, read-only UI hierarchy snapshots.
 - **Project:** staged GFX import, undo, editing folder, and Apply with backups.
 
