@@ -16,8 +16,8 @@ mod explorer_tree;
 mod gfx_bundled_tools;
 mod gfx_dependencies;
 mod gfx_editor;
-mod gfx_featured_promo;
 mod gfx_external_textures;
+mod gfx_featured_promo;
 mod gfx_interactive;
 mod gfx_layout_canvas;
 mod gfx_live_inspector;
@@ -4744,16 +4744,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::GfxResourceTextStage => {
-            let Some(index) = state.gfx_session.as_ref()
+            let Some(index) = state
+                .gfx_session
+                .as_ref()
                 .and_then(|session| session.info.resources.get(state.gfx_resource))
                 .filter(|resource| resource.kind == "text")
-                .map(|_| state.gfx_resource) else {
+                .map(|_| state.gfx_resource)
+            else {
                 state.gfx_status = "Select an original text resource first.".into();
                 return Task::none();
             };
-            return update(state, Message::GfxAction(gfx_editor::Action::ReplaceText {
-                index, text: state.gfx_resource_text.clone(),
-            }));
+            return update(
+                state,
+                Message::GfxAction(gfx_editor::Action::ReplaceText {
+                    index,
+                    text: state.gfx_resource_text.clone(),
+                }),
+            );
         }
         Message::GfxToolsSection(section) => {
             if !state.gfx_active {
@@ -4865,20 +4872,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::GfxFeaturedStage(mode) => {
-            if state.gfx_session.as_ref().is_none_or(|session|
-                !session.relative.eq_ignore_ascii_case("Libs/UI/main_menu.gfx")) {
-                state.gfx_status = "Open Libs/UI/main_menu.gfx to edit the featured promotion.".into();
+            if state.gfx_session.as_ref().is_none_or(|session| {
+                !session
+                    .relative
+                    .eq_ignore_ascii_case("Libs/UI/main_menu.gfx")
+            }) {
+                state.gfx_status =
+                    "Open Libs/UI/main_menu.gfx to edit the featured promotion.".into();
                 return Task::none();
             }
-            return update(state, Message::GfxAction(gfx_editor::Action::Featured {
-                mode,
-                target: state.gfx_featured_target,
-                text: if mode == gfx_featured_promo::Mode::Text {
-                    state.gfx_featured_text.clone()
-                } else {
-                    String::new()
-                },
-            }));
+            return update(
+                state,
+                Message::GfxAction(gfx_editor::Action::Featured {
+                    mode,
+                    target: state.gfx_featured_target,
+                    text: if mode == gfx_featured_promo::Mode::Text {
+                        state.gfx_featured_text.clone()
+                    } else {
+                        String::new()
+                    },
+                }),
+            );
         }
         Message::GfxPickReplacement => {
             return Task::perform(
