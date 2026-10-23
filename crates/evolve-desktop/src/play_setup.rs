@@ -1,7 +1,7 @@
 //! Installed-game path detection and guarded launch handoff for the established
 //! reversible private swap. No game PAK is modified by setup or this module.
 use serde_json::{Map, Value};
-use std::fs::{self, File};
+use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -57,8 +57,14 @@ pub fn detect_game() -> Option<String> {
 }
 
 pub fn detect_client() -> Option<String> {
-    client_exe(CLIENT_HINT)
-        .ok()
+    let local_app = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    let candidate = local_app
+        .as_ref()
+        .map(|base| base.join("Programs/Modded Evolve/ModdedEvolveLauncher.exe"));
+    candidate
+        .as_deref()
+        .and_then(|path| client_exe(&path.to_string_lossy()).ok())
+        .or_else(|| client_exe(CLIENT_HINT).ok())
         .map(|p| p.to_string_lossy().into_owned())
 }
 
