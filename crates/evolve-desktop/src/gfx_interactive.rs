@@ -501,6 +501,44 @@ pub(crate) fn install_live_callbacks(
         }
         allowed.push(*preset);
     }
+    // Preview-only interception of the ORIGINAL updateVideo(name) call.
+    // The game uses a CRI-USM-backed Scaleform NetStream which Ruffle cannot
+    // decode. Preserve the source function, emit its requested video name
+    // through ActionTrace, and then call the original unmodified handler.
+    // This is installed after the source movie defines updateVideo, and only
+    // when its exact first-frame argument count has been verified.
+    let video_arity = chunks.iter()
+        .filter_map(|actions| defined_function_arity(actions, "updateVideo"))
+        .collect::<Vec<_>>();
+    if !video_arity.is_empty() && video_arity.iter().all(|&count| count == 1) {
+        avm1_push_string(&mut emitted, "evolvePreview_original_updateVideo")?;
+        avm1_push_string(&mut emitted, "updateVideo")?;
+        emitted.push(0x1c); // GetVariable: original Function
+        emitted.push(0x1d); // SetVariable: save function before defining wrapper
+
+        let mut video_body = Vec::new();
+        avm1_push_string(&mut video_body, "evolve-video:")?;
+        avm1_push_string(&mut video_body, "name")?;
+        video_body.push(0x1c); // GetVariable: original requested name
+        video_body.push(0x47); // ActionAdd2: prefix + name
+        video_body.push(0x26); // ActionTrace: observed on the page, no native dispatch
+
+        avm1_push_string(&mut video_body, "name")?;
+        video_body.push(0x1c);
+        avm1_push_i32(&mut video_body, 1);
+        avm1_push_string(&mut video_body, "evolvePreview_original_updateVideo")?;
+        video_body.push(0x3d); // CallFunction: unchanged original implementation
+        video_body.extend_from_slice(&[0x3e, 0]); // Return source function result, End
+
+        let mut definition = b"updateVideo\0".to_vec();
+        definition.extend_from_slice(&1u16.to_le_bytes());
+        definition.extend_from_slice(b"name\0");
+        definition.extend_from_slice(&(video_body.len() as u16).to_le_bytes());
+        emitted.push(0x9b); // DefineFunction
+        emitted.extend_from_slice(&(definition.len() as u16).to_le_bytes());
+        emitted.extend_from_slice(&definition);
+        emitted.extend_from_slice(&video_body);
+    }
     if emitted.is_empty() {
         return Ok((swf.to_vec(), allowed));
     }
