@@ -8,10 +8,10 @@ use crate::signed_pak::extract_signed_pak;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const XML_LIMIT: usize = 16 * 1024 * 1024;
 const MAX_SOURCE_BYTES: u64 = 32 * 1024 * 1024 * 1024;
@@ -25,7 +25,6 @@ pub struct LibraryImportPlan {
     pub packed_bytes: u64,
     pub already_imported: usize,
 }
-
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LibraryImportReport {
@@ -460,7 +459,9 @@ pub fn scan_library_import_sources(
             return Err("Cannot import archives from inside the Asset Library".into());
         }
         if info.file_type().is_file() {
-            if !chosen.extension().and_then(|e| e.to_str())
+            if !chosen
+                .extension()
+                .and_then(|e| e.to_str())
                 .is_some_and(|e| e.eq_ignore_ascii_case("pak"))
             {
                 return Err("Select only .pak files".into());
@@ -468,7 +469,9 @@ pub fn scan_library_import_sources(
             if info.len() > MAX_SOURCE_BYTES {
                 return Err("Selected PAK exceeds maximum supported archive size".into());
             }
-            if seen.insert(chosen.clone()) { files.push(chosen); }
+            if seen.insert(chosen.clone()) {
+                files.push(chosen);
+            }
             continue;
         }
         if !info.file_type().is_dir() || selections.len() != 1 {
@@ -476,9 +479,9 @@ pub fn scan_library_import_sources(
         }
         let mut queue = VecDeque::from([(chosen.clone(), 0usize)]);
         while let Some((folder, depth)) = queue.pop_front() {
-            let entries = fs::read_dir(&folder).map_err(|e| format!(
-                "Cannot scan collection directory {}: {e}", folder.display()
-            ))?;
+            let entries = fs::read_dir(&folder).map_err(|e| {
+                format!("Cannot scan collection directory {}: {e}", folder.display())
+            })?;
             for entry in entries {
                 scanned += 1;
                 if scanned > MAX_COLLECTION_ENTRIES {
@@ -487,7 +490,9 @@ pub fn scan_library_import_sources(
                 let entry = entry.map_err(|e| e.to_string())?;
                 let location = entry.path();
                 let item = fs::symlink_metadata(&location).map_err(|e| e.to_string())?;
-                if item.file_type().is_symlink() { continue; }
+                if item.file_type().is_symlink() {
+                    continue;
+                }
                 if item.file_type().is_dir() {
                     if recursive && depth < MAX_COLLECTION_DEPTH {
                         let next = fs::canonicalize(&location).map_err(|e| e.to_string())?;
@@ -497,18 +502,27 @@ pub fn scan_library_import_sources(
                     }
                     continue;
                 }
-                if !item.file_type().is_file() ||
-                    !location.extension().and_then(|ext| ext.to_str())
+                if !item.file_type().is_file()
+                    || !location
+                        .extension()
+                        .and_then(|ext| ext.to_str())
                         .is_some_and(|ext| ext.eq_ignore_ascii_case("pak"))
-                { continue; }
+                {
+                    continue;
+                }
                 if item.len() > MAX_SOURCE_BYTES {
-                    return Err(format!("Selected archive exceeds size limit: {}", location.display()));
+                    return Err(format!(
+                        "Selected archive exceeds size limit: {}",
+                        location.display()
+                    ));
                 }
                 let candidate = fs::canonicalize(&location).map_err(|e| e.to_string())?;
                 if !candidate.starts_with(&chosen) || candidate.starts_with(&library) {
                     return Err("Source folder entry escaped its verified root".into());
                 }
-                if seen.insert(candidate.clone()) { files.push(candidate); }
+                if seen.insert(candidate.clone()) {
+                    files.push(candidate);
+                }
                 if files.len() > MAX_LIBRARY_COLLECTION_PAKS {
                     return Err("More than 4,096 PAKs found; choose a narrower folder".into());
                 }
@@ -519,21 +533,29 @@ pub fn scan_library_import_sources(
         return Err("No .pak files found in the selected source".into());
     }
     files.sort_by(|a, b| {
-        a.to_string_lossy().to_ascii_lowercase()
-            .cmp(&b.to_string_lossy().to_ascii_lowercase()).then_with(|| a.cmp(b))
+        a.to_string_lossy()
+            .to_ascii_lowercase()
+            .cmp(&b.to_string_lossy().to_ascii_lowercase())
+            .then_with(|| a.cmp(b))
     });
     let mut packed_bytes = 0u64;
     for source in &files {
-        packed_bytes = packed_bytes.checked_add(
-            fs::metadata(source).map_err(|e| e.to_string())?.len()
-        ).ok_or("Collection size overflow")?;
+        packed_bytes = packed_bytes
+            .checked_add(fs::metadata(source).map_err(|e| e.to_string())?.len())
+            .ok_or("Collection size overflow")?;
     }
-    let existing = imported_library(&library).map_err(|e| e.to_string())?
-        .archives.into_iter()
+    let existing = imported_library(&library)
+        .map_err(|e| e.to_string())?
+        .archives
+        .into_iter()
         .filter_map(|archive| fs::canonicalize(archive.source).ok())
         .collect::<HashSet<_>>();
     let already_imported = files.iter().filter(|path| existing.contains(*path)).count();
-    Ok(LibraryImportPlan { files, packed_bytes, already_imported })
+    Ok(LibraryImportPlan {
+        files,
+        packed_bytes,
+        already_imported,
+    })
 }
 
 /// Import the displayed, explicit preview selection, preserving completed
@@ -555,13 +577,19 @@ pub fn import_library_plan_with_keys(
         failed: Vec::new(),
     };
     for path in &plan.files {
-        if cancelled.load(Ordering::Relaxed) { break; }
-        let name = path.file_name()
+        if cancelled.load(Ordering::Relaxed) {
+            break;
+        }
+        let name = path
+            .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "<unknown>".into());
         match import_signed_library_pak_with_keys(library_root, path, public_keys) {
             Ok(result) => report.imported.push(result),
-            Err(reason) => report.failed.push(LibraryImportFailure { archive: name, reason }),
+            Err(reason) => report.failed.push(LibraryImportFailure {
+                archive: name,
+                reason,
+            }),
         }
         completed.fetch_add(1, Ordering::Relaxed);
     }
@@ -581,21 +609,19 @@ mod tests {
         fs::write(source.join("root.pak"), b"root").unwrap();
         fs::write(source.join("nested/more/other.PAK"), b"nested").unwrap();
         fs::write(source.join("nested/text.txt"), b"ignore").unwrap();
-        let non_recursive = scan_library_import_sources(
-            &library, &[source.clone()], false
-        ).unwrap();
+        let non_recursive =
+            scan_library_import_sources(&library, &[source.clone()], false).unwrap();
         assert_eq!(non_recursive.files.len(), 1);
-        let recursive = scan_library_import_sources(
-            &library, &[source.clone()], true
-        ).unwrap();
+        let recursive = scan_library_import_sources(&library, &[source.clone()], true).unwrap();
         assert_eq!(recursive.files.len(), 2);
         assert_eq!(recursive.packed_bytes, 10);
         assert_eq!(recursive.already_imported, 0);
         assert_eq!(recursive.files[0].file_name().unwrap(), "other.PAK");
         assert!(scan_library_import_sources(&library, &[library.clone()], true).is_err());
-        assert!(scan_library_import_sources(
-            &library, &[source.join("nested/text.txt")], false
-        ).is_err());
+        assert!(
+            scan_library_import_sources(&library, &[source.join("nested/text.txt")], false)
+                .is_err()
+        );
         assert!(fs::read_dir(&library).unwrap().next().is_none());
     }
 
@@ -609,9 +635,8 @@ mod tests {
         let plan = scan_library_import_sources(&lib, &[source], false).unwrap();
         let cancelled = AtomicBool::new(true);
         let completed = AtomicUsize::new(12);
-        let report = import_library_plan_with_keys(
-            &lib, &plan, &[], &cancelled, &completed
-        ).unwrap();
+        let report =
+            import_library_plan_with_keys(&lib, &plan, &[], &cancelled, &completed).unwrap();
         assert!(report.imported.is_empty());
         assert!(report.failed.is_empty());
         assert_eq!(completed.load(Ordering::Relaxed), 0);
