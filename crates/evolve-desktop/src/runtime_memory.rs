@@ -227,7 +227,9 @@ pub(super) fn scan_signature(
     address: &str,
     pattern: &str,
 ) -> Result<String, String> {
-    let pid = snapshot.pid.ok_or("Detect exactly one Evolve process first")?;
+    let pid = snapshot
+        .pid
+        .ok_or("Detect exactly one Evolve process first")?;
     if inspect(game_root).pid != Some(pid) {
         return Err("Process changed; detect Evolve again".into());
     }
@@ -236,7 +238,8 @@ pub(super) fn scan_signature(
         return Err("Invalid user-mode address".into());
     }
     let pattern = crate::runtime_signatures::parse_aob(pattern)?;
-    let handle: read_process_memory::ProcessHandle = pid.try_into()
+    let handle: read_process_memory::ProcessHandle = pid
+        .try_into()
         .map_err(|error| format!("Unable to open Evolve read-only: {error}"))?;
     let bytes = read_process_memory::copy_address(base, 4096, &handle)
         .map_err(|error| format!("Cannot read full 4 KiB window: {error}"))?;
@@ -244,7 +247,10 @@ pub(super) fn scan_signature(
     if inspect(game_root).pid != Some(pid) {
         return Err("Process changed during search; discarded".into());
     }
-    let mut report = format!("Signature candidates: {} in 4 KiB, PID {pid}. Read-only; validate across game restarts.", matches.len());
+    let mut report = format!(
+        "Signature candidates: {} in 4 KiB, PID {pid}. Read-only; validate across game restarts.",
+        matches.len()
+    );
     for at in matches.iter().take(16) {
         report.push_str(&format!("\n0x{at:016X}"));
     }
