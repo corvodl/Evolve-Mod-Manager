@@ -87,9 +87,22 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
                     .style(design::secondary),
             ]
             .spacing(8),
-            text("Modded play uses the original private-controlled swap and post-game restoration. It does not create signing keys or silently swap game files during setup.")
+            text("The manager can generate a fresh isolated signing stage, locally created RSA keys, signed PAK copies and private-compatible recovery helpers without modifying the installed game.")
                 .size(11)
                 .style(design::muted),
+            row![
+                design::button(if state.busy {
+                    "Preparing Offline Setup…"
+                } else {
+                    "Create Offline Setup"
+                })
+                .on_press_maybe((!state.busy).then_some(Message::StartAutomaticSetup))
+                .style(design::primary),
+                text("Requires available Game Storage space; optional original snapshots follow Settings > Keep original snapshots.")
+                    .size(11)
+                    .style(design::muted),
+            ]
+            .spacing(9),
         ]
         .spacing(9),
     )
@@ -203,7 +216,7 @@ fn storage(state: &State) -> Element<'_, Message> {
             Element::<Message>::from(space().height(Length::Fixed(1.0)))
         },
         row![
-            design::button("Set Up Manager").on_press(Message::SaveGameSetup).style(design::primary).width(Fill),
+            design::button("Set Up Manager").on_press(Message::StartAutomaticSetup).style(design::primary).width(Fill),
             design::button("Check Setup").on_press(Message::StartStageStatus).style(design::secondary).width(Fill),
             design::button("Open Projects").on_press(Message::Navigate(Page::Files)).style(design::secondary).width(Fill),
             design::button("Save Settings").on_press(Message::SavePreferences).style(design::secondary).width(Fill),
