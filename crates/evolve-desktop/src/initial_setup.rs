@@ -152,10 +152,8 @@ pub fn create(
     keep_original_snapshots: bool,
 ) -> Result<InitialSetup, String> {
     launcher_bridge::games_closed()?;
-    let (game, client) = play_setup::validate_paths(
-        &game.to_string_lossy(),
-        &client.to_string_lossy(),
-    )?;
+    let (game, client) =
+        play_setup::validate_paths(&game.to_string_lossy(), &client.to_string_lossy())?;
     play_setup::audit_backup_files(&game)?;
     let rows = relative_paks(&game)?;
     let launcher_folder = client.parent().ok_or("Client has no containing folder")?;
@@ -163,13 +161,17 @@ pub fn create(
     // mistaken Mod Data Location cannot create setup files in the game/client
     // tree, including when its existing parent is a symlink.
     if !storage.is_absolute()
-        || storage.components().any(|part| matches!(part, std::path::Component::ParentDir))
+        || storage
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
     {
         return Err("Mod Data Location must be an absolute path without .. components".into());
     }
     let mut ancestor = storage;
     while !ancestor.exists() {
-        ancestor = ancestor.parent().ok_or("Mod Data Location has no existing parent")?;
+        ancestor = ancestor
+            .parent()
+            .ok_or("Mod Data Location has no existing parent")?;
     }
     let trailing = storage.strip_prefix(ancestor).map_err(|e| e.to_string())?;
     let proposed = fs::canonicalize(ancestor)
@@ -185,8 +187,8 @@ pub fn create(
     if !storage.is_dir() {
         fs::create_dir_all(storage).map_err(|e| format!("Cannot create Game Storage: {e}"))?;
     }
-    let storage = fs::canonicalize(storage)
-        .map_err(|e| format!("Cannot inspect Game Storage: {e}"))?;
+    let storage =
+        fs::canonicalize(storage).map_err(|e| format!("Cannot inspect Game Storage: {e}"))?;
     let original_shim = game.join("bin64_SteamRetail").join("inject.dll");
     let shim = fs::read(&original_shim).map_err(|e| e.to_string())?;
     if shim.len() != 4096 {
