@@ -118,7 +118,12 @@ fn configured_ffmpeg(configured: &str) -> Result<Option<PathBuf>, String> {
     }
     Ok(Some(real))
 }
-fn transcode_as(original: &Path, scratch: &Path, ffmpeg: &Path, filename: &str) -> Result<String, String> {
+fn transcode_as(
+    original: &Path,
+    scratch: &Path,
+    ffmpeg: &Path,
+    filename: &str,
+) -> Result<String, String> {
     let target = scratch.join(filename);
     let mut command = Command::new(ffmpeg);
     #[cfg(windows)]
@@ -441,7 +446,8 @@ impl SubmenuVideoCatalog {
         for ext in ["mp4", "webm"] {
             let target_name = Self::filename(key, ext);
             let target = scratch.join(&target_name);
-            if target.exists() && plain_file(&target, MAX_BROWSER_VIDEO).is_ok()
+            if target.exists()
+                && plain_file(&target, MAX_BROWSER_VIDEO).is_ok()
                 && matches!(is_browser_video(&target, ext), Ok(true))
             {
                 return json!({"source": source, "playable": true, "file": target_name,
@@ -452,7 +458,10 @@ impl SubmenuVideoCatalog {
             return json!({"source": source, "playable": false,
                 "status": "Original video directory is missing"});
         };
-        let stem = file.file_stem().and_then(|value| value.to_str()).unwrap_or("");
+        let stem = file
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
         if !stem.is_ascii() || stem.is_empty() || stem.len() > 80 {
             return json!({"source": source, "playable": false,
                 "status": "Original video name is invalid"});
@@ -463,10 +472,14 @@ impl SubmenuVideoCatalog {
             if sidecar.exists() {
                 let safe_parent = fs::canonicalize(parent);
                 let checked = fs::canonicalize(&sidecar);
-                let valid = safe_parent.ok().zip(checked.ok()).is_some_and(|(root, real)| {
-                    real.starts_with(root) && plain_file(&real, MAX_BROWSER_VIDEO).is_ok()
-                        && matches!(is_browser_video(&real, ext), Ok(true))
-                });
+                let valid = safe_parent
+                    .ok()
+                    .zip(checked.ok())
+                    .is_some_and(|(root, real)| {
+                        real.starts_with(root)
+                            && plain_file(&real, MAX_BROWSER_VIDEO).is_ok()
+                            && matches!(is_browser_video(&real, ext), Ok(true))
+                    });
                 if !valid {
                     return json!({"source": source, "playable": false,
                         "status": "Rejected unsafe or invalid source video preview sidecar"});
@@ -510,22 +523,40 @@ pub(crate) fn submenu_catalog(
         ..SubmenuVideoCatalog::default()
     };
     let mut status = serde_json::Map::new();
-    let Some((root, build)) = root.zip(build).filter(|(_, label)| !label.trim().is_empty()) else {
-        return (json!({"available": 0, "status":
-            "Select the original source build and import videos.pak to enable other menu videos."}), catalog);
+    let Some((root, build)) = root
+        .zip(build)
+        .filter(|(_, label)| !label.trim().is_empty())
+    else {
+        return (
+            json!({"available": 0, "status":
+            "Select the original source build and import videos.pak to enable other menu videos."}),
+            catalog,
+        );
     };
     let paths = match imported_video_members(root, build) {
         Ok(Some(paths)) => paths,
-        Ok(None) => return (json!({"available": 0, "status":
-            "No source-build-qualified videos.pak has been imported."}), catalog),
+        Ok(None) => {
+            return (
+                json!({"available": 0, "status":
+            "No source-build-qualified videos.pak has been imported."}),
+                catalog,
+            );
+        }
         Err(error) => return (json!({"available": 0, "status": error}), catalog),
     };
     for &(key, filename) in SUBMENU_VIDEO_NAMES {
-        let matching = paths.iter().filter(|path| {
-            let parts: Vec<_> = path.split('/').collect();
-            parts.last().is_some_and(|basename| basename.eq_ignore_ascii_case(filename))
-                && parts.iter().any(|segment| segment.eq_ignore_ascii_case("front_end"))
-        }).collect::<Vec<_>>();
+        let matching = paths
+            .iter()
+            .filter(|path| {
+                let parts: Vec<_> = path.split('/').collect();
+                parts
+                    .last()
+                    .is_some_and(|basename| basename.eq_ignore_ascii_case(filename))
+                    && parts
+                        .iter()
+                        .any(|segment| segment.eq_ignore_ascii_case("front_end"))
+            })
+            .collect::<Vec<_>>();
         if matching.len() != 1 {
             status.insert(key.to_owned(), json!({"available": false, "expected": filename,
                 "status": if matching.is_empty() {"Missing exact original clip"} else {"Ambiguous original clip"}}));
@@ -536,19 +567,37 @@ pub(crate) fn submenu_catalog(
             Ok(LibraryReferenceStatus::Found(found)) => {
                 let absolute = PathBuf::from(&found.absolute_path);
                 if plain_file(&absolute, MAX_USM).is_ok() && matches!(is_usm(&absolute), Ok(true)) {
-                    status.insert(key.to_owned(), json!({"available": true, "source_member": found.relative_path}));
-                    catalog.sources.insert(key.to_owned(), (absolute, found.relative_path));
+                    status.insert(
+                        key.to_owned(),
+                        json!({"available": true, "source_member": found.relative_path}),
+                    );
+                    catalog
+                        .sources
+                        .insert(key.to_owned(), (absolute, found.relative_path));
                 } else {
-                    status.insert(key.to_owned(), json!({"available": false,
-                        "status": "Original video failed CRID or file-size verification"}));
+                    status.insert(
+                        key.to_owned(),
+                        json!({"available": false,
+                        "status": "Original video failed CRID or file-size verification"}),
+                    );
                 }
             }
-            Ok(_) => { status.insert(key.to_owned(), json!({"available": false, "status": "Source member unavailable or ambiguous"})); }
-            Err(error) => { status.insert(key.to_owned(), json!({"available": false, "status": error})); }
+            Ok(_) => {
+                status.insert(
+                    key.to_owned(),
+                    json!({"available": false, "status": "Source member unavailable or ambiguous"}),
+                );
+            }
+            Err(error) => {
+                status.insert(key.to_owned(), json!({"available": false, "status": error}));
+            }
         }
     }
-    (json!({"available": catalog.sources.len(), "entries": status,
-            "status": "Submenu videos are prepared only when their original name is requested."}), catalog)
+    (
+        json!({"available": catalog.sources.len(), "entries": status,
+            "status": "Submenu videos are prepared only when their original name is requested."}),
+        catalog,
+    )
 }
 
 #[cfg(test)]
@@ -738,20 +787,30 @@ mod tests {
         fs::write(front.join("options.usm"), usm).unwrap();
         fs::write(front.join("mainmenu_kraken.usm"), usm).unwrap();
         fs::write(front.join("lobby.preview.mp4"), b"\0\0\0\x18ftypisom").unwrap();
-        fs::write(folder.join("asset-library.json"), serde_json::to_vec(&json!({
-            "version": 1, "name": "videos.pak", "source": "/game/videos.pak",
-            "entries": [
-                {"path": "front_end/lobby.usm", "bytes": usm.len()},
-                {"path": "front_end/options.usm", "bytes": usm.len()},
-                {"path": "front_end/mainmenu_kraken.usm", "bytes": usm.len()}
-            ]
-        })).unwrap()).unwrap();
-        fs::write(root.join("build-collections.json"), serde_json::to_vec(&json!({
-            "version": 1, "builds": {"stage2": {
-                "label": "Modded Stage 2",
-                "members": {"11111111111111111111": {}}
-            }}
-        })).unwrap()).unwrap();
+        fs::write(
+            folder.join("asset-library.json"),
+            serde_json::to_vec(&json!({
+                "version": 1, "name": "videos.pak", "source": "/game/videos.pak",
+                "entries": [
+                    {"path": "front_end/lobby.usm", "bytes": usm.len()},
+                    {"path": "front_end/options.usm", "bytes": usm.len()},
+                    {"path": "front_end/mainmenu_kraken.usm", "bytes": usm.len()}
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            root.join("build-collections.json"),
+            serde_json::to_vec(&json!({
+                "version": 1, "builds": {"stage2": {
+                    "label": "Modded Stage 2",
+                    "members": {"11111111111111111111": {}}
+                }}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let (summary, catalog) = submenu_catalog(Some(root), Some("Modded Stage 2"), "");
         assert_eq!(summary["available"], 2);
         assert_eq!(summary["entries"]["modeselect"]["available"], true);
@@ -761,12 +820,20 @@ mod tests {
         let mode = catalog.stage("modeselect", scratch.path());
         assert_eq!(mode["playable"], true);
         assert_eq!(mode["file"], "submenu-video-modeselect.mp4");
-        assert_eq!(fs::read(scratch.path().join("submenu-video-modeselect.mp4")).unwrap(),
-            b"\0\0\0\x18ftypisom");
+        assert_eq!(
+            fs::read(scratch.path().join("submenu-video-modeselect.mp4")).unwrap(),
+            b"\0\0\0\x18ftypisom"
+        );
         assert_eq!(catalog.stage("options", scratch.path())["playable"], false);
         assert_eq!(catalog.stage("arena", scratch.path())["playable"], false);
-        assert_eq!(catalog.stage("mainmenu_kraken", scratch.path())["playable"], false);
-        assert_eq!(catalog.stage("../secrets", scratch.path())["playable"], false);
+        assert_eq!(
+            catalog.stage("mainmenu_kraken", scratch.path())["playable"],
+            false
+        );
+        assert_eq!(
+            catalog.stage("../secrets", scratch.path())["playable"],
+            false
+        );
         let (wrong_build, _) = submenu_catalog(Some(root), Some("Legacy"), "");
         assert_eq!(wrong_build["available"], 0);
     }
