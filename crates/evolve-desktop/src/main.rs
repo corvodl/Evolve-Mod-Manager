@@ -12,7 +12,6 @@ mod blender_install;
 mod crash_diagnostics;
 mod design;
 mod developer_auth;
-mod runtime_memory;
 mod explorer_tree;
 mod gfx_bundled_tools;
 mod gfx_dependencies;
@@ -39,6 +38,7 @@ mod modding_page;
 mod modding_projects;
 mod orientation_gizmo;
 mod private_pages;
+mod runtime_memory;
 mod selection;
 mod settings;
 mod settings_page;
@@ -2980,36 +2980,70 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::RuntimeAddressChanged(value) => {
-            if state.developer_unlocked && value.len() <= 32 { state.runtime_address = value; }
+            if state.developer_unlocked && value.len() <= 32 {
+                state.runtime_address = value;
+            }
         }
         Message::RuntimeOffsetsChanged(value) => {
-            if state.developer_unlocked && value.len() <= 128 { state.runtime_offsets = value; }
+            if state.developer_unlocked && value.len() <= 128 {
+                state.runtime_offsets = value;
+            }
         }
         Message::RuntimeDetect => {
-            if !state.developer_unlocked || state.runtime_checking { return Task::none(); }
+            if !state.developer_unlocked || state.runtime_checking {
+                return Task::none();
+            }
             state.runtime_checking = true;
             state.runtime_snapshot = None;
             state.runtime_result.clear();
             let root = state.preferences.game_storage_root.clone();
-            return Task::perform(async move { tokio::task::spawn_blocking(move || runtime_memory::inspect(&root)).await.unwrap_or_else(|e| runtime_memory::Snapshot { pid: None, status: format!("Process detection failed: {e}"), executable: "Unknown".into() }) }, Message::RuntimeDetected);
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || runtime_memory::inspect(&root))
+                        .await
+                        .unwrap_or_else(|e| runtime_memory::Snapshot {
+                            pid: None,
+                            status: format!("Process detection failed: {e}"),
+                            executable: "Unknown".into(),
+                        })
+                },
+                Message::RuntimeDetected,
+            );
         }
         Message::RuntimeDetected(snapshot) => {
             state.runtime_checking = false;
-            if state.developer_unlocked { state.runtime_snapshot = Some(snapshot); }
+            if state.developer_unlocked {
+                state.runtime_snapshot = Some(snapshot);
+            }
         }
         Message::RuntimeRead => {
-            if !state.developer_unlocked || state.runtime_checking { return Task::none(); }
-            let Some(snapshot) = state.runtime_snapshot.clone() else { return Task::none(); };
+            if !state.developer_unlocked || state.runtime_checking {
+                return Task::none();
+            }
+            let Some(snapshot) = state.runtime_snapshot.clone() else {
+                return Task::none();
+            };
             state.runtime_checking = true;
             state.runtime_result = "Reading...".into();
             let root = state.preferences.game_storage_root.clone();
             let address = state.runtime_address.clone();
             let offsets = state.runtime_offsets.clone();
-            return Task::perform(async move { tokio::task::spawn_blocking(move || runtime_memory::read(&snapshot, &root, &address, &offsets)).await.unwrap_or_else(|e| Err(format!("Memory inspection failed: {e}"))) }, Message::RuntimeReadFinished);
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        runtime_memory::read(&snapshot, &root, &address, &offsets)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Memory inspection failed: {e}")))
+                },
+                Message::RuntimeReadFinished,
+            );
         }
         Message::RuntimeReadFinished(result) => {
             state.runtime_checking = false;
-            if state.developer_unlocked { state.runtime_result = result.unwrap_or_else(|error| error); }
+            if state.developer_unlocked {
+                state.runtime_result = result.unwrap_or_else(|error| error);
+            }
         }
         Message::LockDeveloper => {
             state.runtime_snapshot = None;
