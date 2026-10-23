@@ -80,6 +80,7 @@ pub fn configure_existing_helper(
     stage: &Path,
     swap: &Path,
 ) -> Result<(), String> {
+    crate::launcher_bridge::games_closed()?;
     let stage = fs::canonicalize(stage).map_err(|e| format!("Signing stage: {e}"))?;
     let swap = fs::canonicalize(swap).map_err(|e| format!("Swap helper folder: {e}"))?;
     if !stage.is_dir() || !swap.is_dir() || stage.starts_with(game) || swap.starts_with(game) {
@@ -99,6 +100,18 @@ pub fn configure_existing_helper(
         .map_err(|e| format!("Signing stage original game path is missing: {e}"))?;
     if source != game {
         return Err("Signing stage belongs to a different game. Recreate the stage for this installation before playing with mods.".into());
+    }
+    for helper in [
+        "controlled_swap.py",
+        "auto_launch_frida.py",
+        "reusable_restore.py",
+        "auto_restore_watch.py",
+    ] {
+        if !regular(&swap.join(helper)) {
+            return Err(format!(
+                "Swap helper {helper} is missing. Select the complete private-manager swap folder."
+            ));
+        }
     }
     let journal = swap.join("controlled_swap_state.json");
     if journal.exists() {
@@ -266,6 +279,38 @@ mod tests {
                 .unwrap_err()
                 .contains("different game")
         );
+        assert!(!swap.join("launcher_config.json").exists());
+    }
+
+    #[test]
+    fn live_journal_blocks_client_reconfiguration() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("game");
+        let stage = dir.path().join("stage");
+        let swap = dir.path().join("swap");
+        for folder in [&game, &stage, &swap] {
+            fs::create_dir(folder).unwrap();
+        }
+        fs::write(
+            stage.join("rekey_plan.json"),
+            serde_json::to_vec(&serde_json::json!({"source_root":game})).unwrap(),
+        )
+        .unwrap();
+        for helper in [
+            "controlled_swap.py",
+            "auto_launch_frida.py",
+            "reusable_restore.py",
+            "auto_restore_watch.py",
+        ] {
+            fs::write(swap.join(helper), b"helper").unwrap();
+        }
+        fs::write(
+            swap.join("controlled_swap_state.json"),
+            br#"{"phase":"swapped","files":[]}"#,
+        )
+        .unwrap();
+        assert!(configure_existing_helper(&game, &dir.path().join("ModdedEvolveLauncher.exe"), &stage, &swap)
+            .unwrap_err().contains("active or interrupted"));
         assert!(!swap.join("launcher_config.json").exists());
     }
 
