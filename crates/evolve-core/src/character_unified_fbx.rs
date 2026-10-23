@@ -1989,9 +1989,8 @@ mod tests {
         };
         assert!(opaque_historical_2012_diffuse(true, &opaque));
         assert!(!opaque_historical_2012_diffuse(false, &opaque));
-        let mut diffuse = image::RgbaImage::from_raw(
-            2, 1, vec![38, 72, 116, 0, 190, 85, 32, 16],
-        ).unwrap();
+        let mut diffuse =
+            image::RgbaImage::from_raw(2, 1, vec![38, 72, 116, 0, 190, 85, 32, 16]).unwrap();
         make_diffuse_opaque(&mut diffuse);
         assert_eq!(diffuse.as_raw(), &[38, 72, 116, 255, 190, 85, 32, 255]);
 
@@ -2002,7 +2001,8 @@ mod tests {
         assert!(!opaque_historical_2012_diffuse(true, &translucent));
         let masked = crate::materials::MaterialSlot {
             maps: vec![crate::materials::TextureReference {
-                role: "opacity".into(), path: "mask.dds".into(),
+                role: "opacity".into(),
+                path: "mask.dds".into(),
             }],
             ..opaque.clone()
         };
