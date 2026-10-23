@@ -749,7 +749,7 @@ mod tests {
         fs::write(root.join("build-collections.json"), serde_json::to_vec(&json!({
             "version": 1, "builds": {"stage2": {
                 "label": "Modded Stage 2",
-                "members": {id: {}}
+                "members": {"11111111111111111111": {}}
             }}
         })).unwrap()).unwrap();
         let (summary, catalog) = submenu_catalog(Some(root), Some("Modded Stage 2"), "");
