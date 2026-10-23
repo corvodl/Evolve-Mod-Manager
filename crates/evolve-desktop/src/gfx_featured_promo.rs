@@ -131,7 +131,8 @@ fn definitions(source: &str) -> Vec<usize> {
                 .last()
                 .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_')
             && after.starts_with('(');
-        let assigned_function = after.strip_prefix('=')
+        let assigned_function = after
+            .strip_prefix('=')
             .map(str::trim_start)
             .and_then(|remaining| remaining.strip_prefix("function"))
             .is_some_and(|remaining| remaining.trim_start().starts_with('('));
