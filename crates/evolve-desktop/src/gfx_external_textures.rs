@@ -735,9 +735,92 @@ pub(crate) fn route_mode_image_loadclip_urls(swf: &[u8]) -> Result<(Vec<u8>, usi
     Ok((output, rewritten))
 }
 
+/// Rewrite only exact, source-qualified MenuModeSelect DDS string constants
+/// to .png in the *temporary* AVM1 movie. Ruffle's MovieClipLoader decodes
+/// browser images; leaving a .dds extension on a PNG HTTP response makes the
+/// format ambiguous and can bypass its image loader. Both suffixes are four
+/// bytes, so the original AVM1 bytecode offsets and function bodies are intact.
+/// The source GFX and its verified DDS files are never edited.
+pub(crate) fn route_mode_image_png_paths(
+    swf: &[u8],
+    verified_names: &[String],
+) -> Result<(Vec<u8>, usize), String> {
+    if swf.len() > MAX_DECOMPRESSED || swf.len() < 12 || !swf.starts_with(b"FWS") {
+        return Err("Mode-card PNG path routing requires a bounded FWS".into());
+    }
+    if u32::try_from(swf.len()).ok() != Some(u32::from_le_bytes(swf[4..8].try_into().unwrap())) {
+        return Err("Mode-card PNG path routing requires an exact SWF length".into());
+    }
+    let valid_names = verified_names
+        .iter()
+        .filter(|name| (1..=64).contains(&name.len())
+            && name.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-')))
+        .collect::<Vec<_>>();
+    let (header, records) = tags(swf)?;
+    let mut output = swf[..header].to_vec();
+    let mut rewritten = 0usize;
+    for tag in records {
+        let mut data = tag.data;
+        if tag.code == 59 {
+            for name in &valid_names {
+                let exact = format!("Libs/UI/FlashAssets/images/MenuModeSelect/{name}.dds\0");
+                for at in 0..data.len().saturating_sub(exact.len() - 1) {
+                    if &data[at..at + exact.len()] == exact.as_bytes() {
+                        let suffix = at + exact.len() - 5;
+                        data[suffix..suffix + 4].copy_from_slice(b".png");
+                        rewritten += 1;
+                    }
+                }
+            }
+        }
+        encode_tag(tag.code, &data, &mut output);
+    }
+    if rewritten > valid_names.len().saturating_mul(4) {
+        return Err("Too many source MenuModeSelect path substitutions".into());
+    }
+    if output.len() != swf.len() {
+        return Err("Mode-card PNG routing unexpectedly changed SWF size".into());
+    }
+    let size = output.len() as u32;
+    output[4..8].copy_from_slice(&size.to_le_bytes());
+    Ok((output, rewritten))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn changes_only_verified_source_menu_dds_paths_to_png_in_temporary_avm1() {
+        let mut original = b"FWS\x08".to_vec();
+        original.extend(0u32.to_le_bytes());
+        original.extend([0x08, 0, 0, 12, 1, 0]);
+        let original_card = b"Libs/UI/FlashAssets/images/MenuModeSelect/training.dds\0";
+        let unrelated = b"Libs/UI/FlashAssets/images/Elsewhere/training.dds\0";
+        let missing = b"Libs/UI/FlashAssets/images/MenuModeSelect/missing.dds\0";
+        let mut action = vec![1, 0];
+        action.extend_from_slice(original_card);
+        action.extend_from_slice(unrelated);
+        action.extend_from_slice(missing);
+        encode_tag(59, &action, &mut original);
+        encode_tag(0, &[], &mut original);
+        let length = original.len() as u32;
+        original[4..8].copy_from_slice(&length.to_le_bytes());
+        let pristine = original.clone();
+        let (patched, count) =
+            route_mode_image_png_paths(&original, &["training".into()]).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(original, pristine);
+        assert_eq!(patched.len(), original.len());
+        assert!(patched.windows(b"MenuModeSelect/training.png\0".len())
+            .any(|v| v == b"MenuModeSelect/training.png\0"));
+        assert!(patched.windows(unrelated.len()).any(|v| v == unrelated));
+        assert!(patched.windows(missing.len()).any(|v| v == missing));
+        let (second, count) =
+            route_mode_image_png_paths(&patched, &["training".into()]).unwrap();
+        assert_eq!(count, 0);
+        assert_eq!(second, patched);
+    }
+
     #[test]
     fn routes_only_compiled_imageloading_movieclip_urls_without_touching_original() {
         // Synthetic SWF with a source-like ImageLoading constant pool.
