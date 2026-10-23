@@ -494,6 +494,7 @@ pub fn run(
                     "Direct text editing requires a selected existing text resource".into(),
                 );
             }
+            let character_id = tag.id;
             if session.project.is_none() {
                 return Err(
                     "Asset Library movies are read-only; open an editable Mod Project".into(),
@@ -520,14 +521,14 @@ pub fn run(
                     "-replace".into(),
                     before.display().to_string(),
                     output.display().to_string(),
-                    tag.id.to_string(),
+                    character_id.to_string(),
                     replacement.display().to_string(),
                 ],
             )?;
             import_compiled(&mut session, &output)?;
             format!(
                 "Staged text resource #{} replacement; Undo or Apply to Mod Project.",
-                tag.id
+                character_id
             )
         }
         Action::ExportXml => {
