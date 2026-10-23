@@ -2,6 +2,37 @@
 
 Updated: **2026-10-20** · Repository: `corvodl/Evolve-Mod-Manager` · Working PR: **#6** on `feature/blender-viewport-cdf-autoload`, based on PR #5's `feature/pr5-combined-viewer-preview`. This document is a resumable engineering checklist, **not** a claim of production parity. See [PARITY.md](PARITY.md) for the broader feature matrix.
 
+## 2026-10-23 — original Training cards: PNG URL suffix and live request audit
+
+Nightly 34 confirmed that the original `modeselect` transition selects the
+source-qualified `lobby.usm` video, but the image-card display list remains
+blank. The runtime diagnostics showed 24/24 MenuModeSelect DDS images
+converted and staged, 24 SWF bitmap linkages, and one ImageLoading
+`MovieClipLoader.loadClip` `img://` prefix rewrite. **Those counters
+measure file preparation, not successful Flash image loads.**
+
+The next isolated preview patch rewrites the source-authored, verified
+MenuModeSelect `.dds` suffixes to `.png` in AVM1 DoInitAction constant
+strings, in addition to the existing equal-length `img://` → `./img/`
+rewrite. No original game files are changed; each rewrite is four bytes
+and retains AVM1 bytecode positions. This makes Ruffle's image loader
+request browser-native PNG URLs with a matching PNG HTTP response rather
+than a .dds-looking URL served as PNG. Only names actually staged from
+the exact imported build are eligible. An inspection of the supplied
+original `main_menu.gfx` found exactly 24 authored
+`Libs/UI/FlashAssets/images/MenuModeSelect/<name>.dds` constants.
+
+The temporary local preview server now records **actual HTTP requests**
+by the Flash card loader, their success/failure, and a bounded set of
+requested card names. `Check preview assets` surfaces those values in
+addition to the existing browser PNG-decode check. If the counters stay
+at zero after entering Training, the next issue is ActionScript clip
+initialization/path construction. If requests succeed but no cards
+appear, inspect `mcButtonImage` display-list placement and
+`MovieClipLoader.onLoadInit` visibility/size callbacks, not image
+staging. This change alone is **not** proof of card or hover parity:
+it needs an installed-build replay against the original GFX.
+
 ## 2026-10-22 — original front-end video transitions in Ruffle preview
 
 The main-menu preview now supports the original Flash `updateVideo(name)`
