@@ -3129,7 +3129,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             };
             state.runtime_checking = true;
-            state.runtime_health_report = "Filtering candidates against new in-game values...".into();
+            state.runtime_health_report =
+                "Filtering candidates against new in-game values...".into();
             let root = state.preferences.game_storage_root.clone();
             return Task::perform(
                 async move {
