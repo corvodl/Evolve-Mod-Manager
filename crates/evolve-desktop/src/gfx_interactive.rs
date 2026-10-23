@@ -503,6 +503,74 @@ pub(crate) fn install_live_callbacks(
         }
         allowed.push(*preset);
     }
+    // Read-only ActionScript probes for a missing Training image-card menu.
+    // Verify the authored zero-argument source function before registering
+    // a callback. Merely changing URL suffixes cannot cause a loader call
+    // when shouldUseImageButtons() returned false.
+    let image_branch_arity = chunks
+        .iter()
+        .filter_map(|actions| defined_function_arity(actions, "shouldUseImageButtons"))
+        .collect::<Vec<_>>();
+    if !image_branch_arity.is_empty() && image_branch_arity.iter().all(|&arity| arity == 0) {
+        let mut body = Vec::new();
+        avm1_push_i32(&mut body, 0);
+        avm1_push_string(&mut body, "shouldUseImageButtons")?;
+        body.push(0x3d); // Original CallFunction; leave the boolean result.
+        body.extend_from_slice(&[0x3e, 0]); // Return, End.
+        let mut definition = b"evolveCallback_probeImageButtons\0".to_vec();
+        definition.extend_from_slice(&0u16.to_le_bytes());
+        definition.extend_from_slice(&(body.len() as u16).to_le_bytes());
+        emitted.push(0x9b);
+        emitted.extend_from_slice(&(definition.len() as u16).to_le_bytes());
+        emitted.extend_from_slice(&definition);
+        emitted.extend_from_slice(&body);
+        avm1_push_string(&mut emitted, "evolveCallback_probeImageButtons")?;
+        emitted.push(0x1c);
+        avm1_push_string(&mut emitted, "_root")?;
+        emitted.push(0x1c);
+        avm1_push_string(&mut emitted, "evolvePreview_probeImageButtons")?;
+        avm1_push_i32(&mut emitted, 3);
+        avm1_push_string(&mut emitted, "flash")?;
+        emitted.push(0x1c);
+        avm1_push_string(&mut emitted, "external")?;
+        emitted.push(0x4e);
+        avm1_push_string(&mut emitted, "ExternalInterface")?;
+        emitted.push(0x4e);
+        avm1_push_string(&mut emitted, "addCallback")?;
+        emitted.extend_from_slice(&[0x52, 0x17]);
+    }
+    // menuButtonData is the original root variable established by the
+    // verified seven-argument openScreen lifecycle. Inspect its length,
+    // without modifying menu state, inventing cards or executing game code.
+    if allowed.contains(&PreviewPreset::OpenScreen) {
+        let mut body = Vec::new();
+        avm1_push_string(&mut body, "menuButtonData")?;
+        body.push(0x1c);
+        avm1_push_string(&mut body, "length")?;
+        body.push(0x4e);
+        body.extend_from_slice(&[0x3e, 0]);
+        let mut definition = b"evolveCallback_probeMenuRows\0".to_vec();
+        definition.extend_from_slice(&0u16.to_le_bytes());
+        definition.extend_from_slice(&(body.len() as u16).to_le_bytes());
+        emitted.push(0x9b);
+        emitted.extend_from_slice(&(definition.len() as u16).to_le_bytes());
+        emitted.extend_from_slice(&definition);
+        emitted.extend_from_slice(&body);
+        avm1_push_string(&mut emitted, "evolveCallback_probeMenuRows")?;
+        emitted.push(0x1c);
+        avm1_push_string(&mut emitted, "_root")?;
+        emitted.push(0x1c);
+        avm1_push_string(&mut emitted, "evolvePreview_probeMenuRows")?;
+        avm1_push_i32(&mut emitted, 3);
+        avm1_push_string(&mut emitted, "flash")?;
+        emitted.push(0x1c);
+        avm1_push_string(&mut emitted, "external")?;
+        emitted.push(0x4e);
+        avm1_push_string(&mut emitted, "ExternalInterface")?;
+        emitted.push(0x4e);
+        avm1_push_string(&mut emitted, "addCallback")?;
+        emitted.extend_from_slice(&[0x52, 0x17]);
+    }
     // Preview-only interception of the ORIGINAL updateVideo(name) call.
     // The game uses a CRI-USM-backed Scaleform NetStream which Ruffle cannot
     // decode. Preserve the source function, emit its requested video name
