@@ -328,6 +328,28 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
                 design::button("Read 32 bytes")
                     .on_press_maybe((!state.runtime_checking && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some()).then_some(Message::RuntimeRead)),
                 text(state.runtime_result.as_str()).size(12).style(design::muted),
+                text("Health candidates  /  Read-only").size(16),
+                text("Uses the hexadecimal address above to inspect one containing 4 KiB page. It cannot identify actors or find health across the entire game yet. Optional expected HP narrows initial candidates; blank starts an unknown-value scan. Use only in an offline match.").size(12).style(design::muted),
+                design::text_input("Expected health (optional, e.g. 1500)", &state.runtime_health_value)
+                    .on_input(Message::RuntimeHealthValueChanged),
+                row![
+                    design::button("Find Float candidates")
+                        .on_press_maybe((!state.runtime_checking && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some()).then_some(Message::RuntimeHealthStart(super::runtime_health::Kind::Float))),
+                    design::button("Find 4-Byte candidates")
+                        .on_press_maybe((!state.runtime_checking && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some()).then_some(Message::RuntimeHealthStart(super::runtime_health::Kind::Integer))),
+                ].spacing(8),
+                text("Take damage in-game, then narrow candidates with Decreased. Use Unchanged when no damage occurred. Candidates are NOT confirmed health or actors.").size(12).style(design::muted),
+                row![
+                    design::button("Decreased")
+                        .on_press_maybe((!state.runtime_checking && state.runtime_health_scan.is_some()).then_some(Message::RuntimeHealthRefine(super::runtime_health::Filter::Decreased))),
+                    design::button("Unchanged")
+                        .on_press_maybe((!state.runtime_checking && state.runtime_health_scan.is_some()).then_some(Message::RuntimeHealthRefine(super::runtime_health::Filter::Unchanged))),
+                    design::button("Increased")
+                        .on_press_maybe((!state.runtime_checking && state.runtime_health_scan.is_some()).then_some(Message::RuntimeHealthRefine(super::runtime_health::Filter::Increased))),
+                    design::button("Changed")
+                        .on_press_maybe((!state.runtime_checking && state.runtime_health_scan.is_some()).then_some(Message::RuntimeHealthRefine(super::runtime_health::Filter::Changed))),
+                ].spacing(8),
+                text(state.runtime_health_report.as_str()).size(12).style(design::muted),
                 text("Phase 2  /  Offline runtime controls").size(16),
                 text("Preview typed field changes against a manually entered address above. Health/cooldowns are f32, teleport is X,Y,Z and weapon reference is 0x... . These are BYTE PREVIEWS ONLY; live edits remain locked until verified offline and exact-build actor layouts are available.").size(12).style(design::muted),
                 design::text_input("Desired value (e.g. 100000 / 0 / 1,2,3 / 0x10008)", &state.runtime_phase2_value)
