@@ -1090,7 +1090,10 @@ fn stage_linked_screens(session: &Session, scratch: &Path) -> Vec<serde_json::Va
         let mut fonts = Vec::<serde_json::Value>::new();
         if let Ok((_, _, _, imports, _)) = stage_live_import_graph(&screen, &destination) {
             let _ = localize_imported_initial_text(&screen, &destination, &imports);
-            for relative in imports.iter().filter(|p| p.to_ascii_lowercase().contains("font")) {
+            for relative in imports
+                .iter()
+                .filter(|p| p.to_ascii_lowercase().contains("font"))
+            {
                 let font = destination.join(relative);
                 if let Some(count) = original_font_definitions(&font)
                     && count > 0
@@ -2165,10 +2168,15 @@ mod tests {
             patched[size_at..size_at + 2].try_into().unwrap(),
         ));
         let body = &patched[size_at + 2..size_at + 2 + length];
-        assert!(body.windows(b"pushMenuState".len()).any(|w| w == b"pushMenuState"));
-        assert!(!body
-            .windows(b"transitionToMainMenu".len())
-            .any(|w| w == b"transitionToMainMenu"));
+        assert!(
+            body.windows(b"pushMenuState".len())
+                .any(|w| w == b"pushMenuState")
+        );
+        assert!(
+            !body
+                .windows(b"transitionToMainMenu".len())
+                .any(|w| w == b"transitionToMainMenu")
+        );
         assert_eq!(original, menu_fixture_arity(7));
     }
 
