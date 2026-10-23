@@ -166,7 +166,10 @@ pub(super) fn parse_hex(value: &str) -> Result<usize, String> {
 
 pub(super) fn resolve_address(snapshot: &Snapshot, value: &str) -> Result<usize, String> {
     let trimmed = value.trim();
-    let Some(offset) = trimmed.strip_prefix("Evolve.exe+").or_else(|| trimmed.strip_prefix("evolve.exe+")) else {
+    let Some(offset) = trimmed
+        .strip_prefix("Evolve.exe+")
+        .or_else(|| trimmed.strip_prefix("evolve.exe+"))
+    else {
         return parse_hex(trimmed);
     };
     let base = snapshot.module_base.ok_or(
@@ -345,7 +348,6 @@ mod tests {
         assert!(parse_tasklist("INFO: No tasks are running").is_empty());
     }
 
-
     #[test]
     fn module_relative_addresses_require_verified_module_base() {
         let snapshot = Snapshot {
@@ -354,9 +356,15 @@ mod tests {
             executable: String::new(),
             module_base: Some(0x100000),
         };
-        assert_eq!(resolve_address(&snapshot, "Evolve.exe+0x1234").unwrap(), 0x101234);
+        assert_eq!(
+            resolve_address(&snapshot, "Evolve.exe+0x1234").unwrap(),
+            0x101234
+        );
         assert_eq!(resolve_address(&snapshot, "0x20000").unwrap(), 0x20000);
-        let absent = Snapshot { module_base: None, ..snapshot };
+        let absent = Snapshot {
+            module_base: None,
+            ..snapshot
+        };
         assert!(resolve_address(&absent, "Evolve.exe+0x100").is_err());
     }
 
