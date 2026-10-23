@@ -1655,7 +1655,7 @@ pub fn launch_live(
     skipped += import_skipped;
     // The original Stage 2 background is CRI USM in videos.pak; it is not
     // supposed to be reconstructed as a static Flash fill.
-    let background_video = if session
+    let mut background_video = if session
         .relative
         .eq_ignore_ascii_case("Libs/UI/main_menu.gfx")
     {
@@ -1668,6 +1668,19 @@ pub fn launch_live(
     } else {
         serde_json::json!({"playable": false, "status": "Not the Stage 2 main menu"})
     };
+    // The default Goliath clip remains independent from original submenu
+    // requests. Collect exact same-build FrontEndVideoList sources without
+    // converting unrelated or missing videos at startup.
+    let (submenu_manifest, submenu_videos) = if main_menu {
+        crate::gfx_menu_video::submenu_catalog(
+            session.library_root.as_deref(),
+            session.source_build.as_deref(),
+            ffmpeg_executable,
+        )
+    } else {
+        (serde_json::json!({"available": 0}), crate::gfx_menu_video::SubmenuVideoCatalog::default())
+    };
+    background_video["submenus"] = submenu_manifest;
     let linked_screens = if main_menu {
         stage_linked_screens(session, scratch.path())
     } else {
@@ -1725,7 +1738,7 @@ pub fn launch_live(
             render_effects: &render_effects,
         },
     )?;
-    let live = gfx_live_web::LiveServer::start(scratch, actions, web_runtime)?;
+    let live = gfx_live_web::LiveServer::start(scratch, actions, web_runtime, submenu_videos)?;
     Ok(RunningPreview {
         process: None,
         live: Some(Arc::new(live)),
