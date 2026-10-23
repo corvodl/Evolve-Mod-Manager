@@ -8785,31 +8785,30 @@ fn initial_state() -> State {
     }
     // Attempt the known installation locations without overwriting an explicit
     // user-selected path. Users can change either path in Set Up Manager.
-    if result.preferences.game_installation.trim().is_empty() {
-        if let Some(game) = play_setup::detect_game() {
-            result.preferences.game_installation = game;
-        }
+    if result.preferences.game_installation.trim().is_empty()
+        && let Some(game) = play_setup::detect_game()
+    {
+        result.preferences.game_installation = game;
     }
-    if result.preferences.client_executable.trim().is_empty() {
-        if let Some(client) = play_setup::detect_client() {
-            result.preferences.client_executable = client;
-        }
+    if result.preferences.client_executable.trim().is_empty()
+        && let Some(client) = play_setup::detect_client()
+    {
+        result.preferences.client_executable = client;
     }
-    if result.preferences.stage.trim().is_empty() || result.preferences.swap.trim().is_empty() {
-        if let Ok(settings) = settings_path() {
-            if let Some(profile) = settings.parent() {
-                let setup = profile.join("Data").join("Setup");
-                if result.preferences.stage.trim().is_empty()
-                    && setup.join("staged/rekey_plan.json").is_file()
-                {
-                    result.preferences.stage = setup.join("staged").to_string_lossy().into_owned();
-                }
-                if result.preferences.swap.trim().is_empty()
-                    && setup.join("swap/controlled_swap.py").is_file()
-                {
-                    result.preferences.swap = setup.join("swap").to_string_lossy().into_owned();
-                }
-            }
+    if (result.preferences.stage.trim().is_empty() || result.preferences.swap.trim().is_empty())
+        && let Ok(settings) = settings_path()
+        && let Some(profile) = settings.parent()
+    {
+        let setup = profile.join("Data").join("Setup");
+        if result.preferences.stage.trim().is_empty()
+            && setup.join("staged/rekey_plan.json").is_file()
+        {
+            result.preferences.stage = setup.join("staged").to_string_lossy().into_owned();
+        }
+        if result.preferences.swap.trim().is_empty()
+            && setup.join("swap/controlled_swap.py").is_file()
+        {
+            result.preferences.swap = setup.join("swap").to_string_lossy().into_owned();
         }
     }
     // Automatic Blender discovery is intentionally ephemeral: do not save a
