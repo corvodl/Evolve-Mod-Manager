@@ -501,6 +501,45 @@ pub(crate) fn install_live_callbacks(
         }
         allowed.push(*preset);
     }
+    // Preview-only interception of the ORIGINAL updateVideo(name) call.
+    // The game uses a CRI-USM-backed Scaleform NetStream which Ruffle cannot
+    // decode. Preserve the source function, emit its requested video name
+    // through ActionTrace, and then call the original unmodified handler.
+    // This is installed after the source movie defines updateVideo, and only
+    // when its exact first-frame argument count has been verified.
+    let video_arity = chunks
+        .iter()
+        .filter_map(|actions| defined_function_arity(actions, "updateVideo"))
+        .collect::<Vec<_>>();
+    if !video_arity.is_empty() && video_arity.iter().all(|&count| count == 1) {
+        avm1_push_string(&mut emitted, "evolvePreview_original_updateVideo")?;
+        avm1_push_string(&mut emitted, "updateVideo")?;
+        emitted.push(0x1c); // GetVariable: original Function
+        emitted.push(0x1d); // SetVariable: save function before defining wrapper
+
+        let mut video_body = Vec::new();
+        avm1_push_string(&mut video_body, "evolve-video:")?;
+        avm1_push_string(&mut video_body, "name")?;
+        video_body.push(0x1c); // GetVariable: original requested name
+        video_body.push(0x47); // ActionAdd2: prefix + name
+        video_body.push(0x26); // ActionTrace: observed on the page, no native dispatch
+
+        avm1_push_string(&mut video_body, "name")?;
+        video_body.push(0x1c);
+        avm1_push_i32(&mut video_body, 1);
+        avm1_push_string(&mut video_body, "evolvePreview_original_updateVideo")?;
+        video_body.push(0x3d); // CallFunction: unchanged original implementation
+        video_body.extend_from_slice(&[0x3e, 0]); // Return source function result, End
+
+        let mut definition = b"updateVideo\0".to_vec();
+        definition.extend_from_slice(&1u16.to_le_bytes());
+        definition.extend_from_slice(b"name\0");
+        definition.extend_from_slice(&(video_body.len() as u16).to_le_bytes());
+        emitted.push(0x9b); // DefineFunction
+        emitted.extend_from_slice(&(definition.len() as u16).to_le_bytes());
+        emitted.extend_from_slice(&definition);
+        emitted.extend_from_slice(&video_body);
+    }
     if emitted.is_empty() {
         return Ok((swf.to_vec(), allowed));
     }
@@ -1655,7 +1694,7 @@ pub fn launch_live(
     skipped += import_skipped;
     // The original Stage 2 background is CRI USM in videos.pak; it is not
     // supposed to be reconstructed as a static Flash fill.
-    let background_video = if session
+    let mut background_video = if session
         .relative
         .eq_ignore_ascii_case("Libs/UI/main_menu.gfx")
     {
@@ -1668,6 +1707,22 @@ pub fn launch_live(
     } else {
         serde_json::json!({"playable": false, "status": "Not the Stage 2 main menu"})
     };
+    // The default Goliath clip remains independent from original submenu
+    // requests. Collect exact same-build FrontEndVideoList sources without
+    // converting unrelated or missing videos at startup.
+    let (submenu_manifest, submenu_videos) = if main_menu {
+        crate::gfx_menu_video::submenu_catalog(
+            session.library_root.as_deref(),
+            session.source_build.as_deref(),
+            ffmpeg_executable,
+        )
+    } else {
+        (
+            serde_json::json!({"available": 0}),
+            crate::gfx_menu_video::SubmenuVideoCatalog::default(),
+        )
+    };
+    background_video["submenus"] = submenu_manifest;
     let linked_screens = if main_menu {
         stage_linked_screens(session, scratch.path())
     } else {
@@ -1735,7 +1790,7 @@ pub fn launch_live(
             render_effects: &render_effects,
         },
     )?;
-    let live = gfx_live_web::LiveServer::start(scratch, actions, web_runtime)?;
+    let live = gfx_live_web::LiveServer::start(scratch, actions, web_runtime, submenu_videos)?;
     Ok(RunningPreview {
         process: None,
         live: Some(Arc::new(live)),
