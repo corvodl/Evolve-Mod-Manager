@@ -6165,6 +6165,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.library_selection.clear();
                     state.library_selected = None;
                     state.library_page = 0;
+                    // New imports are unassigned until explicitly associated
+                    // with a build snapshot. Keep them visible after importing.
+                    state.library_by_build = false;
                     state.library_show_configuration = failed > 0 || import_was_cancelled;
                     state.library_import_plan = None;
                     refresh_library_matches(state);
