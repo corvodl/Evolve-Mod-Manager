@@ -260,7 +260,7 @@ pub(super) fn discover(
             {
                 pages_read += bytes.len().div_ceil(PAGE);
                 for (i, part) in bytes.as_chunks::<4>().0.iter().enumerate() {
-                    let value = f32::from_le_bytes(part.try_into().unwrap());
+                    let value = f32::from_le_bytes(*part);
                     if armor_initial(value) {
                         candidates.push(Candidate {
                             address: address + i * 4,
