@@ -5958,7 +5958,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             ) {
                 Ok(paths) => paths,
                 Err(error) => {
-                    state.status = format!("Choose and verify the installed game and client first: {error}");
+                    state.status =
+                        format!("Choose and verify the installed game and client first: {error}");
                     state.page = Some(Page::Settings);
                     state.settings_tab = settings_page::Tab::Storage;
                     return Task::none();
@@ -7974,7 +7975,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         "Offline setup verified: {} signed original PAKs, {} plain archives, local signing key and recovery helpers. Original snapshots: {}. Game PAKs unchanged. Stage: {}. You can now build/stage your modded PAKs and use Play with Mods.",
                         report.signed_count,
                         report.plain_count,
-                        if report.snapshots { "kept" } else { "not copied" },
+                        if report.snapshots {
+                            "kept"
+                        } else {
+                            "not copied"
+                        },
                         report.stage.display(),
                     );
                     state.page = Some(Page::Settings);
