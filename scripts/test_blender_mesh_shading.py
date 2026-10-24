@@ -27,25 +27,6 @@ class _Poly:
         self.material_index = material_index
 
 
-class _Mesh:
-    def __init__(self, normals, uv_right=False, material_right=0):
-        # Two triangles sharing the edge 1--2.
-        self.polygons = [
-            _Poly((0, 1, 2), normals[0]),
-            _Poly((3, 4, 5), normals[1], material_right),
-        ]
-        self.loops = [
-            types.SimpleNamespace(vertex_index=index)
-            for index in (0, 1, 2, 2, 1, 3)
-        ]
-        coords = [(0, 0), (1, 0), (0, 1),
-                  (0 if not uv_right else .1, 1), (1, 0), (1, 1)]
-        data = [types.SimpleNamespace(uv=xy) for xy in coords]
-        layer = types.SimpleNamespace(data=data)
-        self.uv_layers = [layer]
-        self.uv_layers.active = layer  # not supported on list; replaced below
-
-
 class Layers(list):
     def __init__(self, layer):
         super().__init__([layer])
@@ -53,7 +34,7 @@ class Layers(list):
 
 
 def mesh(normals, uv_right=False, material_right=0):
-    m = object.__new__(_Mesh)
+    m = types.SimpleNamespace()
     m.polygons = [
         _Poly((0, 1, 2), normals[0]),
         _Poly((3, 4, 5), normals[1], material_right),
