@@ -887,7 +887,9 @@ pub fn repair_staged_hook_for_offline_play(stage: &Path, swap: &Path) -> Result<
     let swap = directory(swap)?;
     let phase = guarded_restore_state(&stage, &swap)?;
     if phase != "restored" && phase != "prepared" {
-        return Err("A previous offline game swap must be restored before repairing the staged DLL".into());
+        return Err(
+            "A previous offline game swap must be restored before repairing the staged DLL".into(),
+        );
     }
     let plan = json(&stage.join("rekey_plan.json"))?;
     let game = directory(Path::new(
