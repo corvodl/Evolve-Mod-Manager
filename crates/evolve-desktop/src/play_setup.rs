@@ -80,8 +80,8 @@ pub(crate) fn ordinary_windows_spelling(input: &str) -> String {
     let lower = normalized.to_ascii_lowercase();
     if lower.starts_with("//?/unc/") {
         format!("//{}", &normalized[8..])
-    } else if normalized.starts_with("//?/") {
-        normalized[4..].to_owned()
+    } else if let Some(stripped) = normalized.strip_prefix("//?/") {
+        stripped.to_owned()
     } else {
         normalized
     }
