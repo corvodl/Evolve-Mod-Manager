@@ -25,7 +25,9 @@ fn owned_profile_id(stage: &std::path::Path) -> Result<Option<String>, String> {
     let document: serde_json::Value =
         serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
-    let id = document["profile_id"].as_str().ok_or("Saved mod profile ID is missing")?;
+    let id = document["profile_id"]
+        .as_str()
+        .ok_or("Saved mod profile ID is missing")?;
     if document["schema"].as_u64() != Some(1)
         || id.len() != 32
         || !id.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -37,14 +39,18 @@ fn owned_profile_id(stage: &std::path::Path) -> Result<Option<String>, String> {
 
 fn save_owned_profile_id(stage: &std::path::Path, id: &str) -> Result<(), String> {
     let mut file = tempfile::NamedTempFile::new_in(stage).map_err(|e| e.to_string())?;
-    serde_json::to_writer(&mut file, &serde_json::json!({
-        "schema": 1, "profile_id": id
-    })).map_err(|e| e.to_string())?;
+    serde_json::to_writer(
+        &mut file,
+        &serde_json::json!({
+            "schema": 1, "profile_id": id
+        }),
+    )
+    .map_err(|e| e.to_string())?;
     file.as_file().sync_all().map_err(|e| e.to_string())?;
-    file.persist(stage.join(AUTO_ID_FILE)).map_err(|e| e.error.to_string())?;
+    file.persist(stage.join(AUTO_ID_FILE))
+        .map_err(|e| e.error.to_string())?;
     Ok(())
 }
-
 
 pub fn launch_enabled(
     mods: Vec<ProjectRow>,
@@ -84,11 +90,8 @@ pub fn launch_enabled(
 
     // A previous enabled-mod set can be rolled back automatically; an
     // unrelated manually applied profile is never silently discarded.
-    if let Some(active) = evolve_core::batch_stage_status(&stage)
-        .map_err(|e| e.to_string())?
-    {
-        let ours = owned_profile_id(&stage)?
-            .is_some_and(|id| id == active.profile_id);
+    if let Some(active) = evolve_core::batch_stage_status(&stage).map_err(|e| e.to_string())? {
+        let ours = owned_profile_id(&stage)?.is_some_and(|id| id == active.profile_id);
         if !ours {
             return Err("A manually staged profile is active. Restore that profile before playing with enabled mods.".into());
         }
@@ -109,7 +112,11 @@ pub fn launch_enabled(
     // even if the user gave it the same "Enabled Mods" label.
     if let Some(id) = owned_profile_id(&stage)? {
         let catalog = evolve_core::list_mod_profiles(&stage).map_err(|e| e.to_string())?;
-        if catalog.profiles.iter().any(|p| p.id == id && p.name.starts_with(AUTO_PROFILE)) {
+        if catalog
+            .profiles
+            .iter()
+            .any(|p| p.id == id && p.name.starts_with(AUTO_PROFILE))
+        {
             evolve_core::delete_mod_profile(&stage, &id).map_err(|e| e.to_string())?;
         }
     }
