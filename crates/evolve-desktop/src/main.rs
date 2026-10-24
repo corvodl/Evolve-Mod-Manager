@@ -425,6 +425,7 @@ struct State {
     modding_selected: Option<usize>,
     modding_name_input: String,
     mod_launch_progress: Option<Arc<AtomicUsize>>,
+    mod_toggle_animations: Vec<ModToggleAnimation>,
     /// Indeterminate footer activity only: never presented as a real percent.
     footer_pulse: u16,
     modding_filter: String,
@@ -438,6 +439,26 @@ struct State {
     modding_profiles: bool,
     modding_open_editor_when_scanned: bool,
     modding_pending_focus: Option<PathBuf>,
+}
+
+/// Visual-only state: the enabled preference is committed before the
+/// thumb animation begins. Never animate a failed preference write.
+const MOD_TOGGLE_FRAMES: u8 = 7;
+
+#[derive(Debug, Clone)]
+struct ModToggleAnimation {
+    workspace: PathBuf,
+    from: f32,
+    to: f32,
+    frame: u8,
+}
+
+impl ModToggleAnimation {
+    fn position(&self) -> f32 {
+        let t = (f32::from(self.frame) / f32::from(MOD_TOGGLE_FRAMES)).clamp(0.0, 1.0);
+        let eased = t * t * (3.0 - 2.0 * t);
+        self.from + (self.to - self.from) * eased
+    }
 }
 
 /// Docked tools all share the same resizable sidebar. Files is permanent;
@@ -2721,6 +2742,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Some(enable),
             ) {
                 Ok(()) => {
+                    let from = state
+                        .mod_toggle_animations
+                        .iter()
+                        .find(|anim| anim.workspace == project.workspace)
+                        .map(ModToggleAnimation::position)
+                        .unwrap_or(if project.enabled { 1.0 } else { 0.0 });
+                    state.mod_toggle_animations
+                        .retain(|anim| anim.workspace != project.workspace);
+                    state.mod_toggle_animations.push(ModToggleAnimation {
+                        workspace: project.workspace.clone(),
+                        from,
+                        to: if enable { 1.0 } else { 0.0 },
+                        frame: 0,
+                    });
                     if let Some(row) = state
                         .modding_projects
                         .as_mut()
@@ -6953,6 +6988,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::Tick => {
+            for animation in &mut state.mod_toggle_animations {
+                animation.frame = animation.frame.saturating_add(1);
+            }
+            state.mod_toggle_animations
+                .retain(|animation| animation.frame < MOD_TOGGLE_FRAMES);
             if state.cdf_surfaces.as_ref().is_some_and(|surfaces| {
                 surfaces.iter().any(|surface| surface.emissive_uv.is_some())
             }) {
@@ -8615,7 +8655,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.status = format!(
                         "Recovery warning: {issue}. The regular client can still be opened and its Repair or Verify option used. The manager did not force another modded swap."
                     );
-                    state.page = Some(Page::Modding);
+                    state.page = Some(Page::Files);
                 }
                 Ok(Completed::OfflineLauncherRestored(count, reusable)) => {
                     state.status = format!(
@@ -9930,7 +9970,10 @@ impl Desktop {
                 .iter()
                 .any(|surface| surface.visible && surface.emissive_uv.is_some())
         }) && matches!(self.state.page.as_ref(), Some(Page::Models));
-        let playback = if self.state.playing || animate_decal {
+        let playback = if self.state.playing
+            || animate_decal
+            || !self.state.mod_toggle_animations.is_empty()
+        {
             iced::time::every(Duration::from_millis(40)).map(|_| Message::Tick)
         } else {
             Subscription::none()
