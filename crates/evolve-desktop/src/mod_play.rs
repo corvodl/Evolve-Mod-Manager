@@ -49,8 +49,19 @@ pub fn launch_enabled(
     if let Some(active) = evolve_core::batch_stage_status(&stage)
         .map_err(|e| e.to_string())?
     {
-        let catalog = evolve_core::list_mod_profiles(&stage).map_err(|e| e.to_string())?;
-        let ours = catalog.profiles.iter().any(|profile| {
+        // The normal profile-list API deliberately refuses access while a
+        // batch journal is active. Read this bounded identity metadata only
+        // to distinguish our own prior mod set from a manual transaction.
+        let catalog_path = stage.join("profiles.json");
+        let meta = std::fs::symlink_metadata(&catalog_path)
+            .map_err(|e| e.to_string())?;
+        if !meta.file_type().is_file() || meta.len() > 1024 * 1024 {
+            return Err("Cannot identify the previous mod set safely.".into());
+        }
+        let catalog: evolve_core::ProfileCatalog = serde_json::from_slice(
+            &std::fs::read(catalog_path).map_err(|e| e.to_string())?
+        ).map_err(|e| e.to_string())?;
+        let ours = catalog.schema == 1 && catalog.profiles.iter().any(|profile| {
             profile.id == active.profile_id && profile.name == AUTO_PROFILE
         });
         if !ours {
