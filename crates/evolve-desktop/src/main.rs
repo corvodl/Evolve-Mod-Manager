@@ -9439,12 +9439,17 @@ fn view(state: &State) -> Element<'_, Message> {
             ("Working", None)
         };
         let value = (state.footer_pulse % 40) as f32;
-        let position = if value <= 20.0 { value * 5.0 } else { (40.0 - value) * 5.0 };
+        let position = if value <= 20.0 {
+            value * 5.0
+        } else {
+            (40.0 - value) * 5.0
+        };
         row![
             text(match count {
                 Some(done) => format!("{label} · {done} files"),
                 None => label.to_owned(),
-            }).size(11),
+            })
+            .size(11),
             container(iced::widget::progress_bar(0.0..=100.0, position))
                 .width(Length::Fixed(124.0))
                 .height(Length::Fixed(8.0)),
@@ -9994,7 +9999,6 @@ mod project_edit_tests {
         state.mod_launch_progress = None;
         assert!(!footer_is_working(&state));
     }
-
 
     #[test]
     fn open_library_folder_validates_configured_directory() {
