@@ -688,7 +688,10 @@ pub fn run(
             )
         }
         Action::StageLegacyRows => {
-            if !session.relative.eq_ignore_ascii_case("Libs/UI/main_menu.gfx") {
+            if !session
+                .relative
+                .eq_ignore_ascii_case("Libs/UI/main_menu.gfx")
+            {
                 return Err("Legacy row preset only supports Libs/UI/main_menu.gfx".into());
             }
             if session.project.is_none() {
