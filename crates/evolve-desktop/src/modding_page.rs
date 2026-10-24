@@ -451,17 +451,20 @@ fn imported_paks(state: &State) -> Element<'_, Message> {
                 continue;
             }
             rows = rows.push(
-                design::button(row![
-                    text(archive.name.as_str()).size(12).width(Fill),
-                    text(archive.group.as_str()).size(11).style(design::muted)
-                ].spacing(8))
-                    .width(Fill)
-                    .style(if state.library_selected == Some(index) {
-                        design::secondary
-                    } else {
-                        design::text_button
-                    })
-                    .on_press(Message::ModdingSelectImported(index)),
+                design::button(
+                    row![
+                        text(archive.name.as_str()).size(12).width(Fill),
+                        text(archive.group.as_str()).size(11).style(design::muted)
+                    ]
+                    .spacing(8),
+                )
+                .width(Fill)
+                .style(if state.library_selected == Some(index) {
+                    design::secondary
+                } else {
+                    design::text_button
+                })
+                .on_press(Message::ModdingSelectImported(index)),
             );
         }
     }
@@ -476,26 +479,37 @@ fn imported_paks(state: &State) -> Element<'_, Message> {
     } else {
         "No saved Asset Library loaded. Reload existing manifests, or use Browse staged PAKs to edit your prepared stage directly."
     };
-    panel(column![
-        row![
-            text("AVAILABLE IMPORTED PAKS").size(13),
-            space().width(Fill),
-            text(format!("{matching} match(es)")).size(11).style(design::muted),
-            design::button("Reload saved library")
-                .on_press_maybe((!state.library_startup_loading).then_some(Message::ModdingReloadLibrary))
-                .style(design::text_button),
-        ].spacing(8).align_y(iced::Center),
-        text(description).size(11).style(design::muted),
-        scrollable(rows).height(Length::Fixed(120.0)),
-        row![
-            design::button("Edit selected PAK / Add to Project")
-                .style(design::primary)
-                .on_press_maybe(selected.then_some(Message::LibraryMakeModProject)),
-            design::button("Browse staged PAKs")
-                .style(design::secondary)
-                .on_press(Message::ModdingBrowsePaks),
-        ].spacing(8),
-    ].spacing(5)).into()
+    panel(
+        column![
+            row![
+                text("AVAILABLE IMPORTED PAKS").size(13),
+                space().width(Fill),
+                text(format!("{matching} match(es)"))
+                    .size(11)
+                    .style(design::muted),
+                design::button("Reload saved library")
+                    .on_press_maybe(
+                        (!state.library_startup_loading).then_some(Message::ModdingReloadLibrary)
+                    )
+                    .style(design::text_button),
+            ]
+            .spacing(8)
+            .align_y(iced::Center),
+            text(description).size(11).style(design::muted),
+            scrollable(rows).height(Length::Fixed(120.0)),
+            row![
+                design::button("Edit selected PAK / Add to Project")
+                    .style(design::primary)
+                    .on_press_maybe(selected.then_some(Message::LibraryMakeModProject)),
+                design::button("Browse staged PAKs")
+                    .style(design::secondary)
+                    .on_press(Message::ModdingBrowsePaks),
+            ]
+            .spacing(8),
+        ]
+        .spacing(5),
+    )
+    .into()
 }
 
 fn profiles(state: &State) -> Element<'_, Message> {
