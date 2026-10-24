@@ -195,6 +195,8 @@ struct State {
     cdf_legacy_2012: bool,
     texture_preview: Option<image::Handle>,
     gfx_session: Option<gfx_editor::Session>,
+    gfx_apply_pending: bool,
+    modding_build_after_gfx_apply: bool,
     gfx_active: bool,
     gfx_busy: bool,
     gfx_preview: Option<image::Handle>,
@@ -2773,24 +2775,37 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::ModdingBuild => {
+            if state.busy || state.gfx_busy {
+                state.status = "Finish the current operation before building your mod.".into();
+                return Task::none();
+            }
             let Some(project) = state.modding_selected.and_then(|i| {
                 state
                     .modding_projects
                     .as_ref()
                     .and_then(|projects| projects.get(i))
-            }) else {
-                state.status = "Select a verified editable project first.".into();
+            }).cloned() else {
+                state.status = "Select an editable Mod Project first. Imported Asset Library PAKs must be prepared as an editing project.".into();
                 return Task::none();
             };
-            if !project.changed_known || project.modified.is_empty() || project.modified.len() > 64
-            {
-                state.status = "A signed build needs 1–64 verified changed project files. Refresh the project before building.".into();
-                return Task::none();
+            // A changed menu movie still in the FFDec scratch workspace is
+            // NOT yet part of the project's contents. Building explicitly
+            // commits it with the normal validation and EditorBackups first.
+            if state.gfx_session.as_ref().is_some_and(|session| {
+                session.project.as_ref().is_some_and(|p| p.workspace == project.workspace)
+                    && session.edits > 0
+                    && !session.applied
+            }) {
+                state.modding_build_after_gfx_apply = true;
+                return update(state, Message::GfxApply);
             }
+            // The cached dashboard may be stale or partially indexed (large
+            // projects cap their read-only background hash pass). Build on a
+            // worker performs a COMPLETE fresh scan before replacing members.
             return launch(
                 state,
                 Operation::BuildRawProject(
-                    project.clone(),
+                    project,
                     PathBuf::from(&state.preferences.projects),
                     PathBuf::from(&state.preferences.stage),
                 ),
@@ -5827,6 +5842,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             ) {
                 state.gfx_preview = None;
             }
+            state.gfx_apply_pending = matches!(&action, gfx_editor::Action::Apply { .. });
             state.gfx_busy = true;
             state.gfx_status = "Running checked FFDec operation in private edit copy...".into();
             return Task::perform(
@@ -5842,6 +5858,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::GfxFinished(result) => {
             state.gfx_busy = false;
+            let applied_to_project = std::mem::take(&mut state.gfx_apply_pending);
+            let build_after_apply = std::mem::take(&mut state.modding_build_after_gfx_apply);
             match result {
                 Ok((session, note, preview)) => {
                     let selected_key = state
@@ -5863,9 +5881,34 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     if let Some(image_bytes) = preview {
                         state.gfx_preview = Some(image::Handle::from_bytes(image_bytes));
                     }
+                    if applied_to_project && session.applied {
+                        if let Some(project) = session.project {
+                            state.modding_pending_focus = Some(project.workspace.clone());
+                            if build_after_apply {
+                                state.status = "Applied edited GFX to the Mod Project with a backup. Checking the complete project and building a signed test PAK...".into();
+                                return launch(
+                                    state,
+                                    Operation::BuildRawProject(
+                                        project,
+                                        PathBuf::from(&state.preferences.projects),
+                                        PathBuf::from(&state.preferences.stage),
+                                    ),
+                                );
+                            }
+                            state.status = "GFX saved to the Mod Project. Refreshing changed-file counts for Modding...".into();
+                            return launch(
+                                state,
+                                Operation::IndexProjects(
+                                    PathBuf::from(&state.preferences.projects),
+                                    PathBuf::from(&state.preferences.stage),
+                                ),
+                            );
+                        }
+                    }
                 }
                 Err(e) => {
                     state.gfx_status = format!("FFDec editing failed: {e}");
+                    state.status = state.gfx_status.clone();
                 }
             }
             if let Some(index) = state.viewer_queued_preview.take()
