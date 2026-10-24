@@ -10348,6 +10348,49 @@ mod project_edit_tests {
     }
 
     #[test]
+    fn modding_automatically_reindexes_saved_library_and_selects_imports() {
+        let folder = tempfile::tempdir().unwrap();
+        let root = folder.path().to_string_lossy().into_owned();
+        let mut state = State {
+            library_root: root.clone(),
+            ..State::default()
+        };
+        let _ = update(&mut state, Message::Navigate(Page::Files));
+        assert!(state.library_startup_loading);
+        assert_eq!(state.page, Some(Page::Files));
+
+        let catalog = ImportedLibrary {
+            root: root.clone(),
+            archives: vec![ImportedPak {
+                id: "a".repeat(20),
+                name: "models.pak".into(),
+                source: "C:/game/models.pak".into(),
+                directory: root.clone(),
+                group: "Hunters".into(),
+                description: "Models".into(),
+                entries: 1,
+                extracted_bytes: 1,
+                warnings: 0,
+                builds: vec![],
+            }],
+            builds: vec![],
+            total_bytes: 1,
+            ignored: 0,
+        };
+        let _ = update(
+            &mut state,
+            Message::StartupLibraryIndexed(folder.path().to_path_buf(), Ok(catalog)),
+        );
+        assert!(!state.library_startup_loading);
+        assert!(state.library_catalog.is_some());
+        assert_eq!(state.page, Some(Page::Files));
+        let _ = update(&mut state, Message::ModdingSelectImported(0));
+        assert_eq!(state.library_selected, Some(0));
+        assert_eq!(state.library_selection.indices.len(), 1);
+        assert!(state.library_selection.indices.contains(&0));
+    }
+
+    #[test]
     fn project_paging_filtering_and_control_deselection_use_visible_rows() {
         let mut state = State {
             modding_projects: Some(
