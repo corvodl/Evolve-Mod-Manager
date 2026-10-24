@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from blender_uv0 import prepare_original_uv
+from blender_mesh_shading import (glb_source_normals, preserve_or_reconstruct_normals,
+                                 normal_samples, verify_normal_samples)
 from blender_material_ids import (material_records_from_glb, bind_original_material_ids,
                                   verify_original_material_ids, source_material_uv_distributions,
                                   verify_material_uv_distributions)
@@ -41,6 +43,7 @@ def run():
         bind_original_material_ids(source_meshes, 0, source.stem,
                                    source_material_ids)
     meshes = prepare_original_uv(source_meshes)
+    preserve_or_reconstruct_normals(meshes, glb_source_normals(source))
     visible = [o for o in bpy.data.objects if o in visible or o in meshes]
     if not meshes:
         raise RuntimeError("Imported GLB contains no actual mesh")
@@ -70,6 +73,7 @@ def run():
             verify_original_material_ids(meshes, [source_material_ids])
             verify_material_uv_distributions(
                 source_material_uvs, source_material_uv_distributions(meshes))
+    source_shading = normal_samples(meshes)
     armatures = [obj for obj in visible if obj.type == "ARMATURE"]
     export_root = character_root(root_name, meshes, armatures)
     visible = armatures + meshes + [export_root]
@@ -89,7 +93,9 @@ def run():
         bake_space_transform=False,
         axis_forward='-Y', axis_up='Z',
         use_mesh_modifiers=True,
-        mesh_smooth_type='FACE',
+        mesh_smooth_type='EDGE',
+        use_tspace=True,
+        use_triangles=True,
         use_armature_deform_only=False,
         add_leaf_bones=False,
         bake_anim=include_animation,
@@ -124,6 +130,7 @@ def run():
             if arms:
                 raise RuntimeError("Unrigged FBX unexpectedly gained an armature")
             verify_static_world_bounds(roundtrip, native_bounds, "FBX round-trip")
+        verify_normal_samples(source_shading, normal_samples(roundtrip))
         if source_material_ids:
             verify_original_material_ids(roundtrip, [source_material_ids])
             verify_material_uv_distributions(
