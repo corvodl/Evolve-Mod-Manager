@@ -710,6 +710,7 @@ enum Completed {
     InitialSetupCreated(initial_setup::InitialSetup),
     GamePakBaselineRefreshed(initial_setup::InitialSetup),
     OfflineLauncherRestored(usize, bool),
+    OfflineLauncherRecoveryWarning(String),
     ExtractedSigned(usize, PathBuf),
     RebuiltSigned(String, PathBuf),
     BuiltRawProject(String, PathBuf, ProjectRow),
@@ -1467,8 +1468,12 @@ impl Operation {
                     .map(Completed::InitialSetupCreated)
             }
             Self::RestoreExistingOfflineLauncher(stage, swap) => {
-                let (count, reusable) = restore_existing_offline_client(&stage, &swap)?;
-                Ok(Completed::OfflineLauncherRestored(count, reusable))
+                match restore_existing_offline_client(&stage, &swap) {
+                    Ok((count, reusable)) => {
+                        Ok(Completed::OfflineLauncherRestored(count, reusable))
+                    }
+                    Err(error) => Ok(Completed::OfflineLauncherRecoveryWarning(error)),
+                }
             }
             Self::StageInit(root) => {
                 initialize_stage(&root).map_err(|e| e.to_string())?;
@@ -8605,6 +8610,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         "Offline launch is READY (helper PID {id}) with {count} signed PAKs. {warnings} game-version/layout warning(s); originals have automatic recovery. Press Play in the client to start Evolve. Online play remains disabled; actual asset mounting is not yet confirmed."
                     );
                     state.page = Some(Page::Home);
+                }
+                Ok(Completed::OfflineLauncherRecoveryWarning(issue)) => {
+                    state.status = format!(
+                        "Recovery warning: {issue}. The regular client can still be opened and its Repair or Verify option used. The manager did not force another modded swap."
+                    );
+                    state.page = Some(Page::Modding);
                 }
                 Ok(Completed::OfflineLauncherRestored(count, reusable)) => {
                     state.status = format!(
