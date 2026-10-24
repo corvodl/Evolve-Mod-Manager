@@ -1023,6 +1023,39 @@ pub fn guided_import_members(
 mod tests {
     use super::*;
     #[test]
+    fn changed_gfx_is_found_by_full_build_scan_after_dashboard_budget_exceeded() {
+        let temp = tempfile::tempdir().unwrap();
+        let stage = temp.path().join("staged");
+        let original_pak = stage.join("paks/ui_data.pak");
+        fs::create_dir_all(original_pak.parent().unwrap()).unwrap();
+        fs::write(&original_pak, b"source baseline").unwrap();
+        let project = temp.path().join("Projects/Test_B");
+        let member = "Libs/UI/main_menu.gfx";
+        let asset = project.join("files").join(member);
+        fs::create_dir_all(asset.parent().unwrap()).unwrap();
+        fs::write(&asset, b"new main menu Test B").unwrap();
+        let manifest = serde_json::json!({
+            "version": 1,
+            "source_pak": original_pak,
+            "entries": [{
+                "path": member, "format": "raw",
+                "sha256": format!("{:x}", Sha256::digest(b"unmodified main menu")),
+            }]
+        });
+        fs::write(
+            project.join(".evolve-pak-workspace.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        ).unwrap();
+        let limited = inspect_project(&project, &stage, "Test B".into(), "".into(), 8);
+        assert!(!limited.changed_known);
+        assert!(limited.modified.is_empty());
+        let full = inspect_project(&project, &stage, "Test B".into(), "".into(), u64::MAX);
+        assert_eq!(full.status, "Modified");
+        assert!(full.changed_known);
+        assert_eq!(full.modified, vec![member]);
+    }
+
+    #[test]
     fn guided_values_save_backup_restore_and_stale_guard() {
         let temp = tempfile::tempdir().unwrap();
         let projects = temp.path().join("projects");
