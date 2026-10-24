@@ -109,7 +109,7 @@ fn no_orphaned_backup(target: &Path) -> Result<(), String> {
     let backup = PathBuf::from(format!("{}.customkey-original", target.display()));
     if fs::symlink_metadata(&backup).is_ok() {
         return Err(format!(
-            "Original backup remains at {}; restore using the existing private launcher before another launch",
+            "An original game backup remains at {}. Close Evolve and its launcher, then use Modding > Advanced Archive Tools > Tools > Restore original PAKs + hook. Do not delete the backup or launch again until recovery succeeds.",
             backup.display()
         ));
     }
@@ -527,7 +527,7 @@ fn guarded_restore_state(stage: &Path, swap: &Path) -> Result<String, String> {
     let phase = journal["phase"].as_str().ok_or("Missing recovery phase")?;
     if !matches!(
         phase,
-        "prepared" | "restored" | "swapped" | "interrupted" | "restoring"
+        "prepared" | "restored" | "swapping" | "swapped" | "interrupted" | "restoring"
     ) {
         return Err("Unrecognized/unsafe private swap recovery phase".into());
     }
@@ -590,7 +590,23 @@ fn guarded_restore_state(stage: &Path, swap: &Path) -> Result<String, String> {
         .as_array()
         .ok_or("Recovery journal missing files")?;
     if records.len() != expected.len() || journal["count"].as_u64() != Some(expected.len() as u64) {
-        return Err("Recovery ledger differs from original PAK and hook plan".into());
+        // Automatically generated first-run setups start with a restored,
+        // empty journal. That is legitimate only when none of the installed
+        // targets still has an original-backup suffix from an earlier swap.
+        if phase == "restored" && records.is_empty() && journal["count"].as_u64() == Some(0) {
+            let stranded = expected.iter().any(|(_, _, target)| {
+                fs::symlink_metadata(format!("{}.customkey-original", target.display())).is_ok()
+            });
+            if !stranded {
+                return Ok(phase.to_owned());
+            }
+        }
+        return Err(format!(
+            "Recovery ledger has {} file entries (declared count {:?}), but the selected signing stage expects {} signed PAK and hook entries. This stage/swap combination cannot safely restore existing game backups. Keep the .customkey-original files untouched; select the original matching signing stage and swap helper from Settings, then use Restore original game files. Never replace a missing journal with a newly generated one.",
+            records.len(),
+            journal["count"].as_u64(),
+            expected.len()
+        ));
     }
     let mut seen = std::collections::HashSet::new();
     for (record, (name, source, target)) in records.iter().zip(expected) {
@@ -690,8 +706,22 @@ pub fn restore_existing_offline_client(stage: &Path, swap: &Path) -> Result<(usi
     let _watchdog_guard = lock_restore_watchdog(&swap)?;
     let phase = guarded_restore_state(&stage, &swap)?;
     if matches!(phase.as_str(), "prepared" | "restored") {
-        let checked = inspect_existing_launcher(&stage, &swap)?;
-        return Ok((checked.archive_count, checked.prepared));
+        let journal = json(&swap.join("controlled_swap_state.json"))?;
+        let backups_remain = journal["files"].as_array().is_some_and(|files| {
+            files.iter().any(|item| {
+                item["backup"]
+                    .as_str()
+                    .is_some_and(|path| fs::symlink_metadata(path).is_ok())
+            })
+        });
+        if !backups_remain {
+            let checked = inspect_existing_launcher(&stage, &swap)?;
+            return Ok((checked.archive_count, checked.prepared));
+        }
+        // The journal phase can lag a crash while originals are still
+        // backed up. The trusted helper validates the original PAK hashes and
+        // injector RSA slot before restoring anything. Never skip recovery
+        // merely because a stale journal claims the stage is clean.
     }
     // Recovery must remain available even when Frida is missing or broken.
     // reusable_restore.py needs Python 3.11, but does not import Frida.
@@ -1084,6 +1114,34 @@ mod tests {
         let ledger = swap.join("controlled_swap_state.json");
         fs::write(&ledger, serde_json::to_vec(&journal).unwrap()).unwrap();
         assert_eq!(guarded_restore_state(&stage, &swap).unwrap(), "interrupted");
+        // First-run signing setup has an empty, restored swap journal. It
+        // should not be reported as corrupt when the original files are clean.
+        let new_setup = serde_json::json!({
+            "version": 1, "phase": "restored",
+            "game": game, "stage": stage, "count": 0, "files": []
+        });
+        fs::write(&ledger, serde_json::to_vec(&new_setup).unwrap()).unwrap();
+        assert_eq!(guarded_restore_state(&stage, &swap).unwrap(), "restored");
+        // However, even one stranded backup forbids treating that empty
+        // journal as sufficient recovery instructions.
+        let hook_backup = PathBuf::from(format!("{}.customkey-original", hook_target.display()));
+        fs::write(&hook_backup, b"original backup").unwrap();
+        let mismatch = guarded_restore_state(&stage, &swap).unwrap_err();
+        assert!(mismatch.contains("0 file entries"), "{mismatch}");
+        assert!(
+            mismatch.contains("original matching signing stage"),
+            "{mismatch}"
+        );
+        assert_eq!(fs::read(&hook_backup).unwrap(), b"original backup");
+        fs::remove_file(&hook_backup).unwrap();
+        fs::write(&ledger, serde_json::to_vec(&journal).unwrap()).unwrap();
+        for phase in ["swapping", "prepared", "restored"] {
+            journal["phase"] = serde_json::json!(phase);
+            fs::write(&ledger, serde_json::to_vec(&journal).unwrap()).unwrap();
+            assert_eq!(guarded_restore_state(&stage, &swap).unwrap(), phase);
+        }
+        journal["phase"] = serde_json::json!("interrupted");
+        fs::write(&ledger, serde_json::to_vec(&journal).unwrap()).unwrap();
         journal["files"].as_array_mut().unwrap().reverse();
         fs::write(&ledger, serde_json::to_vec(&journal).unwrap()).unwrap();
         assert!(guarded_restore_state(&stage, &swap).is_err());
