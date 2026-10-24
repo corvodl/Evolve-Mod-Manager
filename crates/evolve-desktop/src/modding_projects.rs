@@ -770,7 +770,14 @@ pub fn build_project_raw(
     let modified = &verified.modified;
     let manifest = read_json(&folder.join(".evolve-pak-workspace.json"), 8 * 1024 * 1024)?;
     if manifest["extraction_mode"].as_str() == Some("imported-snapshot") {
-        return build_imported_snapshot(&folder, stage, &parent, &manifest, modified, verified.clone());
+        return build_imported_snapshot(
+            &folder,
+            stage,
+            &parent,
+            &manifest,
+            modified,
+            verified.clone(),
+        );
     }
     let records = manifest
         .get("entries")
