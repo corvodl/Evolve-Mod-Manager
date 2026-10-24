@@ -169,10 +169,10 @@ pub fn legacy_main_menu_rows(movie: &[u8]) -> Result<Vec<u8>, String> {
             if length < 2 {
                 return Err("Truncated GFX DoInitAction sprite identifier".into());
             }
-            if let Some(edits) = style_tag(movie, position, end)? {
-                if selected.replace(edits).is_some() {
-                    return Err("Ambiguous Stage 2 main-menu Style initializer".into());
-                }
+            if let Some(edits) = style_tag(movie, position, end)?
+                && selected.replace(edits).is_some()
+            {
+                return Err("Ambiguous Stage 2 main-menu Style initializer".into());
             }
         }
         position = end;
