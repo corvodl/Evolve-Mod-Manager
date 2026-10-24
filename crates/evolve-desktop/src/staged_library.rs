@@ -155,7 +155,15 @@ pub fn create_project(
     pak: &ImportedPak,
     projects: &Path,
     stage: &Path,
+    progress: Option<&modding_projects::ProjectCopyProgress>,
 ) -> Result<(PathBuf, usize, Option<String>, bool), String> {
+    // The interactive Edit/Add action never reads/re-signs the current game
+    // PAK. Signing and exact target verification happen at Build/Test time.
+    if let Some(progress) = progress {
+        let (workspace, count) =
+            modding_projects::edit_imported_snapshot_with_progress(pak, projects, Some(progress))?;
+        return Ok((workspace, count, None, false));
+    }
     imported_archive_files(pak).map_err(|e| e.to_string())?;
     // An imported Asset Library extraction is already a valid *editing*
     // baseline. Prefer it immediately unless a perfectly matching signed
@@ -364,9 +372,35 @@ mod tests {
         };
         let projects = dir.path().join("Projects");
         let stage = dir.path().join("nonexistent-stage");
+        let progress = modding_projects::ProjectCopyProgress::default();
         let (workspace, count, refreshed, mapped) =
-            create_project(&archive, &projects, &stage).unwrap();
+            create_project(&archive, &projects, &stage, Some(&progress)).unwrap();
         assert_eq!(count, 1);
+        assert_eq!(progress.phase.load(std::sync::atomic::Ordering::Relaxed), 2);
+        assert_eq!(
+            progress
+                .files_done
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            progress
+                .files_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            progress
+                .bytes_done
+                .load(std::sync::atomic::Ordering::Relaxed),
+            13
+        );
+        assert_eq!(
+            progress
+                .bytes_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            13
+        );
         assert!(refreshed.is_none());
         assert!(!mapped);
         let member = workspace.join("files/Libs/UI/main_menu.gfx");
