@@ -58,6 +58,27 @@ pub struct PakHookPairReport {
     pub runtime_mount_verified: bool,
 }
 
+/// Report inventory drift without treating it as a failed signature. Editing a
+/// signed PAK can intentionally add or remove members; integrity comes from
+/// verifying each archive's signature under its respective public key.
+pub fn signed_member_lists_match(
+    original: &[crate::signed_pak::SignedEntry],
+    replacement: &[crate::signed_pak::SignedEntry],
+) -> bool {
+    if original.len() != replacement.len() {
+        return false;
+    }
+    let original_paths: std::collections::HashSet<_> = original
+        .iter()
+        .map(|entry| entry.path.to_ascii_lowercase())
+        .collect();
+    let replacement_paths: std::collections::HashSet<_> = replacement
+        .iter()
+        .map(|entry| entry.path.to_ascii_lowercase())
+        .collect();
+    original_paths == replacement_paths
+}
+
 fn canonical_public(path: &Path) -> Result<Vec<u8>, ClientHookError> {
     let meta = fs::symlink_metadata(path)?;
     if !meta.file_type().is_file() || meta.len() != PUBLIC_BYTES as u64 {
@@ -306,19 +327,7 @@ pub fn inspect_pak_hook_pair_with_original_name(
         inspect_client_hook_pair(original_hook, custom_hook, original_public, custom_public)?;
     let old = inspect_signed_pak(original_pak, original_public, original_signed_name)?;
     let new = inspect_signed_pak(custom_pak, custom_public, original_signed_name)?;
-    let original_paths: std::collections::HashSet<_> = old
-        .entries
-        .iter()
-        .map(|e| e.path.to_ascii_lowercase())
-        .collect();
-    let replacement_paths: std::collections::HashSet<_> = new
-        .entries
-        .iter()
-        .map(|e| e.path.to_ascii_lowercase())
-        .collect();
-    if original_paths != replacement_paths || old.entries.len() != new.entries.len() {
-        return Err(ClientHookError::OtherChanges);
-    }
+    let member_paths_match = signed_member_lists_match(&old.entries, &new.entries);
     Ok(PakHookPairReport {
         schema: 1,
         archive_basename: basename.to_owned(),
@@ -326,7 +335,7 @@ pub fn inspect_pak_hook_pair_with_original_name(
         custom_pak_sha256: archive_fingerprint(custom_pak)?,
         signed_original_entries: old.entries.len(),
         signed_replacement_entries: new.entries.len(),
-        archive_member_paths_match: true,
+        archive_member_paths_match: member_paths_match,
         hook,
         runtime_mount_verified: false,
     })
@@ -364,6 +373,34 @@ mod tests {
         fs::write(&shim, bytes).unwrap();
         (dir, shim, old, new)
     }
+    #[test]
+    fn signed_member_inventory_differences_are_diagnostic_not_integrity_failures() {
+        use crate::signed_pak::SignedEntry;
+        let entry = |path: &str| SignedEntry {
+            path: path.to_owned(),
+            method: 0,
+            flags: 0,
+            crc32: 0,
+            compressed_size: 1,
+            size: 1,
+            encrypted_data_offset: 0,
+        };
+        let original = vec![entry("Materials/sky.mtl"), entry("Textures/sky.dds")];
+        let case_only = vec![entry("materials/SKY.mtl"), entry("textures/sky.dds")];
+        let with_addition = vec![
+            entry("Materials/sky.mtl"),
+            entry("Textures/sky.dds"),
+            entry("Textures/custom.dds"),
+        ];
+        let with_removal = vec![entry("Materials/sky.mtl")];
+        let with_replacement = vec![entry("Materials/sky.mtl"), entry("Textures/new.dds")];
+        assert!(signed_member_lists_match(&original, &original));
+        assert!(signed_member_lists_match(&original, &case_only));
+        assert!(!signed_member_lists_match(&original, &with_addition));
+        assert!(!signed_member_lists_match(&original, &with_removal));
+        assert!(!signed_member_lists_match(&original, &with_replacement));
+    }
+
     #[test]
     fn private_launcher_stage_hook_name_is_supported_without_overwriting_original() {
         let (dir, original, old, new) = setup();

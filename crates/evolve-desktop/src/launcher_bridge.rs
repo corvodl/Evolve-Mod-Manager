@@ -3,6 +3,7 @@
 //! it reuses the user-configured, independently recoverable controlled-swap
 //! helper after verifying the exact installed originals, staged signatures,
 //! matching RSA hook and stage manifests. Never run for normal/online play.
+use evolve_core::client_hook::signed_member_lists_match;
 use evolve_core::signed_pak::inspect_signed_pak;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -383,7 +384,7 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
     }
     let mut seen = std::collections::HashSet::new();
     let mut planned = Vec::with_capacity(signed.len() + 1);
-    let compatibility_warnings = 0usize;
+    let mut compatibility_warnings = 0usize;
     for entry in signed {
         let path = normalized_pak_name(entry["path"].as_str().ok_or("Missing PAK path")?)?;
         if !seen.insert(path.to_ascii_lowercase()) {
@@ -416,20 +417,12 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
                 "Signed PAK has no verified archive members: {path}"
             ));
         }
-        let original_members: std::collections::HashSet<_> = original_info
-            .entries
-            .iter()
-            .map(|entry| entry.path.to_ascii_lowercase())
-            .collect();
-        let custom_members: std::collections::HashSet<_> = replacement_info
-            .entries
-            .iter()
-            .map(|entry| entry.path.to_ascii_lowercase())
-            .collect();
-        if original_info.entries.len() != replacement_info.entries.len()
-            || original_members != custom_members
-        {
-            return Err(format!("Signed PAK member inventory changed for {path}"));
+        // Modded archives can legitimately add, remove or rename members.
+        // The private launcher never requires the staged member list to be
+        // identical. Both signatures and their authenticated signing names
+        // were verified above; differences are informational only.
+        if !signed_member_lists_match(&original_info.entries, &replacement_info.entries) {
+            compatibility_warnings += 1;
         }
         planned.push((path.to_owned(), original_pak, custom_pak));
     }
