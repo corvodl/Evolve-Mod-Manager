@@ -237,13 +237,15 @@ pub fn apply_library_build_updates(
     if build_identity(&root) != plan.build_id {
         return Err("Selected build identity changed".into());
     }
-    if latest_snapshot(&library, &plan.build_id, &root)?.is_some() {
-        // The scan belongs to a specific source baseline. Reject concurrent
-        // commits instead of replacing another update's accepted member map.
-        let refreshed = scan_library_build_updates(&library, &root)?;
-        if refreshed.previous != plan.previous {
+    // Compare only the versioned ledger here: rescanning every unchanged
+    // source PAK would rehash the entire multi-GiB game a second time.
+    // Every changed/new source is separately rehashed before its own import.
+    if let Some(snapshot) = latest_snapshot(&library, &plan.build_id, &root)? {
+        if snapshot.members != plan.previous {
             return Err("Another build update finished. Scan this build again.".into());
         }
+    } else if bootstrap_from_library(&library, &root)? != plan.previous {
+        return Err("Asset Library changed after preview. Scan this build again.".into());
     }
     let mut members = plan.previous.clone();
     for name in &plan.removed { members.remove(name); }
