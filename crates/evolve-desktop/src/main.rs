@@ -705,8 +705,8 @@ enum Completed {
     SignedHookPreflight(PakHookPairReport),
     OfflineLauncherReady(LaunchReady),
     OfflineLauncherStarted(usize, u32, usize),
-    EnabledModsLaunched(usize, u32, usize),
-    CleanClientStarted(u32),
+    EnabledModsLaunched(usize, u32, usize, Option<String>),
+    CleanClientStarted(u32, Vec<String>),
     InitialSetupCreated(initial_setup::InitialSetup),
     GamePakBaselineRefreshed(initial_setup::InitialSetup),
     OfflineLauncherRestored(usize, bool),
@@ -1441,9 +1441,10 @@ impl Operation {
                     .into_iter()
                     .filter(|project| project.enabled)
                     .collect();
-                mod_play::launch_enabled(mods, projects, stage, swap, game, client, progress).map(
-                    |(count, id, warnings)| Completed::EnabledModsLaunched(count, id, warnings),
-                )
+                mod_play::launch_enabled(mods, projects, stage, swap, game, client, progress)
+                    .map(|(count, id, warnings, recovery)| {
+                        Completed::EnabledModsLaunched(count, id, warnings, recovery)
+                    })
             }
             Self::StartExistingOfflineLauncher(stage, swap, game, client) => {
                 play_setup::configure_existing_helper(&game, &client, &stage, &swap)?;
@@ -1457,8 +1458,9 @@ impl Operation {
                 Ok(Completed::OfflineLauncherStarted(count, id, warnings))
             }
             Self::LaunchCleanClient(game, client, swap) => {
-                let id = play_setup::launch_clean(&game, &client, swap.as_deref())?;
-                Ok(Completed::CleanClientStarted(id))
+                let (id, warnings) =
+                    play_setup::launch_clean(&game, &client, swap.as_deref())?;
+                Ok(Completed::CleanClientStarted(id, warnings))
             }
             Self::CreateInitialSetup(game, client, storage, snapshots) => {
                 initial_setup::create(&game, &client, &storage, snapshots)
@@ -6510,8 +6512,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 );
             }
             state.status =
-                "Verifying original game files before starting the normal client without mods…"
-                    .into();
+                "Opening the regular client. Recovery issues will be shown as warnings…".into();
             return launch(
                 state,
                 Operation::LaunchCleanClient(
@@ -8576,16 +8577,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::Settings);
                     state.settings_tab = settings_page::Tab::Storage;
                 }
-                Ok(Completed::CleanClientStarted(id)) => {
-                    state.status = format!(
-                        "Normal Modded Evolve client started (PID {id}); no staged PAKs or custom injector were installed. Press Play in the client to start the original game."
-                    );
+                Ok(Completed::CleanClientStarted(id, warnings)) => {
+                    state.status = if warnings.is_empty() {
+                        format!(
+                            "Regular client opened (PID {id}); the manager did not modify game files."
+                        )
+                    } else {
+                        format!(
+                            "Regular client opened (PID {id}). Recovery warning (not a launch blocker): {} You can use the client Repair or Verify option.",
+                            warnings.join(" ")
+                        )
+                    };
                     state.page = Some(Page::Home);
                 }
-                Ok(Completed::EnabledModsLaunched(mod_count, id, _warnings)) => {
-                    state.status = format!(
-                        "{mod_count} enabled mod(s) ready. Client helper started (PID {id}). Press Play in the client to test offline."
-                    );
+                Ok(Completed::EnabledModsLaunched(mod_count, id, _warnings, recovery)) => {
+                    state.status = if let Some(warning) = recovery {
+                        format!("Regular client opened (PID {id}). {warning}")
+                    } else {
+                        format!(
+                            "{mod_count} enabled mod(s) ready. Offline client helper started (PID {id}). Press Play in the client."
+                        )
+                    };
                     state.page = Some(Page::Home);
                 }
                 Ok(Completed::OfflineLauncherStarted(count, id, warnings)) => {
