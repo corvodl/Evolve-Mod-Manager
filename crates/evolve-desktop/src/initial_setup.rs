@@ -111,7 +111,8 @@ fn relative_paks(game: &Path) -> Result<Vec<(String, PathBuf, u64)>, String> {
                     .extension()
                     .is_some_and(|ext| ext.eq_ignore_ascii_case("pak"))
             {
-                let relative = entry.path().strip_prefix(game).map_err(|e| e.to_string())?;
+                let source_path = entry.path();
+                let relative = source_path.strip_prefix(game).map_err(|e| e.to_string())?;
                 let virtual_path = relative
                     .to_str()
                     .ok_or("Non-UTF8 PAK path")?
