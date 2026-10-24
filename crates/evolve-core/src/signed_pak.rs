@@ -1337,7 +1337,12 @@ mod tests {
         assert_eq!(report.entries.len(), 1);
         // The private manager retries lowercase signed names. Physical archive
         // casing must not invalidate an otherwise authentic RSA-signed CryPAK.
-        let differently_cased = root.path().join("Sample.pak");
+        // Windows file names are case-insensitive by default: the test's
+        // differently-cased source must live in a separate directory,
+        // otherwise Sample.pak aliases sample.pak and corrupts the fixture.
+        let second_root = root.path().join("different-case");
+        fs::create_dir(&second_root).unwrap();
+        let differently_cased = second_root.join("Sample.pak");
         fs::write(&differently_cased, &bytes).unwrap();
         assert!(inspect_signed_pak(&differently_cased, &key, "Sample.pak").is_err());
         assert!(inspect_signed_pak(&differently_cased, &key, "sample.pak").is_ok());
@@ -1473,7 +1478,9 @@ mod tests {
         // Original retail files may be signed as sample.pak while named
         // Sample.pak. Re-key their staged replacement using the authenticated
         // original signing name; do not rename the installed source.
-        let cased_output = resign_folder.join("Sample.pak");
+        let cased_folder = root.path().join("resigned-mixed-case");
+        fs::create_dir(&cased_folder).unwrap();
+        let cased_output = cased_folder.join("Sample.pak");
         let cased = resign_signed_pak_with_original_name(
             &differently_cased,
             &key,
