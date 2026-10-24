@@ -590,7 +590,26 @@ fn guarded_restore_state(stage: &Path, swap: &Path) -> Result<String, String> {
         .as_array()
         .ok_or("Recovery journal missing files")?;
     if records.len() != expected.len() || journal["count"].as_u64() != Some(expected.len() as u64) {
-        return Err("Recovery ledger differs from original PAK and hook plan".into());
+        // Automatically generated first-run setups start with a restored,
+        // empty journal. That is legitimate only when none of the installed
+        // targets still has an original-backup suffix from an earlier swap.
+        if phase == "restored"
+            && records.is_empty()
+            && journal["count"].as_u64() == Some(0)
+        {
+            let stranded = expected.iter().any(|(_, _, target)| {
+                fs::symlink_metadata(format!("{}.customkey-original", target.display())).is_ok()
+            });
+            if !stranded {
+                return Ok(phase.to_owned());
+            }
+        }
+        return Err(format!(
+            "Recovery ledger has {} file entries (declared count {:?}), but the selected signing stage expects {} signed PAK and hook entries. This stage/swap combination cannot safely restore existing game backups. Keep the .customkey-original files untouched; select the original matching signing stage and swap helper from Settings, then use Restore original game files. Never replace a missing journal with a newly generated one.",
+            records.len(),
+            journal["count"].as_u64(),
+            expected.len()
+        ));
     }
     let mut seen = std::collections::HashSet::new();
     for (record, (name, source, target)) in records.iter().zip(expected) {
