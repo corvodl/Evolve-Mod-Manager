@@ -62,7 +62,10 @@ fn archive_id(name: &str, source_sha: &str) -> String {
 /// installation's imported source path to be reused for the other. Preserve
 /// legacy name+hash IDs when that exact source was already indexed.
 fn source_scoped_id(name: &str, sha: &str, source: &Path) -> String {
-    let path = source.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
+    let path = source
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
     let fingerprint = format!("{}|{sha}|{path}", name.to_ascii_lowercase());
     format!("{:x}", Sha256::digest(fingerprint.as_bytes()))[..20].to_owned()
 }
@@ -207,7 +210,9 @@ fn import_library_pak(
     ];
     let mut use_legacy_id = false;
     for old in old_folders {
-        if !old.exists() { continue; }
+        if !old.exists() {
+            continue;
+        }
         let doc_path = old.join("asset-library.json");
         let metadata = fs::symlink_metadata(&doc_path).map_err(|e| e.to_string())?;
         if !metadata.file_type().is_file() || metadata.len() > 32 * 1024 * 1024 {
@@ -801,8 +806,11 @@ mod tests {
         let first = a.join("UI_Assets.pak");
         let second = b.join("UI_Assets.pak");
         let mut zip = zip::ZipWriter::new(File::create(&first).unwrap());
-        zip.start_file("Libs/UI/main_menu.gfx", zip::write::SimpleFileOptions::default())
-            .unwrap();
+        zip.start_file(
+            "Libs/UI/main_menu.gfx",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
         zip.write_all(b"identical").unwrap();
         zip.finish().unwrap();
         fs::copy(&first, &second).unwrap();
@@ -810,10 +818,16 @@ mod tests {
         let second_report = import_signed_library_pak_with_keys(&library, &second, &[]).unwrap();
         assert_ne!(first_report.id, second_report.id);
         assert_eq!(imported_library(&library).unwrap().archives.len(), 2);
-        assert!(import_signed_library_pak_with_keys(&library, &first, &[])
-            .unwrap().already_imported);
-        assert!(import_signed_library_pak_with_keys(&library, &second, &[])
-            .unwrap().already_imported);
+        assert!(
+            import_signed_library_pak_with_keys(&library, &first, &[])
+                .unwrap()
+                .already_imported
+        );
+        assert!(
+            import_signed_library_pak_with_keys(&library, &second, &[])
+                .unwrap()
+                .already_imported
+        );
     }
 
     #[test]
