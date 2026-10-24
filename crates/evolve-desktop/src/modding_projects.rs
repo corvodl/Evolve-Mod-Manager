@@ -561,7 +561,7 @@ pub fn build_project_raw(
     let source_files = fs::canonicalize(folder.join("files")).map_err(|e| e.to_string())?;
     let original_index =
         evolve_core::open_verified_signed_pak(&original, &keys.public, signed_name)
-        .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?;
     let serialized = tempfile::Builder::new()
         .prefix(".project-serialization-")
         .tempdir_in(&folder)
@@ -640,7 +640,7 @@ pub fn build_project_raw(
                 output,
                 verified,
             ))
-        },
+        }
         Err(error) => {
             // The core uses an atomic tempfile on failure. Remove only our
             // new empty output directory, never an existing user's path.
