@@ -130,6 +130,11 @@ pub fn update(state: &mut State, action: Action) -> Task<Message> {
             let Some((archive, _)) = editor.imports.get(i).cloned() else {
                 return Task::none();
             };
+            if state.busy {
+                return Task::none();
+            }
+            let progress = Arc::new(super::ProjectCopyProgress::default());
+            state.project_copy_progress = Some(progress.clone());
             let stage = std::path::PathBuf::from(&state.preferences.stage);
             return super::launch(
                 state,
@@ -137,6 +142,7 @@ pub fn update(state: &mut State, action: Action) -> Task<Message> {
                     (*archive).clone(),
                     std::path::PathBuf::from(&state.preferences.projects),
                     stage,
+                    progress,
                 ),
             );
         }
