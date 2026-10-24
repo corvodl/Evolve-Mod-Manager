@@ -1523,6 +1523,19 @@ mod tests {
         .unwrap();
         assert_eq!(swap.signed_replacement_entries, 1);
         assert!(swap.archive_member_paths_match);
+        let case_swap = crate::client_hook::inspect_pak_hook_pair_with_original_name(
+            &differently_cased,
+            &cased_output,
+            &old_hook,
+            &custom_hook,
+            &key,
+            &new_public_file,
+            "sample.pak",
+            "Sample.pak",
+        )
+        .unwrap();
+        assert!(case_swap.archive_member_paths_match);
+        assert_eq!(case_swap.signed_replacement_entries, 1);
         assert!(!swap.runtime_mount_verified);
         let mut tampered = fs::read(&custom_hook).unwrap();
         tampered[10] ^= 0x80;
