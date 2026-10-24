@@ -691,15 +691,13 @@ pub fn restore_existing_offline_client(stage: &Path, swap: &Path) -> Result<(usi
     let phase = guarded_restore_state(&stage, &swap)?;
     if matches!(phase.as_str(), "prepared" | "restored") {
         let journal = json(&swap.join("controlled_swap_state.json"))?;
-        let backups_remain = journal["files"]
-            .as_array()
-            .is_some_and(|files| {
-                files.iter().any(|item| {
-                    item["backup"]
-                        .as_str()
-                        .is_some_and(|path| fs::symlink_metadata(path).is_ok())
-                })
-            });
+        let backups_remain = journal["files"].as_array().is_some_and(|files| {
+            files.iter().any(|item| {
+                item["backup"]
+                    .as_str()
+                    .is_some_and(|path| fs::symlink_metadata(path).is_ok())
+            })
+        });
         if !backups_remain {
             let checked = inspect_existing_launcher(&stage, &swap)?;
             return Ok((checked.archive_count, checked.prepared));
