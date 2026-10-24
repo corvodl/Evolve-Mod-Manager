@@ -236,7 +236,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let stage = temp.path().join("stage");
         evolve_core::initialize_stage(&stage).unwrap();
-        let manual = evolve_core::create_mod_profile(&stage, "Previous manual offline test").unwrap();
+        let manual =
+            evolve_core::create_mod_profile(&stage, "Previous manual offline test").unwrap();
         let relative = "Game/UI_Assets.pak";
         let original = b"original signed staging bytes";
         let modified = b"previous manual modded bytes";
@@ -271,11 +272,13 @@ mod tests {
         assert!(restore_previous_staged_profile(&stage).unwrap());
         assert_eq!(std::fs::read(&target).unwrap(), original);
         assert!(evolve_core::batch_stage_status(&stage).unwrap().is_none());
-        assert!(evolve_core::list_mod_profiles(&stage)
-            .unwrap()
-            .profiles
-            .iter()
-            .any(|p| p.id == manual.id));
+        assert!(
+            evolve_core::list_mod_profiles(&stage)
+                .unwrap()
+                .profiles
+                .iter()
+                .any(|p| p.id == manual.id)
+        );
         assert!(!restore_previous_staged_profile(&stage).unwrap());
     }
 
@@ -310,7 +313,10 @@ mod tests {
         )
         .unwrap();
         assert!(restore_previous_staged_profile(&stage).is_err());
-        assert_eq!(std::fs::read(&target).unwrap(), b"unexpected third party bytes");
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"unexpected third party bytes"
+        );
         assert!(stage.join("bundle-active.json").exists());
     }
 
