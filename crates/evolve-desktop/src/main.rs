@@ -2879,6 +2879,75 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 ),
             );
         }
+        Message::LibraryUpdatePickFolder => {
+            if state.busy || state.library_import_scanning { return Task::none(); }
+            state.library_import_scanning = true;
+            state.library_update_plan = None;
+            state.status = "Choose the exact installed Evolve build folder to compare. This first scan only reads SHA-256 checksums; no files are imported.".into();
+            return Task::perform(async move {
+                tokio::task::spawn_blocking(move || library_picker::choose_sources(true))
+                    .await.map_err(|e| format!("Build folder picker failed: {e}"))?
+            }, Message::LibraryUpdateFolderPicked);
+        }
+        Message::LibraryUpdateFolderPicked(result) => {
+            match result {
+                Ok(Some(folders)) if folders.len() == 1 => {
+                    let root = folders[0].clone();
+                    let library = PathBuf::from(&state.library_root);
+                    state.status = format!(
+                        "Comparing original PAK checksums for build {} against its own saved snapshots; no files will be modified.",
+                        root.display()
+                    );
+                    return Task::perform(async move {
+                        tokio::task::spawn_blocking(move || {
+                            scan_library_build_updates(&library, &root)
+                        }).await.map_err(|e| format!("Build scan worker failed: {e}"))?
+                    }, Message::LibraryUpdateScanned);
+                }
+                Ok(None) => state.status = "Build update scan cancelled; library unchanged.".into(),
+                Ok(Some(_)) => state.status = "Select exactly one game build folder.".into(),
+                Err(error) => state.status = format!("Cannot select game build: {error}"),
+            }
+            state.library_import_scanning = false;
+        }
+        Message::LibraryUpdateScanned(result) => {
+            state.library_import_scanning = false;
+            match result {
+                Ok(plan) => {
+                    state.status = format!(
+                        "Build scan complete: {} new, {} updated, {} unchanged, {} removed source PAKs. Review the plan before importing.",
+                        plan.new_count, plan.changed_count, plan.unchanged, plan.removed.len()
+                    );
+                    state.library_update_plan = Some(plan);
+                }
+                Err(error) => {
+                    state.library_update_plan = None;
+                    state.status = format!("Build update scan failed: {error}");
+                }
+            }
+        }
+        Message::LibraryUpdateStart => {
+            if state.busy || state.library_import_scanning { return Task::none(); }
+            let Some(plan) = state.library_update_plan.clone() else {
+                state.status = "Scan a specific game build first.".into();
+                return Task::none();
+            };
+            if plan.changed.is_empty() {
+                state.status = "No new or changed source PAKs; the Asset Library is already current for this build.".into();
+                return Task::none();
+            }
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let progress = Arc::new(AtomicUsize::new(0));
+            let task = launch(state, Operation::ApplyLibraryBuildUpdates(
+                PathBuf::from(&state.library_root), plan,
+                PathBuf::from(&state.preferences.stage),
+                cancelled.clone(), progress.clone(),
+            ));
+            state.library_import_cancel = Some(cancelled);
+            state.library_import_progress = Some(progress);
+            state.status = "Importing only changed/new PAKs. Existing snapshots and game originals are preserved; cancellation takes effect between archives.".into();
+            return task;
+        }
         kind @ (Message::LibraryPickFiles | Message::LibraryPickFolder) => {
             if state.busy || state.library_import_scanning {
                 return Task::none();
@@ -7348,6 +7417,32 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.modding_open_editor_when_scanned = true;
                         return begin_scan(state, path.join("files"));
                     }
+                }
+                Ok(Completed::ImportedBuildUpdated(report, catalog)) => {
+                    let failures = report.batch.failed.len();
+                    let error_detail = report.batch.failed.iter().take(2)
+                        .map(|failure| format!("{}: {}", failure.archive, failure.reason))
+                        .collect::<Vec<_>>().join("; ");
+                    state.status = format!(
+                        "Build {} refreshed: {} new, {} changed, {} unchanged, {} removed from current inventory; {} failed. Old imports and projects preserved.{}",
+                        &report.build_id[..8], report.added, report.updated,
+                        report.unchanged, report.removed, failures,
+                        if error_detail.is_empty() { String::new() }
+                        else { format!(" {error_detail}") },
+                    );
+                    state.library_root = catalog.root.clone();
+                    state.preferences.asset_library_root = catalog.root.clone();
+                    state.library_catalog = Some(catalog);
+                    state.library_selection.clear();
+                    state.library_selected = None;
+                    state.library_page = 0;
+                    state.library_by_build = false;
+                    state.library_update_plan = None;
+                    state.library_show_configuration = failures > 0 || import_was_cancelled;
+                    refresh_library_matches(state);
+                    persist_preferences(state);
+                    guided_modding::refresh_imports(state);
+                    state.page = Some(Page::AssetLibrary);
                 }
                 Ok(Completed::ImportedSignedLibrary(report, catalog)) => {
                     let already = report
