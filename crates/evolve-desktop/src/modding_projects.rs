@@ -370,8 +370,13 @@ pub fn edit_imported_snapshot(
         &Path::new(&pak.directory).join("asset-library.json"),
         32 * 1024 * 1024,
     )?;
-    let expected = original["entries"].as_array().ok_or("Imported file list missing")?;
-    if expected.len() != inventory.entries.len() || expected.is_empty() || expected.len() > MAX_ENTRIES {
+    let expected = original["entries"]
+        .as_array()
+        .ok_or("Imported file list missing")?;
+    if expected.len() != inventory.entries.len()
+        || expected.is_empty()
+        || expected.len() > MAX_ENTRIES
+    {
         return Err("Imported archive has an invalid file index".into());
     }
     let staging = tempfile::Builder::new()
@@ -396,7 +401,8 @@ pub fn edit_imported_snapshot(
             .map_err(|e| e.to_string())?;
         fs::copy(&source, &copied).map_err(|e| e.to_string())?;
         let checksum = digest(&copied).map_err(|e| e.to_string())?;
-        let original_record = expected.iter()
+        let original_record = expected
+            .iter()
             .find(|row| row["path"].as_str() == Some(rel))
             .ok_or("Imported archive manifest entry missing")?;
         if let Some(recorded) = original_record["sha256"].as_str()
@@ -428,17 +434,23 @@ pub fn edit_imported_snapshot(
         "entries": records,
     });
     let mut file = fs::OpenOptions::new()
-        .write(true).create_new(true)
+        .write(true)
+        .create_new(true)
         .open(staging.path().join(".evolve-pak-workspace.json"))
         .map_err(|e| e.to_string())?;
     serde_json::to_writer_pretty(&mut file, &manifest).map_err(|e| e.to_string())?;
     file.sync_all().map_err(|e| e.to_string())?;
     drop(file);
-    let stem: String = pak.name.chars()
+    let stem: String = pak
+        .name
+        .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
-        .take(70).collect();
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| e.to_string())?.as_nanos();
+        .take(70)
+        .collect();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
     let destination = base.join(format!("{stem}_editable_{stamp:x}"));
     if fs::symlink_metadata(&destination).is_ok() {
         return Err("An editing project already exists at the destination".into());
@@ -593,7 +605,8 @@ fn build_imported_snapshot(
     modified: &[String],
     verified: ProjectRow,
 ) -> Result<(String, PathBuf, ProjectRow), String> {
-    let source_name = manifest["imported_source"].as_str()
+    let source_name = manifest["imported_source"]
+        .as_str()
         .ok_or("Imported project has no original installation path")?;
     let input = Path::new(source_name);
     if !regular(input, 16 * 1024 * 1024 * 1024) {
@@ -602,7 +615,9 @@ fn build_imported_snapshot(
     let source = fs::canonicalize(input).map_err(|e| e.to_string())?;
     let physical_name = super::modding_keys::signed_basename(&source)?;
     if physical_name != verified.target {
-        return Err("The game's PAK name differs from the imported project's original archive".into());
+        return Err(
+            "The game's PAK name differs from the imported project's original archive".into(),
+        );
     }
     let signer = super::modding_keys::signing_keys(stage).map_err(|_| {
         "Editing is available without setup. To build a playable signed PAK, run Set Up Manager once to create local signing keys.".to_owned()
@@ -618,7 +633,9 @@ fn build_imported_snapshot(
                 break;
             }
         }
-        if authenticated.is_some() { break; }
+        if authenticated.is_some() {
+            break;
+        }
     }
     let (original_key, signed_name) = authenticated.ok_or(
         "This source PAK cannot be authenticated for signing. The editor is still available; select the correct game installation or rebuild its signing setup."
@@ -626,28 +643,40 @@ fn build_imported_snapshot(
     let index = evolve_core::open_verified_signed_pak(&source, &original_key, &signed_name)
         .map_err(|e| e.to_string())?;
     let source_files = fs::canonicalize(folder.join("files")).map_err(|e| e.to_string())?;
-    let serialized = tempfile::Builder::new().prefix(".serialize-import-")
-        .tempdir_in(folder).map_err(|e| e.to_string())?;
-    let entries = manifest["entries"].as_array().ok_or("Missing extracted member index")?;
+    let serialized = tempfile::Builder::new()
+        .prefix(".serialize-import-")
+        .tempdir_in(folder)
+        .map_err(|e| e.to_string())?;
+    let entries = manifest["entries"]
+        .as_array()
+        .ok_or("Missing extracted member index")?;
     let mut replacements = Vec::with_capacity(modified.len());
     for rel in modified {
-        if !safe_member(rel) { return Err("Unsafe project member".into()); }
+        if !safe_member(rel) {
+            return Err("Unsafe project member".into());
+        }
         let file = folder.join("files").join(rel);
         let canonical = fs::canonicalize(&file).map_err(|e| e.to_string())?;
         if !canonical.starts_with(&source_files) || !regular(&file, 16 * 1024 * 1024 * 1024) {
             return Err("Edited file is not inside its managed workspace".into());
         }
-        let record = entries.iter().find(|row| row["path"].as_str() == Some(rel.as_str()))
+        let record = entries
+            .iter()
+            .find(|row| row["path"].as_str() == Some(rel.as_str()))
             .ok_or("Selected file is missing from the imported snapshot")?;
         if editable_format(record)? == "cryxml" {
-            let prior = index.read_member(&source, rel, MAX_XML_BYTES as u64)
+            let prior = index
+                .read_member(&source, rel, MAX_XML_BYTES as u64)
                 .map_err(|e| e.to_string())?;
             let encoded = evolve_core::cryxml::encode_edited_xml(
                 &prior,
                 &fs::read(&file).map_err(|e| e.to_string())?,
                 MAX_XML_BYTES,
-            ).map_err(|e| e.to_string())?;
-            let path = serialized.path().join(format!("member-{}.bin", replacements.len()));
+            )
+            .map_err(|e| e.to_string())?;
+            let path = serialized
+                .path()
+                .join(format!("member-{}.bin", replacements.len()));
             fs::write(&path, encoded).map_err(|e| e.to_string())?;
             replacements.push((rel.clone(), path));
         } else {
@@ -655,12 +684,16 @@ fn build_imported_snapshot(
         }
     }
     let built = parent.join("Built");
-    if !built.exists() { fs::create_dir(&built).map_err(|e| e.to_string())?; }
+    if !built.exists() {
+        fs::create_dir(&built).map_err(|e| e.to_string())?;
+    }
     if !fs::symlink_metadata(&built).is_ok_and(|m| m.file_type().is_dir()) {
         return Err("Built directory is linked or unsafe".into());
     }
-    let number = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| e.to_string())?.as_nanos();
+    let number = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
     let output_folder = built.join(format!("Import-Edit-{number:x}"));
     fs::create_dir(&output_folder).map_err(|e| e.to_string())?;
     let signed_folder = output_folder.join("signed");
@@ -668,22 +701,33 @@ fn build_imported_snapshot(
     let signed_path = signed_folder.join(&signed_name);
     let output = output_folder.join(&physical_name);
     let rebuilt = evolve_core::rebuild_signed_pak_entries(
-        &source, &original_key, &signer.private, &signer.public,
-        &signed_name, &replacements, &signed_path,
+        &source,
+        &original_key,
+        &signer.private,
+        &signer.public,
+        &signed_name,
+        &replacements,
+        &signed_path,
     );
     match rebuilt {
         Ok(report) => {
             fs::rename(&signed_path, &output).map_err(|e| e.to_string())?;
             fs::remove_dir(&signed_folder).map_err(|e| e.to_string())?;
             Ok((
-                format!("{} modified member(s); source version differences accepted", report.len()),
-                output, verified,
+                format!(
+                    "{} modified member(s); source version differences accepted",
+                    report.len()
+                ),
+                output,
+                verified,
             ))
         }
         Err(error) => {
             let _ = fs::remove_dir(&signed_folder);
             let _ = fs::remove_dir(&output_folder);
-            Err(format!("Cannot create a signed PAK for this current game archive: {error}. Your editable project is preserved."))
+            Err(format!(
+                "Cannot create a signed PAK for this current game archive: {error}. Your editable project is preserved."
+            ))
         }
     }
 }
@@ -726,9 +770,7 @@ pub fn build_project_raw(
     let modified = &verified.modified;
     let manifest = read_json(&folder.join(".evolve-pak-workspace.json"), 8 * 1024 * 1024)?;
     if manifest["extraction_mode"].as_str() == Some("imported-snapshot") {
-        return build_imported_snapshot(
-            &folder, stage, &parent, &manifest, modified, verified,
-        );
+        return build_imported_snapshot(&folder, stage, &parent, &manifest, modified, verified);
     }
     let records = manifest
         .get("entries")
