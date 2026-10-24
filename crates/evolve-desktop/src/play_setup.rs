@@ -137,7 +137,9 @@ fn refresh_verified_helper(
         .map_err(|e| e.to_string())?;
     temp.as_file().sync_all().map_err(|e| e.to_string())?;
     if fs::read(&path).map_err(|e| e.to_string())? != existing {
-        return Err(format!("{name} changed during migration; refusing replacement"));
+        return Err(format!(
+            "{name} changed during migration; refusing replacement"
+        ));
     }
     temp.persist(&path)
         .map_err(|e| format!("Cannot update verified legacy {name}: {}", e.error))?;
@@ -467,12 +469,15 @@ mod tests {
         let helper = dir.path().join("auto_launch_frida.py");
         let custom = b"print('private user helper')\n";
         fs::write(&helper, custom).unwrap();
-        assert!(refresh_verified_helper(
-            dir.path(),
-            "auto_launch_frida.py",
-            CURRENT_AUTO_LAUNCH,
-            &[PREVIOUS_AUTO_LAUNCH_SHA256, NIGHTLY_56_AUTO_LAUNCH_SHA256]
-        ).is_err());
+        assert!(
+            refresh_verified_helper(
+                dir.path(),
+                "auto_launch_frida.py",
+                CURRENT_AUTO_LAUNCH,
+                &[PREVIOUS_AUTO_LAUNCH_SHA256, NIGHTLY_56_AUTO_LAUNCH_SHA256]
+            )
+            .is_err()
+        );
         assert_eq!(fs::read(&helper).unwrap(), custom);
     }
 
@@ -481,12 +486,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("auto_launch_frida.py");
         fs::write(&path, CURRENT_AUTO_LAUNCH).unwrap();
-        assert!(!refresh_verified_helper(
-            dir.path(),
-            "auto_launch_frida.py",
-            CURRENT_AUTO_LAUNCH,
-            &[PREVIOUS_AUTO_LAUNCH_SHA256]
-        ).unwrap());
+        assert!(
+            !refresh_verified_helper(
+                dir.path(),
+                "auto_launch_frida.py",
+                CURRENT_AUTO_LAUNCH,
+                &[PREVIOUS_AUTO_LAUNCH_SHA256]
+            )
+            .unwrap()
+        );
     }
 
     #[test]
