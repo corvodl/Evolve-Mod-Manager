@@ -211,46 +211,6 @@ def prepare(args):
     print('DO NOT RUN swap until you have paused the launcher at the Evolve.exe CreateProcessW call.')
 
 
-def refresh_prepared(args):
-    """Refresh only disposable prepared mod copies after the enabled set changes.
-
-    Never touch live game targets or .customkey-original backups. The existing
-    controlled-swap prepare command recreates the signed copies afterward.
-    """
-    all_closed()
-    state = require_state()
-    if state.get('phase') not in ('prepared', 'restored'):
-        stop('A game swap is unfinished. Restore original files before changing enabled mods.')
-    game, stage = fresh(args)
-    if (Path(state['game']).resolve() != game
-            or Path(state['stage']).resolve() != stage):
-        stop('Prepared copies belong to another game or signing stage.')
-    expected, _ = list_files(game, stage)
-    if state['files']:
-        if len(expected) != len(state['files']):
-            stop('Prepared file inventory changed; recover the matching original setup first.')
-        for before, after in zip(state['files'], expected):
-            for field in ('name', 'source', 'target', 'ready', 'backup'):
-                if os.path.normcase(os.path.normpath(str(before[field]))) != os.path.normcase(os.path.normpath(str(after[field]))):
-                    stop('Prepared cache path differs from verified setup: ' + field)
-    for item in state['files']:
-        if Path(item['backup']).exists():
-            stop('Original backup is still active. Restore the game first.')
-        ready = Path(item['ready'])
-        if ready.is_symlink():
-            stop('Prepared cache is a link; refusing deletion.')
-        if ready.exists():
-            if not ready.is_file() or sha(ready) != item.get('sha256'):
-                stop('Prepared cache was modified; refusing deletion: ' + str(ready))
-    for item in state['files']:
-        ready = Path(item['ready'])
-        if ready.is_file():
-            ready.unlink()
-    state['phase'] = 'restored'
-    write_state(state)
-    print('Previous prepared copies cleared; original game files unchanged.')
-
-
 def require_state():
     if not STATE_FILE.exists():stop('No swap journal. Run prepare first.')
     state = read_json(STATE_FILE)
@@ -327,13 +287,13 @@ def status(args):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__,formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('command',choices=('check','prepare','swap','verify','restore','status','refresh-prepared'))
+    p.add_argument('command',choices=('check','prepare','swap','verify','restore','status'))
     p.add_argument('--game-root',default=GAME_DEFAULT)
     p.add_argument('--stage-dir',default=STAGE_DEFAULT)
     p.add_argument('--confirm-launcher-paused',action='store_true')
     args=p.parse_args()
     try:
-        {'check':check,'prepare':prepare,'swap':swap,'verify':verify,'restore':restore,'status':status,'refresh-prepared':refresh_prepared}[args.command](args)
+        {'check':check,'prepare':prepare,'swap':swap,'verify':verify,'restore':restore,'status':status}[args.command](args)
         return 0
     except Exception as e:
         print('STOPPED:',type(e).__name__,str(e),file=sys.stderr)
