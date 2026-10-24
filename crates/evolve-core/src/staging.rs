@@ -132,14 +132,12 @@ fn generated_setup_workspace(root: &Path) -> Result<(), StageError> {
     {
         return Err(bad());
     }
-    let plan: serde_json::Value = serde_json::from_slice(
-        &fs::read(root.join("rekey_plan.json")).map_err(|_| bad())?,
-    )
-    .map_err(|_| bad())?;
-    let status: serde_json::Value = serde_json::from_slice(
-        &fs::read(root.join("stage_status.json")).map_err(|_| bad())?,
-    )
-    .map_err(|_| bad())?;
+    let plan: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("rekey_plan.json")).map_err(|_| bad())?)
+            .map_err(|_| bad())?;
+    let status: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("stage_status.json")).map_err(|_| bad())?)
+            .map_err(|_| bad())?;
     let source = plan["source_root"].as_str().ok_or_else(bad)?;
     let game = fs::canonicalize(source).map_err(|_| bad())?;
     if !game.is_dir()
@@ -568,10 +566,7 @@ mod tests {
         let profile = crate::profiles::create_mod_profile(&stage, "Main menu offline test")
             .expect("An existing generated stage can store new profiles");
         assert_eq!(
-            crate::profiles::list_mod_profiles(&stage)
-                .unwrap()
-                .profiles[0]
-                .id,
+            crate::profiles::list_mod_profiles(&stage).unwrap().profiles[0].id,
             profile.id
         );
         assert!(!stage.join(MARKER).exists());
