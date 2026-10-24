@@ -237,7 +237,18 @@ pub fn scan_library_build_updates(
         None => bootstrap_from_library(&library, &root)?,
     };
     let scan: LibraryImportPlan =
-        scan_library_import_sources(&library, std::slice::from_ref(&root), true)?;
+        match scan_library_import_sources(&library, std::slice::from_ref(&root), true) {
+            Ok(scan) => scan,
+            Err(reason) if reason == "No .pak files found in the selected source" => {
+                // Removal-only updates are valid, including an emptied PAK folder.
+                LibraryImportPlan {
+                    files: Vec::new(),
+                    packed_bytes: 0,
+                    already_imported: 0,
+                }
+            }
+            Err(reason) => return Err(reason),
+        };
     let mut changed = Vec::new();
     let mut scanned = HashSet::new();
     let mut unchanged = 0usize;
@@ -471,6 +482,35 @@ mod tests {
         write_pak(&game_a.join("misc.pak"), b"new archive");
         let removed = scan_library_build_updates(&library, &game_a).unwrap();
         assert_eq!(removed.removed, vec!["UI_Assets.pak"]);
+    }
+
+    #[test]
+    fn removal_only_build_update_keeps_prior_library_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = dir.path().join("library");
+        let game = dir.path().join("game");
+        fs::create_dir_all(&library).unwrap();
+        fs::create_dir_all(&game).unwrap();
+        let pak = game.join("UI_Assets.pak");
+        let mut zip = zip::ZipWriter::new(File::create(&pak).unwrap());
+        zip.start_file("main_menu.gfx", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"menu").unwrap();
+        zip.finish().unwrap();
+        let plan = scan_library_build_updates(&library, &game).unwrap();
+        let first = apply_library_build_updates(
+            &library, &plan, &[], &AtomicBool::new(false), &AtomicUsize::new(0)
+        ).unwrap();
+        fs::remove_file(&pak).unwrap();
+        let removed = scan_library_build_updates(&library, &game).unwrap();
+        assert!(removed.changed.is_empty());
+        assert_eq!(removed.removed, vec!["UI_Assets.pak"]);
+        let applied = apply_library_build_updates(
+            &library, &removed, &[], &AtomicBool::new(false), &AtomicUsize::new(0)
+        ).unwrap();
+        assert_eq!(applied.removed, 1);
+        assert!(first.snapshot.exists());
+        assert_eq!(imported_library(&library).unwrap().archives.len(), 1);
     }
 
     #[test]
