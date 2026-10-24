@@ -341,8 +341,23 @@ pub fn unpack_raw_project(
     stage: &Path,
     source: &Path,
 ) -> Result<(PathBuf, usize), String> {
+    let basename = super::modding_keys::signed_basename(source)?;
+    unpack_raw_project_with_signed_name(projects, stage, source, &basename)
+}
+
+/// Extract an authenticated staged editing copy even when the original
+/// recorded signed spelling differs in ASCII case from its physical name.
+pub fn unpack_raw_project_with_signed_name(
+    projects: &Path,
+    stage: &Path,
+    source: &Path,
+    signed_name: &str,
+) -> Result<(PathBuf, usize), String> {
     let _target = super::modding_keys::staged_target(stage, source)?;
     let basename = super::modding_keys::signed_basename(source)?;
+    if signed_name != basename && signed_name != basename.to_ascii_lowercase() {
+        return Err("Signed archive name differs from the verified physical basename".into());
+    }
     let public = super::modding_keys::public_key(stage)?;
     // A first launch normally has a configured default Projects path but no
     // directory yet. Create that workspace on demand, rather than making the
@@ -378,7 +393,7 @@ pub fn unpack_raw_project(
     .map_err(|e| e.to_string())?;
     // The core's signed extractor uses an atomic temporary directory. It
     // refuses to merge results with pre-existing assets or follow bad paths.
-    let info = evolve_core::extract_signed_pak(source, &public, &basename, &output.join("files"))
+    let info = evolve_core::extract_signed_pak(source, &public, signed_name, &output.join("files"))
         .map_err(|e| e.to_string())?;
     if info.entries.len() > 60_000 {
         return Err("Project exceeds supported manifest entry limit".into());
@@ -435,7 +450,7 @@ pub fn unpack_raw_project(
         "version":1,
         "source_pak":fs::canonicalize(source).map_err(|e| e.to_string())?,
         "source_sha256":before,
-        "signed_basename":basename,
+        "signed_basename":signed_name,
         "public_key_sha256":digest(&public).map_err(|e| e.to_string())?,
         "archive_entry_count":info.entries.len(),
         "entries":records,
