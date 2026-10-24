@@ -185,18 +185,39 @@ fn projects(state: &State) -> Element<'_, Message> {
         let record = &projects[index];
         let selected = state.project_selection.indices.contains(&index);
         let mut cells = row![
-            text(record.label.as_str()).size(12).width(Length::FillPortion(7)),
-            text(record.target.as_str()).size(12).width(Length::FillPortion(5)),
-            text(record.status.as_str()).size(12).width(Length::FillPortion(2)),
+            text(record.label.as_str())
+                .size(12)
+                .width(Length::FillPortion(7)),
+            text(record.target.as_str())
+                .size(12)
+                .width(Length::FillPortion(5)),
+            text(record.status.as_str())
+                .size(12)
+                .width(Length::FillPortion(2)),
         ];
         if state.modding_advanced {
             cells = cells
-                .push(text(record.source_build.as_str()).size(12).width(Length::FillPortion(2)))
-                .push(text(classify(
-                    record.modified.iter().map(String::as_str),
-                    record.changed_known
-                ).label()).size(12).width(Length::FillPortion(2)))
-                .push(text(record.details.as_str()).size(12).width(Length::FillPortion(3)));
+                .push(
+                    text(record.source_build.as_str())
+                        .size(12)
+                        .width(Length::FillPortion(2)),
+                )
+                .push(
+                    text(
+                        classify(
+                            record.modified.iter().map(String::as_str),
+                            record.changed_known,
+                        )
+                        .label(),
+                    )
+                    .size(12)
+                    .width(Length::FillPortion(2)),
+                )
+                .push(
+                    text(record.details.as_str())
+                        .size(12)
+                        .width(Length::FillPortion(3)),
+                );
         }
         let cells = cells.spacing(8).align_y(iced::Center);
         rows = rows.push(
