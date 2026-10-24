@@ -1,8 +1,9 @@
 //! Narrow, source-verified Stage 2 -> Legacy main-menu presentation preset.
 //!
 //! Stage 2 owns ActionScript, native callbacks, navigation and button creation.
-//! Only two *existing* integer operands in its Style class DoInitAction may
-//! change. No tags are inserted, removed, reordered, or rebuilt. This avoids
+//! Only three *existing* integer operands in its Style and ButtonMainMenu
+//! DoInitAction classes may change. No tags are inserted, removed, reordered,
+//! or rebuilt. This avoids
 //! copying Legacy AVM bytecode or importing an incompatible whole movie.
 use evolve_core::gfx::{MAX_SOURCE, inspect_gfx};
 use std::collections::HashMap;
@@ -15,6 +16,17 @@ const STYLE: [(&str, i32, i32); 7] = [
     ("MAIN_MENU_BUTTON_WIDTH", 660, 660),
     ("MAIN_MENU_BUTTON_HEIGHT", 70, 70),
     ("MAIN_MENU_BUTTON_SPACING", 5, 5),
+];
+
+// Stage 2's ButtonMainMenu uses a 70px label inset. The authored Legacy
+// Button class uses 85px; at 1280x720 the target screenshot starts the
+// labels around x=58px (= 87 Stage coordinates). Keep other button values.
+const MAIN_MENU_LABEL: [(&str, i32, i32); 5] = [
+    ("DEFAULT_TEXT_HEIGHT", 40, 40),
+    ("DEFAULT_TEXT_CENTER", 16, 16),
+    ("DEFAULT_TEXT_POS_X", 70, 85),
+    ("DEFAULT_TEXT_DESCRIPTION_WIDTH", 300, 300),
+    ("HIGHLIGHT_FEATURED_POS_Y", -98, -98),
 ];
 
 fn u16_at(data: &[u8], offset: usize) -> Result<usize, String> {
@@ -73,7 +85,12 @@ fn style_setter(payload: &[u8], absolute: usize) -> Option<(usize, i32, usize)> 
     Some((index, value, absolute + payload.len() - 4))
 }
 
-fn style_tag(movie: &[u8], start: usize, end: usize) -> Result<Option<Vec<(usize, i32)>>, String> {
+fn style_tag(
+    movie: &[u8],
+    start: usize,
+    end: usize,
+    constants: &[(&'static str, i32, i32)],
+) -> Result<Option<Vec<(usize, i32)>>, String> {
     let mut position = start + 2; // DoInitAction's sprite ID
     let mut pool = Vec::<String>::new();
     let mut fields = HashMap::<&'static str, (i32, usize)>::new();
@@ -101,7 +118,7 @@ fn style_tag(movie: &[u8], start: usize, end: usize) -> Result<Option<Vec<(usize
             && let Some((index, value, absolute)) = style_setter(payload, position)
             && let Some(name) = pool.get(index)
         {
-            for (field, _, _) in STYLE {
+            for &(field, _, _) in constants {
                 if name == field {
                     if movie.get(next) != Some(&0x4f) {
                         return Err(
@@ -119,11 +136,11 @@ fn style_tag(movie: &[u8], start: usize, end: usize) -> Result<Option<Vec<(usize
     if fields.is_empty() {
         return Ok(None);
     }
-    if fields.len() != STYLE.len() {
-        return Err("Incomplete or unrecognized Stage 2 main-menu Style initialization".into());
+    if fields.len() != constants.len() {
+        return Err("Incomplete or unrecognized Stage 2 menu initializer".into());
     }
     let mut edits = Vec::new();
-    for (field, expected, replacement) in STYLE {
+    for &(field, expected, replacement) in constants {
         let &(value, offset) = fields
             .get(field)
             .ok_or("Missing Stage 2 main-menu Style field")?;
@@ -140,7 +157,7 @@ fn style_tag(movie: &[u8], start: usize, end: usize) -> Result<Option<Vec<(usize
 }
 
 /// An opt-in visual preset for original Stage 2 main_menu.gfx only.
-/// Every byte beyond the two identified int32 operands is retained.
+/// Every byte beyond the three identified int32 operands is retained.
 pub fn legacy_main_menu_rows(movie: &[u8]) -> Result<Vec<u8>, String> {
     if movie.len() > MAX_SOURCE || !movie.starts_with(b"GFX") {
         return Err("Legacy row preset requires an uncompressed original Stage 2 GFX movie".into());
@@ -149,6 +166,7 @@ pub fn legacy_main_menu_rows(movie: &[u8]) -> Result<Vec<u8>, String> {
     let nbits = usize::from(movie[8] >> 3);
     let mut position = 8 + (5 + 4 * nbits).div_ceil(8) + 4; // RECT, frame rate/count
     let mut selected: Option<Vec<(usize, i32)>> = None;
+    let mut menu_label: Option<Vec<(usize, i32)>> = None;
     while position < movie.len() {
         let header = u16_at(movie, position)?;
         position += 2;
@@ -169,10 +187,21 @@ pub fn legacy_main_menu_rows(movie: &[u8]) -> Result<Vec<u8>, String> {
             if length < 2 {
                 return Err("Truncated GFX DoInitAction sprite identifier".into());
             }
-            if let Some(edits) = style_tag(movie, position, end)?
+            let sprite = u16_at(movie, position)?;
+            // Both class IDs are verified against the original Stage 2
+            // Main Menu movie (Style=285; ButtonMainMenu=327). Reject other
+            // builds instead of accidentally changing an unrelated script.
+            if sprite == 285
+                && let Some(edits) = style_tag(movie, position, end, &STYLE)?
                 && selected.replace(edits).is_some()
             {
                 return Err("Ambiguous Stage 2 main-menu Style initializer".into());
+            }
+            if sprite == 327
+                && let Some(edits) = style_tag(movie, position, end, &MAIN_MENU_LABEL)?
+                && menu_label.replace(edits).is_some()
+            {
+                return Err("Ambiguous Stage 2 ButtonMainMenu label initializer".into());
             }
         }
         position = end;
@@ -180,12 +209,13 @@ pub fn legacy_main_menu_rows(movie: &[u8]) -> Result<Vec<u8>, String> {
             break;
         }
     }
-    let edits = selected.ok_or(
+    let mut edits = selected.ok_or(
         "This movie lacks the expected Stage 2 authored button styles. Do not apply this preset to a Legacy movie.",
     )?;
-    if edits.len() != 2 {
+    edits.extend(menu_label.ok_or("Missing original Stage 2 ButtonMainMenu label initializer")?);
+    if edits.len() != 3 {
         return Err(
-            "Stage 2 main-menu row preset did not identify exactly two style values".into(),
+            "Stage 2 main-menu preset did not identify exactly three style operands".into(),
         );
     }
     let mut updated = movie.to_vec();
@@ -248,6 +278,22 @@ mod tests {
         if duplicate {
             write_tag(&mut frame, 59, &script);
         }
+        let mut label_script = 327u16.to_le_bytes().to_vec();
+        let mut label_pool = (MAIN_MENU_LABEL.len() as u16).to_le_bytes().to_vec();
+        for (field, _, _) in MAIN_MENU_LABEL {
+            label_pool.extend(field.as_bytes());
+            label_pool.push(0);
+        }
+        label_script.push(0x88);
+        label_script.extend((label_pool.len() as u16).to_le_bytes());
+        label_script.extend(label_pool);
+        for (index, (_, old, _)) in MAIN_MENU_LABEL.into_iter().enumerate() {
+            label_script.extend([0x96, 9, 0, 4, 1, 8, index as u8, 7]);
+            label_script.extend(old.to_le_bytes());
+            label_script.push(0x4f);
+        }
+        label_script.push(0);
+        write_tag(&mut frame, 59, &label_script);
         frame.extend([0, 0]); // End GFX tag
         let mut gfx = b"GFX\x0f".to_vec();
         gfx.extend(((frame.len() + 8) as u32).to_le_bytes());
@@ -266,7 +312,7 @@ mod tests {
             .filter(|(_, (a, b))| a != b)
             .map(|(i, _)| i)
             .collect();
-        assert_eq!(different.len(), 2); // 40->70, 65->70; int32 little endian
+        assert_eq!(different.len(), 3); // 40/65->70 rows, 70->85 text X, int32 little endian
         assert!(updated.windows(4).any(|data| data == 70i32.to_le_bytes()));
         assert!(legacy_main_menu_rows(&updated).is_err()); // do not stage twice
     }
