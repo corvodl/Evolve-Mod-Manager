@@ -10,6 +10,7 @@ import argparse
 import csv
 import hashlib
 import json
+import ntpath
 import os
 from pathlib import Path
 import shutil
@@ -50,6 +51,22 @@ def write_state(state):
     os.replace(tmp, STATE_FILE)
 
 
+def ordinary_windows_path(value):
+    """Use a standard Win32 path in journals instead of a \\?\ prefix."""
+    text = str(value)
+    if text[:8].casefold() == '\\\\?\\unc\\':
+        return '\\\\' + text[8:]
+    if text.startswith('\\\\?\\'):
+        return text[4:]
+    return text
+
+
+def same_game_root(first, second):
+    """Old immutable rekey plans may still contain extended drive paths."""
+    return (ntpath.normcase(ntpath.normpath(ordinary_windows_path(first))) ==
+            ntpath.normcase(ntpath.normpath(ordinary_windows_path(second))))
+
+
 def task_names():
     if os.name != 'nt':
         return set()
@@ -87,7 +104,7 @@ def list_files(game, stage):
         stop('Stage status is not fully-staged-offline.')
     if plan.get('blocked'):
         stop('Stage plan contains blocked items.')
-    if os.path.normcase(os.path.normpath(str(game))) != os.path.normcase(os.path.normpath(plan.get('source_root',''))):
+    if not same_game_root(game, plan.get('source_root', '')):
         stop('Staged game root differs from selected live game root.')
     signed = [e for e in plan['entries'] if e['kind'] == 'signed-encrypted']
     if not signed or len(signed) != status.get('count'):
@@ -110,8 +127,8 @@ def list_files(game, stage):
 
 
 def fresh(args):
-    game = Path(args.game_root).resolve()
-    stage = Path(args.stage_dir).resolve()
+    game = Path(ordinary_windows_path(Path(args.game_root).resolve()))
+    stage = Path(ordinary_windows_path(Path(args.stage_dir).resolve()))
     if not game.is_dir() or not stage.is_dir(): stop('Game root or staged folder missing.')
     if os.path.normcase(str(game)) == os.path.normcase(str(stage)) or game in stage.parents or stage in game.parents:
         stop('Stage and game folders must be separate.')

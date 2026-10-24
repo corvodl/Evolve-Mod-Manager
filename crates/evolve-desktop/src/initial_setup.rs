@@ -396,7 +396,7 @@ pub fn create(
         json_new(
             &stage.join("rekey_plan.json"),
             &serde_json::json!({
-                "source_root": game,
+                "source_root": play_setup::ordinary_game_path(&game),
                 "blocked": [],
                 "entries": entries,
             }),
@@ -414,7 +414,7 @@ pub fn create(
         }
         json_new(
             &swap.join("launcher_config.json"),
-            &serde_json::json!({"launcher": client}),
+            &serde_json::json!({"launcher": play_setup::ordinary_game_path(&client)}),
         )?;
         json_new(
             &swap.join("controlled_swap_state.json"),

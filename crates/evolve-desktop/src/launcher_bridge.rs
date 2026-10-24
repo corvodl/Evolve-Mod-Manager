@@ -438,8 +438,19 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
         match prior["phase"].as_str() {
             Some("restored") => (),
             Some("prepared") => {
-                if prior["game"].as_str() != Some(game_str)
-                    || prior["stage"].as_str() != stage.to_str()
+                // Windows canonicalization can return \\?\ while the
+                // private Python journal intentionally uses ordinary C:/.
+                // Compare resolved directories instead of path spellings.
+                let journal_game = directory(Path::new(
+                    prior["game"].as_str().ok_or("Prepared game root missing")?,
+                ))?;
+                let journal_stage = directory(Path::new(
+                    prior["stage"]
+                        .as_str()
+                        .ok_or("Prepared stage root missing")?,
+                ))?;
+                if journal_game != game
+                    || journal_stage != stage
                     || prior["count"].as_u64() != Some((seen.len() + 1) as u64)
                 {
                     return Err(
@@ -466,12 +477,19 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
     })
 }
 
-/// The detached private helper is only READY after the Frida agent has
-/// reported that its CreateProcessW hook was installed. Spawning py.exe alone
-/// is not proof that the hook exists, and must not be reported as success.
-/// Inspect only output written after this specific launch (bounded to 64 KiB).
+/// The private launcher reports a hook-ready progress event *before* the
+/// user presses Play. That is not a completed swap. Treat only the full
+/// candidate -> swap -> released sequence as confirmation of modded launch.
 #[cfg(windows)]
-fn inspect_hook_startup_log(path: &Path, offset: u64) -> Result<bool, String> {
+#[derive(Clone, Copy, Default, Debug)]
+struct PrivateLaunchSignals {
+    hook_ready: bool,
+    swap_complete: bool,
+    game_released: bool,
+}
+
+#[cfg(windows)]
+fn inspect_hook_startup_log(path: &Path, offset: u64) -> Result<PrivateLaunchSignals, String> {
     let mut file = File::open(path).map_err(|e| e.to_string())?;
     if file.metadata().map_err(|e| e.to_string())?.len() < offset {
         return Err("Offline helper startup log was truncated during handoff".into());
@@ -479,10 +497,11 @@ fn inspect_hook_startup_log(path: &Path, offset: u64) -> Result<bool, String> {
     file.seek(SeekFrom::Start(offset))
         .map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
-    file.take(64 * 1024)
+    file.take(128 * 1024)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
     let output = String::from_utf8_lossy(&bytes);
+    let mut signals = PrivateLaunchSignals::default();
     for line in output.lines() {
         if line.contains("AUTOMATIC LAUNCH FAILED:")
             || line.contains("AUTO-RESTORE MONITOR FAILED:")
@@ -494,10 +513,27 @@ fn inspect_hook_startup_log(path: &Path, offset: u64) -> Result<bool, String> {
                 line.trim()
             ));
         }
+        signals.hook_ready |= line.contains("Automatic CreateProcessW hook ready at ");
+        signals.swap_complete |= line.contains("SWAP COMPLETE. Releasing CreateProcessW...");
+        signals.game_released |= line.contains("Evolve creation released successfully.");
     }
-    Ok(output
+    Ok(signals)
+}
+
+#[cfg(windows)]
+fn game_running_without_swap() -> Result<bool, String> {
+    use std::os::windows::process::CommandExt;
+    let output = Command::new("tasklist")
+        .args(["/FI", "IMAGENAME eq Evolve.exe", "/FO", "CSV", "/NH"])
+        .creation_flags(0x08000000)
+        .output()
+        .map_err(|e| format!("Cannot inspect Evolve process state: {e}"))?;
+    if !output.status.success() {
+        return Err("Cannot confirm whether Evolve launched without the offline swap".into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
         .lines()
-        .any(|line| line.contains("Automatic CreateProcessW hook ready at ")))
+        .any(|line| line.to_ascii_lowercase().starts_with("\"evolve.exe\",")))
 }
 
 #[cfg(windows)]
@@ -1003,7 +1039,10 @@ pub fn refresh_prepared_offline_cache(stage: &Path, swap: &Path) -> Result<(), S
 /// pause and starts an independent restore watchdog. Nothing here injects,
 /// patches or launches the Evolve.exe executable directly.
 #[cfg(windows)]
-pub fn launch_existing_offline_client(plan: &LaunchReady) -> Result<u32, String> {
+pub fn launch_existing_offline_client(
+    plan: &LaunchReady,
+    progress: &std::sync::atomic::AtomicUsize,
+) -> Result<u32, String> {
     use std::os::windows::process::CommandExt;
     // Windows's Python launcher must be installed with the exact supported
     // Python 3.11 + Frida used by the private helpers.
@@ -1018,7 +1057,7 @@ pub fn launch_existing_offline_client(plan: &LaunchReady) -> Result<u32, String>
             .arg("--stage-dir")
             .arg(&plan.stage)
             .arg("--game-root")
-            .arg(&plan.game)
+            .arg(crate::play_setup::ordinary_game_path(&plan.game))
             .creation_flags(0x08000000)
             .status()
             .map_err(|e| format!("Python 3.11 launcher preparation unavailable: {e}"))?;
@@ -1053,37 +1092,73 @@ pub fn launch_existing_offline_client(plan: &LaunchReady) -> Result<u32, String>
         .spawn()
         .map_err(|e| format!("Could not start private offline launcher helper: {e}"))?;
     let pid = child.id();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let hook_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    // The private helper may wait for the user to press Play for 900 seconds.
+    // We are on the manager worker thread, never the UI thread.
+    let final_deadline = std::time::Instant::now() + std::time::Duration::from_secs(915);
+    let mut last_game_check = std::time::Instant::now();
     loop {
-        match inspect_hook_startup_log(&log_path, initial_log_len) {
-            Ok(true) => return Ok(pid),
-            Ok(false) => (),
+        let signals = match inspect_hook_startup_log(&log_path, initial_log_len) {
+            Ok(signals) => signals,
             Err(error) => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(error);
             }
+        };
+        if signals.hook_ready {
+            progress.store(95, std::sync::atomic::Ordering::Relaxed);
+        }
+        if signals.swap_complete {
+            progress.store(98, std::sync::atomic::Ordering::Relaxed);
         }
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            if status.success() && signals.swap_complete && signals.game_released {
+                return Ok(pid);
+            }
             return Err(format!(
-                "The private launcher helper exited ({status}) without confirming a ready CreateProcessW hook. Check rust-launch-bridge.log; no successful PAK swap can be assumed."
+                "Play with Mods did not complete: helper exited ({status}), hook_ready={}, swap_complete={}, game_released={}. Evolve opening does not mean the mod PAKs were installed; inspect rust-launch-bridge.log.",
+                signals.hook_ready, signals.swap_complete, signals.game_released
             ));
         }
-        if std::time::Instant::now() >= deadline {
-            // No swaps are allowed until the Frida controller confirms the
-            // exact game-process creation pause. Stop an unready controller.
+        if !signals.hook_ready && std::time::Instant::now() >= hook_deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(
-                "Private launch helper did not confirm a ready CreateProcessW hook within 30 seconds; helper stopped. Close the launcher before retrying."
-                    .into(),
-            );
+            return Err("The private launcher did not install its CreateProcessW hook within 30 seconds; no PAK swap occurred.".into());
+        }
+        if std::time::Instant::now() >= final_deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("The private launcher did not confirm a completed PAK swap and released Evolve process. Check rust-launch-bridge.log; no modded launch can be assumed.".into());
+        }
+        if signals.hook_ready
+            && !signals.swap_complete
+            && last_game_check.elapsed() >= std::time::Duration::from_secs(2)
+        {
+            last_game_check = std::time::Instant::now();
+            let running = match game_running_without_swap() {
+                Ok(running) => running,
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(error);
+                }
+            };
+            if running && !inspect_hook_startup_log(&log_path, initial_log_len)?.swap_complete {
+                // Never attempt a late swap once Evolve.exe already exists.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Evolve.exe started before any verified PAK swap. The game is running with its original files, and Play with Mods was NOT applied. Check the launch interception log.".into());
+            }
         }
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
 }
 #[cfg(not(windows))]
-pub fn launch_existing_offline_client(_: &LaunchReady) -> Result<u32, String> {
+pub fn launch_existing_offline_client(
+    _: &LaunchReady,
+    _: &std::sync::atomic::AtomicUsize,
+) -> Result<u32, String> {
     Err("The existing private launcher swap requires Windows x64".into())
 }
 
@@ -1269,21 +1344,26 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn helper_handoff_requires_actual_hook_ready_marker_after_new_log_offset() {
+    fn hook_ready_is_progress_not_swap_success() {
         let temp = tempfile::tempdir().unwrap();
         let log = temp.path().join("rust-launch-bridge.log");
         fs::write(&log, b"Automatic CreateProcessW hook ready at old run\n").unwrap();
         let beginning = fs::metadata(&log).unwrap().len();
-        assert!(!inspect_hook_startup_log(&log, beginning).unwrap());
+        let prelude = "Automatic CreateProcessW hook ready at old run\nPRECHECK PASS: staged\nAutomatic CreateProcessW hook ready at 0x1234\n";
+        fs::write(&log, prelude).unwrap();
+        let state = inspect_hook_startup_log(&log, beginning).unwrap();
+        assert!(state.hook_ready);
+        assert!(!state.swap_complete);
+        assert!(!state.game_released);
+        let completed = format!(
+            "{prelude}CreateProcessW candidate: Evolve.exe\nSWAP COMPLETE. Releasing CreateProcessW...\nEvolve creation released successfully.\n"
+        );
+        fs::write(&log, completed).unwrap();
+        let state = inspect_hook_startup_log(&log, beginning).unwrap();
+        assert!(state.hook_ready && state.swap_complete && state.game_released);
         fs::write(
             &log,
-            b"Automatic CreateProcessW hook ready at old run\nPRECHECK PASS: staged\nAutomatic CreateProcessW hook ready at 0x1234\n",
-        )
-        .unwrap();
-        assert!(inspect_hook_startup_log(&log, beginning).unwrap());
-        fs::write(
-            &log,
-            b"Automatic CreateProcessW hook ready at old run\nAUTOMATIC LAUNCH FAILED: Frida unavailable\n",
+            b"Automatic CreateProcessW hook ready at old run\nAUTOMATIC LAUNCH FAILED: TimeoutError No swap completed\n",
         )
         .unwrap();
         assert!(inspect_hook_startup_log(&log, beginning).is_err());

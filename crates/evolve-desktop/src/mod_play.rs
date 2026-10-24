@@ -226,7 +226,7 @@ pub fn launch_enabled(
         Err(issue) => return launch_for_repair(&game, &client, &swap, &issue),
     };
     progress.store(92, Ordering::Relaxed);
-    let id = launcher_bridge::launch_existing_offline_client(&ready)?;
+    let id = launcher_bridge::launch_existing_offline_client(&ready, &progress)?;
     progress.store(100, Ordering::Relaxed);
     Ok((mods.len(), id, ready.compatibility_warnings, None))
 }

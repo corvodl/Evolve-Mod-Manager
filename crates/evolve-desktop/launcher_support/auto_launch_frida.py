@@ -76,7 +76,7 @@ def preflight() -> None:
         config = json.loads(config_path.read_text(encoding='utf-8'))
         if config.get('launcher'): LAUNCHER = Path(config['launcher'])
     state = swapper.require_state()
-    GAME_EXE = Path(state['game']) / 'bin64_SteamRetail' / 'Evolve.exe'
+    GAME_EXE = Path(swapper.ordinary_windows_path(state['game'])) / 'bin64_SteamRetail' / 'Evolve.exe'
     if (Path(state['stage'])/'REFRESHED-TO.json').exists():
         raise RuntimeError('Stage was superseded. Use the refreshed signing stage.')
     if not LAUNCHER.is_file() or not GAME_EXE.is_file():
