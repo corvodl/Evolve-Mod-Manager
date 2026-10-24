@@ -587,15 +587,21 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     .align_y(iced::Center);
     if state.modding_advanced {
         actions = actions
-            .push(design::button("Advanced Profiles…")
-                .style(design::secondary)
-                .on_press(Message::ModdingToggleProfiles))
-            .push(design::button("Build Selected Mod")
-                .style(design::secondary)
-                .on_press(Message::ModdingBuild))
-            .push(design::button("Prepare Selected Mod for Test")
-                .style(design::secondary)
-                .on_press(Message::ModdingBuildForOfflineTest));
+            .push(
+                design::button("Advanced Profiles…")
+                    .style(design::secondary)
+                    .on_press(Message::ModdingToggleProfiles),
+            )
+            .push(
+                design::button("Build Selected Mod")
+                    .style(design::secondary)
+                    .on_press(Message::ModdingBuild),
+            )
+            .push(
+                design::button("Prepare Selected Mod for Test")
+                    .style(design::secondary)
+                    .on_press(Message::ModdingBuildForOfflineTest),
+            );
     }
     let mut main = column![
         text("Modding").size(22),
