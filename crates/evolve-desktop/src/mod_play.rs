@@ -66,7 +66,7 @@ fn launch_for_repair(
         "Enabled mods were not installed: {issue}. The regular client opened instead; use its Repair or Verify option if needed."
     );
     if !warnings.is_empty() {
-        message.push_str(" ");
+        message.push(' ');
         message.push_str(&warnings.join(" "));
     }
     Ok((0, pid, 0, Some(message)))
