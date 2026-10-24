@@ -536,6 +536,65 @@ mod tests {
         assert_eq!(fs::read(&destination).unwrap(), b"old");
     }
 
+    #[test]
+    fn generated_first_run_stage_supports_profile_metadata_without_recreation() {
+        let temp = tempfile::tempdir().unwrap();
+        let game = temp.path().join("game");
+        fs::create_dir(&game).unwrap();
+        let setup = temp.path().join("Setup_existing");
+        let stage = setup.join("staged");
+        fs::create_dir_all(stage.join("paks")).unwrap();
+        fs::create_dir(stage.join("mykeys")).unwrap();
+        fs::write(setup.join("RSAKeyData.bin"), [0u8; 140]).unwrap();
+        fs::write(stage.join("mykeys/public_key.bin"), b"key").unwrap();
+        fs::write(stage.join("mykeys/private_key.pem"), b"private").unwrap();
+        fs::write(stage.join("inject-custom.dll"), b"hook").unwrap();
+        fs::write(
+            stage.join("rekey_plan.json"),
+            serde_json::json!({
+                "source_root": game,
+                "entries": [{"path": "Game/UI_Assets.pak", "kind": "signed-encrypted"}]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            stage.join("stage_status.json"),
+            serde_json::json!({"status": "fully-staged-offline", "count": 1}).to_string(),
+        )
+        .unwrap();
+        assert!(stage_status(&stage).unwrap().is_none());
+        assert!(crate::batch::batch_stage_status(&stage).unwrap().is_none());
+        let profile = crate::profiles::create_mod_profile(&stage, "Main menu offline test")
+            .expect("An existing generated stage can store new profiles");
+        assert_eq!(
+            crate::profiles::list_mod_profiles(&stage)
+                .unwrap()
+                .profiles[0]
+                .id,
+            profile.id
+        );
+        assert!(!stage.join(MARKER).exists());
+
+        // A forged marker never falls back to the compatibility layout.
+        fs::write(stage.join(MARKER), b"invalid").unwrap();
+        assert!(workspace(&stage).is_err());
+        fs::remove_file(stage.join(MARKER)).unwrap();
+
+        // A matching-looking folder inside the game installation is unsafe.
+        let other_game = setup.parent().unwrap();
+        fs::write(
+            stage.join("rekey_plan.json"),
+            serde_json::json!({
+                "source_root": other_game,
+                "entries": [{"path": "Game/UI_Assets.pak", "kind": "signed-encrypted"}]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(workspace(&stage).is_err());
+    }
+
     #[cfg(unix)]
     #[test]
     fn refuses_symlink_targets() {
