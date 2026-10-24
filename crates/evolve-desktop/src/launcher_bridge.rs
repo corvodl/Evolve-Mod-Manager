@@ -753,7 +753,9 @@ pub fn refresh_prepared_offline_cache(stage: &Path, swap: &Path) -> Result<(), S
     for item in rows {
         let backup = Path::new(item["backup"].as_str().ok_or("Missing backup path")?);
         if fs::symlink_metadata(backup).is_ok() {
-            return Err("An original game backup remains. Restore original game files first.".into());
+            return Err(
+                "An original game backup remains. Restore original game files first.".into(),
+            );
         }
         let ready = Path::new(item["ready"].as_str().ok_or("Missing prepared file path")?);
         match fs::symlink_metadata(ready) {
@@ -779,7 +781,8 @@ pub fn refresh_prepared_offline_cache(stage: &Path, swap: &Path) -> Result<(), S
     let mut file = tempfile::NamedTempFile::new_in(&swap).map_err(|e| e.to_string())?;
     serde_json::to_writer_pretty(&mut file, &journal).map_err(|e| e.to_string())?;
     file.as_file().sync_all().map_err(|e| e.to_string())?;
-    file.persist(&journal_path).map_err(|e| e.error.to_string())?;
+    file.persist(&journal_path)
+        .map_err(|e| e.error.to_string())?;
     Ok(())
 }
 
