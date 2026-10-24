@@ -125,7 +125,15 @@ fn refresh_verified_helper(
     if existing == current.as_bytes() {
         return Ok(false);
     }
-    let digest = format!("{:x}", Sha256::digest(&existing));
+    // Windows-distributed Python helpers can use CRLF even when the Git
+    // source was LF. Recognize that one newline-only transformation, but
+    // never accept changed Python code as a known published helper.
+    let existing_text = String::from_utf8(existing.clone())
+        .map_err(|_| format!("{name} is not a valid UTF-8 Python helper"))?;
+    let digest = format!(
+        "{:x}",
+        Sha256::digest(existing_text.replace("\r\n", "\n").as_bytes())
+    );
     if !known_sha256.contains(&digest.as_str()) {
         return Err(format!(
             "Unrecognized customized or older {name} (SHA-256 {digest}); cannot safely migrate the offline launcher. The file was not overwritten."
