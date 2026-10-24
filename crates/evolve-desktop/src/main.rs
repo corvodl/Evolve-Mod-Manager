@@ -8449,17 +8449,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             .iter_mut()
                             .find(|item| item.workspace == verified.workspace)
                     {
-                        *item = verified;
+                        *item = verified.clone();
                     }
                     if std::mem::take(&mut state.modding_prepare_offline_test) {
                         state.status = "Signed mod created; preparing a recoverable offline test profile...".into();
+                        let stage = PathBuf::from(&state.preferences.stage);
                         return launch(
                             state,
-                            Operation::StageBuiltOfflineTest(
-                                verified,
-                                dir,
-                                PathBuf::from(&state.preferences.stage),
-                            ),
+                            Operation::StageBuiltOfflineTest(verified, dir, stage),
                         );
                     }
                     state.status = format!(
