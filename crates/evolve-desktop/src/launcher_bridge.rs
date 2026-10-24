@@ -438,8 +438,17 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
         match prior["phase"].as_str() {
             Some("restored") => (),
             Some("prepared") => {
-                if prior["game"].as_str() != Some(game_str)
-                    || prior["stage"].as_str() != stage.to_str()
+                // Windows canonicalization can return \\?\ while the
+                // private Python journal intentionally uses ordinary C:/.
+                // Compare resolved directories instead of path spellings.
+                let journal_game = directory(Path::new(
+                    prior["game"].as_str().ok_or("Prepared game root missing")?,
+                ))?;
+                let journal_stage = directory(Path::new(
+                    prior["stage"].as_str().ok_or("Prepared stage root missing")?,
+                ))?;
+                if journal_game != game
+                    || journal_stage != stage
                     || prior["count"].as_u64() != Some((seen.len() + 1) as u64)
                 {
                     return Err(
