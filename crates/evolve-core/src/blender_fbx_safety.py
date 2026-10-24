@@ -205,7 +205,7 @@ def _set_count(node, value):
     node.count = 1
 
 
-def _validate_geometry(objects):
+def _validate_geometry(objects, require_tangent_space=False):
     mesh_count = 0
     for mesh in objects.children_named(b"Geometry"):
         props = _properties(mesh)
@@ -221,6 +221,34 @@ def _validate_geometry(objects):
         layers = mesh.children_named(b"LayerElementUV")
         if not layers:
             raise FBXValidationError("FBX mesh missing UV layers")
+        if require_tangent_space:
+            for element, payload in [
+                (b"LayerElementNormal", b"Normals"),
+                (b"LayerElementTangent", b"Tangents"),
+                (b"LayerElementBinormal", b"Binormals"),
+            ]:
+                attributes = mesh.children_named(element)
+                if not attributes:
+                    raise FBXValidationError(
+                        "FBX lacks exported normal-map shading layer: " + element.decode())
+                for layer in attributes:
+                    data = layer.get(payload)
+                    if data is None:
+                        raise FBXValidationError(
+                            "FBX normal-map shading layer has no vectors: " + element.decode())
+                    vectors = _numeric_array(data, {b"d", b"f"})
+                    if not vectors or len(vectors) % 3 or any(
+                        not math.isfinite(value) for value in vectors
+                    ):
+                        raise FBXValidationError(
+                            "FBX has invalid source-normal/tangent-space vectors")
+                    if any(
+                        not 0.1 < sum(float(vectors[i + axis]) ** 2
+                                      for axis in range(3)) < 2.1
+                        for i in range(0, len(vectors), 3)
+                    ):
+                        raise FBXValidationError(
+                            "FBX has degenerate normal/tangent-space vectors")
         for layer in layers:
             uv_node = layer.get(b"UV")
             if uv_node is None:
@@ -259,7 +287,7 @@ def _cluster_weights(cluster):
     return len(indices), any(w > 0 for w in weights)
 
 
-def optimize_binary_fbx(path, embed_textures=True):
+def optimize_binary_fbx(path, embed_textures=True, require_tangent_space=False):
     """Prune zero-weight clusters and merge only compatible bind poses.
 
     Failure leaves the original staged FBX untouched; caller must publish only
@@ -273,7 +301,7 @@ def optimize_binary_fbx(path, embed_textures=True):
     connections = next((node for node in roots if node.name == b"Connections"), None)
     if objects is None or connections is None:
         raise FBXValidationError("Missing FBX object/connection tables")
-    meshes = _validate_geometry(objects)
+    meshes = _validate_geometry(objects, require_tangent_space=require_tangent_space)
     embedded_normals = 0
     if not embed_textures:
         embedded_normals = embed_verified_normal_maps(objects, path)
@@ -347,7 +375,7 @@ def optimize_binary_fbx(path, embed_textures=True):
     if check_version != version:
         raise FBXValidationError("FBX version changed during optimization")
     check_objects = next(n for n in check_roots if n.name == b"Objects")
-    _validate_geometry(check_objects)
+    _validate_geometry(check_objects, require_tangent_space=require_tangent_space)
     if not embed_textures:
         verify_embedded_normal_media(check_objects, embedded_normals)
     surviving = [c for c in check_objects.children_named(b"Deformer")

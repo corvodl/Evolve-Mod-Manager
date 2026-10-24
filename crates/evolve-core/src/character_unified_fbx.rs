@@ -1854,6 +1854,11 @@ pub fn export_unified_cdf_fbx_options_with_glow(
     )
     .map_err(|e| e.to_string())?;
     fs::write(
+        work.path().join("blender_mesh_shading.py"),
+        include_str!("blender_mesh_shading.py"),
+    )
+    .map_err(|e| e.to_string())?;
+    fs::write(
         work.path().join("blender_fbx_safety.py"),
         include_str!("blender_fbx_safety.py"),
     )
