@@ -217,7 +217,11 @@ fn projects(state: &State) -> Element<'_, Message> {
             container(
                 row![
                     design::button(if record.enabled { "On" } else { "Off" })
-                        .style(if record.enabled { design::primary } else { design::secondary })
+                        .style(if record.enabled {
+                            design::primary
+                        } else {
+                            design::secondary
+                        })
                         .on_press(Message::ModdingToggleEnabled(index))
                         .width(Length::FillPortion(2)),
                     design::button(cells)
