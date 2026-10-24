@@ -254,8 +254,9 @@ mod tests {
         fs::create_dir_all(&bin).unwrap();
         fs::write(bin.join("Evolve.exe"), b"game").unwrap();
         fs::write(bin.join("inject.dll"), b"original").unwrap();
-        assert_eq!(game_root(&game.to_string_lossy()).unwrap(), game);
-        assert_eq!(game_root(&bin.to_string_lossy()).unwrap(), game);
+        let expected = fs::canonicalize(&game).unwrap();
+        assert_eq!(game_root(&game.to_string_lossy()).unwrap(), expected);
+        assert_eq!(game_root(&bin.to_string_lossy()).unwrap(), expected);
         assert!(client_exe(&bin.join("Evolve.exe").to_string_lossy()).is_err());
     }
 
@@ -269,6 +270,7 @@ mod tests {
         for dir in [&game, &other, &stage, &swap] {
             fs::create_dir(dir).unwrap();
         }
+        let game = fs::canonicalize(&game).unwrap();
         fs::write(
             stage.join("rekey_plan.json"),
             serde_json::to_vec(&serde_json::json!({"source_root":other})).unwrap(),
@@ -291,6 +293,7 @@ mod tests {
         for folder in [&game, &stage, &swap] {
             fs::create_dir(folder).unwrap();
         }
+        let game = fs::canonicalize(&game).unwrap();
         fs::write(
             stage.join("rekey_plan.json"),
             serde_json::to_vec(&serde_json::json!({"source_root":game})).unwrap(),
