@@ -2606,8 +2606,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "No existing Asset Library directory at the configured path. Browse staged PAKs to mod directly, or configure the correct library location in Settings.".into();
                 return Task::none();
             }
-            state.library_startup_loading = true;
-            return load_saved_library(root);
+            // Unlike the once-per-launch startup index, a user-initiated
+            // refresh must replace an already loaded catalog as well.
+            return launch(state, Operation::LoadImportedLibrary(root));
         }
         Message::ModdingSelectImported(index) => {
             if let Some(pak) = state.library_catalog.as_ref().and_then(|c| c.archives.get(index)) {
