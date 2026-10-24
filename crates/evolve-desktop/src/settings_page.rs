@@ -221,6 +221,11 @@ fn storage(state: &State) -> Element<'_, Message> {
             design::button("Open Projects").on_press(Message::Navigate(Page::Files)).style(design::secondary).width(Fill),
             design::button("Save Settings").on_press(Message::SavePreferences).style(design::secondary).width(Fill),
         ].spacing(8),
+        design::button("Update Staged / Original PAKs after Game Update")
+            .on_press_maybe((!state.busy).then_some(Message::RefreshGamePakBaseline))
+            .style(design::secondary),
+        text("Creates a new verified signing baseline from the updated game. Existing stages and mod projects are preserved; edits must be reviewed against the new game files before deployment.")
+            .size(11).style(design::muted),
     ].spacing(11))
     .into()
 }
