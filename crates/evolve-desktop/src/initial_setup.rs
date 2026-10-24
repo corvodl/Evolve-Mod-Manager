@@ -153,20 +153,22 @@ pub fn safe_refresh_preflight(stage: &Path, swap: &Path) -> Result<(), String> {
         }
     }
     let journal = swap.join("controlled_swap_state.json");
-    let metadata = fs::symlink_metadata(&journal)
-        .map_err(|e| format!("Missing recovery journal: {e}"))?;
+    let metadata =
+        fs::symlink_metadata(&journal).map_err(|e| format!("Missing recovery journal: {e}"))?;
     if !metadata.file_type().is_file() || metadata.len() > 1024 * 1024 {
         return Err("Recovery journal is unsafe or oversized".into());
     }
-    let value: serde_json::Value = serde_json::from_reader(
-        File::open(journal).map_err(|e| e.to_string())?
-    ).map_err(|e| format!("Invalid recovery journal: {e}"))?;
+    let value: serde_json::Value =
+        serde_json::from_reader(File::open(journal).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("Invalid recovery journal: {e}"))?;
     if value["version"].as_u64() != Some(1)
         || value["phase"].as_str() != Some("restored")
         || value["count"].as_u64() != Some(0)
         || value["files"].as_array().is_none_or(|v| !v.is_empty())
     {
-        return Err("Previous offline swap has unresolved changes; restore the original game first".into());
+        return Err(
+            "Previous offline swap has unresolved changes; restore the original game first".into(),
+        );
     }
     let plan = stage.join("rekey_plan.json");
     let metadata = fs::symlink_metadata(&plan)
@@ -174,9 +176,9 @@ pub fn safe_refresh_preflight(stage: &Path, swap: &Path) -> Result<(), String> {
     if !metadata.file_type().is_file() || metadata.len() > 32 * 1024 * 1024 {
         return Err("Signing inventory is unsafe".into());
     }
-    let inventory: serde_json::Value = serde_json::from_reader(
-        File::open(plan).map_err(|e| e.to_string())?
-    ).map_err(|e| format!("Invalid signing inventory: {e}"))?;
+    let inventory: serde_json::Value =
+        serde_json::from_reader(File::open(plan).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("Invalid signing inventory: {e}"))?;
     if inventory["source_root"].as_str().is_none() || inventory["entries"].as_array().is_none() {
         return Err("Existing signing inventory is incomplete".into());
     }
