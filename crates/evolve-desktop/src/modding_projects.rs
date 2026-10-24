@@ -83,7 +83,13 @@ fn safe_member(raw: &str) -> bool {
             .all(|s| !s.is_empty() && s != "." && s != "..")
         && !raw.starts_with('/')
 }
-fn inspect_project(folder: &Path, stage: &Path, label: String, source_build: String) -> ProjectRow {
+fn inspect_project(
+    folder: &Path,
+    stage: &Path,
+    label: String,
+    source_build: String,
+    hash_budget: u64,
+) -> ProjectRow {
     let mut item = ProjectRow {
         label,
         target: "Unverified source".into(),
@@ -158,7 +164,7 @@ fn inspect_project(folder: &Path, stage: &Path, label: String, source_build: Str
                 return Err("Project file escaped its workspace".into());
             }
             let size = fs::metadata(&path).map_err(|e| e.to_string())?.len();
-            if checked.saturating_add(size) > MAX_HASHED_PER_WORKSPACE {
+            if checked.saturating_add(size) > hash_budget {
                 known = false;
                 continue;
             }
@@ -300,7 +306,7 @@ pub fn discover_projects(root: &Path, stage: &Path) -> Result<Vec<ProjectRow>, S
                     "Unknown build".into(),
                 )
             });
-            inspect_project(&path, stage, label, build)
+            inspect_project(&path, stage, label, build, MAX_HASHED_PER_WORKSPACE)
         })
         .collect();
     projects.sort_by(|a, b| {
@@ -437,13 +443,9 @@ pub fn build_project_raw(
     projects: &Path,
     stage: &Path,
 ) -> Result<(String, PathBuf), String> {
-    if !project.changed_known
-        || project.modified.is_empty()
-        || project.modified.len() > 64
-        || project.status != "Modified"
-    {
-        return Err("A signed build requires 1–64 verified changed project members; refresh the project before building.".into());
-    }
+    // The Modding dashboard uses a bounded scan for responsiveness. Never
+    // trust its cached change list to build: refresh every member on a blocking
+    // worker so large PAKs and newly applied GFX edits cannot be missed.
     let parent = fs::canonicalize(projects).map_err(|e| e.to_string())?;
     if !fs::symlink_metadata(projects).is_ok_and(|m| m.file_type().is_dir()) {
         return Err("Projects path must be a real directory".into());
@@ -452,12 +454,30 @@ pub fn build_project_raw(
     if !folder.starts_with(&parent) || folder == parent {
         return Err("Selected workspace is outside Projects".into());
     }
+    let verified = inspect_project(
+        &folder,
+        stage,
+        project.label.clone(),
+        project.source_build.clone(),
+        u64::MAX,
+    );
+    if !verified.changed_known
+        || verified.modified.is_empty()
+        || verified.modified.len() > 64
+        || verified.status != "Modified"
+    {
+        return Err(format!(
+            "Signed build requires 1–64 fully verified changed files; {}. Save GFX edits with Apply to Mod Project before building.",
+            verified.details
+        ));
+    }
+    let modified = &verified.modified;
     let manifest = read_json(&folder.join(".evolve-pak-workspace.json"), 8 * 1024 * 1024)?;
     let records = manifest
         .get("entries")
         .and_then(Value::as_array)
         .ok_or("Original manifest has no file records")?;
-    for rel in &project.modified {
+    for rel in &modified {
         if !safe_member(rel) {
             return Err("Unsafe modified member".into());
         }
@@ -491,19 +511,6 @@ pub fn build_project_raw(
     {
         return Err("Source PAK changed since extraction; refusing to build".into());
     }
-    // A fresh inspection also detects edits that occurred after project-list
-    // indexing. Do not issue a partial or stale rebuild.
-    let fresh = inspect_project(
-        &folder,
-        stage,
-        project.label.clone(),
-        project.source_build.clone(),
-    );
-    if !fresh.changed_known || fresh.modified != project.modified {
-        return Err(
-            "Project edits changed during preparation; refresh and review before building".into(),
-        );
-    }
     let keys = super::modding_keys::signing_keys(stage)?;
     if let Some(hash) = manifest.get("public_key_sha256").and_then(Value::as_str)
         && !digest(&keys.public)
@@ -525,8 +532,8 @@ pub fn build_project_raw(
         .prefix(".project-serialization-")
         .tempdir_in(&folder)
         .map_err(|e| e.to_string())?;
-    let mut replacements = Vec::with_capacity(project.modified.len());
-    for rel in &project.modified {
+    let mut replacements = Vec::with_capacity(modified.len());
+    for rel in &modified {
         let replacement = folder.join("files").join(rel);
         let canonical = fs::canonicalize(&replacement).map_err(|e| e.to_string())?;
         if !canonical.starts_with(&source_files)
