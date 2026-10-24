@@ -6,8 +6,8 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 const MAX_PROJECTS: usize = 4096;
 const MAX_DIRECTORIES: usize = 32768;
@@ -45,10 +45,14 @@ fn copy_verified_member(
         if read == 0 {
             break;
         }
-        output.write_all(&buffer[..read]).map_err(|e| e.to_string())?;
+        output
+            .write_all(&buffer[..read])
+            .map_err(|e| e.to_string())?;
         hasher.update(&buffer[..read]);
         if let Some(progress) = progress {
-            progress.bytes_done.fetch_add(read as u64, Ordering::Relaxed);
+            progress
+                .bytes_done
+                .fetch_add(read as u64, Ordering::Relaxed);
         }
     }
     output.flush().map_err(|e| e.to_string())?;
@@ -442,8 +446,12 @@ pub fn edit_imported_snapshot_with_progress(
         }
     }
     if let Some(progress) = progress {
-        progress.files_total.store(inventory.entries.len(), Ordering::Relaxed);
-        progress.bytes_total.store(inventory.total_bytes, Ordering::Relaxed);
+        progress
+            .files_total
+            .store(inventory.entries.len(), Ordering::Relaxed);
+        progress
+            .bytes_total
+            .store(inventory.total_bytes, Ordering::Relaxed);
         progress.phase.store(1, Ordering::Relaxed);
     }
     let staging = tempfile::Builder::new()
