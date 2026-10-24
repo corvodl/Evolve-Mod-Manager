@@ -36,6 +36,8 @@ fn is_face(name: &str, binding: &str) -> bool {
     // helmet or whole-head mesh is NOT implicitly a substitute face.
     let named = [
         "oh",
+        "broken",
+        "healing",
         "smile",
         "happy",
         "sad",
