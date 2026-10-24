@@ -615,7 +615,13 @@ enum Operation {
 enum Completed {
     Projects(Vec<ProjectRow>),
     UnpackedProject(PathBuf, usize),
-    ImportedProjectCreated(PathBuf, usize, Option<ImportedLibrary>, Option<String>, bool),
+    ImportedProjectCreated(
+        PathBuf,
+        usize,
+        Option<ImportedLibrary>,
+        Option<String>,
+        bool,
+    ),
     ImportedRawProjectMember(bool, String, PathBuf),
     RestoredRawProjectMember(bool, String, PathBuf),
     ImportedLibrary(ImportedLibrary),
@@ -766,7 +772,11 @@ impl Operation {
                     None
                 };
                 Ok(Completed::ImportedProjectCreated(
-                    path, count, catalog, refreshed_id, mapped,
+                    path,
+                    count,
+                    catalog,
+                    refreshed_id,
+                    mapped,
                 ))
             }
             Self::RefreshGamePakBaseline(game, client, storage, snapshots) => {
@@ -7225,10 +7235,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         ),
                     );
                 }
-                Ok(Completed::ImportedProjectCreated(path, count, catalog, refreshed_id, mapped)) => {
+                Ok(Completed::ImportedProjectCreated(
+                    path,
+                    count,
+                    catalog,
+                    refreshed_id,
+                    mapped,
+                )) => {
                     if let Some(catalog) = catalog {
                         if let Some(id) = refreshed_id.as_deref() {
-                            state.library_selected = catalog.archives.iter().position(|p| p.id == id);
+                            state.library_selected =
+                                catalog.archives.iter().position(|p| p.id == id);
                             state.library_selection.clear();
                             if let Some(index) = state.library_selected {
                                 state.library_selection.indices.insert(index);
