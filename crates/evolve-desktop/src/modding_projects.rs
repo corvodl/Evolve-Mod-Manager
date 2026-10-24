@@ -1096,7 +1096,7 @@ pub fn build_project_raw(
 /// Resolve an exact installed-game target for an offline test. This does
 /// NOT require an old source checksum to match a game update, but never
 /// guesses a destination by basename or searches outside the selected game.
-fn offline_test_target(project: &ProjectRow, stage: &Path) -> Result<String, String> {
+pub(super) fn offline_test_target(project: &ProjectRow, stage: &Path) -> Result<String, String> {
     let manifest = read_json(
         &project.workspace.join(".evolve-pak-workspace.json"),
         8 * 1024 * 1024,
@@ -1676,6 +1676,7 @@ mod tests {
             workspace: workspace.clone(),
             modified: vec![],
             changed_known: true,
+            enabled: false,
         };
         assert_eq!(guided_members(&project, false).unwrap(), vec![member]);
         let snapshot = read_gameplay_document(&project, member).unwrap();
@@ -1721,6 +1722,7 @@ mod tests {
             workspace: workspace.clone(),
             modified: Vec::new(),
             changed_known: true,
+            enabled: false,
         };
         let replacement = temp.path().join("replacement.xml");
         fs::write(&replacement, edited).unwrap();
@@ -1782,6 +1784,7 @@ mod tests {
             workspace: workspace.clone(),
             modified: Vec::new(),
             changed_known: true,
+            enabled: false,
         };
         assert!(import_raw_member(&project, &projects, "hunters/example.bin", &external).unwrap());
         assert_eq!(
