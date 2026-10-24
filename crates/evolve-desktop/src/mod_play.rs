@@ -72,6 +72,22 @@ fn launch_for_repair(
     Ok((0, pid, 0, Some(message)))
 }
 
+/// Reconcile any prior isolated stage batch, regardless of whether it was
+/// created by the old manual testing action or the new enabled-mod launcher.
+/// Never infer ownership from a stale enabled-mod-profile.json marker.
+/// The core restores only hashes verified against its original batch backups,
+/// retaining profiles and preserving unexpected third-party changes on error.
+fn restore_previous_staged_profile(stage: &std::path::Path) -> Result<bool, String> {
+    let active = evolve_core::batch_stage_status(stage)
+        .map_err(|e| format!("Cannot read the previous stage transaction: {e}"))?;
+    if active.is_none() {
+        return Ok(false);
+    }
+    evolve_core::restore_profile_stage(stage)
+        .map_err(|e| format!("Cannot restore the previous signed PAKs: {e}"))?;
+    Ok(true)
+}
+
 pub fn launch_enabled(
     mods: Vec<ProjectRow>,
     projects_root: PathBuf,
@@ -115,37 +131,20 @@ pub fn launch_enabled(
     }
     let keys = modding_keys::signing_keys(&stage)?;
 
-    // A previous enabled-mod set can be rolled back automatically; an
-    // unrelated manually applied profile is never silently discarded.
-    let active = match evolve_core::batch_stage_status(&stage) {
-        Ok(active) => active,
-        Err(issue) => {
-            return launch_for_repair(
-                &game,
-                &client,
-                &swap,
-                &format!("Previous mod setup needs recovery: {issue}"),
-            );
-        }
-    };
-    if let Some(active) = active {
-        let ours = owned_profile_id(&stage)?.is_some_and(|id| id == active.profile_id);
-        if !ours {
-            return launch_for_repair(
-                &game,
-                &client,
-                &swap,
-                "A different mod profile is still active",
-            );
-        }
-        if let Err(issue) = evolve_core::restore_profile_stage(&stage) {
-            return launch_for_repair(
-                &game,
-                &client,
-                &swap,
-                &format!("Previous mod profile could not be restored: {issue}"),
-            );
-        }
+    // A manual "Build & Prepare Offline Test" profile may remain staged
+    // from before the enabled-mod workflow existed. Its ID legitimately
+    // differs from the current automatic profile marker. The journal
+    // contains byte-exact backups and a rollback transaction, so restore
+    // ANY previously staged profile before applying the new enabled set.
+    // This only restores files inside the isolated signing stage. It does
+    // not delete that manual profile from profiles.json or touch game files.
+    if let Err(issue) = restore_previous_staged_profile(&stage) {
+        return launch_for_repair(
+            &game,
+            &client,
+            &swap,
+            &format!("Previous mod setup could not be restored: {issue}"),
+        );
     }
 
     let mut built = Vec::with_capacity(mods.len());
