@@ -66,12 +66,11 @@ pub fn launch_enabled(
     }
     launcher_bridge::games_closed()?;
     play_setup::configure_existing_helper(&game, &client, &stage, &swap)?;
-    // Confirm the current game is restored before changing the offline stage.
-    let current = launcher_bridge::inspect_existing_launcher(&stage, &swap)
-        .map_err(|e| format!("Restore the original game before playing: {e}"))?;
-    if current.game != game {
-        return Err("Your mod setup belongs to another game installation.".into());
-    }
+    // Check only the lightweight original-backup state here. Full signed
+    // archive verification runs once after building/staging, not twice before
+    // and again during the launcher handoff.
+    play_setup::audit_backup_files(&game)
+        .map_err(|_| "Original game backups need restoring before play. Use Restore original game files.".to_owned())?;
     progress.store(5, Ordering::Relaxed);
 
     let mut destinations = HashSet::new();
