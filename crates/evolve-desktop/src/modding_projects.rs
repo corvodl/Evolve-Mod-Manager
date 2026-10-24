@@ -1827,6 +1827,28 @@ mod tests {
     }
 
     #[test]
+    fn mod_name_and_enable_switch_persist_without_touching_original_assets() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("projects");
+        let folder = root.join("Main Menu");
+        fs::create_dir_all(folder.join("files")).unwrap();
+        let original = folder.join("files/main_menu.gfx");
+        fs::write(&original, b"untouched original snapshot").unwrap();
+        assert!(save_mod_preference(&root, &folder, Some(""), None).is_err());
+        save_mod_preference(&root, &folder, Some("  My Main Menu  "), Some(true))
+            .unwrap();
+        let prefs = read_mod_preferences(&root).unwrap();
+        let item = prefs.mods.get("Main Menu").unwrap();
+        assert_eq!(item.name.as_deref(), Some("My Main Menu"));
+        assert!(item.enabled);
+        save_mod_preference(&root, &folder, None, Some(false)).unwrap();
+        let prefs = read_mod_preferences(&root).unwrap();
+        assert!(!prefs.mods.get("Main Menu").unwrap().enabled);
+        assert_eq!(fs::read(&original).unwrap(), b"untouched original snapshot");
+        assert!(save_mod_preference(&root, temp.path(), None, Some(true)).is_err());
+    }
+
+    #[test]
     fn indexes_private_manifest_and_ignores_unsafe_targets() {
         let temp = tempfile::tempdir().unwrap();
         let stage = temp.path().join("stage");
