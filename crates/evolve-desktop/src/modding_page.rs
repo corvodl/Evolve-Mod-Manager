@@ -589,26 +589,28 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             .as_ref()
             .and_then(|list| list.get(index))
     });
-    let actions = row![
-        design::button("Advanced Profiles…")
-            .style(design::secondary)
-            .on_press(Message::ModdingToggleProfiles),
-        design::button("Refresh Projects")
+    let mut actions = row![
+        design::button("Refresh Mods")
             .style(design::secondary)
             .on_press(Message::ModdingRefresh),
         design::button("Continue Editing")
             .style(design::secondary)
             .on_press(Message::ModdingOpenProject),
-        design::button("Build Mod")
-            .style(design::secondary)
-            .on_press(Message::ModdingBuild),
-        design::button("Build & Prepare Offline Test")
-            .style(design::primary)
-            .on_press(Message::ModdingBuildForOfflineTest),
-        space().width(Fill),
     ]
     .spacing(7)
     .align_y(iced::Center);
+    if state.modding_advanced {
+        actions = actions
+            .push(design::button("Advanced Profiles…")
+                .style(design::secondary)
+                .on_press(Message::ModdingToggleProfiles))
+            .push(design::button("Build Selected Mod")
+                .style(design::secondary)
+                .on_press(Message::ModdingBuild))
+            .push(design::button("Prepare Selected Mod for Test")
+                .style(design::secondary)
+                .on_press(Message::ModdingBuildForOfflineTest));
+    }
     let mut main = column![
         text("Modding").size(22),
         text("Name your mods, switch them On or Off, then choose Play with Mods. Enabled mods are built and loaded automatically for offline play.")
