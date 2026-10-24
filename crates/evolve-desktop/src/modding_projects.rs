@@ -918,6 +918,94 @@ pub fn build_project_raw(
     }
 }
 
+/// Resolve an exact installed-game target for an offline test. This does
+/// NOT require an old source checksum to match a game update, but never
+/// guesses a destination by basename or searches outside the selected game.
+fn offline_test_target(project: &ProjectRow, stage: &Path) -> Result<String, String> {
+    let manifest = read_json(
+        &project.workspace.join(".evolve-pak-workspace.json"),
+        8 * 1024 * 1024,
+    )?;
+    if manifest["extraction_mode"].as_str() != Some("imported-snapshot") {
+        return super::modding_keys::staged_target(
+            stage, &stage.join("paks").join(&project.target),
+        );
+    }
+    let source = manifest["imported_source"].as_str()
+        .ok_or("Imported snapshot is missing its installed source location")?;
+    let plan = read_json(&stage.join("rekey_plan.json"), 8 * 1024 * 1024)?;
+    let root = plan["source_root"].as_str()
+        .ok_or("Stage has no installed game root")?;
+    let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
+    let source = fs::canonicalize(source).map_err(|_| {
+        "Imported source is unavailable. Choose a current game PAK before installing.".to_owned()
+    })?;
+    let name = source.strip_prefix(&root)
+        .map_err(|_| "This snapshot belongs to another game installation; select its matching offline stage")?
+        .to_string_lossy().replace('\\', "/");
+    if !safe_member(&name) || !name.to_ascii_lowercase().ends_with(".pak") {
+        return Err("Unsafe installed target path".into());
+    }
+    if !plan["entries"].as_array().is_some_and(|entries|
+        entries.iter().any(|entry| entry["path"].as_str() == Some(name.as_str())
+            && entry["kind"].as_str() == Some("signed-encrypted"))
+    ) {
+        return Err("The selected installed PAK is not present in this stage's verified target list".into());
+    }
+    let target = stage.join("paks").join(&name);
+    if super::modding_keys::staged_target(stage, &target)? != name {
+        return Err("Stage target differs from the installed game target".into());
+    }
+    if target.file_name() != source.file_name() {
+        return Err("Installed source and stage target basenames differ".into());
+    }
+    Ok(name)
+}
+
+/// Prepare a newly built signed archive for offline testing through the
+/// existing profile transaction, with all stage originals backed up BEFORE
+/// any staged PAK is replaced. The live game installation is untouched.
+pub fn prepare_built_offline_test(
+    project: &ProjectRow,
+    output: &Path,
+    stage: &Path,
+) -> Result<String, String> {
+    let target = offline_test_target(project, stage)?;
+    let basename = super::modding_keys::signed_basename(output)?;
+    if target.split('/').next_back() != Some(basename.as_str()) {
+        return Err("Built PAK basename differs from installed stage destination".into());
+    }
+    let keys = super::modding_keys::signing_keys(stage)?;
+    // Verify the exact built archive and stage target before persisting
+    // anything. Signed member inventory differences are permitted offline.
+    evolve_core::inspect_signed_pak(output, &keys.public, &basename)
+        .map_err(|e| format!("Built offline PAK signature could not be verified: {e}"))?;
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?.as_nanos();
+    let display = basename.chars().filter(|c| c.is_ascii_alphanumeric())
+        .take(24).collect::<String>();
+    let name = format!("Offline Test {display} {:x}", stamp);
+    let profile = evolve_core::create_mod_profile(stage, &name)
+        .map_err(|e| format!("Cannot create offline test profile: {e}"))?;
+    let staged = (|| -> Result<(), String> {
+        evolve_core::add_mod_to_profile(
+            stage, &profile.id, output, &target,
+            &keys.original_public, &keys.public, &basename,
+        ).map_err(|e| e.to_string())?;
+        evolve_core::apply_profile_stage(
+            stage, &profile.id, &keys.original_public, &keys.public,
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    })();
+    if let Err(error) = staged {
+        let _ = evolve_core::profiles::delete_mod_profile(stage, &profile.id);
+        return Err(format!("Offline test was not prepared: {error}. Restore any pending stage transaction before retrying."));
+    }
+    Ok(format!(
+        "Offline test prepared for {target}. Select Play with Mods to test the changed menu. Stage originals are saved in the recovery journal; use Restore staged profile when finished. Compatibility with this game build is not guaranteed."
+    ))
+}
+
 /// Import explicitly selected bytes/XML over ONE manifest-listed editable
 /// member. Never writes source PAKs or imported library originals. Keeps a
 /// verified, immutable editor backup for manual or in-app recovery.
