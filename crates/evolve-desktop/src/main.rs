@@ -1477,7 +1477,8 @@ impl Operation {
                 }
                 let count = report.archive_count;
                 let warnings = report.compatibility_warnings;
-                let id = launch_existing_offline_client(&report)?;
+                let launch_progress = std::sync::atomic::AtomicUsize::new(92);
+                let id = launch_existing_offline_client(&report, &launch_progress)?;
                 Ok(Completed::OfflineLauncherStarted(count, id, warnings))
             }
             Self::LaunchCleanClient(game, client, swap) => {
