@@ -688,7 +688,7 @@ enum Completed {
     HookPrepared(HookPairReport, PathBuf),
     SignedHookPreflight(PakHookPairReport),
     OfflineLauncherReady(LaunchReady),
-    OfflineLauncherStarted(usize, u32),
+    OfflineLauncherStarted(usize, u32, usize),
     CleanClientStarted(u32),
     InitialSetupCreated(initial_setup::InitialSetup),
     GamePakBaselineRefreshed(initial_setup::InitialSetup),
@@ -1421,8 +1421,9 @@ impl Operation {
                     return Err("Offline signing stage belongs to another game installation".into());
                 }
                 let count = report.archive_count;
+                let warnings = report.compatibility_warnings;
                 let id = launch_existing_offline_client(&report)?;
-                Ok(Completed::OfflineLauncherStarted(count, id))
+                Ok(Completed::OfflineLauncherStarted(count, id, warnings))
             }
             Self::LaunchCleanClient(game, client, swap) => {
                 let id = play_setup::launch_clean(&game, &client, swap.as_deref())?;
@@ -7373,11 +7374,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         )
                     } else {
                         format!(
-                            "Created a project with {count} editable files. Original source unchanged. {}",
+                            "Ready to edit {count} copied assets. No source version or signing stage match was needed. {}",
                             if mapped {
-                                "Exact game-stage mapping verified."
+                                "Signed stage already available."
                             } else {
-                                "Unmapped editing copy; verify the updated game stage before deployment."
+                                "When you select Build Mod, the manager will attempt a signed offline-test PAK from your currently installed source. Compatibility differences are warnings."
                             }
                         )
                     };
@@ -8344,8 +8345,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::OfflineLauncherReady(report)) => {
                     state.status = format!(
-                        "Offline launcher preflight PASS: {} original/custom signed PAKs and matching inject.dll verified. Private swap state: {}. This does not establish a successful Evolve mount.",
+                        "Offline launch is ready: {} signed PAKs and the recovery hook verified; {} compatibility warning(s) for differing game archive member lists. Swap state: {}. Original backups are retained; test offline only.",
                         report.archive_count,
+                        report.compatibility_warnings,
                         if report.prepared {
                             "prepared"
                         } else {
@@ -8393,9 +8395,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                     state.page = Some(Page::Home);
                 }
-                Ok(Completed::OfflineLauncherStarted(count, id)) => {
+                Ok(Completed::OfflineLauncherStarted(count, id, warnings)) => {
                     state.status = format!(
-                        "Offline launch is READY (helper PID {id}) for {count} signed PAKs + matching custom RSA hook. In the opened Modded Evolve client, press Play to launch Evolve.exe. The original PAKs are replaced only when the helper verifies that exact game-creation event; originals are restored after Evolve.exe and the client both close. See rust-launch-bridge.log and auto-restore.log for confirmation. Actual game mount remains unverified."
+                        "Offline launch is READY (helper PID {id}) with {count} signed PAKs. {warnings} game-version/layout warning(s); originals have automatic recovery. Press Play in the client to start Evolve. Online play remains disabled; actual asset mounting is not yet confirmed."
                     );
                     state.page = Some(Page::Home);
                 }
