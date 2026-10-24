@@ -2946,8 +2946,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Scan a specific game build first.".into();
                 return Task::none();
             };
-            if plan.changed.is_empty() {
-                state.status = "No new or changed source PAKs; the Asset Library is already current for this build.".into();
+            if plan.changed.is_empty() && plan.removed.is_empty() {
+                state.status = "No new, changed, or removed source PAKs; this build is already current.".into();
                 return Task::none();
             }
             let cancelled = Arc::new(AtomicBool::new(false));
