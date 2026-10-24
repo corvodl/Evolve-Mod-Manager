@@ -7289,7 +7289,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.library_import_cancel = None;
             state.library_import_progress = None;
             state.busy = false;
-            if result.is_err() { state.modding_prepare_offline_test = false; }
+            if result.is_err() {
+                state.modding_prepare_offline_test = false;
+            }
             state.storage_analyzing = false;
             state.scan_cancel = None;
             state.scan_indexed = None;
@@ -8452,7 +8454,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         *item = verified.clone();
                     }
                     if std::mem::take(&mut state.modding_prepare_offline_test) {
-                        state.status = "Signed mod created; preparing a recoverable offline test profile...".into();
+                        state.status =
+                            "Signed mod created; preparing a recoverable offline test profile..."
+                                .into();
                         let stage = PathBuf::from(&state.preferences.stage);
                         return launch(
                             state,
