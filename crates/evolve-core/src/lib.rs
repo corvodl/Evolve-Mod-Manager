@@ -100,8 +100,8 @@ pub use inventory::{
 pub use legacy_rig::{parse_legacy_skeleton, read_legacy_skin};
 pub use level_export::{LevelExportError, LevelExportReport, export_level_scene_glb};
 pub use library_build_updates::{
-    BuildUpdateFile, LibraryBuildUpdatePlan, LibraryBuildUpdateReport,
-    apply_library_build_updates, scan_library_build_updates,
+    BuildUpdateFile, LibraryBuildUpdatePlan, LibraryBuildUpdateReport, apply_library_build_updates,
+    scan_library_build_updates,
 };
 pub use library_catalog::{
     ImportedLibrary, ImportedPak, LibraryError, LibraryReference, LibraryReferenceStatus,
