@@ -330,15 +330,20 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
     let custom = within_file(&stage, "inject-custom.dll")?;
     let original = within_file(&game, "bin64_SteamRetail/inject.dll")?;
     no_orphaned_backup(&original)?;
-    let original_key_bytes = fs::read(&old_key).map_err(|e| e.to_string())?;
-    let custom_key_bytes = fs::read(&new_key).map_err(|e| e.to_string())?;
-    verify_hook(&original, &custom, &original_key_bytes, &custom_key_bytes)?;
     let expected_shim = status["shim_sha256"]
         .as_str()
         .ok_or("Missing staged injector digest")?;
     if sha(&custom)? != expected_shim.to_ascii_lowercase() {
-        return Err("Staged custom injector does not match stage_status.json".into());
+        return Err("Staged inject-custom.dll differs from the SHA-256 saved during signing setup. Close the game and refresh the signing stage; installed PAKs were not changed.".into());
     }
+    // Check the hook once before iterating archives, so a DLL mismatch is
+    // never misreported as a problem with the first signed PAK in the plan.
+    let original_key_bytes = fs::read(&old_key).map_err(|e| e.to_string())?;
+    let custom_key_bytes = fs::read(&new_key).map_err(|e| e.to_string())?;
+    verify_hook(&original, &custom, &original_key_bytes, &custom_key_bytes)
+        .map_err(|e| format!(
+            "Installed bin64_SteamRetail/inject.dll and staged inject-custom.dll disagree: {e}. Restore any original-file backups, then refresh signing setup if needed. This is a DLL mismatch, not a Game/materials_min_sky.pak error."
+        ))?;
     // Never fall back to the original helper's developer-specific default
     // launcher path. The existing private setup must identify the user's
     // actual installed ModdedEvolveLauncher executable explicitly.
@@ -866,6 +871,69 @@ pub fn restore_existing_offline_client(stage: &Path, swap: &Path) -> Result<(usi
 #[cfg(not(windows))]
 pub fn restore_existing_offline_client(_: &Path, _: &Path) -> Result<(usize, bool), String> {
     Err("Offline Evolve launcher recovery requires Windows x64".into())
+}
+
+/// Repair a corrupted staged DLL only if the reconstructed bytes match the
+/// immutable digest saved when this signing setup was created. Never patch an
+/// installed game hook, infer a different baseline, or bypass swap recovery.
+pub fn repair_staged_hook_for_offline_play(stage: &Path, swap: &Path) -> Result<bool, String> {
+    games_closed()?;
+    let stage = directory(stage)?;
+    let swap = directory(swap)?;
+    let phase = guarded_restore_state(&stage, &swap)?;
+    if phase != "restored" && phase != "prepared" {
+        return Err("A previous offline game swap must be restored before repairing the staged DLL".into());
+    }
+    let plan = json(&stage.join("rekey_plan.json"))?;
+    let game = directory(Path::new(
+        plan["source_root"]
+            .as_str()
+            .ok_or("Signing setup does not record its original game root")?,
+    ))?;
+    if game.starts_with(&stage)
+        || stage.starts_with(&game)
+        || game.starts_with(&swap)
+        || swap.starts_with(&game)
+    {
+        return Err("Signing setup and original game directories must be separate".into());
+    }
+    let status = json(&stage.join("stage_status.json"))?;
+    if status["status"].as_str() != Some("fully-staged-offline") {
+        return Err("Signing setup is not fully staged for offline play".into());
+    }
+    let expected = status["shim_sha256"]
+        .as_str()
+        .ok_or("Signing setup does not record the staged hook digest")?;
+    let original = within_file(&game, "bin64_SteamRetail/inject.dll")?;
+    no_orphaned_backup(&original)?;
+    let custom = within_file(&stage, "inject-custom.dll")?;
+    let original_key = plain(
+        &stage
+            .parent()
+            .ok_or("Signing stage has no signing parent")?
+            .join("RSAKeyData.bin"),
+        140,
+    )?;
+    let custom_key = plain(&stage.join("mykeys/public_key.bin"), 140)?;
+    let repaired = evolve_core::client_hook::repair_client_hook_from_verified_baseline(
+        &original,
+        &custom,
+        &original_key,
+        &custom_key,
+        expected,
+    )
+    .map_err(|e| format!(
+        "Staged inject-custom.dll could not be safely recovered: {e}.          If the installed inject.dll has changed, restore originals and refresh the signing setup.          The manager did not change installed game files."
+    ))?;
+    // Also reject a digest-correct stage whose installed original changed.
+    let old_bytes = fs::read(&original_key).map_err(|e| e.to_string())?;
+    let new_bytes = fs::read(&custom_key).map_err(|e| e.to_string())?;
+    verify_hook(&original, &custom, &old_bytes, &new_bytes).map_err(|e| {
+        format!(
+            "Installed bin64_SteamRetail/inject.dll no longer matches the verified signing-stage hook: {e}. Restore originals or refresh signing setup; do not change the game's PAKs."
+        )
+    })?;
+    Ok(repaired)
 }
 
 /// Refresh only temporary .customkey-ready copies when enabled mods change.
