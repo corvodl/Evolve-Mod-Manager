@@ -20,18 +20,20 @@ def _validate_stranded_clean_state(state):
         raise RuntimeError('Recovery journal and signed game baseline differ')
     signed = [entry for entry in plan['entries']
               if entry.get('kind') == 'signed-encrypted']
-    expected = [str(entry['path']).replace('\\', '/').casefold() for entry in signed]
-    expected.append('bin64_steamretail/inject.dll')
-    if len(expected) != len(state['files']) or len(set(expected)) != len(expected):
+    expected = [str(entry['path']).replace('\\', '/') for entry in signed]
+    expected.append('bin64_SteamRetail/inject.dll')
+    if (len(expected) != len(state['files'])
+            or len(set(name.casefold() for name in expected)) != len(expected)):
         raise RuntimeError('Recovery journal does not match signed PAK inventory')
     old_key = (stage.parent / 'RSAKeyData.bin').read_bytes()
     if len(old_key) != 140:
         raise RuntimeError('Original injector verification key missing')
-    for item, name in zip(state['files'], expected):
+    for item, expected_name in zip(state['files'], expected):
+        name = expected_name.casefold()
         actual = str(item['name']).replace('\\', '/').casefold()
         if actual != name:
             raise RuntimeError('Stranded backup entry differs from signed inventory')
-        relative = Path(*name.split('/'))
+        relative = Path(*expected_name.split('/'))
         if relative.is_absolute() or '..' in relative.parts or ':' in name:
             raise RuntimeError('Unsafe original member path')
         target = Path(item['target'])
@@ -57,7 +59,7 @@ def _validate_stranded_clean_state(state):
             if len(original) != 4096 or original[0x870:0x870 + 140] != old_key:
                 raise RuntimeError('Stranded injector backup does not match original RSA key')
         else:
-            entry = signed[expected.index(name)]
+            entry = signed[expected.index(expected_name)]
             recorded = entry.get('sha256', '')
             if (len(recorded) != 64
                     or any(c not in '0123456789abcdef' for c in recorded.lower())
