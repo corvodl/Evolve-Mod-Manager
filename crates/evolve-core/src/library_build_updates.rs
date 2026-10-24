@@ -20,7 +20,7 @@ use std::{
 const MAX_LEDGER_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_HISTORY_FILES: usize = 512;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildMember {
     pub sha256: String,
     pub archive_id: String,
