@@ -257,6 +257,10 @@ pub fn convert_glb_to_fbx_with_layout(
         include_str!("blender_uv0.py"),
     )?;
     fs::write(
+        stage.path().join("blender_mesh_shading.py"),
+        include_str!("blender_mesh_shading.py"),
+    )?;
+    fs::write(
         stage.path().join("blender_fbx_safety.py"),
         include_str!("blender_fbx_safety.py"),
     )?;
