@@ -109,16 +109,12 @@ pub fn update(state: &mut State, action: Action) -> Task<Message> {
                 models,
                 ..Editor::default()
             };
-            let mut skipped = 0;
             for project in state.modding_projects.as_deref().unwrap_or(&[]) {
-                match modding_projects::guided_members(project, models) {
-                    Ok(paths) => {
-                        let project = Arc::new(project.clone());
-                        editor
-                            .rows
-                            .extend(paths.into_iter().map(|path| (project.clone(), path)));
-                    }
-                    Err(_) => skipped += 1,
+                if let Ok(paths) = modding_projects::guided_members(project, models) {
+                    let project = Arc::new(project.clone());
+                    editor
+                        .rows
+                        .extend(paths.into_iter().map(|path| (project.clone(), path)));
                 }
             }
             refresh_imports(state);
