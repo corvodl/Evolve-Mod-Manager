@@ -289,7 +289,8 @@ def main():
         embed_textures=embed_textures)
     check(destination.is_file() and destination.stat().st_size >= 256,
           "FBX export failed")
-    optimized = optimize_binary_fbx(destination, embed_textures=embed_textures)
+    optimized = optimize_binary_fbx(destination, embed_textures=embed_textures,
+                                    require_tangent_space=True)
     if not embed_textures:
         check(optimized["embedded_normal_maps"] == len(source_normal_maps),
               "FBX lost an authored embedded normal map")
