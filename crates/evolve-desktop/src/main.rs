@@ -8596,11 +8596,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::OfflineLauncherRestored(count, reusable)) => {
                     state.status = format!(
-                        "Private offline recovery PASS: originals verified for {count} signed PAKs + the original client hook. No stranded custom-key backups. {}",
+                        "Original game-file recovery finished. {}",
                         if reusable {
-                            "Verified custom files were recycled to prepared slots for the next offline launch."
+                            "Previously prepared mod files can be reused for the next offline game."
+                        } else if count == 0 {
+                            "Orphaned originals were handled using the private manager recovery method; preserved modded files and the recovery log remain available."
                         } else {
-                            "Custom files need fresh preparation before the next offline launch."
+                            "The next offline launch may need to prepare fresh mod files."
                         }
                     );
                     state.page = Some(Page::Files);
