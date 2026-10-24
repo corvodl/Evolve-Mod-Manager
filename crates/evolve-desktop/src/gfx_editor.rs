@@ -700,7 +700,7 @@ pub fn run(
             let (before, _) = read_gfx(&session.editable)?;
             let updated = gfx_legacy_layout::legacy_main_menu_rows(&before)?;
             stage(&mut session, &updated)?;
-            "Staged Legacy 70px menu row preset on Stage 2 original GFX: 40/65px default/featured rows to 70px. Original navigation, callbacks, other tags, and textures are unchanged. Undo or Apply to Mod Project; game verification required.".to_owned()
+            "Staged Legacy menu layout on the original Stage 2 GFX: 40/65px default/featured rows to 70px and main-menu text inset 70 to 85px. Navigation, callbacks, other tags, and textures are unchanged. Undo or Apply to Mod Project; game verification required.".to_owned()
         }
         Action::StageLayout(edit) => {
             let (before, _) = read_gfx(&session.editable)?;
