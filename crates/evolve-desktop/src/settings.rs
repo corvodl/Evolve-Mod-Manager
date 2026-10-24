@@ -426,7 +426,10 @@ mod tests {
         for input in ["", "   ", "GameSets", "Data/GameSets", "data\\gamesets"] {
             assert_eq!(setup_storage_directory(&settings, input).unwrap(), expected);
         }
-        assert!(!expected.exists(), "Resolving a default must not touch disk");
+        assert!(
+            !expected.exists(),
+            "Resolving a default must not touch disk"
+        );
         let chosen = home.path().join("OtherLocation");
         assert_eq!(
             setup_storage_directory(&settings, chosen.to_str().unwrap()).unwrap(),
