@@ -113,7 +113,9 @@ fn refresh_known_bundled_auto_launch(swap: &Path) -> Result<bool, String> {
         .map_err(|e| e.to_string())?;
     temp.as_file().sync_all().map_err(|e| e.to_string())?;
     if fs::read(&path).map_err(|e| e.to_string())? != existing {
-        return Err("Launcher helper changed while preparing the update; refusing replacement".into());
+        return Err(
+            "Launcher helper changed while preparing the update; refusing replacement".into(),
+        );
     }
     temp.persist(&path)
         .map_err(|e| format!("Cannot update verified legacy launcher helper: {}", e.error))?;
