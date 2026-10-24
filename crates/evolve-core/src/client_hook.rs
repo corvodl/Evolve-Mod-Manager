@@ -25,7 +25,9 @@ pub enum ClientHookError {
     OriginalMismatch,
     #[error("Custom hook differs outside the permitted embedded RSA public-key bytes")]
     OtherChanges,
-    #[error("Rebuilt hook does not match the signing setup's verified SHA-256; the installed hook or signing baseline changed")]
+    #[error(
+        "Rebuilt hook does not match the signing setup's verified SHA-256; the installed hook or signing baseline changed"
+    )]
     BaselineMismatch,
     #[error("A hook output already exists or would overwrite a source")]
     UnsafeOutput,
@@ -404,14 +406,16 @@ mod tests {
         let mut corrupted = fs::read(&custom).unwrap();
         corrupted[4] ^= 1;
         fs::write(&custom, &corrupted).unwrap();
-        assert!(repair_client_hook_from_verified_baseline(
-            &original, &custom, &old, &new, &expected
-        ).unwrap());
+        assert!(
+            repair_client_hook_from_verified_baseline(&original, &custom, &old, &new, &expected)
+                .unwrap()
+        );
         assert_eq!(fingerprint(&fs::read(&custom).unwrap()), expected);
         assert_eq!(fs::read(&original).unwrap(), source_before);
-        assert!(!repair_client_hook_from_verified_baseline(
-            &original, &custom, &old, &new, &expected
-        ).unwrap());
+        assert!(
+            !repair_client_hook_from_verified_baseline(&original, &custom, &old, &new, &expected)
+                .unwrap()
+        );
         assert!(inspect_client_hook_pair(&original, &custom, &old, &new).is_ok());
     }
 
@@ -436,9 +440,10 @@ mod tests {
         let mut valid = corrupted;
         valid[4] ^= 1;
         fs::write(&custom, valid).unwrap();
-        assert!(!repair_client_hook_from_verified_baseline(
-            &original, &custom, &old, &new, &expected
-        ).unwrap());
+        assert!(
+            !repair_client_hook_from_verified_baseline(&original, &custom, &old, &new, &expected)
+                .unwrap()
+        );
         assert!(inspect_client_hook_pair(&original, &custom, &old, &new).is_err());
     }
 
