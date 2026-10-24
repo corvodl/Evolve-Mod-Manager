@@ -326,6 +326,56 @@ pub fn create_project(
 mod tests {
     use super::*;
     #[test]
+    fn edited_main_menu_snapshot_requires_no_game_source_or_stage() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = dir.path().join("AssetLibrary");
+        let imported = library.join("UI_Assets.pak__0123456789abcdefabcd");
+        let original = imported.join("files/Libs/UI/main_menu.gfx");
+        fs::create_dir_all(original.parent().unwrap()).unwrap();
+        fs::write(&original, b"original menu").unwrap();
+        let manifest = json!({
+            "version": 1,
+            "name": "UI_Assets.pak",
+            "source": dir.path().join("missing-game/Game/UI_Assets.pak"),
+            "source_sha256": "a".repeat(64),
+            "entries": [{
+                "path": "Libs/UI/main_menu.gfx", "bytes": 13,
+                "sha256": sha(&original).unwrap()
+            }]
+        });
+        fs::write(imported.join("asset-library.json"), manifest.to_string()).unwrap();
+        let archive = ImportedPak {
+            id: "0123456789abcdefabcd".into(),
+            name: "UI_Assets.pak".into(),
+            source: dir.path().join("missing-game/Game/UI_Assets.pak").to_string_lossy().into_owned(),
+            directory: imported.to_string_lossy().into_owned(),
+            group: "Other".into(),
+            description: String::new(),
+            entries: 1,
+            extracted_bytes: 13,
+            warnings: 0,
+            builds: vec![],
+        };
+        let projects = dir.path().join("Projects");
+        let stage = dir.path().join("nonexistent-stage");
+        let (workspace, count, refreshed, mapped) =
+            create_project(&archive, &projects, &stage).unwrap();
+        assert_eq!(count, 1);
+        assert!(refreshed.is_none());
+        assert!(!mapped);
+        let member = workspace.join("files/Libs/UI/main_menu.gfx");
+        assert_eq!(fs::read(&member).unwrap(), b"original menu");
+        fs::write(&member, b"Test B new main menu").unwrap();
+        assert_eq!(fs::read(&original).unwrap(), b"original menu");
+        let found = modding_projects::discover_projects(&projects, &stage).unwrap();
+        assert!(found.iter().any(|p| {
+            p.target == "UI_Assets.pak"
+                && p.modified == ["Libs/UI/main_menu.gfx"]
+                && p.status == "Modified"
+        }));
+    }
+
+    #[test]
     fn legacy_import_without_source_sha_reuses_original_without_reimport() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("models.pak");
