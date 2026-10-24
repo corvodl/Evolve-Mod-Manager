@@ -104,6 +104,10 @@ def preserve_or_reconstruct_normals(meshes, original_normals):
         face_count = len(mesh.polygons)
         uv_before = [tuple(float(x) for x in corner.uv)
                      for corner in mesh.uv_layers[0].data]
+        original_corner_normals = (
+            [tuple(float(c) for c in loop.normal) for loop in mesh.loops]
+            if original_normals else None
+        )
         if original_normals:
             # The glTF importer already provided the source vertex/corner
             # normals. Never average or reorient those vectors.
@@ -116,6 +120,14 @@ def preserve_or_reconstruct_normals(meshes, original_normals):
             for polygon in mesh.polygons:
                 polygon.use_smooth = True
         mesh.update()
+        if original_corner_normals is not None:
+            after = [tuple(float(c) for c in loop.normal) for loop in mesh.loops]
+            if len(after) != len(original_corner_normals) or any(
+                any(abs(old - new) > 0.001 for old, new in zip(before, current))
+                for before, current in zip(original_corner_normals, after)
+            ):
+                raise RuntimeError(
+                    "Blender changed an imported CryEngine corner normal; refusing flat fallback")
         if (len(mesh.vertices) != vertex_count or
                 len(mesh.polygons) != face_count or
                 uv_before != [tuple(float(x) for x in corner.uv)
