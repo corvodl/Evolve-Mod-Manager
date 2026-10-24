@@ -324,6 +324,20 @@ pub fn create_project(
     ))
 }
 
+/// Editing from the Asset Library should never re-hash the installed game
+/// PAK, re-sign it, or extract a second staging archive. The imported files
+/// were already authenticated at import time; Build/Prepare Offline Test
+/// performs fresh signing and target validation when deployment is requested.
+pub fn create_project_for_editing(
+    pak: &ImportedPak,
+    projects: &Path,
+    progress: &modding_projects::ProjectCopyProgress,
+) -> Result<(PathBuf, usize, Option<String>, bool), String> {
+    let (workspace, count) =
+        modding_projects::edit_imported_snapshot_with_progress(pak, projects, Some(progress))?;
+    Ok((workspace, count, None, false))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
