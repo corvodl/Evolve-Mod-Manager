@@ -52,6 +52,26 @@ fn save_owned_profile_id(stage: &std::path::Path, id: &str) -> Result<(), String
     Ok(())
 }
 
+/// If an old backup or swap record is unresolved, offer the user access
+/// to the ordinary client's Repair/Verify UI, but DO NOT install enabled mods.
+/// Never silently overwrite original game backups to satisfy a Play click.
+fn launch_for_repair(
+    game: &std::path::Path,
+    client: &std::path::Path,
+    swap: &std::path::Path,
+    issue: &str,
+) -> Result<(usize, u32, usize, Option<String>), String> {
+    let (pid, warnings) = play_setup::launch_clean(game, client, Some(swap))?;
+    let mut message = format!(
+        "Enabled mods were not installed: {issue}. The regular client opened instead; use its Repair or Verify option if needed."
+    );
+    if !warnings.is_empty() {
+        message.push(' ');
+        message.push_str(&warnings.join(" "));
+    }
+    Ok((0, pid, 0, Some(message)))
+}
+
 pub fn launch_enabled(
     mods: Vec<ProjectRow>,
     projects_root: PathBuf,
@@ -60,19 +80,25 @@ pub fn launch_enabled(
     game: PathBuf,
     client: PathBuf,
     progress: Arc<AtomicUsize>,
-) -> Result<(usize, u32, usize), String> {
+) -> Result<(usize, u32, usize, Option<String>), String> {
     if mods.is_empty() {
         return Err("Enable at least one mod before pressing Play with Mods.".into());
     }
     launcher_bridge::games_closed()?;
-    play_setup::configure_existing_helper(&game, &client, &stage, &swap)?;
-    // Check only the lightweight original-backup state here. Full signed
-    // archive verification runs once after building/staging, not twice before
-    // and again during the launcher handoff.
-    play_setup::audit_backup_files(&game).map_err(|_| {
-        "Original game backups need restoring before play. Use Restore original game files."
-            .to_owned()
-    })?;
+    // Physical original backups are a warning for client access, but an
+    // absolute stop for writing another modded swap over those originals.
+    if let Err(issue) = play_setup::audit_backup_files(&game) {
+        return launch_for_repair(&game, &client, &swap, &issue);
+    }
+    if let Err(issue) = play_setup::configure_existing_helper(&game, &client, &stage, &swap) {
+        let recovery_problem = ["journal", "backup", "restore", "recovery"]
+            .iter()
+            .any(|word| issue.to_ascii_lowercase().contains(word));
+        if recovery_problem {
+            return launch_for_repair(&game, &client, &swap, &issue);
+        }
+        return Err(issue);
+    }
     progress.store(5, Ordering::Relaxed);
 
     let mut destinations = HashSet::new();
@@ -91,13 +117,35 @@ pub fn launch_enabled(
 
     // A previous enabled-mod set can be rolled back automatically; an
     // unrelated manually applied profile is never silently discarded.
-    if let Some(active) = evolve_core::batch_stage_status(&stage).map_err(|e| e.to_string())? {
+    let active = match evolve_core::batch_stage_status(&stage) {
+        Ok(active) => active,
+        Err(issue) => {
+            return launch_for_repair(
+                &game,
+                &client,
+                &swap,
+                &format!("Previous mod setup needs recovery: {issue}"),
+            );
+        }
+    };
+    if let Some(active) = active {
         let ours = owned_profile_id(&stage)?.is_some_and(|id| id == active.profile_id);
         if !ours {
-            return Err("A manually staged profile is active. Restore that profile before playing with enabled mods.".into());
+            return launch_for_repair(
+                &game,
+                &client,
+                &swap,
+                "A different mod profile is still active",
+            );
         }
-        evolve_core::restore_profile_stage(&stage)
-            .map_err(|e| format!("Could not restore the previous mod set: {e}"))?;
+        if let Err(issue) = evolve_core::restore_profile_stage(&stage) {
+            return launch_for_repair(
+                &game,
+                &client,
+                &swap,
+                &format!("Previous mod profile could not be restored: {issue}"),
+            );
+        }
     }
 
     let mut built = Vec::with_capacity(mods.len());
@@ -165,12 +213,17 @@ pub fn launch_enabled(
     // Existing prepared files are copies of the previous signed set. Refresh
     // only those known temporary copies (never .customkey-original).
     progress.store(85, Ordering::Relaxed);
-    launcher_bridge::refresh_prepared_offline_cache(&stage, &swap)?;
-    let ready = launcher_bridge::inspect_existing_launcher(&stage, &swap)?;
+    if let Err(issue) = launcher_bridge::refresh_prepared_offline_cache(&stage, &swap) {
+        return launch_for_repair(&game, &client, &swap, &issue);
+    }
+    let ready = match launcher_bridge::inspect_existing_launcher(&stage, &swap) {
+        Ok(ready) => ready,
+        Err(issue) => return launch_for_repair(&game, &client, &swap, &issue),
+    };
     progress.store(92, Ordering::Relaxed);
     let id = launcher_bridge::launch_existing_offline_client(&ready)?;
     progress.store(100, Ordering::Relaxed);
-    Ok((mods.len(), id, ready.compatibility_warnings))
+    Ok((mods.len(), id, ready.compatibility_warnings, None))
 }
 
 #[cfg(test)]

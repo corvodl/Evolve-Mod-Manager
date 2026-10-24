@@ -21,7 +21,11 @@ use std::{
 const MAX_ENTRIES: usize = 512;
 const MAX_TREE_ENTRIES: usize = 120_000;
 const MIN_FREE_RESERVE: u64 = 1024 * 1024 * 1024;
-const HELPERS: [(&str, &str); 4] = [
+const HELPERS: [(&str, &str); 5] = [
+    (
+        "orphaned_swap_recovery.py",
+        include_str!("../launcher_support/orphaned_swap_recovery.py"),
+    ),
     (
         "controlled_swap.py",
         include_str!("../launcher_support/controlled_swap.py"),

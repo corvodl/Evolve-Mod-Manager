@@ -4,7 +4,7 @@
 use super::{Message, State};
 use crate::design;
 use evolve_core::mod_safety::{ModKind, classify};
-use iced::widget::{column, container, row, scrollable, space, text};
+use iced::widget::{column, container, row, scrollable, space, svg, text};
 use iced::{Background, Border, Element, Fill, Length};
 
 pub(super) const PAGE: usize = 90;
@@ -175,6 +175,29 @@ fn project_header(advanced: bool) -> Element<'static, Message> {
     header.spacing(8).into()
 }
 
+/// Lightweight, vector-sharp sliding switch. No images or theme-specific
+/// assets are bundled; thumb and red track interpolate on the Iced Tick.
+fn mod_toggle_switch(position: f32) -> Element<'static, Message> {
+    let position = position.clamp(0.0, 1.0);
+    let blend = |off: u8, on: u8| -> u8 {
+        (f32::from(off) + (f32::from(on) - f32::from(off)) * position).round() as u8
+    };
+    let red = blend(58, 217);
+    let green = blend(62, 49);
+    let blue = blend(72, 69);
+    let knob_x = 15.0 + 26.0 * position;
+    let graphic = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="56" height="32" viewBox="0 0 56 32">
+<rect x="2" y="3" width="52" height="26" rx="13" fill="#{red:02x}{green:02x}{blue:02x}" />
+<circle cx="{knob_x:.2}" cy="16" r="10" fill="#f4f5f7" />
+</svg>"##
+    );
+    svg(svg::Handle::from_memory(graphic.into_bytes()))
+        .width(Length::Fixed(56.0))
+        .height(Length::Fixed(32.0))
+        .into()
+}
+
 fn projects(state: &State) -> Element<'_, Message> {
     let mut rows = column![project_header(state.modding_advanced)].spacing(4);
     let projects = state.modding_projects.as_deref().unwrap_or(&[]);
@@ -220,17 +243,27 @@ fn projects(state: &State) -> Element<'_, Message> {
                 );
         }
         let cells = cells.spacing(8).align_y(iced::Center);
+        let position = state
+            .mod_toggle_animations
+            .iter()
+            .find(|anim| anim.workspace == record.workspace)
+            .map(super::ModToggleAnimation::position)
+            .unwrap_or(if record.enabled { 1.0 } else { 0.0 });
         rows = rows.push(
             container(
                 row![
-                    design::button(if record.enabled { "On" } else { "Off" })
-                        .style(if record.enabled {
-                            design::primary
-                        } else {
-                            design::secondary
-                        })
-                        .on_press(Message::ModdingToggleEnabled(index))
-                        .width(Length::FillPortion(2)),
+                    design::button(
+                        row![
+                            mod_toggle_switch(position),
+                            text(if record.enabled { "On" } else { "Off" }).size(11),
+                        ]
+                        .spacing(3)
+                        .align_y(iced::Center),
+                    )
+                    .style(design::text_button)
+                    .padding([0, 3])
+                    .on_press(Message::ModdingToggleEnabled(index))
+                    .width(Length::FillPortion(2)),
                     design::button(cells)
                         .width(Length::FillPortion(20))
                         .padding([

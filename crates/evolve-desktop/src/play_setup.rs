@@ -203,27 +203,46 @@ pub(super) fn audit_backup_files(game: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Original client launch only: no file swaps, instrumentation or custom DLLs.
-pub fn launch_clean(game: &Path, client: &Path, swap: Option<&Path>) -> Result<u32, String> {
-    crate::launcher_bridge::games_closed()?;
-    audit_backup_files(game)?;
+/// Report recovery concerns without preventing the normal client from
+/// opening its repair/verification UI. This function NEVER writes game files.
+/// The verified modded swap path still refuses to overwrite original backups.
+pub(super) fn recovery_warnings(game: &Path, swap: Option<&Path>) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if let Err(issue) = audit_backup_files(game) {
+        warnings.push(format!("Original-file recovery may be needed: {issue}"));
+    }
     if let Some(swap) = swap {
         let journal = swap.join("controlled_swap_state.json");
         if journal.exists() {
-            let raw = fs::read(&journal).map_err(|e| e.to_string())?;
-            if raw.len() > 4 * 1024 * 1024 {
-                return Err("Swap journal too large to verify".into());
-            }
-            let state: Value = serde_json::from_slice(&raw)
-                .map_err(|e| format!("Cannot inspect swap journal: {e}"))?;
-            if !matches!(state["phase"].as_str(), Some("prepared" | "restored")) {
-                return Err(
-                    "Modded swap is active or interrupted. Restore original PAKs before normal play."
-                        .into(),
-                );
+            let status = (|| -> Result<(), String> {
+                let raw = fs::read(&journal).map_err(|e| e.to_string())?;
+                if raw.len() > 4 * 1024 * 1024 {
+                    return Err("Recovery record is too large".into());
+                }
+                let state: Value = serde_json::from_slice(&raw)
+                    .map_err(|e| format!("Recovery record cannot be read: {e}"))?;
+                if !matches!(state["phase"].as_str(), Some("prepared" | "restored")) {
+                    return Err("Previous modded game session may be unfinished".into());
+                }
+                Ok(())
+            })();
+            if let Err(issue) = status {
+                warnings.push(format!("Recovery warning: {issue}"));
             }
         }
     }
+    warnings
+}
+
+/// Launch only the regular client. Recovery warnings must never block access
+/// to its built-in repair option. No PAK/DLL swapping occurs in this path.
+pub fn launch_clean(
+    game: &Path,
+    client: &Path,
+    swap: Option<&Path>,
+) -> Result<(u32, Vec<String>), String> {
+    crate::launcher_bridge::games_closed()?;
+    let warnings = recovery_warnings(game, swap);
     let mut cmd = Command::new(client);
     cmd.current_dir(
         client
@@ -239,7 +258,7 @@ pub fn launch_clean(game: &Path, client: &Path, swap: Option<&Path>) -> Result<u
     let process = cmd
         .spawn()
         .map_err(|e| format!("Could not start normal Modded Evolve client: {e}"))?;
-    Ok(process.id())
+    Ok((process.id(), warnings))
 }
 
 #[cfg(test)]
@@ -323,6 +342,22 @@ mod tests {
             .contains("active or interrupted")
         );
         assert!(!swap.join("launcher_config.json").exists());
+    }
+
+    #[test]
+    fn recovery_warnings_do_not_require_a_valid_swap_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("game");
+        let swap = dir.path().join("swap");
+        fs::create_dir_all(&game).unwrap();
+        fs::create_dir_all(&swap).unwrap();
+        fs::write(game.join("ui.pak.customkey-original"), b"original").unwrap();
+        fs::write(swap.join("controlled_swap_state.json"), b"not JSON").unwrap();
+        let warnings = recovery_warnings(&game, Some(&swap));
+        assert_eq!(warnings.len(), 2);
+        assert!(warnings[0].contains("Original-file recovery"));
+        assert!(warnings[1].contains("Recovery warning"));
+        assert!(game.join("ui.pak.customkey-original").exists());
     }
 
     #[test]

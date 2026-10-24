@@ -425,6 +425,7 @@ struct State {
     modding_selected: Option<usize>,
     modding_name_input: String,
     mod_launch_progress: Option<Arc<AtomicUsize>>,
+    mod_toggle_animations: Vec<ModToggleAnimation>,
     /// Indeterminate footer activity only: never presented as a real percent.
     footer_pulse: u16,
     modding_filter: String,
@@ -438,6 +439,26 @@ struct State {
     modding_profiles: bool,
     modding_open_editor_when_scanned: bool,
     modding_pending_focus: Option<PathBuf>,
+}
+
+/// Visual-only state: the enabled preference is committed before the
+/// thumb animation begins. Never animate a failed preference write.
+const MOD_TOGGLE_FRAMES: u8 = 7;
+
+#[derive(Debug, Clone)]
+struct ModToggleAnimation {
+    workspace: PathBuf,
+    from: f32,
+    to: f32,
+    frame: u8,
+}
+
+impl ModToggleAnimation {
+    fn position(&self) -> f32 {
+        let t = (f32::from(self.frame) / f32::from(MOD_TOGGLE_FRAMES)).clamp(0.0, 1.0);
+        let eased = t * t * (3.0 - 2.0 * t);
+        self.from + (self.to - self.from) * eased
+    }
 }
 
 /// Docked tools all share the same resizable sidebar. Files is permanent;
@@ -705,11 +726,12 @@ enum Completed {
     SignedHookPreflight(PakHookPairReport),
     OfflineLauncherReady(LaunchReady),
     OfflineLauncherStarted(usize, u32, usize),
-    EnabledModsLaunched(usize, u32, usize),
-    CleanClientStarted(u32),
+    EnabledModsLaunched(usize, u32, usize, Option<String>),
+    CleanClientStarted(u32, Vec<String>),
     InitialSetupCreated(initial_setup::InitialSetup),
     GamePakBaselineRefreshed(initial_setup::InitialSetup),
     OfflineLauncherRestored(usize, bool),
+    OfflineLauncherRecoveryWarning(String),
     ExtractedSigned(usize, PathBuf),
     RebuiltSigned(String, PathBuf),
     BuiltRawProject(String, PathBuf, ProjectRow),
@@ -1442,7 +1464,9 @@ impl Operation {
                     .filter(|project| project.enabled)
                     .collect();
                 mod_play::launch_enabled(mods, projects, stage, swap, game, client, progress).map(
-                    |(count, id, warnings)| Completed::EnabledModsLaunched(count, id, warnings),
+                    |(count, id, warnings, recovery)| {
+                        Completed::EnabledModsLaunched(count, id, warnings, recovery)
+                    },
                 )
             }
             Self::StartExistingOfflineLauncher(stage, swap, game, client) => {
@@ -1457,16 +1481,20 @@ impl Operation {
                 Ok(Completed::OfflineLauncherStarted(count, id, warnings))
             }
             Self::LaunchCleanClient(game, client, swap) => {
-                let id = play_setup::launch_clean(&game, &client, swap.as_deref())?;
-                Ok(Completed::CleanClientStarted(id))
+                let (id, warnings) = play_setup::launch_clean(&game, &client, swap.as_deref())?;
+                Ok(Completed::CleanClientStarted(id, warnings))
             }
             Self::CreateInitialSetup(game, client, storage, snapshots) => {
                 initial_setup::create(&game, &client, &storage, snapshots)
                     .map(Completed::InitialSetupCreated)
             }
             Self::RestoreExistingOfflineLauncher(stage, swap) => {
-                let (count, reusable) = restore_existing_offline_client(&stage, &swap)?;
-                Ok(Completed::OfflineLauncherRestored(count, reusable))
+                match restore_existing_offline_client(&stage, &swap) {
+                    Ok((count, reusable)) => {
+                        Ok(Completed::OfflineLauncherRestored(count, reusable))
+                    }
+                    Err(error) => Ok(Completed::OfflineLauncherRecoveryWarning(error)),
+                }
             }
             Self::StageInit(root) => {
                 initialize_stage(&root).map_err(|e| e.to_string())?;
@@ -2714,6 +2742,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Some(enable),
             ) {
                 Ok(()) => {
+                    let from = state
+                        .mod_toggle_animations
+                        .iter()
+                        .find(|anim| anim.workspace == project.workspace)
+                        .map(ModToggleAnimation::position)
+                        .unwrap_or(if project.enabled { 1.0 } else { 0.0 });
+                    state
+                        .mod_toggle_animations
+                        .retain(|anim| anim.workspace != project.workspace);
+                    state.mod_toggle_animations.push(ModToggleAnimation {
+                        workspace: project.workspace.clone(),
+                        from,
+                        to: if enable { 1.0 } else { 0.0 },
+                        frame: 0,
+                    });
                     if let Some(row) = state
                         .modding_projects
                         .as_mut()
@@ -6510,8 +6553,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 );
             }
             state.status =
-                "Verifying original game files before starting the normal client without mods…"
-                    .into();
+                "Opening the regular client. Recovery issues will be shown as warnings…".into();
             return launch(
                 state,
                 Operation::LaunchCleanClient(
@@ -6947,6 +6989,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::Tick => {
+            for animation in &mut state.mod_toggle_animations {
+                animation.frame = animation.frame.saturating_add(1);
+            }
+            state
+                .mod_toggle_animations
+                .retain(|animation| animation.frame < MOD_TOGGLE_FRAMES);
             if state.cdf_surfaces.as_ref().is_some_and(|surfaces| {
                 surfaces.iter().any(|surface| surface.emissive_uv.is_some())
             }) {
@@ -8576,16 +8624,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::Settings);
                     state.settings_tab = settings_page::Tab::Storage;
                 }
-                Ok(Completed::CleanClientStarted(id)) => {
-                    state.status = format!(
-                        "Normal Modded Evolve client started (PID {id}); no staged PAKs or custom injector were installed. Press Play in the client to start the original game."
-                    );
+                Ok(Completed::CleanClientStarted(id, warnings)) => {
+                    state.status = if warnings.is_empty() {
+                        format!(
+                            "Regular client opened (PID {id}); the manager did not modify game files."
+                        )
+                    } else {
+                        format!(
+                            "Regular client opened (PID {id}). Recovery warning (not a launch blocker): {} You can use the client Repair or Verify option.",
+                            warnings.join(" ")
+                        )
+                    };
                     state.page = Some(Page::Home);
                 }
-                Ok(Completed::EnabledModsLaunched(mod_count, id, _warnings)) => {
-                    state.status = format!(
-                        "{mod_count} enabled mod(s) ready. Client helper started (PID {id}). Press Play in the client to test offline."
-                    );
+                Ok(Completed::EnabledModsLaunched(mod_count, id, _warnings, recovery)) => {
+                    state.status = if let Some(warning) = recovery {
+                        format!("Regular client opened (PID {id}). {warning}")
+                    } else {
+                        format!(
+                            "{mod_count} enabled mod(s) ready. Offline client helper started (PID {id}). Press Play in the client."
+                        )
+                    };
                     state.page = Some(Page::Home);
                 }
                 Ok(Completed::OfflineLauncherStarted(count, id, warnings)) => {
@@ -8594,13 +8653,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                     state.page = Some(Page::Home);
                 }
+                Ok(Completed::OfflineLauncherRecoveryWarning(issue)) => {
+                    state.status = format!(
+                        "Recovery warning: {issue}. The regular client can still be opened and its Repair or Verify option used. The manager did not force another modded swap."
+                    );
+                    state.page = Some(Page::Files);
+                }
                 Ok(Completed::OfflineLauncherRestored(count, reusable)) => {
                     state.status = format!(
-                        "Private offline recovery PASS: originals verified for {count} signed PAKs + the original client hook. No stranded custom-key backups. {}",
+                        "Original game-file recovery finished. {}",
                         if reusable {
-                            "Verified custom files were recycled to prepared slots for the next offline launch."
+                            "Previously prepared mod files can be reused for the next offline game."
+                        } else if count == 0 {
+                            "Orphaned originals were handled using the private manager recovery method; preserved modded files and the recovery log remain available."
                         } else {
-                            "Custom files need fresh preparation before the next offline launch."
+                            "The next offline launch may need to prepare fresh mod files."
                         }
                     );
                     state.page = Some(Page::Files);
@@ -9905,7 +9972,10 @@ impl Desktop {
                 .iter()
                 .any(|surface| surface.visible && surface.emissive_uv.is_some())
         }) && matches!(self.state.page.as_ref(), Some(Page::Models));
-        let playback = if self.state.playing || animate_decal {
+        let playback = if self.state.playing
+            || animate_decal
+            || !self.state.mod_toggle_animations.is_empty()
+        {
             iced::time::every(Duration::from_millis(40)).map(|_| Message::Tick)
         } else {
             Subscription::none()
@@ -9980,6 +10050,25 @@ fn main() -> iced::Result {
 #[cfg(test)]
 mod project_edit_tests {
     use super::*;
+
+    #[test]
+    fn mod_toggle_thumb_eases_without_changing_persisted_enable_state() {
+        let mut animation = ModToggleAnimation {
+            workspace: PathBuf::from("test-mod"),
+            from: 0.0,
+            to: 1.0,
+            frame: 0,
+        };
+        assert_eq!(animation.position(), 0.0);
+        animation.frame = 3;
+        assert!(animation.position() > 0.0 && animation.position() < 1.0);
+        animation.frame = MOD_TOGGLE_FRAMES;
+        assert_eq!(animation.position(), 1.0);
+        animation.from = 1.0;
+        animation.to = 0.0;
+        animation.frame = MOD_TOGGLE_FRAMES;
+        assert_eq!(animation.position(), 0.0);
+    }
 
     #[test]
     fn footer_activity_tracks_workers_without_claiming_a_percentage() {
