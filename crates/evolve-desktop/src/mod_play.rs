@@ -266,9 +266,12 @@ mod tests {
         )
         .unwrap();
 
-        // A different profile ID is NOT a conflict: its verified staged
-        // transaction can be rolled back without deleting the profile.
-        assert!(owned_profile_id(&stage).unwrap().is_none());
+        // A different profile ID is NOT a conflict: the old manual batch
+        // can be rolled back even if an automatic-mod ownership marker
+        // already exists and points at some unrelated/stale profile.
+        let previous_enabled_id = "3".repeat(32);
+        save_owned_profile_id(&stage, &previous_enabled_id).unwrap();
+        assert_ne!(owned_profile_id(&stage).unwrap().as_deref(), Some(manual.id.as_str()));
         assert!(restore_previous_staged_profile(&stage).unwrap());
         assert_eq!(std::fs::read(&target).unwrap(), original);
         assert!(evolve_core::batch_stage_status(&stage).unwrap().is_none());
