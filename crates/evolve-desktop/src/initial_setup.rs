@@ -297,7 +297,7 @@ pub fn create(
                 let file = File::open(&authored).map_err(|e| e.to_string())?;
                 let archive = zip::ZipArchive::new(file)
                     .map_err(|_| format!("PAK has neither a valid original CryPAK signature nor a supported plain ZIP layout: {relative}"))?;
-                if !archive.comment().is_empty() || archive.len() == 0 {
+                if !archive.comment().is_empty() || archive.is_empty() {
                     return Err(format!("Unsupported signed/ZIP PAK trailer: {relative}"));
                 }
                 plain += 1;
