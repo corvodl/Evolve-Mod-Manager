@@ -210,14 +210,14 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 .size(11).style(design::muted),
             changed_paths,
             row![
-                design::button(if plan.changed.is_empty() && plan.removed.is_empty() {
+                design::button(text(if plan.changed.is_empty() && plan.removed.is_empty() {
                     "Register Current Build Snapshot".to_owned()
                 } else {
                     format!(
                         "Apply build update · {} new/changed, {} removed",
                         plan.changed.len(), plan.removed.len()
                     )
-                })
+                }))
                     .style(design::primary)
                     .on_press_maybe(
                         (!state.busy && !state.library_import_scanning)
