@@ -728,39 +728,59 @@ pub fn restore_existing_offline_client(_: &Path, _: &Path) -> Result<(usize, boo
     Err("Offline Evolve launcher recovery requires Windows x64".into())
 }
 
-/// Discard only verified disposable .customkey-ready copies before the
-/// launcher prepares the newly enabled mod set. Original game backups and
-/// recovery files are explicitly excluded by controlled_swap.py.
-#[cfg(windows)]
+/// Refresh only temporary .customkey-ready copies when enabled mods change.
+/// Existing automatic setups keep their old helper scripts, so recovery
+/// cache maintenance belongs here rather than relying on a newly added
+/// Python subcommand. No installed game target or original backup is written.
 pub fn refresh_prepared_offline_cache(stage: &Path, swap: &Path) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
     games_closed()?;
-    let script = helper(swap, "controlled_swap.py")?;
-    let game = original_hook_for_stage(stage)?
-        .parent()
-        .and_then(Path::parent)
-        .ok_or("Game root missing")?
-        .to_path_buf();
-    let result = Command::new("py")
-        .args(["-3.11", "-u"])
-        .arg(script)
-        .arg("refresh-prepared")
-        .arg("--stage-dir")
-        .arg(stage)
-        .arg("--game-root")
-        .arg(game)
-        .current_dir(swap)
-        .creation_flags(0x08000000)
-        .status()
-        .map_err(|e| format!("Cannot refresh prepared mods: {e}"))?;
-    if !result.success() {
-        return Err("Previous prepared mod files need attention. Restore original files before trying again.".into());
+    let swap = directory(swap)?;
+    let stage = directory(stage)?;
+    let journal_path = swap.join("controlled_swap_state.json");
+    let mut journal = json(&journal_path)?;
+    let phase = journal["phase"].as_str().ok_or("Missing swap phase")?;
+    if !matches!(phase, "prepared" | "restored") {
+        return Err("Restore original game files before changing enabled mods.".into());
     }
+    let rows = journal["files"]
+        .as_array()
+        .ok_or("Swap ledger is incomplete")?;
+    if phase == "restored" && rows.is_empty() && journal["count"].as_u64() == Some(0) {
+        return Ok(());
+    }
+    guarded_restore_state(&stage, &swap)?;
+    let mut ready_paths = Vec::new();
+    for item in rows {
+        let backup = Path::new(item["backup"].as_str().ok_or("Missing backup path")?);
+        if fs::symlink_metadata(backup).is_ok() {
+            return Err("An original game backup remains. Restore original game files first.".into());
+        }
+        let ready = Path::new(item["ready"].as_str().ok_or("Missing prepared file path")?);
+        match fs::symlink_metadata(ready) {
+            Ok(meta) => {
+                if !meta.file_type().is_file()
+                    || item["bytes"].as_u64() != Some(meta.len())
+                    || item["sha256"].as_str() != Some(sha(ready)?.as_str())
+                {
+                    return Err("A prepared mod copy changed unexpectedly. Restore original game files first.".into());
+                }
+                ready_paths.push(ready.to_path_buf());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    // All paths, ownership and old digests were verified before touching
+    // disposable files. A crash partway through can be retried idempotently.
+    for ready in ready_paths {
+        fs::remove_file(ready).map_err(|e| e.to_string())?;
+    }
+    journal["phase"] = Value::String("restored".into());
+    let mut file = tempfile::NamedTempFile::new_in(&swap).map_err(|e| e.to_string())?;
+    serde_json::to_writer_pretty(&mut file, &journal).map_err(|e| e.to_string())?;
+    file.as_file().sync_all().map_err(|e| e.to_string())?;
+    file.persist(&journal_path).map_err(|e| e.error.to_string())?;
     Ok(())
-}
-#[cfg(not(windows))]
-pub fn refresh_prepared_offline_cache(_: &Path, _: &Path) -> Result<(), String> {
-    Err("Offline mod launching requires Windows x64".into())
 }
 
 /// Reuse the private launcher's already-tested control flow. It performs
