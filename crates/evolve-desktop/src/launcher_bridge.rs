@@ -342,7 +342,7 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
     let custom_key_bytes = fs::read(&new_key).map_err(|e| e.to_string())?;
     verify_hook(&original, &custom, &original_key_bytes, &custom_key_bytes)
         .map_err(|e| format!(
-            "Installed bin64_SteamRetail/inject.dll and staged inject-custom.dll disagree: {e}. Restore any original-file backups, then refresh signing setup if needed. This is a DLL mismatch, not a Game/materials_min_sky.pak error."
+            "Installed bin64_SteamRetail/inject.dll and staged inject-custom.dll disagree: {e}. Restore any original-file backups, then refresh signing setup if needed. This DLL mismatch does not by itself indicate a damaged PAK."
         ))?;
     // Never fall back to the original helper's developer-specific default
     // launcher path. The existing private setup must identify the user's
