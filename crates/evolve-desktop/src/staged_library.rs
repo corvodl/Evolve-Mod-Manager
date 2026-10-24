@@ -3,7 +3,11 @@
 //! source-root + relative-path + SHA match to rekey_plan.json can reuse a
 //! launchable staged archive.
 use crate::{modding_keys, modding_projects};
-use evolve_core::{ImportedPak, imported_archive_files, inspect_signed_pak, resign_signed_pak};
+use evolve_core::{
+    ImportedPak, imported_archive_files, inspect_signed_pak, imported_library,
+    library_import::import_signed_library_pak_with_keys,
+    signed_pak::resign_signed_pak_with_original_name,
+};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -35,7 +39,7 @@ fn read_json(path: &Path) -> Result<Value, String> {
         .map_err(|e| format!("Invalid metadata at {}: {e}", path.display()))
 }
 
-fn signed_source(pak: &ImportedPak) -> Result<(PathBuf, String), String> {
+fn signed_source(pak: &ImportedPak) -> Result<(PathBuf, String, bool), String> {
     if pak.id.len() != 20 || !pak.id.bytes().all(|c| c.is_ascii_hexdigit()) {
         return Err("Invalid imported archive identity".into());
     }
@@ -73,10 +77,23 @@ fn signed_source(pak: &ImportedPak) -> Result<(PathBuf, String), String> {
     }
     let source = fs::canonicalize(&source).map_err(|e| e.to_string())?;
     let current = sha(&source)?;
-    if expected.is_some_and(|recorded| !current.eq_ignore_ascii_case(recorded)) {
-        return Err("Imported source has changed since import. Refresh the game baseline or import the updated archive before editing.".into());
+    Ok((
+        source,
+        current.clone(),
+        expected.is_some_and(|recorded| !current.eq_ignore_ascii_case(recorded)),
+    ))
+}
+
+/// Only read the signed name authenticated during the original import.
+/// A trusted import may record ASCII-lowercase RSA signing even when the
+/// physical filename has mixed case.
+fn signed_name(pak: &ImportedPak) -> Result<String, String> {
+    let doc = read_json(&Path::new(&pak.directory).join("asset-library.json"))?;
+    let name = doc["signed_name"].as_str().unwrap_or(&pak.name);
+    if name != pak.name && name != pak.name.to_ascii_lowercase() {
+        return Err("Imported PAK manifest has an unsafe signed filename".into());
     }
-    Ok((source, current))
+    Ok(name.to_owned())
 }
 
 fn exact_planned_target(
@@ -115,7 +132,10 @@ fn exact_planned_target(
         .as_str()
         .is_some_and(|s| s.eq_ignore_ascii_case(checksum))
     {
-        return Err("The game PAK has changed since the signing stage was prepared. Use Update Staged / Original PAKs first.".into());
+        // A newer authenticated import can still be edited in its own
+        // isolated project. It cannot replace an out-of-date game baseline:
+        // never map this PAK to the original stage by filename alone.
+        return Ok(None);
     }
     if record["kind"].as_str() != Some("signed-encrypted") {
         return Ok(None);
@@ -135,23 +155,56 @@ pub fn create_project(
     pak: &ImportedPak,
     projects: &Path,
     stage: &Path,
-) -> Result<(PathBuf, usize), String> {
+) -> Result<(PathBuf, usize, Option<String>, bool), String> {
     imported_archive_files(pak).map_err(|e| e.to_string())?;
-    let (source, original_sha) = signed_source(pak)?;
+    let (source, source_sha, changed) = signed_source(pak)?;
+    // Refresh ONLY the selected archive when the original changed. Import
+    // verifies its RSA signature and every extracted file before publishing a
+    // separate content-addressed library snapshot. Never overwrite previous
+    // imports or silently assume that a game-update PAK is deployable.
+    let refreshed = if changed {
+        let folder = fs::canonicalize(&pak.directory).map_err(|e| e.to_string())?;
+        let root = folder.parent().ok_or("Imported archive has no library root")?;
+        if !fs::symlink_metadata(root).is_ok_and(|m| m.file_type().is_dir()) {
+            return Err("Saved Asset Library root is unsafe".into());
+        }
+        let keys = modding_keys::archive_verification_keys(stage)?;
+        let imported = import_signed_library_pak_with_keys(root, &source, &keys.paths)
+            .map_err(|e| format!("Selected PAK changed since import; automatic single-PAK verification failed: {e}"))?;
+        let catalog = imported_library(root).map_err(|e| e.to_string())?;
+        let latest = catalog.archives.into_iter()
+            .find(|candidate| candidate.id == imported.id
+                && candidate.source == pak.source
+                && candidate.name == pak.name)
+            .ok_or("Verified updated PAK was not found in the saved Asset Library")?;
+        let (_, checked, still_changed) = signed_source(&latest)?;
+        if still_changed || checked != source_sha {
+            return Err("Source PAK changed again while preparing the updated import; retry after the game is closed".into());
+        }
+        Some(latest)
+    } else {
+        None
+    };
+    let pak = refreshed.as_ref().unwrap_or(pak);
+    let (source, original_sha, stale) = signed_source(pak)?;
+    if stale {
+        return Err("Selected source PAK changed again during preparation".into());
+    }
     let basename = modding_keys::signed_basename(&source)?;
+    let authenticated_name = signed_name(pak)?;
     if basename != pak.name {
         return Err("Source archive basename changed after import".into());
     }
     let keys = modding_keys::signing_keys(stage)?;
     let planned = exact_planned_target(stage, &source, &original_sha)?;
     let (staged, launchable) = if let Some(path) = planned {
-        inspect_signed_pak(&path, &keys.public, &basename)
+        inspect_signed_pak(&path, &keys.public, &authenticated_name)
             .map_err(|e| format!("Existing signed stage is invalid: {e}"))?;
         (path, true)
     } else {
         let candidates = modding_keys::archive_verification_keys(stage)?;
         let original_key = candidates.paths.iter()
-            .find(|key| inspect_signed_pak(&source, key, &basename).is_ok())
+            .find(|key| inspect_signed_pak(&source, key, &authenticated_name).is_ok())
             .ok_or("Imported PAK does not authenticate as a signed CryPAK under configured keys; legacy/plain ZIP editing is not supported by the signed project builder")?;
         let root = stage.join("paks").join("library-imports");
         fs::create_dir_all(&root).map_err(|e| e.to_string())?;
@@ -171,7 +224,7 @@ pub fn create_project(
                         .into(),
                 );
             }
-            inspect_signed_pak(&dest, &keys.public, &basename)
+            inspect_signed_pak(&dest, &keys.public, &authenticated_name)
                 .map_err(|e| format!("Staged imported PAK failed verification: {e}"))?;
         } else {
             let temp = tempfile::Builder::new()
@@ -179,11 +232,12 @@ pub fn create_project(
                 .tempdir_in(&root)
                 .map_err(|e| e.to_string())?;
             let authored = temp.path().join(&basename);
-            resign_signed_pak(
+            resign_signed_pak_with_original_name(
                 &source,
                 original_key,
                 &keys.private,
                 &keys.public,
+                &authenticated_name,
                 &basename,
                 &authored,
             )
@@ -221,7 +275,9 @@ pub fn create_project(
         }
         (dest, false)
     };
-    let (workspace, count) = modding_projects::unpack_raw_project(projects, stage, &staged)?;
+    let (workspace, count) = modding_projects::unpack_raw_project_with_signed_name(
+        projects, stage, &staged, &authenticated_name,
+    )?;
     // Preserve source provenance and explicitly distinguish non-deployable
     // imported archives from PAKs mapped by the exact game manifest.
     let manifest_path = workspace.join(".evolve-pak-workspace.json");
@@ -230,12 +286,13 @@ pub fn create_project(
     manifest["imported_source_sha256"] = json!(original_sha);
     manifest["imported_archive_id"] = json!(pak.id);
     manifest["deployment_mapped"] = json!(launchable);
+    manifest["source_was_refreshed"] = json!(changed);
     fs::write(
         &manifest_path,
         serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
-    Ok((workspace, count))
+    Ok((workspace, count, refreshed.map(|archive| archive.id), launchable))
 }
 
 #[cfg(test)]
@@ -265,9 +322,10 @@ mod tests {
             "entries": [{"path": "models/test.cdf", "bytes": 1}]
         });
         fs::write(imported.join("asset-library.json"), manifest.to_string()).unwrap();
-        let (verified, checksum) = signed_source(&archive).unwrap();
+        let (verified, checksum, changed) = signed_source(&archive).unwrap();
         assert_eq!(verified, fs::canonicalize(&source).unwrap());
         assert_eq!(checksum, sha(&source).unwrap());
+        assert!(!changed);
 
         let with_sha = json!({
             "version": 1, "name": archive.name, "source": archive.source,
@@ -275,7 +333,25 @@ mod tests {
             "entries": [{"path": "models/test.cdf", "bytes": 1}]
         });
         fs::write(imported.join("asset-library.json"), with_sha.to_string()).unwrap();
-        assert!(signed_source(&archive).is_err());
+        assert!(signed_source(&archive).unwrap().2);
+    }
+
+    #[test]
+    fn changed_installed_pak_does_not_get_mapped_by_filename() {
+        let root = tempfile::tempdir().unwrap();
+        let game = root.path().join("game");
+        let stage = root.path().join("stage");
+        let source = game.join("Game/UI_Assets.pak");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::create_dir_all(&stage).unwrap();
+        fs::write(&source, b"new original after game update").unwrap();
+        fs::write(stage.join("rekey_plan.json"), json!({
+            "source_root": game,
+            "entries": [{ "path": "Game/UI_Assets.pak",
+                "kind": "signed-encrypted", "sha256": "0".repeat(64) }]
+        }).to_string()).unwrap();
+        assert!(exact_planned_target(&stage, &source, &sha(&source).unwrap())
+            .unwrap().is_none());
     }
 
     #[test]
