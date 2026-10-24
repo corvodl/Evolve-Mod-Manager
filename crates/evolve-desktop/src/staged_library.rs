@@ -4,7 +4,7 @@
 //! launchable staged archive.
 use crate::{modding_keys, modding_projects};
 use evolve_core::{
-    ImportedPak, imported_archive_files, inspect_signed_pak, imported_library,
+    ImportedPak, imported_archive_files, imported_library, inspect_signed_pak,
     library_import::import_signed_library_pak_with_keys,
     signed_pak::resign_signed_pak_with_original_name,
 };
@@ -164,7 +164,9 @@ pub fn create_project(
     // imports or silently assume that a game-update PAK is deployable.
     let refreshed = if changed {
         let folder = fs::canonicalize(&pak.directory).map_err(|e| e.to_string())?;
-        let root = folder.parent().ok_or("Imported archive has no library root")?;
+        let root = folder
+            .parent()
+            .ok_or("Imported archive has no library root")?;
         if !fs::symlink_metadata(root).is_ok_and(|m| m.file_type().is_dir()) {
             return Err("Saved Asset Library root is unsafe".into());
         }
@@ -172,10 +174,14 @@ pub fn create_project(
         let imported = import_signed_library_pak_with_keys(root, &source, &keys.paths)
             .map_err(|e| format!("Selected PAK changed since import; automatic single-PAK verification failed: {e}"))?;
         let catalog = imported_library(root).map_err(|e| e.to_string())?;
-        let latest = catalog.archives.into_iter()
-            .find(|candidate| candidate.id == imported.id
-                && candidate.source == pak.source
-                && candidate.name == pak.name)
+        let latest = catalog
+            .archives
+            .into_iter()
+            .find(|candidate| {
+                candidate.id == imported.id
+                    && candidate.source == pak.source
+                    && candidate.name == pak.name
+            })
             .ok_or("Verified updated PAK was not found in the saved Asset Library")?;
         let (_, checked, still_changed) = signed_source(&latest)?;
         if still_changed || checked != source_sha {
@@ -276,7 +282,10 @@ pub fn create_project(
         (dest, false)
     };
     let (workspace, count) = modding_projects::unpack_raw_project_with_signed_name(
-        projects, stage, &staged, &authenticated_name,
+        projects,
+        stage,
+        &staged,
+        &authenticated_name,
     )?;
     // Preserve source provenance and explicitly distinguish non-deployable
     // imported archives from PAKs mapped by the exact game manifest.
@@ -292,7 +301,12 @@ pub fn create_project(
         serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
-    Ok((workspace, count, refreshed.map(|archive| archive.id), launchable))
+    Ok((
+        workspace,
+        count,
+        refreshed.map(|archive| archive.id),
+        launchable,
+    ))
 }
 
 #[cfg(test)]
@@ -345,13 +359,21 @@ mod tests {
         fs::create_dir_all(source.parent().unwrap()).unwrap();
         fs::create_dir_all(&stage).unwrap();
         fs::write(&source, b"new original after game update").unwrap();
-        fs::write(stage.join("rekey_plan.json"), json!({
-            "source_root": game,
-            "entries": [{ "path": "Game/UI_Assets.pak",
-                "kind": "signed-encrypted", "sha256": "0".repeat(64) }]
-        }).to_string()).unwrap();
-        assert!(exact_planned_target(&stage, &source, &sha(&source).unwrap())
-            .unwrap().is_none());
+        fs::write(
+            stage.join("rekey_plan.json"),
+            json!({
+                "source_root": game,
+                "entries": [{ "path": "Game/UI_Assets.pak",
+                    "kind": "signed-encrypted", "sha256": "0".repeat(64) }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(
+            exact_planned_target(&stage, &source, &sha(&source).unwrap())
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
