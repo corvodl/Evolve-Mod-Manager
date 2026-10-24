@@ -673,6 +673,39 @@ fn guarded_restore_state(stage: &Path, swap: &Path) -> Result<String, String> {
     Ok(phase.to_owned())
 }
 
+/// Find originals independently of the journal. A clean phase can still
+/// have backups left from an older interrupted run.
+fn count_original_backups(game: &Path) -> Result<usize, String> {
+    let game = directory(game)?;
+    let mut folders = vec![(game, 0usize)];
+    let mut visited = 0usize;
+    let mut count = 0usize;
+    while let Some((folder, depth)) = folders.pop() {
+        if depth > 20 {
+            return Err("Original-backup scan exceeded safe folder depth.".into());
+        }
+        for entry in fs::read_dir(&folder).map_err(|e| e.to_string())? {
+            visited += 1;
+            if visited > 120_000 {
+                return Err("Original-backup scan exceeded safe file limit.".into());
+            }
+            let entry = entry.map_err(|e| e.to_string())?;
+            let kind = entry.file_type().map_err(|e| e.to_string())?;
+            if kind.is_dir() {
+                folders.push((entry.path(), depth + 1));
+            } else if entry
+                .file_name()
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .ends_with(".customkey-original")
+            {
+                count += 1;
+            }
+        }
+    }
+    Ok(count)
+}
+
 /// Fallback from the private manager: orphaned originals can be recovered
 /// without recreating an obsolete controlled-swap journal.
 #[cfg(windows)]
@@ -763,14 +796,25 @@ pub fn restore_existing_offline_client(stage: &Path, swap: &Path) -> Result<(usi
     // Avoid racing the private launcher watchdog's independent restoration.
     // Hold this handle until the manual helper finishes verifying originals.
     let _watchdog_guard = lock_restore_watchdog(&swap)?;
+    let stage_plan = json(&stage.join("rekey_plan.json"))?;
+    let installed_game = directory(Path::new(
+        stage_plan["source_root"]
+            .as_str()
+            .ok_or("Signing stage is missing its installed game")?,
+    ))?;
+    let pending_backups = count_original_backups(&installed_game)?;
     let phase = match guarded_restore_state(&stage, &swap) {
         Ok(phase) => phase,
-        Err(_) => {
-            // A stale, empty, or missing swap ledger must not prevent the
-            // original independent backup recovery path from running.
+        Err(_) if pending_backups > 0 => {
             return recover_orphaned_originals(&stage, &swap);
         }
+        Err(error) => return Err(error),
     };
+    if pending_backups > 0 && matches!(phase.as_str(), "prepared" | "restored") {
+        // The private manager checks real backups first: the journal's clean
+        // status does not override a physical, recoverable original.
+        return recover_orphaned_originals(&stage, &swap);
+    }
     if matches!(phase.as_str(), "prepared" | "restored") {
         let journal = json(&swap.join("controlled_swap_state.json"))?;
         let backups_remain = journal["files"].as_array().is_some_and(|files| {
@@ -1275,6 +1319,18 @@ mod tests {
         assert!(guarded_restore_state(&stage, &swap).is_err());
         assert!(!pak_target.exists());
         assert!(!hook_target.exists());
+    }
+
+    #[test]
+    fn orphaned_originals_are_detectable_without_a_swap_journal() {
+        let root = tempfile::tempdir().unwrap();
+        let game = root.path().join("EvolveGame");
+        fs::create_dir_all(game.join("Game")).unwrap();
+        fs::write(game.join("Game/UI_Assets.pak.customkey-original"), b"original").unwrap();
+        fs::write(game.join("Game/UI_Assets.pak"), b"modded").unwrap();
+        assert_eq!(count_original_backups(&game).unwrap(), 1);
+        fs::remove_file(game.join("Game/UI_Assets.pak.customkey-original")).unwrap();
+        assert_eq!(count_original_backups(&game).unwrap(), 0);
     }
 
     #[test]
