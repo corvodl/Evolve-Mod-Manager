@@ -234,8 +234,7 @@ pub fn inspect_pak_hook_pair(
         custom_hook,
         original_public,
         custom_public,
-        basename,
-        basename,
+        (basename, basename),
     )
 }
 
@@ -250,12 +249,10 @@ pub fn inspect_pak_hook_pair_with_original_name(
     custom_hook: &Path,
     original_public: &Path,
     custom_public: &Path,
-    original_signed_name: &str,
-    basename: &str,
+    signed_names: (&str, &str),
 ) -> Result<PakHookPairReport, ClientHookError> {
-    if original_signed_name != basename
-        && original_signed_name != basename.to_ascii_lowercase()
-    {
+    let (original_signed_name, basename) = signed_names;
+    if original_signed_name != basename && original_signed_name != basename.to_ascii_lowercase() {
         return Err(ClientHookError::Format);
     }
     let hook =
