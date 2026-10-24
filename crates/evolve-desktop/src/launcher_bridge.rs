@@ -1326,7 +1326,11 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let game = root.path().join("EvolveGame");
         fs::create_dir_all(game.join("Game")).unwrap();
-        fs::write(game.join("Game/UI_Assets.pak.customkey-original"), b"original").unwrap();
+        fs::write(
+            game.join("Game/UI_Assets.pak.customkey-original"),
+            b"original",
+        )
+        .unwrap();
         fs::write(game.join("Game/UI_Assets.pak"), b"modded").unwrap();
         assert_eq!(count_original_backups(&game).unwrap(), 1);
         fs::remove_file(game.join("Game/UI_Assets.pak.customkey-original")).unwrap();
