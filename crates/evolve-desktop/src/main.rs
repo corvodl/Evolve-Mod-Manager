@@ -678,6 +678,7 @@ enum Completed {
     OfflineLauncherRestored(usize, bool),
     ExtractedSigned(usize, PathBuf),
     RebuiltSigned(String, PathBuf),
+    BuiltRawProject(String, PathBuf, ProjectRow),
     LevelExported(usize, usize, PathBuf),
     LevelFbxExported(usize, usize, PathBuf),
     StageInitialized(PathBuf),
@@ -705,7 +706,7 @@ impl Operation {
             }
             Self::BuildRawProject(project, projects, stage) => {
                 modding_projects::build_project_raw(&project, &projects, &stage)
-                    .map(|(entry, target)| Completed::RebuiltSigned(entry, target))
+                    .map(|(entry, target, verified)| Completed::BuiltRawProject(entry, target, verified))
             }
             Self::ImportRawProjectMember(project, projects, member, source) => {
                 modding_projects::import_raw_member(&project, &projects, &member, &source).map(
@@ -5887,7 +5888,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.gfx_preview = Some(image::Handle::from_bytes(image_bytes));
                     }
                     if let Some(project) = saved_project {
-                            state.modding_pending_focus = Some(project.workspace.clone());
                             if build_after_apply {
                                 state.status = "Applied edited GFX to the Mod Project with a backup. Checking the complete project and building a signed test PAK...".into();
                                 return launch(
@@ -5899,6 +5899,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                                     ),
                                 );
                             }
+                            state.modding_pending_focus = Some(project.workspace.clone());
                             state.status = "GFX saved to the Mod Project. Refreshing changed-file counts for Modding...".into();
                             return launch(
                                 state,
@@ -8184,6 +8185,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.selected = None;
                     state.file_selection.clear();
                     refresh_viewer_rows(state);
+                }
+                Ok(Completed::BuiltRawProject(name, dir, verified)) => {
+                    if let Some(projects) = state.modding_projects.as_mut()
+                        && let Some(item) = projects.iter_mut().find(|item| item.workspace == verified.workspace)
+                    {
+                        *item = verified;
+                    }
+                    state.status = format!(
+                        "Built and verified {} into {}. GFX and other changed assets are included; original PAK unchanged. Test with your offline mod profile.",
+                        name,
+                        dir.display()
+                    );
+                    state.page = Some(Page::Files);
                 }
                 Ok(Completed::RebuiltSigned(name, dir)) => {
                     state.status = format!(
