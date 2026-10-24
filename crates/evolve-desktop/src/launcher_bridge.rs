@@ -445,7 +445,9 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
                     prior["game"].as_str().ok_or("Prepared game root missing")?,
                 ))?;
                 let journal_stage = directory(Path::new(
-                    prior["stage"].as_str().ok_or("Prepared stage root missing")?,
+                    prior["stage"]
+                        .as_str()
+                        .ok_or("Prepared stage root missing")?,
                 ))?;
                 if journal_game != game
                     || journal_stage != stage
