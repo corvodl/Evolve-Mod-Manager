@@ -1442,10 +1442,11 @@ impl Operation {
                     .into_iter()
                     .filter(|project| project.enabled)
                     .collect();
-                mod_play::launch_enabled(mods, projects, stage, swap, game, client, progress)
-                    .map(|(count, id, warnings, recovery)| {
+                mod_play::launch_enabled(mods, projects, stage, swap, game, client, progress).map(
+                    |(count, id, warnings, recovery)| {
                         Completed::EnabledModsLaunched(count, id, warnings, recovery)
-                    })
+                    },
+                )
             }
             Self::StartExistingOfflineLauncher(stage, swap, game, client) => {
                 play_setup::configure_existing_helper(&game, &client, &stage, &swap)?;
@@ -1459,8 +1460,7 @@ impl Operation {
                 Ok(Completed::OfflineLauncherStarted(count, id, warnings))
             }
             Self::LaunchCleanClient(game, client, swap) => {
-                let (id, warnings) =
-                    play_setup::launch_clean(&game, &client, swap.as_deref())?;
+                let (id, warnings) = play_setup::launch_clean(&game, &client, swap.as_deref())?;
                 Ok(Completed::CleanClientStarted(id, warnings))
             }
             Self::CreateInitialSetup(game, client, storage, snapshots) => {
