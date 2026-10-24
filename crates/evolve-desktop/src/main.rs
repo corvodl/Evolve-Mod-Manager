@@ -198,6 +198,7 @@ struct State {
     gfx_session: Option<gfx_editor::Session>,
     gfx_apply_pending: bool,
     modding_build_after_gfx_apply: bool,
+    modding_prepare_offline_test: bool,
     gfx_active: bool,
     gfx_busy: bool,
     gfx_preview: Option<image::Handle>,
@@ -471,6 +472,7 @@ enum ViewerTab {
 enum Operation {
     IndexProjects(PathBuf, PathBuf),
     BuildRawProject(ProjectRow, PathBuf, PathBuf),
+    StageBuiltOfflineTest(ProjectRow, PathBuf, PathBuf),
     ImportRawProjectMember(ProjectRow, PathBuf, String, PathBuf),
     RestoreRawProjectMember(ProjectRow, PathBuf, String),
     UnpackRawProject(PathBuf, PathBuf, PathBuf),
@@ -696,6 +698,7 @@ enum Completed {
     ExtractedSigned(usize, PathBuf),
     RebuiltSigned(String, PathBuf),
     BuiltRawProject(String, PathBuf, ProjectRow),
+    OfflineTestPrepared(String),
     LevelExported(usize, usize, PathBuf),
     LevelFbxExported(usize, usize, PathBuf),
     StageInitialized(PathBuf),
@@ -725,6 +728,10 @@ impl Operation {
                 &project, &projects, &stage,
             )
             .map(|(entry, target, verified)| Completed::BuiltRawProject(entry, target, verified)),
+            Self::StageBuiltOfflineTest(project, output, stage) => {
+                modding_projects::prepare_built_offline_test(&project, &output, &stage)
+                    .map(Completed::OfflineTestPrepared)
+            }
             Self::ImportRawProjectMember(project, projects, member, source) => {
                 modding_projects::import_raw_member(&project, &projects, &member, &source).map(
                     |changed| {
@@ -1528,6 +1535,7 @@ enum Message {
     GuidedEdit(guided_modding::Action),
     ModdingReviewChanges,
     ModdingBuild,
+    ModdingBuildForOfflineTest,
     ModdingUnpackPak,
     EditorReplacementChanged(String),
     EditorImportRawMember,
@@ -2819,7 +2827,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Select a project to review its changed assets.".into();
             }
         }
-        Message::ModdingBuild => {
+        kind @ (Message::ModdingBuild | Message::ModdingBuildForOfflineTest) => {
+            state.modding_prepare_offline_test =
+                matches!(kind, Message::ModdingBuildForOfflineTest);
             if state.busy || state.gfx_busy {
                 state.status = "Finish the current operation before building your mod.".into();
                 return Task::none();
@@ -7279,6 +7289,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.library_import_cancel = None;
             state.library_import_progress = None;
             state.busy = false;
+            if result.is_err() { state.modding_prepare_offline_test = false; }
             state.storage_analyzing = false;
             state.scan_cancel = None;
             state.scan_indexed = None;
@@ -8440,11 +8451,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     {
                         *item = verified;
                     }
+                    if std::mem::take(&mut state.modding_prepare_offline_test) {
+                        state.status = "Signed mod created; preparing a recoverable offline test profile...".into();
+                        return launch(
+                            state,
+                            Operation::StageBuiltOfflineTest(
+                                verified,
+                                dir,
+                                PathBuf::from(&state.preferences.stage),
+                            ),
+                        );
+                    }
                     state.status = format!(
-                        "Built and verified {} into {}. GFX and other changed assets are included; original PAK unchanged. Test with your offline mod profile.",
+                        "Built and verified {} into {}. GFX and other changed assets are included; originals unchanged. Select Build & Prepare Offline Test to stage it safely.",
                         name,
                         dir.display()
                     );
+                    state.page = Some(Page::Files);
+                }
+                Ok(Completed::OfflineTestPrepared(note)) => {
+                    state.profile_feedback = note.clone();
+                    state.status = note;
                     state.page = Some(Page::Files);
                 }
                 Ok(Completed::RebuiltSigned(name, dir)) => {
