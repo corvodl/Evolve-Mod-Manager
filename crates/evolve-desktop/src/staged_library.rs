@@ -349,7 +349,11 @@ mod tests {
         let archive = ImportedPak {
             id: "0123456789abcdefabcd".into(),
             name: "UI_Assets.pak".into(),
-            source: dir.path().join("missing-game/Game/UI_Assets.pak").to_string_lossy().into_owned(),
+            source: dir
+                .path()
+                .join("missing-game/Game/UI_Assets.pak")
+                .to_string_lossy()
+                .into_owned(),
             directory: imported.to_string_lossy().into_owned(),
             group: "Other".into(),
             description: String::new(),
