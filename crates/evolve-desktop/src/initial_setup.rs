@@ -4,7 +4,9 @@
 use crate::{launcher_bridge, play_setup};
 use evolve_core::{
     client_hook::prepare_client_hook,
-    signed_pak::{generate_local_signing_keys, inspect_signed_pak, resign_signed_pak},
+    signed_pak::{
+        generate_local_signing_keys, inspect_signed_pak, resign_signed_pak_with_original_name,
+    },
 };
 use fs2::available_space;
 use serde::Serialize;
@@ -51,6 +53,8 @@ pub struct InitialSetup {
 struct ArchiveEntry {
     path: String,
     kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signed_name: Option<String>,
     sha256: String,
     bytes: u64,
 }
@@ -321,30 +325,48 @@ pub fn create(
                 .file_name()
                 .and_then(|p| p.to_str())
                 .ok_or("Invalid original PAK name")?;
-            let kind = if inspect_signed_pak(&authored, &original_public, basename).is_ok() {
+            // Retail Stage 2 CryPAK signatures authenticate their basename
+            // bytes; some archives (e.g. mixed-case asset names) are signed
+            // against an ASCII-lowercase spelling. Use only fully verified
+            // filename variants, just as the Asset Library importer does.
+            let lowercase = basename.to_ascii_lowercase();
+            let signed_name = if inspect_signed_pak(&authored, &original_public, basename).is_ok() {
+                Some(basename.to_owned())
+            } else if lowercase != basename
+                && inspect_signed_pak(&authored, &original_public, &lowercase).is_ok()
+            {
+                Some(lowercase)
+            } else {
+                None
+            };
+            let (kind, signed_name) = if let Some(signed_name) = signed_name {
                 let destination = stage.join("paks").join(relative);
                 fs::create_dir_all(destination.parent().ok_or("Staged PAK has no parent")?)
                     .map_err(|e| e.to_string())?;
-                resign_signed_pak(
+                resign_signed_pak_with_original_name(
                     &authored,
                     &original_public,
                     &private,
                     &public,
+                    &signed_name,
                     basename,
                     &destination,
                 )
                 .map_err(|e| format!("Cannot re-sign {relative}: {e}"))?;
                 signed += 1;
-                "signed-encrypted"
+                ("signed-encrypted", Some(signed_name))
             } else {
+                // A bad signature must never be treated as an unsigned
+                // archive. The bounded standard ZIP parser is the only
+                // alternate supported layout; invalid/corrupt files fail.
                 let file = File::open(&authored).map_err(|e| e.to_string())?;
                 let archive = zip::ZipArchive::new(file)
-                    .map_err(|_| format!("PAK has neither a valid original CryPAK signature nor a supported plain ZIP layout: {relative}"))?;
+                    .map_err(|_| format!("PAK has neither a valid original CryPAK signature (physical/lowercase name) nor a supported plain ZIP layout: {relative}. This may be a different game build, an unsupported archive, or a damaged file."))?;
                 if !archive.comment().is_empty() || archive.is_empty() {
                     return Err(format!("Unsupported signed/ZIP PAK trailer: {relative}"));
                 }
                 plain += 1;
-                "plain-zip"
+                ("plain-zip", None)
             };
             if sha256(source)? != original_sha {
                 return Err(format!("Installed PAK changed while signing: {relative}"));
@@ -352,6 +374,7 @@ pub fn create(
             entries.push(ArchiveEntry {
                 path: relative.clone(),
                 kind,
+                signed_name,
                 sha256: original_sha,
                 bytes: *bytes,
             });
