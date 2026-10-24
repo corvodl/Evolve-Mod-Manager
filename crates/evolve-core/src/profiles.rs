@@ -236,10 +236,14 @@ fn verify_pair(
     // A prepared stage can contain either the original-key version or a
     // locally signed baseline. The installed game build label is advisory;
     // signatures and the member layout remain mandatory before any swap.
+    let lowercase = basename.to_ascii_lowercase();
     let old = inspect_signed_pak(&staged, original_key, basename)
+        .or_else(|_| inspect_signed_pak(&staged, original_key, &lowercase))
         .or_else(|_| inspect_signed_pak(&staged, mod_key, basename))
+        .or_else(|_| inspect_signed_pak(&staged, mod_key, &lowercase))
         .map_err(|e| ProfileError::Verify(e.to_string()))?;
     let new = inspect_signed_pak(file, mod_key, basename)
+        .or_else(|_| inspect_signed_pak(file, mod_key, &lowercase))
         .map_err(|e| ProfileError::Verify(e.to_string()))?;
     let a: HashSet<_> = old.entries.iter().map(|e| e.path.to_lowercase()).collect();
     let b: HashSet<_> = new.entries.iter().map(|e| e.path.to_lowercase()).collect();
