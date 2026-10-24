@@ -63,9 +63,7 @@ fn constant_pool(payload: &[u8]) -> Result<Vec<String>, String> {
 /// length-changing ActionScript reconstruction, or positional byte offsets.
 fn style_setter(payload: &[u8], absolute: usize) -> Option<(usize, i32, usize)> {
     let (index, value) = match payload {
-        [4, 1, 8, index, 7, a, b, c, d] => {
-            (*index as usize, i32::from_le_bytes([*a, *b, *c, *d]))
-        }
+        [4, 1, 8, index, 7, a, b, c, d] => (*index as usize, i32::from_le_bytes([*a, *b, *c, *d])),
         [4, 1, 9, a, b, 7, c, d, e, f] => (
             u16::from_le_bytes([*a, *b]) as usize,
             i32::from_le_bytes([*c, *d, *e, *f]),
@@ -106,7 +104,9 @@ fn style_tag(movie: &[u8], start: usize, end: usize) -> Result<Option<Vec<(usize
             for (field, _, _) in STYLE {
                 if name == field {
                     if movie.get(next) != Some(&0x4f) {
-                        return Err("Style constant lacks original AVM1 SetMember instruction".into());
+                        return Err(
+                            "Style constant lacks original AVM1 SetMember instruction".into()
+                        );
                     }
                     if fields.insert(field, (value, absolute)).is_some() {
                         return Err(format!("Duplicate Stage 2 main-menu Style setter: {field}"));
@@ -184,7 +184,9 @@ pub fn legacy_main_menu_rows(movie: &[u8]) -> Result<Vec<u8>, String> {
         "This movie lacks the expected Stage 2 authored button styles. Do not apply this preset to a Legacy movie.",
     )?;
     if edits.len() != 2 {
-        return Err("Stage 2 main-menu row preset did not identify exactly two style values".into());
+        return Err(
+            "Stage 2 main-menu row preset did not identify exactly two style values".into(),
+        );
     }
     let mut updated = movie.to_vec();
     for (offset, value) in edits {
@@ -257,8 +259,13 @@ mod tests {
         let original = fixture(None, false);
         let updated = legacy_main_menu_rows(&original).unwrap();
         assert_eq!(updated.len(), original.len());
-        let different: Vec<_> = original.iter().zip(&updated).enumerate()
-            .filter(|(_, (a, b))| a != b).map(|(i, _)| i).collect();
+        let different: Vec<_> = original
+            .iter()
+            .zip(&updated)
+            .enumerate()
+            .filter(|(_, (a, b))| a != b)
+            .map(|(i, _)| i)
+            .collect();
         assert_eq!(different.len(), 2); // 40->70, 65->70; int32 little endian
         assert!(updated.windows(4).any(|data| data == 70i32.to_le_bytes()));
         assert!(legacy_main_menu_rows(&updated).is_err()); // do not stage twice
