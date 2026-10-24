@@ -241,8 +241,8 @@ pub fn inspect_pak_hook_pair(
 
 /// Verify each CryPAK against the exact basename it was signed with.
 /// Retail source signatures may use ASCII lowercase while their installed
-/// file names use different case. Custom staged files remain signed under
-/// their unchanged on-disk basenames.
+/// file names use different case. Custom staged copies preserve the
+/// authenticated signing name, regardless of the unchanged on-disk basename.
 pub fn inspect_pak_hook_pair_with_original_name(
     original_pak: &Path,
     custom_pak: &Path,
@@ -261,7 +261,7 @@ pub fn inspect_pak_hook_pair_with_original_name(
     let hook =
         inspect_client_hook_pair(original_hook, custom_hook, original_public, custom_public)?;
     let old = inspect_signed_pak(original_pak, original_public, original_signed_name)?;
-    let new = inspect_signed_pak(custom_pak, custom_public, basename)?;
+    let new = inspect_signed_pak(custom_pak, custom_public, original_signed_name)?;
     let original_paths: std::collections::HashSet<_> = old
         .entries
         .iter()
