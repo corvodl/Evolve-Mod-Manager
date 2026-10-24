@@ -81,7 +81,7 @@ def watch(fresh=True, interval=2.0, monotonic=time.monotonic, sleeper=time.sleep
                 raise RuntimeError("Original backup remains despite a clean journal.")
             print("Original files are already restored.", flush=True)
             return 0
-        if phase not in ("swapped", "interrupted", "restoring"):
+        if phase not in ("swapping", "swapped", "interrupted", "restoring"):
             raise RuntimeError("Automatic restoration refused unsafe phase: " + str(phase))
         names = swap.task_names()
         if "evolve.exe" in names:
