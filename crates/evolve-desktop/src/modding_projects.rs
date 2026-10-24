@@ -477,7 +477,7 @@ pub fn build_project_raw(
         .get("entries")
         .and_then(Value::as_array)
         .ok_or("Original manifest has no file records")?;
-    for rel in &modified {
+    for rel in modified {
         if !safe_member(rel) {
             return Err("Unsafe modified member".into());
         }
@@ -533,7 +533,7 @@ pub fn build_project_raw(
         .tempdir_in(&folder)
         .map_err(|e| e.to_string())?;
     let mut replacements = Vec::with_capacity(modified.len());
-    for rel in &modified {
+    for rel in modified {
         let replacement = folder.join("files").join(rel);
         let canonical = fs::canonicalize(&replacement).map_err(|e| e.to_string())?;
         if !canonical.starts_with(&source_files)
