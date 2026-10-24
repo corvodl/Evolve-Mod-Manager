@@ -777,9 +777,7 @@ pub fn resign_signed_pak_with_original_name(
     basename: &str,
     destination: &Path,
 ) -> Result<SignedPakInfo, SignedPakError> {
-    if original_signed_name != basename
-        && original_signed_name != basename.to_ascii_lowercase()
-    {
+    if original_signed_name != basename && original_signed_name != basename.to_ascii_lowercase() {
         return Err(SignedPakError::UnsafeOutput);
     }
     let parent = destination.parent().ok_or(SignedPakError::UnsafeOutput)?;
@@ -1490,15 +1488,18 @@ mod tests {
         assert!(inspect_signed_pak(&cased_output, &new_public_file, "sample.pak").is_ok());
         assert!(inspect_signed_pak(&cased_output, &new_public_file, "Sample.pak").is_err());
         assert_eq!(fs::read(&differently_cased).unwrap(), bytes);
-        assert!(resign_signed_pak_with_original_name(
-            &differently_cased,
-            &key,
-            &new_private_file,
-            &new_public_file,
-            "OTHER.pak",
-            "Sample.pak",
-            &resign_folder.join("refused.pak"),
-        ).is_err());
+        assert!(
+            resign_signed_pak_with_original_name(
+                &differently_cased,
+                &key,
+                &new_private_file,
+                &new_public_file,
+                "OTHER.pak",
+                "Sample.pak",
+                &resign_folder.join("refused.pak"),
+            )
+            .is_err()
+        );
 
         let old_hook = root.path().join("original-hook.dll");
         let hook_root = root.path().join("custom-hook");
@@ -1530,8 +1531,7 @@ mod tests {
             &custom_hook,
             &key,
             &new_public_file,
-            "sample.pak",
-            "Sample.pak",
+            ("sample.pak", "Sample.pak"),
         )
         .unwrap();
         assert!(case_swap.archive_member_paths_match);
