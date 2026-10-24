@@ -69,8 +69,10 @@ pub fn launch_enabled(
     // Check only the lightweight original-backup state here. Full signed
     // archive verification runs once after building/staging, not twice before
     // and again during the launcher handoff.
-    play_setup::audit_backup_files(&game)
-        .map_err(|_| "Original game backups need restoring before play. Use Restore original game files.".to_owned())?;
+    play_setup::audit_backup_files(&game).map_err(|_| {
+        "Original game backups need restoring before play. Use Restore original game files."
+            .to_owned()
+    })?;
     progress.store(5, Ordering::Relaxed);
 
     let mut destinations = HashSet::new();
