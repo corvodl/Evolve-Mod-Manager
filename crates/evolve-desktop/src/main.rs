@@ -3047,8 +3047,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             let stage = PathBuf::from(&state.preferences.stage);
             let swap = PathBuf::from(&state.preferences.swap);
-            if let Err(error) = launcher_bridge::inspect_existing_launcher(&stage, &swap) {
-                state.status = format!("Old offline baseline is not clean and verified; refresh refused: {error}");
+            // The current game may no longer match the old signing stage:
+            // that is precisely why a refresh is necessary. Require the old
+            // swap journal to be restored instead of comparing old/new PAKs.
+            if let Err(error) = initial_setup::safe_refresh_preflight(&stage, &swap) {
+                state.status = format!("Old swap setup must be restored before refresh: {error}");
                 return Task::none();
             }
             let storage = PathBuf::from(&state.preferences.game_storage_root);
