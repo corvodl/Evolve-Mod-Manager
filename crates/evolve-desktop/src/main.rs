@@ -49,6 +49,7 @@ mod runtime_signatures;
 mod selection;
 mod settings;
 mod settings_page;
+mod staged_library;
 mod storage_usage;
 mod system_health;
 mod textured;
@@ -479,6 +480,7 @@ enum Operation {
     ),
     OpenImportedPak(ImportedPak),
     CreateProjectFromLibrary(ImportedPak, PathBuf, PathBuf),
+    RefreshGamePakBaseline(PathBuf, PathBuf, PathBuf, bool),
     InspectDependencies(Inventory, String),
     CompareAssets(PathBuf, PathBuf),
     Scan(PathBuf, Arc<AtomicBool>, Arc<AtomicUsize>),
@@ -670,6 +672,7 @@ enum Completed {
     OfflineLauncherStarted(usize, u32),
     CleanClientStarted(u32),
     InitialSetupCreated(initial_setup::InitialSetup),
+    GamePakBaselineRefreshed(initial_setup::InitialSetup),
     OfflineLauncherRestored(usize, bool),
     ExtractedSigned(usize, PathBuf),
     RebuiltSigned(String, PathBuf),
@@ -748,15 +751,12 @@ impl Operation {
                 .map(Completed::ImportedPakFiles)
                 .map_err(|e| e.to_string()),
             Self::CreateProjectFromLibrary(pak, projects, stage) => {
-                // Exact source PAK must be in the configured stage/paks;
-                // never choose a similarly named or cross-build PAK.
-                imported_archive_files(&pak).map_err(|e| e.to_string())?;
-                modding_projects::unpack_raw_project(
-                    &projects,
-                    &stage,
-                    PathBuf::from(&pak.source).as_path(),
-                )
-                .map(|(path, count)| Completed::UnpackedProject(path, count))
+                staged_library::create_project(&pak, &projects, &stage)
+                    .map(|(path, count)| Completed::UnpackedProject(path, count))
+            }
+            Self::RefreshGamePakBaseline(game, client, storage, snapshots) => {
+                initial_setup::create(&game, &client, &storage, snapshots)
+                    .map(Completed::GamePakBaselineRefreshed)
             }
             Self::Scan(source, cancelled, indexed) => {
                 scan_directory_with_progress(&source, &cancelled, &indexed)
@@ -1495,6 +1495,7 @@ enum Message {
     LibrarySelect(usize),
     LibraryPreview,
     LibraryMakeModProject,
+    RefreshGamePakBaseline,
     LibraryPreviousPage,
     LibraryNextPage,
     OpenViewer,
@@ -3018,10 +3019,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             };
             let stage = PathBuf::from(&state.preferences.stage);
-            if modding_keys::staged_target(&stage, PathBuf::from(&pak.source).as_path()).is_err() {
-                state.status = "This imported PAK is not an exact staged original in the configured stage/paks. A separate copy mapping would be required; no target was guessed.".into();
-                return Task::none();
-            }
             state.modding_open_editor_when_scanned = true;
             return launch(
                 state,
@@ -3029,6 +3026,48 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     pak,
                     PathBuf::from(&state.preferences.projects),
                     stage,
+                ),
+            );
+        }
+        Message::RefreshGamePakBaseline => {
+            if state.busy {
+                return Task::none();
+            }
+            let (game, client) = match play_setup::validate_paths(
+                &state.preferences.game_installation,
+                &state.preferences.client_executable,
+            ) {
+                Ok(paths) => paths,
+                Err(error) => {
+                    state.status = format!(
+                        "Select valid game and client paths before refreshing PAKs: {error}"
+                    );
+                    return Task::none();
+                }
+            };
+            if state.preferences.stage.trim().is_empty() || state.preferences.swap.trim().is_empty()
+            {
+                state.status = "Create the original offline setup before refreshing it.".into();
+                return Task::none();
+            }
+            let stage = PathBuf::from(&state.preferences.stage);
+            let swap = PathBuf::from(&state.preferences.swap);
+            // The current game may no longer match the old signing stage:
+            // that is precisely why a refresh is necessary. Require the old
+            // swap journal to be restored instead of comparing old/new PAKs.
+            if let Err(error) = initial_setup::safe_refresh_preflight(&stage, &swap) {
+                state.status = format!("Old swap setup must be restored before refresh: {error}");
+                return Task::none();
+            }
+            let storage = PathBuf::from(&state.preferences.game_storage_root);
+            state.status = "Creating a separate verified PAK baseline for the updated installation; old staged PAKs, projects and recovery helpers remain unchanged.".into();
+            return launch(
+                state,
+                Operation::RefreshGamePakBaseline(
+                    game,
+                    client,
+                    storage,
+                    state.preferences.keep_original_snapshots,
                 ),
             );
         }
@@ -7966,6 +8005,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         }
                     );
                     state.page = Some(Page::Files);
+                }
+                Ok(Completed::GamePakBaselineRefreshed(report)) => {
+                    // The previous stage remains on disk for existing mod projects.
+                    // An updated game's PAK baseline must not silently reuse old edits.
+                    state.preferences.stage = report.stage.to_string_lossy().into_owned();
+                    state.preferences.swap = report.swap.to_string_lossy().into_owned();
+                    persist_preferences(state);
+                    state.status = format!(
+                        "Created new verified game-update baseline: {} signed PAKs and {} plain archives. Previous stage and all mod projects preserved. Review and rebase edits before applying them to updated archives. New stage: {}",
+                        report.signed_count,
+                        report.plain_count,
+                        report.stage.display()
+                    );
+                    state.page = Some(Page::Settings);
+                    state.settings_tab = settings_page::Tab::Storage;
                 }
                 Ok(Completed::InitialSetupCreated(report)) => {
                     state.preferences.stage = report.stage.to_string_lossy().into_owned();

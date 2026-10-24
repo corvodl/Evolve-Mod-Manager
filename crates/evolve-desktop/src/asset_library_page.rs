@@ -399,7 +399,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         design::button("Edit / Add to Mod Project")
             .on_press_maybe(selected.map(|_| Message::LibraryMakeModProject)),
         text(if selected.is_some() {
-            "Shift: range (including across pages) • Ctrl: toggle. Editing requires an exact staged PAK; the Library remains read-only."
+            "Shift: range (including across pages) • Ctrl: toggle. Editing creates a separate staged copy when required; imported originals stay read-only."
         } else {
             "Select an imported archive to preview its extracted files."
         }).size(12).style(design::muted),

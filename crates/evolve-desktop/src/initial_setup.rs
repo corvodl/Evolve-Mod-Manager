@@ -142,6 +142,49 @@ fn relative_paks(game: &Path) -> Result<Vec<(String, PathBuf, u64)>, String> {
     Ok(rows)
 }
 
+/// A changed game can no longer pass its old signature preflight. Protect
+/// recovery by requiring the prior swap to have an empty, restored journal.
+/// Never edit the old baseline, even when the new game differs.
+pub fn safe_refresh_preflight(stage: &Path, swap: &Path) -> Result<(), String> {
+    launcher_bridge::games_closed()?;
+    for dir in [stage, swap] {
+        if !fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_dir()) {
+            return Err("Existing stage and recovery folders must be real directories".into());
+        }
+    }
+    let journal = swap.join("controlled_swap_state.json");
+    let metadata =
+        fs::symlink_metadata(&journal).map_err(|e| format!("Missing recovery journal: {e}"))?;
+    if !metadata.file_type().is_file() || metadata.len() > 1024 * 1024 {
+        return Err("Recovery journal is unsafe or oversized".into());
+    }
+    let value: serde_json::Value =
+        serde_json::from_reader(File::open(journal).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("Invalid recovery journal: {e}"))?;
+    if value["version"].as_u64() != Some(1)
+        || value["phase"].as_str() != Some("restored")
+        || value["count"].as_u64() != Some(0)
+        || value["files"].as_array().is_none_or(|v| !v.is_empty())
+    {
+        return Err(
+            "Previous offline swap has unresolved changes; restore the original game first".into(),
+        );
+    }
+    let plan = stage.join("rekey_plan.json");
+    let metadata = fs::symlink_metadata(&plan)
+        .map_err(|e| format!("Missing existing signing inventory: {e}"))?;
+    if !metadata.file_type().is_file() || metadata.len() > 32 * 1024 * 1024 {
+        return Err("Signing inventory is unsafe".into());
+    }
+    let inventory: serde_json::Value =
+        serde_json::from_reader(File::open(plan).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("Invalid signing inventory: {e}"))?;
+    if inventory["source_root"].as_str().is_none() || inventory["entries"].as_array().is_none() {
+        return Err("Existing signing inventory is incomplete".into());
+    }
+    Ok(())
+}
+
 /// The private launcher consumes a stage created against the *exact*
 /// installed game, plus a separate swap folder with a durable restored
 /// journal. This builder creates both using native, verified CryPAK signing.

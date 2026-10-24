@@ -1,0 +1,264 @@
+//! Promote an imported, authenticated PAK to an isolated editable baseline.
+//! An imported archive is never an implicit launcher target. Only an exact
+//! source-root + relative-path + SHA match to rekey_plan.json can reuse a
+//! launchable staged archive.
+use crate::{modding_keys, modding_projects};
+use evolve_core::{ImportedPak, imported_archive_files, inspect_signed_pak, resign_signed_pak};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use std::{
+    fs::{self, File},
+    io::{Read, Write},
+    path::{Path, PathBuf},
+};
+
+fn sha(path: &Path) -> Result<String, String> {
+    let mut digest = Sha256::new();
+    let mut input = File::open(path).map_err(|e| e.to_string())?;
+    let mut buf = [0; 128 * 1024];
+    loop {
+        let count = input.read(&mut buf).map_err(|e| e.to_string())?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buf[..count]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn read_json(path: &Path) -> Result<Value, String> {
+    let meta = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if !meta.file_type().is_file() || meta.len() > 32 * 1024 * 1024 {
+        return Err(format!("Unsafe or oversized metadata: {}", path.display()));
+    }
+    serde_json::from_reader(File::open(path).map_err(|e| e.to_string())?)
+        .map_err(|e| format!("Invalid metadata at {}: {e}", path.display()))
+}
+
+fn signed_source(pak: &ImportedPak) -> Result<(PathBuf, String), String> {
+    if pak.id.len() != 20 || !pak.id.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return Err("Invalid imported archive identity".into());
+    }
+    let filename = modding_keys::signed_basename(Path::new(&pak.name))?;
+    if filename != pak.name {
+        return Err("Imported archive name disagrees with file name".into());
+    }
+    let folder = PathBuf::from(&pak.directory);
+    let info = read_json(&folder.join("asset-library.json"))?;
+    let expected = info["source_sha256"]
+        .as_str()
+        .ok_or("Imported archive has no original SHA-256; re-import it before editing")?;
+    if expected.len() != 64 || !expected.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return Err("Imported source checksum is invalid".into());
+    }
+    if info["name"].as_str() != Some(pak.name.as_str())
+        || info["source"].as_str() != Some(pak.source.as_str())
+    {
+        return Err("Imported manifest and selected archive disagree".into());
+    }
+    let source = PathBuf::from(&pak.source);
+    let meta = fs::symlink_metadata(&source).map_err(|_| {
+        "Original imported PAK was moved or removed; re-import the current file".to_owned()
+    })?;
+    if !meta.file_type().is_file() {
+        return Err("Original imported PAK is not a regular file".into());
+    }
+    let source = fs::canonicalize(&source).map_err(|e| e.to_string())?;
+    if !sha(&source)?.eq_ignore_ascii_case(expected) {
+        return Err("Imported source has changed since import. Re-import the PAK and refresh the game baseline before editing.".into());
+    }
+    Ok((source, expected.to_ascii_lowercase()))
+}
+
+fn exact_planned_target(
+    stage: &Path,
+    source: &Path,
+    checksum: &str,
+) -> Result<Option<PathBuf>, String> {
+    let plan = read_json(&stage.join("rekey_plan.json"))?;
+    let root = plan["source_root"]
+        .as_str()
+        .ok_or("Signing stage is missing its original game root")?;
+    let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
+    let Ok(relative) = source.strip_prefix(root) else {
+        return Ok(None);
+    };
+    let name = relative
+        .to_str()
+        .ok_or("Imported game-relative PAK path is not UTF-8")?
+        .replace('\\', "/");
+    if name
+        .split('/')
+        .any(|p| p.is_empty() || p == "." || p == "..")
+    {
+        return Err("Unsafe game-relative PAK path".into());
+    }
+    let Some(entries) = plan["entries"].as_array() else {
+        return Err("Signing stage lacks an archive inventory".into());
+    };
+    let record = entries
+        .iter()
+        .find(|e| e["path"].as_str() == Some(name.as_str()));
+    let Some(record) = record else {
+        return Ok(None);
+    };
+    if !record["sha256"]
+        .as_str()
+        .is_some_and(|s| s.eq_ignore_ascii_case(checksum))
+    {
+        return Err("The game PAK has changed since the signing stage was prepared. Use Update Staged / Original PAKs first.".into());
+    }
+    if record["kind"].as_str() != Some("signed-encrypted") {
+        return Ok(None);
+    }
+    let target = stage.join("paks").join(&name);
+    let staged_name = modding_keys::staged_target(stage, &target)?;
+    if staged_name != name {
+        return Err("Staged archive path differs from original game inventory".into());
+    }
+    Ok(Some(target))
+}
+
+/// Returns a new editable project. On an exact installed-game match it reuses
+/// the already-authenticated launcher stage. Otherwise it creates a distinct
+/// non-launchable isolated baseline, never inventing a game destination.
+pub fn create_project(
+    pak: &ImportedPak,
+    projects: &Path,
+    stage: &Path,
+) -> Result<(PathBuf, usize), String> {
+    imported_archive_files(pak).map_err(|e| e.to_string())?;
+    let (source, original_sha) = signed_source(pak)?;
+    let basename = modding_keys::signed_basename(&source)?;
+    if basename != pak.name {
+        return Err("Source archive basename changed after import".into());
+    }
+    let keys = modding_keys::signing_keys(stage)?;
+    let planned = exact_planned_target(stage, &source, &original_sha)?;
+    let (staged, launchable) = if let Some(path) = planned {
+        inspect_signed_pak(&path, &keys.public, &basename)
+            .map_err(|e| format!("Existing signed stage is invalid: {e}"))?;
+        (path, true)
+    } else {
+        let candidates = modding_keys::archive_verification_keys(stage)?;
+        let original_key = candidates.paths.iter()
+            .find(|key| inspect_signed_pak(&source, key, &basename).is_ok())
+            .ok_or("Imported PAK does not authenticate as a signed CryPAK under configured keys; legacy/plain ZIP editing is not supported by the signed project builder")?;
+        let root = stage.join("paks").join("library-imports");
+        fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+        if !fs::symlink_metadata(&root).is_ok_and(|m| m.file_type().is_dir()) {
+            return Err("Imported stage folder is not a real directory".into());
+        }
+        let dest_dir = root.join(&pak.id);
+        let dest = dest_dir.join(&basename);
+        if dest_dir.exists() {
+            let record = read_json(&dest_dir.join("origin.json"))?;
+            if record["original_sha256"].as_str() != Some(original_sha.as_str())
+                || record["source"].as_str() != Some(pak.source.as_str())
+                || record["staged_sha256"].as_str() != Some(sha(&dest)?.as_str())
+            {
+                return Err(
+                    "Imported stage identity changed; refusing to overwrite an existing baseline"
+                        .into(),
+                );
+            }
+            inspect_signed_pak(&dest, &keys.public, &basename)
+                .map_err(|e| format!("Staged imported PAK failed verification: {e}"))?;
+        } else {
+            let temp = tempfile::Builder::new()
+                .prefix(".pak-import-")
+                .tempdir_in(&root)
+                .map_err(|e| e.to_string())?;
+            let authored = temp.path().join(&basename);
+            resign_signed_pak(
+                &source,
+                original_key,
+                &keys.private,
+                &keys.public,
+                &basename,
+                &authored,
+            )
+            .map_err(|e| format!("Could not sign isolated editing copy: {e}"))?;
+            if sha(&source)? != original_sha {
+                return Err(
+                    "Source changed while preparing staged copy; nothing was published".into(),
+                );
+            }
+            let manifest = json!({
+                "version": 1,
+                "archive_id": pak.id,
+                "source": pak.source,
+                "original_sha256": original_sha,
+                "staged_sha256": sha(&authored)?,
+                "deployment": "unmapped",
+                "note": "Editing baseline only; no installed game target has been selected"
+            });
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(temp.path().join("origin.json"))
+                .map_err(|e| e.to_string())?;
+            file.write_all(
+                serde_json::to_string_pretty(&manifest)
+                    .map_err(|e| e.to_string())?
+                    .as_bytes(),
+            )
+            .map_err(|e| e.to_string())?;
+            file.sync_all().map_err(|e| e.to_string())?;
+            if dest_dir.exists() {
+                return Err("Another import created this staged identity; retry".into());
+            }
+            fs::rename(temp.path(), &dest_dir).map_err(|e| e.to_string())?;
+        }
+        (dest, false)
+    };
+    let (workspace, count) = modding_projects::unpack_raw_project(projects, stage, &staged)?;
+    // Preserve source provenance and explicitly distinguish non-deployable
+    // imported archives from PAKs mapped by the exact game manifest.
+    let manifest_path = workspace.join(".evolve-pak-workspace.json");
+    let mut manifest = read_json(&manifest_path)?;
+    manifest["imported_source"] = json!(pak.source);
+    manifest["imported_source_sha256"] = json!(original_sha);
+    manifest["imported_archive_id"] = json!(pak.id);
+    manifest["deployment_mapped"] = json!(launchable);
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok((workspace, count))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn foreign_pak_cannot_infer_target_from_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        let stage = dir.path().join("stage");
+        fs::create_dir_all(&stage).unwrap();
+        fs::write(
+            stage.join("rekey_plan.json"),
+            json!({
+                "source_root": dir.path().join("game"),
+                "entries": [{
+                    "path": "Game/duplicate.pak", "kind": "signed-encrypted",
+                    "sha256": "aa".repeat(32),
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::create_dir_all(dir.path().join("game")).unwrap();
+        let foreign = dir
+            .path()
+            .join("foreign")
+            .join("Game")
+            .join("duplicate.pak");
+        assert!(
+            exact_planned_target(&stage, &foreign, &"aa".repeat(32))
+                .unwrap()
+                .is_none()
+        );
+    }
+}
