@@ -10460,6 +10460,33 @@ mod project_edit_tests {
     }
 
     #[test]
+    fn mod_build_scans_fresh_even_if_cached_project_has_no_recognized_edits() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = ProjectRow {
+            label: "Test B".into(),
+            target: "ui_data.pak".into(),
+            source_build: String::new(),
+            status: "Needs review".into(),
+            details: "Scan limit reached".into(),
+            workspace: temp.path().join("Test_B"),
+            modified: vec![],
+            changed_known: false,
+        };
+        let mut state = State {
+            modding_selected: Some(0),
+            modding_projects: Some(vec![project]),
+            preferences: Preferences {
+                projects: temp.path().to_string_lossy().into_owned(),
+                stage: temp.path().join("stage").to_string_lossy().into_owned(),
+                ..Preferences::default()
+            },
+            ..State::default()
+        };
+        let _ = update(&mut state, Message::ModdingBuild);
+        assert!(state.busy, "Build must reach a full revalidation worker");
+    }
+
+    #[test]
     fn project_paging_filtering_and_control_deselection_use_visible_rows() {
         let mut state = State {
             modding_projects: Some(
