@@ -593,10 +593,7 @@ fn guarded_restore_state(stage: &Path, swap: &Path) -> Result<String, String> {
         // Automatically generated first-run setups start with a restored,
         // empty journal. That is legitimate only when none of the installed
         // targets still has an original-backup suffix from an earlier swap.
-        if phase == "restored"
-            && records.is_empty()
-            && journal["count"].as_u64() == Some(0)
-        {
+        if phase == "restored" && records.is_empty() && journal["count"].as_u64() == Some(0) {
             let stranded = expected.iter().any(|(_, _, target)| {
                 fs::symlink_metadata(format!("{}.customkey-original", target.display())).is_ok()
             });
@@ -1127,14 +1124,14 @@ mod tests {
         assert_eq!(guarded_restore_state(&stage, &swap).unwrap(), "restored");
         // However, even one stranded backup forbids treating that empty
         // journal as sufficient recovery instructions.
-        let hook_backup = PathBuf::from(format!(
-            "{}.customkey-original",
-            hook_target.display()
-        ));
+        let hook_backup = PathBuf::from(format!("{}.customkey-original", hook_target.display()));
         fs::write(&hook_backup, b"original backup").unwrap();
         let mismatch = guarded_restore_state(&stage, &swap).unwrap_err();
         assert!(mismatch.contains("0 file entries"), "{mismatch}");
-        assert!(mismatch.contains("original matching signing stage"), "{mismatch}");
+        assert!(
+            mismatch.contains("original matching signing stage"),
+            "{mismatch}"
+        );
         assert_eq!(fs::read(&hook_backup).unwrap(), b"original backup");
         fs::remove_file(&hook_backup).unwrap();
         fs::write(&ledger, serde_json::to_vec(&journal).unwrap()).unwrap();
