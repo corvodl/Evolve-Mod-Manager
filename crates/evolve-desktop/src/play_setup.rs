@@ -1,6 +1,7 @@
 //! Installed-game path detection and guarded launch handoff for the established
 //! reversible private swap. No game PAK is modified by setup or this module.
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -72,6 +73,53 @@ pub fn validate_paths(game: &str, client: &str) -> Result<(PathBuf, PathBuf), St
     Ok((game_root(game)?, client_exe(client)?))
 }
 
+// Previous manager nightlies copied this helper once into Setup_*/swap and
+// never refreshed it. Old Win32/extended-path matching prevents Test B from
+// swapping even though the prepared signed PAK is valid. Recognize the exact
+// published legacy helper, not arbitrary user-modified scripts.
+const PREVIOUS_AUTO_LAUNCH_SHA256: &str =
+    "833c057c42846d51793e52fc429c506a6623c4ee59dade9df7e019a59d4ddc07";
+const CURRENT_AUTO_LAUNCH: &str = include_str!("../launcher_support/auto_launch_frida.py");
+
+fn refresh_known_bundled_auto_launch(swap: &Path) -> Result<bool, String> {
+    let path = swap.join("auto_launch_frida.py");
+    let meta = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+    if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 1024 * 1024 {
+        return Err("Existing auto_launch_frida.py must be a regular, bounded file".into());
+    }
+    let existing = fs::read(&path).map_err(|e| e.to_string())?;
+    if existing == CURRENT_AUTO_LAUNCH.as_bytes() {
+        return Ok(false);
+    }
+    let digest = format!("{:x}", Sha256::digest(&existing));
+    if digest != PREVIOUS_AUTO_LAUNCH_SHA256 {
+        // Never overwrite a user-customized or unrecognized private helper.
+        // Detect the vulnerable matcher rather than silently using it again.
+        let text = String::from_utf8_lossy(&existing);
+        if text.contains("def normalize_exec_command(command: str)")
+            && text.contains("replace('\\\\', '\\')")
+            && text.contains("function canon(s)")
+        {
+            return Err("The existing auto_launch_frida.py has an unrecognized older path matcher. The manager will not overwrite custom helper edits; review the helper before launching a modded swap.".into());
+        }
+        return Ok(false);
+    }
+    // All games are closed, recovery backups were already checked, and the
+    // entire old helper matches the known bundled SHA-256. Only replace this
+    // helper; never touch journals, staged PAKs or installed game originals.
+    let mut temp = tempfile::NamedTempFile::new_in(swap)
+        .map_err(|e| format!("Cannot prepare updated launcher helper: {e}"))?;
+    temp.write_all(CURRENT_AUTO_LAUNCH.as_bytes())
+        .map_err(|e| e.to_string())?;
+    temp.as_file().sync_all().map_err(|e| e.to_string())?;
+    if fs::read(&path).map_err(|e| e.to_string())? != existing {
+        return Err("Launcher helper changed while preparing the update; refusing replacement".into());
+    }
+    temp.persist(&path)
+        .map_err(|e| format!("Cannot update verified legacy launcher helper: {}", e.error))?;
+    Ok(true)
+}
+
 /// Only enable the existing private helper for exactly the selected game and
 /// client. Never repoint a signing stage to a different installed game.
 pub fn configure_existing_helper(
@@ -135,6 +183,9 @@ pub fn configure_existing_helper(
             return Err("Original backup files exist; restore before changing the client".into());
         }
     }
+    // Ensure existing signed setups receive the repaired matcher without
+    // forcing a full rekey or rebuilding hundreds of prepared PAK copies.
+    refresh_known_bundled_auto_launch(&swap)?;
     let config = swap.join("launcher_config.json");
     let mut previous = Map::new();
     if config.exists() {
@@ -358,6 +409,25 @@ mod tests {
         assert!(warnings[0].contains("Original-file recovery"));
         assert!(warnings[1].contains("Recovery warning"));
         assert!(game.join("ui.pak.customkey-original").exists());
+    }
+
+    #[test]
+    fn helper_refresh_preserves_modified_private_scripts() {
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("auto_launch_frida.py");
+        let custom = b"print('private user helper')\n";
+        fs::write(&helper, custom).unwrap();
+        assert!(!refresh_known_bundled_auto_launch(dir.path()).unwrap());
+        assert_eq!(fs::read(&helper).unwrap(), custom);
+    }
+
+    #[test]
+    fn helper_refresh_is_idempotent_for_current_bundled_script() {
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("auto_launch_frida.py");
+        fs::write(&helper, CURRENT_AUTO_LAUNCH).unwrap();
+        assert!(!refresh_known_bundled_auto_launch(dir.path()).unwrap());
+        assert_eq!(fs::read_to_string(&helper).unwrap(), CURRENT_AUTO_LAUNCH);
     }
 
     #[test]
