@@ -161,7 +161,8 @@ fn dropdown_left(name: Option<&str>) -> f32 {
 
 fn project_header() -> Element<'static, Message> {
     row![
-        text("PROJECT").width(Length::FillPortion(4)),
+        text("ENABLED").width(Length::FillPortion(2)),
+        text("MOD").width(Length::FillPortion(4)),
         text("TARGET PAK").width(Length::FillPortion(4)),
         text("CHANGED").width(Length::FillPortion(1)),
         text("SOURCE BUILD").width(Length::FillPortion(2)),
@@ -214,18 +215,25 @@ fn projects(state: &State) -> Element<'_, Message> {
         .align_y(iced::Center);
         rows = rows.push(
             container(
-                design::button(cells)
-                    .width(Fill)
-                    .padding([
-                        if state.preferences.ui_density == "Compact" {
-                            2
-                        } else {
-                            5
-                        },
-                        7,
-                    ])
-                    .style(design::text_button)
-                    .on_press(Message::ModdingSelectProject(index)),
+                row![
+                    design::button(if record.enabled { "On" } else { "Off" })
+                        .style(if record.enabled { design::primary } else { design::secondary })
+                        .on_press(Message::ModdingToggleEnabled(index))
+                        .width(Length::FillPortion(2)),
+                    design::button(cells)
+                        .width(Length::FillPortion(20))
+                        .padding([
+                            if state.preferences.ui_density == "Compact" {
+                                2
+                            } else {
+                                5
+                            },
+                            7,
+                        ])
+                        .style(design::text_button)
+                        .on_press(Message::ModdingSelectProject(index)),
+                ]
+                .spacing(8),
             )
             .width(Fill)
             .style(move |theme| container::Style {
@@ -578,10 +586,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             .and_then(|list| list.get(index))
     });
     let actions = row![
-        design::button("Install Mod…")
-            .style(design::secondary)
-            .on_press(Message::ModdingToggleProfiles),
-        design::button("Installed Mods…")
+        design::button("Advanced Profiles…")
             .style(design::secondary)
             .on_press(Message::ModdingToggleProfiles),
         design::button("Refresh Projects")
@@ -602,7 +607,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     .align_y(iced::Center);
     let mut main = column![
         text("Modding").size(22),
-        text("Open imported PAKs, edit assets, then Build & Prepare Offline Test. Source-version differences are warnings; original files remain backed up for offline play.")
+        text("Name your mods, switch them On or Off, then choose Play with Mods. Enabled mods are built and loaded automatically for offline play.")
             .size(12)
             .style(design::muted),
         menu(state),
@@ -636,6 +641,17 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         ].spacing(6),
         imported_paks(state),
         projects(state),
+        row![
+            text("Mod name").size(12),
+            design::text_input("Select a mod to name it…", &state.modding_name_input)
+                .on_input(Message::ModdingNameChanged)
+                .width(Length::FillPortion(4)),
+            design::button("Save Name")
+                .style(design::secondary)
+                .on_press_maybe(state.modding_selected.map(|_| Message::ModdingSaveName)),
+        ]
+        .spacing(8)
+        .align_y(iced::Center),
         modifications(state),
         actions,
         design::button(if state.modding_advanced {
