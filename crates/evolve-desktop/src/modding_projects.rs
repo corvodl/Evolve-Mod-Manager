@@ -107,25 +107,38 @@ fn inspect_project(
         {
             return Err("Not a supported editable project manifest".into());
         }
-        let source = manifest
-            .get("source_pak")
-            .and_then(Value::as_str)
-            .ok_or("Missing project source archive")?;
-        let source = Path::new(source);
-        if !regular(source, 16 * 1024 * 1024 * 1024) {
-            return Err("Original staged archive is unavailable".into());
-        }
-        let original = fs::canonicalize(source).map_err(|e| e.to_string())?;
-        let base = fs::canonicalize(stage.join("paks"))
-            .map_err(|_| "Configured signing stage is unavailable")?;
-        let relative = original
-            .strip_prefix(&base)
-            .map_err(|_| "Project is not backed by the configured signed stage")?
-            .to_string_lossy()
-            .replace('\\', "/");
-        if !safe_member(&relative) || !relative.to_ascii_lowercase().ends_with(".pak") {
-            return Err("Unsafe staged archive identity".into());
-        }
+        let relative = if manifest["extraction_mode"].as_str() == Some("imported-snapshot") {
+            let name = manifest["target_name"]
+                .as_str()
+                .ok_or("Snapshot has no archive name")?;
+            if super::modding_keys::signed_basename(Path::new(name))? != name {
+                return Err("Imported snapshot archive name is unsafe".into());
+            }
+            // No game version, signing-stage, or current-source dependency
+            // exists during independent asset editing.
+            name.to_owned()
+        } else {
+            let source = manifest
+                .get("source_pak")
+                .and_then(Value::as_str)
+                .ok_or("Missing project source archive")?;
+            let source = Path::new(source);
+            if !regular(source, 16 * 1024 * 1024 * 1024) {
+                return Err("Original staged archive is unavailable".into());
+            }
+            let original = fs::canonicalize(source).map_err(|e| e.to_string())?;
+            let base = fs::canonicalize(stage.join("paks"))
+                .map_err(|_| "Configured signing stage is unavailable")?;
+            let relative = original
+                .strip_prefix(&base)
+                .map_err(|_| "Project is not backed by the configured signed stage")?
+                .to_string_lossy()
+                .replace('\\', "/");
+            if !safe_member(&relative) || !relative.to_ascii_lowercase().ends_with(".pak") {
+                return Err("Unsafe staged archive identity".into());
+            }
+            relative
+        };
         let files = fs::canonicalize(folder.join("files"))
             .map_err(|_| "Extracted project files are missing")?;
         let entries = manifest
