@@ -49,8 +49,8 @@ mod runtime_signatures;
 mod selection;
 mod settings;
 mod settings_page;
-mod storage_usage;
 mod staged_library;
+mod storage_usage;
 mod system_health;
 mod textured;
 mod updater;
@@ -752,7 +752,7 @@ impl Operation {
                 .map_err(|e| e.to_string()),
             Self::CreateProjectFromLibrary(pak, projects, stage) => {
                 staged_library::create_project(&pak, &projects, &stage)
-                .map(|(path, count)| Completed::UnpackedProject(path, count))
+                    .map(|(path, count)| Completed::UnpackedProject(path, count))
             }
             Self::RefreshGamePakBaseline(game, client, storage, snapshots) => {
                 initial_setup::create(&game, &client, &storage, snapshots)
@@ -3030,18 +3030,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::RefreshGamePakBaseline => {
-            if state.busy { return Task::none(); }
+            if state.busy {
+                return Task::none();
+            }
             let (game, client) = match play_setup::validate_paths(
                 &state.preferences.game_installation,
                 &state.preferences.client_executable,
             ) {
                 Ok(paths) => paths,
                 Err(error) => {
-                    state.status = format!("Select valid game and client paths before refreshing PAKs: {error}");
+                    state.status = format!(
+                        "Select valid game and client paths before refreshing PAKs: {error}"
+                    );
                     return Task::none();
                 }
             };
-            if state.preferences.stage.trim().is_empty() || state.preferences.swap.trim().is_empty() {
+            if state.preferences.stage.trim().is_empty() || state.preferences.swap.trim().is_empty()
+            {
                 state.status = "Create the original offline setup before refreshing it.".into();
                 return Task::none();
             }
@@ -3056,9 +3061,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             let storage = PathBuf::from(&state.preferences.game_storage_root);
             state.status = "Creating a separate verified PAK baseline for the updated installation; old staged PAKs, projects and recovery helpers remain unchanged.".into();
-            return launch(state, Operation::RefreshGamePakBaseline(
-                game, client, storage, state.preferences.keep_original_snapshots,
-            ));
+            return launch(
+                state,
+                Operation::RefreshGamePakBaseline(
+                    game,
+                    client,
+                    storage,
+                    state.preferences.keep_original_snapshots,
+                ),
+            );
         }
         Message::ToggleAdvancedTools => state.show_advanced_tools = !state.show_advanced_tools,
         Message::ToggleActivity => {}
@@ -8003,7 +8014,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     persist_preferences(state);
                     state.status = format!(
                         "Created new verified game-update baseline: {} signed PAKs and {} plain archives. Previous stage and all mod projects preserved. Review and rebase edits before applying them to updated archives. New stage: {}",
-                        report.signed_count, report.plain_count, report.stage.display()
+                        report.signed_count,
+                        report.plain_count,
+                        report.stage.display()
                     );
                     state.page = Some(Page::Settings);
                     state.settings_tab = settings_page::Tab::Storage;
