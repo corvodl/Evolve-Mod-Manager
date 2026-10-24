@@ -24,6 +24,7 @@ pub mod glb;
 pub mod inventory;
 pub mod legacy_rig;
 pub mod level_export;
+pub mod library_build_updates;
 pub mod library_catalog;
 pub mod library_import;
 pub mod materials;
@@ -98,6 +99,10 @@ pub use inventory::{
 };
 pub use legacy_rig::{parse_legacy_skeleton, read_legacy_skin};
 pub use level_export::{LevelExportError, LevelExportReport, export_level_scene_glb};
+pub use library_build_updates::{
+    BuildUpdateFile, LibraryBuildUpdatePlan, LibraryBuildUpdateReport,
+    apply_library_build_updates, scan_library_build_updates,
+};
 pub use library_catalog::{
     ImportedLibrary, ImportedPak, LibraryError, LibraryReference, LibraryReferenceStatus,
     describe_archive, imported_archive_files, imported_library, resolve_imported_reference,
