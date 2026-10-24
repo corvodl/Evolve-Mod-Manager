@@ -29,6 +29,8 @@ jobs:
         run: node --test crates/evolve-desktop/tests/gfx_preview_input.test.mjs
       - name: Verify original Training menu preview-only host state
         run: node --test crates/evolve-desktop/tests/gfx_preview_runtime.test.cjs
+      - name: Validate Legacy UI Data reference audit without proprietary game assets
+        run: python3 -m unittest discover -s scripts -p 'test_audit_legacy_ui.py'
       - name: Verify ordinary C:/ swap journal and legacy rekey path parity
         run: python3 -m unittest discover -s crates/evolve-desktop/launcher_support -p 'test_ordinary_swap_paths.py'
       - name: Verify Test B Win32 / extended-path hook matching (Python)
