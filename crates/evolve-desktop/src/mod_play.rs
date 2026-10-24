@@ -164,3 +164,19 @@ pub fn launch_enabled(
     progress.store(100, Ordering::Relaxed);
     Ok((mods.len(), id, ready.compatibility_warnings))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_profile_marker_is_bounded_and_never_inferred_from_a_name() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(owned_profile_id(temp.path()).unwrap().is_none());
+        let id = "00112233445566778899aabbccddeeff";
+        save_owned_profile_id(temp.path(), id).unwrap();
+        assert_eq!(owned_profile_id(temp.path()).unwrap().as_deref(), Some(id));
+        std::fs::write(temp.path().join(AUTO_ID_FILE), b"not a profile").unwrap();
+        assert!(owned_profile_id(temp.path()).is_err());
+    }
+}
