@@ -195,6 +195,8 @@ struct State {
     cdf_legacy_2012: bool,
     texture_preview: Option<image::Handle>,
     gfx_session: Option<gfx_editor::Session>,
+    gfx_apply_pending: bool,
+    modding_build_after_gfx_apply: bool,
     gfx_active: bool,
     gfx_busy: bool,
     gfx_preview: Option<image::Handle>,
@@ -676,6 +678,7 @@ enum Completed {
     OfflineLauncherRestored(usize, bool),
     ExtractedSigned(usize, PathBuf),
     RebuiltSigned(String, PathBuf),
+    BuiltRawProject(String, PathBuf, ProjectRow),
     LevelExported(usize, usize, PathBuf),
     LevelFbxExported(usize, usize, PathBuf),
     StageInitialized(PathBuf),
@@ -701,10 +704,10 @@ impl Operation {
             Self::IndexProjects(root, stage) => {
                 discover_projects(&root, &stage).map(Completed::Projects)
             }
-            Self::BuildRawProject(project, projects, stage) => {
-                modding_projects::build_project_raw(&project, &projects, &stage)
-                    .map(|(entry, target)| Completed::RebuiltSigned(entry, target))
-            }
+            Self::BuildRawProject(project, projects, stage) => modding_projects::build_project_raw(
+                &project, &projects, &stage,
+            )
+            .map(|(entry, target, verified)| Completed::BuiltRawProject(entry, target, verified)),
             Self::ImportRawProjectMember(project, projects, member, source) => {
                 modding_projects::import_raw_member(&project, &projects, &member, &source).map(
                     |changed| {
@@ -1474,6 +1477,8 @@ enum Message {
     ModdingToggleAdvanced,
     ModdingBrowsePaks,
     ModdingSelectArchive(usize),
+    ModdingSelectImported(usize),
+    ModdingReloadLibrary,
     ModdingOpenProject,
     ModdingKind(Option<evolve_core::mod_safety::ModKind>),
     GuidedEdit(guided_modding::Action),
@@ -2343,6 +2348,22 @@ fn persist_preferences(state: &mut State) {
         };
 }
 
+/// Load existing imported PAK manifests independently of the Modding worker,
+/// so navigating between Asset Library and Modding never requires reimporting.
+fn load_saved_library(root: PathBuf) -> Task<Message> {
+    Task::perform(
+        async move {
+            let expected = root.clone();
+            let result = tokio::task::spawn_blocking(move || imported_library(&root))
+                .await
+                .map_err(|e| format!("Asset Library worker stopped: {e}"))
+                .and_then(|outcome| outcome.map_err(|e| e.to_string()));
+            (expected, result)
+        },
+        |(expected, result)| Message::StartupLibraryIndexed(expected, result),
+    )
+}
+
 fn check_updates_task(channel: UpdateChannel) -> Task<Message> {
     Task::perform(
         async move {
@@ -2453,27 +2474,34 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::Navigate(page) => {
             state.page = Some(page);
+            let mut tasks = Vec::new();
             if page == Page::Files
                 && state.modding_projects.is_none()
                 && !state.preferences.projects.trim().is_empty()
+                && !state.busy
             {
-                return launch(
+                tasks.push(launch(
                     state,
                     Operation::IndexProjects(
                         PathBuf::from(&state.preferences.projects),
                         PathBuf::from(&state.preferences.stage),
                     ),
-                );
+                ));
             }
-            if page == Page::AssetLibrary
+            if matches!(page, Page::AssetLibrary | Page::Files)
                 && state.library_catalog.is_none()
                 && !state.library_startup_loading
             {
                 let root = PathBuf::from(&state.library_root);
                 if root.is_dir() {
-                    return launch(state, Operation::LoadImportedLibrary(root));
+                    state.library_startup_loading = true;
+                    tasks.push(load_saved_library(root));
+                } else {
+                    state.status = "No saved imported PAK manifests were found at the configured Asset Library location. Existing signing-stage PAKs can still be edited in Modding; import source PAKs only once if you need the Asset Library.".into();
                 }
-                state.status = "Asset Library is ready at the detected manager data location. Import a local signed PAK to populate it.".into();
+            }
+            if !tasks.is_empty() {
+                return Task::batch(tasks);
             }
         }
         Message::DismissMenus | Message::MenuCommand(_) => {
@@ -2568,6 +2596,36 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return launch(
                     state,
                     Operation::ListProfiles(PathBuf::from(&state.preferences.stage)),
+                );
+            }
+        }
+        Message::ModdingReloadLibrary => {
+            if state.library_startup_loading {
+                state.status =
+                    "Loading saved Asset Library manifests; no reimport is needed.".into();
+                return Task::none();
+            }
+            let root = PathBuf::from(&state.library_root);
+            if !root.is_dir() {
+                state.status = "No existing Asset Library directory at the configured path. Browse staged PAKs to mod directly, or configure the correct library location in Settings.".into();
+                return Task::none();
+            }
+            // Unlike the once-per-launch startup index, a user-initiated
+            // refresh must replace an already loaded catalog as well.
+            return launch(state, Operation::LoadImportedLibrary(root));
+        }
+        Message::ModdingSelectImported(index) => {
+            if let Some(pak) = state
+                .library_catalog
+                .as_ref()
+                .and_then(|c| c.archives.get(index))
+            {
+                state.library_selection.clear();
+                state.library_selection.indices.insert(index);
+                state.library_selected = Some(index);
+                state.status = format!(
+                    "Selected imported PAK {} for an isolated editable project.",
+                    pak.name
                 );
             }
         }
@@ -2718,24 +2776,44 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::ModdingBuild => {
-            let Some(project) = state.modding_selected.and_then(|i| {
-                state
-                    .modding_projects
-                    .as_ref()
-                    .and_then(|projects| projects.get(i))
-            }) else {
-                state.status = "Select a verified editable project first.".into();
-                return Task::none();
-            };
-            if !project.changed_known || project.modified.is_empty() || project.modified.len() > 64
-            {
-                state.status = "A signed build needs 1–64 verified changed project files. Refresh the project before building.".into();
+            if state.busy || state.gfx_busy {
+                state.status = "Finish the current operation before building your mod.".into();
                 return Task::none();
             }
+            let Some(project) = state
+                .modding_selected
+                .and_then(|i| {
+                    state
+                        .modding_projects
+                        .as_ref()
+                        .and_then(|projects| projects.get(i))
+                })
+                .cloned()
+            else {
+                state.status = "Select an editable Mod Project first. Imported Asset Library PAKs must be prepared as an editing project.".into();
+                return Task::none();
+            };
+            // A changed menu movie still in the FFDec scratch workspace is
+            // NOT yet part of the project's contents. Building explicitly
+            // commits it with the normal validation and EditorBackups first.
+            if state.gfx_session.as_ref().is_some_and(|session| {
+                session
+                    .project
+                    .as_ref()
+                    .is_some_and(|p| p.workspace == project.workspace)
+                    && session.edits > 0
+                    && !session.applied
+            }) {
+                state.modding_build_after_gfx_apply = true;
+                return update(state, Message::GfxApply);
+            }
+            // The cached dashboard may be stale or partially indexed (large
+            // projects cap their read-only background hash pass). Build on a
+            // worker performs a COMPLETE fresh scan before replacing members.
             return launch(
                 state,
                 Operation::BuildRawProject(
-                    project.clone(),
+                    project,
                     PathBuf::from(&state.preferences.projects),
                     PathBuf::from(&state.preferences.stage),
                 ),
@@ -2875,12 +2953,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.library_menu = None;
         }
         Message::StartupLibraryIndexed(expected, result) => {
+            // Ignore reads from previous root choices. A completion for an
+            // outdated path must never clear the new location's loading flag.
+            if Path::new(&state.library_root) != expected.as_path() {
+                return Task::none();
+            }
             state.library_startup_loading = false;
-            // Ignore a startup read that finished after the user changed
-            // the root or explicitly loaded a newer catalog.
-            if Path::new(&state.library_root) != expected.as_path()
-                || state.library_catalog.is_some()
-            {
+            if state.library_catalog.is_some() {
                 return Task::none();
             }
             match result {
@@ -2896,9 +2975,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.library_selected = None;
                     state.library_page = 0;
                     refresh_library_matches(state);
+                    guided_modding::refresh_imports(state);
                 }
                 Err(error) => {
-                    state.status = format!("Could not index saved Asset Library: {error}")
+                    state.status = format!("Could not index saved Asset Library: {error}");
+                    guided_modding::refresh_imports(state);
                 }
             }
         }
@@ -5769,6 +5850,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             ) {
                 state.gfx_preview = None;
             }
+            state.gfx_apply_pending = matches!(&action, gfx_editor::Action::Apply { .. });
             state.gfx_busy = true;
             state.gfx_status = "Running checked FFDec operation in private edit copy...".into();
             return Task::perform(
@@ -5784,6 +5866,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::GfxFinished(result) => {
             state.gfx_busy = false;
+            let applied_to_project = std::mem::take(&mut state.gfx_apply_pending);
+            let build_after_apply = std::mem::take(&mut state.modding_build_after_gfx_apply);
             match result {
                 Ok((session, note, preview)) => {
                     let selected_key = state
@@ -5796,6 +5880,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             .iter()
                             .position(|layer| layer.depth == depth && layer.character == character)
                     });
+                    let saved_project = if applied_to_project && session.applied {
+                        session.project.clone()
+                    } else {
+                        None
+                    };
                     state.gfx_status = note;
                     state.gfx_session = Some(session);
                     state.gfx_layout_selected = None;
@@ -5805,9 +5894,32 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     if let Some(image_bytes) = preview {
                         state.gfx_preview = Some(image::Handle::from_bytes(image_bytes));
                     }
+                    if let Some(project) = saved_project {
+                        if build_after_apply {
+                            state.status = "Applied edited GFX to the Mod Project with a backup. Checking the complete project and building a signed test PAK...".into();
+                            return launch(
+                                state,
+                                Operation::BuildRawProject(
+                                    project,
+                                    PathBuf::from(&state.preferences.projects),
+                                    PathBuf::from(&state.preferences.stage),
+                                ),
+                            );
+                        }
+                        state.modding_pending_focus = Some(project.workspace.clone());
+                        state.status = "GFX saved to the Mod Project. Refreshing changed-file counts for Modding...".into();
+                        return launch(
+                            state,
+                            Operation::IndexProjects(
+                                PathBuf::from(&state.preferences.projects),
+                                PathBuf::from(&state.preferences.stage),
+                            ),
+                        );
+                    }
                 }
                 Err(e) => {
                     state.gfx_status = format!("FFDec editing failed: {e}");
+                    state.status = state.gfx_status.clone();
                 }
             }
             if let Some(index) = state.viewer_queued_preview.take()
@@ -7167,6 +7279,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     persist_preferences(state);
                 }
                 Ok(Completed::ImportedLibrary(catalog)) => {
+                    let from_modding = state.page == Some(Page::Files);
                     let count = catalog.archives.len();
                     state.status = format!(
                         "{count} imported Asset Library PAKs indexed from saved manifests; originals unchanged."
@@ -7179,13 +7292,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.library_page = 0;
                     state.library_menu = None;
                     refresh_library_matches(state);
-                    state.page = Some(Page::AssetLibrary);
-                    persist_preferences(state);
-                    if state.guided_editor.open {
-                        state.page = Some(Page::Files);
-                        let models = state.guided_editor.models;
-                        return guided_modding::update(state, guided_modding::Action::Open(models));
+                    if !from_modding {
+                        state.page = Some(Page::AssetLibrary);
                     }
+                    persist_preferences(state);
+                    guided_modding::refresh_imports(state);
                 }
                 Ok(Completed::ImportedPakFiles(inventory)) => {
                     state.viewer_queued_preview = None;
@@ -8081,6 +8192,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.selected = None;
                     state.file_selection.clear();
                     refresh_viewer_rows(state);
+                }
+                Ok(Completed::BuiltRawProject(name, dir, verified)) => {
+                    if let Some(projects) = state.modding_projects.as_mut()
+                        && let Some(item) = projects
+                            .iter_mut()
+                            .find(|item| item.workspace == verified.workspace)
+                    {
+                        *item = verified;
+                    }
+                    state.status = format!(
+                        "Built and verified {} into {}. GFX and other changed assets are included; original PAK unchanged. Test with your offline mod profile.",
+                        name,
+                        dir.display()
+                    );
+                    state.page = Some(Page::Files);
                 }
                 Ok(Completed::RebuiltSigned(name, dir)) => {
                     state.status = format!(
@@ -8978,18 +9104,7 @@ impl Desktop {
         // Independent read-only indexing: don't block Modding, updates,
         // previews or Settings with the global worker busy flag.
         let startup = if library_root.is_dir() {
-            Task::perform(
-                async move {
-                    let expected = library_root.clone();
-                    let result =
-                        tokio::task::spawn_blocking(move || imported_library(&library_root))
-                            .await
-                            .map_err(|e| format!("Asset Library worker stopped: {e}"))
-                            .and_then(|outcome| outcome.map_err(|e| e.to_string()));
-                    (expected, result)
-                },
-                |(expected, result)| Message::StartupLibraryIndexed(expected, result),
-            )
+            load_saved_library(library_root)
         } else {
             Task::none()
         };
@@ -10308,6 +10423,76 @@ mod project_edit_tests {
         let _ = update(&mut state, Message::LibraryRefresh);
         assert_eq!(state.page, Some(Page::Settings));
         assert!(!state.busy);
+    }
+
+    #[test]
+    fn modding_automatically_reindexes_saved_library_and_selects_imports() {
+        let folder = tempfile::tempdir().unwrap();
+        let root = folder.path().to_string_lossy().into_owned();
+        let mut state = State {
+            library_root: root.clone(),
+            ..State::default()
+        };
+        let _ = update(&mut state, Message::Navigate(Page::Files));
+        assert!(state.library_startup_loading);
+        assert_eq!(state.page, Some(Page::Files));
+
+        let catalog = ImportedLibrary {
+            root: root.clone(),
+            archives: vec![ImportedPak {
+                id: "a".repeat(20),
+                name: "models.pak".into(),
+                source: "C:/game/models.pak".into(),
+                directory: root.clone(),
+                group: "Hunters".into(),
+                description: "Models".into(),
+                entries: 1,
+                extracted_bytes: 1,
+                warnings: 0,
+                builds: vec![],
+            }],
+            builds: vec![],
+            total_bytes: 1,
+            ignored: 0,
+        };
+        let _ = update(
+            &mut state,
+            Message::StartupLibraryIndexed(folder.path().to_path_buf(), Ok(catalog)),
+        );
+        assert!(!state.library_startup_loading);
+        assert!(state.library_catalog.is_some());
+        assert_eq!(state.page, Some(Page::Files));
+        let _ = update(&mut state, Message::ModdingSelectImported(0));
+        assert_eq!(state.library_selected, Some(0));
+        assert_eq!(state.library_selection.indices.len(), 1);
+        assert!(state.library_selection.indices.contains(&0));
+    }
+
+    #[test]
+    fn mod_build_scans_fresh_even_if_cached_project_has_no_recognized_edits() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = ProjectRow {
+            label: "Test B".into(),
+            target: "ui_data.pak".into(),
+            source_build: String::new(),
+            status: "Needs review".into(),
+            details: "Scan limit reached".into(),
+            workspace: temp.path().join("Test_B"),
+            modified: vec![],
+            changed_known: false,
+        };
+        let mut state = State {
+            modding_selected: Some(0),
+            modding_projects: Some(vec![project]),
+            preferences: Preferences {
+                projects: temp.path().to_string_lossy().into_owned(),
+                stage: temp.path().join("stage").to_string_lossy().into_owned(),
+                ..Preferences::default()
+            },
+            ..State::default()
+        };
+        let _ = update(&mut state, Message::ModdingBuild);
+        assert!(state.busy, "Build must reach a full revalidation worker");
     }
 
     #[test]

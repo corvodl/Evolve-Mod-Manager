@@ -430,6 +430,88 @@ fn archive_browser(state: &State) -> Element<'_, Message> {
     ].spacing(8)).into()
 }
 
+/// One-click source PAK editing from the persisted Asset Library. This
+/// shares the Asset Library selection and preparation action, but does not
+/// require visiting that page or starting a new import on every launch.
+fn imported_paks(state: &State) -> Element<'_, Message> {
+    let mut rows = column![].spacing(2);
+    let query = state.modding_filter.to_ascii_lowercase();
+    let mut matching = 0usize;
+    if let Some(library) = &state.library_catalog {
+        for (index, archive) in library.archives.iter().enumerate() {
+            if !query.is_empty()
+                && !archive.name.to_ascii_lowercase().contains(&query)
+                && !archive.group.to_ascii_lowercase().contains(&query)
+                && !archive.source.to_ascii_lowercase().contains(&query)
+            {
+                continue;
+            }
+            matching += 1;
+            if matching > 40 {
+                continue;
+            }
+            rows = rows.push(
+                design::button(
+                    row![
+                        text(archive.name.as_str()).size(12).width(Fill),
+                        text(archive.group.as_str()).size(11).style(design::muted)
+                    ]
+                    .spacing(8),
+                )
+                .width(Fill)
+                .style(if state.library_selected == Some(index) {
+                    design::secondary
+                } else {
+                    design::text_button
+                })
+                .on_press(Message::ModdingSelectImported(index)),
+            );
+        }
+    }
+    let selected = state
+        .library_selected
+        .and_then(|i| state.library_catalog.as_ref()?.archives.get(i))
+        .is_some();
+    let description = if state.library_startup_loading {
+        "Loading saved PAK manifests; you do not need to reimport."
+    } else if state.library_catalog.is_some() {
+        "Previously imported PAKs are available for editing. Select one to create a staged copy; source files stay unchanged."
+    } else {
+        "No saved Asset Library loaded. Reload existing manifests, or use Browse staged PAKs to edit your prepared stage directly."
+    };
+    panel(
+        column![
+            row![
+                text("AVAILABLE IMPORTED PAKS").size(13),
+                space().width(Fill),
+                text(format!("{matching} match(es)"))
+                    .size(11)
+                    .style(design::muted),
+                design::button("Reload saved library")
+                    .on_press_maybe(
+                        (!state.library_startup_loading).then_some(Message::ModdingReloadLibrary)
+                    )
+                    .style(design::text_button),
+            ]
+            .spacing(8)
+            .align_y(iced::Center),
+            text(description).size(11).style(design::muted),
+            scrollable(rows).height(Length::Fixed(120.0)),
+            row![
+                design::button("Edit selected PAK / Add to Project")
+                    .style(design::primary)
+                    .on_press_maybe(selected.then_some(Message::LibraryMakeModProject)),
+                design::button("Browse staged PAKs")
+                    .style(design::secondary)
+                    .on_press(Message::ModdingBrowsePaks),
+            ]
+            .spacing(8),
+        ]
+        .spacing(5),
+    )
+    .into()
+}
+
 fn profiles(state: &State) -> Element<'_, Message> {
     let mut catalog = column![].spacing(3);
     if let Some(data) = &state.profile_catalog {
@@ -549,6 +631,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             design::button("Gameplay values…").on_press(Message::GuidedEdit(crate::guided_modding::Action::Open(false))),
             design::button("Models…").on_press(Message::GuidedEdit(crate::guided_modding::Action::Open(true))),
         ].spacing(6),
+        imported_paks(state),
         projects(state),
         modifications(state),
         actions,

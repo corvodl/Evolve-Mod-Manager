@@ -39,6 +39,54 @@ pub enum Action {
 fn message(action: Action) -> Message {
     Message::GuidedEdit(action)
 }
+/// Repopulate imported edit targets from the already-indexed library without
+/// resetting unsaved gameplay fields or requiring another source-PAK import.
+pub fn refresh_imports(state: &mut State) {
+    if !state.guided_editor.open {
+        return;
+    }
+    let editor = &mut state.guided_editor;
+    editor.imports.clear();
+    let mut skipped = 0;
+    if let Some(library) = &state.library_catalog {
+        let build = state
+            .library_by_build
+            .then(|| library.builds.get(state.library_build_index))
+            .flatten();
+        for archive in &library.archives {
+            if state.library_by_build && !build.is_some_and(|b| archive.builds.contains(b)) {
+                continue;
+            }
+            if editor.rows.iter().any(|(p, _)| {
+                p.target.eq_ignore_ascii_case(&archive.name)
+                    && archive.builds.contains(&p.source_build)
+            }) {
+                continue;
+            }
+            match modding_projects::guided_import_members(archive, editor.models) {
+                Ok(paths) => {
+                    let archive = Arc::new(archive.clone());
+                    editor
+                        .imports
+                        .extend(paths.into_iter().map(|path| (archive.clone(), path)));
+                }
+                Err(_) => skipped += 1,
+            }
+        }
+    }
+    editor.note = if state.library_catalog.is_some() {
+        format!(
+            "{} assets in editable projects; {} imported assets ready; {skipped} imports unavailable. Select an imported asset to create a staged editing copy. Originals remain unchanged.",
+            editor.rows.len(),
+            editor.imports.len()
+        )
+    } else if state.library_startup_loading {
+        "Loading previously imported Asset Library PAKs; no reimport required.".into()
+    } else {
+        "No saved imported Asset Library catalog loaded. Select Refresh assets to scan saved manifests without importing PAKs again.".into()
+    };
+}
+
 pub fn update(state: &mut State, action: Action) -> Task<Message> {
     if state.busy {
         state.status = "Wait for the current operation before editing.".into();
@@ -61,55 +109,21 @@ pub fn update(state: &mut State, action: Action) -> Task<Message> {
                 models,
                 ..Editor::default()
             };
-            let mut skipped = 0;
             for project in state.modding_projects.as_deref().unwrap_or(&[]) {
-                match modding_projects::guided_members(project, models) {
-                    Ok(paths) => {
-                        let project = Arc::new(project.clone());
-                        editor
-                            .rows
-                            .extend(paths.into_iter().map(|path| (project.clone(), path)));
-                    }
-                    Err(_) => skipped += 1,
+                if let Ok(paths) = modding_projects::guided_members(project, models) {
+                    let project = Arc::new(project.clone());
+                    editor
+                        .rows
+                        .extend(paths.into_iter().map(|path| (project.clone(), path)));
                 }
             }
-            if let Some(library) = &state.library_catalog {
-                let build = state
-                    .library_by_build
-                    .then(|| library.builds.get(state.library_build_index))
-                    .flatten();
-                for archive in &library.archives {
-                    if state.library_by_build && !build.is_some_and(|b| archive.builds.contains(b))
-                    {
-                        continue;
-                    }
-                    // Existing project copies take precedence over imported originals.
-                    if editor.rows.iter().any(|(p, _)| {
-                        p.target.eq_ignore_ascii_case(&archive.name)
-                            && archive.builds.contains(&p.source_build)
-                    }) {
-                        continue;
-                    }
-                    match modding_projects::guided_import_members(archive, models) {
-                        Ok(paths) => {
-                            let archive = Arc::new(archive.clone());
-                            editor
-                                .imports
-                                .extend(paths.into_iter().map(|path| (archive.clone(), path)));
-                        }
-                        Err(_) => skipped += 1,
-                    }
-                }
-            }
-            editor.note = format!(
-                "{} assets in editable projects; {skipped} projects unavailable. Search by character, ability or filename. Imported assets below can create an editable copy; originals remain unchanged. The Asset Library build filter controls imported results.",
-                editor.rows.len()
-            );
+            refresh_imports(state);
         }
         Action::Refresh => {
             if state.library_catalog.is_none() {
-                return super::update(state, Message::LibraryRefresh);
+                return super::update(state, Message::ModdingReloadLibrary);
             }
+            refresh_imports(state);
             return super::update(state, Message::ModdingRefresh);
         }
         Action::Prepare(i) => {
@@ -117,10 +131,6 @@ pub fn update(state: &mut State, action: Action) -> Task<Message> {
                 return Task::none();
             };
             let stage = std::path::PathBuf::from(&state.preferences.stage);
-            if crate::modding_keys::staged_target(&stage, Path::new(&archive.source)).is_err() {
-                editor.note = "This build's original is not mapped to the configured signing stage. Complete stage setup before creating an editable copy.".into();
-                return Task::none();
-            }
             return super::launch(
                 state,
                 super::Operation::CreateProjectFromLibrary(
@@ -324,4 +334,52 @@ pub fn view(state: &State) -> Element<'_, Message> {
             .push(row![design::button("Save gameplay values").on_press(message(Action::Save)), design::button("Discard edits").on_press(message(Action::Discard))].spacing(8));
     }
     panel.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use evolve_core::{ImportedLibrary, ImportedPak};
+
+    #[test]
+    fn saved_imports_are_available_to_guided_modding_without_reimport() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = serde_json::json!({
+            "version": 1,
+            "source": "C:/EvolveGame/models.pak",
+            "entries": [{"path": "characters/hunters/merc_emet/emet_3p.cdf"}]
+        });
+        std::fs::write(dir.path().join("asset-library.json"), manifest.to_string()).unwrap();
+        let archive = ImportedPak {
+            id: "1".repeat(20),
+            name: "models.pak".into(),
+            source: "C:/EvolveGame/models.pak".into(),
+            directory: dir.path().to_string_lossy().into_owned(),
+            group: "Hunters".into(),
+            description: "Models".into(),
+            entries: 1,
+            extracted_bytes: 1,
+            warnings: 0,
+            builds: vec![],
+        };
+        let mut state = State {
+            library_catalog: Some(ImportedLibrary {
+                root: dir.path().to_string_lossy().into_owned(),
+                archives: vec![archive],
+                builds: vec![],
+                total_bytes: 1,
+                ignored: 0,
+            }),
+            ..State::default()
+        };
+        state.guided_editor.open = true;
+        state.guided_editor.models = true;
+        refresh_imports(&mut state);
+        assert_eq!(state.guided_editor.imports.len(), 1);
+
+        // An imported source outside stage/paks must reach the new automatic
+        // staging worker, rather than being rejected by the obsolete guard.
+        let _ = update(&mut state, Action::Prepare(0));
+        assert!(state.busy);
+    }
 }

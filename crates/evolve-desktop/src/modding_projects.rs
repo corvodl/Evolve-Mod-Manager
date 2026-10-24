@@ -83,7 +83,13 @@ fn safe_member(raw: &str) -> bool {
             .all(|s| !s.is_empty() && s != "." && s != "..")
         && !raw.starts_with('/')
 }
-fn inspect_project(folder: &Path, stage: &Path, label: String, source_build: String) -> ProjectRow {
+fn inspect_project(
+    folder: &Path,
+    stage: &Path,
+    label: String,
+    source_build: String,
+    hash_budget: u64,
+) -> ProjectRow {
     let mut item = ProjectRow {
         label,
         target: "Unverified source".into(),
@@ -133,7 +139,20 @@ fn inspect_project(folder: &Path, stage: &Path, label: String, source_build: Str
         let mut checked = 0u64;
         let mut known = true;
         let mut seen = HashSet::new();
-        for entry in entries {
+        // Inspect GFX movie edits first. UI PAKs may contain hundreds of MiB
+        // of unrelated assets; otherwise a main_menu.gfx edit near the end
+        // of the manifest is invisible in the bounded dashboard scan.
+        let gfx_member = |entry: &&Value| {
+            entry
+                .get("path")
+                .and_then(Value::as_str)
+                .is_some_and(|p| p.to_ascii_lowercase().ends_with(".gfx"))
+        };
+        for entry in entries
+            .iter()
+            .filter(|entry| gfx_member(entry))
+            .chain(entries.iter().filter(|entry| !gfx_member(entry)))
+        {
             let name = entry
                 .get("path")
                 .and_then(Value::as_str)
@@ -158,7 +177,7 @@ fn inspect_project(folder: &Path, stage: &Path, label: String, source_build: Str
                 return Err("Project file escaped its workspace".into());
             }
             let size = fs::metadata(&path).map_err(|e| e.to_string())?.len();
-            if checked.saturating_add(size) > MAX_HASHED_PER_WORKSPACE {
+            if checked.saturating_add(size) > hash_budget {
                 known = false;
                 continue;
             }
@@ -175,18 +194,21 @@ fn inspect_project(folder: &Path, stage: &Path, label: String, source_build: Str
     match read() {
         Ok((target, modified, known)) => {
             item.target = target;
-            item.status = if !known {
-                "Needs review"
-            } else if modified.is_empty() {
-                "Draft"
-            } else {
+            item.status = if !modified.is_empty() {
                 "Modified"
+            } else if !known {
+                "Needs review"
+            } else {
+                "Draft"
             }
             .into();
             item.details = if known {
                 format!("{} changed asset(s)", modified.len())
             } else {
-                "Some files could not be checked within scan limits".into()
+                format!(
+                    "{} changed asset(s) found; other files exceed fast-scan budget and will be fully verified during Build Mod",
+                    modified.len()
+                )
             };
             item.modified = modified;
             item.changed_known = known;
@@ -300,7 +322,7 @@ pub fn discover_projects(root: &Path, stage: &Path) -> Result<Vec<ProjectRow>, S
                     "Unknown build".into(),
                 )
             });
-            inspect_project(&path, stage, label, build)
+            inspect_project(&path, stage, label, build, MAX_HASHED_PER_WORKSPACE)
         })
         .collect();
     projects.sort_by(|a, b| {
@@ -322,8 +344,18 @@ pub fn unpack_raw_project(
     let _target = super::modding_keys::staged_target(stage, source)?;
     let basename = super::modding_keys::signed_basename(source)?;
     let public = super::modding_keys::public_key(stage)?;
+    // A first launch normally has a configured default Projects path but no
+    // directory yet. Create that workspace on demand, rather than making the
+    // user import PAKs again or manually initialize an empty projects folder.
+    if !projects.is_absolute() {
+        return Err("Configure an absolute Projects directory before editing".into());
+    }
+    if fs::symlink_metadata(projects).is_err() {
+        fs::create_dir_all(projects)
+            .map_err(|e| format!("Cannot create Projects directory: {e}"))?;
+    }
     if !fs::symlink_metadata(projects).is_ok_and(|meta| meta.file_type().is_dir()) {
-        return Err("Configure a real Projects directory before extracting".into());
+        return Err("Projects must be a real directory, not a symbolic link".into());
     }
     let canonical_projects = fs::canonicalize(projects).map_err(|e| e.to_string())?;
     let before = digest(source).map_err(|e| e.to_string())?;
@@ -426,14 +458,10 @@ pub fn build_project_raw(
     project: &ProjectRow,
     projects: &Path,
     stage: &Path,
-) -> Result<(String, PathBuf), String> {
-    if !project.changed_known
-        || project.modified.is_empty()
-        || project.modified.len() > 64
-        || project.status != "Modified"
-    {
-        return Err("A signed build requires 1–64 verified changed project members; refresh the project before building.".into());
-    }
+) -> Result<(String, PathBuf, ProjectRow), String> {
+    // The Modding dashboard uses a bounded scan for responsiveness. Never
+    // trust its cached change list to build: refresh every member on a blocking
+    // worker so large PAKs and newly applied GFX edits cannot be missed.
     let parent = fs::canonicalize(projects).map_err(|e| e.to_string())?;
     if !fs::symlink_metadata(projects).is_ok_and(|m| m.file_type().is_dir()) {
         return Err("Projects path must be a real directory".into());
@@ -442,12 +470,30 @@ pub fn build_project_raw(
     if !folder.starts_with(&parent) || folder == parent {
         return Err("Selected workspace is outside Projects".into());
     }
+    let verified = inspect_project(
+        &folder,
+        stage,
+        project.label.clone(),
+        project.source_build.clone(),
+        u64::MAX,
+    );
+    if !verified.changed_known
+        || verified.modified.is_empty()
+        || verified.modified.len() > 64
+        || verified.status != "Modified"
+    {
+        return Err(format!(
+            "Signed build requires 1–64 fully verified changed files; {}. Save GFX edits with Apply to Mod Project before building.",
+            verified.details
+        ));
+    }
+    let modified = &verified.modified;
     let manifest = read_json(&folder.join(".evolve-pak-workspace.json"), 8 * 1024 * 1024)?;
     let records = manifest
         .get("entries")
         .and_then(Value::as_array)
         .ok_or("Original manifest has no file records")?;
-    for rel in &project.modified {
+    for rel in modified {
         if !safe_member(rel) {
             return Err("Unsafe modified member".into());
         }
@@ -481,19 +527,6 @@ pub fn build_project_raw(
     {
         return Err("Source PAK changed since extraction; refusing to build".into());
     }
-    // A fresh inspection also detects edits that occurred after project-list
-    // indexing. Do not issue a partial or stale rebuild.
-    let fresh = inspect_project(
-        &folder,
-        stage,
-        project.label.clone(),
-        project.source_build.clone(),
-    );
-    if !fresh.changed_known || fresh.modified != project.modified {
-        return Err(
-            "Project edits changed during preparation; refresh and review before building".into(),
-        );
-    }
     let keys = super::modding_keys::signing_keys(stage)?;
     if let Some(hash) = manifest.get("public_key_sha256").and_then(Value::as_str)
         && !digest(&keys.public)
@@ -515,8 +548,8 @@ pub fn build_project_raw(
         .prefix(".project-serialization-")
         .tempdir_in(&folder)
         .map_err(|e| e.to_string())?;
-    let mut replacements = Vec::with_capacity(project.modified.len());
-    for rel in &project.modified {
+    let mut replacements = Vec::with_capacity(modified.len());
+    for rel in modified {
         let replacement = folder.join("files").join(rel);
         let canonical = fs::canonicalize(&replacement).map_err(|e| e.to_string())?;
         if !canonical.starts_with(&source_files)
@@ -573,7 +606,11 @@ pub fn build_project_raw(
         &output,
     );
     match result {
-        Ok(reports) => Ok((format!("{} modified member(s)", reports.len()), output)),
+        Ok(reports) => Ok((
+            format!("{} modified member(s)", reports.len()),
+            output,
+            verified,
+        )),
         Err(error) => {
             // The core uses an atomic tempfile on failure. Remove only our
             // new empty output directory, never an existing user's path.
@@ -1001,6 +1038,40 @@ pub fn guided_import_members(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn changed_gfx_is_found_by_full_build_scan_after_dashboard_budget_exceeded() {
+        let temp = tempfile::tempdir().unwrap();
+        let stage = temp.path().join("staged");
+        let original_pak = stage.join("paks/ui_data.pak");
+        fs::create_dir_all(original_pak.parent().unwrap()).unwrap();
+        fs::write(&original_pak, b"source baseline").unwrap();
+        let project = temp.path().join("Projects/Test_B");
+        let member = "Libs/UI/main_menu.gfx";
+        let asset = project.join("files").join(member);
+        fs::create_dir_all(asset.parent().unwrap()).unwrap();
+        fs::write(&asset, b"new main menu Test B").unwrap();
+        let manifest = serde_json::json!({
+            "version": 1,
+            "source_pak": original_pak,
+            "entries": [{
+                "path": member, "format": "raw",
+                "sha256": format!("{:x}", Sha256::digest(b"unmodified main menu")),
+            }]
+        });
+        fs::write(
+            project.join(".evolve-pak-workspace.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        let limited = inspect_project(&project, &stage, "Test B".into(), "".into(), 8);
+        assert!(!limited.changed_known);
+        assert!(limited.modified.is_empty());
+        let full = inspect_project(&project, &stage, "Test B".into(), "".into(), u64::MAX);
+        assert_eq!(full.status, "Modified");
+        assert!(full.changed_known);
+        assert_eq!(full.modified, vec![member]);
+    }
+
     #[test]
     fn guided_values_save_backup_restore_and_stale_guard() {
         let temp = tempfile::tempdir().unwrap();

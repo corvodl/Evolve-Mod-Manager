@@ -45,10 +45,18 @@ fn signed_source(pak: &ImportedPak) -> Result<(PathBuf, String), String> {
     }
     let folder = PathBuf::from(&pak.directory);
     let info = read_json(&folder.join("asset-library.json"))?;
-    let expected = info["source_sha256"]
-        .as_str()
-        .ok_or("Imported archive has no original SHA-256; re-import it before editing")?;
-    if expected.len() != 64 || !expected.bytes().all(|c| c.is_ascii_hexdigit()) {
+    // Older private-manager imports may not record a source SHA. They still
+    // identify the exact source path and have independently verified extracted
+    // files. Hash the current regular PAK and cryptographically verify it at
+    // staging time instead of forcing a costly reimport of every archive.
+    // Never ignore or replace a checksum when a modern manifest supplies one.
+    let expected = info["source_sha256"].as_str();
+    if info.get("source_sha256").is_some() && expected.is_none() {
+        return Err("Imported source checksum field is malformed".into());
+    }
+    if let Some(value) = expected
+        && (value.len() != 64 || !value.bytes().all(|c| c.is_ascii_hexdigit()))
+    {
         return Err("Imported source checksum is invalid".into());
     }
     if info["name"].as_str() != Some(pak.name.as_str())
@@ -64,10 +72,11 @@ fn signed_source(pak: &ImportedPak) -> Result<(PathBuf, String), String> {
         return Err("Original imported PAK is not a regular file".into());
     }
     let source = fs::canonicalize(&source).map_err(|e| e.to_string())?;
-    if !sha(&source)?.eq_ignore_ascii_case(expected) {
-        return Err("Imported source has changed since import. Re-import the PAK and refresh the game baseline before editing.".into());
+    let current = sha(&source)?;
+    if expected.is_some_and(|recorded| !current.eq_ignore_ascii_case(recorded)) {
+        return Err("Imported source has changed since import. Refresh the game baseline or import the updated archive before editing.".into());
     }
-    Ok((source, expected.to_ascii_lowercase()))
+    Ok((source, current))
 }
 
 fn exact_planned_target(
@@ -232,6 +241,43 @@ pub fn create_project(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legacy_import_without_source_sha_reuses_original_without_reimport() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("models.pak");
+        fs::write(&source, b"original signed source placeholder").unwrap();
+        let imported = dir.path().join("old-import");
+        fs::create_dir_all(&imported).unwrap();
+        let archive = ImportedPak {
+            id: "c".repeat(20),
+            name: "models.pak".into(),
+            source: source.to_string_lossy().into_owned(),
+            directory: imported.to_string_lossy().into_owned(),
+            group: String::new(),
+            description: String::new(),
+            entries: 1,
+            extracted_bytes: 10,
+            warnings: 0,
+            builds: vec![],
+        };
+        let manifest = json!({
+            "version": 1, "name": archive.name, "source": archive.source,
+            "entries": [{"path": "models/test.cdf", "bytes": 1}]
+        });
+        fs::write(imported.join("asset-library.json"), manifest.to_string()).unwrap();
+        let (verified, checksum) = signed_source(&archive).unwrap();
+        assert_eq!(verified, fs::canonicalize(&source).unwrap());
+        assert_eq!(checksum, sha(&source).unwrap());
+
+        let with_sha = json!({
+            "version": 1, "name": archive.name, "source": archive.source,
+            "source_sha256": "0".repeat(64),
+            "entries": [{"path": "models/test.cdf", "bytes": 1}]
+        });
+        fs::write(imported.join("asset-library.json"), with_sha.to_string()).unwrap();
+        assert!(signed_source(&archive).is_err());
+    }
+
     #[test]
     fn foreign_pak_cannot_infer_target_from_filename() {
         let dir = tempfile::tempdir().unwrap();
