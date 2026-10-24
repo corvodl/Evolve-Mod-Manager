@@ -1018,7 +1018,7 @@ pub fn launch_existing_offline_client(plan: &LaunchReady) -> Result<u32, String>
             .arg("--stage-dir")
             .arg(&plan.stage)
             .arg("--game-root")
-            .arg(&plan.game)
+            .arg(crate::play_setup::ordinary_game_path(&plan.game))
             .creation_flags(0x08000000)
             .status()
             .map_err(|e| format!("Python 3.11 launcher preparation unavailable: {e}"))?;
