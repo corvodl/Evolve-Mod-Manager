@@ -1100,6 +1100,13 @@ mod tests {
         let ledger = swap.join("controlled_swap_state.json");
         fs::write(&ledger, serde_json::to_vec(&journal).unwrap()).unwrap();
         assert_eq!(guarded_restore_state(&stage, &swap).unwrap(), "interrupted");
+        for phase in ["swapping", "prepared", "restored"] {
+            journal["phase"] = serde_json::json!(phase);
+            fs::write(&ledger, serde_json::to_vec(&journal).unwrap()).unwrap();
+            assert_eq!(guarded_restore_state(&stage, &swap).unwrap(), phase);
+        }
+        journal["phase"] = serde_json::json!("interrupted");
+        fs::write(&ledger, serde_json::to_vec(&journal).unwrap()).unwrap();
         journal["files"].as_array_mut().unwrap().reverse();
         fs::write(&ledger, serde_json::to_vec(&journal).unwrap()).unwrap();
         assert!(guarded_restore_state(&stage, &swap).is_err());
