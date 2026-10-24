@@ -184,9 +184,13 @@ fn manifests_by_build(root: &Path) -> Result<HashMap<String, Vec<String>>, Libra
         let mut builds = 0usize;
         for entry in fs::read_dir(&updates)? {
             builds += 1;
-            if builds > 128 { return Err(LibraryError::Limit); }
+            if builds > 128 {
+                return Err(LibraryError::Limit);
+            }
             let entry = entry?;
-            if !entry.file_type()?.is_dir() { continue; }
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
             let id = entry.file_name().to_string_lossy().into_owned();
             if id.len() != 24 || !id.bytes().all(|c| c.is_ascii_hexdigit()) {
                 continue;
@@ -195,34 +199,58 @@ fn manifests_by_build(root: &Path) -> Result<HashMap<String, Vec<String>>, Libra
             let mut history = 0usize;
             for snapshot in fs::read_dir(entry.path())? {
                 history += 1;
-                if history > 512 { return Err(LibraryError::Limit); }
+                if history > 512 {
+                    return Err(LibraryError::Limit);
+                }
                 let snapshot = snapshot?;
                 let name = snapshot.file_name().to_string_lossy().into_owned();
-                if name.starts_with("snapshot-") && name.ends_with(".json")
+                if name.starts_with("snapshot-")
+                    && name.ends_with(".json")
                     && snapshot.file_type()?.is_file()
-                    && last.as_ref().is_none_or(|(prior, _): &(String, PathBuf)| name > *prior)
+                    && last
+                        .as_ref()
+                        .is_none_or(|(prior, _): &(String, PathBuf)| name > *prior)
                 {
                     last = Some((name, snapshot.path()));
                 }
             }
-            let Some((_, filename)) = last else { continue; };
-            let Ok(bytes) = read_bounded(&filename, MAX_BUILD_BYTES) else { continue; };
+            let Some((_, filename)) = last else {
+                continue;
+            };
+            let Ok(bytes) = read_bounded(&filename, MAX_BUILD_BYTES) else {
+                continue;
+            };
             let Ok(record) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
                 continue;
             };
             if record["version"].as_u64() != Some(1)
-                || record["build_id"].as_str() != Some(id.as_str()) {
+                || record["build_id"].as_str() != Some(id.as_str())
+            {
                 continue;
             }
-            let Some(root_path) = record["source_root"].as_str() else { continue; };
-            let Some(members) = record["members"].as_object() else { continue; };
-            if members.len() > MAX_ARCHIVES { continue; }
-            let chunks = root_path.split(['/', '\\'])
+            let Some(root_path) = record["source_root"].as_str() else {
+                continue;
+            };
+            let Some(members) = record["members"].as_object() else {
+                continue;
+            };
+            if members.len() > MAX_ARCHIVES {
+                continue;
+            }
+            let chunks = root_path
+                .split(['/', '\\'])
                 .filter(|s| !s.is_empty())
                 .collect::<Vec<_>>();
             let label = format!(
                 "{} [{}]",
-                chunks.iter().rev().take(3).rev().copied().collect::<Vec<_>>().join("/"),
+                chunks
+                    .iter()
+                    .rev()
+                    .take(3)
+                    .rev()
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join("/"),
                 &id[..8]
             );
             for member in members.values() {
@@ -230,7 +258,10 @@ fn manifests_by_build(root: &Path) -> Result<HashMap<String, Vec<String>>, Libra
                     && archive_id.len() == 20
                     && archive_id.bytes().all(|c| c.is_ascii_hexdigit())
                 {
-                    lookup.entry(archive_id.to_owned()).or_default().push(label.clone());
+                    lookup
+                        .entry(archive_id.to_owned())
+                        .or_default()
+                        .push(label.clone());
                 }
             }
         }
@@ -552,10 +583,15 @@ mod tests {
         for (i, (archive, build)) in imports.iter().enumerate() {
             let folder = library.path().join(format!("assets{i}.pak__{archive}"));
             fs::create_dir_all(&folder).unwrap();
-            fs::write(folder.join("asset-library.json"), serde_json::json!({
-                "version":1, "name":format!("assets{i}.pak"), "source":"/unused",
-                "entries":[]
-            }).to_string()).unwrap();
+            fs::write(
+                folder.join("asset-library.json"),
+                serde_json::json!({
+                    "version":1, "name":format!("assets{i}.pak"), "source":"/unused",
+                    "entries":[]
+                })
+                .to_string(),
+            )
+            .unwrap();
             let snapshots = history.join(build);
             fs::create_dir_all(&snapshots).unwrap();
             let root = if i == 0 {
@@ -563,15 +599,24 @@ mod tests {
             } else {
                 "C:/Games/ModdedEvolve/EvolveGame"
             };
-            fs::write(snapshots.join("snapshot-0000000001.json"), serde_json::json!({
-                "version":1, "source_root":root, "build_id":build,
-                "members":{"Game/UI_Assets.pak":{
-                    "sha256":"a".repeat(64),"archive_id":archive
-                }}
-            }).to_string()).unwrap();
+            fs::write(
+                snapshots.join("snapshot-0000000001.json"),
+                serde_json::json!({
+                    "version":1, "source_root":root, "build_id":build,
+                    "members":{"Game/UI_Assets.pak":{
+                        "sha256":"a".repeat(64),"archive_id":archive
+                    }}
+                })
+                .to_string(),
+            )
+            .unwrap();
         }
         let catalog = imported_library(library.path()).unwrap();
-        let labels: Vec<_> = catalog.archives.iter().flat_map(|a| a.builds.iter()).collect();
+        let labels: Vec<_> = catalog
+            .archives
+            .iter()
+            .flat_map(|a| a.builds.iter())
+            .collect();
         assert_eq!(labels.len(), 2);
         assert_ne!(labels[0], labels[1]);
         assert!(labels.iter().any(|l| l.contains("LegacyModdedEvolve")));
