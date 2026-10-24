@@ -551,13 +551,16 @@ pub fn build_project_raw(
         return Err("Stage signing key no longer matches the original extracted archive".into());
     }
     let basename = super::modding_keys::signed_basename(&original)?;
-    if let Some(name) = manifest.get("signed_basename").and_then(Value::as_str)
-        && name != basename
-    {
-        return Err("Archive signed basename mismatch".into());
+    let signed_name = manifest
+        .get("signed_basename")
+        .and_then(Value::as_str)
+        .unwrap_or(&basename);
+    if signed_name != basename && signed_name != basename.to_ascii_lowercase() {
+        return Err("Archive signed basename is not an authenticated filename variant".into());
     }
     let source_files = fs::canonicalize(folder.join("files")).map_err(|e| e.to_string())?;
-    let original_index = evolve_core::open_verified_signed_pak(&original, &keys.public, &basename)
+    let original_index =
+        evolve_core::open_verified_signed_pak(&original, &keys.public, signed_name)
         .map_err(|e| e.to_string())?;
     let serialized = tempfile::Builder::new()
         .prefix(".project-serialization-")
@@ -611,21 +614,33 @@ pub fn build_project_raw(
     let output_folder = built.join(format!("Rust-Raw-{:x}", number));
     fs::create_dir(&output_folder).map_err(|e| e.to_string())?;
     let output = output_folder.join(&basename);
+    // The core signs using the authenticated original basename. If retail
+    // CryPAK uses ASCII lowercase while the installed file uses mixed case,
+    // first publish the signed file under that verified spelling, then move
+    // it to its original physical basename within the same new output folder.
+    let signed_output = output_folder.join(signed_name);
     let result = evolve_core::rebuild_signed_pak_entries(
         &original,
         &keys.public,
         &keys.private,
         &keys.public,
-        &basename,
+        signed_name,
         &replacements,
-        &output,
+        &signed_output,
     );
     match result {
-        Ok(reports) => Ok((
-            format!("{} modified member(s)", reports.len()),
-            output,
-            verified,
-        )),
+        Ok(reports) => {
+            if signed_output != output {
+                fs::rename(&signed_output, &output).map_err(|e| {
+                    format!("Cannot restore the original PAK filename after signing: {e}")
+                })?;
+            }
+            Ok((
+                format!("{} modified member(s)", reports.len()),
+                output,
+                verified,
+            ))
+        },
         Err(error) => {
             // The core uses an atomic tempfile on failure. Remove only our
             // new empty output directory, never an existing user's path.
