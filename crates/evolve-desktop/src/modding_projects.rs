@@ -296,14 +296,19 @@ struct ModPreferences {
 
 impl Default for ModPreferences {
     fn default() -> Self {
-        Self { schema: 1, mods: HashMap::new() }
+        Self {
+            schema: 1,
+            mods: HashMap::new(),
+        }
     }
 }
 
 fn preference_key(root: &Path, workspace: &Path) -> Result<String, String> {
     let base = fs::canonicalize(root).map_err(|e| e.to_string())?;
     let folder = fs::canonicalize(workspace).map_err(|e| e.to_string())?;
-    let relative = folder.strip_prefix(&base).map_err(|_| "Mod is outside Projects")?;
+    let relative = folder
+        .strip_prefix(&base)
+        .map_err(|_| "Mod is outside Projects")?;
     let name = relative.to_string_lossy().replace('\\', "/");
     if !safe_member(&name) {
         return Err("Invalid mod folder".into());
@@ -338,7 +343,10 @@ pub fn save_mod_preference(
     let entry = settings.mods.entry(key).or_default();
     if let Some(value) = name {
         let trimmed = value.trim();
-        if trimmed.is_empty() || trimmed.chars().count() > 80 || trimmed.chars().any(char::is_control) {
+        if trimmed.is_empty()
+            || trimmed.chars().count() > 80
+            || trimmed.chars().any(char::is_control)
+        {
             return Err("Give the mod a name between 1 and 80 characters".into());
         }
         entry.name = Some(trimmed.into());
@@ -350,7 +358,9 @@ pub fn save_mod_preference(
     serde_json::to_writer_pretty(&mut temporary, &settings).map_err(|e| e.to_string())?;
     temporary.flush().map_err(|e| e.to_string())?;
     temporary.as_file().sync_all().map_err(|e| e.to_string())?;
-    temporary.persist(root.join("mod-settings.json")).map_err(|e| e.error.to_string())?;
+    temporary
+        .persist(root.join("mod-settings.json"))
+        .map_err(|e| e.error.to_string())?;
     Ok(())
 }
 
