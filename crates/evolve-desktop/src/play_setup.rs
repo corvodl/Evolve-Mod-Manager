@@ -130,10 +130,8 @@ fn refresh_verified_helper(
     // never accept changed Python code as a known published helper.
     let existing_text = String::from_utf8(existing.clone())
         .map_err(|_| format!("{name} is not a valid UTF-8 Python helper"))?;
-    let digest = format!(
-        "{:x}",
-        Sha256::digest(existing_text.replace("\r\n", "\n").as_bytes())
-    );
+    let canonical_digest = Sha256::digest(existing_text.replace("\r\n", "\n").as_bytes());
+    let digest = format!("{canonical_digest:x}");
     if !known_sha256.contains(&digest.as_str()) {
         return Err(format!(
             "Unrecognized customized or older {name} (SHA-256 {digest}); cannot safely migrate the offline launcher. The file was not overwritten."
