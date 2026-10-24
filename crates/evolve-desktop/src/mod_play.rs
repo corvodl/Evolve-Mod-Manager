@@ -72,6 +72,22 @@ fn launch_for_repair(
     Ok((0, pid, 0, Some(message)))
 }
 
+/// Reconcile any prior isolated stage batch, regardless of whether it was
+/// created by the old manual testing action or the new enabled-mod launcher.
+/// Never infer ownership from a stale enabled-mod-profile.json marker.
+/// The core restores only hashes verified against its original batch backups,
+/// retaining profiles and preserving unexpected third-party changes on error.
+fn restore_previous_staged_profile(stage: &std::path::Path) -> Result<bool, String> {
+    let active = evolve_core::batch_stage_status(stage)
+        .map_err(|e| format!("Cannot read the previous stage transaction: {e}"))?;
+    if active.is_none() {
+        return Ok(false);
+    }
+    evolve_core::restore_profile_stage(stage)
+        .map_err(|e| format!("Cannot restore the previous signed PAKs: {e}"))?;
+    Ok(true)
+}
+
 pub fn launch_enabled(
     mods: Vec<ProjectRow>,
     projects_root: PathBuf,
@@ -115,37 +131,20 @@ pub fn launch_enabled(
     }
     let keys = modding_keys::signing_keys(&stage)?;
 
-    // A previous enabled-mod set can be rolled back automatically; an
-    // unrelated manually applied profile is never silently discarded.
-    let active = match evolve_core::batch_stage_status(&stage) {
-        Ok(active) => active,
-        Err(issue) => {
-            return launch_for_repair(
-                &game,
-                &client,
-                &swap,
-                &format!("Previous mod setup needs recovery: {issue}"),
-            );
-        }
-    };
-    if let Some(active) = active {
-        let ours = owned_profile_id(&stage)?.is_some_and(|id| id == active.profile_id);
-        if !ours {
-            return launch_for_repair(
-                &game,
-                &client,
-                &swap,
-                "A different mod profile is still active",
-            );
-        }
-        if let Err(issue) = evolve_core::restore_profile_stage(&stage) {
-            return launch_for_repair(
-                &game,
-                &client,
-                &swap,
-                &format!("Previous mod profile could not be restored: {issue}"),
-            );
-        }
+    // A manual "Build & Prepare Offline Test" profile may remain staged
+    // from before the enabled-mod workflow existed. Its ID legitimately
+    // differs from the current automatic profile marker. The journal
+    // contains byte-exact backups and a rollback transaction, so restore
+    // ANY previously staged profile before applying the new enabled set.
+    // This only restores files inside the isolated signing stage. It does
+    // not delete that manual profile from profiles.json or touch game files.
+    if let Err(issue) = restore_previous_staged_profile(&stage) {
+        return launch_for_repair(
+            &game,
+            &client,
+            &swap,
+            &format!("Previous mod setup could not be restored: {issue}"),
+        );
     }
 
     let mut built = Vec::with_capacity(mods.len());
@@ -229,6 +228,103 @@ pub fn launch_enabled(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manual_test_profile_is_restored_before_enabled_play_without_deleting_profile() {
+        use sha2::{Digest, Sha256};
+
+        let temp = tempfile::tempdir().unwrap();
+        let stage = temp.path().join("stage");
+        evolve_core::initialize_stage(&stage).unwrap();
+        let manual =
+            evolve_core::create_mod_profile(&stage, "Previous manual offline test").unwrap();
+        let relative = "Game/UI_Assets.pak";
+        let original = b"original signed staging bytes";
+        let modified = b"previous manual modded bytes";
+        let target = stage.join("paks").join(relative);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, modified).unwrap();
+        let journal_id = "1".repeat(32);
+        let backup_dir = stage.join(".evolve-batches").join(&journal_id);
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        std::fs::write(backup_dir.join("before-0.pak"), original).unwrap();
+        std::fs::write(backup_dir.join("displaced-0.pak"), original).unwrap();
+        let hash = |data: &[u8]| format!("{:x}", Sha256::digest(data));
+        let transaction = serde_json::json!({
+            "schema": 1,
+            "id": journal_id,
+            "profile_id": manual.id,
+            "entries": [{
+                "target": relative,
+                "original_sha256": hash(original),
+                "replacement_sha256": hash(modified),
+            }],
+        });
+        std::fs::write(
+            stage.join("bundle-active.json"),
+            serde_json::to_vec(&transaction).unwrap(),
+        )
+        .unwrap();
+
+        // A different profile ID is NOT a conflict: the old manual batch
+        // can be rolled back even if an automatic-mod ownership marker
+        // already exists and points at some unrelated/stale profile.
+        let previous_enabled_id = "3".repeat(32);
+        save_owned_profile_id(&stage, &previous_enabled_id).unwrap();
+        assert_ne!(
+            owned_profile_id(&stage).unwrap().as_deref(),
+            Some(manual.id.as_str())
+        );
+        assert!(restore_previous_staged_profile(&stage).unwrap());
+        assert_eq!(std::fs::read(&target).unwrap(), original);
+        assert!(evolve_core::batch_stage_status(&stage).unwrap().is_none());
+        assert!(
+            evolve_core::list_mod_profiles(&stage)
+                .unwrap()
+                .profiles
+                .iter()
+                .any(|p| p.id == manual.id)
+        );
+        assert!(!restore_previous_staged_profile(&stage).unwrap());
+    }
+
+    #[test]
+    fn unexpected_third_party_stage_changes_are_not_overwritten() {
+        use sha2::{Digest, Sha256};
+
+        let temp = tempfile::tempdir().unwrap();
+        let stage = temp.path().join("stage");
+        evolve_core::initialize_stage(&stage).unwrap();
+        let profile = evolve_core::create_mod_profile(&stage, "Manual project").unwrap();
+        let target = stage.join("paks/Game/UI_Assets.pak");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"unexpected third party bytes").unwrap();
+        let backup_dir = stage.join(".evolve-batches").join("2".repeat(32));
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        std::fs::write(backup_dir.join("before-0.pak"), b"original").unwrap();
+        let hash = |data: &[u8]| format!("{:x}", Sha256::digest(data));
+        std::fs::write(
+            stage.join("bundle-active.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema": 1,
+                "id": "2".repeat(32),
+                "profile_id": profile.id,
+                "entries": [{
+                    "target": "Game/UI_Assets.pak",
+                    "original_sha256": hash(b"original"),
+                    "replacement_sha256": hash(b"expected modified"),
+                }],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(restore_previous_staged_profile(&stage).is_err());
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"unexpected third party bytes"
+        );
+        assert!(stage.join("bundle-active.json").exists());
+    }
 
     #[test]
     fn auto_profile_marker_is_bounded_and_never_inferred_from_a_name() {
