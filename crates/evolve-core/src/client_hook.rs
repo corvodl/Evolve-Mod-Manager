@@ -227,9 +227,40 @@ pub fn inspect_pak_hook_pair(
     custom_public: &Path,
     basename: &str,
 ) -> Result<PakHookPairReport, ClientHookError> {
+    inspect_pak_hook_pair_with_original_name(
+        original_pak,
+        custom_pak,
+        original_hook,
+        custom_hook,
+        original_public,
+        custom_public,
+        basename,
+        basename,
+    )
+}
+
+/// Verify each CryPAK against the exact basename it was signed with.
+/// Retail source signatures may use ASCII lowercase while their installed
+/// file names use different case. Custom staged files remain signed under
+/// their unchanged on-disk basenames.
+pub fn inspect_pak_hook_pair_with_original_name(
+    original_pak: &Path,
+    custom_pak: &Path,
+    original_hook: &Path,
+    custom_hook: &Path,
+    original_public: &Path,
+    custom_public: &Path,
+    original_signed_name: &str,
+    basename: &str,
+) -> Result<PakHookPairReport, ClientHookError> {
+    if original_signed_name != basename
+        && original_signed_name != basename.to_ascii_lowercase()
+    {
+        return Err(ClientHookError::Format);
+    }
     let hook =
         inspect_client_hook_pair(original_hook, custom_hook, original_public, custom_public)?;
-    let old = inspect_signed_pak(original_pak, original_public, basename)?;
+    let old = inspect_signed_pak(original_pak, original_public, original_signed_name)?;
     let new = inspect_signed_pak(custom_pak, custom_public, basename)?;
     let original_paths: std::collections::HashSet<_> = old
         .entries
