@@ -320,8 +320,13 @@ pub fn apply_library_build_updates(
         return Err("Asset Library changed after preview. Scan this build again.".into());
     }
     let mut members = plan.previous.clone();
-    for name in &plan.removed { members.remove(name); }
-    let mut report = LibraryBatchImportReport {imported: Vec::new(), failed: Vec::new()};
+    for name in &plan.removed {
+        members.remove(name);
+    }
+    let mut report = LibraryBatchImportReport {
+        imported: Vec::new(),
+        failed: Vec::new(),
+    };
     progress.store(0, Ordering::Relaxed);
     let mut added = 0usize;
     let mut updated = 0usize;
