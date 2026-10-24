@@ -985,7 +985,9 @@ pub fn prepare_built_offline_test(
     let keys = super::modding_keys::signing_keys(stage)?;
     // Verify the exact built archive and stage target before persisting
     // anything. Signed member inventory differences are permitted offline.
+    let lowercase = basename.to_ascii_lowercase();
     evolve_core::inspect_signed_pak(output, &keys.public, &basename)
+        .or_else(|_| evolve_core::inspect_signed_pak(output, &keys.public, &lowercase))
         .map_err(|e| format!("Built offline PAK signature could not be verified: {e}"))?;
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
