@@ -120,9 +120,12 @@ pub fn launch_enabled(
     let active = match evolve_core::batch_stage_status(&stage) {
         Ok(active) => active,
         Err(issue) => {
-            return launch_for_repair(&game, &client, &swap, &format!(
-                "Previous mod setup needs recovery: {issue}"
-            ));
+            return launch_for_repair(
+                &game,
+                &client,
+                &swap,
+                &format!("Previous mod setup needs recovery: {issue}"),
+            );
         }
     };
     if let Some(active) = active {
