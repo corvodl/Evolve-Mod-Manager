@@ -108,7 +108,8 @@ def run():
     )
     if not destination.is_file() or destination.stat().st_size < 256:
         raise RuntimeError("Blender did not create a valid FBX")
-    optimized = optimize_binary_fbx(destination, embed_textures=embed_textures)
+    optimized = optimize_binary_fbx(destination, embed_textures=embed_textures,
+                                    require_tangent_space=True)
     if not embed_textures:
         if optimized["embedded_normal_maps"] != len(source_normal_maps):
             raise RuntimeError("FBX lost one or more embedded normal maps")
