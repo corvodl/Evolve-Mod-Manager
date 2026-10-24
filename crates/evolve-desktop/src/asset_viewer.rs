@@ -820,7 +820,10 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                 actions = actions.push(text("ROOT FIRST-FRAME LAYERS").size(13))
                     .push(text("Select a layer, drag its bounds in the viewport or edit its transform, then stage the change.")
                         .size(11).style(design::muted));
-                if session.relative.eq_ignore_ascii_case("Libs/UI/main_menu.gfx") {
+                if session
+                    .relative
+                    .eq_ignore_ascii_case("Libs/UI/main_menu.gfx")
+                {
                     actions = actions
                         .push(text("LEGACY APPEARANCE · STAGE 2 NAVIGATION").size(12))
                         .push(text("Use original Stage 2 movie/scripts. Match Legacy menu row heights (70px) by changing only the two source-authored 40/65px Style constants. No Legacy ActionScript, textures, menu callbacks or PAK files are imported.")
