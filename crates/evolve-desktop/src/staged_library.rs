@@ -155,7 +155,15 @@ pub fn create_project(
     pak: &ImportedPak,
     projects: &Path,
     stage: &Path,
+    progress: Option<&modding_projects::ProjectCopyProgress>,
 ) -> Result<(PathBuf, usize, Option<String>, bool), String> {
+    // The interactive Edit/Add action never reads/re-signs the current game
+    // PAK. Signing and exact target verification happen at Build/Test time.
+    if let Some(progress) = progress {
+        let (workspace, count) =
+            modding_projects::edit_imported_snapshot_with_progress(pak, projects, Some(progress))?;
+        return Ok((workspace, count, None, false));
+    }
     imported_archive_files(pak).map_err(|e| e.to_string())?;
     // An imported Asset Library extraction is already a valid *editing*
     // baseline. Prefer it immediately unless a perfectly matching signed
@@ -324,20 +332,6 @@ pub fn create_project(
     ))
 }
 
-/// Editing from the Asset Library should never re-hash the installed game
-/// PAK, re-sign it, or extract a second staging archive. The imported files
-/// were already authenticated at import time; Build/Prepare Offline Test
-/// performs fresh signing and target validation when deployment is requested.
-pub fn create_project_for_editing(
-    pak: &ImportedPak,
-    projects: &Path,
-    progress: &modding_projects::ProjectCopyProgress,
-) -> Result<(PathBuf, usize, Option<String>, bool), String> {
-    let (workspace, count) =
-        modding_projects::edit_imported_snapshot_with_progress(pak, projects, Some(progress))?;
-    Ok((workspace, count, None, false))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,7 +373,7 @@ mod tests {
         let projects = dir.path().join("Projects");
         let stage = dir.path().join("nonexistent-stage");
         let (workspace, count, refreshed, mapped) =
-            create_project(&archive, &projects, &stage).unwrap();
+            create_project(&archive, &projects, &stage, None).unwrap();
         assert_eq!(count, 1);
         assert!(refreshed.is_none());
         assert!(!mapped);
