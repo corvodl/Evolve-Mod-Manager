@@ -209,6 +209,30 @@ mod tests {
         ));
     }
     #[test]
+    fn emet_broken_healing_and_oh_are_exclusive_even_when_geometry_is_identical() {
+        let cdf = parse_cdf(br#"<CharacterDefinition>
+            <Model File="characters/hunters/merc_emet/emet_3p_skeleton.chr"/>
+            <AttachmentList>
+            <Attachment AName="body" Type="CA_SKIN" Binding="characters/hunters/merc_emet/body.skin"/>
+            <Attachment AName="broken" Type="CA_SKIN" Binding="characters/hunters/merc_emet/face.skin"/>
+            <Attachment AName="healing" Type="CA_SKIN" Binding="characters/hunters/merc_emet/face.skin"/>
+            <Attachment AName="oh" Type="CA_SKIN" Binding="characters/hunters/merc_emet/face.skin"/>
+            </AttachmentList></CharacterDefinition>"#).unwrap();
+        let path = "characters/hunters/merc_emet/emet_3p.cdf";
+        let found = discover(path, &cdf).unwrap();
+        assert_eq!(found.faces, ["broken", "healing", "oh"]);
+        let all = cdf.attachments.iter().map(|part| part.name.as_str()).collect();
+        assert_eq!(
+            choose(path, &cdf, all, &EquipmentOverrides::new()).unwrap(),
+            ["body", "broken"],
+        );
+        let mut selected = EquipmentOverrides::new();
+        selected.insert(FACE.into(), "oh".into());
+        let all = cdf.attachments.iter().map(|part| part.name.as_str()).collect();
+        assert_eq!(choose(path, &cdf, all, &selected).unwrap(), ["body", "oh"]);
+    }
+
+    #[test]
     fn refuses_invented_face_and_cross_character_options() {
         let cdf = emet();
         let mut options = EquipmentOverrides::new();
