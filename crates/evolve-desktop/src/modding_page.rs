@@ -638,13 +638,19 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         projects(state),
         modifications(state),
         actions,
-        design::button(if state.modding_advanced {
-            "Hide Advanced Archive Tools"
-        } else {
-            "Show Advanced Archive Tools"
-        })
-        .style(design::secondary)
-        .on_press(Message::ModdingToggleAdvanced),
+        row![
+            design::button("Restore original game files")
+                .style(design::secondary)
+                .on_press(Message::StartOfflineLauncherRestore),
+            design::button(if state.modding_advanced {
+                "Hide Advanced Archive Tools"
+            } else {
+                "Show Advanced Archive Tools"
+            })
+            .style(design::secondary)
+            .on_press(Message::ModdingToggleAdvanced),
+        ]
+        .spacing(8),
     ]
     .spacing(9)
     .height(Fill);
