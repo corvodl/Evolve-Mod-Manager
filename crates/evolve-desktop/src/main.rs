@@ -1474,6 +1474,8 @@ enum Message {
     ModdingToggleAdvanced,
     ModdingBrowsePaks,
     ModdingSelectArchive(usize),
+    ModdingSelectImported(usize),
+    ModdingReloadLibrary,
     ModdingOpenProject,
     ModdingKind(Option<evolve_core::mod_safety::ModKind>),
     GuidedEdit(guided_modding::Action),
@@ -2343,6 +2345,22 @@ fn persist_preferences(state: &mut State) {
         };
 }
 
+/// Load existing imported PAK manifests independently of the Modding worker,
+/// so navigating between Asset Library and Modding never requires reimporting.
+fn load_saved_library(root: PathBuf) -> Task<Message> {
+    Task::perform(
+        async move {
+            let expected = root.clone();
+            let result = tokio::task::spawn_blocking(move || imported_library(&root))
+                .await
+                .map_err(|e| format!("Asset Library worker stopped: {e}"))
+                .and_then(|outcome| outcome.map_err(|e| e.to_string()));
+            (expected, result)
+        },
+        |(expected, result)| Message::StartupLibraryIndexed(expected, result),
+    )
+}
+
 fn check_updates_task(channel: UpdateChannel) -> Task<Message> {
     Task::perform(
         async move {
@@ -2453,27 +2471,34 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::Navigate(page) => {
             state.page = Some(page);
+            let mut tasks = Vec::new();
             if page == Page::Files
                 && state.modding_projects.is_none()
                 && !state.preferences.projects.trim().is_empty()
+                && !state.busy
             {
-                return launch(
+                tasks.push(launch(
                     state,
                     Operation::IndexProjects(
                         PathBuf::from(&state.preferences.projects),
                         PathBuf::from(&state.preferences.stage),
                     ),
-                );
+                ));
             }
-            if page == Page::AssetLibrary
+            if matches!(page, Page::AssetLibrary | Page::Files)
                 && state.library_catalog.is_none()
                 && !state.library_startup_loading
             {
                 let root = PathBuf::from(&state.library_root);
                 if root.is_dir() {
-                    return launch(state, Operation::LoadImportedLibrary(root));
+                    state.library_startup_loading = true;
+                    tasks.push(load_saved_library(root));
+                } else {
+                    state.status = "No saved imported PAK manifests were found at the configured Asset Library location. Existing signing-stage PAKs can still be edited in Modding; import source PAKs only once if you need the Asset Library.".into();
                 }
-                state.status = "Asset Library is ready at the detected manager data location. Import a local signed PAK to populate it.".into();
+            }
+            if !tasks.is_empty() {
+                return Task::batch(tasks);
             }
         }
         Message::DismissMenus | Message::MenuCommand(_) => {
@@ -2569,6 +2594,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state,
                     Operation::ListProfiles(PathBuf::from(&state.preferences.stage)),
                 );
+            }
+        }
+        Message::ModdingReloadLibrary => {
+            if state.library_startup_loading {
+                state.status = "Loading saved Asset Library manifests; no reimport is needed.".into();
+                return Task::none();
+            }
+            let root = PathBuf::from(&state.library_root);
+            if !root.is_dir() {
+                state.status = "No existing Asset Library directory at the configured path. Browse staged PAKs to mod directly, or configure the correct library location in Settings.".into();
+                return Task::none();
+            }
+            state.library_startup_loading = true;
+            return load_saved_library(root);
+        }
+        Message::ModdingSelectImported(index) => {
+            if let Some(pak) = state.library_catalog.as_ref().and_then(|c| c.archives.get(index)) {
+                state.library_selection.clear();
+                state.library_selection.indices.insert(index);
+                state.library_selected = Some(index);
+                state.status = format!("Selected imported PAK {} for an isolated editable project.", pak.name);
             }
         }
         Message::ModdingBrowsePaks => {
@@ -2875,12 +2921,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.library_menu = None;
         }
         Message::StartupLibraryIndexed(expected, result) => {
+            // Ignore reads from previous root choices. A completion for an
+            // outdated path must never clear the new location's loading flag.
+            if Path::new(&state.library_root) != expected.as_path() {
+                return Task::none();
+            }
             state.library_startup_loading = false;
-            // Ignore a startup read that finished after the user changed
-            // the root or explicitly loaded a newer catalog.
-            if Path::new(&state.library_root) != expected.as_path()
-                || state.library_catalog.is_some()
-            {
+            if state.library_catalog.is_some() {
                 return Task::none();
             }
             match result {
@@ -2896,9 +2943,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.library_selected = None;
                     state.library_page = 0;
                     refresh_library_matches(state);
+                    guided_modding::refresh_imports(state);
                 }
                 Err(error) => {
-                    state.status = format!("Could not index saved Asset Library: {error}")
+                    state.status = format!("Could not index saved Asset Library: {error}");
+                    guided_modding::refresh_imports(state);
                 }
             }
         }
@@ -7167,6 +7216,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     persist_preferences(state);
                 }
                 Ok(Completed::ImportedLibrary(catalog)) => {
+                    let from_modding = state.page == Some(Page::Files);
                     let count = catalog.archives.len();
                     state.status = format!(
                         "{count} imported Asset Library PAKs indexed from saved manifests; originals unchanged."
@@ -7179,13 +7229,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.library_page = 0;
                     state.library_menu = None;
                     refresh_library_matches(state);
-                    state.page = Some(Page::AssetLibrary);
-                    persist_preferences(state);
-                    if state.guided_editor.open {
-                        state.page = Some(Page::Files);
-                        let models = state.guided_editor.models;
-                        return guided_modding::update(state, guided_modding::Action::Open(models));
+                    if !from_modding {
+                        state.page = Some(Page::AssetLibrary);
                     }
+                    persist_preferences(state);
+                    guided_modding::refresh_imports(state);
                 }
                 Ok(Completed::ImportedPakFiles(inventory)) => {
                     state.viewer_queued_preview = None;
@@ -8978,18 +9026,7 @@ impl Desktop {
         // Independent read-only indexing: don't block Modding, updates,
         // previews or Settings with the global worker busy flag.
         let startup = if library_root.is_dir() {
-            Task::perform(
-                async move {
-                    let expected = library_root.clone();
-                    let result =
-                        tokio::task::spawn_blocking(move || imported_library(&library_root))
-                            .await
-                            .map_err(|e| format!("Asset Library worker stopped: {e}"))
-                            .and_then(|outcome| outcome.map_err(|e| e.to_string()));
-                    (expected, result)
-                },
-                |(expected, result)| Message::StartupLibraryIndexed(expected, result),
-            )
+            load_saved_library(library_root)
         } else {
             Task::none()
         };
