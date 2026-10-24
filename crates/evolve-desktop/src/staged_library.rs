@@ -157,6 +157,19 @@ pub fn create_project(
     stage: &Path,
 ) -> Result<(PathBuf, usize, Option<String>, bool), String> {
     imported_archive_files(pak).map_err(|e| e.to_string())?;
+    // An imported Asset Library extraction is already a valid *editing*
+    // baseline. Prefer it immediately unless a perfectly matching signed
+    // stage can be reused. Old game builds, missing source PAKs and absent
+    // signing stages are compatibility warnings, not editing blockers.
+    let ready_stage = signed_source(pak).ok().is_some_and(|(source, digest, changed)| {
+        !changed
+            && modding_keys::signing_keys(stage).is_ok()
+            && matches!(exact_planned_target(stage, &source, &digest), Ok(Some(_)))
+    });
+    if !ready_stage {
+        let (workspace, count) = modding_projects::edit_imported_snapshot(pak, projects)?;
+        return Ok((workspace, count, None, false));
+    }
     let (source, source_sha, changed) = signed_source(pak)?;
     // Refresh ONLY the selected archive when the original changed. Import
     // verifies its RSA signature and every extracted file before publishing a
