@@ -764,9 +764,9 @@ pub fn resign_signed_pak(
 }
 
 /// Some retail CryPAKs are signed over a lowercase name despite a differently
-/// cased filename on disk. Authenticate the exact original signed name first,
-/// but sign the staged copy over the physical game filename so the launcher
-/// can verify and mount the replacement at its original path.
+/// cased filename on disk. Authenticate and re-sign over the SAME signed name:
+/// game runtime authentication also uses that original signing convention.
+/// Keep the staged output's physical basename unchanged.
 /// Both names are restricted to the physical basename or its ASCII lowercase.
 pub fn resign_signed_pak_with_original_name(
     source: &Path,
@@ -798,7 +798,7 @@ pub fn resign_signed_pak_with_original_name(
     let comment = signed_comment(
         &original.comment,
         &original.cdr,
-        basename,
+        original_signed_name,
         &private,
         &public,
         &original.iv,
@@ -827,7 +827,7 @@ pub fn resign_signed_pak_with_original_name(
             "source changed during re-sign".into(),
         ));
     }
-    let checked = open_verified_signed_pak(stage.path(), signing_public, basename)?;
+    let checked = open_verified_signed_pak(stage.path(), signing_public, original_signed_name)?;
     if checked.info.entries.len() != original.info.entries.len()
         || checked.cdr != original.cdr
         || checked.cdr_pos != original.cdr_pos
@@ -1473,8 +1473,8 @@ mod tests {
             "never overwrite the preexisting custom-signed output"
         );
         // Original retail files may be signed as sample.pak while named
-        // Sample.pak. Re-key their staged replacement under the on-disk name,
-        // never by skipping verification or renaming the installed source.
+        // Sample.pak. Re-key their staged replacement using the authenticated
+        // original signing name; do not rename the installed source.
         let cased_output = resign_folder.join("Sample.pak");
         let cased = resign_signed_pak_with_original_name(
             &differently_cased,
@@ -1487,8 +1487,8 @@ mod tests {
         )
         .unwrap();
         assert!(cased.signature_verified);
-        assert!(inspect_signed_pak(&cased_output, &new_public_file, "Sample.pak").is_ok());
-        assert!(inspect_signed_pak(&cased_output, &new_public_file, "sample.pak").is_err());
+        assert!(inspect_signed_pak(&cased_output, &new_public_file, "sample.pak").is_ok());
+        assert!(inspect_signed_pak(&cased_output, &new_public_file, "Sample.pak").is_err());
         assert_eq!(fs::read(&differently_cased).unwrap(), bytes);
         assert!(resign_signed_pak_with_original_name(
             &differently_cased,
