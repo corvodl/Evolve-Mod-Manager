@@ -499,15 +499,25 @@ mod tests {
         zip.finish().unwrap();
         let plan = scan_library_build_updates(&library, &game).unwrap();
         let first = apply_library_build_updates(
-            &library, &plan, &[], &AtomicBool::new(false), &AtomicUsize::new(0)
-        ).unwrap();
+            &library,
+            &plan,
+            &[],
+            &AtomicBool::new(false),
+            &AtomicUsize::new(0),
+        )
+        .unwrap();
         fs::remove_file(&pak).unwrap();
         let removed = scan_library_build_updates(&library, &game).unwrap();
         assert!(removed.changed.is_empty());
         assert_eq!(removed.removed, vec!["UI_Assets.pak"]);
         let applied = apply_library_build_updates(
-            &library, &removed, &[], &AtomicBool::new(false), &AtomicUsize::new(0)
-        ).unwrap();
+            &library,
+            &removed,
+            &[],
+            &AtomicBool::new(false),
+            &AtomicUsize::new(0),
+        )
+        .unwrap();
         assert_eq!(applied.removed, 1);
         assert!(first.snapshot.exists());
         assert_eq!(imported_library(&library).unwrap().archives.len(), 1);
