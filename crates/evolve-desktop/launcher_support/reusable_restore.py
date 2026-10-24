@@ -31,10 +31,23 @@ def _validate_stranded_clean_state(state):
         actual = str(item['name']).replace('\\', '/').casefold()
         if actual != name:
             raise RuntimeError('Stranded backup entry differs from signed inventory')
+        relative = Path(*name.split('/'))
+        if relative.is_absolute() or '..' in relative.parts or ':' in name:
+            raise RuntimeError('Unsafe original member path')
         target = Path(item['target'])
         backup = Path(item['backup'])
-        if backup != Path(str(target) + swap.BACKUP):
-            raise RuntimeError('Unsafe stranded original backup path')
+        ready = Path(item['ready'])
+        expected_target = game / relative
+        expected_source = (stage / 'inject-custom.dll'
+                           if name == 'bin64_steamretail/inject.dll'
+                           else stage / 'paks' / relative)
+        source = Path(item['source'])
+        if (target.resolve(strict=False) != expected_target.resolve(strict=False)
+                or source.resolve(strict=True) != expected_source.resolve(strict=True)
+                or backup != Path(str(target) + swap.BACKUP)
+                or ready != Path(str(target) + swap.READY)
+                or ready.is_symlink()):
+            raise RuntimeError('Unsafe stranded original recovery path')
         if not backup.exists():
             continue
         if backup.is_symlink() or not backup.is_file():
