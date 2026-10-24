@@ -425,6 +425,8 @@ struct State {
     modding_selected: Option<usize>,
     modding_name_input: String,
     mod_launch_progress: Option<Arc<AtomicUsize>>,
+    /// Indeterminate footer activity only: never presented as a real percent.
+    footer_pulse: u16,
     modding_filter: String,
     modding_kind: Option<evolve_core::mod_safety::ModKind>,
     guided_editor: guided_modding::Editor,
@@ -2150,6 +2152,24 @@ fn exportable_asset(relative: &str) -> bool {
         ]
         .iter()
         .any(|ext| lower.ends_with(ext))
+}
+
+/// All meaningful background work shares the persistent footer indicator.
+/// The normal launch path sets busy; independently scheduled workers are
+/// covered by their own lifecycle flags. Idle/playback never looks like work.
+fn footer_is_working(state: &State) -> bool {
+    state.busy
+        || state.project_copy_progress.is_some()
+        || state.mod_launch_progress.is_some()
+        || state.scan_indexed.is_some()
+        || state.library_import_scanning
+        || state.library_import_progress.is_some()
+        || state.library_startup_loading
+        || state.gfx_busy
+        || state.gfx_install_busy
+        || state.storage_analyzing
+        || state.runtime_checking
+        || state.developer_checking
 }
 
 fn launch(state: &mut State, operation: Operation) -> Task<Message> {
@@ -4148,6 +4168,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::ScanPulse => {
+            state.footer_pulse = state.footer_pulse.wrapping_add(1);
             if let Some(indexed) = &state.scan_indexed {
                 state.status = format!(
                     "Indexed {} local assets; working asynchronously...",
@@ -9401,6 +9422,37 @@ fn view(state: &State) -> Element<'_, Message> {
         .spacing(7)
         .align_y(iced::Alignment::Center)
         .into()
+    } else if footer_is_working(state) {
+        // A moving bar means busy, not a made-up completion percentage.
+        // Reserve percentages for operations with real progress.
+        let (label, count) = if let Some(progress) = &state.library_import_progress {
+            ("Importing PAKs", Some(progress.load(Ordering::Relaxed)))
+        } else if let Some(progress) = &state.scan_indexed {
+            ("Indexing assets", Some(progress.load(Ordering::Relaxed)))
+        } else if state.gfx_busy || state.gfx_install_busy {
+            ("Working on GFX", None)
+        } else if state.storage_analyzing {
+            ("Checking storage", None)
+        } else if state.library_import_scanning {
+            ("Scanning PAKs", None)
+        } else {
+            ("Working", None)
+        };
+        let value = (state.footer_pulse % 40) as f32;
+        let position = if value <= 20.0 { value * 5.0 } else { (40.0 - value) * 5.0 };
+        row![
+            text(match count {
+                Some(done) => format!("{label} · {done} files"),
+                None => label.to_owned(),
+            }).size(11),
+            container(iced::widget::progress_bar(0.0..=100.0, position))
+                .width(Length::Fixed(124.0))
+                .height(Length::Fixed(8.0)),
+            text("…").size(11),
+        ]
+        .spacing(7)
+        .align_y(iced::Alignment::Center)
+        .into()
     } else {
         row![].into()
     };
@@ -9853,7 +9905,7 @@ impl Desktop {
         } else {
             Subscription::none()
         };
-        let scan_progress = if self.state.scan_indexed.is_some() || self.state.busy {
+        let scan_progress = if footer_is_working(&self.state) {
             iced::time::every(Duration::from_millis(250)).map(|_| Message::ScanPulse)
         } else {
             Subscription::none()
@@ -9923,6 +9975,26 @@ fn main() -> iced::Result {
 #[cfg(test)]
 mod project_edit_tests {
     use super::*;
+
+    #[test]
+    fn footer_activity_tracks_workers_without_claiming_a_percentage() {
+        let mut state = State::default();
+        assert!(!footer_is_working(&state));
+        state.busy = true;
+        assert!(footer_is_working(&state));
+        state.busy = false;
+        state.gfx_busy = true;
+        assert!(footer_is_working(&state));
+        state.gfx_busy = false;
+        state.library_import_scanning = true;
+        assert!(footer_is_working(&state));
+        state.library_import_scanning = false;
+        state.mod_launch_progress = Some(Arc::new(AtomicUsize::new(24)));
+        assert!(footer_is_working(&state));
+        state.mod_launch_progress = None;
+        assert!(!footer_is_working(&state));
+    }
+
 
     #[test]
     fn open_library_folder_validates_configured_directory() {
