@@ -1,0 +1,37 @@
+name: CryEngine FBX shading regression tests
+
+on:
+  pull_request:
+    paths:
+      - "crates/evolve-core/src/blender_mesh_shading.py"
+      - "crates/evolve-core/src/blender_character_fbx.py"
+      - "crates/evolve-core/src/blender_glb_fbx.py"
+      - "scripts/test_blender_mesh_shading.py"
+      - ".github/workflows/fbx-shading-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/evolve-core/src/blender_mesh_shading.py"
+      - "crates/evolve-core/src/blender_character_fbx.py"
+      - "crates/evolve-core/src/blender_glb_fbx.py"
+      - "scripts/test_blender_mesh_shading.py"
+      - ".github/workflows/fbx-shading-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  shading:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Validate Blender shading script syntax
+        run: python -m py_compile crates/evolve-core/src/blender_mesh_shading.py crates/evolve-core/src/blender_character_fbx.py crates/evolve-core/src/blender_glb_fbx.py
+      - name: Exercise source-normal and crease/UV-seam rules
+        run: python -m unittest discover -s scripts -p test_blender_mesh_shading.py -v
