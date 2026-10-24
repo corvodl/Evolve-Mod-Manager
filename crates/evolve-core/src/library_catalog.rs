@@ -154,26 +154,85 @@ pub fn describe_archive(filename: &str) -> (String, String) {
 
 fn manifests_by_build(root: &Path) -> Result<HashMap<String, Vec<String>>, LibraryError> {
     let path = root.join("build-collections.json");
-    if !path.exists() {
-        return Ok(HashMap::new());
-    }
-    let data: BuildCollections = serde_json::from_slice(&read_bounded(&path, MAX_BUILD_BYTES)?)?;
-    if data.version != 1 {
-        return Err(LibraryError::UnsafeArchive);
-    }
     let mut lookup = HashMap::<String, Vec<String>>::new();
-    for (id, build) in data.builds {
-        if id == "unassigned" {
-            continue;
+    if path.exists() {
+        let data: BuildCollections =
+            serde_json::from_slice(&read_bounded(&path, MAX_BUILD_BYTES)?)?;
+        if data.version != 1 {
+            return Err(LibraryError::UnsafeArchive);
         }
-        if build.label.len() > 120 || build.members.len() > MAX_ARCHIVES {
-            return Err(LibraryError::Limit);
+        for (id, build) in data.builds {
+            if id == "unassigned" {
+                continue;
+            }
+            if build.label.len() > 120 || build.members.len() > MAX_ARCHIVES {
+                return Err(LibraryError::Limit);
+            }
+            for member in build.members.keys() {
+                lookup
+                    .entry(member.clone())
+                    .or_default()
+                    .push(build.label.clone());
+            }
         }
-        for member in build.members.keys() {
-            lookup
-                .entry(member.clone())
-                .or_default()
-                .push(build.label.clone());
+    }
+    // Overlay the latest accepted source-root-scoped incremental snapshots.
+    // Keep legacy build collections untouched; distinct installations can
+    // display the same archive name with separate build labels.
+    let updates = root.join("build-update-history");
+    if updates.exists() && fs::symlink_metadata(&updates)?.file_type().is_dir() {
+        let mut builds = 0usize;
+        for entry in fs::read_dir(&updates)? {
+            builds += 1;
+            if builds > 128 { return Err(LibraryError::Limit); }
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() { continue; }
+            let id = entry.file_name().to_string_lossy().into_owned();
+            if id.len() != 24 || !id.bytes().all(|c| c.is_ascii_hexdigit()) {
+                continue;
+            }
+            let mut last = None;
+            let mut history = 0usize;
+            for snapshot in fs::read_dir(entry.path())? {
+                history += 1;
+                if history > 512 { return Err(LibraryError::Limit); }
+                let snapshot = snapshot?;
+                let name = snapshot.file_name().to_string_lossy().into_owned();
+                if name.starts_with("snapshot-") && name.ends_with(".json")
+                    && snapshot.file_type()?.is_file()
+                    && last.as_ref().is_none_or(|(prior, _): &(String, PathBuf)| name > *prior)
+                {
+                    last = Some((name, snapshot.path()));
+                }
+            }
+            let Some((_, filename)) = last else { continue; };
+            let Ok(bytes) = read_bounded(&filename, MAX_BUILD_BYTES) else { continue; };
+            let Ok(record) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+                continue;
+            };
+            if record["version"].as_u64() != Some(1)
+                || record["build_id"].as_str() != Some(id.as_str()) {
+                continue;
+            }
+            let Some(root_path) = record["source_root"].as_str() else { continue; };
+            let Some(members) = record["members"].as_object() else { continue; };
+            if members.len() > MAX_ARCHIVES { continue; }
+            let chunks = root_path.split(['/', '\\'])
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>();
+            let label = format!(
+                "{} [{}]",
+                chunks.iter().rev().take(3).rev().copied().collect::<Vec<_>>().join("/"),
+                &id[..8]
+            );
+            for member in members.values() {
+                if let Some(archive_id) = member["archive_id"].as_str()
+                    && archive_id.len() == 20
+                    && archive_id.bytes().all(|c| c.is_ascii_hexdigit())
+                {
+                    lookup.entry(archive_id.to_owned()).or_default().push(label.clone());
+                }
+            }
         }
     }
     for labels in lookup.values_mut() {
@@ -482,6 +541,43 @@ mod tests {
         assert_eq!(description, "Merc Emet Textures");
         assert_eq!(describe_archive("animationsdba.pak").0, "Animations");
     }
+    #[test]
+    fn incremental_build_labels_include_distinct_game_roots() {
+        let library = tempfile::tempdir().unwrap();
+        let history = library.path().join("build-update-history");
+        let imports = [
+            ("11111111111111111111", "aaaaaaaaaaaaaaaaaaaaaaaa"),
+            ("22222222222222222222", "bbbbbbbbbbbbbbbbbbbbbbbb"),
+        ];
+        for (i, (archive, build)) in imports.iter().enumerate() {
+            let folder = library.path().join(format!("assets{i}.pak__{archive}"));
+            fs::create_dir_all(&folder).unwrap();
+            fs::write(folder.join("asset-library.json"), serde_json::json!({
+                "version":1, "name":format!("assets{i}.pak"), "source":"/unused",
+                "entries":[]
+            }).to_string()).unwrap();
+            let snapshots = history.join(build);
+            fs::create_dir_all(&snapshots).unwrap();
+            let root = if i == 0 {
+                "C:/Games/LegacyModdedEvolve/EvolveGame"
+            } else {
+                "C:/Games/ModdedEvolve/EvolveGame"
+            };
+            fs::write(snapshots.join("snapshot-0000000001.json"), serde_json::json!({
+                "version":1, "source_root":root, "build_id":build,
+                "members":{"Game/UI_Assets.pak":{
+                    "sha256":"a".repeat(64),"archive_id":archive
+                }}
+            }).to_string()).unwrap();
+        }
+        let catalog = imported_library(library.path()).unwrap();
+        let labels: Vec<_> = catalog.archives.iter().flat_map(|a| a.builds.iter()).collect();
+        assert_eq!(labels.len(), 2);
+        assert_ne!(labels[0], labels[1]);
+        assert!(labels.iter().any(|l| l.contains("LegacyModdedEvolve")));
+        assert!(labels.iter().any(|l| l.contains("ModdedEvolve")));
+    }
+
     #[test]
     fn source_texture_lookup_fails_closed_on_cross_build_duplicates() {
         let root = tempfile::tempdir().unwrap();
