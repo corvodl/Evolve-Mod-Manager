@@ -2598,7 +2598,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ModdingReloadLibrary => {
             if state.library_startup_loading {
-                state.status = "Loading saved Asset Library manifests; no reimport is needed.".into();
+                state.status =
+                    "Loading saved Asset Library manifests; no reimport is needed.".into();
                 return Task::none();
             }
             let root = PathBuf::from(&state.library_root);
@@ -2611,11 +2612,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return launch(state, Operation::LoadImportedLibrary(root));
         }
         Message::ModdingSelectImported(index) => {
-            if let Some(pak) = state.library_catalog.as_ref().and_then(|c| c.archives.get(index)) {
+            if let Some(pak) = state
+                .library_catalog
+                .as_ref()
+                .and_then(|c| c.archives.get(index))
+            {
                 state.library_selection.clear();
                 state.library_selection.indices.insert(index);
                 state.library_selected = Some(index);
-                state.status = format!("Selected imported PAK {} for an isolated editable project.", pak.name);
+                state.status = format!(
+                    "Selected imported PAK {} for an isolated editable project.",
+                    pak.name
+                );
             }
         }
         Message::ModdingBrowsePaks => {
