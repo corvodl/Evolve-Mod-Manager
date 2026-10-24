@@ -10,6 +10,41 @@ use std::sync::{
 };
 
 const AUTO_PROFILE: &str = "Enabled Mods";
+const AUTO_ID_FILE: &str = "enabled-mod-profile.json";
+
+fn owned_profile_id(stage: &std::path::Path) -> Result<Option<String>, String> {
+    let path = stage.join(AUTO_ID_FILE);
+    let meta = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+    if !meta.file_type().is_file() || meta.len() > 256 {
+        return Err("Saved enabled-mod profile is invalid.".into());
+    }
+    let document: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    let id = document["profile_id"].as_str().ok_or("Saved mod profile ID is missing")?;
+    if document["schema"].as_u64() != Some(1)
+        || id.len() != 32
+        || !id.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("Saved enabled-mod profile ID is invalid".into());
+    }
+    Ok(Some(id.to_owned()))
+}
+
+fn save_owned_profile_id(stage: &std::path::Path, id: &str) -> Result<(), String> {
+    let mut file = tempfile::NamedTempFile::new_in(stage).map_err(|e| e.to_string())?;
+    serde_json::to_writer(&mut file, &serde_json::json!({
+        "schema": 1, "profile_id": id
+    })).map_err(|e| e.to_string())?;
+    file.as_file().sync_all().map_err(|e| e.to_string())?;
+    file.persist(stage.join(AUTO_ID_FILE)).map_err(|e| e.error.to_string())?;
+    Ok(())
+}
+
 
 pub fn launch_enabled(
     mods: Vec<ProjectRow>,
@@ -52,21 +87,8 @@ pub fn launch_enabled(
     if let Some(active) = evolve_core::batch_stage_status(&stage)
         .map_err(|e| e.to_string())?
     {
-        // The normal profile-list API deliberately refuses access while a
-        // batch journal is active. Read this bounded identity metadata only
-        // to distinguish our own prior mod set from a manual transaction.
-        let catalog_path = stage.join("profiles.json");
-        let meta = std::fs::symlink_metadata(&catalog_path)
-            .map_err(|e| e.to_string())?;
-        if !meta.file_type().is_file() || meta.len() > 1024 * 1024 {
-            return Err("Cannot identify the previous mod set safely.".into());
-        }
-        let catalog: evolve_core::ProfileCatalog = serde_json::from_slice(
-            &std::fs::read(catalog_path).map_err(|e| e.to_string())?
-        ).map_err(|e| e.to_string())?;
-        let ours = catalog.schema == 1 && catalog.profiles.iter().any(|profile| {
-            profile.id == active.profile_id && profile.name == AUTO_PROFILE
-        });
+        let ours = owned_profile_id(&stage)?
+            .is_some_and(|id| id == active.profile_id);
         if !ours {
             return Err("A manually staged profile is active. Restore that profile before playing with enabled mods.".into());
         }
@@ -83,18 +105,24 @@ pub fn launch_enabled(
         progress.store(10 + ((index + 1) * 60 / mods.len()), Ordering::Relaxed);
     }
 
-    // Replace only the manager-owned automatic profile, preserving all named
-    // user profiles and manual staging transactions.
-    for profile in evolve_core::list_mod_profiles(&stage)
-        .map_err(|e| e.to_string())?
-        .profiles
-    {
-        if profile.name == AUTO_PROFILE {
-            evolve_core::delete_mod_profile(&stage, &profile.id).map_err(|e| e.to_string())?;
+    // Use an owned stable ID marker. Never delete a manually named profile,
+    // even if the user gave it the same "Enabled Mods" label.
+    if let Some(id) = owned_profile_id(&stage)? {
+        let catalog = evolve_core::list_mod_profiles(&stage).map_err(|e| e.to_string())?;
+        if catalog.profiles.iter().any(|p| p.id == id && p.name.starts_with(AUTO_PROFILE)) {
+            evolve_core::delete_mod_profile(&stage, &id).map_err(|e| e.to_string())?;
         }
     }
-    let profile = evolve_core::create_mod_profile(&stage, AUTO_PROFILE)
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let profile = evolve_core::create_mod_profile(&stage, &format!("{AUTO_PROFILE} {stamp:x}"))
         .map_err(|e| format!("Could not prepare enabled mods: {e}"))?;
+    if let Err(error) = save_owned_profile_id(&stage, &profile.id) {
+        let _ = evolve_core::delete_mod_profile(&stage, &profile.id);
+        return Err(format!("Could not save enabled-mod settings: {error}"));
+    }
     let result = (|| -> Result<(), String> {
         for (_, target, output) in &built {
             let basename = modding_keys::signed_basename(output)?;
