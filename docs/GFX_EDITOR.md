@@ -38,6 +38,12 @@ a manifest-listed, extracted Mod Project only after explicitly selecting
 **Apply to Mod Project**. The existing hash-check and `EditorBackups` transaction
 protects the original; this operation never rewrites an installed PAK.
 
+### Experimental Legacy main-menu row heights (Stage 2 script preserved)
+
+In **Modding**, open an editable project containing the original Stage 2 `Libs/UI/main_menu.gfx`. In **GFX Tools → Layout**, select **Stage Legacy button row heights**. This is a narrow, source-verified presentation edit: it changes Stage 2's default 40-pixel and featured 65-pixel menu row heights to the Legacy movie's 70 pixels. Original Stage 2 menu functions, button creation, native callbacks, textures, symbols and all other assets remain unchanged. The edit is staged privately; use **Undo** or **Apply to Mod Project**. Nothing is installed into the running game by this editor action.
+
+The action requires the seven existing Stage 2 menu Style constants (including original widths and spacing) and refuses a Legacy movie or different source layout. This is **not** a complete Legacy menu port: fonts, artwork, hover effects, positions and submenus still need verified asset-by-asset adaptation and a real game test with working navigation.
+
 ## Visual layout editor
 
 Use **Visual GFX layout editor** in the GFX pane:
