@@ -403,8 +403,7 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
             &custom,
             &old_key,
             &new_key,
-            signed_name,
-            basename,
+            (signed_name, basename),
         )
         .map_err(|e| format!("PAK/hook mismatch for {path}: {e}"))?;
         if !report.archive_member_paths_match || report.signed_original_entries == 0 {
