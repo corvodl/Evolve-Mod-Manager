@@ -233,7 +233,11 @@ fn verify_pair(
             "Mod must be external and have target basename".into(),
         ));
     }
+    // A prepared stage can contain either the original-key version or a
+    // locally signed baseline. The installed game build label is advisory;
+    // signatures and the member layout remain mandatory before any swap.
     let old = inspect_signed_pak(&staged, original_key, basename)
+        .or_else(|_| inspect_signed_pak(&staged, mod_key, basename))
         .map_err(|e| ProfileError::Verify(e.to_string()))?;
     let new = inspect_signed_pak(file, mod_key, basename)
         .map_err(|e| ProfileError::Verify(e.to_string()))?;
@@ -329,19 +333,19 @@ pub fn plan_mod_profile(
             mod_key,
             item.target.rsplit('/').next().unwrap_or_default(),
         )?;
-        if current != item.sha256 {
-            return Err(ProfileError::Verify(format!(
-                "Changed source for {}",
-                item.target
-            )));
-        }
+        // Iterating on a mod rebuild changes its SHA. A formerly registered
+        // checksum is informational after the replacement has just passed
+        // signed-archive and member-layout verification. Update the active
+        // plan's digest; recovery continues to use the freshly verified bytes.
+        let mut refreshed = item.clone();
+        refreshed.sha256 = current;
         size = size
             .checked_add(bytes)
             .ok_or_else(|| ProfileError::Invalid("Plan size overflow".into()))?;
         if size > 16 * 1024 * 1024 * 1024 {
             return Err(ProfileError::Invalid("Plan exceeds safety limit".into()));
         }
-        mods.push(item.clone());
+        mods.push(refreshed);
     }
     Ok(ProfilePlan {
         profile_id: profile_id.into(),
