@@ -51,6 +51,9 @@ fn signed_source(pak: &ImportedPak) -> Result<(PathBuf, String), String> {
     // staging time instead of forcing a costly reimport of every archive.
     // Never ignore or replace a checksum when a modern manifest supplies one.
     let expected = info["source_sha256"].as_str();
+    if info.get("source_sha256").is_some() && expected.is_none() {
+        return Err("Imported source checksum field is malformed".into());
+    }
     if let Some(value) = expected
         && (value.len() != 64 || !value.bytes().all(|c| c.is_ascii_hexdigit()))
     {
