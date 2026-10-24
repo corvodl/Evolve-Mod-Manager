@@ -34,10 +34,10 @@ mod launcher_bridge;
 mod level_workspace;
 mod library_picker;
 mod menu_popup;
+mod mod_play;
 mod modding_keys;
 mod modding_page;
 mod modding_projects;
-mod mod_play;
 mod orientation_gizmo;
 mod play_setup;
 mod private_pages;
@@ -595,7 +595,12 @@ enum Operation {
     CheckExistingOfflineLauncher(PathBuf, PathBuf),
     StartExistingOfflineLauncher(PathBuf, PathBuf, PathBuf, PathBuf),
     PlayEnabledMods(
-        PathBuf, PathBuf, PathBuf, PathBuf, PathBuf, Arc<AtomicUsize>,
+        PathBuf,
+        PathBuf,
+        PathBuf,
+        PathBuf,
+        PathBuf,
+        Arc<AtomicUsize>,
     ),
     LaunchCleanClient(PathBuf, PathBuf, Option<PathBuf>),
     CreateInitialSetup(PathBuf, PathBuf, PathBuf, bool),
@@ -1434,10 +1439,9 @@ impl Operation {
                     .into_iter()
                     .filter(|project| project.enabled)
                     .collect();
-                mod_play::launch_enabled(
-                    mods, projects, stage, swap, game, client, progress,
+                mod_play::launch_enabled(mods, projects, stage, swap, game, client, progress).map(
+                    |(count, id, warnings)| Completed::EnabledModsLaunched(count, id, warnings),
                 )
-                .map(|(count, id, warnings)| Completed::EnabledModsLaunched(count, id, warnings))
             }
             Self::StartExistingOfflineLauncher(stage, swap, game, client) => {
                 play_setup::configure_existing_helper(&game, &client, &stage, &swap)?;
@@ -2630,7 +2634,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if state.busy {
                 return Task::none();
             }
-            let Some(project) = state.modding_selected
+            let Some(project) = state
+                .modding_selected
                 .and_then(|index| state.modding_projects.as_ref()?.get(index))
                 .cloned()
             else {
@@ -2644,9 +2649,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 None,
             ) {
                 Ok(()) => {
-                    if let Some(row) = state.modding_projects.as_mut()
-                        .and_then(|items| items.iter_mut().find(|p| p.workspace == project.workspace))
-                    {
+                    if let Some(row) = state.modding_projects.as_mut().and_then(|items| {
+                        items.iter_mut().find(|p| p.workspace == project.workspace)
+                    }) {
                         row.label = state.modding_name_input.trim().into();
                     }
                     state.status = "Mod name saved.".into();
@@ -2658,16 +2663,24 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if state.busy {
                 return Task::none();
             }
-            let Some(project) = state.modding_projects.as_ref()
-                .and_then(|items| items.get(index)).cloned()
+            let Some(project) = state
+                .modding_projects
+                .as_ref()
+                .and_then(|items| items.get(index))
+                .cloned()
             else {
                 return Task::none();
             };
             let enable = !project.enabled;
-            if enable && state.modding_projects.as_ref().is_some_and(|items| {
-                items.iter().any(|p| p.enabled && p.workspace != project.workspace
-                    && p.target.eq_ignore_ascii_case(&project.target))
-            }) {
+            if enable
+                && state.modding_projects.as_ref().is_some_and(|items| {
+                    items.iter().any(|p| {
+                        p.enabled
+                            && p.workspace != project.workspace
+                            && p.target.eq_ignore_ascii_case(&project.target)
+                    })
+                })
+            {
                 state.status = format!(
                     "Another enabled mod already uses {}. Disable it before enabling {}.",
                     project.target, project.label
@@ -2681,7 +2694,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Some(enable),
             ) {
                 Ok(()) => {
-                    if let Some(row) = state.modding_projects.as_mut()
+                    if let Some(row) = state
+                        .modding_projects
+                        .as_mut()
                         .and_then(|items| items.get_mut(index))
                     {
                         row.enabled = enable;
@@ -6451,7 +6466,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.status = "Modded play needs a verified signing stage. Use Create Offline Setup in Settings to build the keys, re-signed PAKs and recovery helpers automatically from your game installation. Existing stage/swap folders can also be selected under Advanced paths. No game files were changed.".into();
                     return Task::none();
                 }
-                if state.gfx_session.as_ref().is_some_and(|session| session.edits > 0 && !session.applied) {
+                if state
+                    .gfx_session
+                    .as_ref()
+                    .is_some_and(|session| session.edits > 0 && !session.applied)
+                {
                     state.status = "Save your GFX edits to the Mod Project before playing.".into();
                     return Task::none();
                 }
@@ -7560,7 +7579,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         previous.and_then(|path| projects.iter().position(|p| p.workspace == path));
                     state.status = format!("Loaded {} editable project(s).", projects.len());
                     state.modding_projects = Some(projects);
-                    state.modding_name_input = state.modding_selected
+                    state.modding_name_input = state
+                        .modding_selected
                         .and_then(|index| state.modding_projects.as_ref()?.get(index))
                         .map(|p| p.label.clone())
                         .unwrap_or_default();
