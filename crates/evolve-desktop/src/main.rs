@@ -20,6 +20,7 @@ mod gfx_external_textures;
 mod gfx_featured_promo;
 mod gfx_interactive;
 mod gfx_layout_canvas;
+mod gfx_legacy_layout;
 mod gfx_live_inspector;
 mod gfx_live_web;
 mod gfx_localization;

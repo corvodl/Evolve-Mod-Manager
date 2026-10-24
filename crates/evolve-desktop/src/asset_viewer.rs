@@ -820,6 +820,23 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                 actions = actions.push(text("ROOT FIRST-FRAME LAYERS").size(13))
                     .push(text("Select a layer, drag its bounds in the viewport or edit its transform, then stage the change.")
                         .size(11).style(design::muted));
+                if session
+                    .relative
+                    .eq_ignore_ascii_case("Libs/UI/main_menu.gfx")
+                {
+                    actions = actions
+                        .push(text("LEGACY APPEARANCE · STAGE 2 NAVIGATION").size(12))
+                        .push(text("Use original Stage 2 movie/scripts. Match Legacy 70px rows and the 85px button-label inset by changing only three source-verified Style operands. No Legacy ActionScript, textures, menu callbacks or PAK files are imported.")
+                            .size(11).style(design::muted))
+                        .push(design::button("Stage Legacy menu rows + labels").on_press_maybe(
+                            (session.project.is_some() && !state.gfx_busy)
+                                .then_some(Message::GfxAction(
+                                    crate::gfx_editor::Action::StageLegacyRows,
+                                )),
+                        ))
+                        .push(text("Opt-in, undoable and specific to verified Stage 2 Style symbols. Unsupported or modified source values are refused. Apply to Mod Project only after previewing; actual in-game layout is unverified.")
+                            .size(11).style(design::muted));
+                }
                 if !session.layers.is_empty() {
                     actions = actions.push(
                         design::button(if state.gfx_layout_show_raster {

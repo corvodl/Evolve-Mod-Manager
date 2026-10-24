@@ -3,6 +3,7 @@
 use crate::gfx_dependencies::{self, Dependency};
 use crate::gfx_external_textures;
 use crate::gfx_featured_promo::{self, Mode as FeaturedMode, Target as FeaturedTarget};
+use crate::gfx_legacy_layout;
 use crate::gfx_menu_map;
 use crate::modding_projects::{self, ProjectRow};
 use evolve_core::gfx::{GfxInfo, MAX_SOURCE, inspect_gfx};
@@ -62,6 +63,7 @@ pub enum Action {
     },
     PreviewFrame,
     StageLayout(LayoutEdit),
+    StageLegacyRows,
     Featured {
         mode: FeaturedMode,
         target: FeaturedTarget,
@@ -684,6 +686,21 @@ pub fn run(
                 },
                 target.label()
             )
+        }
+        Action::StageLegacyRows => {
+            if !session
+                .relative
+                .eq_ignore_ascii_case("Libs/UI/main_menu.gfx")
+            {
+                return Err("Legacy row preset only supports Libs/UI/main_menu.gfx".into());
+            }
+            if session.project.is_none() {
+                return Err("Open Stage 2 main_menu.gfx from an editable Mod Project".into());
+            }
+            let (before, _) = read_gfx(&session.editable)?;
+            let updated = gfx_legacy_layout::legacy_main_menu_rows(&before)?;
+            stage(&mut session, &updated)?;
+            "Staged Legacy menu layout on the original Stage 2 GFX: 40/65px default/featured rows to 70px and main-menu text inset 70 to 85px. Navigation, callbacks, other tags, and textures are unchanged. Undo or Apply to Mod Project; game verification required.".to_owned()
         }
         Action::StageLayout(edit) => {
             let (before, _) = read_gfx(&session.editable)?;

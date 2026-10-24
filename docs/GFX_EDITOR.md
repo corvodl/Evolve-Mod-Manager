@@ -38,6 +38,22 @@ a manifest-listed, extracted Mod Project only after explicitly selecting
 **Apply to Mod Project**. The existing hash-check and `EditorBackups` transaction
 protects the original; this operation never rewrites an installed PAK.
 
+### Read-only Legacy UI Data and UI Assets reference
+
+The Legacy UI Data XML and original GFX/DDS archives can be used to guide the appearance port while keeping **Stage 2 navigation and initialization**. From the repository root, run:
+
+```sh
+python3 scripts/audit_legacy_ui.py /path/to/legacy_ui_data.zip --assets /path/to/ui_assets_legacy_full.zip
+```
+
+The optional asset ZIP is the assembled original archive, not its numbered transfer segments. The tool only reads ZIP member names and bounded XML and emits JSON: original PC menu command order, movie binding, dynamic menu arrays/native function names, default news DDS references and source-art availability. It never edits GFX, copies copyrighted artwork, rewrites Stage 2 UI Data or patches game PAKs. The source comparison and unresolved styling targets are maintained in `docs/parity_handoff.md`.
+
+### Experimental Legacy main-menu row heights (Stage 2 script preserved)
+
+In **Modding**, open an editable project containing the original Stage 2 `Libs/UI/main_menu.gfx`. In **GFX Tools → Layout**, select **Stage Legacy menu rows + labels**. This is a narrow, source-verified presentation edit: it changes Stage 2's default 40-pixel and featured 65-pixel menu row heights to the Legacy movie's 70 pixels, and moves ButtonMainMenu's label inset from 70 to the Legacy 85 stage pixels. Original Stage 2 menu functions, button creation, native callbacks, textures, symbols and all other assets remain unchanged. The edit is staged privately; use **Undo** or **Apply to Mod Project**. Nothing is installed into the running game by this editor action.
+
+The action requires the seven existing Stage 2 menu Style constants plus the five original ButtonMainMenu label/geometry constants and refuses a Legacy movie or different source layout. This is **not** a complete Legacy menu port: fonts, artwork, hover effects, positions and submenus still need verified asset-by-asset adaptation and a real game test with working navigation.
+
 ## Visual layout editor
 
 Use **Visual GFX layout editor** in the GFX pane:
