@@ -2748,7 +2748,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .find(|anim| anim.workspace == project.workspace)
                         .map(ModToggleAnimation::position)
                         .unwrap_or(if project.enabled { 1.0 } else { 0.0 });
-                    state.mod_toggle_animations
+                    state
+                        .mod_toggle_animations
                         .retain(|anim| anim.workspace != project.workspace);
                     state.mod_toggle_animations.push(ModToggleAnimation {
                         workspace: project.workspace.clone(),
@@ -6991,7 +6992,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             for animation in &mut state.mod_toggle_animations {
                 animation.frame = animation.frame.saturating_add(1);
             }
-            state.mod_toggle_animations
+            state
+                .mod_toggle_animations
                 .retain(|animation| animation.frame < MOD_TOGGLE_FRAMES);
             if state.cdf_surfaces.as_ref().is_some_and(|surfaces| {
                 surfaces.iter().any(|surface| surface.emissive_uv.is_some())
