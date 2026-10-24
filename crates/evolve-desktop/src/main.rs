@@ -5888,26 +5888,26 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.gfx_preview = Some(image::Handle::from_bytes(image_bytes));
                     }
                     if let Some(project) = saved_project {
-                            if build_after_apply {
-                                state.status = "Applied edited GFX to the Mod Project with a backup. Checking the complete project and building a signed test PAK...".into();
-                                return launch(
-                                    state,
-                                    Operation::BuildRawProject(
-                                        project,
-                                        PathBuf::from(&state.preferences.projects),
-                                        PathBuf::from(&state.preferences.stage),
-                                    ),
-                                );
-                            }
-                            state.modding_pending_focus = Some(project.workspace.clone());
-                            state.status = "GFX saved to the Mod Project. Refreshing changed-file counts for Modding...".into();
+                        if build_after_apply {
+                            state.status = "Applied edited GFX to the Mod Project with a backup. Checking the complete project and building a signed test PAK...".into();
                             return launch(
                                 state,
-                                Operation::IndexProjects(
+                                Operation::BuildRawProject(
+                                    project,
                                     PathBuf::from(&state.preferences.projects),
                                     PathBuf::from(&state.preferences.stage),
                                 ),
                             );
+                        }
+                        state.modding_pending_focus = Some(project.workspace.clone());
+                        state.status = "GFX saved to the Mod Project. Refreshing changed-file counts for Modding...".into();
+                        return launch(
+                            state,
+                            Operation::IndexProjects(
+                                PathBuf::from(&state.preferences.projects),
+                                PathBuf::from(&state.preferences.stage),
+                            ),
+                        );
                     }
                 }
                 Err(e) => {
