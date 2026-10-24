@@ -409,7 +409,9 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
         )
         .map_err(|e| format!("PAK/hook mismatch for {path}: {e}"))?;
         if report.signed_original_entries == 0 || report.signed_replacement_entries == 0 {
-            return Err(format!("Signed PAK has no verified archive members: {path}"));
+            return Err(format!(
+                "Signed PAK has no verified archive members: {path}"
+            ));
         }
         // Differing archive member inventories indicate an untested game
         // version, not unsafe paths. Continue offline after cryptographic
