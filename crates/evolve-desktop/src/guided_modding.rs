@@ -77,7 +77,8 @@ pub fn refresh_imports(state: &mut State) {
     editor.note = if state.library_catalog.is_some() {
         format!(
             "{} assets in editable projects; {} imported assets ready; {skipped} imports unavailable. Select an imported asset to create a staged editing copy. Originals remain unchanged.",
-            editor.rows.len(), editor.imports.len()
+            editor.rows.len(),
+            editor.imports.len()
         )
     } else if state.library_startup_loading {
         "Loading previously imported Asset Library PAKs; no reimport required.".into()
