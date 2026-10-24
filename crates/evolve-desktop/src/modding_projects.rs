@@ -93,6 +93,7 @@ pub struct ProjectRow {
     pub workspace: PathBuf,
     pub modified: Vec<String>,
     pub changed_known: bool,
+    pub enabled: bool,
 }
 
 fn regular(path: &Path, max: u64) -> bool {
@@ -144,6 +145,7 @@ fn inspect_project(
         workspace: folder.to_path_buf(),
         modified: Vec::new(),
         changed_known: false,
+        enabled: false,
     };
     let read = || -> Result<(String, Vec<String>, bool), String> {
         let manifest = read_json(&folder.join(".evolve-pak-workspace.json"), 32 * 1024 * 1024)?;
@@ -276,6 +278,82 @@ fn inspect_project(
     item
 }
 
+/// User-facing names and switches are separate from signed PAK manifests.
+/// Existing projects default to OFF so an upgrade never silently deploys mods.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct ModPreference {
+    name: Option<String>,
+    enabled: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModPreferences {
+    schema: u32,
+    mods: HashMap<String, ModPreference>,
+}
+
+impl Default for ModPreferences {
+    fn default() -> Self {
+        Self { schema: 1, mods: HashMap::new() }
+    }
+}
+
+fn preference_key(root: &Path, workspace: &Path) -> Result<String, String> {
+    let base = fs::canonicalize(root).map_err(|e| e.to_string())?;
+    let folder = fs::canonicalize(workspace).map_err(|e| e.to_string())?;
+    let relative = folder.strip_prefix(&base).map_err(|_| "Mod is outside Projects")?;
+    let name = relative.to_string_lossy().replace('\\', "/");
+    if !safe_member(&name) {
+        return Err("Invalid mod folder".into());
+    }
+    Ok(name)
+}
+
+fn read_mod_preferences(root: &Path) -> Result<ModPreferences, String> {
+    let path = root.join("mod-settings.json");
+    if !path.exists() {
+        return Ok(ModPreferences::default());
+    }
+    let settings: ModPreferences = serde_json::from_value(read_json(&path, 4 * 1024 * 1024)?)
+        .map_err(|e| format!("Cannot read saved mods: {e}"))?;
+    if settings.schema != 1 || settings.mods.len() > MAX_PROJECTS {
+        return Err("Saved mod settings are unsupported".into());
+    }
+    Ok(settings)
+}
+
+/// Persist only the requested UI setting; never alter an extracted PAK, game,
+/// signing key, or recovery journal.
+pub fn save_mod_preference(
+    root: &Path,
+    workspace: &Path,
+    name: Option<&str>,
+    enabled: Option<bool>,
+) -> Result<(), String> {
+    let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
+    let key = preference_key(&root, workspace)?;
+    let mut settings = read_mod_preferences(&root)?;
+    let entry = settings.mods.entry(key).or_default();
+    if let Some(value) = name {
+        let trimmed = value.trim();
+        if trimmed.is_empty() || trimmed.chars().count() > 80 || trimmed.chars().any(char::is_control) {
+            return Err("Give the mod a name between 1 and 80 characters".into());
+        }
+        entry.name = Some(trimmed.into());
+    }
+    if let Some(value) = enabled {
+        entry.enabled = value;
+    }
+    let mut temporary = tempfile::NamedTempFile::new_in(&root).map_err(|e| e.to_string())?;
+    serde_json::to_writer_pretty(&mut temporary, &settings).map_err(|e| e.to_string())?;
+    temporary.flush().map_err(|e| e.to_string())?;
+    temporary.as_file().sync_all().map_err(|e| e.to_string())?;
+    temporary.persist(root.join("mod-settings.json")).map_err(|e| e.error.to_string())?;
+    Ok(())
+}
+
 /// Includes registered projects and legacy manifests up to four directories
 /// deep; never follows symlinks/junctions or scans into backup/build folders.
 pub fn discover_projects(root: &Path, stage: &Path) -> Result<Vec<ProjectRow>, String> {
@@ -383,6 +461,16 @@ pub fn discover_projects(root: &Path, stage: &Path) -> Result<Vec<ProjectRow>, S
             inspect_project(&path, stage, label, build, MAX_HASHED_PER_WORKSPACE)
         })
         .collect();
+    let settings = read_mod_preferences(&root)?;
+    for project in &mut projects {
+        let key = preference_key(&root, &project.workspace)?;
+        if let Some(prefs) = settings.mods.get(&key) {
+            if let Some(name) = &prefs.name {
+                project.label = name.clone();
+            }
+            project.enabled = prefs.enabled;
+        }
+    }
     projects.sort_by(|a, b| {
         a.label
             .to_ascii_lowercase()
