@@ -377,10 +377,30 @@ mod tests {
             create_project(&archive, &projects, &stage, Some(&progress)).unwrap();
         assert_eq!(count, 1);
         assert_eq!(progress.phase.load(std::sync::atomic::Ordering::Relaxed), 2);
-        assert_eq!(progress.files_done.load(std::sync::atomic::Ordering::Relaxed), 1);
-        assert_eq!(progress.files_total.load(std::sync::atomic::Ordering::Relaxed), 1);
-        assert_eq!(progress.bytes_done.load(std::sync::atomic::Ordering::Relaxed), 13);
-        assert_eq!(progress.bytes_total.load(std::sync::atomic::Ordering::Relaxed), 13);
+        assert_eq!(
+            progress
+                .files_done
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            progress
+                .files_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            progress
+                .bytes_done
+                .load(std::sync::atomic::Ordering::Relaxed),
+            13
+        );
+        assert_eq!(
+            progress
+                .bytes_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            13
+        );
         assert!(refreshed.is_none());
         assert!(!mapped);
         let member = workspace.join("files/Libs/UI/main_menu.gfx");
