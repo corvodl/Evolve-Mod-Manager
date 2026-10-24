@@ -1116,9 +1116,7 @@ pub fn launch_existing_offline_client(
             }
             return Err(format!(
                 "Play with Mods did not complete: helper exited ({status}), hook_ready={}, swap_complete={}, game_released={}. Evolve opening does not mean the mod PAKs were installed; inspect rust-launch-bridge.log.",
-                signals.hook_ready,
-                signals.swap_complete,
-                signals.game_released
+                signals.hook_ready, signals.swap_complete, signals.game_released
             ));
         }
         if !signals.hook_ready && std::time::Instant::now() >= hook_deadline {
