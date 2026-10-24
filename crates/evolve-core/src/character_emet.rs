@@ -221,14 +221,22 @@ mod tests {
         let path = "characters/hunters/merc_emet/emet_3p.cdf";
         let found = discover(path, &cdf).unwrap();
         assert_eq!(found.faces, ["broken", "healing", "oh"]);
-        let all = cdf.attachments.iter().map(|part| part.name.as_str()).collect();
+        let all = cdf
+            .attachments
+            .iter()
+            .map(|part| part.name.as_str())
+            .collect();
         assert_eq!(
             choose(path, &cdf, all, &EquipmentOverrides::new()).unwrap(),
             ["body", "broken"],
         );
         let mut selected = EquipmentOverrides::new();
         selected.insert(FACE.into(), "oh".into());
-        let all = cdf.attachments.iter().map(|part| part.name.as_str()).collect();
+        let all = cdf
+            .attachments
+            .iter()
+            .map(|part| part.name.as_str())
+            .collect();
         assert_eq!(choose(path, &cdf, all, &selected).unwrap(), ["body", "oh"]);
     }
 
