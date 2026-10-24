@@ -289,7 +289,11 @@ pub fn create(
     let swap = output.join("swap");
     let originals = output.join("originals");
     let result = (|| -> Result<InitialSetup, String> {
-        fs::create_dir(&stage).map_err(|e| e.to_string())?;
+        // The auto-generated signing stage is also the profile transaction
+        // workspace. Initialize its recovery marker/history now so Build &
+        // Prepare Offline Test can journal and restore a profile safely.
+        evolve_core::initialize_stage(&stage)
+            .map_err(|e| format!("Cannot initialize signed stage recovery: {e}"))?;
         fs::create_dir(&swap).map_err(|e| e.to_string())?;
         if keep_original_snapshots {
             fs::create_dir(&originals).map_err(|e| e.to_string())?;

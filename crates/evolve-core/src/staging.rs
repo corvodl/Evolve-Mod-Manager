@@ -93,6 +93,82 @@ pub(crate) fn copy_checked(
     Ok(())
 }
 
+/// Read-only compatibility with the manager's fully-generated first-run
+/// signing stages. Older versions created Setup_*/staged with rekey_plan and
+/// stage_status files, but did not initialize the standalone legacy marker.
+/// Only accept that exact layout, never an arbitrary existing directory or
+/// installed game tree. Profile swaps still verify PAK signatures and keep
+/// journaled byte-exact backups before modifying any staged files.
+fn generated_setup_workspace(root: &Path) -> Result<(), StageError> {
+    let bad = || StageError::InvalidWorkspace;
+    if root.file_name().and_then(|v| v.to_str()) != Some("staged") {
+        return Err(bad());
+    }
+    let parent = root.parent().ok_or_else(bad)?;
+    if !parent
+        .file_name()
+        .and_then(|v| v.to_str())
+        .is_some_and(|v| v.starts_with("Setup_"))
+    {
+        return Err(bad());
+    }
+    let real_dir = |path: &Path| {
+        fs::symlink_metadata(path)
+            .is_ok_and(|m| m.file_type().is_dir() && !m.file_type().is_symlink())
+    };
+    let real_file = |path: &Path, limit: u64| {
+        fs::symlink_metadata(path)
+            .is_ok_and(|m| m.file_type().is_file() && m.len() > 0 && m.len() <= limit)
+    };
+    if !real_dir(&root.join("paks"))
+        || !real_dir(&root.join("mykeys"))
+        || !real_file(&root.join("mykeys/public_key.bin"), 64 * 1024)
+        || !real_file(&root.join("mykeys/private_key.pem"), 64 * 1024)
+        || !real_file(&root.join("inject-custom.dll"), 1024 * 1024)
+        || !fs::symlink_metadata(parent.join("RSAKeyData.bin"))
+            .is_ok_and(|m| m.file_type().is_file() && m.len() == 140)
+        || !real_file(&root.join("rekey_plan.json"), 8 * 1024 * 1024)
+        || !real_file(&root.join("stage_status.json"), 1024 * 1024)
+    {
+        return Err(bad());
+    }
+    let plan: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("rekey_plan.json")).map_err(|_| bad())?)
+            .map_err(|_| bad())?;
+    let status: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("stage_status.json")).map_err(|_| bad())?)
+            .map_err(|_| bad())?;
+    let source = plan["source_root"].as_str().ok_or_else(bad)?;
+    let game = fs::canonicalize(source).map_err(|_| bad())?;
+    if !game.is_dir()
+        || root.starts_with(&game)
+        || game.starts_with(root)
+        || status["status"].as_str() != Some("fully-staged-offline")
+    {
+        return Err(bad());
+    }
+    let rows = plan["entries"].as_array().ok_or_else(bad)?;
+    let signed = rows
+        .iter()
+        .filter(|v| v["kind"].as_str() == Some("signed-encrypted"))
+        .count();
+    if signed == 0
+        || signed > 4096
+        || rows.len() > 4096
+        || status["count"].as_u64() != Some(signed as u64)
+    {
+        return Err(bad());
+    }
+    // Existing modern stages did not have the legacy history directory.
+    // Profile batch swaps use their own .evolve-batches recovery journal.
+    if let Ok(meta) = fs::symlink_metadata(root.join(HISTORY))
+        && (!meta.file_type().is_dir() || meta.file_type().is_symlink())
+    {
+        return Err(bad());
+    }
+    Ok(())
+}
+
 pub(crate) fn workspace(root: &Path) -> Result<PathBuf, StageError> {
     let kind = fs::symlink_metadata(root)
         .map_err(|_| StageError::InvalidWorkspace)?
@@ -102,18 +178,22 @@ pub(crate) fn workspace(root: &Path) -> Result<PathBuf, StageError> {
     }
     let root = fs::canonicalize(root)?;
     let marker = root.join(MARKER);
-    ordinary(&marker).map_err(|_| StageError::InvalidWorkspace)?;
-    if fs::metadata(&marker)?.len() > 1024
-        || fs::read_to_string(&marker)?
-            != "{\"schema\":1,\"kind\":\"isolated-offline-pak-stage\"}\n"
-    {
-        return Err(StageError::InvalidWorkspace);
-    }
-    for folder in ["paks", HISTORY] {
-        let ty = fs::symlink_metadata(root.join(folder))?.file_type();
-        if !ty.is_dir() || ty.is_symlink() {
+    if fs::symlink_metadata(&marker).is_ok() {
+        ordinary(&marker).map_err(|_| StageError::InvalidWorkspace)?;
+        if fs::metadata(&marker)?.len() > 1024
+            || fs::read_to_string(&marker)?
+                != "{\"schema\":1,\"kind\":\"isolated-offline-pak-stage\"}\n"
+        {
             return Err(StageError::InvalidWorkspace);
         }
+        for folder in ["paks", HISTORY] {
+            let ty = fs::symlink_metadata(root.join(folder))?.file_type();
+            if !ty.is_dir() || ty.is_symlink() {
+                return Err(StageError::InvalidWorkspace);
+            }
+        }
+    } else {
+        generated_setup_workspace(&root)?;
     }
     Ok(root)
 }
@@ -452,6 +532,62 @@ mod tests {
         write_journal(&root, &tx).unwrap();
         restore_stage(&root).unwrap();
         assert_eq!(fs::read(&destination).unwrap(), b"old");
+    }
+
+    #[test]
+    fn generated_first_run_stage_supports_profile_metadata_without_recreation() {
+        let temp = tempfile::tempdir().unwrap();
+        let game = temp.path().join("game");
+        fs::create_dir(&game).unwrap();
+        let setup = temp.path().join("Setup_existing");
+        let stage = setup.join("staged");
+        fs::create_dir_all(stage.join("paks")).unwrap();
+        fs::create_dir(stage.join("mykeys")).unwrap();
+        fs::write(setup.join("RSAKeyData.bin"), [0u8; 140]).unwrap();
+        fs::write(stage.join("mykeys/public_key.bin"), b"key").unwrap();
+        fs::write(stage.join("mykeys/private_key.pem"), b"private").unwrap();
+        fs::write(stage.join("inject-custom.dll"), b"hook").unwrap();
+        fs::write(
+            stage.join("rekey_plan.json"),
+            serde_json::json!({
+                "source_root": game,
+                "entries": [{"path": "Game/UI_Assets.pak", "kind": "signed-encrypted"}]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            stage.join("stage_status.json"),
+            serde_json::json!({"status": "fully-staged-offline", "count": 1}).to_string(),
+        )
+        .unwrap();
+        assert!(stage_status(&stage).unwrap().is_none());
+        assert!(crate::batch::batch_stage_status(&stage).unwrap().is_none());
+        let profile = crate::profiles::create_mod_profile(&stage, "Main menu offline test")
+            .expect("An existing generated stage can store new profiles");
+        assert_eq!(
+            crate::profiles::list_mod_profiles(&stage).unwrap().profiles[0].id,
+            profile.id
+        );
+        assert!(!stage.join(MARKER).exists());
+
+        // A forged marker never falls back to the compatibility layout.
+        fs::write(stage.join(MARKER), b"invalid").unwrap();
+        assert!(workspace(&stage).is_err());
+        fs::remove_file(stage.join(MARKER)).unwrap();
+
+        // A matching-looking folder inside the game installation is unsafe.
+        let other_game = setup.parent().unwrap();
+        fs::write(
+            stage.join("rekey_plan.json"),
+            serde_json::json!({
+                "source_root": other_game,
+                "entries": [{"path": "Game/UI_Assets.pak", "kind": "signed-encrypted"}]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(workspace(&stage).is_err());
     }
 
     #[cfg(unix)]
