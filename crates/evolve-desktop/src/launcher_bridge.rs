@@ -673,6 +673,53 @@ fn guarded_restore_state(stage: &Path, swap: &Path) -> Result<String, String> {
     Ok(phase.to_owned())
 }
 
+/// Fallback from the private manager: orphaned originals can be recovered
+/// without recreating an obsolete controlled-swap journal.
+#[cfg(windows)]
+fn recover_orphaned_originals(stage: &Path, swap: &Path) -> Result<(usize, bool), String> {
+    use std::os::windows::process::CommandExt;
+    let plan = json(&stage.join("rekey_plan.json"))?;
+    let game = directory(Path::new(
+        plan["source_root"].as_str().ok_or("Signing stage is missing its game path")?,
+    ))?;
+    if game.starts_with(stage) || stage.starts_with(&game)
+        || game.starts_with(swap) || swap.starts_with(&game)
+    {
+        return Err("Game and recovery folders must be separate.".into());
+    }
+    plain(&game.join("bin64_SteamRetail/Evolve.exe"), 1024 * 1024 * 1024)?;
+    // Use the exact journal-independent implementation from the private
+    // manager. It keeps existing modded files under unique recovery names
+    // before restoring .customkey-original backups.
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(swap.join("rust-restore-bridge.log"))
+        .map_err(|e| e.to_string())?;
+    let stderr = log.try_clone().map_err(|e| e.to_string())?;
+    let status = Command::new("py")
+        .args(["-3.11", "-u", "-c", include_str!("../launcher_support/orphaned_swap_recovery.py")])
+        .arg("--game")
+        .arg(&game)
+        .arg("--manifest-dir")
+        .arg(swap.join("recovery-logs"))
+        .arg("--apply")
+        .current_dir(swap)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(stderr))
+        .creation_flags(0x08000000)
+        .status()
+        .map_err(|e| format!("Could not start automatic original-file recovery: {e}"))?;
+    if !status.success() {
+        return Err(
+            "Original-file recovery needs attention. No backup was intentionally deleted; see the recovery log in Mod Data."
+                .into(),
+        );
+    }
+    Ok((0, false))
+}
+
 #[cfg(windows)]
 fn lock_restore_watchdog(swap: &Path) -> Result<Option<File>, String> {
     let path = swap.join("auto_restore_watch.lock");
@@ -704,7 +751,14 @@ pub fn restore_existing_offline_client(stage: &Path, swap: &Path) -> Result<(usi
     // Avoid racing the private launcher watchdog's independent restoration.
     // Hold this handle until the manual helper finishes verifying originals.
     let _watchdog_guard = lock_restore_watchdog(&swap)?;
-    let phase = guarded_restore_state(&stage, &swap)?;
+    let phase = match guarded_restore_state(&stage, &swap) {
+        Ok(phase) => phase,
+        Err(_) => {
+            // A stale, empty, or missing swap ledger must not prevent the
+            // original independent backup recovery path from running.
+            return recover_orphaned_originals(&stage, &swap);
+        }
+    };
     if matches!(phase.as_str(), "prepared" | "restored") {
         let journal = json(&swap.join("controlled_swap_state.json"))?;
         let backups_remain = journal["files"].as_array().is_some_and(|files| {
