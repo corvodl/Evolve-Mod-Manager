@@ -1061,7 +1061,8 @@ mod tests {
         fs::write(
             project.join(".evolve-pak-workspace.json"),
             serde_json::to_vec(&manifest).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
         let limited = inspect_project(&project, &stage, "Test B".into(), "".into(), 8);
         assert!(!limited.changed_known);
         assert!(limited.modified.is_empty());
