@@ -91,7 +91,7 @@ use launcher_bridge::{
     LaunchReady, inspect_existing_launcher, launch_existing_offline_client,
     restore_existing_offline_client,
 };
-use modding_projects::{ProjectRow, discover_projects};
+use modding_projects::{ProjectCopyProgress, ProjectRow, discover_projects};
 use selection::MultiSelection;
 use settings::{Preferences, load_from, save_to, settings_path};
 use sha2::{Digest, Sha256};
@@ -383,6 +383,7 @@ struct State {
     library_import_scanning: bool,
     library_import_cancel: Option<Arc<AtomicBool>>,
     library_import_progress: Option<Arc<AtomicUsize>>,
+    project_copy_progress: Option<Arc<ProjectCopyProgress>>,
     library_search: String,
     library_by_build: bool,
     library_build_index: usize,
@@ -492,7 +493,7 @@ enum Operation {
         Arc<AtomicUsize>,
     ),
     OpenImportedPak(ImportedPak),
-    CreateProjectFromLibrary(ImportedPak, PathBuf, PathBuf),
+    CreateProjectFromLibrary(ImportedPak, PathBuf, PathBuf, Arc<ProjectCopyProgress>),
     RefreshGamePakBaseline(PathBuf, PathBuf, PathBuf, bool),
     InspectDependencies(Inventory, String),
     CompareAssets(PathBuf, PathBuf),
@@ -784,9 +785,9 @@ impl Operation {
             Self::OpenImportedPak(pak) => imported_archive_files(&pak)
                 .map(Completed::ImportedPakFiles)
                 .map_err(|e| e.to_string()),
-            Self::CreateProjectFromLibrary(pak, projects, stage) => {
+            Self::CreateProjectFromLibrary(pak, projects, stage, progress) => {
                 let (path, count, refreshed_id, mapped) =
-                    staged_library::create_project(&pak, &projects, &stage)?;
+                    staged_library::create_project(&pak, &projects, &stage, Some(&progress))?;
                 let catalog = if refreshed_id.is_some() {
                     let root = Path::new(&pak.directory)
                         .parent()
@@ -2148,6 +2149,12 @@ fn launch(state: &mut State, operation: Operation) -> Task<Message> {
             "Checking that original PAKs and the recovery journal are clean before opening the normal client..."
                 .into()
         }
+        Operation::CreateProjectFromLibrary(..) => {
+            "Checking imported files and making a private editing copy...".into()
+        }
+        Operation::IndexProjects(..) if state.project_copy_progress.is_some() => {
+            "Indexing the new editable project before opening it...".into()
+        }
         _ => "Working on explicitly selected local files...".into(),
     };
     Task::perform(
@@ -3239,6 +3246,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Choose a verified imported archive first.".into();
                 return Task::none();
             };
+            if state.busy {
+                return Task::none();
+            }
+            let progress = Arc::new(ProjectCopyProgress::default());
+            state.project_copy_progress = Some(progress.clone());
             let stage = PathBuf::from(&state.preferences.stage);
             state.modding_open_editor_when_scanned = true;
             return launch(
@@ -3247,6 +3259,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     pak,
                     PathBuf::from(&state.preferences.projects),
                     stage,
+                    progress,
                 ),
             );
         }
@@ -7278,6 +7291,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return launch(state, Operation::ExportPng(source, output));
         }
         Message::Finished(result) => {
+            // Preserve the footer progress through indexing and the initial
+            // file scan; all other completions (including errors) clear it.
+            let keep_project_progress = state.project_copy_progress.is_some()
+                && matches!(
+                    &result,
+                    Ok(Completed::ImportedProjectCreated(..) | Completed::Projects(..))
+                );
+            if !keep_project_progress {
+                state.project_copy_progress = None;
+            }
             let import_was_cancelled = state
                 .library_import_cancel
                 .as_ref()
@@ -7363,6 +7386,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     refreshed_id,
                     mapped,
                 )) => {
+                    if let Some(progress) = &state.project_copy_progress {
+                        progress.phase.store(3, Ordering::Relaxed);
+                    }
                     if let Some(catalog) = catalog {
                         if let Some(id) = refreshed_id.as_deref() {
                             state.library_selected =
@@ -9200,21 +9226,50 @@ fn view(state: &State) -> Element<'_, Message> {
     } else {
         container(column![]).into()
     };
+    let footer_progress: Element<'_, Message> =
+        if let Some(progress) = &state.project_copy_progress {
+            let phase = progress.phase.load(Ordering::Relaxed);
+            let done = progress.files_done.load(Ordering::Relaxed);
+            let total = progress.files_total.load(Ordering::Relaxed);
+            let bytes = progress.bytes_done.load(Ordering::Relaxed);
+            let size = progress.bytes_total.load(Ordering::Relaxed);
+            let percent = match phase {
+                0 => 0,
+                1 if size > 0 => ((bytes.min(size) as f64 / size as f64) * 95.0) as u32,
+                1 => 0,
+                2 => 98,
+                _ => 99,
+            };
+            let label = match phase {
+                0 => "Checking imported assets".to_owned(),
+                1 => format!("Copying & verifying {done}/{total} files"),
+                2 => "Saving project".to_owned(),
+                _ => "Opening project".to_owned(),
+            };
+            row![
+                text(label).size(11),
+                iced::widget::progress_bar(0.0..=100.0, percent as f32)
+                    .width(Length::Fixed(124.0))
+                    .height(Length::Fixed(8.0)),
+                text(format!("{percent}%")).size(11),
+            ]
+            .spacing(7)
+            .align_y(iced::Alignment::Center)
+            .into()
+        } else {
+            row![].into()
+        };
     let body = column![
         headline,
         tools,
         workspace,
         row![
-            text(if state.busy {
-                "Working..."
-            } else {
-                state.status.as_str()
-            })
-            .size(12)
-            .width(Fill),
+            text(state.status.as_str()).size(12).width(Fill),
+            footer_progress,
             text(format!("v{}  •  Rust preview", env!("CARGO_PKG_VERSION"))).size(12),
         ]
-        .spacing(12),
+        .spacing(12)
+        .align_y(iced::Alignment::Center),
     ]
     .spacing(11)
     .padding([10, 28])
