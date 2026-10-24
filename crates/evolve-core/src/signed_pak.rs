@@ -752,6 +752,36 @@ pub fn resign_signed_pak(
     basename: &str,
     destination: &Path,
 ) -> Result<SignedPakInfo, SignedPakError> {
+    resign_signed_pak_with_original_name(
+        source,
+        original_public,
+        signing_private,
+        signing_public,
+        basename,
+        basename,
+        destination,
+    )
+}
+
+/// Some retail CryPAKs are signed over a lowercase name despite a differently
+/// cased filename on disk. Authenticate the exact original signed name first,
+/// but sign the staged copy over the physical game filename so the launcher
+/// can verify and mount the replacement at its original path.
+/// Both names are restricted to the physical basename or its ASCII lowercase.
+pub fn resign_signed_pak_with_original_name(
+    source: &Path,
+    original_public: &Path,
+    signing_private: &Path,
+    signing_public: &Path,
+    original_signed_name: &str,
+    basename: &str,
+    destination: &Path,
+) -> Result<SignedPakInfo, SignedPakError> {
+    if original_signed_name != basename
+        && original_signed_name != basename.to_ascii_lowercase()
+    {
+        return Err(SignedPakError::UnsafeOutput);
+    }
     let parent = destination.parent().ok_or(SignedPakError::UnsafeOutput)?;
     if destination.file_name().and_then(|v| v.to_str()) != Some(basename)
         || !fs::symlink_metadata(parent)?.file_type().is_dir()
@@ -763,7 +793,7 @@ pub fn resign_signed_pak(
     if !source_meta.file_type().is_file() || source_meta.len() > MAX_TOTAL_BYTES {
         return Err(SignedPakError::Limits);
     }
-    let original = open_verified_signed_pak(source, original_public, basename)?;
+    let original = open_verified_signed_pak(source, original_public, original_signed_name)?;
     let (private, public) = signing_key_pair(signing_private, signing_public)?;
     let comment = signed_comment(
         &original.comment,
@@ -1442,6 +1472,34 @@ mod tests {
             .is_err(),
             "never overwrite the preexisting custom-signed output"
         );
+        // Original retail files may be signed as sample.pak while named
+        // Sample.pak. Re-key their staged replacement under the on-disk name,
+        // never by skipping verification or renaming the installed source.
+        let cased_output = resign_folder.join("Sample.pak");
+        let cased = resign_signed_pak_with_original_name(
+            &differently_cased,
+            &key,
+            &new_private_file,
+            &new_public_file,
+            "sample.pak",
+            "Sample.pak",
+            &cased_output,
+        )
+        .unwrap();
+        assert!(cased.signature_verified);
+        assert!(inspect_signed_pak(&cased_output, &new_public_file, "Sample.pak").is_ok());
+        assert!(inspect_signed_pak(&cased_output, &new_public_file, "sample.pak").is_err());
+        assert_eq!(fs::read(&differently_cased).unwrap(), bytes);
+        assert!(resign_signed_pak_with_original_name(
+            &differently_cased,
+            &key,
+            &new_private_file,
+            &new_public_file,
+            "OTHER.pak",
+            "Sample.pak",
+            &resign_folder.join("refused.pak"),
+        ).is_err());
+
         let old_hook = root.path().join("original-hook.dll");
         let hook_root = root.path().join("custom-hook");
         fs::create_dir(&hook_root).unwrap();
