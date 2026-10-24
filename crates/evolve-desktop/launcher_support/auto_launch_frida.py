@@ -23,14 +23,44 @@ GAME_EXE = Path(r'C:\Games\ModdedEvolve\EvolveGame\bin64_SteamRetail\Evolve.exe'
 WAIT_SECONDS = 900
 
 
-def normalize_exec_command(command: str) -> bool:
-    if not command:
-        return False
-    clean = command.casefold().replace('/', '\\').replace('\\\\', '\\')
-    expected = str(GAME_EXE).casefold()
-    return (clean.startswith('"' + expected + '"') if clean.startswith('"')
-            else clean == expected or clean.startswith(expected + ' '))
+def canonical_exec_path(path: str) -> str:
+    """Compare drive/UNC paths independently of the Win32 extended prefix.
 
+    Do not collapse the leading two UNC separators; doing so can turn a
+    network root into a different path. Only path spelling is normalized,
+    never the executable basename or its command-line argument boundary.
+    """
+    path = (path or '').casefold().replace('/', '\\')
+    extended_unc = '\\\\?\\unc\\'
+    extended = '\\\\?\\'
+    if path.startswith(extended_unc):
+        path = '\\\\' + path[len(extended_unc):]
+    elif path.startswith(extended):
+        path = path[len(extended):]
+    unc = path.startswith('\\\\')
+    prefix = '\\\\' if unc else ''
+    body = path[2:] if unc else path
+    while '\\\\' in body:
+        body = body.replace('\\\\', '\\')
+    return prefix + body
+
+
+def normalize_exec_command(command: str) -> bool:
+    if not isinstance(command, str) or not command.strip():
+        return False
+    clean = command.strip()
+    expected = canonical_exec_path(str(GAME_EXE))
+    if clean.startswith('"'):
+        end = clean.find('"', 1)
+        if end <= 1 or (end + 1 < len(clean) and not clean[end + 1].isspace()):
+            return False
+        return canonical_exec_path(clean[1:end]) == expected
+    candidate = canonical_exec_path(clean)
+    return candidate == expected or (
+        candidate.startswith(expected)
+        and len(candidate) > len(expected)
+        and candidate[len(expected)].isspace()
+    )
 
 def is_evolve_launch(app: str, cmd: str) -> bool:
     return normalize_exec_command(app if app else cmd)
@@ -72,14 +102,31 @@ FRIDA_JS = r'''
 const path = __GAME_PATH__;
 let blocked = false;
 let seq = 0;
-function canon(s) {
-  return (s || '').toLowerCase().replaceAll('/', '\\').replaceAll('\\\\', '\\');
+function canon(raw) {
+  let p = (raw || '').toLowerCase().replaceAll('/', '\\');
+  const extendedUnc = '\\\\?\\unc\\';
+  const extended = '\\\\?\\';
+  if (p.startsWith(extendedUnc)) p = '\\\\' + p.slice(extendedUnc.length);
+  else if (p.startsWith(extended)) p = p.slice(extended.length);
+  const unc = p.startsWith('\\\\');
+  const prefix = unc ? '\\\\' : '';
+  let body = unc ? p.slice(2) : p;
+  while (body.includes('\\\\')) body = body.replaceAll('\\\\', '\\');
+  return prefix + body;
 }
-function matches(s) {
-  s = canon(s);
+function matches(value) {
+  if (!value) return false;
+  const candidate = value.trim();
   const expected = canon(path);
-  return s.startsWith('"') ? s.startsWith('"' + expected + '"') :
-    (s === expected || s.startsWith(expected + ' '));
+  if (candidate.startsWith('"')) {
+    const end = candidate.indexOf('"', 1);
+    if (end <= 1 || (end + 1 < candidate.length && !/\s/.test(candidate[end + 1])))
+      return false;
+    return canon(candidate.slice(1, end)) === expected;
+  }
+  const normalized = canon(candidate);
+  return normalized === expected ||
+    (normalized.startsWith(expected) && /\s/.test(normalized[expected.length] || ''));
 }
 function readWide(p) {
   if (p.isNull()) return '';
