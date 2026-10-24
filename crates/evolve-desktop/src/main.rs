@@ -615,6 +615,7 @@ enum Operation {
 enum Completed {
     Projects(Vec<ProjectRow>),
     UnpackedProject(PathBuf, usize),
+    ImportedProjectCreated(PathBuf, usize, Option<ImportedLibrary>, Option<String>, bool),
     ImportedRawProjectMember(bool, String, PathBuf),
     RestoredRawProjectMember(bool, String, PathBuf),
     ImportedLibrary(ImportedLibrary),
@@ -754,8 +755,19 @@ impl Operation {
                 .map(Completed::ImportedPakFiles)
                 .map_err(|e| e.to_string()),
             Self::CreateProjectFromLibrary(pak, projects, stage) => {
-                staged_library::create_project(&pak, &projects, &stage)
-                    .map(|(path, count)| Completed::UnpackedProject(path, count))
+                let (path, count, refreshed_id, mapped) =
+                    staged_library::create_project(&pak, &projects, &stage)?;
+                let catalog = if refreshed_id.is_some() {
+                    let root = Path::new(&pak.directory)
+                        .parent()
+                        .ok_or("Imported archive has no library root")?;
+                    Some(imported_library(root).map_err(|e| e.to_string())?)
+                } else {
+                    None
+                };
+                Ok(Completed::ImportedProjectCreated(
+                    path, count, catalog, refreshed_id, mapped,
+                ))
             }
             Self::RefreshGamePakBaseline(game, client, storage, snapshots) => {
                 initial_setup::create(&game, &client, &storage, snapshots)
@@ -7205,6 +7217,47 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         format!("{member} already matches its verified original.")
                     };
                     state.modding_pending_focus = Some(workspace);
+                    return launch(
+                        state,
+                        Operation::IndexProjects(
+                            PathBuf::from(&state.preferences.projects),
+                            PathBuf::from(&state.preferences.stage),
+                        ),
+                    );
+                }
+                Ok(Completed::ImportedProjectCreated(path, count, catalog, refreshed_id, mapped)) => {
+                    if let Some(catalog) = catalog {
+                        if let Some(id) = refreshed_id.as_deref() {
+                            state.library_selected = catalog.archives.iter().position(|p| p.id == id);
+                            state.library_selection.clear();
+                            if let Some(index) = state.library_selected {
+                                state.library_selection.indices.insert(index);
+                            }
+                        }
+                        state.library_catalog = Some(catalog);
+                        refresh_library_matches(state);
+                        guided_modding::refresh_imports(state);
+                    }
+                    state.status = if refreshed_id.is_some() {
+                        format!(
+                            "Selected PAK changed since import. Its new source was independently authenticated and refreshed without replacing the old Asset Library snapshot; {count} files are ready to edit. {}",
+                            if mapped {
+                                "The updated archive matches this signing stage."
+                            } else {
+                                "This editing copy is isolated and NOT mapped for game deployment; update the game signing stage before testing mods against the updated game."
+                            }
+                        )
+                    } else {
+                        format!(
+                            "Created a project with {count} editable files. Original source unchanged. {}",
+                            if mapped {
+                                "Exact game-stage mapping verified."
+                            } else {
+                                "Unmapped editing copy; verify the updated game stage before deployment."
+                            }
+                        )
+                    };
+                    state.modding_pending_focus = Some(path);
                     return launch(
                         state,
                         Operation::IndexProjects(
