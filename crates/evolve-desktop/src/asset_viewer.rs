@@ -826,9 +826,9 @@ fn gfx_tools(state: &State) -> Element<'_, Message> {
                 {
                     actions = actions
                         .push(text("LEGACY APPEARANCE · STAGE 2 NAVIGATION").size(12))
-                        .push(text("Use original Stage 2 movie/scripts. Match Legacy menu row heights (70px) by changing only the two source-authored 40/65px Style constants. No Legacy ActionScript, textures, menu callbacks or PAK files are imported.")
+                        .push(text("Use original Stage 2 movie/scripts. Match Legacy 70px rows and the 85px button-label inset by changing only three source-verified Style operands. No Legacy ActionScript, textures, menu callbacks or PAK files are imported.")
                             .size(11).style(design::muted))
-                        .push(design::button("Stage Legacy button row heights").on_press_maybe(
+                        .push(design::button("Stage Legacy menu rows + labels").on_press_maybe(
                             (session.project.is_some() && !state.gfx_busy)
                                 .then_some(Message::GfxAction(
                                     crate::gfx_editor::Action::StageLegacyRows,
