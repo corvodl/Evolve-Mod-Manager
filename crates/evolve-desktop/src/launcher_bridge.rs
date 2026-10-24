@@ -466,12 +466,19 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
     })
 }
 
-/// The detached private helper is only READY after the Frida agent has
-/// reported that its CreateProcessW hook was installed. Spawning py.exe alone
-/// is not proof that the hook exists, and must not be reported as success.
-/// Inspect only output written after this specific launch (bounded to 64 KiB).
+/// The private launcher reports a hook-ready progress event *before* the
+/// user presses Play. That is not a completed swap. Treat only the full
+/// candidate -> swap -> released sequence as confirmation of modded launch.
 #[cfg(windows)]
-fn inspect_hook_startup_log(path: &Path, offset: u64) -> Result<bool, String> {
+#[derive(Clone, Copy, Default, Debug)]
+struct PrivateLaunchSignals {
+    hook_ready: bool,
+    swap_complete: bool,
+    game_released: bool,
+}
+
+#[cfg(windows)]
+fn inspect_hook_startup_log(path: &Path, offset: u64) -> Result<PrivateLaunchSignals, String> {
     let mut file = File::open(path).map_err(|e| e.to_string())?;
     if file.metadata().map_err(|e| e.to_string())?.len() < offset {
         return Err("Offline helper startup log was truncated during handoff".into());
@@ -479,10 +486,11 @@ fn inspect_hook_startup_log(path: &Path, offset: u64) -> Result<bool, String> {
     file.seek(SeekFrom::Start(offset))
         .map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
-    file.take(64 * 1024)
+    file.take(128 * 1024)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
     let output = String::from_utf8_lossy(&bytes);
+    let mut signals = PrivateLaunchSignals::default();
     for line in output.lines() {
         if line.contains("AUTOMATIC LAUNCH FAILED:")
             || line.contains("AUTO-RESTORE MONITOR FAILED:")
@@ -494,10 +502,27 @@ fn inspect_hook_startup_log(path: &Path, offset: u64) -> Result<bool, String> {
                 line.trim()
             ));
         }
+        signals.hook_ready |= line.contains("Automatic CreateProcessW hook ready at ");
+        signals.swap_complete |= line.contains("SWAP COMPLETE. Releasing CreateProcessW...");
+        signals.game_released |= line.contains("Evolve creation released successfully.");
     }
-    Ok(output
+    Ok(signals)
+}
+
+#[cfg(windows)]
+fn game_running_without_swap() -> Result<bool, String> {
+    use std::os::windows::process::CommandExt;
+    let output = Command::new("tasklist")
+        .args(["/FI", "IMAGENAME eq Evolve.exe", "/FO", "CSV", "/NH"])
+        .creation_flags(0x08000000)
+        .output()
+        .map_err(|e| format!("Cannot inspect Evolve process state: {e}"))?;
+    if !output.status.success() {
+        return Err("Cannot confirm whether Evolve launched without the offline swap".into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
         .lines()
-        .any(|line| line.contains("Automatic CreateProcessW hook ready at ")))
+        .any(|line| line.to_ascii_lowercase().starts_with("\"evolve.exe\",")))
 }
 
 #[cfg(windows)]
