@@ -9248,9 +9248,11 @@ fn view(state: &State) -> Element<'_, Message> {
         };
         row![
             text(label).size(11),
-            iced::widget::progress_bar(0.0..=100.0, percent as f32)
-                .width(Length::Fixed(124.0))
-                .height(Length::Fixed(8.0)),
+            container(
+                iced::widget::progress_bar(0.0..=100.0, percent as f32)
+                    .height(Length::Fixed(8.0)),
+            )
+            .width(Length::Fixed(124.0)),
             text(format!("{percent}%")).size(11),
         ]
         .spacing(7)
