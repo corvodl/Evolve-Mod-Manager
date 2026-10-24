@@ -29,6 +29,8 @@ jobs:
         run: node --test crates/evolve-desktop/tests/gfx_preview_input.test.mjs
       - name: Verify original Training menu preview-only host state
         run: node --test crates/evolve-desktop/tests/gfx_preview_runtime.test.cjs
+      - name: Verify ordinary C:/ swap journal and legacy rekey path parity
+        run: python3 -m unittest discover -s crates/evolve-desktop/launcher_support -p 'test_ordinary_swap_paths.py'
       - name: Verify Test B Win32 / extended-path hook matching (Python)
         run: python3 -m unittest discover -s crates/evolve-desktop/launcher_support -p 'test_launch_path_matching.py'
       - name: Verify Frida CreateProcessW path matching (JavaScript)
