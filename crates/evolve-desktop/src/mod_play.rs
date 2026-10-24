@@ -4,7 +4,10 @@ use super::{launcher_bridge, modding_keys, modding_projects, play_setup};
 use modding_projects::ProjectRow;
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 const AUTO_PROFILE: &str = "Enabled Mods";
 
@@ -67,17 +70,15 @@ pub fn launch_enabled(
         if !ours {
             return Err("A manually staged profile is active. Restore that profile before playing with enabled mods.".into());
         }
-        evolve_core::restore_profile_stage(&stage).map_err(|e| {
-            format!("Could not restore the previous mod set: {e}")
-        })?;
+        evolve_core::restore_profile_stage(&stage)
+            .map_err(|e| format!("Could not restore the previous mod set: {e}"))?;
     }
 
     let mut built = Vec::with_capacity(mods.len());
     for (index, (project, target)) in mods.iter().zip(targets).enumerate() {
         progress.store(10 + (index * 60 / mods.len()), Ordering::Relaxed);
-        let (_, output, _) = modding_projects::build_project_raw(
-            project, &projects_root, &stage
-        ).map_err(|e| format!("Could not build {}: {e}", project.label))?;
+        let (_, output, _) = modding_projects::build_project_raw(project, &projects_root, &stage)
+            .map_err(|e| format!("Could not build {}: {e}", project.label))?;
         built.push((project.label.clone(), target, output));
         progress.store(10 + ((index + 1) * 60 / mods.len()), Ordering::Relaxed);
     }
@@ -85,11 +86,11 @@ pub fn launch_enabled(
     // Replace only the manager-owned automatic profile, preserving all named
     // user profiles and manual staging transactions.
     for profile in evolve_core::list_mod_profiles(&stage)
-        .map_err(|e| e.to_string())?.profiles
+        .map_err(|e| e.to_string())?
+        .profiles
     {
         if profile.name == AUTO_PROFILE {
-            evolve_core::delete_mod_profile(&stage, &profile.id)
-                .map_err(|e| e.to_string())?;
+            evolve_core::delete_mod_profile(&stage, &profile.id).map_err(|e| e.to_string())?;
         }
     }
     let profile = evolve_core::create_mod_profile(&stage, AUTO_PROFILE)
@@ -98,20 +99,27 @@ pub fn launch_enabled(
         for (_, target, output) in &built {
             let basename = modding_keys::signed_basename(output)?;
             evolve_core::add_mod_to_profile(
-                &stage, &profile.id, output, target,
-                &keys.original_public, &keys.public, &basename
-            ).map_err(|e| format!("Could not add {target}: {e}"))?;
+                &stage,
+                &profile.id,
+                output,
+                target,
+                &keys.original_public,
+                &keys.public,
+                &basename,
+            )
+            .map_err(|e| format!("Could not add {target}: {e}"))?;
         }
         progress.store(78, Ordering::Relaxed);
-        evolve_core::apply_profile_stage(
-            &stage, &profile.id, &keys.original_public, &keys.public
-        ).map_err(|e| format!("Could not activate enabled mods: {e}"))?;
+        evolve_core::apply_profile_stage(&stage, &profile.id, &keys.original_public, &keys.public)
+            .map_err(|e| format!("Could not activate enabled mods: {e}"))?;
         Ok(())
     })();
     if let Err(error) = result {
         // Never delete a profile owning an active recovery transaction.
         if evolve_core::batch_stage_status(&stage)
-            .ok().flatten().is_none()
+            .ok()
+            .flatten()
+            .is_none()
         {
             let _ = evolve_core::delete_mod_profile(&stage, &profile.id);
         }
