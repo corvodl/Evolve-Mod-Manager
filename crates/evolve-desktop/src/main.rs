@@ -704,10 +704,10 @@ impl Operation {
             Self::IndexProjects(root, stage) => {
                 discover_projects(&root, &stage).map(Completed::Projects)
             }
-            Self::BuildRawProject(project, projects, stage) => {
-                modding_projects::build_project_raw(&project, &projects, &stage)
-                    .map(|(entry, target, verified)| Completed::BuiltRawProject(entry, target, verified))
-            }
+            Self::BuildRawProject(project, projects, stage) => modding_projects::build_project_raw(
+                &project, &projects, &stage,
+            )
+            .map(|(entry, target, verified)| Completed::BuiltRawProject(entry, target, verified)),
             Self::ImportRawProjectMember(project, projects, member, source) => {
                 modding_projects::import_raw_member(&project, &projects, &member, &source).map(
                     |changed| {
@@ -2780,12 +2780,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Finish the current operation before building your mod.".into();
                 return Task::none();
             }
-            let Some(project) = state.modding_selected.and_then(|i| {
-                state
-                    .modding_projects
-                    .as_ref()
-                    .and_then(|projects| projects.get(i))
-            }).cloned() else {
+            let Some(project) = state
+                .modding_selected
+                .and_then(|i| {
+                    state
+                        .modding_projects
+                        .as_ref()
+                        .and_then(|projects| projects.get(i))
+                })
+                .cloned()
+            else {
                 state.status = "Select an editable Mod Project first. Imported Asset Library PAKs must be prepared as an editing project.".into();
                 return Task::none();
             };
@@ -2793,7 +2797,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             // NOT yet part of the project's contents. Building explicitly
             // commits it with the normal validation and EditorBackups first.
             if state.gfx_session.as_ref().is_some_and(|session| {
-                session.project.as_ref().is_some_and(|p| p.workspace == project.workspace)
+                session
+                    .project
+                    .as_ref()
+                    .is_some_and(|p| p.workspace == project.workspace)
                     && session.edits > 0
                     && !session.applied
             }) {
@@ -8188,7 +8195,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::BuiltRawProject(name, dir, verified)) => {
                     if let Some(projects) = state.modding_projects.as_mut()
-                        && let Some(item) = projects.iter_mut().find(|item| item.workspace == verified.workspace)
+                        && let Some(item) = projects
+                            .iter_mut()
+                            .find(|item| item.workspace == verified.workspace)
                     {
                         *item = verified;
                     }
