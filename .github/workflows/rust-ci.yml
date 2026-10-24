@@ -29,6 +29,10 @@ jobs:
         run: node --test crates/evolve-desktop/tests/gfx_preview_input.test.mjs
       - name: Verify original Training menu preview-only host state
         run: node --test crates/evolve-desktop/tests/gfx_preview_runtime.test.cjs
+      - name: Verify Test B Win32 / extended-path hook matching (Python)
+        run: python3 -m unittest discover -s crates/evolve-desktop/launcher_support -p 'test_launch_path_matching.py'
+      - name: Verify Frida CreateProcessW path matching (JavaScript)
+        run: node --test crates/evolve-desktop/tests/launcher_path_matching.test.cjs
       - name: Verify guarded original game backup restoration
         run: python3 -m unittest discover -s crates/evolve-desktop/launcher_support -p 'test_reusable_restore.py'
       - name: Verify journal-independent private manager backup recovery
