@@ -5,7 +5,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::path::{Path, PathBuf};
 
 const MAX_PROJECTS: usize = 4096;
@@ -13,6 +14,46 @@ const MAX_DIRECTORIES: usize = 32768;
 const MAX_ENTRIES: usize = 60000;
 const MAX_HASHED_PER_WORKSPACE: u64 = 256 * 1024 * 1024;
 const MAX_XML_BYTES: usize = 48 * 1024 * 1024;
+
+/// Progress for copying verified imported assets into a private project.
+/// Phase 0 = validating, 1 = copying, 2 = publishing, 3 = opening editor.
+#[derive(Debug, Default)]
+pub struct ProjectCopyProgress {
+    pub phase: AtomicUsize,
+    pub files_done: AtomicUsize,
+    pub files_total: AtomicUsize,
+    pub bytes_done: AtomicU64,
+    pub bytes_total: AtomicU64,
+}
+
+/// Hash the bytes while copying, rather than re-reading each copied file.
+fn copy_verified_member(
+    source: &Path,
+    destination: &Path,
+    progress: Option<&ProjectCopyProgress>,
+) -> Result<String, String> {
+    let mut input = File::open(source).map_err(|e| e.to_string())?;
+    let mut output = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .map_err(|e| e.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 1024 * 1024];
+    loop {
+        let read = input.read(&mut buffer).map_err(|e| e.to_string())?;
+        if read == 0 {
+            break;
+        }
+        output.write_all(&buffer[..read]).map_err(|e| e.to_string())?;
+        hasher.update(&buffer[..read]);
+        if let Some(progress) = progress {
+            progress.bytes_done.fetch_add(read as u64, Ordering::Relaxed);
+        }
+    }
+    output.flush().map_err(|e| e.to_string())?;
+    Ok(format!("{:x}", hasher.finalize()))
+}
 
 fn editable_format(record: &Value) -> Result<&str, String> {
     match record.get("format").and_then(Value::as_str) {
@@ -353,6 +394,17 @@ pub fn edit_imported_snapshot(
     pak: &evolve_core::ImportedPak,
     projects: &Path,
 ) -> Result<(PathBuf, usize), String> {
+    edit_imported_snapshot_with_progress(pak, projects, None)
+}
+
+pub fn edit_imported_snapshot_with_progress(
+    pak: &evolve_core::ImportedPak,
+    projects: &Path,
+    progress: Option<&ProjectCopyProgress>,
+) -> Result<(PathBuf, usize), String> {
+    if let Some(progress) = progress {
+        progress.phase.store(0, Ordering::Relaxed);
+    }
     let inventory = evolve_core::imported_archive_files(pak).map_err(|e| e.to_string())?;
     if !projects.is_absolute() {
         return Err("Configure an absolute Projects directory before editing".into());
@@ -379,6 +431,21 @@ pub fn edit_imported_snapshot(
     {
         return Err("Imported archive has an invalid file index".into());
     }
+    // Index manifest records once instead of a linear search per asset.
+    let mut by_path = HashMap::with_capacity(expected.len());
+    for record in expected {
+        let path = record["path"]
+            .as_str()
+            .ok_or("Imported archive manifest has an invalid member name")?;
+        if !safe_member(path) || by_path.insert(path, record).is_some() {
+            return Err("Imported archive manifest has duplicate or unsafe members".into());
+        }
+    }
+    if let Some(progress) = progress {
+        progress.files_total.store(inventory.entries.len(), Ordering::Relaxed);
+        progress.bytes_total.store(inventory.total_bytes, Ordering::Relaxed);
+        progress.phase.store(1, Ordering::Relaxed);
+    }
     let staging = tempfile::Builder::new()
         .prefix(".editable-snapshot-")
         .tempdir_in(&base)
@@ -399,11 +466,10 @@ pub fn edit_imported_snapshot(
         let copied = extracted.join(rel);
         fs::create_dir_all(copied.parent().ok_or("Invalid copy destination")?)
             .map_err(|e| e.to_string())?;
-        fs::copy(&source, &copied).map_err(|e| e.to_string())?;
-        let checksum = digest(&copied).map_err(|e| e.to_string())?;
-        let original_record = expected
-            .iter()
-            .find(|row| row["path"].as_str() == Some(rel))
+        let checksum = copy_verified_member(&source, &copied, progress)?;
+        let original_record = by_path
+            .get(rel)
+            .copied()
             .ok_or("Imported archive manifest entry missing")?;
         if let Some(recorded) = original_record["sha256"].as_str()
             && !recorded.eq_ignore_ascii_case(&checksum)
@@ -420,6 +486,12 @@ pub fn edit_imported_snapshot(
             },
             "sha256": checksum,
         }));
+        if let Some(progress) = progress {
+            progress.files_done.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    if let Some(progress) = progress {
+        progress.phase.store(2, Ordering::Relaxed);
     }
     let manifest = serde_json::json!({
         "version": 1,
