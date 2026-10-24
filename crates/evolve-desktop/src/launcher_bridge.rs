@@ -109,7 +109,7 @@ fn no_orphaned_backup(target: &Path) -> Result<(), String> {
     let backup = PathBuf::from(format!("{}.customkey-original", target.display()));
     if fs::symlink_metadata(&backup).is_ok() {
         return Err(format!(
-            "Original backup remains at {}; restore using the existing private launcher before another launch",
+            "An original game backup remains at {}. Close Evolve and its launcher, then use Modding > Advanced Archive Tools > Tools > Restore original PAKs + hook. Do not delete the backup or launch again until recovery succeeds.",
             backup.display()
         ));
     }
@@ -527,7 +527,7 @@ fn guarded_restore_state(stage: &Path, swap: &Path) -> Result<String, String> {
     let phase = journal["phase"].as_str().ok_or("Missing recovery phase")?;
     if !matches!(
         phase,
-        "prepared" | "restored" | "swapped" | "interrupted" | "restoring"
+        "prepared" | "restored" | "swapping" | "swapped" | "interrupted" | "restoring"
     ) {
         return Err("Unrecognized/unsafe private swap recovery phase".into());
     }
@@ -690,8 +690,24 @@ pub fn restore_existing_offline_client(stage: &Path, swap: &Path) -> Result<(usi
     let _watchdog_guard = lock_restore_watchdog(&swap)?;
     let phase = guarded_restore_state(&stage, &swap)?;
     if matches!(phase.as_str(), "prepared" | "restored") {
-        let checked = inspect_existing_launcher(&stage, &swap)?;
-        return Ok((checked.archive_count, checked.prepared));
+        let journal = json(&swap.join("controlled_swap_state.json"))?;
+        let backups_remain = journal["files"]
+            .as_array()
+            .is_some_and(|files| {
+                files.iter().any(|item| {
+                    item["backup"]
+                        .as_str()
+                        .is_some_and(|path| fs::symlink_metadata(path).is_ok())
+                })
+            });
+        if !backups_remain {
+            let checked = inspect_existing_launcher(&stage, &swap)?;
+            return Ok((checked.archive_count, checked.prepared));
+        }
+        // The journal phase can lag a crash while originals are still
+        // backed up. The trusted helper validates the original PAK hashes and
+        // injector RSA slot before restoring anything. Never skip recovery
+        // merely because a stale journal claims the stage is clean.
     }
     // Recovery must remain available even when Frida is missing or broken.
     // reusable_restore.py needs Python 3.11, but does not import Frida.
