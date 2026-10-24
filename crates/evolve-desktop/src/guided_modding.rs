@@ -338,3 +338,51 @@ pub fn view(state: &State) -> Element<'_, Message> {
     }
     panel.into()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use evolve_core::{ImportedLibrary, ImportedPak};
+
+    #[test]
+    fn saved_imports_are_available_to_guided_modding_without_reimport() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = serde_json::json!({
+            "version": 1,
+            "source": "C:/EvolveGame/models.pak",
+            "entries": [{"path": "characters/hunters/merc_emet/emet_3p.cdf"}]
+        });
+        std::fs::write(dir.path().join("asset-library.json"), manifest.to_string()).unwrap();
+        let archive = ImportedPak {
+            id: "1".repeat(20),
+            name: "models.pak".into(),
+            source: "C:/EvolveGame/models.pak".into(),
+            directory: dir.path().to_string_lossy().into_owned(),
+            group: "Hunters".into(),
+            description: "Models".into(),
+            entries: 1,
+            extracted_bytes: 1,
+            warnings: 0,
+            builds: vec![],
+        };
+        let mut state = State {
+            library_catalog: Some(ImportedLibrary {
+                root: dir.path().to_string_lossy().into_owned(),
+                archives: vec![archive],
+                builds: vec![],
+                total_bytes: 1,
+                ignored: 0,
+            }),
+            ..State::default()
+        };
+        state.guided_editor.open = true;
+        state.guided_editor.models = true;
+        refresh_imports(&mut state);
+        assert_eq!(state.guided_editor.imports.len(), 1);
+
+        // An imported source outside stage/paks must reach the new automatic
+        // staging worker, rather than being rejected by the obsolete guard.
+        let _ = update(&mut state, Action::Prepare(0));
+        assert!(state.busy);
+    }
+}
