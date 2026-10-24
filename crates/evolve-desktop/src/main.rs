@@ -5872,6 +5872,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             .iter()
                             .position(|layer| layer.depth == depth && layer.character == character)
                     });
+                    let saved_project = if applied_to_project && session.applied {
+                        session.project.clone()
+                    } else {
+                        None
+                    };
                     state.gfx_status = note;
                     state.gfx_session = Some(session);
                     state.gfx_layout_selected = None;
@@ -5881,8 +5886,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     if let Some(image_bytes) = preview {
                         state.gfx_preview = Some(image::Handle::from_bytes(image_bytes));
                     }
-                    if applied_to_project && session.applied {
-                        if let Some(project) = session.project {
+                    if let Some(project) = saved_project {
                             state.modding_pending_focus = Some(project.workspace.clone());
                             if build_after_apply {
                                 state.status = "Applied edited GFX to the Mod Project with a backup. Checking the complete project and building a signed test PAK...".into();
@@ -5903,7 +5907,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                                     PathBuf::from(&state.preferences.stage),
                                 ),
                             );
-                        }
                     }
                 }
                 Err(e) => {
