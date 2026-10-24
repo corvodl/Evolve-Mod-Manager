@@ -39,6 +39,53 @@ pub enum Action {
 fn message(action: Action) -> Message {
     Message::GuidedEdit(action)
 }
+/// Repopulate imported edit targets from the already-indexed library without
+/// resetting unsaved gameplay fields or requiring another source-PAK import.
+pub fn refresh_imports(state: &mut State) {
+    if !state.guided_editor.open {
+        return;
+    }
+    let editor = &mut state.guided_editor;
+    editor.imports.clear();
+    let mut skipped = 0;
+    if let Some(library) = &state.library_catalog {
+        let build = state
+            .library_by_build
+            .then(|| library.builds.get(state.library_build_index))
+            .flatten();
+        for archive in &library.archives {
+            if state.library_by_build && !build.is_some_and(|b| archive.builds.contains(b)) {
+                continue;
+            }
+            if editor.rows.iter().any(|(p, _)| {
+                p.target.eq_ignore_ascii_case(&archive.name)
+                    && archive.builds.contains(&p.source_build)
+            }) {
+                continue;
+            }
+            match modding_projects::guided_import_members(archive, editor.models) {
+                Ok(paths) => {
+                    let archive = Arc::new(archive.clone());
+                    editor
+                        .imports
+                        .extend(paths.into_iter().map(|path| (archive.clone(), path)));
+                }
+                Err(_) => skipped += 1,
+            }
+        }
+    }
+    editor.note = if state.library_catalog.is_some() {
+        format!(
+            "{} assets in editable projects; {} imported assets ready; {skipped} imports unavailable. Select an imported asset to create a staged editing copy. Originals remain unchanged.",
+            editor.rows.len(), editor.imports.len()
+        )
+    } else if state.library_startup_loading {
+        "Loading previously imported Asset Library PAKs; no reimport required.".into()
+    } else {
+        "No saved imported Asset Library catalog loaded. Select Refresh assets to scan saved manifests without importing PAKs again.".into()
+    };
+}
+
 pub fn update(state: &mut State, action: Action) -> Task<Message> {
     if state.busy {
         state.status = "Wait for the current operation before editing.".into();
@@ -73,43 +120,13 @@ pub fn update(state: &mut State, action: Action) -> Task<Message> {
                     Err(_) => skipped += 1,
                 }
             }
-            if let Some(library) = &state.library_catalog {
-                let build = state
-                    .library_by_build
-                    .then(|| library.builds.get(state.library_build_index))
-                    .flatten();
-                for archive in &library.archives {
-                    if state.library_by_build && !build.is_some_and(|b| archive.builds.contains(b))
-                    {
-                        continue;
-                    }
-                    // Existing project copies take precedence over imported originals.
-                    if editor.rows.iter().any(|(p, _)| {
-                        p.target.eq_ignore_ascii_case(&archive.name)
-                            && archive.builds.contains(&p.source_build)
-                    }) {
-                        continue;
-                    }
-                    match modding_projects::guided_import_members(archive, models) {
-                        Ok(paths) => {
-                            let archive = Arc::new(archive.clone());
-                            editor
-                                .imports
-                                .extend(paths.into_iter().map(|path| (archive.clone(), path)));
-                        }
-                        Err(_) => skipped += 1,
-                    }
-                }
-            }
-            editor.note = format!(
-                "{} assets in editable projects; {skipped} projects unavailable. Search by character, ability or filename. Imported assets below can create an editable copy; originals remain unchanged. The Asset Library build filter controls imported results.",
-                editor.rows.len()
-            );
+            refresh_imports(state);
         }
         Action::Refresh => {
             if state.library_catalog.is_none() {
-                return super::update(state, Message::LibraryRefresh);
+                return super::update(state, Message::ModdingReloadLibrary);
             }
+            refresh_imports(state);
             return super::update(state, Message::ModdingRefresh);
         }
         Action::Prepare(i) => {
@@ -117,10 +134,6 @@ pub fn update(state: &mut State, action: Action) -> Task<Message> {
                 return Task::none();
             };
             let stage = std::path::PathBuf::from(&state.preferences.stage);
-            if crate::modding_keys::staged_target(&stage, Path::new(&archive.source)).is_err() {
-                editor.note = "This build's original is not mapped to the configured signing stage. Complete stage setup before creating an editable copy.".into();
-                return Task::none();
-            }
             return super::launch(
                 state,
                 super::Operation::CreateProjectFromLibrary(
