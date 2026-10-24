@@ -3,7 +3,7 @@
 //! it reuses the user-configured, independently recoverable controlled-swap
 //! helper after verifying the exact installed originals, staged signatures,
 //! matching RSA hook and stage manifests. Never run for normal/online play.
-use evolve_core::client_hook::inspect_pak_hook_pair_with_original_name;
+use evolve_core::signed_pak::inspect_signed_pak;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
@@ -115,6 +115,9 @@ fn no_orphaned_backup(target: &Path) -> Result<(), String> {
     }
     Ok(())
 }
+/// The private helper checks each shim's own RSA key slot, not byte equality
+/// between two distinct game builds. The staged file must ALSO match the
+/// immutable digest recorded at setup; that check is performed by callers.
 fn verify_hook(
     original: &Path,
     patched: &Path,
@@ -123,18 +126,15 @@ fn verify_hook(
 ) -> Result<(), String> {
     let a = fs::read(original).map_err(|e| e.to_string())?;
     let b = fs::read(patched).map_err(|e| e.to_string())?;
-    if a.len() != HOOK_BYTES
-        || b.len() != HOOK_BYTES
-        || old_key.len() != KEY_BYTES
+    if a.len() != HOOK_BYTES || b.len() != HOOK_BYTES {
+        return Err("Installed or staged inject.dll is not the supported 4096-byte hook".into());
+    }
+    if old_key.len() != KEY_BYTES
         || new_key.len() != KEY_BYTES
         || a[KEY_START..KEY_START + KEY_BYTES] != *old_key
         || b[KEY_START..KEY_START + KEY_BYTES] != *new_key
-        || a[..KEY_START] != b[..KEY_START]
-        || a[KEY_START + KEY_BYTES..] != b[KEY_START + KEY_BYTES..]
     {
-        return Err(
-            "Original/custom client hook mismatch outside the exact RSA public-key region".into(),
-        );
+        return Err("Installed or staged inject.dll has a mismatched RSA public-key slot".into());
     }
     Ok(())
 }
@@ -278,10 +278,9 @@ fn verify_prepared_journal(
     Ok(())
 }
 
-/// Exactly mirror the private manager's launcher preflight before permitting
-/// its existing controlled_swap.py + auto_launch_frida.py lifecycle. This
-/// remains a *prelaunch* verification: only a real game session can show that
-/// CryEngine mounted all the custom-key archives.
+/// Mirror the private manager's hook key-slot and pinned staged-digest checks
+/// while separately verifying original/replacement PAK signatures. This is a
+/// *prelaunch* check: only a real game session proves what CryEngine mounted.
 pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchReady, String> {
     let stage = directory(stage)?;
     let swap = directory(swap)?;
@@ -330,15 +329,22 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
     let custom = within_file(&stage, "inject-custom.dll")?;
     let original = within_file(&game, "bin64_SteamRetail/inject.dll")?;
     no_orphaned_backup(&original)?;
-    let original_key_bytes = fs::read(&old_key).map_err(|e| e.to_string())?;
-    let custom_key_bytes = fs::read(&new_key).map_err(|e| e.to_string())?;
-    verify_hook(&original, &custom, &original_key_bytes, &custom_key_bytes)?;
     let expected_shim = status["shim_sha256"]
         .as_str()
         .ok_or("Missing staged injector digest")?;
     if sha(&custom)? != expected_shim.to_ascii_lowercase() {
-        return Err("Staged custom injector does not match stage_status.json".into());
+        return Err("Staged inject-custom.dll differs from the SHA-256 saved during signing setup. Close the game and refresh the signing stage; installed PAKs were not changed.".into());
     }
+    // Check the hook once before iterating archives, so a DLL mismatch is
+    // never misreported as a problem with the first signed PAK in the plan.
+    // Unlike the old Rust gate, the private working helper accepts distinct
+    // non-key shim bytes so long as both slots and pinned stage digest match.
+    let original_key_bytes = fs::read(&old_key).map_err(|e| e.to_string())?;
+    let custom_key_bytes = fs::read(&new_key).map_err(|e| e.to_string())?;
+    verify_hook(&original, &custom, &original_key_bytes, &custom_key_bytes)
+        .map_err(|e| format!(
+            "Installed bin64_SteamRetail/inject.dll and staged inject-custom.dll disagree: {e}. Restore any original-file backups, then refresh signing setup if needed. This DLL mismatch does not by itself indicate a damaged PAK."
+        ))?;
     // Never fall back to the original helper's developer-specific default
     // launcher path. The existing private setup must identify the user's
     // actual installed ModdedEvolveLauncher executable explicitly.
@@ -377,7 +383,7 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
     }
     let mut seen = std::collections::HashSet::new();
     let mut planned = Vec::with_capacity(signed.len() + 1);
-    let mut compatibility_warnings = 0usize;
+    let compatibility_warnings = 0usize;
     for entry in signed {
         let path = normalized_pak_name(entry["path"].as_str().ok_or("Missing PAK path")?)?;
         if !seen.insert(path.to_ascii_lowercase()) {
@@ -398,26 +404,32 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
         if signed_name != basename && signed_name != basename.to_ascii_lowercase() {
             return Err(format!("Invalid authenticated signing name for {path}"));
         }
-        let report = inspect_pak_hook_pair_with_original_name(
-            &original_pak,
-            &custom_pak,
-            &original,
-            &custom,
-            &old_key,
-            &new_key,
-            (signed_name, basename),
-        )
-        .map_err(|e| format!("PAK/hook mismatch for {path}: {e}"))?;
-        if report.signed_original_entries == 0 || report.signed_replacement_entries == 0 {
+        // Do not invoke the strict standalone hook/PAK pair inspector here:
+        // it compares *all* non-key DLL bytes and falsely blocks the private
+        // launcher's supported staged hook. Signature checks stay mandatory.
+        let original_info = inspect_signed_pak(&original_pak, &old_key, signed_name)
+            .map_err(|e| format!("Original PAK signature mismatch for {path}: {e}"))?;
+        let replacement_info = inspect_signed_pak(&custom_pak, &new_key, signed_name)
+            .map_err(|e| format!("Staged PAK signature mismatch for {path}: {e}"))?;
+        if original_info.entries.is_empty() || replacement_info.entries.is_empty() {
             return Err(format!(
                 "Signed PAK has no verified archive members: {path}"
             ));
         }
-        // Differing archive member inventories indicate an untested game
-        // version, not unsafe paths. Continue offline after cryptographic
-        // verification; recovery still owns byte-exact original backups.
-        if !report.archive_member_paths_match {
-            compatibility_warnings += 1;
+        let original_members: std::collections::HashSet<_> = original_info
+            .entries
+            .iter()
+            .map(|entry| entry.path.to_ascii_lowercase())
+            .collect();
+        let custom_members: std::collections::HashSet<_> = replacement_info
+            .entries
+            .iter()
+            .map(|entry| entry.path.to_ascii_lowercase())
+            .collect();
+        if original_info.entries.len() != replacement_info.entries.len()
+            || original_members != custom_members
+        {
+            return Err(format!("Signed PAK member inventory changed for {path}"));
         }
         planned.push((path.to_owned(), original_pak, custom_pak));
     }
@@ -866,6 +878,73 @@ pub fn restore_existing_offline_client(stage: &Path, swap: &Path) -> Result<(usi
 #[cfg(not(windows))]
 pub fn restore_existing_offline_client(_: &Path, _: &Path) -> Result<(usize, bool), String> {
     Err("Offline Evolve launcher recovery requires Windows x64".into())
+}
+
+/// Repair a corrupted staged DLL only if the reconstructed bytes match the
+/// immutable digest saved when this signing setup was created. Never patch an
+/// installed game hook, infer a different baseline, or bypass swap recovery.
+pub fn repair_staged_hook_for_offline_play(stage: &Path, swap: &Path) -> Result<bool, String> {
+    games_closed()?;
+    let stage = directory(stage)?;
+    let swap = directory(swap)?;
+    let phase = guarded_restore_state(&stage, &swap)?;
+    if phase != "restored" && phase != "prepared" {
+        return Err(
+            "A previous offline game swap must be restored before repairing the staged DLL".into(),
+        );
+    }
+    let plan = json(&stage.join("rekey_plan.json"))?;
+    let game = directory(Path::new(
+        plan["source_root"]
+            .as_str()
+            .ok_or("Signing setup does not record its original game root")?,
+    ))?;
+    if game.starts_with(&stage)
+        || stage.starts_with(&game)
+        || game.starts_with(&swap)
+        || swap.starts_with(&game)
+    {
+        return Err("Signing setup and original game directories must be separate".into());
+    }
+    let status = json(&stage.join("stage_status.json"))?;
+    if status["status"].as_str() != Some("fully-staged-offline") {
+        return Err("Signing setup is not fully staged for offline play".into());
+    }
+    let expected = status["shim_sha256"]
+        .as_str()
+        .ok_or("Signing setup does not record the staged hook digest")?;
+    let original = within_file(&game, "bin64_SteamRetail/inject.dll")?;
+    no_orphaned_backup(&original)?;
+    let custom = within_file(&stage, "inject-custom.dll")?;
+    let original_key = plain(
+        &stage
+            .parent()
+            .ok_or("Signing stage has no signing parent")?
+            .join("RSAKeyData.bin"),
+        140,
+    )?;
+    let custom_key = plain(&stage.join("mykeys/public_key.bin"), 140)?;
+    let repaired = evolve_core::client_hook::repair_client_hook_from_verified_baseline(
+        &original,
+        &custom,
+        &original_key,
+        &custom_key,
+        expected,
+    )
+    .map_err(|e| format!(
+        "Staged inject-custom.dll could not be safely recovered: {e}.          If the installed inject.dll has changed, restore originals and refresh the signing setup.          The manager did not change installed game files."
+    ))?;
+    // Even when the staged digest is correct, independently verify both RSA
+    // key slots. Differences outside the key slot are not a reason to reject
+    // the already-hash-pinned custom hook, matching the private helper.
+    let old_bytes = fs::read(&original_key).map_err(|e| e.to_string())?;
+    let new_bytes = fs::read(&custom_key).map_err(|e| e.to_string())?;
+    verify_hook(&original, &custom, &old_bytes, &new_bytes).map_err(|e| {
+        format!(
+            "Installed bin64_SteamRetail/inject.dll no longer matches the verified signing-stage hook: {e}. Restore originals or refresh signing setup; do not change the game's PAKs."
+        )
+    })?;
+    Ok(repaired)
 }
 
 /// Refresh only temporary .customkey-ready copies when enabled mods change.
@@ -1338,20 +1417,33 @@ mod tests {
     }
 
     #[test]
-    fn refuses_unverified_custom_injector_bytes_and_stranded_backup() {
+    fn private_hook_preflight_accepts_distinct_non_key_bytes_but_rejects_wrong_key_slots() {
         let dir = tempfile::tempdir().unwrap();
         let old = dir.path().join("original.dll");
         let custom = dir.path().join("inject-custom.dll");
-        let key_a = vec![0x21u8; 140];
-        let key_b = vec![0x32u8; 140];
-        let mut source = vec![0x55u8; HOOK_BYTES];
-        source[KEY_START..KEY_START + KEY_BYTES].copy_from_slice(&key_a);
-        fs::write(&old, &source).unwrap();
-        source[KEY_START..KEY_START + KEY_BYTES].copy_from_slice(&key_b);
-        fs::write(&custom, &source).unwrap();
+        let key_a = vec![0x21u8; KEY_BYTES];
+        let key_b = vec![0x32u8; KEY_BYTES];
+        let mut installed = vec![0x55u8; HOOK_BYTES];
+        installed[KEY_START..KEY_START + KEY_BYTES].copy_from_slice(&key_a);
+        fs::write(&old, &installed).unwrap();
+        let mut staged = installed.clone();
+        staged[KEY_START..KEY_START + KEY_BYTES].copy_from_slice(&key_b);
+        staged[3] ^= 0xFF;
+        fs::write(&custom, &staged).unwrap();
+        let expected_digest = sha(&custom).unwrap();
         assert!(verify_hook(&old, &custom, &key_a, &key_b).is_ok());
-        source[3] ^= 0xFF;
-        fs::write(&custom, &source).unwrap();
+        installed[4] ^= 0xFF;
+        fs::write(&old, &installed).unwrap();
+        assert!(verify_hook(&old, &custom, &key_a, &key_b).is_ok());
+        assert_eq!(sha(&custom).unwrap(), expected_digest);
+        staged[KEY_START] ^= 0xFF;
+        fs::write(&custom, &staged).unwrap();
+        assert!(verify_hook(&old, &custom, &key_a, &key_b).is_err());
+        assert_ne!(sha(&custom).unwrap(), expected_digest);
+        staged[KEY_START] ^= 0xFF;
+        fs::write(&custom, &staged).unwrap();
+        installed[KEY_START] ^= 0xFF;
+        fs::write(&old, &installed).unwrap();
         assert!(verify_hook(&old, &custom, &key_a, &key_b).is_err());
         let stranded = dir.path().join("original.dll.customkey-original");
         fs::write(stranded, b"backup").unwrap();

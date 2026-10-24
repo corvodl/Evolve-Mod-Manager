@@ -215,6 +215,12 @@ pub fn launch_enabled(
     if let Err(issue) = launcher_bridge::refresh_prepared_offline_cache(&stage, &swap) {
         return launch_for_repair(&game, &client, &swap, &issue);
     }
+    // Staging-only self-repair: accept a rebuilt hook ONLY when it hashes
+    // exactly to this setup's saved original digest. A changed installed DLL
+    // or unresolved game swap still falls back to the regular client.
+    if let Err(issue) = launcher_bridge::repair_staged_hook_for_offline_play(&stage, &swap) {
+        return launch_for_repair(&game, &client, &swap, &issue);
+    }
     let ready = match launcher_bridge::inspect_existing_launcher(&stage, &swap) {
         Ok(ready) => ready,
         Err(issue) => return launch_for_repair(&game, &client, &swap, &issue),

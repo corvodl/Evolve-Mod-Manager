@@ -490,7 +490,7 @@ mod tests {
 
     #[test]
     fn included_private_swap_helpers_are_present() {
-        assert_eq!(HELPERS.len(), 4);
+        assert_eq!(HELPERS.len(), 5);
         for (name, script) in HELPERS {
             assert!(name.ends_with(".py") && script.len() > 500);
             assert!(script.contains("def "));
