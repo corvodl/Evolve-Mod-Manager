@@ -65,21 +65,22 @@ use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph,
     EquipmentOverrides, EquipmentSlot, HookPairReport, ImportedLibrary, ImportedPak, Inventory,
-    KalaTubingState, LevelScene, LibraryBatchImportReport, LibraryImportPlan,
-    LibraryReferenceStatus, MaterialReport, ModProfile, ModelInfo, NativeCafMotion,
-    PakHookPairReport, PakInventory, ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh,
-    RigReport, SignedPakInfo, StageTransaction, TerrainInfo, VerifiedCafAssembly, VerifiedCafSkin,
-    add_mod_to_profile, apply_profile_stage, apply_stage_pak, batch_stage_status, compare_assets,
-    convert_glb_to_fbx, convert_original_motion, create_mod_profile, decode_dds_rgba,
-    discover_equipment, export_dds_png, export_level_scene_glb,
-    export_rigged_character_fbx_textured_animated, export_rigged_character_glb, extract_legacy_pak,
-    extract_signed_pak, import_library_plan_with_keys, import_stage_pak, imported_archive_files,
-    imported_library, initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak,
-    inspect_pak_hook_pair, inspect_signed_pak, list_mod_profiles, load_level_scene,
-    material_texture_candidates, plan_mod_profile, prepare_client_hook, read_cdf, read_material,
-    read_model, read_native_caf, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry,
-    resign_signed_pak, resolve_cdf, resolve_imported_reference, resolve_materials,
-    restore_profile_stage, restore_stage, scan_directory, scan_directory_with_progress,
+    KalaTubingState, LevelScene, LibraryBatchImportReport, LibraryBuildUpdatePlan,
+    LibraryBuildUpdateReport, LibraryImportPlan, LibraryReferenceStatus, MaterialReport,
+    ModProfile, ModelInfo, NativeCafMotion, PakHookPairReport, PakInventory, ProfileCatalog,
+    ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo, StageTransaction, TerrainInfo,
+    VerifiedCafAssembly, VerifiedCafSkin, add_mod_to_profile, apply_library_build_updates,
+    apply_profile_stage, apply_stage_pak, batch_stage_status, compare_assets, convert_glb_to_fbx,
+    convert_original_motion, create_mod_profile, decode_dds_rgba, discover_equipment,
+    export_dds_png, export_level_scene_glb, export_rigged_character_fbx_textured_animated,
+    export_rigged_character_glb, extract_legacy_pak, extract_signed_pak,
+    import_library_plan_with_keys, import_stage_pak, imported_archive_files, imported_library,
+    initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_pak_hook_pair,
+    inspect_signed_pak, list_mod_profiles, load_level_scene, material_texture_candidates,
+    plan_mod_profile, prepare_client_hook, read_cdf, read_material, read_model, read_native_caf,
+    read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry, resign_signed_pak, resolve_cdf,
+    resolve_imported_reference, resolve_materials, restore_profile_stage, restore_stage,
+    scan_directory, scan_directory_with_progress, scan_library_build_updates,
     scan_library_import_sources, stage_status,
 };
 use iced::widget::{
@@ -197,6 +198,7 @@ struct State {
     gfx_session: Option<gfx_editor::Session>,
     gfx_apply_pending: bool,
     modding_build_after_gfx_apply: bool,
+    modding_prepare_offline_test: bool,
     gfx_active: bool,
     gfx_busy: bool,
     gfx_preview: Option<image::Handle>,
@@ -377,6 +379,7 @@ struct State {
     library_selected: Option<usize>,
     library_root: String,
     library_import_plan: Option<LibraryImportPlan>,
+    library_update_plan: Option<LibraryBuildUpdatePlan>,
     library_import_scanning: bool,
     library_import_cancel: Option<Arc<AtomicBool>>,
     library_import_progress: Option<Arc<AtomicUsize>>,
@@ -469,6 +472,7 @@ enum ViewerTab {
 enum Operation {
     IndexProjects(PathBuf, PathBuf),
     BuildRawProject(ProjectRow, PathBuf, PathBuf),
+    StageBuiltOfflineTest(ProjectRow, PathBuf, PathBuf),
     ImportRawProjectMember(ProjectRow, PathBuf, String, PathBuf),
     RestoreRawProjectMember(ProjectRow, PathBuf, String),
     UnpackRawProject(PathBuf, PathBuf, PathBuf),
@@ -476,6 +480,13 @@ enum Operation {
     ImportSignedLibraryPlan(
         PathBuf,
         LibraryImportPlan,
+        PathBuf,
+        Arc<AtomicBool>,
+        Arc<AtomicUsize>,
+    ),
+    ApplyLibraryBuildUpdates(
+        PathBuf,
+        LibraryBuildUpdatePlan,
         PathBuf,
         Arc<AtomicBool>,
         Arc<AtomicUsize>,
@@ -626,6 +637,7 @@ enum Completed {
     RestoredRawProjectMember(bool, String, PathBuf),
     ImportedLibrary(ImportedLibrary),
     ImportedSignedLibrary(LibraryBatchImportReport, ImportedLibrary),
+    ImportedBuildUpdated(LibraryBuildUpdateReport, ImportedLibrary),
     ImportedPakFiles(Inventory),
     Dependencies(DependencyGraph),
     Comparison(AssetComparison),
@@ -678,7 +690,7 @@ enum Completed {
     HookPrepared(HookPairReport, PathBuf),
     SignedHookPreflight(PakHookPairReport),
     OfflineLauncherReady(LaunchReady),
-    OfflineLauncherStarted(usize, u32),
+    OfflineLauncherStarted(usize, u32, usize),
     CleanClientStarted(u32),
     InitialSetupCreated(initial_setup::InitialSetup),
     GamePakBaselineRefreshed(initial_setup::InitialSetup),
@@ -686,6 +698,7 @@ enum Completed {
     ExtractedSigned(usize, PathBuf),
     RebuiltSigned(String, PathBuf),
     BuiltRawProject(String, PathBuf, ProjectRow),
+    OfflineTestPrepared(String),
     LevelExported(usize, usize, PathBuf),
     LevelFbxExported(usize, usize, PathBuf),
     StageInitialized(PathBuf),
@@ -715,6 +728,10 @@ impl Operation {
                 &project, &projects, &stage,
             )
             .map(|(entry, target, verified)| Completed::BuiltRawProject(entry, target, verified)),
+            Self::StageBuiltOfflineTest(project, output, stage) => {
+                modding_projects::prepare_built_offline_test(&project, &output, &stage)
+                    .map(Completed::OfflineTestPrepared)
+            }
             Self::ImportRawProjectMember(project, projects, member, source) => {
                 modding_projects::import_raw_member(&project, &projects, &member, &source).map(
                     |changed| {
@@ -744,6 +761,13 @@ impl Operation {
             Self::LoadImportedLibrary(root) => imported_library(&root)
                 .map(Completed::ImportedLibrary)
                 .map_err(|e| e.to_string()),
+            Self::ApplyLibraryBuildUpdates(root, plan, stage, cancelled, progress) => {
+                let keys = modding_keys::archive_verification_keys(&stage)?;
+                let report =
+                    apply_library_build_updates(&root, &plan, &keys.paths, &cancelled, &progress)?;
+                let catalog = imported_library(&root).map_err(|e| e.to_string())?;
+                Ok(Completed::ImportedBuildUpdated(report, catalog))
+            }
             Self::ImportSignedLibraryPlan(root, plan, stage, cancelled, progress) => {
                 // Keep the original signed-archive authentication path.
                 let keys = modding_keys::archive_verification_keys(&stage)?;
@@ -1404,8 +1428,9 @@ impl Operation {
                     return Err("Offline signing stage belongs to another game installation".into());
                 }
                 let count = report.archive_count;
+                let warnings = report.compatibility_warnings;
                 let id = launch_existing_offline_client(&report)?;
-                Ok(Completed::OfflineLauncherStarted(count, id))
+                Ok(Completed::OfflineLauncherStarted(count, id, warnings))
             }
             Self::LaunchCleanClient(game, client, swap) => {
                 let id = play_setup::launch_clean(&game, &client, swap.as_deref())?;
@@ -1481,6 +1506,10 @@ enum Message {
     Navigate(Page),
     LibraryPickFiles,
     LibraryPickFolder,
+    LibraryUpdatePickFolder,
+    LibraryUpdateFolderPicked(Result<Option<Vec<PathBuf>>, String>),
+    LibraryUpdateScanned(Result<LibraryBuildUpdatePlan, String>),
+    LibraryUpdateStart,
     LibrarySourcesPicked(Result<Option<Vec<PathBuf>>, String>),
     LibraryImportScanned(Result<LibraryImportPlan, String>),
     LibraryImportStart,
@@ -1506,6 +1535,7 @@ enum Message {
     GuidedEdit(guided_modding::Action),
     ModdingReviewChanges,
     ModdingBuild,
+    ModdingBuildForOfflineTest,
     ModdingUnpackPak,
     EditorReplacementChanged(String),
     EditorImportRawMember,
@@ -2797,7 +2827,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Select a project to review its changed assets.".into();
             }
         }
-        Message::ModdingBuild => {
+        kind @ (Message::ModdingBuild | Message::ModdingBuildForOfflineTest) => {
+            state.modding_prepare_offline_test =
+                matches!(kind, Message::ModdingBuildForOfflineTest);
             if state.busy || state.gfx_busy {
                 state.status = "Finish the current operation before building your mod.".into();
                 return Task::none();
@@ -2855,6 +2887,92 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     PathBuf::from(&state.input),
                 ),
             );
+        }
+        Message::LibraryUpdatePickFolder => {
+            if state.busy || state.library_import_scanning {
+                return Task::none();
+            }
+            state.library_import_scanning = true;
+            state.library_update_plan = None;
+            state.status = "Choose the exact installed Evolve build folder to compare. This first scan only reads SHA-256 checksums; no files are imported.".into();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || library_picker::choose_sources(true))
+                        .await
+                        .map_err(|e| format!("Build folder picker failed: {e}"))?
+                },
+                Message::LibraryUpdateFolderPicked,
+            );
+        }
+        Message::LibraryUpdateFolderPicked(result) => {
+            match result {
+                Ok(Some(folders)) if folders.len() == 1 => {
+                    let root = folders[0].clone();
+                    let library = PathBuf::from(&state.library_root);
+                    state.status = format!(
+                        "Comparing original PAK checksums for build {} against its own saved snapshots; no files will be modified.",
+                        root.display()
+                    );
+                    return Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || {
+                                scan_library_build_updates(&library, &root)
+                            })
+                            .await
+                            .map_err(|e| format!("Build scan worker failed: {e}"))?
+                        },
+                        Message::LibraryUpdateScanned,
+                    );
+                }
+                Ok(None) => state.status = "Build update scan cancelled; library unchanged.".into(),
+                Ok(Some(_)) => state.status = "Select exactly one game build folder.".into(),
+                Err(error) => state.status = format!("Cannot select game build: {error}"),
+            }
+            state.library_import_scanning = false;
+        }
+        Message::LibraryUpdateScanned(result) => {
+            state.library_import_scanning = false;
+            match result {
+                Ok(plan) => {
+                    state.status = format!(
+                        "Build scan complete: {} new, {} updated, {} unchanged, {} removed source PAKs. Review the plan before importing.",
+                        plan.new_count,
+                        plan.changed_count,
+                        plan.unchanged,
+                        plan.removed.len()
+                    );
+                    state.library_update_plan = Some(plan);
+                }
+                Err(error) => {
+                    state.library_update_plan = None;
+                    state.status = format!("Build update scan failed: {error}");
+                }
+            }
+        }
+        Message::LibraryUpdateStart => {
+            if state.busy || state.library_import_scanning {
+                return Task::none();
+            }
+            let Some(plan) = state.library_update_plan.clone() else {
+                state.status = "Scan a specific game build first.".into();
+                return Task::none();
+            };
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let progress = Arc::new(AtomicUsize::new(0));
+            let task = launch(
+                state,
+                Operation::ApplyLibraryBuildUpdates(
+                    PathBuf::from(&state.library_root),
+                    plan,
+                    PathBuf::from(&state.preferences.stage),
+                    cancelled.clone(),
+                    progress.clone(),
+                ),
+            );
+            state.library_import_cancel = Some(cancelled);
+            state.library_import_progress = Some(progress);
+            state.status = "Importing only changed/new PAKs. Existing snapshots and game originals are preserved; cancellation takes effect between archives.".into();
+            return task;
         }
         kind @ (Message::LibraryPickFiles | Message::LibraryPickFolder) => {
             if state.busy || state.library_import_scanning {
@@ -7171,6 +7289,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.library_import_cancel = None;
             state.library_import_progress = None;
             state.busy = false;
+            if result.is_err() {
+                state.modding_prepare_offline_test = false;
+            }
             state.storage_analyzing = false;
             state.scan_cancel = None;
             state.scan_indexed = None;
@@ -7266,11 +7387,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         )
                     } else {
                         format!(
-                            "Created a project with {count} editable files. Original source unchanged. {}",
+                            "Ready to edit {count} copied assets. No source version or signing stage match was needed. {}",
                             if mapped {
-                                "Exact game-stage mapping verified."
+                                "Signed stage already available."
                             } else {
-                                "Unmapped editing copy; verify the updated game stage before deployment."
+                                "When you select Build Mod, the manager will attempt a signed offline-test PAK from your currently installed source. Compatibility differences are warnings."
                             }
                         )
                     };
@@ -7325,6 +7446,44 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.modding_open_editor_when_scanned = true;
                         return begin_scan(state, path.join("files"));
                     }
+                }
+                Ok(Completed::ImportedBuildUpdated(report, catalog)) => {
+                    let failures = report.batch.failed.len();
+                    let error_detail = report
+                        .batch
+                        .failed
+                        .iter()
+                        .take(2)
+                        .map(|failure| format!("{}: {}", failure.archive, failure.reason))
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    state.status = format!(
+                        "Build {} refreshed: {} new, {} changed, {} unchanged, {} removed from current inventory; {} failed. Old imports and projects preserved.{}",
+                        &report.build_id[..8],
+                        report.added,
+                        report.updated,
+                        report.unchanged,
+                        report.removed,
+                        failures,
+                        if error_detail.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" {error_detail}")
+                        },
+                    );
+                    state.library_root = catalog.root.clone();
+                    state.preferences.asset_library_root = catalog.root.clone();
+                    state.library_catalog = Some(catalog);
+                    state.library_selection.clear();
+                    state.library_selected = None;
+                    state.library_page = 0;
+                    state.library_by_build = false;
+                    state.library_update_plan = None;
+                    state.library_show_configuration = failures > 0 || import_was_cancelled;
+                    refresh_library_matches(state);
+                    persist_preferences(state);
+                    guided_modding::refresh_imports(state);
+                    state.page = Some(Page::AssetLibrary);
                 }
                 Ok(Completed::ImportedSignedLibrary(report, catalog)) => {
                     let already = report
@@ -8199,8 +8358,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::OfflineLauncherReady(report)) => {
                     state.status = format!(
-                        "Offline launcher preflight PASS: {} original/custom signed PAKs and matching inject.dll verified. Private swap state: {}. This does not establish a successful Evolve mount.",
+                        "Offline launch is ready: {} signed PAKs and the recovery hook verified; {} compatibility warning(s) for differing game archive member lists. Swap state: {}. Original backups are retained; test offline only.",
                         report.archive_count,
+                        report.compatibility_warnings,
                         if report.prepared {
                             "prepared"
                         } else {
@@ -8248,9 +8408,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                     state.page = Some(Page::Home);
                 }
-                Ok(Completed::OfflineLauncherStarted(count, id)) => {
+                Ok(Completed::OfflineLauncherStarted(count, id, warnings)) => {
                     state.status = format!(
-                        "Offline launch is READY (helper PID {id}) for {count} signed PAKs + matching custom RSA hook. In the opened Modded Evolve client, press Play to launch Evolve.exe. The original PAKs are replaced only when the helper verifies that exact game-creation event; originals are restored after Evolve.exe and the client both close. See rust-launch-bridge.log and auto-restore.log for confirmation. Actual game mount remains unverified."
+                        "Offline launch is READY (helper PID {id}) with {count} signed PAKs. {warnings} game-version/layout warning(s); originals have automatic recovery. Press Play in the client to start Evolve. Online play remains disabled; actual asset mounting is not yet confirmed."
                     );
                     state.page = Some(Page::Home);
                 }
@@ -8291,13 +8451,28 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             .iter_mut()
                             .find(|item| item.workspace == verified.workspace)
                     {
-                        *item = verified;
+                        *item = verified.clone();
+                    }
+                    if std::mem::take(&mut state.modding_prepare_offline_test) {
+                        state.status =
+                            "Signed mod created; preparing a recoverable offline test profile..."
+                                .into();
+                        let stage = PathBuf::from(&state.preferences.stage);
+                        return launch(
+                            state,
+                            Operation::StageBuiltOfflineTest(verified, dir, stage),
+                        );
                     }
                     state.status = format!(
-                        "Built and verified {} into {}. GFX and other changed assets are included; original PAK unchanged. Test with your offline mod profile.",
+                        "Built and verified {} into {}. GFX and other changed assets are included; originals unchanged. Select Build & Prepare Offline Test to stage it safely.",
                         name,
                         dir.display()
                     );
+                    state.page = Some(Page::Files);
+                }
+                Ok(Completed::OfflineTestPrepared(note)) => {
+                    state.profile_feedback = note.clone();
+                    state.status = note;
                     state.page = Some(Page::Files);
                 }
                 Ok(Completed::RebuiltSigned(name, dir)) => {

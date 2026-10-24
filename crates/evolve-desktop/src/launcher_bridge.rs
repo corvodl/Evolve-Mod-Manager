@@ -23,6 +23,7 @@ pub struct LaunchReady {
     pub swap: PathBuf,
     pub game: PathBuf,
     pub archive_count: usize,
+    pub compatibility_warnings: usize,
     pub prepared: bool,
 }
 
@@ -376,6 +377,7 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
     }
     let mut seen = std::collections::HashSet::new();
     let mut planned = Vec::with_capacity(signed.len() + 1);
+    let mut compatibility_warnings = 0usize;
     for entry in signed {
         let path = normalized_pak_name(entry["path"].as_str().ok_or("Missing PAK path")?)?;
         if !seen.insert(path.to_ascii_lowercase()) {
@@ -406,8 +408,16 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
             (signed_name, basename),
         )
         .map_err(|e| format!("PAK/hook mismatch for {path}: {e}"))?;
-        if !report.archive_member_paths_match || report.signed_original_entries == 0 {
-            return Err(format!("Signed source member mismatch for {path}"));
+        if report.signed_original_entries == 0 || report.signed_replacement_entries == 0 {
+            return Err(format!(
+                "Signed PAK has no verified archive members: {path}"
+            ));
+        }
+        // Differing archive member inventories indicate an untested game
+        // version, not unsafe paths. Continue offline after cryptographic
+        // verification; recovery still owns byte-exact original backups.
+        if !report.archive_member_paths_match {
+            compatibility_warnings += 1;
         }
         planned.push((path.to_owned(), original_pak, custom_pak));
     }
@@ -446,6 +456,7 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
         swap,
         game,
         archive_count: seen.len(),
+        compatibility_warnings,
         prepared,
     })
 }

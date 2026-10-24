@@ -591,15 +591,18 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             .style(design::secondary)
             .on_press(Message::ModdingOpenProject),
         design::button("Build Mod")
-            .style(design::primary)
+            .style(design::secondary)
             .on_press(Message::ModdingBuild),
+        design::button("Build & Prepare Offline Test")
+            .style(design::primary)
+            .on_press(Message::ModdingBuildForOfflineTest),
         space().width(Fill),
     ]
     .spacing(7)
     .align_y(iced::Center);
     let mut main = column![
         text("Modding").size(22),
-        text("Projects contain editable copies. Original signed PAKs stay in the Asset Library.")
+        text("Open imported PAKs, edit assets, then Build & Prepare Offline Test. Source-version differences are warnings; original files remain backed up for offline play.")
             .size(12)
             .style(design::muted),
         menu(state),

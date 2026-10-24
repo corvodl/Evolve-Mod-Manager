@@ -153,6 +153,9 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         row![
             design::button("Import PAKs").style(design::primary)
                 .on_press(Message::LibraryToggleConfiguration),
+            design::button("Update Imported Build…").style(design::secondary)
+                .on_press_maybe((!state.busy && !state.library_import_scanning)
+                    .then_some(Message::LibraryUpdatePickFolder)),
             design::button("Library Settings").style(design::secondary)
                 .on_press(Message::OpenLibrarySettings),
             design::button("Refresh").on_press(Message::LibraryRefresh),
@@ -160,6 +163,84 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             text("◈").size(18).style(design::muted),
         ].spacing(9),
     ].spacing(10);
+
+    if let Some(plan) = &state.library_update_plan {
+        let importing = state.library_import_cancel.is_some() && state.busy;
+        let mut changed_paths = column![].spacing(2);
+        for change in plan.changed.iter().take(8) {
+            changed_paths = changed_paths.push(
+                text(format!(
+                    "{} · {}",
+                    if change.was_present { "Updated" } else { "New" },
+                    change.relative
+                ))
+                .size(11)
+                .style(design::muted),
+            );
+        }
+        if plan.changed.len() > 8 {
+            changed_paths = changed_paths.push(
+                text(format!(
+                    "…and {} other changed/new PAKs",
+                    plan.changed.len() - 8
+                ))
+                .size(11)
+                .style(design::muted),
+            );
+        }
+        let progress = state.library_import_progress.as_ref().map_or(0, |counter| {
+            counter.load(std::sync::atomic::Ordering::Relaxed)
+        });
+        let summary = column![
+            row![
+                text("UPDATE IMPORTED BUILD").size(15),
+                space().width(Fill),
+                design::button("Close").style(design::text_button)
+                    .on_press_maybe((!state.busy).then_some(Message::LibraryUpdateScanned(
+                        Err("Update preview dismissed".into())
+                    ))),
+            ].spacing(8),
+            text(format!("Source installation: {}", plan.source_root.display())).size(12),
+            text(format!(
+                "{} new  •  {} updated  •  {} unchanged  •  {} removed  •  {:.2} GiB to import",
+                plan.new_count, plan.changed_count, plan.unchanged, plan.removed.len(),
+                plan.import_bytes as f64 / 1_073_741_824.0
+            )).size(13),
+            text("This is a read-only SHA-256 comparison. Only new/changed PAKs are re-imported after confirmation; unchanged PAKs are skipped. A changed encrypted PAK may require full re-extraction. Previous library snapshots, mod projects, and originals are preserved.")
+                .size(11).style(design::muted),
+            changed_paths,
+            row![
+                design::button(text(if plan.changed.is_empty() && plan.removed.is_empty() {
+                    "Register Current Build Snapshot".to_owned()
+                } else {
+                    format!(
+                        "Apply build update · {} new/changed, {} removed",
+                        plan.changed.len(), plan.removed.len()
+                    )
+                }))
+                    .style(design::primary)
+                    .on_press_maybe(
+                        (!state.busy && !state.library_import_scanning)
+                            .then_some(Message::LibraryUpdateStart),
+                    ),
+                text(if importing {
+                    format!("Updated import: {progress} / {}", plan.changed.len())
+                } else {
+                    "Review this build's changes before importing".to_owned()
+                }).size(11).style(design::muted),
+                design::button("Cancel after current PAK")
+                    .style(design::secondary)
+                    .on_press_maybe(importing.then_some(Message::LibraryImportCancel)),
+            ].spacing(9)
+        ].spacing(8);
+        layout = layout.push(panel(container(summary).padding(12)));
+    } else if state.library_import_scanning {
+        layout = layout.push(
+            text("Scanning this build and hashing original PAKs. No files are being imported.")
+                .size(12)
+                .style(design::muted),
+        );
+    }
 
     if state.library_show_configuration {
         let picking = state.library_import_scanning;

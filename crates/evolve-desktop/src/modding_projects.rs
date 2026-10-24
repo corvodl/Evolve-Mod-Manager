@@ -107,25 +107,38 @@ fn inspect_project(
         {
             return Err("Not a supported editable project manifest".into());
         }
-        let source = manifest
-            .get("source_pak")
-            .and_then(Value::as_str)
-            .ok_or("Missing project source archive")?;
-        let source = Path::new(source);
-        if !regular(source, 16 * 1024 * 1024 * 1024) {
-            return Err("Original staged archive is unavailable".into());
-        }
-        let original = fs::canonicalize(source).map_err(|e| e.to_string())?;
-        let base = fs::canonicalize(stage.join("paks"))
-            .map_err(|_| "Configured signing stage is unavailable")?;
-        let relative = original
-            .strip_prefix(&base)
-            .map_err(|_| "Project is not backed by the configured signed stage")?
-            .to_string_lossy()
-            .replace('\\', "/");
-        if !safe_member(&relative) || !relative.to_ascii_lowercase().ends_with(".pak") {
-            return Err("Unsafe staged archive identity".into());
-        }
+        let relative = if manifest["extraction_mode"].as_str() == Some("imported-snapshot") {
+            let name = manifest["target_name"]
+                .as_str()
+                .ok_or("Snapshot has no archive name")?;
+            if super::modding_keys::signed_basename(Path::new(name))? != name {
+                return Err("Imported snapshot archive name is unsafe".into());
+            }
+            // No game version, signing-stage, or current-source dependency
+            // exists during independent asset editing.
+            name.to_owned()
+        } else {
+            let source = manifest
+                .get("source_pak")
+                .and_then(Value::as_str)
+                .ok_or("Missing project source archive")?;
+            let source = Path::new(source);
+            if !regular(source, 16 * 1024 * 1024 * 1024) {
+                return Err("Original staged archive is unavailable".into());
+            }
+            let original = fs::canonicalize(source).map_err(|e| e.to_string())?;
+            let base = fs::canonicalize(stage.join("paks"))
+                .map_err(|_| "Configured signing stage is unavailable")?;
+            let relative = original
+                .strip_prefix(&base)
+                .map_err(|_| "Project is not backed by the configured signed stage")?
+                .to_string_lossy()
+                .replace('\\', "/");
+            if !safe_member(&relative) || !relative.to_ascii_lowercase().ends_with(".pak") {
+                return Err("Unsafe staged archive identity".into());
+            }
+            relative
+        };
         let files = fs::canonicalize(folder.join("files"))
             .map_err(|_| "Extracted project files are missing")?;
         let entries = manifest
@@ -333,6 +346,119 @@ pub fn discover_projects(root: &Path, stage: &Path) -> Result<Vec<ProjectRow>, S
     Ok(projects)
 }
 
+/// Editing a previously imported archive never needs the source game PAK
+/// or a signing stage. Work from the immutable, verified Asset Library
+/// extraction into a new private project; launchability is checked later.
+pub fn edit_imported_snapshot(
+    pak: &evolve_core::ImportedPak,
+    projects: &Path,
+) -> Result<(PathBuf, usize), String> {
+    let inventory = evolve_core::imported_archive_files(pak).map_err(|e| e.to_string())?;
+    if !projects.is_absolute() {
+        return Err("Configure an absolute Projects directory before editing".into());
+    }
+    if !projects.exists() {
+        fs::create_dir_all(projects)
+            .map_err(|e| format!("Cannot create Projects directory: {e}"))?;
+    }
+    if !fs::symlink_metadata(projects).is_ok_and(|m| m.file_type().is_dir()) {
+        return Err("Projects must be a real directory".into());
+    }
+    let base = fs::canonicalize(projects).map_err(|e| e.to_string())?;
+    let imports = fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
+    let original = read_json(
+        &Path::new(&pak.directory).join("asset-library.json"),
+        32 * 1024 * 1024,
+    )?;
+    let expected = original["entries"]
+        .as_array()
+        .ok_or("Imported file list missing")?;
+    if expected.len() != inventory.entries.len()
+        || expected.is_empty()
+        || expected.len() > MAX_ENTRIES
+    {
+        return Err("Imported archive has an invalid file index".into());
+    }
+    let staging = tempfile::Builder::new()
+        .prefix(".editable-snapshot-")
+        .tempdir_in(&base)
+        .map_err(|e| e.to_string())?;
+    let extracted = staging.path().join("files");
+    fs::create_dir(&extracted).map_err(|e| e.to_string())?;
+    let mut records = Vec::with_capacity(inventory.entries.len());
+    for asset in &inventory.entries {
+        let rel = asset.relative_path.as_str();
+        if !safe_member(rel) {
+            return Err("Unsafe imported archive member".into());
+        }
+        let source = imports.join(rel);
+        let actual = fs::canonicalize(&source).map_err(|e| e.to_string())?;
+        if !actual.starts_with(&imports) || !regular(&source, 16 * 1024 * 1024 * 1024) {
+            return Err("Imported file escaped the Asset Library".into());
+        }
+        let copied = extracted.join(rel);
+        fs::create_dir_all(copied.parent().ok_or("Invalid copy destination")?)
+            .map_err(|e| e.to_string())?;
+        fs::copy(&source, &copied).map_err(|e| e.to_string())?;
+        let checksum = digest(&copied).map_err(|e| e.to_string())?;
+        let original_record = expected
+            .iter()
+            .find(|row| row["path"].as_str() == Some(rel))
+            .ok_or("Imported archive manifest entry missing")?;
+        if let Some(recorded) = original_record["sha256"].as_str()
+            && !recorded.eq_ignore_ascii_case(&checksum)
+        {
+            return Err(format!("Imported original was modified: {rel}"));
+        }
+        records.push(serde_json::json!({
+            "path": rel,
+            "archive_name": rel,
+            "format": if original_record["converted"].as_bool() == Some(true) {
+                "cryxml"
+            } else {
+                "raw"
+            },
+            "sha256": checksum,
+        }));
+    }
+    let manifest = serde_json::json!({
+        "version": 1,
+        "extraction_mode": "imported-snapshot",
+        "target_name": pak.name,
+        "source_pak": null,
+        "signed_basename": original["signed_name"].as_str().unwrap_or(&pak.name),
+        "imported_source": pak.source,
+        "imported_archive_id": pak.id,
+        "imported_source_sha256": original["source_sha256"],
+        "deployment_mapped": false,
+        "entries": records,
+    });
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(staging.path().join(".evolve-pak-workspace.json"))
+        .map_err(|e| e.to_string())?;
+    serde_json::to_writer_pretty(&mut file, &manifest).map_err(|e| e.to_string())?;
+    file.sync_all().map_err(|e| e.to_string())?;
+    drop(file);
+    let stem: String = pak
+        .name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .take(70)
+        .collect();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let destination = base.join(format!("{stem}_editable_{stamp:x}"));
+    if fs::symlink_metadata(&destination).is_ok() {
+        return Err("An editing project already exists at the destination".into());
+    }
+    fs::rename(staging.path(), &destination).map_err(|e| e.to_string())?;
+    Ok((destination, inventory.entries.len()))
+}
+
 /// Extract a selected, verified staged CryPAK into a NEW private-style project.
 /// Extract a new project, decoding CryXmlB to editable UTF-8 XML. Both
 /// editable and original binary digests are retained; source PAKs are untouched.
@@ -467,6 +593,145 @@ pub fn unpack_raw_project_with_signed_name(
     Ok((output, info.entries.len()))
 }
 
+/// Sign edited files from an imported snapshot against the *currently*
+/// installed source PAK. Source version differences are not editing errors:
+/// the current archive's authenticated member table decides whether this
+/// edit can be represented. Never write into the installation or stage here.
+fn build_imported_snapshot(
+    folder: &Path,
+    stage: &Path,
+    parent: &Path,
+    manifest: &Value,
+    modified: &[String],
+    verified: ProjectRow,
+) -> Result<(String, PathBuf, ProjectRow), String> {
+    let source_name = manifest["imported_source"]
+        .as_str()
+        .ok_or("Imported project has no original installation path")?;
+    let input = Path::new(source_name);
+    if !regular(input, 16 * 1024 * 1024 * 1024) {
+        return Err("The source PAK is unavailable. Editing is still supported; choose an installed source PAK before producing a signed game archive.".into());
+    }
+    let source = fs::canonicalize(input).map_err(|e| e.to_string())?;
+    let physical_name = super::modding_keys::signed_basename(&source)?;
+    if physical_name != verified.target {
+        return Err(
+            "The game's PAK name differs from the imported project's original archive".into(),
+        );
+    }
+    let signer = super::modding_keys::signing_keys(stage).map_err(|_| {
+        "Editing is available without setup. To build a playable signed PAK, run Set Up Manager once to create local signing keys.".to_owned()
+    })?;
+    let originals = super::modding_keys::archive_verification_keys(stage)?;
+    let lowercase = physical_name.to_ascii_lowercase();
+    let signed_names = [physical_name.as_str(), lowercase.as_str()];
+    let mut authenticated = None;
+    for name in signed_names {
+        for key in &originals.paths {
+            if evolve_core::inspect_signed_pak(&source, key, name).is_ok() {
+                authenticated = Some((key.clone(), name.to_owned()));
+                break;
+            }
+        }
+        if authenticated.is_some() {
+            break;
+        }
+    }
+    let (original_key, signed_name) = authenticated.ok_or(
+        "This source PAK cannot be authenticated for signing. The editor is still available; select the correct game installation or rebuild its signing setup."
+    )?;
+    let index = evolve_core::open_verified_signed_pak(&source, &original_key, &signed_name)
+        .map_err(|e| e.to_string())?;
+    let source_files = fs::canonicalize(folder.join("files")).map_err(|e| e.to_string())?;
+    let serialized = tempfile::Builder::new()
+        .prefix(".serialize-import-")
+        .tempdir_in(folder)
+        .map_err(|e| e.to_string())?;
+    let entries = manifest["entries"]
+        .as_array()
+        .ok_or("Missing extracted member index")?;
+    let mut replacements = Vec::with_capacity(modified.len());
+    for rel in modified {
+        if !safe_member(rel) {
+            return Err("Unsafe project member".into());
+        }
+        let file = folder.join("files").join(rel);
+        let canonical = fs::canonicalize(&file).map_err(|e| e.to_string())?;
+        if !canonical.starts_with(&source_files) || !regular(&file, 16 * 1024 * 1024 * 1024) {
+            return Err("Edited file is not inside its managed workspace".into());
+        }
+        let record = entries
+            .iter()
+            .find(|row| row["path"].as_str() == Some(rel.as_str()))
+            .ok_or("Selected file is missing from the imported snapshot")?;
+        if editable_format(record)? == "cryxml" {
+            let prior = index
+                .read_member(&source, rel, MAX_XML_BYTES as u64)
+                .map_err(|e| e.to_string())?;
+            let encoded = evolve_core::cryxml::encode_edited_xml(
+                &prior,
+                &fs::read(&file).map_err(|e| e.to_string())?,
+                MAX_XML_BYTES,
+            )
+            .map_err(|e| e.to_string())?;
+            let path = serialized
+                .path()
+                .join(format!("member-{}.bin", replacements.len()));
+            fs::write(&path, encoded).map_err(|e| e.to_string())?;
+            replacements.push((rel.clone(), path));
+        } else {
+            replacements.push((rel.clone(), file));
+        }
+    }
+    let built = parent.join("Built");
+    if !built.exists() {
+        fs::create_dir(&built).map_err(|e| e.to_string())?;
+    }
+    if !fs::symlink_metadata(&built).is_ok_and(|m| m.file_type().is_dir()) {
+        return Err("Built directory is linked or unsafe".into());
+    }
+    let number = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let output_folder = built.join(format!("Import-Edit-{number:x}"));
+    fs::create_dir(&output_folder).map_err(|e| e.to_string())?;
+    let signed_folder = output_folder.join("signed");
+    fs::create_dir(&signed_folder).map_err(|e| e.to_string())?;
+    let signed_path = signed_folder.join(&signed_name);
+    let output = output_folder.join(&physical_name);
+    let rebuilt = evolve_core::rebuild_signed_pak_entries(
+        &source,
+        &original_key,
+        &signer.private,
+        &signer.public,
+        &signed_name,
+        &replacements,
+        &signed_path,
+    );
+    match rebuilt {
+        Ok(report) => {
+            fs::rename(&signed_path, &output).map_err(|e| e.to_string())?;
+            fs::remove_dir(&signed_folder).map_err(|e| e.to_string())?;
+            Ok((
+                format!(
+                    "{} modified member(s); source version differences accepted",
+                    report.len()
+                ),
+                output,
+                verified,
+            ))
+        }
+        Err(error) => {
+            let _ = fs::remove_dir(&signed_folder);
+            let _ = fs::remove_dir(&output_folder);
+            Err(format!(
+                "Cannot create a signed PAK for this current game archive: {error}. Your editable project is preserved."
+            ))
+        }
+    }
+}
+
 /// Build changed raw/XML project members into a single signed PAK after
 /// validating original payload identity and binary XML semantic round trips.
 pub fn build_project_raw(
@@ -504,6 +769,16 @@ pub fn build_project_raw(
     }
     let modified = &verified.modified;
     let manifest = read_json(&folder.join(".evolve-pak-workspace.json"), 8 * 1024 * 1024)?;
+    if manifest["extraction_mode"].as_str() == Some("imported-snapshot") {
+        return build_imported_snapshot(
+            &folder,
+            stage,
+            &parent,
+            &manifest,
+            modified,
+            verified.clone(),
+        );
+    }
     let records = manifest
         .get("entries")
         .and_then(Value::as_array)
@@ -648,6 +923,115 @@ pub fn build_project_raw(
             Err(error.to_string())
         }
     }
+}
+
+/// Resolve an exact installed-game target for an offline test. This does
+/// NOT require an old source checksum to match a game update, but never
+/// guesses a destination by basename or searches outside the selected game.
+fn offline_test_target(project: &ProjectRow, stage: &Path) -> Result<String, String> {
+    let manifest = read_json(
+        &project.workspace.join(".evolve-pak-workspace.json"),
+        8 * 1024 * 1024,
+    )?;
+    if manifest["extraction_mode"].as_str() != Some("imported-snapshot") {
+        return super::modding_keys::staged_target(
+            stage,
+            &stage.join("paks").join(&project.target),
+        );
+    }
+    let source = manifest["imported_source"]
+        .as_str()
+        .ok_or("Imported snapshot is missing its installed source location")?;
+    let plan = read_json(&stage.join("rekey_plan.json"), 8 * 1024 * 1024)?;
+    let root = plan["source_root"]
+        .as_str()
+        .ok_or("Stage has no installed game root")?;
+    let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
+    let source = fs::canonicalize(source).map_err(|_| {
+        "Imported source is unavailable. Choose a current game PAK before installing.".to_owned()
+    })?;
+    let name = source.strip_prefix(&root)
+        .map_err(|_| "This snapshot belongs to another game installation; select its matching offline stage")?
+        .to_string_lossy().replace('\\', "/");
+    if !safe_member(&name) || !name.to_ascii_lowercase().ends_with(".pak") {
+        return Err("Unsafe installed target path".into());
+    }
+    if !plan["entries"].as_array().is_some_and(|entries| {
+        entries.iter().any(|entry| {
+            entry["path"].as_str() == Some(name.as_str())
+                && entry["kind"].as_str() == Some("signed-encrypted")
+        })
+    }) {
+        return Err(
+            "The selected installed PAK is not present in this stage's verified target list".into(),
+        );
+    }
+    let target = stage.join("paks").join(&name);
+    if super::modding_keys::staged_target(stage, &target)? != name {
+        return Err("Stage target differs from the installed game target".into());
+    }
+    if target.file_name() != source.file_name() {
+        return Err("Installed source and stage target basenames differ".into());
+    }
+    Ok(name)
+}
+
+/// Prepare a newly built signed archive for offline testing through the
+/// existing profile transaction, with all stage originals backed up BEFORE
+/// any staged PAK is replaced. The live game installation is untouched.
+pub fn prepare_built_offline_test(
+    project: &ProjectRow,
+    output: &Path,
+    stage: &Path,
+) -> Result<String, String> {
+    let target = offline_test_target(project, stage)?;
+    let basename = super::modding_keys::signed_basename(output)?;
+    if target.split('/').next_back() != Some(basename.as_str()) {
+        return Err("Built PAK basename differs from installed stage destination".into());
+    }
+    let keys = super::modding_keys::signing_keys(stage)?;
+    // Verify the exact built archive and stage target before persisting
+    // anything. Signed member inventory differences are permitted offline.
+    let lowercase = basename.to_ascii_lowercase();
+    evolve_core::inspect_signed_pak(output, &keys.public, &basename)
+        .or_else(|_| evolve_core::inspect_signed_pak(output, &keys.public, &lowercase))
+        .map_err(|e| format!("Built offline PAK signature could not be verified: {e}"))?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let display = basename
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(24)
+        .collect::<String>();
+    let name = format!("Offline Test {display} {:x}", stamp);
+    let profile = evolve_core::create_mod_profile(stage, &name)
+        .map_err(|e| format!("Cannot create offline test profile: {e}"))?;
+    let staged = (|| -> Result<(), String> {
+        evolve_core::add_mod_to_profile(
+            stage,
+            &profile.id,
+            output,
+            &target,
+            &keys.original_public,
+            &keys.public,
+            &basename,
+        )
+        .map_err(|e| e.to_string())?;
+        evolve_core::apply_profile_stage(stage, &profile.id, &keys.original_public, &keys.public)
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })();
+    if let Err(error) = staged {
+        let _ = evolve_core::profiles::delete_mod_profile(stage, &profile.id);
+        return Err(format!(
+            "Offline test was not prepared: {error}. Restore any pending stage transaction before retrying."
+        ));
+    }
+    Ok(format!(
+        "Offline test prepared for {target}. Select Play with Mods to test the changed menu. Stage originals are saved in the recovery journal; use Restore staged profile when finished. Compatibility with this game build is not guaranteed."
+    ))
 }
 
 /// Import explicitly selected bytes/XML over ONE manifest-listed editable
