@@ -25,6 +25,8 @@ pub enum ClientHookError {
     OriginalMismatch,
     #[error("Custom hook differs outside the permitted embedded RSA public-key bytes")]
     OtherChanges,
+    #[error("Rebuilt hook does not match the signing setup's verified SHA-256; the installed hook or signing baseline changed")]
+    BaselineMismatch,
     #[error("A hook output already exists or would overwrite a source")]
     UnsafeOutput,
     #[error("Signed PAK and matching client key validation failed: {0}")]
@@ -196,6 +198,49 @@ pub fn prepare_client_hook(
     Ok(report)
 }
 
+/// Recover only a corrupt staged hook, using the SHA-256 recorded when the
+/// signing stage was first generated. The installed game's hook is read-only.
+/// A changed original can never silently become the new signing baseline.
+pub fn repair_client_hook_from_verified_baseline(
+    original_hook: &Path,
+    staged_hook: &Path,
+    original_public: &Path,
+    custom_public: &Path,
+    expected_sha256: &str,
+) -> Result<bool, ClientHookError> {
+    if expected_sha256.len() != 64
+        || !expected_sha256.bytes().all(|b| b.is_ascii_hexdigit())
+        || staged_hook.file_name().and_then(|name| name.to_str()) != Some("inject-custom.dll")
+        || staged_hook == original_hook
+    {
+        return Err(ClientHookError::Format);
+    }
+    let source_before = hook_bytes(original_hook)?;
+    let damaged = hook_bytes(staged_hook)?;
+    if fingerprint(&damaged).eq_ignore_ascii_case(expected_sha256) {
+        // inspect_client_hook_pair still checks the live original separately.
+        return Ok(false);
+    }
+    let parent = staged_hook.parent().ok_or(ClientHookError::UnsafeOutput)?;
+    let candidate_dir = tempfile::Builder::new()
+        .prefix(".evolve-hook-repair-")
+        .tempdir_in(parent)?;
+    let candidate = candidate_dir.path().join("inject-custom.dll");
+    prepare_client_hook(original_hook, original_public, custom_public, &candidate)?;
+    if !fingerprint(&hook_bytes(&candidate)?).eq_ignore_ascii_case(expected_sha256) {
+        return Err(ClientHookError::BaselineMismatch);
+    }
+    // If either input changed during preparation, do not replace any file.
+    if hook_bytes(original_hook)? != source_before || hook_bytes(staged_hook)? != damaged {
+        return Err(ClientHookError::OtherChanges);
+    }
+    fs::rename(&candidate, staged_hook)?;
+    if !fingerprint(&hook_bytes(staged_hook)?).eq_ignore_ascii_case(expected_sha256) {
+        return Err(ClientHookError::BaselineMismatch);
+    }
+    Ok(true)
+}
+
 /// Confirm an existing custom hook has no changes beyond the exact public
 /// key bytes. This check alone cannot prove the hook is loaded by Evolve.
 pub fn inspect_client_hook_pair(
@@ -349,6 +394,54 @@ mod tests {
         ));
         assert_eq!(fs::read(&original).unwrap(), before);
     }
+    #[test]
+    fn repairs_only_staged_hook_bytes_matching_the_saved_setup_digest() {
+        let (dir, original, old, new) = setup();
+        let custom = dir.path().join("inject-custom.dll");
+        prepare_client_hook(&original, &old, &new, &custom).unwrap();
+        let source_before = fs::read(&original).unwrap();
+        let expected = fingerprint(&fs::read(&custom).unwrap());
+        let mut corrupted = fs::read(&custom).unwrap();
+        corrupted[4] ^= 1;
+        fs::write(&custom, &corrupted).unwrap();
+        assert!(repair_client_hook_from_verified_baseline(
+            &original, &custom, &old, &new, &expected
+        ).unwrap());
+        assert_eq!(fingerprint(&fs::read(&custom).unwrap()), expected);
+        assert_eq!(fs::read(&original).unwrap(), source_before);
+        assert!(!repair_client_hook_from_verified_baseline(
+            &original, &custom, &old, &new, &expected
+        ).unwrap());
+        assert!(inspect_client_hook_pair(&original, &custom, &old, &new).is_ok());
+    }
+
+    #[test]
+    fn never_repairs_from_an_original_hook_changed_after_setup() {
+        let (dir, original, old, new) = setup();
+        let custom = dir.path().join("inject-custom.dll");
+        prepare_client_hook(&original, &old, &new, &custom).unwrap();
+        let expected = fingerprint(&fs::read(&custom).unwrap());
+        let mut changed_source = fs::read(&original).unwrap();
+        changed_source[1] ^= 1;
+        fs::write(&original, changed_source).unwrap();
+        let mut corrupted = fs::read(&custom).unwrap();
+        corrupted[4] ^= 1;
+        fs::write(&custom, &corrupted).unwrap();
+        assert!(matches!(
+            repair_client_hook_from_verified_baseline(&original, &custom, &old, &new, &expected),
+            Err(ClientHookError::BaselineMismatch)
+        ));
+        assert_eq!(fs::read(&custom).unwrap(), corrupted);
+        // A valid staged SHA alone is never proof the installed original is safe.
+        let mut valid = corrupted;
+        valid[4] ^= 1;
+        fs::write(&custom, valid).unwrap();
+        assert!(!repair_client_hook_from_verified_baseline(
+            &original, &custom, &old, &new, &expected
+        ).unwrap());
+        assert!(inspect_client_hook_pair(&original, &custom, &old, &new).is_err());
+    }
+
     #[test]
     fn rejects_wrong_original_key_modified_hook_and_unsafe_paths() {
         let (dir, original, old, new) = setup();
