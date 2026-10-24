@@ -159,21 +159,24 @@ fn dropdown_left(name: Option<&str>) -> f32 {
     }
 }
 
-fn project_header() -> Element<'static, Message> {
-    row![
-        text("PROJECT").width(Length::FillPortion(4)),
-        text("TARGET PAK").width(Length::FillPortion(4)),
-        text("CHANGED").width(Length::FillPortion(1)),
-        text("SOURCE BUILD").width(Length::FillPortion(2)),
-        text("MOD TYPE").width(Length::FillPortion(2)),
-        text("DETAILS").width(Length::FillPortion(3)),
-    ]
-    .spacing(8)
-    .into()
+fn project_header(advanced: bool) -> Element<'static, Message> {
+    let mut header = row![
+        text("ENABLED").width(Length::FillPortion(2)),
+        text("MOD NAME").width(Length::FillPortion(7)),
+        text("PAK").width(Length::FillPortion(5)),
+        text("STATUS").width(Length::FillPortion(2)),
+    ];
+    if advanced {
+        header = header
+            .push(text("SOURCE BUILD").width(Length::FillPortion(2)))
+            .push(text("MOD TYPE").width(Length::FillPortion(2)))
+            .push(text("DETAILS").width(Length::FillPortion(3)));
+    }
+    header.spacing(8).into()
 }
 
 fn projects(state: &State) -> Element<'_, Message> {
-    let mut rows = column![project_header()].spacing(4);
+    let mut rows = column![project_header(state.modding_advanced)].spacing(4);
     let projects = state.modding_projects.as_deref().unwrap_or(&[]);
     let matches = matching_projects(state);
     let count = matches.len();
@@ -181,51 +184,67 @@ fn projects(state: &State) -> Element<'_, Message> {
     for &index in &matches[range.clone()] {
         let record = &projects[index];
         let selected = state.project_selection.indices.contains(&index);
-        let changed = if record.changed_known {
-            record.modified.len().to_string()
-        } else {
-            "Review".into()
-        };
-        let cells = row![
+        let mut cells = row![
             text(record.label.as_str())
                 .size(12)
-                .width(Length::FillPortion(4)),
+                .width(Length::FillPortion(7)),
             text(record.target.as_str())
                 .size(12)
-                .width(Length::FillPortion(4)),
-            text(changed).size(12).width(Length::FillPortion(1)),
-            text(record.source_build.as_str())
+                .width(Length::FillPortion(5)),
+            text(record.status.as_str())
                 .size(12)
                 .width(Length::FillPortion(2)),
-            text(
-                classify(
-                    record.modified.iter().map(String::as_str),
-                    record.changed_known
+        ];
+        if state.modding_advanced {
+            cells = cells
+                .push(
+                    text(record.source_build.as_str())
+                        .size(12)
+                        .width(Length::FillPortion(2)),
                 )
-                .label()
-            )
-            .size(12)
-            .width(Length::FillPortion(2)),
-            text(record.details.as_str())
-                .size(12)
-                .width(Length::FillPortion(3)),
-        ]
-        .spacing(8)
-        .align_y(iced::Center);
+                .push(
+                    text(
+                        classify(
+                            record.modified.iter().map(String::as_str),
+                            record.changed_known,
+                        )
+                        .label(),
+                    )
+                    .size(12)
+                    .width(Length::FillPortion(2)),
+                )
+                .push(
+                    text(record.details.as_str())
+                        .size(12)
+                        .width(Length::FillPortion(3)),
+                );
+        }
+        let cells = cells.spacing(8).align_y(iced::Center);
         rows = rows.push(
             container(
-                design::button(cells)
-                    .width(Fill)
-                    .padding([
-                        if state.preferences.ui_density == "Compact" {
-                            2
+                row![
+                    design::button(if record.enabled { "On" } else { "Off" })
+                        .style(if record.enabled {
+                            design::primary
                         } else {
-                            5
-                        },
-                        7,
-                    ])
-                    .style(design::text_button)
-                    .on_press(Message::ModdingSelectProject(index)),
+                            design::secondary
+                        })
+                        .on_press(Message::ModdingToggleEnabled(index))
+                        .width(Length::FillPortion(2)),
+                    design::button(cells)
+                        .width(Length::FillPortion(20))
+                        .padding([
+                            if state.preferences.ui_density == "Compact" {
+                                2
+                            } else {
+                                5
+                            },
+                            7,
+                        ])
+                        .style(design::text_button)
+                        .on_press(Message::ModdingSelectProject(index)),
+                ]
+                .spacing(8),
             )
             .width(Fill)
             .style(move |theme| container::Style {
@@ -577,32 +596,37 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             .as_ref()
             .and_then(|list| list.get(index))
     });
-    let actions = row![
-        design::button("Install Mod…")
-            .style(design::secondary)
-            .on_press(Message::ModdingToggleProfiles),
-        design::button("Installed Mods…")
-            .style(design::secondary)
-            .on_press(Message::ModdingToggleProfiles),
-        design::button("Refresh Projects")
+    let mut actions = row![
+        design::button("Refresh Mods")
             .style(design::secondary)
             .on_press(Message::ModdingRefresh),
         design::button("Continue Editing")
             .style(design::secondary)
             .on_press(Message::ModdingOpenProject),
-        design::button("Build Mod")
-            .style(design::secondary)
-            .on_press(Message::ModdingBuild),
-        design::button("Build & Prepare Offline Test")
-            .style(design::primary)
-            .on_press(Message::ModdingBuildForOfflineTest),
-        space().width(Fill),
     ]
     .spacing(7)
     .align_y(iced::Center);
+    if state.modding_advanced {
+        actions = actions
+            .push(
+                design::button("Advanced Profiles…")
+                    .style(design::secondary)
+                    .on_press(Message::ModdingToggleProfiles),
+            )
+            .push(
+                design::button("Build Selected Mod")
+                    .style(design::secondary)
+                    .on_press(Message::ModdingBuild),
+            )
+            .push(
+                design::button("Prepare Selected Mod for Test")
+                    .style(design::secondary)
+                    .on_press(Message::ModdingBuildForOfflineTest),
+            );
+    }
     let mut main = column![
         text("Modding").size(22),
-        text("Open imported PAKs, edit assets, then Build & Prepare Offline Test. Source-version differences are warnings; original files remain backed up for offline play.")
+        text("Name your mods, switch them On or Off, then choose Play with Mods. Enabled mods are built and loaded automatically for offline play.")
             .size(12)
             .style(design::muted),
         menu(state),
@@ -636,6 +660,17 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         ].spacing(6),
         imported_paks(state),
         projects(state),
+        row![
+            text("Mod name").size(12),
+            design::text_input("Select a mod to name it…", &state.modding_name_input)
+                .on_input(Message::ModdingNameChanged)
+                .width(Length::FillPortion(4)),
+            design::button("Save Name")
+                .style(design::secondary)
+                .on_press_maybe(state.modding_selected.map(|_| Message::ModdingSaveName)),
+        ]
+        .spacing(8)
+        .align_y(iced::Center),
         modifications(state),
         actions,
         row![

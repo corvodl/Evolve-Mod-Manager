@@ -34,6 +34,7 @@ mod launcher_bridge;
 mod level_workspace;
 mod library_picker;
 mod menu_popup;
+mod mod_play;
 mod modding_keys;
 mod modding_page;
 mod modding_projects;
@@ -422,6 +423,10 @@ struct State {
     preview_cache: SharedCache,
     modding_projects: Option<Vec<ProjectRow>>,
     modding_selected: Option<usize>,
+    modding_name_input: String,
+    mod_launch_progress: Option<Arc<AtomicUsize>>,
+    /// Indeterminate footer activity only: never presented as a real percent.
+    footer_pulse: u16,
     modding_filter: String,
     modding_kind: Option<evolve_core::mod_safety::ModKind>,
     guided_editor: guided_modding::Editor,
@@ -591,6 +596,14 @@ enum Operation {
     VerifySignedHookPair(PathBuf, PathBuf, PathBuf, PathBuf, PathBuf, PathBuf, String),
     CheckExistingOfflineLauncher(PathBuf, PathBuf),
     StartExistingOfflineLauncher(PathBuf, PathBuf, PathBuf, PathBuf),
+    PlayEnabledMods(
+        PathBuf,
+        PathBuf,
+        PathBuf,
+        PathBuf,
+        PathBuf,
+        Arc<AtomicUsize>,
+    ),
     LaunchCleanClient(PathBuf, PathBuf, Option<PathBuf>),
     CreateInitialSetup(PathBuf, PathBuf, PathBuf, bool),
     RestoreExistingOfflineLauncher(PathBuf, PathBuf),
@@ -692,6 +705,7 @@ enum Completed {
     SignedHookPreflight(PakHookPairReport),
     OfflineLauncherReady(LaunchReady),
     OfflineLauncherStarted(usize, u32, usize),
+    EnabledModsLaunched(usize, u32, usize),
     CleanClientStarted(u32),
     InitialSetupCreated(initial_setup::InitialSetup),
     GamePakBaselineRefreshed(initial_setup::InitialSetup),
@@ -1422,6 +1436,15 @@ impl Operation {
                 let report = inspect_existing_launcher(&stage, &swap)?;
                 Ok(Completed::OfflineLauncherReady(report))
             }
+            Self::PlayEnabledMods(projects, stage, swap, game, client, progress) => {
+                let mods = discover_projects(&projects, &stage)?
+                    .into_iter()
+                    .filter(|project| project.enabled)
+                    .collect();
+                mod_play::launch_enabled(mods, projects, stage, swap, game, client, progress).map(
+                    |(count, id, warnings)| Completed::EnabledModsLaunched(count, id, warnings),
+                )
+            }
             Self::StartExistingOfflineLauncher(stage, swap, game, client) => {
                 play_setup::configure_existing_helper(&game, &client, &stage, &swap)?;
                 let report = inspect_existing_launcher(&stage, &swap)?;
@@ -1525,6 +1548,9 @@ enum Message {
     ModdingPage(bool),
     ModdingChangesPage(bool),
     ModdingSelectProject(usize),
+    ModdingToggleEnabled(usize),
+    ModdingNameChanged(String),
+    ModdingSaveName,
     ModdingRefresh,
     ModdingToggleAdvanced,
     ModdingBrowsePaks,
@@ -2128,6 +2154,24 @@ fn exportable_asset(relative: &str) -> bool {
         .any(|ext| lower.ends_with(ext))
 }
 
+/// All meaningful background work shares the persistent footer indicator.
+/// The normal launch path sets busy; independently scheduled workers are
+/// covered by their own lifecycle flags. Idle/playback never looks like work.
+fn footer_is_working(state: &State) -> bool {
+    state.busy
+        || state.project_copy_progress.is_some()
+        || state.mod_launch_progress.is_some()
+        || state.scan_indexed.is_some()
+        || state.library_import_scanning
+        || state.library_import_progress.is_some()
+        || state.library_startup_loading
+        || state.gfx_busy
+        || state.gfx_install_busy
+        || state.storage_analyzing
+        || state.runtime_checking
+        || state.developer_checking
+}
+
 fn launch(state: &mut State, operation: Operation) -> Task<Message> {
     if state.busy {
         return Task::none();
@@ -2138,8 +2182,10 @@ fn launch(state: &mut State, operation: Operation) -> Task<Message> {
     }
     state.status = match &operation {
         Operation::StartExistingOfflineLauncher(..) => {
-            "Verifying original PAKs and preparing the offline launcher hook. The normal client will open after preparation; press Play only after the hook is ready."
-                .into()
+            "Preparing offline play...".into()
+        }
+        Operation::PlayEnabledMods(..) => {
+            "Building enabled mods and preparing offline play...".into()
         }
         Operation::CreateInitialSetup(..) => {
             "Building the isolated offline setup: generating local signing keys, validating/resigning original game PAKs, preparing a verified hook copy and independent recovery scripts. Original game files will not be altered."
@@ -2603,6 +2649,88 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
         }
         Message::ModifiersChanged(modifiers) => state.keyboard_modifiers = modifiers,
+        Message::ModdingNameChanged(value) => state.modding_name_input = value,
+        Message::ModdingSaveName => {
+            if state.busy {
+                return Task::none();
+            }
+            let Some(project) = state
+                .modding_selected
+                .and_then(|index| state.modding_projects.as_ref()?.get(index))
+                .cloned()
+            else {
+                state.status = "Select a mod to rename.".into();
+                return Task::none();
+            };
+            match modding_projects::save_mod_preference(
+                Path::new(&state.preferences.projects),
+                &project.workspace,
+                Some(&state.modding_name_input),
+                None,
+            ) {
+                Ok(()) => {
+                    if let Some(row) = state.modding_projects.as_mut().and_then(|items| {
+                        items.iter_mut().find(|p| p.workspace == project.workspace)
+                    }) {
+                        row.label = state.modding_name_input.trim().into();
+                    }
+                    state.status = "Mod name saved.".into();
+                }
+                Err(error) => state.status = format!("Could not rename mod: {error}"),
+            }
+        }
+        Message::ModdingToggleEnabled(index) => {
+            if state.busy {
+                return Task::none();
+            }
+            let Some(project) = state
+                .modding_projects
+                .as_ref()
+                .and_then(|items| items.get(index))
+                .cloned()
+            else {
+                return Task::none();
+            };
+            let enable = !project.enabled;
+            if enable
+                && state.modding_projects.as_ref().is_some_and(|items| {
+                    items.iter().any(|p| {
+                        p.enabled
+                            && p.workspace != project.workspace
+                            && p.target.eq_ignore_ascii_case(&project.target)
+                    })
+                })
+            {
+                state.status = format!(
+                    "Another enabled mod already uses {}. Disable it before enabling {}.",
+                    project.target, project.label
+                );
+                return Task::none();
+            }
+            match modding_projects::save_mod_preference(
+                Path::new(&state.preferences.projects),
+                &project.workspace,
+                None,
+                Some(enable),
+            ) {
+                Ok(()) => {
+                    if let Some(row) = state
+                        .modding_projects
+                        .as_mut()
+                        .and_then(|items| items.get_mut(index))
+                    {
+                        row.enabled = enable;
+                    }
+                    state.status = format!(
+                        "{} {}. It will {} the next time you choose Play with Mods.",
+                        project.label,
+                        if enable { "enabled" } else { "disabled" },
+                        if enable { "load" } else { "not load" },
+                    );
+                }
+                Err(error) => state.status = format!("Could not change mod: {error}"),
+            }
+        }
         Message::ModdingSelectProject(index) => {
             let matches = modding_page::matching_projects(state);
             let range = modding_page::page_range(matches.len(), state.modding_page);
@@ -2624,6 +2752,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             {
                 state.preferences.current_workspace =
                     project.workspace.to_string_lossy().into_owned();
+                state.modding_name_input = project.label.clone();
                 state.input = PathBuf::from(&state.preferences.stage)
                     .join("paks")
                     .join(&project.target)
@@ -2632,6 +2761,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = format!("Selected {} · {}", project.label, project.details);
             } else {
                 state.preferences.current_workspace.clear();
+                state.modding_name_input.clear();
                 state.status = "No project selected.".into();
             }
         }
@@ -4038,6 +4168,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::ScanPulse => {
+            state.footer_pulse = state.footer_pulse.wrapping_add(1);
             if let Some(indexed) = &state.scan_indexed {
                 state.status = format!(
                     "Indexed {} local assets; working asynchronously...",
@@ -6356,14 +6487,25 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.status = "Modded play needs a verified signing stage. Use Create Offline Setup in Settings to build the keys, re-signed PAKs and recovery helpers automatically from your game installation. Existing stage/swap folders can also be selected under Advanced paths. No game files were changed.".into();
                     return Task::none();
                 }
-                state.status = "Preparing offline mod launch; the normal client will open. Press Play in the client only after its launch hook is ready. The existing helper swaps verified staged PAKs only after an exact Evolve.exe creation event, and the watchdog restores them after both processes close.".into();
+                if state
+                    .gfx_session
+                    .as_ref()
+                    .is_some_and(|session| session.edits > 0 && !session.applied)
+                {
+                    state.status = "Save your GFX edits to the Mod Project before playing.".into();
+                    return Task::none();
+                }
+                let progress = Arc::new(AtomicUsize::new(0));
+                state.mod_launch_progress = Some(progress.clone());
                 return launch(
                     state,
-                    Operation::StartExistingOfflineLauncher(
+                    Operation::PlayEnabledMods(
+                        PathBuf::from(&state.preferences.projects),
                         PathBuf::from(&state.preferences.stage),
                         PathBuf::from(&state.preferences.swap),
                         game,
                         client,
+                        progress,
                     ),
                 );
             }
@@ -7291,6 +7433,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return launch(state, Operation::ExportPng(source, output));
         }
         Message::Finished(result) => {
+            state.mod_launch_progress = None;
             // Preserve the footer progress through indexing and the initial
             // file scan; all other completions (including errors) clear it.
             let keep_project_progress = state.project_copy_progress.is_some()
@@ -7457,6 +7600,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         previous.and_then(|path| projects.iter().position(|p| p.workspace == path));
                     state.status = format!("Loaded {} editable project(s).", projects.len());
                     state.modding_projects = Some(projects);
+                    state.modding_name_input = state
+                        .modding_selected
+                        .and_then(|index| state.modding_projects.as_ref()?.get(index))
+                        .map(|p| p.label.clone())
+                        .unwrap_or_default();
                     let matches = modding_page::matching_projects(state);
                     state.modding_page = state
                         .modding_selected
@@ -8434,6 +8582,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                     state.page = Some(Page::Home);
                 }
+                Ok(Completed::EnabledModsLaunched(mod_count, id, _warnings)) => {
+                    state.status = format!(
+                        "{mod_count} enabled mod(s) ready. Client helper started (PID {id}). Press Play in the client to test offline."
+                    );
+                    state.page = Some(Page::Home);
+                }
                 Ok(Completed::OfflineLauncherStarted(count, id, warnings)) => {
                     state.status = format!(
                         "Offline launch is READY (helper PID {id}) with {count} signed PAKs. {warnings} game-version/layout warning(s); originals have automatic recovery. Press Play in the client to start Evolve. Online play remains disabled; actual asset mounting is not yet confirmed."
@@ -9256,6 +9410,54 @@ fn view(state: &State) -> Element<'_, Message> {
         .spacing(7)
         .align_y(iced::Alignment::Center)
         .into()
+    } else if let Some(progress) = &state.mod_launch_progress {
+        let percent = progress.load(Ordering::Relaxed).min(100);
+        row![
+            text("Preparing enabled mods").size(11),
+            container(iced::widget::progress_bar(0.0..=100.0, percent as f32))
+                .width(Length::Fixed(124.0))
+                .height(Length::Fixed(8.0)),
+            text(format!("{percent}%")).size(11),
+        ]
+        .spacing(7)
+        .align_y(iced::Alignment::Center)
+        .into()
+    } else if footer_is_working(state) {
+        // A moving bar means busy, not a made-up completion percentage.
+        // Reserve percentages for operations with real progress.
+        let (label, count) = if let Some(progress) = &state.library_import_progress {
+            ("Importing PAKs", Some(progress.load(Ordering::Relaxed)))
+        } else if let Some(progress) = &state.scan_indexed {
+            ("Indexing assets", Some(progress.load(Ordering::Relaxed)))
+        } else if state.gfx_busy || state.gfx_install_busy {
+            ("Working on GFX", None)
+        } else if state.storage_analyzing {
+            ("Checking storage", None)
+        } else if state.library_import_scanning {
+            ("Scanning PAKs", None)
+        } else {
+            ("Working", None)
+        };
+        let value = (state.footer_pulse % 40) as f32;
+        let position = if value <= 20.0 {
+            value * 5.0
+        } else {
+            (40.0 - value) * 5.0
+        };
+        row![
+            text(match count {
+                Some(done) => format!("{label} · {done} files"),
+                None => label.to_owned(),
+            })
+            .size(11),
+            container(iced::widget::progress_bar(0.0..=100.0, position))
+                .width(Length::Fixed(124.0))
+                .height(Length::Fixed(8.0)),
+            text("…").size(11),
+        ]
+        .spacing(7)
+        .align_y(iced::Alignment::Center)
+        .into()
     } else {
         row![].into()
     };
@@ -9708,7 +9910,7 @@ impl Desktop {
         } else {
             Subscription::none()
         };
-        let scan_progress = if self.state.scan_indexed.is_some() || self.state.busy {
+        let scan_progress = if footer_is_working(&self.state) {
             iced::time::every(Duration::from_millis(250)).map(|_| Message::ScanPulse)
         } else {
             Subscription::none()
@@ -9778,6 +9980,25 @@ fn main() -> iced::Result {
 #[cfg(test)]
 mod project_edit_tests {
     use super::*;
+
+    #[test]
+    fn footer_activity_tracks_workers_without_claiming_a_percentage() {
+        let mut state = State::default();
+        assert!(!footer_is_working(&state));
+        state.busy = true;
+        assert!(footer_is_working(&state));
+        state.busy = false;
+        state.gfx_busy = true;
+        assert!(footer_is_working(&state));
+        state.gfx_busy = false;
+        state.library_import_scanning = true;
+        assert!(footer_is_working(&state));
+        state.library_import_scanning = false;
+        state.mod_launch_progress = Some(Arc::new(AtomicUsize::new(24)));
+        assert!(footer_is_working(&state));
+        state.mod_launch_progress = None;
+        assert!(!footer_is_working(&state));
+    }
 
     #[test]
     fn open_library_folder_validates_configured_directory() {
@@ -10802,6 +11023,7 @@ mod project_edit_tests {
             workspace: temp.path().join("Test_B"),
             modified: vec![],
             changed_known: false,
+            enabled: false,
         };
         let mut state = State {
             modding_selected: Some(0),
@@ -10831,6 +11053,7 @@ mod project_edit_tests {
                         workspace: PathBuf::from(format!("projects/{i}")),
                         modified: (0..181).map(|j| format!("file{j}.xml")).collect(),
                         changed_known: true,
+                        enabled: false,
                     })
                     .collect(),
             ),
@@ -10896,6 +11119,7 @@ mod project_edit_tests {
                 workspace: project,
                 modified: vec![],
                 changed_known: true,
+                enabled: false,
             }]),
             inventory: Some(scan_directory(&other).unwrap()),
             ..State::default()
