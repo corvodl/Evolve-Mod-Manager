@@ -680,14 +680,21 @@ fn recover_orphaned_originals(stage: &Path, swap: &Path) -> Result<(usize, bool)
     use std::os::windows::process::CommandExt;
     let plan = json(&stage.join("rekey_plan.json"))?;
     let game = directory(Path::new(
-        plan["source_root"].as_str().ok_or("Signing stage is missing its game path")?,
+        plan["source_root"]
+            .as_str()
+            .ok_or("Signing stage is missing its game path")?,
     ))?;
-    if game.starts_with(stage) || stage.starts_with(&game)
-        || game.starts_with(swap) || swap.starts_with(&game)
+    if game.starts_with(stage)
+        || stage.starts_with(&game)
+        || game.starts_with(swap)
+        || swap.starts_with(&game)
     {
         return Err("Game and recovery folders must be separate.".into());
     }
-    plain(&game.join("bin64_SteamRetail/Evolve.exe"), 1024 * 1024 * 1024)?;
+    plain(
+        &game.join("bin64_SteamRetail/Evolve.exe"),
+        1024 * 1024 * 1024,
+    )?;
     // Use the exact journal-independent implementation from the private
     // manager. It keeps existing modded files under unique recovery names
     // before restoring .customkey-original backups.
@@ -698,7 +705,12 @@ fn recover_orphaned_originals(stage: &Path, swap: &Path) -> Result<(usize, bool)
         .map_err(|e| e.to_string())?;
     let stderr = log.try_clone().map_err(|e| e.to_string())?;
     let status = Command::new("py")
-        .args(["-3.11", "-u", "-c", include_str!("../launcher_support/orphaned_swap_recovery.py")])
+        .args([
+            "-3.11",
+            "-u",
+            "-c",
+            include_str!("../launcher_support/orphaned_swap_recovery.py"),
+        ])
         .arg("--game")
         .arg(&game)
         .arg("--manifest-dir")
