@@ -159,22 +159,24 @@ fn dropdown_left(name: Option<&str>) -> f32 {
     }
 }
 
-fn project_header() -> Element<'static, Message> {
-    row![
+fn project_header(advanced: bool) -> Element<'static, Message> {
+    let mut header = row![
         text("ENABLED").width(Length::FillPortion(2)),
-        text("MOD").width(Length::FillPortion(4)),
-        text("TARGET PAK").width(Length::FillPortion(4)),
-        text("CHANGED").width(Length::FillPortion(1)),
-        text("SOURCE BUILD").width(Length::FillPortion(2)),
-        text("MOD TYPE").width(Length::FillPortion(2)),
-        text("DETAILS").width(Length::FillPortion(3)),
-    ]
-    .spacing(8)
-    .into()
+        text("MOD NAME").width(Length::FillPortion(7)),
+        text("PAK").width(Length::FillPortion(5)),
+        text("STATUS").width(Length::FillPortion(2)),
+    ];
+    if advanced {
+        header = header
+            .push(text("SOURCE BUILD").width(Length::FillPortion(2)))
+            .push(text("MOD TYPE").width(Length::FillPortion(2)))
+            .push(text("DETAILS").width(Length::FillPortion(3)));
+    }
+    header.spacing(8).into()
 }
 
 fn projects(state: &State) -> Element<'_, Message> {
-    let mut rows = column![project_header()].spacing(4);
+    let mut rows = column![project_header(state.modding_advanced)].spacing(4);
     let projects = state.modding_projects.as_deref().unwrap_or(&[]);
     let matches = matching_projects(state);
     let count = matches.len();
@@ -182,37 +184,21 @@ fn projects(state: &State) -> Element<'_, Message> {
     for &index in &matches[range.clone()] {
         let record = &projects[index];
         let selected = state.project_selection.indices.contains(&index);
-        let changed = if record.changed_known {
-            record.modified.len().to_string()
-        } else {
-            "Review".into()
-        };
-        let cells = row![
-            text(record.label.as_str())
-                .size(12)
-                .width(Length::FillPortion(4)),
-            text(record.target.as_str())
-                .size(12)
-                .width(Length::FillPortion(4)),
-            text(changed).size(12).width(Length::FillPortion(1)),
-            text(record.source_build.as_str())
-                .size(12)
-                .width(Length::FillPortion(2)),
-            text(
-                classify(
+        let mut cells = row![
+            text(record.label.as_str()).size(12).width(Length::FillPortion(7)),
+            text(record.target.as_str()).size(12).width(Length::FillPortion(5)),
+            text(record.status.as_str()).size(12).width(Length::FillPortion(2)),
+        ];
+        if state.modding_advanced {
+            cells = cells
+                .push(text(record.source_build.as_str()).size(12).width(Length::FillPortion(2)))
+                .push(text(classify(
                     record.modified.iter().map(String::as_str),
                     record.changed_known
-                )
-                .label()
-            )
-            .size(12)
-            .width(Length::FillPortion(2)),
-            text(record.details.as_str())
-                .size(12)
-                .width(Length::FillPortion(3)),
-        ]
-        .spacing(8)
-        .align_y(iced::Center);
+                ).label()).size(12).width(Length::FillPortion(2)))
+                .push(text(record.details.as_str()).size(12).width(Length::FillPortion(3)));
+        }
+        let cells = cells.spacing(8).align_y(iced::Center);
         rows = rows.push(
             container(
                 row![
