@@ -1845,8 +1845,7 @@ mod tests {
         let original = folder.join("files/main_menu.gfx");
         fs::write(&original, b"untouched original snapshot").unwrap();
         assert!(save_mod_preference(&root, &folder, Some(""), None).is_err());
-        save_mod_preference(&root, &folder, Some("  My Main Menu  "), Some(true))
-            .unwrap();
+        save_mod_preference(&root, &folder, Some("  My Main Menu  "), Some(true)).unwrap();
         let prefs = read_mod_preferences(&root).unwrap();
         let item = prefs.mods.get("Main Menu").unwrap();
         assert_eq!(item.name.as_deref(), Some("My Main Menu"));
