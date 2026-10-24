@@ -219,9 +219,10 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     )
                 })
                     .style(design::primary)
-                    .on_press_maybe((!state.busy && !state.library_import_scanning
-                        )
-                        .then_some(Message::LibraryUpdateStart)),
+                    .on_press_maybe(
+                        (!state.busy && !state.library_import_scanning)
+                            .then_some(Message::LibraryUpdateStart),
+                    ),
                 text(if importing {
                     format!("Updated import: {progress} / {}", plan.changed.len())
                 } else {
