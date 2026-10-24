@@ -65,7 +65,8 @@ use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph,
     EquipmentOverrides, EquipmentSlot, HookPairReport, ImportedLibrary, ImportedPak, Inventory,
-    KalaTubingState, LevelScene, LibraryBatchImportReport, LibraryImportPlan,
+    KalaTubingState, LevelScene, LibraryBatchImportReport, LibraryBuildUpdatePlan,
+    LibraryBuildUpdateReport, LibraryImportPlan,
     LibraryReferenceStatus, MaterialReport, ModProfile, ModelInfo, NativeCafMotion,
     PakHookPairReport, PakInventory, ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh,
     RigReport, SignedPakInfo, StageTransaction, TerrainInfo, VerifiedCafAssembly, VerifiedCafSkin,
@@ -74,6 +75,7 @@ use evolve_core::{
     discover_equipment, export_dds_png, export_level_scene_glb,
     export_rigged_character_fbx_textured_animated, export_rigged_character_glb, extract_legacy_pak,
     extract_signed_pak, import_library_plan_with_keys, import_stage_pak, imported_archive_files,
+    scan_library_build_updates, apply_library_build_updates,
     imported_library, initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak,
     inspect_pak_hook_pair, inspect_signed_pak, list_mod_profiles, load_level_scene,
     material_texture_candidates, plan_mod_profile, prepare_client_hook, read_cdf, read_material,
@@ -377,6 +379,7 @@ struct State {
     library_selected: Option<usize>,
     library_root: String,
     library_import_plan: Option<LibraryImportPlan>,
+    library_update_plan: Option<LibraryBuildUpdatePlan>,
     library_import_scanning: bool,
     library_import_cancel: Option<Arc<AtomicBool>>,
     library_import_progress: Option<Arc<AtomicUsize>>,
@@ -476,6 +479,13 @@ enum Operation {
     ImportSignedLibraryPlan(
         PathBuf,
         LibraryImportPlan,
+        PathBuf,
+        Arc<AtomicBool>,
+        Arc<AtomicUsize>,
+    ),
+    ApplyLibraryBuildUpdates(
+        PathBuf,
+        LibraryBuildUpdatePlan,
         PathBuf,
         Arc<AtomicBool>,
         Arc<AtomicUsize>,
@@ -626,6 +636,7 @@ enum Completed {
     RestoredRawProjectMember(bool, String, PathBuf),
     ImportedLibrary(ImportedLibrary),
     ImportedSignedLibrary(LibraryBatchImportReport, ImportedLibrary),
+    ImportedBuildUpdated(LibraryBuildUpdateReport, ImportedLibrary),
     ImportedPakFiles(Inventory),
     Dependencies(DependencyGraph),
     Comparison(AssetComparison),
@@ -744,6 +755,14 @@ impl Operation {
             Self::LoadImportedLibrary(root) => imported_library(&root)
                 .map(Completed::ImportedLibrary)
                 .map_err(|e| e.to_string()),
+            Self::ApplyLibraryBuildUpdates(root, plan, stage, cancelled, progress) => {
+                let keys = modding_keys::archive_verification_keys(&stage)?;
+                let report = apply_library_build_updates(
+                    &root, &plan, &keys.paths, &cancelled, &progress,
+                )?;
+                let catalog = imported_library(&root).map_err(|e| e.to_string())?;
+                Ok(Completed::ImportedBuildUpdated(report, catalog))
+            }
             Self::ImportSignedLibraryPlan(root, plan, stage, cancelled, progress) => {
                 // Keep the original signed-archive authentication path.
                 let keys = modding_keys::archive_verification_keys(&stage)?;
@@ -1481,6 +1500,10 @@ enum Message {
     Navigate(Page),
     LibraryPickFiles,
     LibraryPickFolder,
+    LibraryUpdatePickFolder,
+    LibraryUpdateFolderPicked(Result<Option<Vec<PathBuf>>, String>),
+    LibraryUpdateScanned(Result<LibraryBuildUpdatePlan, String>),
+    LibraryUpdateStart,
     LibrarySourcesPicked(Result<Option<Vec<PathBuf>>, String>),
     LibraryImportScanned(Result<LibraryImportPlan, String>),
     LibraryImportStart,
