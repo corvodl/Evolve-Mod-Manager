@@ -9226,39 +9226,39 @@ fn view(state: &State) -> Element<'_, Message> {
     } else {
         container(column![]).into()
     };
-    let footer_progress: Element<'_, Message> =
-        if let Some(progress) = &state.project_copy_progress {
-            let phase = progress.phase.load(Ordering::Relaxed);
-            let done = progress.files_done.load(Ordering::Relaxed);
-            let total = progress.files_total.load(Ordering::Relaxed);
-            let bytes = progress.bytes_done.load(Ordering::Relaxed);
-            let size = progress.bytes_total.load(Ordering::Relaxed);
-            let percent = match phase {
-                0 => 0,
-                1 if size > 0 => ((bytes.min(size) as f64 / size as f64) * 95.0) as u32,
-                1 => 0,
-                2 => 98,
-                _ => 99,
-            };
-            let label = match phase {
-                0 => "Checking imported assets".to_owned(),
-                1 => format!("Copying & verifying {done}/{total} files"),
-                2 => "Saving project".to_owned(),
-                _ => "Opening project".to_owned(),
-            };
-            row![
-                text(label).size(11),
-                iced::widget::progress_bar(0.0..=100.0, percent as f32)
-                    .width(Length::Fixed(124.0))
-                    .height(Length::Fixed(8.0)),
-                text(format!("{percent}%")).size(11),
-            ]
-            .spacing(7)
-            .align_y(iced::Alignment::Center)
-            .into()
-        } else {
-            row![].into()
+    let footer_progress: Element<'_, Message> = if let Some(progress) = &state.project_copy_progress
+    {
+        let phase = progress.phase.load(Ordering::Relaxed);
+        let done = progress.files_done.load(Ordering::Relaxed);
+        let total = progress.files_total.load(Ordering::Relaxed);
+        let bytes = progress.bytes_done.load(Ordering::Relaxed);
+        let size = progress.bytes_total.load(Ordering::Relaxed);
+        let percent = match phase {
+            0 => 0,
+            1 if size > 0 => ((bytes.min(size) as f64 / size as f64) * 95.0) as u32,
+            1 => 0,
+            2 => 98,
+            _ => 99,
         };
+        let label = match phase {
+            0 => "Checking imported assets".to_owned(),
+            1 => format!("Copying & verifying {done}/{total} files"),
+            2 => "Saving project".to_owned(),
+            _ => "Opening project".to_owned(),
+        };
+        row![
+            text(label).size(11),
+            iced::widget::progress_bar(0.0..=100.0, percent as f32)
+                .width(Length::Fixed(124.0))
+                .height(Length::Fixed(8.0)),
+            text(format!("{percent}%")).size(11),
+        ]
+        .spacing(7)
+        .align_y(iced::Alignment::Center)
+        .into()
+    } else {
+        row![].into()
+    };
     let body = column![
         headline,
         tools,
