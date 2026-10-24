@@ -1117,6 +1117,27 @@ mod tests {
         let ledger = swap.join("controlled_swap_state.json");
         fs::write(&ledger, serde_json::to_vec(&journal).unwrap()).unwrap();
         assert_eq!(guarded_restore_state(&stage, &swap).unwrap(), "interrupted");
+        // First-run signing setup has an empty, restored swap journal. It
+        // should not be reported as corrupt when the original files are clean.
+        let new_setup = serde_json::json!({
+            "version": 1, "phase": "restored",
+            "game": game, "stage": stage, "count": 0, "files": []
+        });
+        fs::write(&ledger, serde_json::to_vec(&new_setup).unwrap()).unwrap();
+        assert_eq!(guarded_restore_state(&stage, &swap).unwrap(), "restored");
+        // However, even one stranded backup forbids treating that empty
+        // journal as sufficient recovery instructions.
+        let hook_backup = PathBuf::from(format!(
+            "{}.customkey-original",
+            hook_target.display()
+        ));
+        fs::write(&hook_backup, b"original backup").unwrap();
+        let mismatch = guarded_restore_state(&stage, &swap).unwrap_err();
+        assert!(mismatch.contains("0 file entries"), "{mismatch}");
+        assert!(mismatch.contains("original matching signing stage"), "{mismatch}");
+        assert_eq!(fs::read(&hook_backup).unwrap(), b"original backup");
+        fs::remove_file(&hook_backup).unwrap();
+        fs::write(&ledger, serde_json::to_vec(&journal).unwrap()).unwrap();
         for phase in ["swapping", "prepared", "restored"] {
             journal["phase"] = serde_json::json!(phase);
             fs::write(&ledger, serde_json::to_vec(&journal).unwrap()).unwrap();
