@@ -928,13 +928,16 @@ fn offline_test_target(project: &ProjectRow, stage: &Path) -> Result<String, Str
     )?;
     if manifest["extraction_mode"].as_str() != Some("imported-snapshot") {
         return super::modding_keys::staged_target(
-            stage, &stage.join("paks").join(&project.target),
+            stage,
+            &stage.join("paks").join(&project.target),
         );
     }
-    let source = manifest["imported_source"].as_str()
+    let source = manifest["imported_source"]
+        .as_str()
         .ok_or("Imported snapshot is missing its installed source location")?;
     let plan = read_json(&stage.join("rekey_plan.json"), 8 * 1024 * 1024)?;
-    let root = plan["source_root"].as_str()
+    let root = plan["source_root"]
+        .as_str()
         .ok_or("Stage has no installed game root")?;
     let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
     let source = fs::canonicalize(source).map_err(|_| {
@@ -946,11 +949,15 @@ fn offline_test_target(project: &ProjectRow, stage: &Path) -> Result<String, Str
     if !safe_member(&name) || !name.to_ascii_lowercase().ends_with(".pak") {
         return Err("Unsafe installed target path".into());
     }
-    if !plan["entries"].as_array().is_some_and(|entries|
-        entries.iter().any(|entry| entry["path"].as_str() == Some(name.as_str())
-            && entry["kind"].as_str() == Some("signed-encrypted"))
-    ) {
-        return Err("The selected installed PAK is not present in this stage's verified target list".into());
+    if !plan["entries"].as_array().is_some_and(|entries| {
+        entries.iter().any(|entry| {
+            entry["path"].as_str() == Some(name.as_str())
+                && entry["kind"].as_str() == Some("signed-encrypted")
+        })
+    }) {
+        return Err(
+            "The selected installed PAK is not present in this stage's verified target list".into(),
+        );
     }
     let target = stage.join("paks").join(&name);
     if super::modding_keys::staged_target(stage, &target)? != name {
@@ -980,26 +987,38 @@ pub fn prepare_built_offline_test(
     // anything. Signed member inventory differences are permitted offline.
     evolve_core::inspect_signed_pak(output, &keys.public, &basename)
         .map_err(|e| format!("Built offline PAK signature could not be verified: {e}"))?;
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| e.to_string())?.as_nanos();
-    let display = basename.chars().filter(|c| c.is_ascii_alphanumeric())
-        .take(24).collect::<String>();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let display = basename
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(24)
+        .collect::<String>();
     let name = format!("Offline Test {display} {:x}", stamp);
     let profile = evolve_core::create_mod_profile(stage, &name)
         .map_err(|e| format!("Cannot create offline test profile: {e}"))?;
     let staged = (|| -> Result<(), String> {
         evolve_core::add_mod_to_profile(
-            stage, &profile.id, output, &target,
-            &keys.original_public, &keys.public, &basename,
-        ).map_err(|e| e.to_string())?;
-        evolve_core::apply_profile_stage(
-            stage, &profile.id, &keys.original_public, &keys.public,
-        ).map_err(|e| e.to_string())?;
+            stage,
+            &profile.id,
+            output,
+            &target,
+            &keys.original_public,
+            &keys.public,
+            &basename,
+        )
+        .map_err(|e| e.to_string())?;
+        evolve_core::apply_profile_stage(stage, &profile.id, &keys.original_public, &keys.public)
+            .map_err(|e| e.to_string())?;
         Ok(())
     })();
     if let Err(error) = staged {
         let _ = evolve_core::profiles::delete_mod_profile(stage, &profile.id);
-        return Err(format!("Offline test was not prepared: {error}. Restore any pending stage transaction before retrying."));
+        return Err(format!(
+            "Offline test was not prepared: {error}. Restore any pending stage transaction before retrying."
+        ));
     }
     Ok(format!(
         "Offline test prepared for {target}. Select Play with Mods to test the changed menu. Stage originals are saved in the recovery journal; use Restore staged profile when finished. Compatibility with this game build is not guaranteed."
