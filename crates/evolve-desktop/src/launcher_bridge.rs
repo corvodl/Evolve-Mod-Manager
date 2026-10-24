@@ -412,7 +412,9 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
         let replacement_info = inspect_signed_pak(&custom_pak, &new_key, signed_name)
             .map_err(|e| format!("Staged PAK signature mismatch for {path}: {e}"))?;
         if original_info.entries.is_empty() || replacement_info.entries.is_empty() {
-            return Err(format!("Signed PAK has no verified archive members: {path}"));
+            return Err(format!(
+                "Signed PAK has no verified archive members: {path}"
+            ));
         }
         let original_members: std::collections::HashSet<_> = original_info
             .entries
