@@ -1478,7 +1478,9 @@ mod tests {
         // Original retail files may be signed as sample.pak while named
         // Sample.pak. Re-key their staged replacement using the authenticated
         // original signing name; do not rename the installed source.
-        let cased_output = resign_folder.join("Sample.pak");
+        let cased_folder = root.path().join("resigned-mixed-case");
+        fs::create_dir(&cased_folder).unwrap();
+        let cased_output = cased_folder.join("Sample.pak");
         let cased = resign_signed_pak_with_original_name(
             &differently_cased,
             &key,
