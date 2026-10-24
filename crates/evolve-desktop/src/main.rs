@@ -66,22 +66,21 @@ use evolve_core::{
     CdfDefinition, CdfDependencyReport, ConvertedMotion, DdsInfo, DependencyGraph,
     EquipmentOverrides, EquipmentSlot, HookPairReport, ImportedLibrary, ImportedPak, Inventory,
     KalaTubingState, LevelScene, LibraryBatchImportReport, LibraryBuildUpdatePlan,
-    LibraryBuildUpdateReport, LibraryImportPlan,
-    LibraryReferenceStatus, MaterialReport, ModProfile, ModelInfo, NativeCafMotion,
-    PakHookPairReport, PakInventory, ProfileCatalog, ProfileMod, ProfilePlan, RenderMesh,
-    RigReport, SignedPakInfo, StageTransaction, TerrainInfo, VerifiedCafAssembly, VerifiedCafSkin,
-    add_mod_to_profile, apply_profile_stage, apply_stage_pak, batch_stage_status, compare_assets,
-    convert_glb_to_fbx, convert_original_motion, create_mod_profile, decode_dds_rgba,
-    discover_equipment, export_dds_png, export_level_scene_glb,
-    export_rigged_character_fbx_textured_animated, export_rigged_character_glb, extract_legacy_pak,
-    extract_signed_pak, import_library_plan_with_keys, import_stage_pak, imported_archive_files,
-    scan_library_build_updates, apply_library_build_updates,
-    imported_library, initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak,
-    inspect_pak_hook_pair, inspect_signed_pak, list_mod_profiles, load_level_scene,
-    material_texture_candidates, plan_mod_profile, prepare_client_hook, read_cdf, read_material,
-    read_model, read_native_caf, read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry,
-    resign_signed_pak, resolve_cdf, resolve_imported_reference, resolve_materials,
-    restore_profile_stage, restore_stage, scan_directory, scan_directory_with_progress,
+    LibraryBuildUpdateReport, LibraryImportPlan, LibraryReferenceStatus, MaterialReport,
+    ModProfile, ModelInfo, NativeCafMotion, PakHookPairReport, PakInventory, ProfileCatalog,
+    ProfileMod, ProfilePlan, RenderMesh, RigReport, SignedPakInfo, StageTransaction, TerrainInfo,
+    VerifiedCafAssembly, VerifiedCafSkin, add_mod_to_profile, apply_library_build_updates,
+    apply_profile_stage, apply_stage_pak, batch_stage_status, compare_assets, convert_glb_to_fbx,
+    convert_original_motion, create_mod_profile, decode_dds_rgba, discover_equipment,
+    export_dds_png, export_level_scene_glb, export_rigged_character_fbx_textured_animated,
+    export_rigged_character_glb, extract_legacy_pak, extract_signed_pak,
+    import_library_plan_with_keys, import_stage_pak, imported_archive_files, imported_library,
+    initialize_stage, inspect_dds, inspect_dependencies, inspect_legacy_pak, inspect_pak_hook_pair,
+    inspect_signed_pak, list_mod_profiles, load_level_scene, material_texture_candidates,
+    plan_mod_profile, prepare_client_hook, read_cdf, read_material, read_model, read_native_caf,
+    read_terrain, rebuild_legacy_pak, rebuild_signed_pak_entry, resign_signed_pak, resolve_cdf,
+    resolve_imported_reference, resolve_materials, restore_profile_stage, restore_stage,
+    scan_directory, scan_directory_with_progress, scan_library_build_updates,
     scan_library_import_sources, stage_status,
 };
 use iced::widget::{
@@ -757,9 +756,8 @@ impl Operation {
                 .map_err(|e| e.to_string()),
             Self::ApplyLibraryBuildUpdates(root, plan, stage, cancelled, progress) => {
                 let keys = modding_keys::archive_verification_keys(&stage)?;
-                let report = apply_library_build_updates(
-                    &root, &plan, &keys.paths, &cancelled, &progress,
-                )?;
+                let report =
+                    apply_library_build_updates(&root, &plan, &keys.paths, &cancelled, &progress)?;
                 let catalog = imported_library(&root).map_err(|e| e.to_string())?;
                 Ok(Completed::ImportedBuildUpdated(report, catalog))
             }
@@ -2880,14 +2878,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::LibraryUpdatePickFolder => {
-            if state.busy || state.library_import_scanning { return Task::none(); }
+            if state.busy || state.library_import_scanning {
+                return Task::none();
+            }
             state.library_import_scanning = true;
             state.library_update_plan = None;
             state.status = "Choose the exact installed Evolve build folder to compare. This first scan only reads SHA-256 checksums; no files are imported.".into();
-            return Task::perform(async move {
-                tokio::task::spawn_blocking(move || library_picker::choose_sources(true))
-                    .await.map_err(|e| format!("Build folder picker failed: {e}"))?
-            }, Message::LibraryUpdateFolderPicked);
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || library_picker::choose_sources(true))
+                        .await
+                        .map_err(|e| format!("Build folder picker failed: {e}"))?
+                },
+                Message::LibraryUpdateFolderPicked,
+            );
         }
         Message::LibraryUpdateFolderPicked(result) => {
             match result {
@@ -2898,11 +2902,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         "Comparing original PAK checksums for build {} against its own saved snapshots; no files will be modified.",
                         root.display()
                     );
-                    return Task::perform(async move {
-                        tokio::task::spawn_blocking(move || {
-                            scan_library_build_updates(&library, &root)
-                        }).await.map_err(|e| format!("Build scan worker failed: {e}"))?
-                    }, Message::LibraryUpdateScanned);
+                    return Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || {
+                                scan_library_build_updates(&library, &root)
+                            })
+                            .await
+                            .map_err(|e| format!("Build scan worker failed: {e}"))?
+                        },
+                        Message::LibraryUpdateScanned,
+                    );
                 }
                 Ok(None) => state.status = "Build update scan cancelled; library unchanged.".into(),
                 Ok(Some(_)) => state.status = "Select exactly one game build folder.".into(),
@@ -2916,7 +2925,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Ok(plan) => {
                     state.status = format!(
                         "Build scan complete: {} new, {} updated, {} unchanged, {} removed source PAKs. Review the plan before importing.",
-                        plan.new_count, plan.changed_count, plan.unchanged, plan.removed.len()
+                        plan.new_count,
+                        plan.changed_count,
+                        plan.unchanged,
+                        plan.removed.len()
                     );
                     state.library_update_plan = Some(plan);
                 }
@@ -2927,7 +2939,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::LibraryUpdateStart => {
-            if state.busy || state.library_import_scanning { return Task::none(); }
+            if state.busy || state.library_import_scanning {
+                return Task::none();
+            }
             let Some(plan) = state.library_update_plan.clone() else {
                 state.status = "Scan a specific game build first.".into();
                 return Task::none();
@@ -2938,11 +2952,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             let cancelled = Arc::new(AtomicBool::new(false));
             let progress = Arc::new(AtomicUsize::new(0));
-            let task = launch(state, Operation::ApplyLibraryBuildUpdates(
-                PathBuf::from(&state.library_root), plan,
-                PathBuf::from(&state.preferences.stage),
-                cancelled.clone(), progress.clone(),
-            ));
+            let task = launch(
+                state,
+                Operation::ApplyLibraryBuildUpdates(
+                    PathBuf::from(&state.library_root),
+                    plan,
+                    PathBuf::from(&state.preferences.stage),
+                    cancelled.clone(),
+                    progress.clone(),
+                ),
+            );
             state.library_import_cancel = Some(cancelled);
             state.library_import_progress = Some(progress);
             state.status = "Importing only changed/new PAKs. Existing snapshots and game originals are preserved; cancellation takes effect between archives.".into();
@@ -7420,15 +7439,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::ImportedBuildUpdated(report, catalog)) => {
                     let failures = report.batch.failed.len();
-                    let error_detail = report.batch.failed.iter().take(2)
+                    let error_detail = report
+                        .batch
+                        .failed
+                        .iter()
+                        .take(2)
                         .map(|failure| format!("{}: {}", failure.archive, failure.reason))
-                        .collect::<Vec<_>>().join("; ");
+                        .collect::<Vec<_>>()
+                        .join("; ");
                     state.status = format!(
                         "Build {} refreshed: {} new, {} changed, {} unchanged, {} removed from current inventory; {} failed. Old imports and projects preserved.{}",
-                        &report.build_id[..8], report.added, report.updated,
-                        report.unchanged, report.removed, failures,
-                        if error_detail.is_empty() { String::new() }
-                        else { format!(" {error_detail}") },
+                        &report.build_id[..8],
+                        report.added,
+                        report.updated,
+                        report.unchanged,
+                        report.removed,
+                        failures,
+                        if error_detail.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" {error_detail}")
+                        },
                     );
                     state.library_root = catalog.root.clone();
                     state.preferences.asset_library_root = catalog.root.clone();
