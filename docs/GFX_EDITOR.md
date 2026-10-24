@@ -40,9 +40,9 @@ protects the original; this operation never rewrites an installed PAK.
 
 ### Experimental Legacy main-menu row heights (Stage 2 script preserved)
 
-In **Modding**, open an editable project containing the original Stage 2 `Libs/UI/main_menu.gfx`. In **GFX Tools → Layout**, select **Stage Legacy button row heights**. This is a narrow, source-verified presentation edit: it changes Stage 2's default 40-pixel and featured 65-pixel menu row heights to the Legacy movie's 70 pixels. Original Stage 2 menu functions, button creation, native callbacks, textures, symbols and all other assets remain unchanged. The edit is staged privately; use **Undo** or **Apply to Mod Project**. Nothing is installed into the running game by this editor action.
+In **Modding**, open an editable project containing the original Stage 2 `Libs/UI/main_menu.gfx`. In **GFX Tools → Layout**, select **Stage Legacy menu rows + labels**. This is a narrow, source-verified presentation edit: it changes Stage 2's default 40-pixel and featured 65-pixel menu row heights to the Legacy movie's 70 pixels, and moves ButtonMainMenu's label inset from 70 to the Legacy 85 stage pixels. Original Stage 2 menu functions, button creation, native callbacks, textures, symbols and all other assets remain unchanged. The edit is staged privately; use **Undo** or **Apply to Mod Project**. Nothing is installed into the running game by this editor action.
 
-The action requires the seven existing Stage 2 menu Style constants (including original widths and spacing) and refuses a Legacy movie or different source layout. This is **not** a complete Legacy menu port: fonts, artwork, hover effects, positions and submenus still need verified asset-by-asset adaptation and a real game test with working navigation.
+The action requires the seven existing Stage 2 menu Style constants plus the five original ButtonMainMenu label/geometry constants and refuses a Legacy movie or different source layout. This is **not** a complete Legacy menu port: fonts, artwork, hover effects, positions and submenus still need verified asset-by-asset adaptation and a real game test with working navigation.
 
 ## Visual layout editor
 
