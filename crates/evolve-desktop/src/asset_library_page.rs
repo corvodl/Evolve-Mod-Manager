@@ -173,17 +173,24 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     "{} · {}",
                     if change.was_present { "Updated" } else { "New" },
                     change.relative
-                )).size(11).style(design::muted)
+                ))
+                .size(11)
+                .style(design::muted),
             );
         }
         if plan.changed.len() > 8 {
             changed_paths = changed_paths.push(
-                text(format!("…and {} other changed/new PAKs", plan.changed.len() - 8))
-                    .size(11).style(design::muted)
+                text(format!(
+                    "…and {} other changed/new PAKs",
+                    plan.changed.len() - 8
+                ))
+                .size(11)
+                .style(design::muted),
             );
         }
-        let progress = state.library_import_progress.as_ref()
-            .map_or(0, |counter| counter.load(std::sync::atomic::Ordering::Relaxed));
+        let progress = state.library_import_progress.as_ref().map_or(0, |counter| {
+            counter.load(std::sync::atomic::Ordering::Relaxed)
+        });
         let summary = column![
             row![
                 text("UPDATE IMPORTED BUILD").size(15),
@@ -219,9 +226,11 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         ].spacing(8);
         layout = layout.push(panel(container(summary).padding(12)));
     } else if state.library_import_scanning {
-        layout = layout.push(text(
-            "Scanning this build and hashing original PAKs. No files are being imported."
-        ).size(12).style(design::muted));
+        layout = layout.push(
+            text("Scanning this build and hashing original PAKs. No files are being imported.")
+                .size(12)
+                .style(design::muted),
+        );
     }
 
     if state.library_show_configuration {
