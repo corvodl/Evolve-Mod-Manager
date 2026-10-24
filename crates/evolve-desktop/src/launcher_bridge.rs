@@ -728,6 +728,41 @@ pub fn restore_existing_offline_client(_: &Path, _: &Path) -> Result<(usize, boo
     Err("Offline Evolve launcher recovery requires Windows x64".into())
 }
 
+/// Discard only verified disposable .customkey-ready copies before the
+/// launcher prepares the newly enabled mod set. Original game backups and
+/// recovery files are explicitly excluded by controlled_swap.py.
+#[cfg(windows)]
+pub fn refresh_prepared_offline_cache(stage: &Path, swap: &Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    games_closed()?;
+    let script = helper(swap, "controlled_swap.py")?;
+    let game = original_hook_for_stage(stage)?
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("Game root missing")?
+        .to_path_buf();
+    let result = Command::new("py")
+        .args(["-3.11", "-u"])
+        .arg(script)
+        .arg("refresh-prepared")
+        .arg("--stage-dir")
+        .arg(stage)
+        .arg("--game-root")
+        .arg(game)
+        .current_dir(swap)
+        .creation_flags(0x08000000)
+        .status()
+        .map_err(|e| format!("Cannot refresh prepared mods: {e}"))?;
+    if !result.success() {
+        return Err("Previous prepared mod files need attention. Restore original files before trying again.".into());
+    }
+    Ok(())
+}
+#[cfg(not(windows))]
+pub fn refresh_prepared_offline_cache(_: &Path, _: &Path) -> Result<(), String> {
+    Err("Offline mod launching requires Windows x64".into())
+}
+
 /// Reuse the private launcher's already-tested control flow. It performs
 /// same-volume .customkey-ready renames only during its Frida CreateProcessW
 /// pause and starts an independent restore watchdog. Nothing here injects,
