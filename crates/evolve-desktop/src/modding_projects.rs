@@ -442,7 +442,7 @@ pub fn build_project_raw(
     project: &ProjectRow,
     projects: &Path,
     stage: &Path,
-) -> Result<(String, PathBuf), String> {
+) -> Result<(String, PathBuf, ProjectRow), String> {
     // The Modding dashboard uses a bounded scan for responsiveness. Never
     // trust its cached change list to build: refresh every member on a blocking
     // worker so large PAKs and newly applied GFX edits cannot be missed.
@@ -590,7 +590,11 @@ pub fn build_project_raw(
         &output,
     );
     match result {
-        Ok(reports) => Ok((format!("{} modified member(s)", reports.len()), output)),
+        Ok(reports) => Ok((
+            format!("{} modified member(s)", reports.len()),
+            output,
+            verified,
+        )),
         Err(error) => {
             // The core uses an atomic tempfile on failure. Remove only our
             // new empty output directory, never an existing user's path.
