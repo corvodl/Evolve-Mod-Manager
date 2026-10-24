@@ -333,6 +333,107 @@ pub fn discover_projects(root: &Path, stage: &Path) -> Result<Vec<ProjectRow>, S
     Ok(projects)
 }
 
+/// Editing a previously imported archive never needs the source game PAK
+/// or a signing stage. Work from the immutable, verified Asset Library
+/// extraction into a new private project; launchability is checked later.
+pub fn edit_imported_snapshot(
+    pak: &evolve_core::ImportedPak,
+    projects: &Path,
+) -> Result<(PathBuf, usize), String> {
+    let inventory = evolve_core::imported_archive_files(pak).map_err(|e| e.to_string())?;
+    if !projects.is_absolute() {
+        return Err("Configure an absolute Projects directory before editing".into());
+    }
+    if !projects.exists() {
+        fs::create_dir_all(projects)
+            .map_err(|e| format!("Cannot create Projects directory: {e}"))?;
+    }
+    if !fs::symlink_metadata(projects).is_ok_and(|m| m.file_type().is_dir()) {
+        return Err("Projects must be a real directory".into());
+    }
+    let base = fs::canonicalize(projects).map_err(|e| e.to_string())?;
+    let imports = fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
+    let original = read_json(
+        &Path::new(&pak.directory).join("asset-library.json"),
+        32 * 1024 * 1024,
+    )?;
+    let expected = original["entries"].as_array().ok_or("Imported file list missing")?;
+    if expected.len() != inventory.entries.len() || expected.is_empty() || expected.len() > MAX_ENTRIES {
+        return Err("Imported archive has an invalid file index".into());
+    }
+    let staging = tempfile::Builder::new()
+        .prefix(".editable-snapshot-")
+        .tempdir_in(&base)
+        .map_err(|e| e.to_string())?;
+    let extracted = staging.path().join("files");
+    fs::create_dir(&extracted).map_err(|e| e.to_string())?;
+    let mut records = Vec::with_capacity(inventory.entries.len());
+    for asset in &inventory.entries {
+        let rel = asset.relative_path.as_str();
+        if !safe_member(rel) {
+            return Err("Unsafe imported archive member".into());
+        }
+        let source = imports.join(rel);
+        let actual = fs::canonicalize(&source).map_err(|e| e.to_string())?;
+        if !actual.starts_with(&imports) || !regular(&source, 16 * 1024 * 1024 * 1024) {
+            return Err("Imported file escaped the Asset Library".into());
+        }
+        let copied = extracted.join(rel);
+        fs::create_dir_all(copied.parent().ok_or("Invalid copy destination")?)
+            .map_err(|e| e.to_string())?;
+        fs::copy(&source, &copied).map_err(|e| e.to_string())?;
+        let checksum = digest(&copied).map_err(|e| e.to_string())?;
+        let original_record = expected.iter()
+            .find(|row| row["path"].as_str() == Some(rel))
+            .ok_or("Imported archive manifest entry missing")?;
+        if let Some(recorded) = original_record["sha256"].as_str()
+            && !recorded.eq_ignore_ascii_case(&checksum)
+        {
+            return Err(format!("Imported original was modified: {rel}"));
+        }
+        records.push(serde_json::json!({
+            "path": rel,
+            "archive_name": rel,
+            "format": if original_record["converted"].as_bool() == Some(true) {
+                "cryxml"
+            } else {
+                "raw"
+            },
+            "sha256": checksum,
+        }));
+    }
+    let manifest = serde_json::json!({
+        "version": 1,
+        "extraction_mode": "imported-snapshot",
+        "target_name": pak.name,
+        "source_pak": null,
+        "signed_basename": original["signed_name"].as_str().unwrap_or(&pak.name),
+        "imported_source": pak.source,
+        "imported_archive_id": pak.id,
+        "imported_source_sha256": original["source_sha256"],
+        "deployment_mapped": false,
+        "entries": records,
+    });
+    let mut file = fs::OpenOptions::new()
+        .write(true).create_new(true)
+        .open(staging.path().join(".evolve-pak-workspace.json"))
+        .map_err(|e| e.to_string())?;
+    serde_json::to_writer_pretty(&mut file, &manifest).map_err(|e| e.to_string())?;
+    file.sync_all().map_err(|e| e.to_string())?;
+    drop(file);
+    let stem: String = pak.name.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .take(70).collect();
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?.as_nanos();
+    let destination = base.join(format!("{stem}_editable_{stamp:x}"));
+    if fs::symlink_metadata(&destination).is_ok() {
+        return Err("An editing project already exists at the destination".into());
+    }
+    fs::rename(staging.path(), &destination).map_err(|e| e.to_string())?;
+    Ok((destination, inventory.entries.len()))
+}
+
 /// Extract a selected, verified staged CryPAK into a NEW private-style project.
 /// Extract a new project, decoding CryXmlB to editable UTF-8 XML. Both
 /// editable and original binary digests are retained; source PAKs are untouched.
