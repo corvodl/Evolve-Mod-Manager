@@ -6127,10 +6127,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             // deterministic per-user directory instead of passing that label
             // to the signing worker as a relative working-directory path.
             let storage = match settings_path().and_then(|file| {
-                settings::setup_storage_directory(
-                    &file,
-                    &state.preferences.game_storage_root,
-                )
+                settings::setup_storage_directory(&file, &state.preferences.game_storage_root)
             }) {
                 Ok(path) => path,
                 Err(error) => {
