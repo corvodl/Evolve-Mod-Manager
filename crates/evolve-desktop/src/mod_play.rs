@@ -271,7 +271,10 @@ mod tests {
         // already exists and points at some unrelated/stale profile.
         let previous_enabled_id = "3".repeat(32);
         save_owned_profile_id(&stage, &previous_enabled_id).unwrap();
-        assert_ne!(owned_profile_id(&stage).unwrap().as_deref(), Some(manual.id.as_str()));
+        assert_ne!(
+            owned_profile_id(&stage).unwrap().as_deref(),
+            Some(manual.id.as_str())
+        );
         assert!(restore_previous_staged_profile(&stage).unwrap());
         assert_eq!(std::fs::read(&target).unwrap(), original);
         assert!(evolve_core::batch_stage_status(&stage).unwrap().is_none());
