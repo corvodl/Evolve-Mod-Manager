@@ -322,8 +322,18 @@ pub fn unpack_raw_project(
     let _target = super::modding_keys::staged_target(stage, source)?;
     let basename = super::modding_keys::signed_basename(source)?;
     let public = super::modding_keys::public_key(stage)?;
+    // A first launch normally has a configured default Projects path but no
+    // directory yet. Create that workspace on demand, rather than making the
+    // user import PAKs again or manually initialize an empty projects folder.
+    if !projects.is_absolute() {
+        return Err("Configure an absolute Projects directory before editing".into());
+    }
+    if fs::symlink_metadata(projects).is_err() {
+        fs::create_dir_all(projects)
+            .map_err(|e| format!("Cannot create Projects directory: {e}"))?;
+    }
     if !fs::symlink_metadata(projects).is_ok_and(|meta| meta.file_type().is_dir()) {
-        return Err("Configure a real Projects directory before extracting".into());
+        return Err("Projects must be a real directory, not a symbolic link".into());
     }
     let canonical_projects = fs::canonicalize(projects).map_err(|e| e.to_string())?;
     let before = digest(source).map_err(|e| e.to_string())?;
