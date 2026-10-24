@@ -10,6 +10,8 @@ import traceback
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from blender_uv0 import prepare_original_uv
+from blender_mesh_shading import (glb_source_normals, preserve_or_reconstruct_normals,
+                                 normal_samples, verify_normal_samples)
 from blender_export_hierarchy import character_root, combine_source_meshes, clean_name
 from blender_material_ids import (bind_original_material_ids,
                                   verify_original_material_ids,
@@ -203,6 +205,7 @@ def main():
         bind_original_material_ids(source_meshes, part_index, name, original_ids)
         original_material_parts.append(original_ids)
         imported = prepare_original_uv(source_meshes)
+        preserve_or_reconstruct_normals(imported, glb_source_normals(source))
         check(len(arms) == 1 and 1 <= len(imported) <= 128,
               "part has no original rig or too many material fragments")
         arm = arms[0]
@@ -249,6 +252,7 @@ def main():
         verify_material_uv_distributions(source_material_uvs, source_material_uv_distributions(meshes))
         validate_blender_meshes(meshes, rigged=True, embed_textures=embed_textures)
         # Joining changes the mesh naming, not the verified source attachment set.
+    source_shading = normal_samples(meshes)
     export_root = character_root(root_name, meshes, armatures)
     bone_count = sum(len(arm.data.bones) for arm in armatures)
     # Keep primitive strings: read_factory_settings destroys the original
@@ -278,6 +282,7 @@ def main():
         filepath=str(destination), use_selection=True,
         object_types={"ARMATURE", "MESH", "EMPTY"}, add_leaf_bones=False,
         use_armature_deform_only=False, axis_forward="-Y", axis_up="Z",
+        mesh_smooth_type="EDGE", use_tspace=True, use_triangles=True,
         bake_anim=animate, bake_anim_use_all_actions=animate,
         bake_anim_use_nla_strips=animate, bake_anim_simplify_factor=0,
         path_mode="COPY" if embed_textures else "RELATIVE",
@@ -315,6 +320,7 @@ def main():
               "FBX round-trip lost embedded diffuse image links; refusing white export")
         if not combine_meshes:
             verify_part_diffuse_coverage(result_meshes, parts, "FBX round-trip")
+    verify_normal_samples(source_shading, normal_samples(result_meshes))
     if animate:
         check(bool(bpy.data.actions), "FBX round-trip lost the verified CAF Action")
     validate_blender_meshes(result_meshes, rigged=True, embed_textures=embed_textures)
