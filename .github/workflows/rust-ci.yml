@@ -29,6 +29,8 @@ jobs:
         run: node --test crates/evolve-desktop/tests/gfx_preview_input.test.mjs
       - name: Verify original Training menu preview-only host state
         run: node --test crates/evolve-desktop/tests/gfx_preview_runtime.test.cjs
+      - name: Verify guarded original game backup restoration
+        run: python3 -m unittest discover -s crates/evolve-desktop/launcher_support -p 'test_reusable_restore.py'
       - name: Validate bundled Blender converter syntax
         run: python3 -c "import ast,pathlib; [ast.parse(p.read_text(encoding='utf-8'), filename=str(p)) for p in pathlib.Path('crates/evolve-core/src').glob('blender_*.py')]"
       - name: Validate source-faithful UV seam/tile regressions
