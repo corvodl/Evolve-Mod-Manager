@@ -138,7 +138,7 @@ fn verify_hook(
     Ok(())
 }
 #[cfg(windows)]
-fn games_closed() -> Result<(), String> {
+pub(super) fn games_closed() -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     let output = Command::new("tasklist")
         .args(["/FO", "CSV", "/NH"])
@@ -159,7 +159,7 @@ fn games_closed() -> Result<(), String> {
     Ok(())
 }
 #[cfg(not(windows))]
-fn games_closed() -> Result<(), String> {
+pub(super) fn games_closed() -> Result<(), String> {
     Ok(())
 }
 

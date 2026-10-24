@@ -29,6 +29,7 @@ mod gfx_menu_video;
 mod gfx_mode_images;
 mod gfx_tool_install;
 mod guided_modding;
+mod initial_setup;
 mod launcher_bridge;
 mod level_workspace;
 mod library_picker;
@@ -37,6 +38,7 @@ mod modding_keys;
 mod modding_page;
 mod modding_projects;
 mod orientation_gizmo;
+mod play_setup;
 mod private_pages;
 mod runtime_armor;
 mod runtime_experiments;
@@ -572,7 +574,9 @@ enum Operation {
     PrepareClientHook(PathBuf, PathBuf, PathBuf, PathBuf),
     VerifySignedHookPair(PathBuf, PathBuf, PathBuf, PathBuf, PathBuf, PathBuf, String),
     CheckExistingOfflineLauncher(PathBuf, PathBuf),
-    StartExistingOfflineLauncher(PathBuf, PathBuf),
+    StartExistingOfflineLauncher(PathBuf, PathBuf, PathBuf, PathBuf),
+    LaunchCleanClient(PathBuf, PathBuf, Option<PathBuf>),
+    CreateInitialSetup(PathBuf, PathBuf, PathBuf, bool),
     RestoreExistingOfflineLauncher(PathBuf, PathBuf),
     RebuildSignedPak(
         PathBuf,
@@ -664,6 +668,8 @@ enum Completed {
     SignedHookPreflight(PakHookPairReport),
     OfflineLauncherReady(LaunchReady),
     OfflineLauncherStarted(usize, u32),
+    CleanClientStarted(u32),
+    InitialSetupCreated(initial_setup::InitialSetup),
     OfflineLauncherRestored(usize, bool),
     ExtractedSigned(usize, PathBuf),
     RebuiltSigned(String, PathBuf),
@@ -1366,11 +1372,23 @@ impl Operation {
                 let report = inspect_existing_launcher(&stage, &swap)?;
                 Ok(Completed::OfflineLauncherReady(report))
             }
-            Self::StartExistingOfflineLauncher(stage, swap) => {
+            Self::StartExistingOfflineLauncher(stage, swap, game, client) => {
+                play_setup::configure_existing_helper(&game, &client, &stage, &swap)?;
                 let report = inspect_existing_launcher(&stage, &swap)?;
+                if report.game != game {
+                    return Err("Offline signing stage belongs to another game installation".into());
+                }
                 let count = report.archive_count;
                 let id = launch_existing_offline_client(&report)?;
                 Ok(Completed::OfflineLauncherStarted(count, id))
+            }
+            Self::LaunchCleanClient(game, client, swap) => {
+                let id = play_setup::launch_clean(&game, &client, swap.as_deref())?;
+                Ok(Completed::CleanClientStarted(id))
+            }
+            Self::CreateInitialSetup(game, client, storage, snapshots) => {
+                initial_setup::create(&game, &client, &storage, snapshots)
+                    .map(Completed::InitialSetupCreated)
             }
             Self::RestoreExistingOfflineLauncher(stage, swap) => {
                 let (count, reusable) = restore_existing_offline_client(&stage, &swap)?;
@@ -1662,6 +1680,16 @@ enum Message {
     StartOfflineLauncherCheck,
     StartOfflineLauncherLaunch,
     StartOfflineLauncherRestore,
+    PlayWithMods,
+    PlayWithoutMods,
+    SaveGameSetup,
+    StartAutomaticSetup,
+    PreferenceGameInstall(String),
+    PreferenceClientExecutable(String),
+    PickGameInstallation,
+    PickClientExecutable,
+    PickedGameInstallation(Option<PathBuf>),
+    PickedClientExecutable(Option<PathBuf>),
     ProfileNameChanged(String),
     SelectProfile(String),
     StartProfileList,
@@ -2049,7 +2077,21 @@ fn launch(state: &mut State, operation: Operation) -> Task<Message> {
     if !matches!(&operation, Operation::BuildStaticCdf(..)) {
         state.viewer_load_progress = None;
     }
-    state.status = "Working on explicitly selected local files...".into();
+    state.status = match &operation {
+        Operation::StartExistingOfflineLauncher(..) => {
+            "Verifying original PAKs and preparing the offline launcher hook. The normal client will open after preparation; press Play only after the hook is ready."
+                .into()
+        }
+        Operation::CreateInitialSetup(..) => {
+            "Building the isolated offline setup: generating local signing keys, validating/resigning original game PAKs, preparing a verified hook copy and independent recovery scripts. Original game files will not be altered."
+                .into()
+        }
+        Operation::LaunchCleanClient(..) => {
+            "Checking that original PAKs and the recovery journal are clean before opening the normal client..."
+                .into()
+        }
+        _ => "Working on explicitly selected local files...".into(),
+    };
     Task::perform(
         async move {
             tokio::task::spawn_blocking(move || operation.execute())
@@ -5876,6 +5918,142 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Operation::AnalyzeStorage(data, games, stage, projects, library),
             );
         }
+        Message::PreferenceGameInstall(value) => state.preferences.game_installation = value,
+        Message::PreferenceClientExecutable(value) => {
+            state.preferences.client_executable = value;
+        }
+        Message::PickGameInstallation | Message::PickClientExecutable => {
+            let game = matches!(message, Message::PickGameInstallation);
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        native_export_picker(if game { "folder" } else { "file" })
+                    })
+                    .await
+                    .unwrap_or(None)
+                },
+                move |selection| {
+                    if game {
+                        Message::PickedGameInstallation(selection)
+                    } else {
+                        Message::PickedClientExecutable(selection)
+                    }
+                },
+            );
+        }
+        Message::PickedGameInstallation(Some(path)) => {
+            state.preferences.game_installation = path.to_string_lossy().into_owned();
+        }
+        Message::PickedClientExecutable(Some(path)) => {
+            state.preferences.client_executable = path.to_string_lossy().into_owned();
+        }
+        Message::PickedGameInstallation(None) | Message::PickedClientExecutable(None) => {}
+        Message::StartAutomaticSetup => {
+            if state.busy {
+                return Task::none();
+            }
+            let (game, client) = match play_setup::validate_paths(
+                &state.preferences.game_installation,
+                &state.preferences.client_executable,
+            ) {
+                Ok(paths) => paths,
+                Err(error) => {
+                    state.status =
+                        format!("Choose and verify the installed game and client first: {error}");
+                    state.page = Some(Page::Settings);
+                    state.settings_tab = settings_page::Tab::Storage;
+                    return Task::none();
+                }
+            };
+            if !state.preferences.stage.trim().is_empty()
+                || !state.preferences.swap.trim().is_empty()
+            {
+                state.status = "An existing signing stage or swap folder is configured. Preserve that setup. Clear both Advanced folder paths only if you intend to create a separate new setup; no existing files will be deleted.".into();
+                return Task::none();
+            }
+            state.status = "Generating isolated local keys, verifying original PAKs, re-signing archives and preparing private-compatible recovery helpers. Installed originals remain untouched.".into();
+            return launch(
+                state,
+                Operation::CreateInitialSetup(
+                    game,
+                    client,
+                    PathBuf::from(&state.preferences.game_storage_root),
+                    state.preferences.keep_original_snapshots,
+                ),
+            );
+        }
+        Message::SaveGameSetup => {
+            match play_setup::validate_paths(
+                &state.preferences.game_installation,
+                &state.preferences.client_executable,
+            ) {
+                Ok((game, client)) => {
+                    state.preferences.game_installation = game.to_string_lossy().into_owned();
+                    state.preferences.client_executable = client.to_string_lossy().into_owned();
+                    persist_preferences(state);
+                    state.status = "Game and client paths verified and saved. For modded play, the original signed staging set and private swap helper must also be configured below.".into();
+                }
+                Err(error) => {
+                    state.settings_status = format!("Game/client setup is incomplete: {error}");
+                    state.status = state.settings_status.clone();
+                }
+            }
+        }
+        Message::PlayWithMods | Message::PlayWithoutMods => {
+            if state.busy {
+                state.status = "Finish the current manager task before launching Evolve.".into();
+                return Task::none();
+            }
+            let is_modded = matches!(message, Message::PlayWithMods);
+            let (game, client) = match play_setup::validate_paths(
+                &state.preferences.game_installation,
+                &state.preferences.client_executable,
+            ) {
+                Ok(paths) => paths,
+                Err(error) => {
+                    state.page = Some(Page::Settings);
+                    state.settings_tab = settings_page::Tab::Storage;
+                    state.settings_advanced_paths = true;
+                    state.status = format!(
+                        "Set Up Manager: {error}. Choose your installed game folder and normal Modded Evolve client, then Save Setup."
+                    );
+                    return Task::none();
+                }
+            };
+            if is_modded {
+                if state.preferences.stage.trim().is_empty()
+                    || state.preferences.swap.trim().is_empty()
+                {
+                    state.page = Some(Page::Settings);
+                    state.settings_tab = settings_page::Tab::Storage;
+                    state.settings_advanced_paths = true;
+                    state.status = "Modded play needs a verified signing stage. Use Create Offline Setup in Settings to build the keys, re-signed PAKs and recovery helpers automatically from your game installation. Existing stage/swap folders can also be selected under Advanced paths. No game files were changed.".into();
+                    return Task::none();
+                }
+                state.status = "Preparing offline mod launch; the normal client will open. Press Play in the client only after its launch hook is ready. The existing helper swaps verified staged PAKs only after an exact Evolve.exe creation event, and the watchdog restores them after both processes close.".into();
+                return launch(
+                    state,
+                    Operation::StartExistingOfflineLauncher(
+                        PathBuf::from(&state.preferences.stage),
+                        PathBuf::from(&state.preferences.swap),
+                        game,
+                        client,
+                    ),
+                );
+            }
+            state.status =
+                "Verifying original game files before starting the normal client without mods…"
+                    .into();
+            return launch(
+                state,
+                Operation::LaunchCleanClient(
+                    game,
+                    client,
+                    (!state.preferences.swap.trim().is_empty())
+                        .then(|| PathBuf::from(&state.preferences.swap)),
+                ),
+            );
+        }
         Message::PreferenceStage(value) => {
             state.preferences.stage = value;
             state.modding_projects = None;
@@ -6215,7 +6393,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     Operation::RestoreExistingOfflineLauncher(stage, swap),
                 );
             }
-            return launch(state, Operation::StartExistingOfflineLauncher(stage, swap));
+            let (game, client) = match play_setup::validate_paths(
+                &state.preferences.game_installation,
+                &state.preferences.client_executable,
+            ) {
+                Ok(paths) => paths,
+                Err(error) => {
+                    state.status = format!("Set Up Manager first: {error}");
+                    state.page = Some(Page::Settings);
+                    state.settings_tab = settings_page::Tab::Storage;
+                    return Task::none();
+                }
+            };
+            return launch(
+                state,
+                Operation::StartExistingOfflineLauncher(stage, swap, game, client),
+            );
         }
         Message::StartStageRestore => {
             if state.preferences.stage.trim().is_empty() {
@@ -7774,11 +7967,35 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                     state.page = Some(Page::Files);
                 }
+                Ok(Completed::InitialSetupCreated(report)) => {
+                    state.preferences.stage = report.stage.to_string_lossy().into_owned();
+                    state.preferences.swap = report.swap.to_string_lossy().into_owned();
+                    persist_preferences(state);
+                    state.status = format!(
+                        "Offline setup verified: {} signed original PAKs, {} plain archives, local signing key and recovery helpers. Original snapshots: {}. Game PAKs unchanged. Stage: {}. You can now build/stage your modded PAKs and use Play with Mods.",
+                        report.signed_count,
+                        report.plain_count,
+                        if report.snapshots {
+                            "kept"
+                        } else {
+                            "not copied"
+                        },
+                        report.stage.display(),
+                    );
+                    state.page = Some(Page::Settings);
+                    state.settings_tab = settings_page::Tab::Storage;
+                }
+                Ok(Completed::CleanClientStarted(id)) => {
+                    state.status = format!(
+                        "Normal Modded Evolve client started (PID {id}); no staged PAKs or custom injector were installed. Press Play in the client to start the original game."
+                    );
+                    state.page = Some(Page::Home);
+                }
                 Ok(Completed::OfflineLauncherStarted(count, id)) => {
                     state.status = format!(
-                        "Private launcher CreateProcessW hook READY (helper PID {id}) for {count} signed PAKs + matching custom RSA hook. The actual swap occurs only when the exact game launch is intercepted; watch rust-launch-bridge.log and auto-restore.log for swap/restoration. CryEngine mount is NOT yet verified."
+                        "Offline launch is READY (helper PID {id}) for {count} signed PAKs + matching custom RSA hook. In the opened Modded Evolve client, press Play to launch Evolve.exe. The original PAKs are replaced only when the helper verifies that exact game-creation event; originals are restored after Evolve.exe and the client both close. See rust-launch-bridge.log and auto-restore.log for confirmation. Actual game mount remains unverified."
                     );
-                    state.page = Some(Page::Files);
+                    state.page = Some(Page::Home);
                 }
                 Ok(Completed::OfflineLauncherRestored(count, reusable)) => {
                     state.status = format!(
@@ -8071,12 +8288,18 @@ fn view(state: &State) -> Element<'_, Message> {
     .height(20);
     let lower = column![
         tooltip(
-            design::button(play_mods_icon).width(46).height(40),
+            design::button(play_mods_icon)
+                .width(46)
+                .height(40)
+                .on_press(Message::PlayWithMods),
             text("Play with Mods").size(11),
             tooltip::Position::Right
         ),
         tooltip(
-            design::button(play_clean_icon).width(46).height(40),
+            design::button(play_clean_icon)
+                .width(46)
+                .height(40)
+                .on_press(Message::PlayWithoutMods),
             text("Play without Mods").size(11),
             tooltip::Position::Right
         ),
@@ -8622,6 +8845,34 @@ fn initial_state() -> State {
                 .join("Projects")
                 .to_string_lossy()
                 .into_owned();
+        }
+    }
+    // Attempt the known installation locations without overwriting an explicit
+    // user-selected path. Users can change either path in Set Up Manager.
+    if result.preferences.game_installation.trim().is_empty()
+        && let Some(game) = play_setup::detect_game()
+    {
+        result.preferences.game_installation = game;
+    }
+    if result.preferences.client_executable.trim().is_empty()
+        && let Some(client) = play_setup::detect_client()
+    {
+        result.preferences.client_executable = client;
+    }
+    if (result.preferences.stage.trim().is_empty() || result.preferences.swap.trim().is_empty())
+        && let Ok(settings) = settings_path()
+        && let Some(profile) = settings.parent()
+    {
+        let setup = profile.join("Data").join("Setup");
+        if result.preferences.stage.trim().is_empty()
+            && setup.join("staged/rekey_plan.json").is_file()
+        {
+            result.preferences.stage = setup.join("staged").to_string_lossy().into_owned();
+        }
+        if result.preferences.swap.trim().is_empty()
+            && setup.join("swap/controlled_swap.py").is_file()
+        {
+            result.preferences.swap = setup.join("swap").to_string_lossy().into_owned();
         }
     }
     // Automatic Blender discovery is intentionally ephemeral: do not save a

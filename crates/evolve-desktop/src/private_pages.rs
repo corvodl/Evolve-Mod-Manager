@@ -149,11 +149,11 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
             .size(12)
             .style(design::muted),
         row![
-            design::button("Play with Mods").style(design::primary),
-            design::button("Play without Mods").style(design::secondary),
+            design::button("Play with Mods").on_press(Message::PlayWithMods).style(design::primary),
+            design::button("Play without Mods").on_press(Message::PlayWithoutMods).style(design::secondary),
         ]
         .spacing(8),
-        text("Launch controls are disabled until game swap and restore integration is verified.")
+        text("First launch: choose your game and normal client in Settings. Modded play requires the existing verified offline swap helper.")
             .size(12)
             .style(design::muted),
     ]
@@ -210,7 +210,22 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         text("Installed game and client status; launch actions are separate.")
             .size(12)
             .style(design::muted),
-        status_card("Game installation", "Not configured for launch".to_owned()),
+        status_card(
+            "Game installation",
+            if state.preferences.game_installation.is_empty() {
+                "Select EvolveGame in Settings".to_owned()
+            } else {
+                state.preferences.game_installation.clone()
+            }
+        ),
+        status_card(
+            "Modded Evolve client",
+            if state.preferences.client_executable.is_empty() {
+                "Select ModdedEvolveLauncher.exe in Settings".to_owned()
+            } else {
+                state.preferences.client_executable.clone()
+            }
+        ),
         status_card("Game version", "Not detected".to_owned()),
         status_card(
             "Signing stage",
@@ -266,10 +281,10 @@ pub(super) fn instructions() -> Element<'static, Message> {
             design::button("Set Up Manager").on_press(Message::Navigate(Page::Settings)).width(Fill),
         ].spacing(8)),
         text("YOUR WORKFLOW").size(13),
-        workflow_step("1  Set up your installation", "Choose the installed EvolveGame folder, client executable and private signing stage. The Rust release does not yet integrate production launches."),
+        workflow_step("1  Set up your installation", "Choose EvolveGame and ModdedEvolveLauncher.exe in Settings. For offline mods, reuse a verified signed stage and journalled launcher helper."),
         workflow_step("2  Unpack and edit PAKs", "From Modding, inspect archives, browse files, edit supported assets and sign a new offline PAK."),
-        workflow_step("3  Play offline with mods", "Launch is only available after installed-game swap and crash recovery are verified."),
-        workflow_step("4  Restore original game files", "After testing, original backups must be recovered safely. Isolated staging does not replace production game recovery."),
+        workflow_step("3  Play offline with mods", "The established offline helper prepares PAKs, starts the normal client, pauses the exact Evolve.exe creation event and swaps only the verified staged files."),
+        workflow_step("4  Restore original game files", "The detached watchdog restores originals when Evolve.exe and the launcher exit; use manual Restore if interrupted."),
         text("Keep the entire manager data folder, signing keys, projects and original backups when updating.").size(12).style(design::muted),
         design::button("Go to Modding  →").on_press(Message::Navigate(Page::Files)).width(Fill),
     ].spacing(12).padding(12)).height(Fill).into()

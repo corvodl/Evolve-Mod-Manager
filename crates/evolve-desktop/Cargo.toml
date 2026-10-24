@@ -25,6 +25,7 @@ argon2 = "0.5"
 read-process-memory = "0.1"
 zeroize = "1"
 fs2 = "0.4"
+rsa = { version = "0.9", features = ["pem"] }
 flate2 = "1"
 quick-xml = "0.38"
 
