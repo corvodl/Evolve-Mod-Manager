@@ -3,7 +3,7 @@
 //! it reuses the user-configured, independently recoverable controlled-swap
 //! helper after verifying the exact installed originals, staged signatures,
 //! matching RSA hook and stage manifests. Never run for normal/online play.
-use evolve_core::inspect_pak_hook_pair;
+use evolve_core::client_hook::inspect_pak_hook_pair_with_original_name;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
@@ -388,13 +388,22 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
             .file_name()
             .and_then(|x| x.to_str())
             .ok_or("Invalid PAK basename")?;
-        let report = inspect_pak_hook_pair(
+        // Older stages omit signed_name; use their physical basename.
+        // New stages record the RSA-authenticated lowercase variant when
+        // present, so both the original and replacement can be verified
+        // without guessing names or weakening the signature check.
+        let signed_name = entry["signed_name"].as_str().unwrap_or(basename);
+        if signed_name != basename && signed_name != basename.to_ascii_lowercase() {
+            return Err(format!("Invalid authenticated signing name for {path}"));
+        }
+        let report = inspect_pak_hook_pair_with_original_name(
             &original_pak,
             &custom_pak,
             &original,
             &custom,
             &old_key,
             &new_key,
+            signed_name,
             basename,
         )
         .map_err(|e| format!("PAK/hook mismatch for {path}: {e}"))?;
