@@ -139,7 +139,20 @@ fn inspect_project(
         let mut checked = 0u64;
         let mut known = true;
         let mut seen = HashSet::new();
-        for entry in entries {
+        // Inspect GFX movie edits first. UI PAKs may contain hundreds of MiB
+        // of unrelated assets; otherwise a main_menu.gfx edit near the end
+        // of the manifest is invisible in the bounded dashboard scan.
+        let gfx_member = |entry: &&Value| {
+            entry
+                .get("path")
+                .and_then(Value::as_str)
+                .is_some_and(|p| p.to_ascii_lowercase().ends_with(".gfx"))
+        };
+        for entry in entries
+            .iter()
+            .filter(|entry| gfx_member(entry))
+            .chain(entries.iter().filter(|entry| !gfx_member(entry)))
+        {
             let name = entry
                 .get("path")
                 .and_then(Value::as_str)
@@ -181,18 +194,21 @@ fn inspect_project(
     match read() {
         Ok((target, modified, known)) => {
             item.target = target;
-            item.status = if !known {
-                "Needs review"
-            } else if modified.is_empty() {
-                "Draft"
-            } else {
+            item.status = if !modified.is_empty() {
                 "Modified"
+            } else if !known {
+                "Needs review"
+            } else {
+                "Draft"
             }
             .into();
             item.details = if known {
                 format!("{} changed asset(s)", modified.len())
             } else {
-                "Some files could not be checked within scan limits".into()
+                format!(
+                    "{} changed asset(s) found; other files exceed fast-scan budget and will be fully verified during Build Mod",
+                    modified.len()
+                )
             };
             item.modified = modified;
             item.changed_known = known;
