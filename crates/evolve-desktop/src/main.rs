@@ -10050,6 +10050,25 @@ mod project_edit_tests {
     use super::*;
 
     #[test]
+    fn mod_toggle_thumb_eases_without_changing_persisted_enable_state() {
+        let mut animation = ModToggleAnimation {
+            workspace: PathBuf::from("test-mod"),
+            from: 0.0,
+            to: 1.0,
+            frame: 0,
+        };
+        assert_eq!(animation.position(), 0.0);
+        animation.frame = 3;
+        assert!(animation.position() > 0.0 && animation.position() < 1.0);
+        animation.frame = MOD_TOGGLE_FRAMES;
+        assert_eq!(animation.position(), 1.0);
+        animation.from = 1.0;
+        animation.to = 0.0;
+        animation.frame = MOD_TOGGLE_FRAMES;
+        assert_eq!(animation.position(), 0.0);
+    }
+
+    #[test]
     fn footer_activity_tracks_workers_without_claiming_a_percentage() {
         let mut state = State::default();
         assert!(!footer_is_working(&state));
