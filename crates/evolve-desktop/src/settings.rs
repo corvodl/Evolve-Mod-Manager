@@ -160,6 +160,33 @@ pub fn game_storage_directory(
     Ok(profile.join("Data").join("GameSets"))
 }
 
+/// Resolve the destination for automatic setup, independent of legacy stages
+/// and without relying on the process working directory. A missing GameSets
+/// value (or an old relative UI label) means the Rust manager's per-user
+/// GameSets folder. Explicit custom destinations must be absolute and safe.
+pub fn setup_storage_directory(
+    settings_file: &Path,
+    preference: &str,
+) -> Result<PathBuf, SettingsError> {
+    let raw = preference.trim();
+    let alias = raw.replace('\\', "/");
+    if raw.is_empty()
+        || alias.eq_ignore_ascii_case("GameSets")
+        || alias.eq_ignore_ascii_case("Data/GameSets")
+    {
+        return game_storage_directory(settings_file, "");
+    }
+    let selected = PathBuf::from(raw);
+    if !selected.is_absolute()
+        || selected
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(SettingsError::InvalidValue);
+    }
+    Ok(selected)
+}
+
 /// Only change the two accent roles; keep any custom surface, typography,
 /// or other private-manager palette choices intact.
 pub fn apply_accent_preset(prefs: &mut Preferences, preset: &str) -> bool {
@@ -389,6 +416,28 @@ mod tests {
             !library.exists(),
             "Discovery must not silently create or modify source data"
         );
+    }
+
+    #[test]
+    fn fresh_setup_uses_public_manager_gamesets_without_private_paths() {
+        let home = tempfile::tempdir().unwrap();
+        let settings = home.path().join("settings.json");
+        let expected = home.path().join("Data").join("GameSets");
+        for input in ["", "   ", "GameSets", "Data/GameSets", "data\\gamesets"] {
+            assert_eq!(setup_storage_directory(&settings, input).unwrap(), expected);
+        }
+        assert!(
+            !expected.exists(),
+            "Resolving a default must not touch disk"
+        );
+        let chosen = home.path().join("OtherLocation");
+        assert_eq!(
+            setup_storage_directory(&settings, chosen.to_str().unwrap()).unwrap(),
+            chosen
+        );
+        assert!(setup_storage_directory(&settings, "../GameSets").is_err());
+        assert!(setup_storage_directory(&settings, "folder/GameSets").is_err());
+        assert!(setup_storage_directory(&settings, "GameSets/../elsewhere").is_err());
     }
 
     #[test]

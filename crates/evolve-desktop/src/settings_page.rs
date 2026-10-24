@@ -202,6 +202,7 @@ fn storage(state: &State) -> Element<'_, Message> {
             column![
                 text("Future GameSets location").size(12),
                 design::text_input("GameSets folder", &state.preferences.game_storage_root).on_input(Message::PreferenceGameStorage),
+                text("Leave blank to have Set Up Manager use its own GameSets folder under your Windows user profile. It creates new stage and recovery folders automatically; no private manager data is needed.").size(11).style(design::muted),
                 text("Signing stage • existing location").size(12),
                 design::text_input("Stage folder", &state.preferences.stage).on_input(Message::PreferenceStage),
                 text("Launch restoration journal").size(12),
@@ -224,6 +225,8 @@ fn storage(state: &State) -> Element<'_, Message> {
         design::button("Update Staged / Original PAKs after Game Update")
             .on_press_maybe((!state.busy).then_some(Message::RefreshGamePakBaseline))
             .style(design::secondary),
+        text("Set Up Manager creates a fresh signing stage and recovery folder from your installed game; you do not need to provide private-manager Stage or Swap paths.")
+            .size(11).style(design::muted),
         text("Creates a new verified signing baseline from the updated game. Existing stages and mod projects are preserved; edits must be reviewed against the new game files before deployment.")
             .size(11).style(design::muted),
     ].spacing(11))

@@ -6122,13 +6122,35 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "An existing signing stage or swap folder is configured. Preserve that setup. Clear both Advanced folder paths only if you intend to create a separate new setup; no existing files will be deleted.".into();
                 return Task::none();
             }
-            state.status = "Generating isolated local keys, verifying original PAKs, re-signing archives and preparing private-compatible recovery helpers. Installed originals remain untouched.".into();
+            // A fresh install or older settings file can leave GameSets blank
+            // or save only the relative 'GameSets' label. Always use a safe
+            // deterministic per-user directory instead of passing that label
+            // to the signing worker as a relative working-directory path.
+            let storage = match settings_path().and_then(|file| {
+                settings::setup_storage_directory(&file, &state.preferences.game_storage_root)
+            }) {
+                Ok(path) => path,
+                Err(error) => {
+                    state.status = format!(
+                        "Cannot select GameSets storage: {error}. Clear the Future GameSets field to use this public manager's own local storage, or enter an absolute path (for example C:\\EvolveModManager\\GameSets). Parent-directory (..) paths are not supported."
+                    );
+                    state.page = Some(Page::Settings);
+                    state.settings_tab = settings_page::Tab::Storage;
+                    return Task::none();
+                }
+            };
+            state.preferences.game_storage_root = storage.to_string_lossy().into_owned();
+            persist_preferences(state);
+            state.status = format!(
+                "Creating this manager's own setup under {}. Generating keys, verifying original PAKs and preparing local recovery helpers. Installed originals remain untouched.",
+                storage.display()
+            );
             return launch(
                 state,
                 Operation::CreateInitialSetup(
                     game,
                     client,
-                    PathBuf::from(&state.preferences.game_storage_root),
+                    storage,
                     state.preferences.keep_original_snapshots,
                 ),
             );
@@ -9013,7 +9035,7 @@ fn initial_state() -> State {
             result.preferences.asset_library_root = location.to_string_lossy().into_owned();
         }
         if let Ok(location) =
-            settings::game_storage_directory(&file, &result.preferences.game_storage_root)
+            settings::setup_storage_directory(&file, &result.preferences.game_storage_root)
         {
             result.preferences.game_storage_root = location.to_string_lossy().into_owned();
         }
