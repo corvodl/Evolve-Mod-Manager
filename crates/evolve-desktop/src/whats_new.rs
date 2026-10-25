@@ -18,6 +18,8 @@ const MAX_IMAGE_BYTES: u64 = 6 * 1024 * 1024;
 const MAX_IMAGE_PIXELS: u64 = 16_000_000;
 const MAX_VISIBLE_IMAGES: usize = 16;
 
+pub type ImageResults = Vec<(String, Result<Handle, String>)>;
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Cache {
@@ -337,7 +339,7 @@ pub fn allowed_image_url(url: &str) -> bool {
 
 /// Download, size-check and decode images off the Iced render thread.
 /// Redirects to untrusted destinations are not followed.
-pub fn load_images(urls: Vec<String>) -> Vec<(String, Result<Handle, String>)> {
+pub fn load_images(urls: Vec<String>) -> ImageResults {
     let client = Client::builder()
         .user_agent("Evolve-Mod-Manager-NewsImages/1.0")
         .timeout(Duration::from_secs(12))
@@ -445,6 +447,52 @@ mod tests {
         assert!(!allowed_link(
             "https://discord.com\\@evil.example/channels/1"
         ));
+    }
+
+    #[test]
+    fn image_preview_urls_are_trusted_and_bounded() {
+        assert!(allowed_image_url(
+            "https://cdn.discordapp.com/attachments/123/456/a.png?ex=abc"
+        ));
+        assert!(allowed_image_url(
+            "https://media.discordapp.net/attachments/123/456/a.webp"
+        ));
+        assert!(!allowed_image_url("https://cdn.discordapp.com.evil.test/attachments/a.png"));
+        assert!(!allowed_image_url("file:///C:/Users/Documents/a.png"));
+        assert!(!allowed_image_url("https://cdn.discordapp.com/attachments/a#fragment"));
+    }
+
+    #[test]
+    fn preview_selection_deduplicates_and_limits_attachments() {
+        let posts = (0..20)
+            .map(|index| Announcement {
+                id: index.to_string(),
+                author: String::new(),
+                timestamp: String::new(),
+                title: String::new(),
+                content: String::new(),
+                description: String::new(),
+                url: String::new(),
+                image_urls: vec![
+                    format!("https://cdn.discordapp.com/attachments/a/b/{index}.png"),
+                    "https://cdn.discordapp.com/attachments/a/b/shared.png".into(),
+                    "https://other.example/image.png".into(),
+                ],
+            })
+            .collect::<Vec<_>>();
+        let urls = image_urls(&posts);
+        assert_eq!(urls.len(), MAX_VISIBLE_IMAGES);
+        assert_eq!(urls.iter().filter(|url| url.ends_with("shared.png")).count(), 1);
+        assert!(urls.iter().all(|url| allowed_image_url(url)));
+    }
+
+    #[test]
+    fn decodes_valid_png_in_memory_but_rejects_invalid_image() {
+        let image = ::image::DynamicImage::new_rgba8(2, 2);
+        let mut output = Cursor::new(Vec::new());
+        image.write_to(&mut output, ::image::ImageFormat::Png).unwrap();
+        assert!(decode_image(&output.into_inner()).is_ok());
+        assert!(decode_image(&[0, 1, 2, 3]).is_err());
     }
 
     #[test]
