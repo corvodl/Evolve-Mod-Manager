@@ -156,6 +156,47 @@ def check(args):
     print(f'Free space on game volume: {shutil.disk_usage(game).free/1024**3:.2f} GiB.')
     print('No game files changed. Next: verify x64dbg can pause BEFORE Evolve.exe creation.')
 
+def preserve_abandoned_partial(partial, target, ready, backup):
+    """Quarantine only an orphaned preparation artifact, never an original PAK.
+
+    Called from prepare only after the game/launcher-close, restored-journal,
+    stage-identity, source/target presence and *all* backup checks have passed.
+    Do not resume unverified partial bytes or remove a recovery backup.
+    """
+    if backup.exists() or backup.is_symlink():
+        stop(f'Original game backup exists; restore before preparing: {backup}')
+    if not target.is_file() or target.is_symlink():
+        stop(f'Installed original is missing or unsafe: {target}')
+    if ready.exists() or ready.is_symlink():
+        stop(f'Cannot quarantine partial beside an existing prepared file: {ready}')
+
+    import stat
+    metadata = partial.lstat()
+    reparse = getattr(metadata, 'st_file_attributes', 0) & getattr(
+        stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0
+    )
+    if not stat.S_ISREG(metadata.st_mode) or reparse or metadata.st_size > 16 * 1024**3:
+        stop(f'Unsafe abandoned prepared file; manual inspection required: {partial}')
+
+    # Same-directory rename preserves bytes without copying another full PAK.
+    # This path has a unique, non-PAK suffix and is never used as a signing input.
+    for attempt in range(64):
+        preserved = partial.with_name(
+            f'{partial.name}.stale-{time.time_ns()}-{attempt}'
+        )
+        if preserved.exists() or preserved.is_symlink():
+            continue
+        try:
+            partial.rename(preserved)
+        except FileExistsError:
+            continue
+        except OSError as error:
+            stop(f'Could not preserve abandoned prepared file {partial}: {error}')
+        print(f'Preserved interrupted preparation file: {preserved}')
+        return preserved
+    stop(f'Could not allocate a distinct preservation name for: {partial}')
+
+
 def prepare(args):
     all_closed()
     if STATE_FILE.exists():
@@ -201,8 +242,10 @@ def prepare(args):
         else:
             ready.parent.mkdir(parents=True, exist_ok=True)
             partial = Path(str(ready) + '.partial')
-            if partial.exists():
-                stop(f'Leftover partial file requires manual inspection: {partial}')
+            if partial.exists() or partial.is_symlink():
+                preserve_abandoned_partial(
+                    partial, Path(item['target']), ready, Path(item['backup'])
+                )
             source_digest = hashlib.sha256()
             with source.open('rb') as inp, partial.open('xb') as out:
                 for b in iter(lambda: inp.read(BLOCK), b''):
