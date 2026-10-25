@@ -6508,21 +6508,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.play_notice = None;
         }
         Message::PlayWithMods | Message::PlayWithoutMods => {
-            if state.busy {
-                state.status = "Finish the current manager task before launching Evolve.".into();
-                state.play_notice = Some(play_dialog::Notice::finished(
-                    play_dialog::Kind::Modded,
-                    play_dialog::Phase::Error,
-                    state.status.clone(),
-                ));
-                return Task::none();
-            }
             let is_modded = matches!(message, Message::PlayWithMods);
             let kind = if is_modded {
                 play_dialog::Kind::Modded
             } else {
                 play_dialog::Kind::Clean
             };
+            if state.busy {
+                state.status = "Finish the current manager task before launching Evolve.".into();
+                state.play_notice = Some(play_dialog::Notice::finished(
+                    kind,
+                    play_dialog::Phase::Error,
+                    state.status.clone(),
+                ));
+                return Task::none();
+            }
             state.active_play = Some(kind);
             state.play_notice = Some(play_dialog::Notice::preparing(kind));
             let (game, client) = match play_setup::validate_paths(
@@ -7565,6 +7565,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             });
             if let Some(notice) = launch_notice {
                 state.play_notice = Some(notice);
+            } else if let Err(error) = &result {
+                state.play_notice = Some(play_dialog::Notice::finished(
+                    play_dialog::Kind::Manager,
+                    play_dialog::Phase::Error,
+                    error.clone(),
+                ));
             }
             state.mod_launch_progress = None;
             // Preserve the footer progress through indexing and the initial
