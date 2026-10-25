@@ -9,6 +9,7 @@ use std::sync::atomic::Ordering;
 pub enum Kind {
     Modded,
     Clean,
+    Manager,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,6 +35,7 @@ impl Notice {
             message: match kind {
                 Kind::Modded => "Building enabled mods and verifying the signed PAKs, hook and original-file recovery state. No in-game swap has happened yet.".into(),
                 Kind::Clean => "Opening the regular client. The manager will not install mod files.".into(),
+                Kind::Manager => "Checking the current manager task.".into(),
             },
         }
     }
@@ -52,6 +54,7 @@ impl Notice {
             Phase::Success if self.kind == Kind::Modded => "Modded game launch confirmed",
             Phase::Success => "Regular client opened",
             Phase::Warning => "Mods were not installed",
+            Phase::Error if self.kind == Kind::Manager => "Manager operation failed",
             Phase::Error => "Game launch needs attention",
         }
     }
@@ -91,6 +94,7 @@ pub fn view(state: &State) -> Element<'_, Message> {
             "The manager did not confirm that enabled mods were installed. Close Evolve before retrying or restoring. Do not manually delete backup files or the swap journal."
         }
         (Kind::Clean, _) => "Regular-client mode does not apply the modded PAK swap.",
+        (Kind::Manager, _) => "Review this error before repeating the operation. The manager's Activity window retains the detail.",
         _ => {
             "You may switch to the client to press Play. This window will show the verified launch outcome."
         }
