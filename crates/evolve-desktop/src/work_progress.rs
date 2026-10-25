@@ -159,7 +159,7 @@ pub fn footer(state: &State) -> Element<'_, Message> {
         |value| format!("{value}% · {}", status.detail),
     );
     row![
-        text(status.label).size(12),
+        text(status.label.clone()).size(12),
         bar(&status, Length::Fixed(180.0), 14.0),
         text(metric).size(11)
     ]
