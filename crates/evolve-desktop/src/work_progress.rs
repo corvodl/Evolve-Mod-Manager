@@ -142,8 +142,8 @@ pub fn bar<'a>(snapshot: &Snapshot, width: Length, height: f32) -> Element<'a, M
         .map_or(snapshot.position, |value| value as f32);
     container(
         progress_bar(0.0..=100.0, value)
-            .width(width)
-            .height(Length::Fixed(height)),
+            .length(width)
+            .girth(Length::Fixed(height)),
     )
     .width(width)
     .height(Length::Fixed(height))
