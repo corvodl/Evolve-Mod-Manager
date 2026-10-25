@@ -8,7 +8,8 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-const RELEASES_API: &str = "https://api.github.com/repos/corvodl/Evolve-Mod-Manager/releases?per_page=20";
+const RELEASES_API: &str =
+    "https://api.github.com/repos/corvodl/Evolve-Mod-Manager/releases?per_page=20";
 const DISCORD_FEED: &str = "https://corvodl.github.io/Evolve-Mod-Manager/announcements.json";
 const MAX_RESPONSE: u64 = 1_000_000;
 
@@ -112,7 +113,10 @@ fn get_json(client: &Client, url: &str) -> Result<serde_json::Value, String> {
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
         .map_err(|error| error.to_string())?;
-    if response.content_length().is_some_and(|size| size > MAX_RESPONSE) {
+    if response
+        .content_length()
+        .is_some_and(|size| size > MAX_RESPONSE)
+    {
         return Err("News response is too large".into());
     }
     let mut buffer = Vec::new();
@@ -135,7 +139,9 @@ fn shorten(value: &str, max_chars: usize) -> String {
 }
 
 fn release_from_response(value: &serde_json::Value) -> Result<Release, String> {
-    let releases = value.as_array().ok_or("GitHub release listing is invalid")?;
+    let releases = value
+        .as_array()
+        .ok_or("GitHub release listing is invalid")?;
     let release = releases
         .iter()
         .filter(|value| value["draft"] == false)
@@ -148,7 +154,9 @@ fn release_from_response(value: &serde_json::Value) -> Result<Release, String> {
         .ok_or("Missing valid GitHub release tag")?;
     let url = release["html_url"]
         .as_str()
-        .filter(|url| url.starts_with("https://github.com/corvodl/Evolve-Mod-Manager/releases/tag/"))
+        .filter(|url| {
+            url.starts_with("https://github.com/corvodl/Evolve-Mod-Manager/releases/tag/")
+        })
         .ok_or("GitHub release URL was not the expected repository")?;
     let notes = release["body"]
         .as_str()
@@ -157,7 +165,10 @@ fn release_from_response(value: &serde_json::Value) -> Result<Release, String> {
         .filter(|line| !line.starts_with("SHA256 "))
         .collect::<Vec<_>>()
         .join("\n");
-    let name = release["name"].as_str().filter(|x| !x.is_empty()).unwrap_or(version);
+    let name = release["name"]
+        .as_str()
+        .filter(|x| !x.is_empty())
+        .unwrap_or(version);
     Ok(Release {
         title: shorten(name, 180),
         version: version.to_owned(),
@@ -192,15 +203,20 @@ fn announcements_from_response(value: &serde_json::Value) -> Result<Vec<Announce
         .ok_or("Discord feed does not contain an announcement list")?;
     let mut parsed = Vec::new();
     for value in posts.iter().take(20) {
-        let Some(id) = value["id"].as_str().filter(|v| !v.is_empty() && v.len() < 40) else {
+        let Some(id) = value["id"]
+            .as_str()
+            .filter(|v| !v.is_empty() && v.len() < 40)
+        else {
             continue;
         };
-        let Some(url) = value["url"].as_str().filter(|v| allowed_link(v) && v.starts_with("https://discord.com/channels/")) else {
+        let Some(url) = value["url"]
+            .as_str()
+            .filter(|v| allowed_link(v) && v.starts_with("https://discord.com/channels/"))
+        else {
             continue;
         };
-        let field = |name: &str, max: usize| {
-            shorten(value[name].as_str().unwrap_or("").trim(), max)
-        };
+        let field =
+            |name: &str, max: usize| shorten(value[name].as_str().unwrap_or("").trim(), max);
         let images = value["image_urls"]
             .as_array()
             .into_iter()
@@ -245,7 +261,8 @@ pub fn refresh() -> NewsResult {
                     result.release_status = "Live GitHub release notes".into();
                 }
                 Err(error) => {
-                    result.release_status = format!("GitHub unavailable; cached notes if available: {error}");
+                    result.release_status =
+                        format!("GitHub unavailable; cached notes if available: {error}");
                 }
             }
             match get_json(&client, DISCORD_FEED).and_then(|v| announcements_from_response(&v)) {
@@ -254,7 +271,8 @@ pub fn refresh() -> NewsResult {
                     result.discord_status = "Synced forwarded Discord announcements".into();
                 }
                 Err(error) => {
-                    result.discord_status = format!("Discord feed unavailable; cached posts if available: {error}");
+                    result.discord_status =
+                        format!("Discord feed unavailable; cached posts if available: {error}");
                 }
             }
         }
@@ -319,7 +337,9 @@ mod tests {
         assert_eq!(posts.len(), 1);
         assert_eq!(posts[0].content, "ok");
         assert_eq!(posts[0].image_urls.len(), 1);
-        assert!(!allowed_link("https://discord.com\\@evil.example/channels/1"));
+        assert!(!allowed_link(
+            "https://discord.com\\@evil.example/channels/1"
+        ));
     }
 
     #[test]
