@@ -349,14 +349,14 @@ pub(super) fn whats_new(state: &State) -> Element<'_, Message> {
         cards = cards.push(text(&news.release_status).size(11).style(design::muted));
     }
     cards = cards.push(text("DISCORD ANNOUNCEMENTS").size(14).style(design::accent));
-    cards = cards.push(text("Forwarded announcements from the followed Discord channel. Only published posts appear here.")
+    cards = cards.push(text("Updates from your configured Discord channel, including followed announcements and messages you post.")
         .size(12).style(design::muted));
 
     if news.cache.announcements.is_empty() {
         cards = cards.push(surface(text(if news.loading {
-            "Loading forwarded announcements..."
+            "Loading Discord channel messages..."
         } else {
-            "No forwarded announcements available. Confirm the channel is followed and that GitHub Pages published the feed."
+            "No Discord channel messages available. Post an update in the configured channel and verify the GitHub Pages feed."
         }).size(13)));
     } else {
         for post in news.cache.announcements.iter().take(20) {

@@ -31,11 +31,90 @@ def forward(message_id="623456789012345678", **overrides):
 
 
 class FeedTests(unittest.TestCase):
-    def test_only_forwarded_webhooks_are_published(self):
-        messages = [forward(webhook_id=None), forward(channel_id=SOURCE_CHANNEL), forward()]
-        posts = clean_posts(messages, DEST)
+    def test_regular_owner_webhook_and_bot_messages_are_all_published(self):
+        own_post = forward(
+            "623456789012345679",
+            webhook_id=None,
+            message_reference=None,
+            author={"id": "823456789012345678", "username": "Corvo"},
+            content="My own development update",
+        )
+        bot_post = forward(
+            "623456789012345680",
+            webhook_id=None,
+            message_reference=None,
+            author={"id": "923456789012345678", "username": "UpdateBot", "bot": True},
+            content="Build finished",
+        )
+        webhook_post = forward("623456789012345681")
+        unrelated = forward("623456789012345682", channel_id=SOURCE_CHANNEL)
+        posts = clean_posts([own_post, bot_post, webhook_post, unrelated], DEST)
+        self.assertEqual(len(posts), 3)
+        self.assertEqual([post["author"] for post in posts], ["Corvo", "UpdateBot", "Announcements"])
+        self.assertEqual(posts[0]["content"], "My own development update")
+        self.assertEqual(
+            posts[0]["url"],
+            f"https://discord.com/channels/{GUILD}/{DEST}/623456789012345679",
+        )
+        self.assertEqual(
+            posts[1]["url"],
+            f"https://discord.com/channels/{GUILD}/{DEST}/623456789012345680",
+        )
+
+    def test_regular_message_attachments_and_embed_only_posts(self):
+        image = "https://cdn.discordapp.com/attachments/123/456/test.png"
+        standalone = forward(
+            "623456789012345683", webhook_id=None, message_reference=None,
+            content="", attachments=[{"url": image}]
+        )
+        embed_only = forward(
+            "623456789012345684", webhook_id=None, message_reference=None,
+            content="", embeds=[{"title": "Community update", "description": "Patch notes"}]
+        )
+        posts = clean_posts([standalone, embed_only], DEST)
+        self.assertEqual(len(posts), 2)
+        self.assertEqual(posts[0]["image_urls"], [image])
+        self.assertEqual(posts[1]["title"], "Community update")
+        self.assertEqual(posts[1]["description"], "Patch notes")
+
+    def test_missing_or_malformed_message_ids_are_never_published(self):
+        posts = clean_posts([
+            forward("not-a-message-id", webhook_id=None),
+            forward(None, webhook_id=None),
+            forward("623456789012345685", webhook_id=None),
+        ], DEST)
         self.assertEqual(len(posts), 1)
-        self.assertEqual(posts[0]["content"], "Published update")
+
+    def test_guild_lookup_rescues_regular_message_without_guild_id(self):
+        message = forward(
+            "623456789012345686",
+            guild_id=None,
+            webhook_id=None,
+            message_reference=None,
+            author={"username": "Corvo"},
+            content="Manual patch notes",
+        )
+        self.assertEqual(clean_posts([message], DEST), [])
+        post = clean_posts([message], DEST, GUILD)[0]
+        self.assertEqual(post["content"], "Manual patch notes")
+        self.assertEqual(
+            post["url"],
+            f"https://discord.com/channels/{GUILD}/{DEST}/623456789012345686",
+        )
+
+    def test_reply_uses_its_own_message_link_not_parent_message(self):
+        reply = forward(
+            "623456789012345687", webhook_id=None,
+            message_reference={
+                "guild_id": GUILD, "channel_id": DEST,
+                "message_id": "623456789012345686"
+            }, content="My reply to a previous update"
+        )
+        post = clean_posts([reply], DEST, GUILD)[0]
+        self.assertEqual(
+            post["url"],
+            f"https://discord.com/channels/{GUILD}/{DEST}/623456789012345687",
+        )
 
     def test_original_link_preferred_when_provided(self):
         post = clean_posts([forward()], DEST)[0]

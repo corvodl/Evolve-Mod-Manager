@@ -1,5 +1,5 @@
 //! Read-only What's New: latest public GitHub release and a separately hosted,
-//! sanitized Discord Channel Following feed. Neither source receives credentials.
+//! sanitized feed for one selected Discord channel. Neither source receives credentials.
 //! Failures never block game startup, updating, or mod operations.
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
@@ -278,7 +278,7 @@ pub fn refresh() -> NewsResult {
             match get_json(&client, DISCORD_FEED).and_then(|v| announcements_from_response(&v)) {
                 Ok(announcements) => {
                     cache.announcements = announcements;
-                    result.discord_status = "Synced forwarded Discord announcements".into();
+                    result.discord_status = "Synced Discord channel updates".into();
                 }
                 Err(error) => {
                     result.discord_status =
