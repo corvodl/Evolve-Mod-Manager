@@ -9798,6 +9798,7 @@ fn initial_state() -> State {
     // Optional installer GFX tools are detected automatically. Any custom
     // FFDec or Ruffle executable selected in settings takes precedence.
     gfx_bundled_tools::detect_bundled(&mut result.preferences);
+    result.news.cache = whats_new::cached_on_start();
     result.library_root = result.preferences.asset_library_root.clone();
     result.assets_root = result.library_root.clone();
     if let Ok(executable) = std::env::current_exe()
