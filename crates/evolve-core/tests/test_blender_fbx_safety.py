@@ -1,5 +1,7 @@
 """Dependency-free regression tests for binary FBX postprocessing."""
 import hashlib
+import math
+import zlib
 import pathlib
 import struct
 import sys
@@ -73,6 +75,32 @@ def sample(extra_objects=(), bad_uv=False):
     return _write_nodes(7500, roots, bytes(25)+b"sample-trailer")
 
 
+def shaded_sample(normals=None, tangents=None, binormals=None, compressed=False):
+    """Synthetic Blender FBX mesh with intact UV and explicitly stored TBN."""
+    default_n = [0., 0., 1.] * 3
+    default_t = [1., 0., 0.] * 3
+    default_b = [0., 1., 0.] * 3
+    values = (normals or default_n, tangents or default_t, binormals or default_b)
+    version, roots, footer = _read_nodes(sample())
+    geometry = roots[0].children_named(b"Geometry")[0]
+
+    def vectors(name, payload, data):
+        encoded = array("d", data)
+        if compressed:
+            packed = encoded[13:]
+            zipped = zlib.compress(packed)
+            encoded = b"d" + struct.pack("<III", len(data), 1, len(zipped)) + zipped
+        geometry.children.append(node(name, children=[node(payload, encoded, 1)]))
+
+    for (name, key), vec in zip((
+        ("LayerElementNormal", "Normals"),
+        ("LayerElementTangent", "Tangents"),
+        ("LayerElementBinormal", "Binormals"),
+    ), values):
+        vectors(name, key, vec)
+    return _write_nodes(version, roots, footer)
+
+
 class FBXSafetyTests(unittest.TestCase):
     def test_sparse_cluster_and_identical_pose_optimization(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -89,6 +117,72 @@ class FBXSafetyTests(unittest.TestCase):
             self.assertEqual(after.children_named(b"Geometry")[0].children[0].props,
                              before_geo.children[0].props)
             self.assertEqual(_validate_geometry(after),1)
+
+    def test_zero_uv_derivative_repairs_tangent_and_binormal_without_rewriting_mesh(self):
+        # Emet-like fragments can have zero exported tangent-space vectors
+        # on an otherwise valid triangulated mesh. Never discard the fragment.
+        normals = [0., 0., 1.] * 3
+        tangent = [0., 0., 0., 1., 0., 0., 1., 0., 0.]
+        binormal = [0., 0., 0., 0., 1., 0., 0., 1., 0.]
+        for compressed in (False, True):
+            with self.subTest(compressed=compressed), tempfile.TemporaryDirectory() as folder:
+                path = pathlib.Path(folder) / "emet_3p.fbx"
+                path.write_bytes(shaded_sample(normals, tangent, binormal, compressed))
+                before = _read_nodes(path.read_bytes())[1][0].children_named(b"Geometry")[0]
+                original_normals = before.children_named(b"LayerElementNormal")[0].children[0].props
+                original_uv = before.children_named(b"LayerElementUV")[0].children[0].props
+                original_vertices = before.get(b"Vertices").props
+                stats = optimize_binary_fbx(path, require_tangent_space=True)
+                self.assertEqual(stats["repaired_tangent_vectors"], 2)
+                after = _read_nodes(path.read_bytes())[1][0].children_named(b"Geometry")[0]
+                self.assertEqual(after.children_named(b"LayerElementNormal")[0].children[0].props,
+                                 original_normals)
+                self.assertEqual(after.children_named(b"LayerElementUV")[0].children[0].props,
+                                 original_uv)
+                self.assertEqual(after.get(b"Vertices").props, original_vertices)
+                _validate_geometry(_read_nodes(path.read_bytes())[1][0],
+                                   require_tangent_space=True)
+
+    def test_repairs_only_missing_binormal_when_original_tangent_is_valid(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = pathlib.Path(folder) / "rigged.fbx"
+            path.write_bytes(shaded_sample(
+                tangents=[1., 0., 0.] * 3,
+                binormals=[0., 0., 0.] + [0., 1., 0.] * 2,
+            ))
+            before = _read_nodes(path.read_bytes())[1][0].children_named(b"Geometry")[0]
+            old_tangent = before.children_named(b"LayerElementTangent")[0].children[0].props
+            stats = optimize_binary_fbx(path, require_tangent_space=True)
+            self.assertEqual(stats["repaired_tangent_vectors"], 1)
+            after = _read_nodes(path.read_bytes())[1][0].children_named(b"Geometry")[0]
+            self.assertEqual(after.children_named(b"LayerElementTangent")[0].children[0].props,
+                             old_tangent)
+            _validate_geometry(_read_nodes(path.read_bytes())[1][0],
+                               require_tangent_space=True)
+
+    def test_invalid_source_normals_still_fail_without_modifying_fbx(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = pathlib.Path(folder) / "invalid_normals.fbx"
+            broken = shaded_sample(
+                normals=[0., 0., 0.] + [0., 0., 1.] * 2,
+                tangents=[0., 0., 0.] + [1., 0., 0.] * 2,
+                binormals=[0., 0., 0.] + [0., 1., 0.] * 2,
+            )
+            path.write_bytes(broken)
+            with self.assertRaisesRegex(FBXValidationError, "degenerate normal/tangent"):
+                optimize_binary_fbx(path, require_tangent_space=True)
+            self.assertEqual(path.read_bytes(), broken)
+
+    def test_near_zero_nonzero_tangent_must_not_be_fabricated(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = pathlib.Path(folder) / "invalid_tangent.fbx"
+            original = shaded_sample(
+                tangents=[.0001, 0., 0.] + [1., 0., 0.] * 2,
+            )
+            path.write_bytes(original)
+            with self.assertRaisesRegex(FBXValidationError, "degenerate normal/tangent"):
+                optimize_binary_fbx(path, require_tangent_space=True)
+            self.assertEqual(path.read_bytes(), original)
 
     def test_rocky_omitted_zero_influence_cluster_arrays(self):
         # Blender can omit Indexes and Weights entirely for unused joints.
