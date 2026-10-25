@@ -268,6 +268,24 @@ pub fn refresh() -> NewsResult {
     result
 }
 
+/// Launch only known HTTPS announcement, image or official release links.
+pub fn open_link(url: &str) -> Result<(), String> {
+    if !allowed_link(url) {
+        return Err("The announcement contained an unsupported external URL".into());
+    }
+    #[cfg(windows)]
+    let mut command = std::process::Command::new("explorer.exe");
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    let mut command = std::process::Command::new("xdg-open");
+    command
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Could not open external announcement: {error}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
