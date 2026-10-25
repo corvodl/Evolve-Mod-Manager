@@ -138,7 +138,7 @@ fn get_json(client: &Client, url: &str) -> Result<serde_json::Value, String> {
 fn shorten(value: &str, max_chars: usize) -> String {
     let mut text: String = value.chars().take(max_chars).collect();
     if value.chars().count() > max_chars {
-        text.push_str("…");
+        text.push('…');
     }
     text
 }
