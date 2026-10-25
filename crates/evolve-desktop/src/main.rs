@@ -1864,6 +1864,7 @@ enum Message {
     UpdateChecked(Result<Option<ReleaseUpdate>, String>),
     RefreshNews,
     NewsLoaded(Result<whats_new::NewsResult, String>),
+    NewsImagesLoaded(Result<whats_new::ImageResults, String>),
     OpenNewsLink(String),
     ApplyUpdate,
     UpdatePrepared(Result<PreparedUpdate, String>),
@@ -2605,6 +2606,28 @@ fn check_updates_task(channel: UpdateChannel) -> Task<Message> {
     )
 }
 
+fn start_news_images(state: &mut State) -> Task<Message> {
+    if state.news.images_loading {
+        return Task::none();
+    }
+    let urls = whats_new::image_urls(&state.news.cache.announcements)
+        .into_iter()
+        .filter(|url| !state.news.image_handles.contains_key(url) && !state.news.image_failures.contains(url))
+        .collect::<Vec<_>>();
+    if urls.is_empty() {
+        return Task::none();
+    }
+    state.news.images_loading = true;
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || whats_new::load_images(urls))
+                .await
+                .map_err(|error| format!("News image worker failed: {error}"))
+        },
+        Message::NewsImagesLoaded,
+    )
+}
+
 fn refresh_news_task() -> Task<Message> {
     Task::perform(
         async move {
@@ -2714,6 +2737,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::Navigate(page) => {
             state.page = Some(page);
             let mut tasks = Vec::new();
+            if page == Page::WhatsNew {
+                tasks.push(start_news_images(state));
+            }
             if page == Page::WhatsNew && state.news.needs_refresh() {
                 state.news.loading = true;
                 tasks.push(refresh_news_task());
@@ -6755,7 +6781,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::NewsLoaded(result) => match result {
-            Ok(news) => state.news.apply(news),
+            Ok(news) => {
+                state.news.apply(news);
+                if state.page == Some(Page::WhatsNew) {
+                    return start_news_images(state);
+                }
+            },
             Err(error) => {
                 state.news.loading = false;
                 state.news.loaded_at = Some(std::time::Instant::now());
@@ -6763,6 +6794,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.news.discord_status = format!("Could not refresh Discord posts: {error}");
             }
         },
+        Message::NewsImagesLoaded(result) => {
+            state.news.images_loading = false;
+            if let Ok(images) = result {
+                let visible: HashSet<_> =
+                    whats_new::image_urls(&state.news.cache.announcements).into_iter().collect();
+                for (url, result) in images {
+                    if !visible.contains(&url) {
+                        continue;
+                    }
+                    match result {
+                        Ok(handle) => { state.news.image_handles.insert(url, handle); }
+                        Err(_) => { state.news.image_failures.insert(url); }
+                    }
+                }
+            }
+            // A news refresh may have changed the attachment URLs while the
+            // previous download was running; reconcile them without blocking.
+            if state.page == Some(Page::WhatsNew) {
+                return start_news_images(state);
+            }
+        }
         Message::OpenNewsLink(url) => {
             if let Err(error) = whats_new::open_link(&url) {
                 state.status = error;
