@@ -80,6 +80,11 @@ fn cache_file() -> Option<PathBuf> {
         .map(|path| path.with_file_name("whats-new-cache.json"))
 }
 
+/// Show the last successful feed immediately, even before networking finishes.
+pub fn cached_on_start() -> Cache {
+    read_cache()
+}
+
 fn read_cache() -> Cache {
     cache_file()
         .and_then(|path| fs::read(path).ok())
@@ -108,7 +113,7 @@ fn save_cache(data: &Cache) {
 }
 
 fn get_json(client: &Client, url: &str) -> Result<serde_json::Value, String> {
-    let mut response = client
+    let response = client
         .get(url)
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
