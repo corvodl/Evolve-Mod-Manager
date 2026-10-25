@@ -109,12 +109,12 @@ fn latest_announcement(state: &State) -> Element<'_, Message> {
                 );
             } else if news.image_failures.contains(url) {
                 content = content.push(
-                    text("Image preview unavailable").size(11).style(design::muted),
+                    text("Image preview unavailable")
+                        .size(11)
+                        .style(design::muted),
                 );
             } else {
-                content = content.push(
-                    text("Loading image…").size(11).style(design::muted),
-                );
+                content = content.push(text("Loading image…").size(11).style(design::muted));
             }
         }
     } else {
