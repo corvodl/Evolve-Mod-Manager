@@ -229,7 +229,7 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                 state.preferences.client_executable.clone()
             }
         ),
-        status_card("Game version", "Not detected".to_owned()),
+        status_card("Client Version", format!("v{}", env!("CARGO_PKG_VERSION"))),
         status_card(
             "Signing stage",
             if state.preferences.stage.is_empty() {
