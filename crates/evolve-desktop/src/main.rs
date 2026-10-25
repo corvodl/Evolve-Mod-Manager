@@ -57,12 +57,12 @@ mod system_health;
 mod textured;
 mod updater;
 mod updater_apply;
-mod whats_new;
 mod uv_preview;
 mod view_navigation;
 mod viewer_grid;
 mod viewer_inspector;
 mod viewport;
+mod whats_new;
 mod work_progress;
 use asset_cache::{SharedCache, decoded_dds, decoded_dds_indexed};
 use evolve_core::{
@@ -9867,7 +9867,11 @@ impl Desktop {
                 play_notice_id: None,
                 export_id: None,
             },
-            Task::batch([opened.map(|_| Message::ViewerOpened), startup, refresh_news_task()]),
+            Task::batch([
+                opened.map(|_| Message::ViewerOpened),
+                startup,
+                refresh_news_task(),
+            ]),
         )
     }
 
