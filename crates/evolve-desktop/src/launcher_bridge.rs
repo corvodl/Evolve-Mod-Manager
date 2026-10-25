@@ -1100,8 +1100,16 @@ fn prepare_failure_reason(stdout: &[u8], stderr: &[u8]) -> String {
         .rev()
         .map(str::trim)
         .find(|line| line.starts_with("STOPPED:"));
-    let last_error = err.lines().rev().map(str::trim).find(|line| !line.is_empty());
-    let last_output = out.lines().rev().map(str::trim).find(|line| !line.is_empty());
+    let last_error = err
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty());
+    let last_output = out
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty());
     let detail = stopped
         .or(last_error)
         .or(last_output)
@@ -1115,7 +1123,10 @@ fn prepare_recovery_advice(detail: &str) -> &'static str {
         "Free space on the game drive, then retry. Keep all original backups and recovery records."
     } else if lower.contains("already running") || lower.contains("close evolve.exe") {
         "Close Evolve and the Modded Evolve launcher completely before retrying."
-    } else if lower.contains("backup") || lower.contains("state journal") || lower.contains("restore") {
+    } else if lower.contains("backup")
+        || lower.contains("state journal")
+        || lower.contains("restore")
+    {
         "Review Restore original game files in Modding. Do not delete original backups or the swap journal manually."
     } else if lower.contains("prepared file differs") || lower.contains("partial file") {
         "The helper found a leftover temporary prepared file. Do not overwrite game originals; check the preparation log and safe recovery state."
@@ -1128,17 +1139,18 @@ fn prepare_recovery_advice(detail: &str) -> &'static str {
 
 /// Best-effort diagnostic record; a logging failure must not hide the Python
 /// failure that caused the modded launch to stop.
-fn record_prepare_output(
-    log_path: &Path,
-    output: &std::process::Output,
-) -> Result<(), String> {
+fn record_prepare_output(log_path: &Path, output: &std::process::Output) -> Result<(), String> {
     let mut log = OpenOptions::new()
         .create(true)
         .append(true)
         .open(log_path)
         .map_err(|e| format!("{}: {e}", log_path.display()))?;
-    writeln!(log, "\n=== controlled_swap.py prepare: {} ===", output.status)
-        .map_err(|e| e.to_string())?;
+    writeln!(
+        log,
+        "\n=== controlled_swap.py prepare: {} ===",
+        output.status
+    )
+    .map_err(|e| e.to_string())?;
     log.write_all(&output.stdout).map_err(|e| e.to_string())?;
     log.write_all(&output.stderr).map_err(|e| e.to_string())?;
     writeln!(log).map_err(|e| e.to_string())
@@ -1348,7 +1360,10 @@ mod tests {
     fn preparation_failure_fallback_is_bounded_and_explicit() {
         assert!(prepare_failure_reason(b"", b"").contains("No diagnostic text"));
         assert_eq!(
-            prepare_failure_reason(b"Preparing 237 files\n", b"Traceback\nPermissionError: Access denied\n"),
+            prepare_failure_reason(
+                b"Preparing 237 files\n",
+                b"Traceback\nPermissionError: Access denied\n"
+            ),
             "PermissionError: Access denied"
         );
         assert_eq!(
