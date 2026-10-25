@@ -39,8 +39,8 @@ mod modding_keys;
 mod modding_page;
 mod modding_projects;
 mod orientation_gizmo;
-mod play_setup;
 mod play_dialog;
+mod play_setup;
 mod private_pages;
 mod runtime_armor;
 mod runtime_experiments;
@@ -9923,9 +9923,12 @@ impl Desktop {
             Message::ToggleActivity => self.open_activity(),
             Message::DismissPlayNotice => {
                 let command = update(&mut self.state, Message::DismissPlayNotice);
-                let close = self.play_notice_id.take().map_or_else(Task::none, window::close);
+                let close = self
+                    .play_notice_id
+                    .take()
+                    .map_or_else(Task::none, window::close);
                 Task::batch([command, close])
-            },
+            }
             Message::ActivityOpened => Task::none(),
             Message::InspectorOpened => Task::none(),
             Message::ViewerOpened => Task::none(),
