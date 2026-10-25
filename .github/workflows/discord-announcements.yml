@@ -1,0 +1,52 @@
+name: Publish Discord announcement feed
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17,47 * * * *"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/discord-announcements.yml"
+      - "scripts/publish_discord_announcements.py"
+      - "scripts/test_publish_discord_announcements.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evolve-discord-announcements-pages
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    # Secrets are deliberately never exposed in PR builds or the desktop.
+    if: github.repository == 'corvodl/Evolve-Mod-Manager' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify announcement feed sanitization
+        run: python3 -m unittest discover -s scripts -p 'test_publish_discord_announcements.py'
+      - name: Fetch Discord channel posts (private credentials)
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
+        run: |
+          python3 scripts/publish_discord_announcements.py --output site/announcements.json
+          touch site/.nojekyll
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+      - name: Upload feed to Pages
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+      - name: Deploy public read-only announcement feed
+        id: deploy
+        uses: actions/deploy-pages@v4
