@@ -52,7 +52,7 @@ def compact_text(value: object, limit: int = MAX_TEXT) -> str:
     return "".join(ch for ch in value if ch == "\n" or ch == "\t" or ord(ch) >= 32)[:limit].strip()
 
 
-def clean_posts(messages: object, destination_id: str) -> list[dict]:
+def clean_posts(messages: object, destination_id: str, guild_id: str | None = None) -> list[dict]:
     if not isinstance(messages, list):
         raise ValueError("Discord did not return a message list")
     posts = []
@@ -69,10 +69,15 @@ def clean_posts(messages: object, destination_id: str) -> list[dict]:
         forward = message.get("message_reference") or {}
         if not isinstance(forward, dict):
             forward = {}
-        local = discord_jump(message.get("guild_id"), destination_id, message["id"])
-        original = discord_jump(
-            forward.get("guild_id"), forward.get("channel_id"), forward.get("message_id")
-        )
+        # Get Channel Messages does not reliably include guild_id. The
+        # separate channel-info API response supplies the verified destination
+        # server so normal messages are never dropped for lacking that field.
+        local = discord_jump(guild_id or message.get("guild_id"), destination_id, message["id"])
+        original = None
+        if forward.get("channel_id") != destination_id:
+            original = discord_jump(
+                forward.get("guild_id"), forward.get("channel_id"), forward.get("message_id")
+            )
         link = original or local
         if not link:
             continue
@@ -122,6 +127,32 @@ def clean_posts(messages: object, destination_id: str) -> list[dict]:
     return posts
 
 
+def get_channel_guild_id(token: str, channel: str) -> str:
+    """Resolve a verified Discord guild ID for channel-message deep links."""
+    request = urllib.request.Request(
+        f"https://discord.com/api/v10/channels/{channel}",
+        headers={
+            "Authorization": "Bot " + token,
+            "User-Agent": "Evolve-Mod-Manager-Announcements/1.0",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            data = response.read(65537)
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(f"Discord could not resolve the destination channel (HTTP {error.code})") from None
+    if len(data) > 65536:
+        raise RuntimeError("Discord channel information exceeded the allowed size")
+    info = json.loads(data)
+    if not isinstance(info, dict) or info.get("id") != channel:
+        raise RuntimeError("Discord returned an unexpected destination channel")
+    guild_id = info.get("guild_id")
+    if not isinstance(guild_id, str) or not CHANNEL_ID.fullmatch(guild_id):
+        raise RuntimeError("The selected Discord channel must belong to a server")
+    return guild_id
+
+
 def get_messages(token: str, channel: str) -> object:
     request = urllib.request.Request(
         f"https://discord.com/api/v10/channels/{channel}/messages?limit=100",
@@ -158,7 +189,8 @@ def main() -> int:
         )
         return 2
     try:
-        posts = clean_posts(get_messages(token, channel), channel)
+        guild_id = get_channel_guild_id(token, channel)
+        posts = clean_posts(get_messages(token, channel), channel, guild_id)
         result = {
             "schema_version": 1,
             "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
