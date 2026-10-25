@@ -8,7 +8,6 @@ use std::path::Path;
 /// from an empty or arbitrary ProductVersion string.
 fn normalize_version(input: &str) -> Option<String> {
     let token = input
-        .trim()
         .split_whitespace()
         .next()?
         .trim_start_matches(['v', 'V']);
