@@ -1,12 +1,12 @@
 //! Read-only What's New: latest public GitHub release and a separately hosted,
 //! sanitized feed for one selected Discord channel. Neither source receives credentials.
 //! Failures never block game startup, updating, or mod operations.
+use iced::widget::image::Handle;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Cursor, Read};
-use iced::widget::image::Handle;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -367,7 +367,10 @@ fn fetch_one_image(client: &Client, url: &str) -> Result<Handle, String> {
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
         .map_err(|error| error.to_string())?;
-    if response.content_length().is_some_and(|size| size > MAX_IMAGE_BYTES) {
+    if response
+        .content_length()
+        .is_some_and(|size| size > MAX_IMAGE_BYTES)
+    {
         return Err("Image is larger than the preview limit".to_owned());
     }
     let mut bytes = Vec::new();
@@ -385,12 +388,18 @@ fn decode_image(bytes: &[u8]) -> Result<Handle, String> {
     let reader = ::image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|error| error.to_string())?;
-    let (width, height) = reader.into_dimensions().map_err(|error| error.to_string())?;
+    let (width, height) = reader
+        .into_dimensions()
+        .map_err(|error| error.to_string())?;
     if width == 0 || height == 0 || (width as u64) * (height as u64) > MAX_IMAGE_PIXELS {
         return Err("Image dimensions exceed the preview limit".to_owned());
     }
     let decoded = ::image::load_from_memory(bytes).map_err(|error| error.to_string())?;
-    Ok(Handle::from_rgba(width, height, decoded.into_rgba8().into_raw()))
+    Ok(Handle::from_rgba(
+        width,
+        height,
+        decoded.into_rgba8().into_raw(),
+    ))
 }
 
 /// Launch only known HTTPS announcement, image or official release links.
@@ -457,9 +466,13 @@ mod tests {
         assert!(allowed_image_url(
             "https://media.discordapp.net/attachments/123/456/a.webp"
         ));
-        assert!(!allowed_image_url("https://cdn.discordapp.com.evil.test/attachments/a.png"));
+        assert!(!allowed_image_url(
+            "https://cdn.discordapp.com.evil.test/attachments/a.png"
+        ));
         assert!(!allowed_image_url("file:///C:/Users/Documents/a.png"));
-        assert!(!allowed_image_url("https://cdn.discordapp.com/attachments/a#fragment"));
+        assert!(!allowed_image_url(
+            "https://cdn.discordapp.com/attachments/a#fragment"
+        ));
     }
 
     #[test]
@@ -482,7 +495,12 @@ mod tests {
             .collect::<Vec<_>>();
         let urls = image_urls(&posts);
         assert_eq!(urls.len(), MAX_VISIBLE_IMAGES);
-        assert_eq!(urls.iter().filter(|url| url.ends_with("shared.png")).count(), 1);
+        assert_eq!(
+            urls.iter()
+                .filter(|url| url.ends_with("shared.png"))
+                .count(),
+            1
+        );
         assert!(urls.iter().all(|url| allowed_image_url(url)));
     }
 
@@ -490,7 +508,9 @@ mod tests {
     fn decodes_valid_png_in_memory_but_rejects_invalid_image() {
         let image = ::image::DynamicImage::new_rgba8(2, 2);
         let mut output = Cursor::new(Vec::new());
-        image.write_to(&mut output, ::image::ImageFormat::Png).unwrap();
+        image
+            .write_to(&mut output, ::image::ImageFormat::Png)
+            .unwrap();
         assert!(decode_image(&output.into_inner()).is_ok());
         assert!(decode_image(&[0, 1, 2, 3]).is_err());
     }
