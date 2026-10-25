@@ -85,6 +85,37 @@ class FeedTests(unittest.TestCase):
         ], DEST)
         self.assertEqual(len(posts), 1)
 
+    def test_guild_lookup_rescues_regular_message_without_guild_id(self):
+        message = forward(
+            "623456789012345686",
+            guild_id=None,
+            webhook_id=None,
+            message_reference=None,
+            author={"username": "Corvo"},
+            content="Manual patch notes",
+        )
+        self.assertEqual(clean_posts([message], DEST), [])
+        post = clean_posts([message], DEST, GUILD)[0]
+        self.assertEqual(post["content"], "Manual patch notes")
+        self.assertEqual(
+            post["url"],
+            f"https://discord.com/channels/{GUILD}/{DEST}/623456789012345686",
+        )
+
+    def test_reply_uses_its_own_message_link_not_parent_message(self):
+        reply = forward(
+            "623456789012345687", webhook_id=None,
+            message_reference={
+                "guild_id": GUILD, "channel_id": DEST,
+                "message_id": "623456789012345686"
+            }, content="My reply to a previous update"
+        )
+        post = clean_posts([reply], DEST, GUILD)[0]
+        self.assertEqual(
+            post["url"],
+            f"https://discord.com/channels/{GUILD}/{DEST}/623456789012345687",
+        )
+
     def test_original_link_preferred_when_provided(self):
         post = clean_posts([forward()], DEST)[0]
         self.assertEqual(
