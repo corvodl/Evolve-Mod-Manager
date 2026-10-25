@@ -615,6 +615,12 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
 mod tests {
     use super::*;
     #[test]
+    fn system_health_is_a_selectable_settings_tab() {
+        assert!(Tab::ALL.contains(&Tab::SystemHealth));
+        assert_eq!(Tab::SystemHealth.title(), "System Health");
+    }
+
+    #[test]
     fn shared_and_animation_archive_readiness_counts_unique_exact_names() {
         let (shared, animations) = required_reference_counts([
             "characters_monsters_shared.pak".to_owned(),
