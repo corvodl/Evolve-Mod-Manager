@@ -41,6 +41,7 @@ mod modding_projects;
 mod orientation_gizmo;
 mod play_dialog;
 mod play_setup;
+mod work_progress;
 mod private_pages;
 mod runtime_armor;
 mod runtime_experiments;
@@ -431,6 +432,10 @@ struct State {
     mod_toggle_animations: Vec<ModToggleAnimation>,
     /// Indeterminate footer activity only: never presented as a real percent.
     footer_pulse: u16,
+    /// Named worker operation and real elapsed time, shared by the footer and
+    /// all open progress windows; no fabricated percentages.
+    busy_operation: Option<String>,
+    activity_started: Option<std::time::Instant>,
     modding_filter: String,
     modding_kind: Option<evolve_core::mod_safety::ModKind>,
     guided_editor: guided_modding::Editor,
@@ -2194,6 +2199,7 @@ fn footer_is_working(state: &State) -> bool {
     state.busy
         || state.project_copy_progress.is_some()
         || state.mod_launch_progress.is_some()
+        || state.viewer_load_progress.is_some()
         || state.scan_indexed.is_some()
         || state.library_import_scanning
         || state.library_import_progress.is_some()
@@ -2205,11 +2211,82 @@ fn footer_is_working(state: &State) -> bool {
         || state.developer_checking
 }
 
+/// A specific, stable action name for every worker path. The footer never
+/// falls back to a context-free "Working" string. Counts and percentages are
+/// reported separately, only by workers that actually provide them.
+fn operation_label(operation: &Operation) -> &'static str {
+    match operation {
+        Operation::IndexProjects(..) => "Indexing mod projects",
+        Operation::BuildRawProject(..) | Operation::RebuildPak(..) => "Building mod PAK",
+        Operation::StageBuiltOfflineTest(..) => "Preparing signed offline test",
+        Operation::ImportRawProjectMember(..) => "Importing asset into mod project",
+        Operation::RestoreRawProjectMember(..) => "Restoring original project asset",
+        Operation::UnpackRawProject(..) | Operation::ExtractPak(..) => "Extracting PAK files",
+        Operation::LoadImportedLibrary(..) => "Opening Asset Library",
+        Operation::ImportSignedLibraryPlan(..) => "Importing signed game PAKs",
+        Operation::ApplyLibraryBuildUpdates(..) => "Updating Asset Library PAKs",
+        Operation::OpenImportedPak(..) | Operation::InspectPak(..) => "Inspecting game PAK",
+        Operation::CreateProjectFromLibrary(..) => "Creating editable mod project",
+        Operation::RefreshGamePakBaseline(..) => "Verifying original game PAKs",
+        Operation::InspectDependencies(..) => "Analyzing asset dependencies",
+        Operation::CompareAssets(..) => "Comparing original and changed assets",
+        Operation::Scan(..) => "Scanning asset folder",
+        Operation::AnalyzeStorage(..) => "Analyzing storage usage",
+        Operation::InspectDds(..) | Operation::PreviewDds(..) => "Inspecting DDS texture",
+        Operation::LoadDiffuse(..) | Operation::LoadNormal(..) | Operation::LoadEmissive(..) => {
+            "Loading model textures"
+        }
+        Operation::ResolveMaterial(..) => "Resolving CryEngine materials",
+        Operation::LoadModelSurfaces(..) => "Loading model surface materials",
+        Operation::LoadCaf(..) | Operation::LoadCafLayer(..) => "Loading character animation",
+        Operation::BindCafPreview(..) | Operation::BindCdfCafPreview(..) => "Binding character animation",
+        Operation::RiggedGlb(..) | Operation::RiggedFbx(..) => "Exporting rigged character",
+        Operation::ExportBundle(..) => "Exporting selected asset bundle",
+        Operation::ConvertMotion(..) => "Converting animation",
+        Operation::LoadGlbMotion(..) => "Loading animation keyframes",
+        Operation::InspectCdf(..) | Operation::ResolveCdf(..) => "Inspecting character assembly",
+        Operation::BuildStaticCdf(..) => "Building character viewport model",
+        Operation::PrepareCdfDamage(..) | Operation::ReblendCdfDamage(..) => "Preparing damage materials",
+        Operation::InspectModel(..) | Operation::InspectIndexedModel(..) => "Inspecting original model",
+        Operation::DiscoverModelResources(..) => "Discovering model dependencies",
+        Operation::LoadDeclaredClip(..) | Operation::LoadDeclaredDba(..) => "Loading original animation clip",
+        Operation::InspectLevel(..) | Operation::InspectTerrain(..) => "Inspecting level resources",
+        Operation::ExportEditedLevel(..) => "Exporting edited level",
+        Operation::InspectSignedPak(..) => "Verifying signed CryPAK",
+        Operation::ExtractSignedPak(..) => "Extracting signed CryPAK",
+        Operation::ResignSignedPak(..) | Operation::RebuildSignedPak(..) => "Signing modded CryPAK",
+        Operation::PrepareClientHook(..) => "Preparing offline client hook",
+        Operation::VerifySignedHookPair(..) => "Verifying original and custom hook",
+        Operation::CheckExistingOfflineLauncher(..) => "Checking offline launch readiness",
+        Operation::StartExistingOfflineLauncher(..) => "Preparing original offline launcher",
+        Operation::PlayEnabledMods(..) => "Building and launching enabled mods",
+        Operation::LaunchCleanClient(..) => "Opening regular game client",
+        Operation::CreateInitialSetup(..) => "Creating isolated offline setup",
+        Operation::RestoreExistingOfflineLauncher(..) => "Restoring original game files",
+        Operation::ExportLevelGlb(..) | Operation::ExportLevelFbx(..) => "Exporting level scene",
+        Operation::StageInit(..) => "Initializing protected signing stage",
+        Operation::StageStatus(..) => "Checking signing stage",
+        Operation::StageImport(..) => "Importing signed PAK into stage",
+        Operation::StageApply(..) => "Applying recoverable PAK stage",
+        Operation::StageRestore(..) => "Restoring staged original PAK",
+        Operation::ListProfiles(..) => "Listing mod profiles",
+        Operation::CreateProfile(..) => "Creating mod profile",
+        Operation::AddProfileMod(..) => "Adding mod to profile",
+        Operation::PlanProfile(..) => "Planning mod profile",
+        Operation::ApplyProfile(..) => "Applying mod profile",
+        Operation::RecoverProfile(..) => "Recovering mod profile",
+        Operation::StatusProfile(..) => "Checking active mod profile",
+        Operation::ExportPng(..) => "Exporting full-resolution PNG",
+    }
+}
+
 fn launch(state: &mut State, operation: Operation) -> Task<Message> {
     if state.busy {
         return Task::none();
     }
     state.busy = true;
+    state.busy_operation = Some(operation_label(&operation).to_owned());
+    state.activity_started = Some(std::time::Instant::now());
     if !matches!(&operation, Operation::BuildStaticCdf(..)) {
         state.viewer_load_progress = None;
     }
@@ -2234,7 +2311,7 @@ fn launch(state: &mut State, operation: Operation) -> Task<Message> {
         Operation::IndexProjects(..) if state.project_copy_progress.is_some() => {
             "Indexing the new editable project before opening it...".into()
         }
-        _ => "Working on explicitly selected local files...".into(),
+        _ => format!("{}...", operation_label(&operation)),
     };
     Task::perform(
         async move {
@@ -4217,6 +4294,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ScanPulse => {
             state.footer_pulse = state.footer_pulse.wrapping_add(1);
+            if state.activity_started.is_none() {
+                state.activity_started = Some(std::time::Instant::now());
+            }
             if let Some(indexed) = &state.scan_indexed {
                 state.status = format!(
                     "Indexed {} local assets; working asynchronously...",
@@ -7594,6 +7674,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.library_import_cancel = None;
             state.library_import_progress = None;
             state.busy = false;
+            state.busy_operation = None;
+            state.activity_started = None;
             if result.is_err() {
                 state.modding_prepare_offline_test = false;
             }
@@ -9538,87 +9620,7 @@ fn view(state: &State) -> Element<'_, Message> {
     } else {
         container(column![]).into()
     };
-    let footer_progress: Element<'_, Message> = if let Some(progress) = &state.project_copy_progress
-    {
-        let phase = progress.phase.load(Ordering::Relaxed);
-        let done = progress.files_done.load(Ordering::Relaxed);
-        let total = progress.files_total.load(Ordering::Relaxed);
-        let bytes = progress.bytes_done.load(Ordering::Relaxed);
-        let size = progress.bytes_total.load(Ordering::Relaxed);
-        let percent = match phase {
-            0 => 0,
-            1 if size > 0 => ((bytes.min(size) as f64 / size as f64) * 95.0) as u32,
-            1 => 0,
-            2 => 98,
-            _ => 99,
-        };
-        let label = match phase {
-            0 => "Checking imported assets".to_owned(),
-            1 => format!("Copying & verifying {done}/{total} files"),
-            2 => "Saving project".to_owned(),
-            _ => "Opening project".to_owned(),
-        };
-        row![
-            text(label).size(11),
-            container(iced::widget::progress_bar(0.0..=100.0, percent as f32))
-                .width(Length::Fixed(124.0))
-                .height(Length::Fixed(8.0)),
-            text(format!("{percent}%")).size(11),
-        ]
-        .spacing(7)
-        .align_y(iced::Alignment::Center)
-        .into()
-    } else if let Some(progress) = &state.mod_launch_progress {
-        let percent = progress.load(Ordering::Relaxed).min(100);
-        row![
-            text("Preparing enabled mods").size(11),
-            container(iced::widget::progress_bar(0.0..=100.0, percent as f32))
-                .width(Length::Fixed(124.0))
-                .height(Length::Fixed(8.0)),
-            text(format!("{percent}%")).size(11),
-        ]
-        .spacing(7)
-        .align_y(iced::Alignment::Center)
-        .into()
-    } else if footer_is_working(state) {
-        // A moving bar means busy, not a made-up completion percentage.
-        // Reserve percentages for operations with real progress.
-        let (label, count) = if let Some(progress) = &state.library_import_progress {
-            ("Importing PAKs", Some(progress.load(Ordering::Relaxed)))
-        } else if let Some(progress) = &state.scan_indexed {
-            ("Indexing assets", Some(progress.load(Ordering::Relaxed)))
-        } else if state.gfx_busy || state.gfx_install_busy {
-            ("Working on GFX", None)
-        } else if state.storage_analyzing {
-            ("Checking storage", None)
-        } else if state.library_import_scanning {
-            ("Scanning PAKs", None)
-        } else {
-            ("Working", None)
-        };
-        let value = (state.footer_pulse % 40) as f32;
-        let position = if value <= 20.0 {
-            value * 5.0
-        } else {
-            (40.0 - value) * 5.0
-        };
-        row![
-            text(match count {
-                Some(done) => format!("{label} · {done} files"),
-                None => label.to_owned(),
-            })
-            .size(11),
-            container(iced::widget::progress_bar(0.0..=100.0, position))
-                .width(Length::Fixed(124.0))
-                .height(Length::Fixed(8.0)),
-            text("…").size(11),
-        ]
-        .spacing(7)
-        .align_y(iced::Alignment::Center)
-        .into()
-    } else {
-        row![].into()
-    };
+    let footer_progress = work_progress::footer(state);
     let body = column![
         headline,
         tools,
@@ -9774,9 +9776,20 @@ struct Desktop {
     export_id: Option<window::Id>,
 }
 
+/// Use the shipped application artwork for titlebars and taskbar icons on
+/// every Iced-created native window, not the platform's default window icon.
+fn app_window_icon() -> Option<window::Icon> {
+    let rgba = ::image::load_from_memory(include_bytes!("../../../assets/hunt.png"))
+        .ok()?
+        .into_rgba8();
+    let (width, height) = rgba.dimensions();
+    window::icon::from_rgba(rgba.into_raw(), width, height).ok()
+}
+
 impl Desktop {
     fn new() -> (Self, Task<Message>) {
         let (main_id, opened) = window::open(window::Settings {
+            icon: app_window_icon(),
             size: iced::Size::new(1440.0, 900.0),
             min_size: Some(iced::Size::new(880.0, 620.0)),
             ..window::Settings::default()
@@ -9812,6 +9825,7 @@ impl Desktop {
         }
         self.state.viewer_from_library = self.state.page == Some(Page::AssetLibrary);
         let (id, opened) = window::open(window::Settings {
+            icon: app_window_icon(),
             size: iced::Size::new(1550.0, 940.0),
             ..window::Settings::default()
         });
@@ -9824,6 +9838,7 @@ impl Desktop {
             return Task::none();
         }
         let (id, opened) = window::open(window::Settings {
+            icon: app_window_icon(),
             size: iced::Size::new(700.0, 530.0),
             ..window::Settings::default()
         });
@@ -9836,6 +9851,7 @@ impl Desktop {
             return Task::none();
         }
         let (id, opened) = window::open(window::Settings {
+            icon: app_window_icon(),
             size: iced::Size::new(960.0, 740.0),
             min_size: Some(iced::Size::new(720.0, 520.0)),
             ..window::Settings::default()
@@ -9849,6 +9865,7 @@ impl Desktop {
             return Task::none();
         }
         let (id, opened) = window::open(window::Settings {
+            icon: app_window_icon(),
             size: iced::Size::new(640.0, 330.0),
             min_size: Some(iced::Size::new(510.0, 270.0)),
             ..window::Settings::default()
@@ -9862,6 +9879,7 @@ impl Desktop {
             return Task::none();
         }
         let (id, opened) = window::open(window::Settings {
+            icon: app_window_icon(),
             size: iced::Size::new(740.0, 560.0),
             ..window::Settings::default()
         });
@@ -9876,6 +9894,7 @@ impl Desktop {
         }
         self.state.viewer_show_inspector = true;
         let (id, opened) = window::open(window::Settings {
+            icon: app_window_icon(),
             size: iced::Size::new(950.0, 610.0),
             ..window::Settings::default()
         });
