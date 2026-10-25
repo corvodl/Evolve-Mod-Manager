@@ -151,7 +151,12 @@ fn release_from_response(value: &serde_json::Value) -> Result<Release, String> {
         .iter()
         .filter(|value| value["draft"] == false)
         .filter(|value| value["published_at"].as_str().is_some())
-        .max_by_key(|value| value["published_at"].as_str().unwrap_or_default().to_owned())
+        .max_by_key(|value| {
+            value["published_at"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned()
+        })
         .ok_or("No published GitHub Releases found")?;
     let version = release["tag_name"]
         .as_str()
