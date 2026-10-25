@@ -371,13 +371,16 @@ def _validate_geometry(objects, require_tangent_space=False):
                     ):
                         raise FBXValidationError(
                             "FBX has invalid source-normal/tangent-space vectors")
-                    if any(
-                        not 0.1 < sum(float(vectors[i + axis]) ** 2
-                                      for axis in range(3)) < 2.1
-                        for i in range(0, len(vectors), 3)
-                    ):
-                        raise FBXValidationError(
-                            "FBX has degenerate normal/tangent-space vectors")
+                    for i in range(0, len(vectors), 3):
+                        magnitude = sum(float(vectors[i + axis]) ** 2
+                                        for axis in range(3))
+                        if not 0.1 < magnitude < 2.1:
+                            identity = props[1].decode("utf-8", "replace") if isinstance(
+                                props[1], bytes) else "unnamed mesh"
+                            raise FBXValidationError(
+                                "FBX has degenerate normal/tangent-space vectors: "
+                                + element.decode() + " on " + identity
+                                + " at vector " + str(i // 3))
         for layer in layers:
             uv_node = layer.get(b"UV")
             if uv_node is None:
