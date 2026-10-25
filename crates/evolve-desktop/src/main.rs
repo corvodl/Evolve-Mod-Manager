@@ -2612,7 +2612,9 @@ fn start_news_images(state: &mut State) -> Task<Message> {
     }
     let urls = whats_new::image_urls(&state.news.cache.announcements)
         .into_iter()
-        .filter(|url| !state.news.image_handles.contains_key(url) && !state.news.image_failures.contains(url))
+        .filter(|url| {
+            !state.news.image_handles.contains_key(url) && !state.news.image_failures.contains(url)
+        })
         .collect::<Vec<_>>();
     if urls.is_empty() {
         return Task::none();
@@ -6786,7 +6788,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 if state.page == Some(Page::WhatsNew) {
                     return start_news_images(state);
                 }
-            },
+            }
             Err(error) => {
                 state.news.loading = false;
                 state.news.loaded_at = Some(std::time::Instant::now());
@@ -6797,15 +6799,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::NewsImagesLoaded(result) => {
             state.news.images_loading = false;
             if let Ok(images) = result {
-                let visible: HashSet<_> =
-                    whats_new::image_urls(&state.news.cache.announcements).into_iter().collect();
+                let visible: HashSet<_> = whats_new::image_urls(&state.news.cache.announcements)
+                    .into_iter()
+                    .collect();
                 for (url, result) in images {
                     if !visible.contains(&url) {
                         continue;
                     }
                     match result {
-                        Ok(handle) => { state.news.image_handles.insert(url, handle); }
-                        Err(_) => { state.news.image_failures.insert(url); }
+                        Ok(handle) => {
+                            state.news.image_handles.insert(url, handle);
+                        }
+                        Err(_) => {
+                            state.news.image_failures.insert(url);
+                        }
                     }
                 }
             }
