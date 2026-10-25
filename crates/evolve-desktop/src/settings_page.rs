@@ -28,6 +28,68 @@ fn heading<'a>(name: &'a str, description: &'a str) -> iced::widget::Column<'a, 
     .spacing(7)
 }
 
+fn health_entry<'a>(title: &'static str, value: &str) -> Element<'a, Message> {
+    panel(
+        column![
+            text(title).size(13),
+            text(value.to_owned()).size(12).style(design::muted),
+        ]
+        .spacing(6),
+    )
+    .into()
+}
+
+fn health_panel(state: &State) -> Element<'_, Message> {
+    let heading = design::button(if state.health_expanded {
+        "⌄ System Health   ·   On-demand diagnostics"
+    } else {
+        "› System Health   ·   On-demand diagnostics"
+    })
+    .on_press(Message::ToggleSystemHealth)
+    .style(design::secondary)
+    .width(Fill);
+    if !state.health_expanded {
+        return heading.into();
+    }
+    let check = row![
+        design::button(if state.health_checking {
+            "Checking..."
+        } else {
+            "Check System Health"
+        })
+        .on_press_maybe((!state.health_checking).then_some(Message::CheckSystemHealth)),
+        text("Read-only until you choose an explicit operation")
+            .size(12)
+            .style(design::muted),
+    ]
+    .spacing(12);
+    if let Some(result) = &state.health_report {
+        column![
+            heading,
+            text("Checks are opt-in. Firewall, registry, dumps and cleanup settings are never changed.")
+                .size(12).style(design::muted),
+            check,
+            row![
+                health_entry("Windows Firewall", &result.firewall),
+                health_entry("Game Process", &result.game_process),
+            ].spacing(10),
+            row![
+                health_entry("Crash Dumps & Support", &result.dumps),
+                health_entry("Storage & Backups", &result.storage),
+            ].spacing(10),
+            health_entry("Game Environment", &result.environment),
+            health_entry("Recovery & Projects", &result.recovery),
+        ].spacing(10).into()
+    } else {
+        column![
+            heading,
+            text("Nothing is scanned while this panel is closed. Select Check System Health to run read-only checks.")
+                .size(12).style(design::muted),
+            check,
+        ].spacing(9).into()
+    }
+}
+
 fn mib(bytes: u64) -> String {
     format!("{:.1} GiB", bytes as f64 / 1_073_741_824.0)
 }
@@ -291,15 +353,17 @@ pub enum Tab {
     Storage,
     Integration,
     Updates,
+    SystemHealth,
     Advanced,
 }
 
 impl Tab {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Appearance,
         Self::Storage,
         Self::Integration,
         Self::Updates,
+        Self::SystemHealth,
         Self::Advanced,
     ];
     fn title(self) -> &'static str {
@@ -308,6 +372,7 @@ impl Tab {
             Self::Storage => "Storage",
             Self::Integration => "Integrations",
             Self::Updates => "Updates",
+            Self::SystemHealth => "System Health",
             Self::Advanced => "Advanced",
         }
     }
@@ -491,6 +556,15 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     .size(11).style(design::muted),
             ].spacing(12).into()
         },
+        Tab::SystemHealth => column![
+            heading(
+                "SYSTEM HEALTH",
+                "Read-only, on-demand diagnostics for your local Evolve installation.",
+            ),
+            panel(health_panel(state)),
+        ]
+        .spacing(12)
+        .into(),
         Tab::Advanced => column![
         heading("BACKUPS & RECOVERY", "Preserve source archives and restoration history."),
         panel(column![
@@ -540,6 +614,12 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn system_health_is_a_selectable_settings_tab() {
+        assert!(Tab::ALL.contains(&Tab::SystemHealth));
+        assert_eq!(Tab::SystemHealth.title(), "System Health");
+    }
+
     #[test]
     fn shared_and_animation_archive_readiness_counts_unique_exact_names() {
         let (shared, animations) = required_reference_counts([

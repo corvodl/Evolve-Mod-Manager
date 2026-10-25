@@ -66,66 +66,69 @@ fn status_card<'a>(label: &'static str, value: String) -> Element<'a, Message> {
     .into()
 }
 
-fn health_entry<'a>(title: &'static str, value: &str) -> Element<'a, Message> {
-    surface(
-        column![
-            text(title).size(13),
-            text(value.to_owned()).size(12).style(design::muted),
+fn latest_announcement(state: &State) -> Element<'_, Message> {
+    let news = &state.news;
+    let mut content = column![
+        row![
+            text("LATEST DISCORD ANNOUNCEMENT")
+                .size(14)
+                .style(design::accent),
+            design::button("More in What's New")
+                .on_press(Message::Navigate(Page::WhatsNew))
+                .style(design::secondary),
         ]
-        .spacing(6),
-    )
-    .into()
-}
-
-fn health_panel(state: &State) -> Element<'_, Message> {
-    let heading = design::button(if state.health_expanded {
-        "⌄ System Health   ·   On-demand diagnostics"
+        .spacing(12)
+        .align_y(iced::Center),
+    ]
+    .spacing(10);
+    if let Some(post) = news.cache.announcements.first() {
+        if !post.title.is_empty() {
+            content = content.push(text(&post.title).size(18));
+        }
+        content = content.push(
+            text(format!("{}  ·  {}", post.author, post.timestamp))
+                .size(12)
+                .style(design::muted),
+        );
+        for body in [&post.content, &post.description] {
+            if !body.is_empty() {
+                let excerpt: String = body.chars().take(700).collect();
+                content = content.push(text(excerpt).size(13));
+            }
+        }
+        for url in post.image_urls.iter().take(2) {
+            if !crate::whats_new::allowed_image_url(url) {
+                continue;
+            }
+            if let Some(handle) = news.image_handles.get(url) {
+                content = content.push(
+                    image(handle.clone())
+                        .width(Fill)
+                        .height(Length::Fixed(260.0))
+                        .content_fit(iced::ContentFit::Contain),
+                );
+            } else if news.image_failures.contains(url) {
+                content = content.push(
+                    text("Image preview unavailable")
+                        .size(11)
+                        .style(design::muted),
+                );
+            } else {
+                content = content.push(text("Loading image…").size(11).style(design::muted));
+            }
+        }
     } else {
-        "› System Health   ·   On-demand diagnostics"
-    })
-    .on_press(Message::ToggleSystemHealth)
-    .style(design::secondary)
-    .width(Fill);
-    if !state.health_expanded {
-        return heading.into();
-    }
-    let check = row![
-        design::button(if state.health_checking {
-            "Checking..."
-        } else {
-            "Check System Health"
-        })
-        .on_press_maybe((!state.health_checking).then_some(Message::CheckSystemHealth)),
-        text("Read-only until you choose an explicit operation")
+        content = content.push(
+            text(if news.loading {
+                "Loading the latest announcement…"
+            } else {
+                "No announcements available yet."
+            })
             .size(12)
             .style(design::muted),
-    ]
-    .spacing(12);
-    if let Some(result) = &state.health_report {
-        column![
-            heading,
-            text("Checks are opt-in. Firewall, registry, dumps and cleanup settings are never changed.")
-                .size(12).style(design::muted),
-            check,
-            row![
-                health_entry("Windows Firewall", &result.firewall),
-                health_entry("Game Process", &result.game_process),
-            ].spacing(10),
-            row![
-                health_entry("Crash Dumps & Support", &result.dumps),
-                health_entry("Storage & Backups", &result.storage),
-            ].spacing(10),
-            health_entry("Game Environment", &result.environment),
-            health_entry("Recovery & Projects", &result.recovery),
-        ].spacing(10).into()
-    } else {
-        column![
-            heading,
-            text("Nothing is scanned while this panel is closed. Select Check System Health to run read-only checks.")
-                .size(12).style(design::muted),
-            check,
-        ].spacing(9).into()
+        );
     }
+    surface(content).into()
 }
 
 pub(super) fn home(state: &State) -> Element<'_, Message> {
@@ -226,7 +229,13 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                 state.preferences.client_executable.clone()
             }
         ),
-        status_card("Game version", "Not detected".to_owned()),
+        status_card(
+            "Client Version",
+            state.client_version.as_ref().map_or_else(
+                || "Not detected".to_owned(),
+                |version| format!("v{version}")
+            ),
+        ),
         status_card(
             "Signing stage",
             if state.preferences.stage.is_empty() {
@@ -250,8 +259,8 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         column![
             hero,
             quick,
-            health_panel(state),
             row![entries, status].spacing(14),
+            latest_announcement(state),
         ]
         .spacing(20)
         .padding(12),

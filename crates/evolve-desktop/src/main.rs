@@ -9,6 +9,7 @@ mod asset_library_page;
 mod asset_viewer;
 mod auto_resources;
 mod blender_install;
+mod client_version;
 mod crash_diagnostics;
 mod design;
 mod developer_auth;
@@ -317,6 +318,7 @@ struct State {
     update_worker_failure: Option<String>,
     available_update: Option<ReleaseUpdate>,
     news: whats_new::NewsState,
+    client_version: Option<String>,
     startup_update_checked: bool,
     viewer_search: String,
     viewer_rows: Vec<explorer_tree::ExplorerRow>,
@@ -1865,6 +1867,7 @@ enum Message {
     RefreshNews,
     NewsLoaded(Result<whats_new::NewsResult, String>),
     NewsImagesLoaded(Result<whats_new::ImageResults, String>),
+    ClientVersionChecked(String, Option<String>),
     OpenNewsLink(String),
     ApplyUpdate,
     UpdatePrepared(Result<PreparedUpdate, String>),
@@ -2610,7 +2613,14 @@ fn start_news_images(state: &mut State) -> Task<Message> {
     if state.news.images_loading {
         return Task::none();
     }
-    let urls = whats_new::image_urls(&state.news.cache.announcements)
+    // Home needs just the newest post; What's New can load the full list.
+    let candidates = if state.page == Some(Page::Home) {
+        let posts = &state.news.cache.announcements;
+        whats_new::image_urls(&posts[..posts.len().min(1)])
+    } else {
+        whats_new::image_urls(&state.news.cache.announcements)
+    };
+    let urls = candidates
         .into_iter()
         .filter(|url| {
             !state.news.image_handles.contains_key(url) && !state.news.image_failures.contains(url)
@@ -2627,6 +2637,24 @@ fn start_news_images(state: &mut State) -> Task<Message> {
                 .map_err(|error| format!("News image worker failed: {error}"))
         },
         Message::NewsImagesLoaded,
+    )
+}
+
+fn inspect_client_version_task(path: &str) -> Task<Message> {
+    if path.trim().is_empty() {
+        return Task::none();
+    }
+    let path = path.to_owned();
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                let version = client_version::installed_version(&path);
+                (path, version)
+            })
+            .await
+            .unwrap_or_default()
+        },
+        |(path, version)| Message::ClientVersionChecked(path, version),
     )
 }
 
@@ -2739,10 +2767,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::Navigate(page) => {
             state.page = Some(page);
             let mut tasks = Vec::new();
-            if page == Page::WhatsNew {
+            if page == Page::Home {
+                tasks.push(inspect_client_version_task(
+                    &state.preferences.client_executable,
+                ));
+            }
+            if matches!(page, Page::Home | Page::WhatsNew) {
                 tasks.push(start_news_images(state));
             }
-            if page == Page::WhatsNew && state.news.needs_refresh() {
+            if matches!(page, Page::Home | Page::WhatsNew) && state.news.needs_refresh() {
                 state.news.loading = true;
                 tasks.push(refresh_news_task());
             }
@@ -6540,6 +6573,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::PreferenceGameInstall(value) => state.preferences.game_installation = value,
         Message::PreferenceClientExecutable(value) => {
             state.preferences.client_executable = value;
+            state.client_version = None;
         }
         Message::PickGameInstallation | Message::PickClientExecutable => {
             let game = matches!(message, Message::PickGameInstallation);
@@ -6565,6 +6599,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::PickedClientExecutable(Some(path)) => {
             state.preferences.client_executable = path.to_string_lossy().into_owned();
+            state.client_version = None;
+            return inspect_client_version_task(&state.preferences.client_executable);
         }
         Message::PickedGameInstallation(None) | Message::PickedClientExecutable(None) => {}
         Message::StartAutomaticSetup => {
@@ -6631,8 +6667,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Ok((game, client)) => {
                     state.preferences.game_installation = game.to_string_lossy().into_owned();
                     state.preferences.client_executable = client.to_string_lossy().into_owned();
+                    state.client_version = None;
                     persist_preferences(state);
                     state.status = "Game and client paths verified and saved. For modded play, the original signed staging set and private swap helper must also be configured below.".into();
+                    return inspect_client_version_task(&state.preferences.client_executable);
                 }
                 Err(error) => {
                     state.settings_status = format!("Game/client setup is incomplete: {error}");
@@ -6776,6 +6814,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
             return check_updates_task(channel);
         }
+        Message::ClientVersionChecked(path, version) => {
+            if state.preferences.client_executable == path {
+                state.client_version = version;
+            }
+        }
         Message::RefreshNews => {
             if !state.news.loading {
                 state.news.loading = true;
@@ -6785,7 +6828,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::NewsLoaded(result) => match result {
             Ok(news) => {
                 state.news.apply(news);
-                if state.page == Some(Page::WhatsNew) {
+                if matches!(state.page, Some(Page::Home | Page::WhatsNew)) {
                     return start_news_images(state);
                 }
             }
@@ -6818,7 +6861,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             // A news refresh may have changed the attachment URLs while the
             // previous download was running; reconcile them without blocking.
-            if state.page == Some(Page::WhatsNew) {
+            if matches!(state.page, Some(Page::Home | Page::WhatsNew)) {
                 return start_news_images(state);
             }
         }
@@ -9916,6 +9959,7 @@ impl Desktop {
         } else {
             Task::none()
         };
+        let client_version_task = inspect_client_version_task(&state.preferences.client_executable);
         (
             Self {
                 state,
@@ -9931,6 +9975,7 @@ impl Desktop {
                 opened.map(|_| Message::ViewerOpened),
                 startup,
                 refresh_news_task(),
+                client_version_task,
             ]),
         )
     }
@@ -10265,7 +10310,7 @@ impl Desktop {
         } else {
             Subscription::none()
         };
-        let news_poll = if self.state.page == Some(Page::WhatsNew) {
+        let news_poll = if matches!(self.state.page, Some(Page::Home | Page::WhatsNew)) {
             iced::time::every(Duration::from_secs(600)).map(|_| Message::RefreshNews)
         } else {
             Subscription::none()
