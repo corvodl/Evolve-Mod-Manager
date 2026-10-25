@@ -1,8 +1,8 @@
-# What's New: latest version notes + forwarded Discord announcements
+# What's New: latest version notes + Discord channel updates
 
 The manager's **What's New** screen has independent sections for the newest
 published GitHub Release (including Nightly prereleases) and the latest 20
-forwarded Discord announcements. The UI refreshes at startup, when the page
+messages from the configured Discord destination channel. The UI refreshes at startup, when the page
 is reopened after ten minutes, and every ten minutes while it remains open.
 The last successful data is cached in the per-user manager settings folder.
 Unreachable feeds never prevent running the manager, updating, or playing.
@@ -30,13 +30,16 @@ Unreachable feeds never prevent running the manager, updating, or playing.
    `https://corvodl.github.io/Evolve-Mod-Manager/announcements.json`.
 
 The workflow requests messages from Discord *inside GitHub Actions* using the
-bot token, selects only webhook-authored (forwarded) messages from the exact
-configured channel, and publishes a small, bounded, text-focused JSON result.
+bot token, and publishes a small, bounded, text-focused JSON result containing
+**all displayable messages from the exact configured channel**. This includes
+followed announcements, ordinary human-authored posts, and bot/webhook posts.
+It does **not** monitor other channels or the server as a whole.
 Tokens are **never** included in that result or shipped inside the desktop.
 No long-running bot, Discord sign-in or in-app credentials are needed.
 
-The destination channel must contain genuinely forwarded announcements.
-If the bot has no access, has an invalid token or lacks message-content access,
+Post your own regular update in the destination channel to test the feed;
+there is no need to publish it as a followed announcement. If the bot has no
+access, has an invalid token or lacks message-content access,
 the workflow fails with a non-secret diagnostic or publishes zero announcements.
 Discord API message/attachment access may require privileged-intent approval
 for verified bots.
@@ -46,7 +49,7 @@ for verified bots.
 - GitHub Releases API: newest non-draft *published* release, including nightlies.
   This is presentation only; the separately authenticated update installer
   continues to verify actual release assets and digests.
-- Discord JSON feed: last 20 forwarded posts, newest first, plain-text body,
+- Discord JSON feed: last 20 displayable channel messages, newest first, plain-text body,
   embed title/description, author, timestamp, links to the source or destination
   Discord message and up to four attachment-image **links**. Images are linked
   rather than downloaded or embedded; Discord media URLs may expire.
@@ -55,10 +58,13 @@ for verified bots.
   URLs are accepted. Release bodies display an excerpt with a link to the
   full GitHub release.
 
-**Permission reminder:** Following another server's Discord announcement
-channel does not automatically grant permission to republish its content on
-a public website. Confirm public redistribution is acceptable to the
-original community before enabling the workflow.
+**Public channel warning:** This workflow republishes **every displayable
+message in the selected channel** to a public GitHub Pages JSON feed and the
+manager. Keep this a dedicated public-updates channel: do not post secrets,
+private discussions or personal data there, and limit who can post if needed.
+Following another server's Discord announcement channel does not automatically
+grant permission to republish its content on a public website. Confirm public
+redistribution is acceptable to the original community.
 
 ## Testing
 
@@ -71,4 +77,4 @@ cargo test -p evolve-mod-manager whats_new
 ```
 
 Real setup testing still needs the configured GitHub Actions secrets, Pages,
-one newly published forwarded message and a Windows manager build.
+a new normal or followed channel message and a Windows manager build.
