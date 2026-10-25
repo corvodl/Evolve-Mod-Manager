@@ -389,12 +389,12 @@ pub(super) fn whats_new(state: &State) -> Element<'_, Message> {
                     );
                 } else if news.image_failures.contains(url) {
                     details = details.push(
-                        text("Image preview unavailable").size(11).style(design::muted),
+                        text("Image preview unavailable")
+                            .size(11)
+                            .style(design::muted),
                     );
                 } else {
-                    details = details.push(
-                        text("Loading image…").size(11).style(design::muted),
-                    );
+                    details = details.push(text("Loading image…").size(11).style(design::muted));
                 }
             }
             cards = cards.push(surface(details));
