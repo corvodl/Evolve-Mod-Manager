@@ -57,6 +57,7 @@ mod system_health;
 mod textured;
 mod updater;
 mod updater_apply;
+mod whats_new;
 mod uv_preview;
 mod view_navigation;
 mod viewer_grid;
@@ -315,6 +316,7 @@ struct State {
     update_status: String,
     update_worker_failure: Option<String>,
     available_update: Option<ReleaseUpdate>,
+    news: whats_new::NewsState,
     startup_update_checked: bool,
     viewer_search: String,
     viewer_rows: Vec<explorer_tree::ExplorerRow>,
@@ -1860,6 +1862,9 @@ enum Message {
     SavePreferences,
     CheckUpdates,
     UpdateChecked(Result<Option<ReleaseUpdate>, String>),
+    RefreshNews,
+    NewsLoaded(Result<whats_new::NewsResult, String>),
+    OpenNewsLink(String),
     ApplyUpdate,
     UpdatePrepared(Result<PreparedUpdate, String>),
     AssetsRootChanged(String),
@@ -2600,6 +2605,17 @@ fn check_updates_task(channel: UpdateChannel) -> Task<Message> {
     )
 }
 
+fn refresh_news_task() -> Task<Message> {
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(whats_new::refresh)
+                .await
+                .map_err(|error| format!("News worker failed: {error}"))
+        },
+        Message::NewsLoaded,
+    )
+}
+
 /// Rebuild filtering only when the catalog, query or selected snapshot changes.
 /// Validates the currently configured Asset Library directory before shell
 /// navigation. Never treat a non-directory, missing or relative path as the
@@ -2698,6 +2714,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::Navigate(page) => {
             state.page = Some(page);
             let mut tasks = Vec::new();
+            if page == Page::WhatsNew && state.news.needs_refresh() {
+                state.news.loading = true;
+                tasks.push(refresh_news_task());
+            }
             if page == Page::Files
                 && state.modding_projects.is_none()
                 && !state.preferences.projects.trim().is_empty()
@@ -6728,6 +6748,26 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
             return check_updates_task(channel);
         }
+        Message::RefreshNews => {
+            if !state.news.loading {
+                state.news.loading = true;
+                return refresh_news_task();
+            }
+        }
+        Message::NewsLoaded(result) => match result {
+            Ok(news) => state.news.apply(news),
+            Err(error) => {
+                state.news.loading = false;
+                state.news.loaded_at = Some(std::time::Instant::now());
+                state.news.release_status = format!("Could not refresh release notes: {error}");
+                state.news.discord_status = format!("Could not refresh Discord posts: {error}");
+            }
+        },
+        Message::OpenNewsLink(url) => {
+            if let Err(error) = whats_new::open_link(&url) {
+                state.status = error;
+            }
+        }
         Message::UpdateChecked(result) => match result {
             Ok(Some(update)) => {
                 state.update_status = format!(
@@ -9345,7 +9385,7 @@ fn view(state: &State) -> Element<'_, Message> {
     let workspace: Element<'_, Message> = match page {
         Page::Home => private_pages::home(state),
         Page::Instructions => private_pages::instructions(),
-        Page::WhatsNew => private_pages::whats_new(),
+        Page::WhatsNew => private_pages::whats_new(state),
         Page::Credits => private_pages::credits(),
         Page::Developer => private_pages::developer(state),
         Page::AssetLibrary => asset_library_page::view(state),
@@ -9806,6 +9846,7 @@ impl Desktop {
             ..window::Settings::default()
         });
         let mut state = initial_state();
+        state.news.loading = true;
         let library_root = PathBuf::from(&state.library_root);
         state.library_startup_loading = library_root.is_dir();
         // Independent read-only indexing: don't block Modding, updates,
@@ -9826,7 +9867,7 @@ impl Desktop {
                 play_notice_id: None,
                 export_id: None,
             },
-            Task::batch([opened.map(|_| Message::ViewerOpened), startup]),
+            Task::batch([opened.map(|_| Message::ViewerOpened), startup, refresh_news_task()]),
         )
     }
 
@@ -10160,7 +10201,13 @@ impl Desktop {
         } else {
             Subscription::none()
         };
+        let news_poll = if self.state.page == Some(Page::WhatsNew) {
+            iced::time::every(Duration::from_secs(600)).map(|_| Message::RefreshNews)
+        } else {
+            Subscription::none()
+        };
         Subscription::batch([
+            news_poll,
             armor_recovery,
             armor_pulse,
             playback,
