@@ -1,6 +1,6 @@
 //! A dedicated native Play result window; no need to discover launch errors
 //! in the main window's scrolling footer or activity log.
-use super::{Message, State, design};
+use super::{Message, State, design, work_progress};
 use iced::widget::{column, container, row, scrollable, space, text};
 use iced::{Element, Fill, Length};
 use std::sync::atomic::Ordering;
@@ -101,9 +101,47 @@ pub fn view(state: &State) -> Element<'_, Message> {
             "You may switch to the client to press Play. This window will show the verified launch outcome."
         }
     };
+    // Show the exact same snapshot/counter as the footer: percentages only
+    // for workers that actually publish them, an active sweep otherwise.
+    let progress = if notice.phase == Phase::Preparing {
+        work_progress::snapshot(state).unwrap_or_else(|| work_progress::Snapshot {
+            label: "Opening game client".into(),
+            detail: "Waiting for launch worker".into(),
+            percent: None,
+            position: 0.0,
+        })
+    } else {
+        work_progress::Snapshot {
+            label: match notice.phase {
+                Phase::Success => "Launch completed".into(),
+                Phase::Warning => "Game opened without verified mods".into(),
+                Phase::Error => "Launch operation stopped".into(),
+                Phase::Preparing => "Preparing game launch".into(),
+            },
+            detail: match notice.phase {
+                Phase::Success => "Completed".into(),
+                _ => "No completed modded swap can be assumed".into(),
+            },
+            percent: (notice.phase == Phase::Success).then_some(100),
+            position: 0.0,
+        }
+    };
+    let label = progress.label.clone();
+    let meter = work_progress::bar(&progress, Length::Fill, 16.0);
+    let detail = if let Some(percent) = progress.percent {
+        format!("{percent}% · {}", progress.detail)
+    } else {
+        progress.detail.clone()
+    };
     let content = column![
         text(notice.title()).size(23),
         text(stage).size(12).style(design::muted),
+        column![
+            text(label).size(13),
+            meter,
+            text(detail).size(12).style(design::muted),
+        ]
+        .spacing(7),
         scrollable(
             column![
                 text(notice.message.as_str()).size(14),
