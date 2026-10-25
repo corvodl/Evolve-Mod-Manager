@@ -59,7 +59,9 @@ impl Notice {
 
 pub fn view(state: &State) -> Element<'_, Message> {
     let Some(notice) = state.play_notice.as_ref() else {
-        return container(text("No game launch to report.")).padding(24).into();
+        return container(text("No game launch to report."))
+            .padding(24)
+            .into();
     };
     let stage = if notice.phase == Phase::Preparing && notice.kind == Kind::Modded {
         let progress = state
@@ -88,10 +90,10 @@ pub fn view(state: &State) -> Element<'_, Message> {
         (Kind::Modded, Phase::Error | Phase::Warning) => {
             "The manager did not confirm that enabled mods were installed. Close Evolve before retrying or restoring. Do not manually delete backup files or the swap journal."
         }
-        (Kind::Clean, _) => {
-            "Regular-client mode does not apply the modded PAK swap."
+        (Kind::Clean, _) => "Regular-client mode does not apply the modded PAK swap.",
+        _ => {
+            "You may switch to the client to press Play. This window will show the verified launch outcome."
         }
-        _ => "You may switch to the client to press Play. This window will show the verified launch outcome.",
     };
     let content = column![
         text(notice.title()).size(23),
