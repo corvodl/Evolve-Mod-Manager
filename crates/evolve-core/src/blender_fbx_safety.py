@@ -205,6 +205,135 @@ def _set_count(node, value):
     node.count = 1
 
 
+def _vector_length_squared(vector):
+    return sum(float(component) ** 2 for component in vector)
+
+
+def _cross(a, b):
+    return (a[1]*b[2] - a[2]*b[1],
+            a[2]*b[0] - a[0]*b[2],
+            a[0]*b[1] - a[1]*b[0])
+
+
+def _unit(vector):
+    norm = math.sqrt(_vector_length_squared(vector))
+    if norm <= 1e-8 or not math.isfinite(norm):
+        raise FBXValidationError("FBX cannot reconstruct tangent basis from invalid vectors")
+    return tuple(component / norm for component in vector)
+
+
+def _fallback_tangent(normal):
+    """Defined orthonormal basis where the authored UV derivative is zero.
+
+    A zero-area UV island has no unique tangent direction. Use an axis least
+    parallel to its *unchanged* corner normal instead of copying zero vectors
+    into the resulting FBX. Normal-map direction cannot be inferred on such
+    islands, but the mesh remains importable and all UVs stay source-faithful.
+    """
+    direction = min(range(3), key=lambda axis: abs(normal[axis]))
+    axis = tuple(1.0 if i == direction else 0.0 for i in range(3))
+    projected = tuple(axis[i] - normal[i] * normal[direction]
+                      for i in range(3))
+    return _unit(projected)
+
+
+def _store_fbx_vectors(node, vectors):
+    """Replace only a tangent or binormal direct array, retaining compression."""
+    prop = _properties(node)
+    if len(prop) != 1 or not isinstance(prop[0], tuple):
+        raise FBXValidationError("FBX tangent layer has invalid array properties")
+    kind, count, encoding, _ = prop[0]
+    if kind not in (b"d", b"f") or len(vectors) != count:
+        raise FBXValidationError("FBX tangent array type/count changed during repair")
+    code = "d" if kind == b"d" else "f"
+    raw = struct.pack("<" + str(count) + code, *vectors)
+    if encoding == 1:
+        payload = zlib.compress(raw)
+    elif encoding == 0:
+        payload = raw
+    else:
+        raise FBXValidationError("Unsupported FBX tangent array compression")
+    node.props = kind + struct.pack("<III", count, encoding, len(payload)) + payload
+    node.count = 1
+
+
+def _repair_zero_tangent_vectors(objects):
+    """Repair only zero Blender FBX tangent/binormal vectors.
+
+    Blender can emit literal zero vectors at a collapsed UV triangle, even
+    though the CryEngine surface normals, material IDs, UV0 and skin weights
+    are still valid. Never substitute missing or degenerate *normals*, and
+    never modify valid tangent-space vectors or source mesh geometry.
+    """
+    repaired = 0
+    for mesh in objects.children_named(b"Geometry"):
+        props = _properties(mesh)
+        if len(props) < 3 or props[2] != b"Mesh":
+            continue
+        layer_names = ((b"LayerElementNormal", b"Normals"),
+                       (b"LayerElementTangent", b"Tangents"),
+                       (b"LayerElementBinormal", b"Binormals"))
+        layers = [mesh.children_named(name) for name, _ in layer_names]
+        # Normal validation will diagnose missing layers. Multiple layer
+        # mappings require exact polygon-corner correspondence, not guesses.
+        if any(len(items) != 1 for items in layers):
+            continue
+        nodes = [items[0].get(name) for items, (_, name) in zip(layers, layer_names)]
+        if any(node is None for node in nodes):
+            continue
+        normals, tangents, binormals = [
+            _numeric_array(node, {b"d", b"f"}) for node in nodes
+        ]
+        if (len(normals) != len(tangents) or len(normals) != len(binormals)
+                or not normals or len(normals) % 3):
+            continue  # Existing strict validation will reject malformed layers.
+        new_tangents = list(tangents)
+        new_binormals = list(binormals)
+        changes_t = changes_b = 0
+        for index in range(0, len(normals), 3):
+            n = normals[index:index+3]
+            t = tangents[index:index+3]
+            b = binormals[index:index+3]
+            # Preserve exact imported CryEngine normals. An invalid normal
+            # cannot supply a defensible tangent basis; fail closed below.
+            if not all(math.isfinite(x) for x in n+t+b):
+                continue
+            if not (0.1 < _vector_length_squared(n) < 2.1):
+                continue
+            t_zero = _vector_length_squared(t) < 1e-12
+            b_zero = _vector_length_squared(b) < 1e-12
+            if not (t_zero or b_zero):
+                continue
+            n = _unit(n)
+            if t_zero and b_zero:
+                replacement_t = _fallback_tangent(n)
+                replacement_b = _unit(_cross(n, replacement_t))
+            elif t_zero:
+                # Keep the valid authored binormal and derive only its
+                # missing partner. Reject parallel/inconsistent inputs.
+                if not 0.1 < _vector_length_squared(b) < 2.1:
+                    continue
+                replacement_t = _unit(_cross(_unit(b), n))
+                replacement_b = None
+            else:
+                if not 0.1 < _vector_length_squared(t) < 2.1:
+                    continue
+                replacement_t = None
+                replacement_b = _unit(_cross(n, _unit(t)))
+            if replacement_t is not None:
+                new_tangents[index:index+3] = replacement_t
+                changes_t += 1
+            if replacement_b is not None:
+                new_binormals[index:index+3] = replacement_b
+                changes_b += 1
+        if changes_t:
+            _store_fbx_vectors(nodes[1], new_tangents)
+        if changes_b:
+            _store_fbx_vectors(nodes[2], new_binormals)
+        repaired += changes_t + changes_b
+    return repaired
+
+
 def _validate_geometry(objects, require_tangent_space=False):
     mesh_count = 0
     for mesh in objects.children_named(b"Geometry"):
@@ -301,6 +430,7 @@ def optimize_binary_fbx(path, embed_textures=True, require_tangent_space=False):
     connections = next((node for node in roots if node.name == b"Connections"), None)
     if objects is None or connections is None:
         raise FBXValidationError("Missing FBX object/connection tables")
+    repaired_vectors = _repair_zero_tangent_vectors(objects) if require_tangent_space else 0
     meshes = _validate_geometry(objects, require_tangent_space=require_tangent_space)
     embedded_normals = 0
     if not embed_textures:
@@ -395,7 +525,8 @@ def optimize_binary_fbx(path, embed_textures=True, require_tangent_space=False):
     finally:
         if target.exists():
             target.unlink()
-    return {"meshes": meshes, "weighted_clusters": active_clusters,
+    return {"meshes": meshes, "repaired_tangent_vectors": repaired_vectors,
+            "weighted_clusters": active_clusters,
             "removed_empty_clusters": len(clusters) - active_clusters,
             "merged_bind_poses": len(poses) - len(pose_groups),
             "embedded_normal_maps": embedded_normals}
