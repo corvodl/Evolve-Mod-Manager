@@ -231,10 +231,10 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         ),
         status_card(
             "Client Version",
-            state
-                .client_version
-                .as_ref()
-                .map_or_else(|| "Not detected".to_owned(), |version| format!("v{version}")),
+            state.client_version.as_ref().map_or_else(
+                || "Not detected".to_owned(),
+                |version| format!("v{version}")
+            ),
         ),
         status_card(
             "Signing stage",
