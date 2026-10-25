@@ -2610,7 +2610,14 @@ fn start_news_images(state: &mut State) -> Task<Message> {
     if state.news.images_loading {
         return Task::none();
     }
-    let urls = whats_new::image_urls(&state.news.cache.announcements)
+    // Home needs just the newest post; What's New can load the full list.
+    let candidates = if state.page == Some(Page::Home) {
+        let posts = &state.news.cache.announcements;
+        whats_new::image_urls(&posts[..posts.len().min(1)])
+    } else {
+        whats_new::image_urls(&state.news.cache.announcements)
+    };
+    let urls = candidates
         .into_iter()
         .filter(|url| {
             !state.news.image_handles.contains_key(url) && !state.news.image_failures.contains(url)
@@ -2739,10 +2746,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::Navigate(page) => {
             state.page = Some(page);
             let mut tasks = Vec::new();
-            if page == Page::WhatsNew {
+            if matches!(page, Page::Home | Page::WhatsNew) {
                 tasks.push(start_news_images(state));
             }
-            if page == Page::WhatsNew && state.news.needs_refresh() {
+            if matches!(page, Page::Home | Page::WhatsNew) && state.news.needs_refresh() {
                 state.news.loading = true;
                 tasks.push(refresh_news_task());
             }
@@ -6785,7 +6792,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::NewsLoaded(result) => match result {
             Ok(news) => {
                 state.news.apply(news);
-                if state.page == Some(Page::WhatsNew) {
+                if matches!(state.page, Some(Page::Home | Page::WhatsNew)) {
                     return start_news_images(state);
                 }
             }
@@ -6818,7 +6825,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             // A news refresh may have changed the attachment URLs while the
             // previous download was running; reconcile them without blocking.
-            if state.page == Some(Page::WhatsNew) {
+            if matches!(state.page, Some(Page::Home | Page::WhatsNew)) {
                 return start_news_images(state);
             }
         }
@@ -10265,7 +10272,7 @@ impl Desktop {
         } else {
             Subscription::none()
         };
-        let news_poll = if self.state.page == Some(Page::WhatsNew) {
+        let news_poll = if matches!(self.state.page, Some(Page::Home | Page::WhatsNew)) {
             iced::time::every(Duration::from_secs(600)).map(|_| Message::RefreshNews)
         } else {
             Subscription::none()
