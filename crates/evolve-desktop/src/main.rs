@@ -7661,6 +7661,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 ));
             }
             state.mod_launch_progress = None;
+            // Model preparation is another tracked worker; clear its marker
+            // when the result arrives so the activity bar never stays active.
+            state.viewer_load_progress = None;
             // Preserve the footer progress through indexing and the initial
             // file scan; all other completions (including errors) clear it.
             let keep_project_progress = state.project_copy_progress.is_some()
