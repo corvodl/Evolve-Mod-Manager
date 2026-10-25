@@ -290,21 +290,107 @@ pub(super) fn instructions() -> Element<'static, Message> {
     ].spacing(12).padding(12)).height(Fill).into()
 }
 
-pub(super) fn whats_new() -> Element<'static, Message> {
-    scrollable(column![
+pub(super) fn whats_new(state: &State) -> Element<'_, Message> {
+    let news = &state.news;
+    let mut cards = column![
         text("What's New").size(24),
-        surface(column![
-            text("Rust rewrite / Development Preview").size(17),
-            text("Native Iced/wgpu separate asset viewer, read-only explorer, GPU viewport and a compact timeline.").size(13),
-            text("Signed PAK staging, hash-checked recovery, authored DDS material references and limited Blender exports are under validation.").size(13),
-            text("Not equivalent to the private v1.3.5 feature set; the public 1.0 release remains blocked.").size(12).style(design::muted),
-        ].spacing(9)),
-        surface(column![
-            text("Private manager reference — v1.3.5").size(17),
-            text("Complete-character FBX assembly, source-faithful UV mapping and animation compatibility are the parity targets.").size(13),
-            text("Read the project parity checklist for acceptance status; private release notes are not public Rust feature claims.").size(12).style(design::muted),
-        ].spacing(9)),
-    ].spacing(12).padding(12)).height(Fill).into()
+        row![
+            text("Latest published version and community announcements")
+                .size(12)
+                .style(design::muted),
+            design::button(if news.loading {
+                "Refreshing..."
+            } else {
+                "Refresh"
+            })
+            .on_press_maybe((!news.loading).then_some(Message::RefreshNews)),
+        ]
+        .spacing(15)
+        .align_y(iced::Center),
+        text("LATEST VERSION").size(14).style(design::accent),
+    ]
+    .spacing(12);
+
+    let release_card: Element<'_, Message> = if let Some(release) = &news.cache.release {
+        surface(
+            column![
+                text(&release.title).size(18),
+                text(format!(
+                    "{}  ·  Published {}",
+                    release.version, release.published_at
+                ))
+                .size(12)
+                .style(design::muted),
+                text(if release.notes.is_empty() {
+                    "No release description was published.".to_owned()
+                } else {
+                    release.notes.clone()
+                })
+                .size(13),
+                design::button("View full release notes on GitHub")
+                    .on_press(Message::OpenNewsLink(release.url.clone())),
+            ]
+            .spacing(9),
+        )
+        .into()
+    } else {
+        surface(
+            text(if news.loading {
+                "Loading release notes from GitHub Releases..."
+            } else {
+                "No published release notes available yet."
+            })
+            .size(13),
+        )
+        .into()
+    };
+    cards = cards.push(release_card);
+    if !news.release_status.is_empty() {
+        cards = cards.push(text(&news.release_status).size(11).style(design::muted));
+    }
+    cards = cards.push(text("DISCORD ANNOUNCEMENTS").size(14).style(design::accent));
+    cards = cards.push(text("Forwarded announcements from the followed Discord channel. Only published posts appear here.")
+        .size(12).style(design::muted));
+
+    if news.cache.announcements.is_empty() {
+        cards = cards.push(surface(text(if news.loading {
+            "Loading forwarded announcements..."
+        } else {
+            "No forwarded announcements available. Confirm the channel is followed and that GitHub Pages published the feed."
+        }).size(13)));
+    } else {
+        for post in news.cache.announcements.iter().take(20) {
+            let mut details = column![].spacing(8);
+            if !post.title.is_empty() {
+                details = details.push(text(&post.title).size(17));
+            }
+            details = details.push(
+                text(format!("{}  ·  {}", post.author, post.timestamp))
+                    .size(12)
+                    .style(design::muted),
+            );
+            if !post.content.is_empty() {
+                details = details.push(text(&post.content).size(13));
+            }
+            if !post.description.is_empty() {
+                details = details.push(text(&post.description).size(13));
+            }
+            let mut links = row![
+                design::button("View on Discord").on_press(Message::OpenNewsLink(post.url.clone()))
+            ]
+            .spacing(8);
+            for image in post.image_urls.iter().take(2) {
+                links = links.push(
+                    design::button("View image").on_press(Message::OpenNewsLink(image.clone())),
+                );
+            }
+            cards = cards.push(surface(details.push(links)));
+        }
+    }
+    if !news.discord_status.is_empty() {
+        cards = cards.push(text(&news.discord_status).size(11).style(design::muted));
+    }
+    scrollable(cards.padding(12)).height(Fill).into()
 }
 
 pub(super) fn credits() -> Element<'static, Message> {

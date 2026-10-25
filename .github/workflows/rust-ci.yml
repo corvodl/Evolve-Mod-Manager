@@ -53,6 +53,8 @@ jobs:
         run: python3 -m unittest discover -s crates/evolve-core/tests -p 'test_blender_static_fbx_basis.py'
       - name: Validate original 2012 Rocky 47/48-bone armature compatibility
         run: python3 -m unittest discover -s crates/evolve-core/tests -p 'test_2012_rocky_armatures.py'
+      - name: Test sanitized read-only Discord feed
+        run: python3 -m unittest discover -s scripts -p 'test_publish_discord_announcements.py'
       - run: cargo fmt --all -- --check
       - run: cargo test -p evolve-core --all-targets
       - run: cargo clippy -p evolve-core --all-targets -- -D warnings
