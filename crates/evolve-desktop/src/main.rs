@@ -41,7 +41,6 @@ mod modding_projects;
 mod orientation_gizmo;
 mod play_dialog;
 mod play_setup;
-mod work_progress;
 mod private_pages;
 mod runtime_armor;
 mod runtime_experiments;
@@ -63,6 +62,7 @@ mod view_navigation;
 mod viewer_grid;
 mod viewer_inspector;
 mod viewport;
+mod work_progress;
 use asset_cache::{SharedCache, decoded_dds, decoded_dds_indexed};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
@@ -2239,17 +2239,25 @@ fn operation_label(operation: &Operation) -> &'static str {
         Operation::ResolveMaterial(..) => "Resolving CryEngine materials",
         Operation::LoadModelSurfaces(..) => "Loading model surface materials",
         Operation::LoadCaf(..) | Operation::LoadCafLayer(..) => "Loading character animation",
-        Operation::BindCafPreview(..) | Operation::BindCdfCafPreview(..) => "Binding character animation",
+        Operation::BindCafPreview(..) | Operation::BindCdfCafPreview(..) => {
+            "Binding character animation"
+        }
         Operation::RiggedGlb(..) | Operation::RiggedFbx(..) => "Exporting rigged character",
         Operation::ExportBundle(..) => "Exporting selected asset bundle",
         Operation::ConvertMotion(..) => "Converting animation",
         Operation::LoadGlbMotion(..) => "Loading animation keyframes",
         Operation::InspectCdf(..) | Operation::ResolveCdf(..) => "Inspecting character assembly",
         Operation::BuildStaticCdf(..) => "Building character viewport model",
-        Operation::PrepareCdfDamage(..) | Operation::ReblendCdfDamage(..) => "Preparing damage materials",
-        Operation::InspectModel(..) | Operation::InspectIndexedModel(..) => "Inspecting original model",
+        Operation::PrepareCdfDamage(..) | Operation::ReblendCdfDamage(..) => {
+            "Preparing damage materials"
+        }
+        Operation::InspectModel(..) | Operation::InspectIndexedModel(..) => {
+            "Inspecting original model"
+        }
         Operation::DiscoverModelResources(..) => "Discovering model dependencies",
-        Operation::LoadDeclaredClip(..) | Operation::LoadDeclaredDba(..) => "Loading original animation clip",
+        Operation::LoadDeclaredClip(..) | Operation::LoadDeclaredDba(..) => {
+            "Loading original animation clip"
+        }
         Operation::InspectLevel(..) | Operation::InspectTerrain(..) => "Inspecting level resources",
         Operation::ExportEditedLevel(..) => "Exporting edited level",
         Operation::InspectSignedPak(..) => "Verifying signed CryPAK",
