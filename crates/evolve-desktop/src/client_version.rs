@@ -92,7 +92,7 @@ mod tests {
 
     #[test]
     fn only_configured_client_launcher_is_supported() {
-        assert!(is_launcher(Path::new(r"C:\Games\Modded Evolve\ModdedEvolveLauncher.exe")));
+        assert!(is_launcher(Path::new("ModdedEvolveLauncher.exe")));
         assert!(!is_launcher(Path::new(r"C:\Games\Modded Evolve\Evolve.exe")));
         assert!(!is_launcher(Path::new("evolve-mod-manager.exe")));
     }
