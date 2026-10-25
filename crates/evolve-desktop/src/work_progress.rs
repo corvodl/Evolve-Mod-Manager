@@ -60,7 +60,11 @@ pub fn snapshot(state: &State) -> Option<Snapshot> {
             None
         };
         let detail = if size > 0 && phase == 1 {
-            format!("{done}/{total} files · {} / {} MiB · {elapsed}", bytes / 1048576, size / 1048576)
+            format!(
+                "{done}/{total} files · {} / {} MiB · {elapsed}",
+                bytes / 1048576,
+                size / 1048576
+            )
         } else {
             format!("{done}/{total} files · {elapsed}")
         };
@@ -76,17 +80,39 @@ pub fn snapshot(state: &State) -> Option<Snapshot> {
             95..=97 => "Launcher ready — press Play",
             _ => "Confirming PAK swap and game release",
         };
-        return Some(make(label.into(), format!("Launch stage {percent}% · {elapsed}"), Some(percent)));
+        return Some(make(
+            label.into(),
+            format!("Launch stage {percent}% · {elapsed}"),
+            Some(percent),
+        ));
     }
     if let Some(progress) = &state.library_import_progress {
-        return Some(make("Importing or updating PAKs".into(), format!("{} files processed · {elapsed}", progress.load(Ordering::Relaxed)), None));
+        return Some(make(
+            "Importing or updating PAKs".into(),
+            format!(
+                "{} files processed · {elapsed}",
+                progress.load(Ordering::Relaxed)
+            ),
+            None,
+        ));
     }
     if let Some(progress) = &state.scan_indexed {
-        return Some(make("Indexing game assets".into(), format!("{} entries indexed · {elapsed}", progress.load(Ordering::Relaxed)), None));
+        return Some(make(
+            "Indexing game assets".into(),
+            format!(
+                "{} entries indexed · {elapsed}",
+                progress.load(Ordering::Relaxed)
+            ),
+            None,
+        ));
     }
     if let Some(progress) = &state.viewer_load_progress {
         let percent = progress.load(Ordering::Relaxed).min(99) as u32;
-        return Some(make("Loading character model".into(), format!("Model stages {percent}% · {elapsed}"), Some(percent)));
+        return Some(make(
+            "Loading character model".into(),
+            format!("Model stages {percent}% · {elapsed}"),
+            Some(percent),
+        ));
     }
     let label = if state.gfx_busy || state.gfx_install_busy {
         "Editing or previewing GFX".to_owned()
@@ -99,7 +125,8 @@ pub fn snapshot(state: &State) -> Option<Snapshot> {
     } else if state.runtime_checking || state.developer_checking {
         "Checking runtime diagnostics".to_owned()
     } else if state.busy {
-        state.busy_operation
+        state
+            .busy_operation
             .as_deref()
             .unwrap_or("Processing selected assets")
             .to_owned()
@@ -110,7 +137,9 @@ pub fn snapshot(state: &State) -> Option<Snapshot> {
 }
 
 pub fn bar<'a>(snapshot: &Snapshot, width: Length, height: f32) -> Element<'a, Message> {
-    let value = snapshot.percent.map_or(snapshot.position, |value| value as f32);
+    let value = snapshot
+        .percent
+        .map_or(snapshot.position, |value| value as f32);
     container(
         progress_bar(0.0..=100.0, value)
             .width(width)
