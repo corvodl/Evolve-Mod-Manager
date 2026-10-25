@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish a read-only, bounded JSON feed of Discord-followed announcement posts.
+"""Publish a read-only, bounded JSON feed of all messages in one Discord channel.
 
 The bot token is read only from the GitHub Actions secret environment. Never
 write the token, raw Discord response headers or credentials to the feed.
@@ -59,9 +59,10 @@ def clean_posts(messages: object, destination_id: str) -> list[dict]:
     for message in messages:
         if not isinstance(message, dict):
             continue
-        # Channel Following creates webhook-authored posts. Do not republish
-        # ordinary community messages from this channel by accident.
-        if not message.get("webhook_id") or not isinstance(message.get("id"), str):
+        # This is an intentionally public news channel: include original
+        # forwards, owner-authored updates, bot messages and plain text posts.
+        # Never read or publish messages from a different channel.
+        if not isinstance(message.get("id"), str) or not CHANNEL_ID.fullmatch(message["id"]):
             continue
         if message.get("channel_id") != destination_id:
             continue
@@ -170,9 +171,9 @@ def main() -> int:
     except (RuntimeError, ValueError, OSError, json.JSONDecodeError) as error:
         print(f"Announcements feed not published: {error}", file=sys.stderr)
         return 1
-    print(f"Published {len(posts)} forwarded Discord announcements")
+    print(f"Published {len(posts)} Discord channel messages")
     if not posts:
-        print("No webhook-forwarded posts found. Confirm the source channel was followed and its posts published.")
+        print("No displayable channel messages found. Post a text update or check the configured channel and bot permissions.")
     return 0
 
 
