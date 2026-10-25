@@ -9954,6 +9954,7 @@ impl Desktop {
         } else {
             Task::none()
         };
+        let client_version_task = inspect_client_version_task(&state.preferences.client_executable);
         (
             Self {
                 state,
@@ -9969,7 +9970,7 @@ impl Desktop {
                 opened.map(|_| Message::ViewerOpened),
                 startup,
                 refresh_news_task(),
-                inspect_client_version_task(&state.preferences.client_executable),
+                client_version_task,
             ]),
         )
     }
