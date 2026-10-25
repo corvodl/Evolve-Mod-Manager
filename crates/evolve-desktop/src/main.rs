@@ -2767,6 +2767,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::Navigate(page) => {
             state.page = Some(page);
             let mut tasks = Vec::new();
+            if page == Page::Home {
+                tasks.push(inspect_client_version_task(&state.preferences.client_executable));
+            }
             if matches!(page, Page::Home | Page::WhatsNew) {
                 tasks.push(start_news_images(state));
             }
