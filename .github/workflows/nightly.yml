@@ -1,7 +1,8 @@
 name: Nightly 0.1.0 Windows release
 
 on:
-  # Publish the first Nightly when this release workflow enters main.
+  # An update to this workflow triggers a Nightly from main; release notes
+  # list only changes merged since the previous published Nightly tag.
   push:
     branches: [main]
     paths: [".github/workflows/nightly.yml"]
