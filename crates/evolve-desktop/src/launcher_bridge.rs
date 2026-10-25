@@ -8,7 +8,7 @@ use evolve_core::signed_pak::inspect_signed_pak;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -1088,6 +1088,62 @@ pub fn refresh_prepared_offline_cache(stage: &Path, swap: &Path) -> Result<usize
     Ok(preserved)
 }
 
+/// The private helper prints the actual cause as `STOPPED: Type message` on
+/// stderr, but `Command::status()` discards it. Always select that diagnostic
+/// over the generic Windows process exit code. Limit text shown in the popup;
+/// preserve the full helper output separately for troubleshooting.
+fn prepare_failure_reason(stdout: &[u8], stderr: &[u8]) -> String {
+    let err = String::from_utf8_lossy(stderr);
+    let out = String::from_utf8_lossy(stdout);
+    let stopped = err
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| line.starts_with("STOPPED:"));
+    let last_error = err.lines().rev().map(str::trim).find(|line| !line.is_empty());
+    let last_output = out.lines().rev().map(str::trim).find(|line| !line.is_empty());
+    let detail = stopped
+        .or(last_error)
+        .or(last_output)
+        .unwrap_or("No diagnostic text was emitted by the Python helper");
+    detail.chars().take(600).collect()
+}
+
+fn prepare_recovery_advice(detail: &str) -> &'static str {
+    let lower = detail.to_ascii_lowercase();
+    if lower.contains("insufficient free space") {
+        "Free space on the game drive, then retry. Keep all original backups and recovery records."
+    } else if lower.contains("already running") || lower.contains("close evolve.exe") {
+        "Close Evolve and the Modded Evolve launcher completely before retrying."
+    } else if lower.contains("backup") || lower.contains("state journal") || lower.contains("restore") {
+        "Review Restore original game files in Modding. Do not delete original backups or the swap journal manually."
+    } else if lower.contains("prepared file differs") || lower.contains("partial file") {
+        "The helper found a leftover temporary prepared file. Do not overwrite game originals; check the preparation log and safe recovery state."
+    } else if lower.contains("shim") || lower.contains("public key") {
+        "The injector key or staged shim needs verification. Use the manager's offline setup/recovery workflow before another launch."
+    } else {
+        "Review the preparation log for the affected file and keep original backups unchanged."
+    }
+}
+
+/// Best-effort diagnostic record; a logging failure must not hide the Python
+/// failure that caused the modded launch to stop.
+fn record_prepare_output(
+    log_path: &Path,
+    output: &std::process::Output,
+) -> Result<(), String> {
+    let mut log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .map_err(|e| format!("{}: {e}", log_path.display()))?;
+    writeln!(log, "\n=== controlled_swap.py prepare: {} ===", output.status)
+        .map_err(|e| e.to_string())?;
+    log.write_all(&output.stdout).map_err(|e| e.to_string())?;
+    log.write_all(&output.stderr).map_err(|e| e.to_string())?;
+    writeln!(log).map_err(|e| e.to_string())
+}
+
 /// Reuse the private launcher's already-tested control flow. It performs
 /// same-volume .customkey-ready renames only during its Frida CreateProcessW
 /// pause and starts an independent restore watchdog. Nothing here injects,
@@ -1104,7 +1160,7 @@ pub fn launch_existing_offline_client(
     games_closed()?;
     check_private_helper_runtime()?;
     if !plan.prepared {
-        let status = Command::new("py")
+        let output = Command::new("py")
             .args(["-3.11", "-u"])
             .arg(helper_dir.join("controlled_swap.py"))
             .arg("prepare")
@@ -1112,12 +1168,23 @@ pub fn launch_existing_offline_client(
             .arg(&plan.stage)
             .arg("--game-root")
             .arg(crate::play_setup::ordinary_game_path(&plan.game))
+            .current_dir(helper_dir)
+            .stdin(Stdio::null())
             .creation_flags(0x08000000)
-            .status()
+            .output()
             .map_err(|e| format!("Python 3.11 launcher preparation unavailable: {e}"))?;
-        if !status.success() {
+        let log_path = helper_dir.join("rust-prepare-bridge.log");
+        let logged = record_prepare_output(&log_path, &output);
+        if !output.status.success() {
+            let detail = prepare_failure_reason(&output.stdout, &output.stderr);
+            let log_hint = match &logged {
+                Ok(()) => format!("Details: {}", log_path.display()),
+                Err(error) => format!("Also could not write preparation log: {error}"),
+            };
             return Err(format!(
-                "Private controlled_swap.py prepare failed: {status}"
+                "Modded PAK preparation failed ({}): {detail}. {} {log_hint}. No game swap was started.",
+                output.status,
+                prepare_recovery_advice(&detail),
             ));
         }
     }
@@ -1267,6 +1334,29 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         assert!(inspect_existing_launcher(temp.path(), temp.path()).is_err());
     }
+    #[test]
+    fn prepare_errors_prefer_the_actual_private_stopped_reason() {
+        let stdout = b"Preparing 237 files; 12 GiB copied to non-PAK names.\n";
+        let stderr = b"STOPPED: RuntimeError Insufficient free space for prepared copies: need 5 GiB, have 2 GiB.\n";
+        let cause = prepare_failure_reason(stdout, stderr);
+        assert!(cause.contains("Insufficient free space"));
+        assert!(!cause.contains("Preparing 237"));
+        assert!(prepare_recovery_advice(&cause).contains("Free space"));
+    }
+
+    #[test]
+    fn preparation_failure_fallback_is_bounded_and_explicit() {
+        assert!(prepare_failure_reason(b"", b"").contains("No diagnostic text"));
+        assert_eq!(
+            prepare_failure_reason(b"Preparing 237 files\n", b"Traceback\nPermissionError: Access denied\n"),
+            "PermissionError: Access denied"
+        );
+        assert_eq!(
+            prepare_failure_reason(b"", &["x".repeat(900).as_bytes(), b"\n"].concat()).len(),
+            600
+        );
+    }
+
     #[test]
     fn prepared_swap_requires_hash_exact_sources_and_never_overwrites_originals() {
         let home = tempfile::tempdir().unwrap();
