@@ -6,10 +6,9 @@ use iced::{Element, Fill, Length};
 
 pub(super) fn view(state: &State) -> Element<'_, Message> {
     let progress = work_progress::snapshot(state);
-    let active = progress.as_ref().map_or_else(
-        || "Idle".to_owned(),
-        |snapshot| snapshot.label.clone(),
-    );
+    let active = progress
+        .as_ref()
+        .map_or_else(|| "Idle".to_owned(), |snapshot| snapshot.label.clone());
     let meter: Element<'_, Message> = if let Some(snapshot) = &progress {
         column![
             work_progress::bar(snapshot, Length::Fill, 12.0),
