@@ -104,7 +104,7 @@ jobs:
           )
           $changes = @()
           if ($previousTag) {
-            $body += "Changes since $previousTag:"
+            $body += "Changes since ${previousTag}:"
             $history = @(git log --first-parent --format="%H" "$previousTag..HEAD")
             if ($LASTEXITCODE -ne 0) { throw "Unable to compare commits with $previousTag" }
             foreach ($commit in $history) {
