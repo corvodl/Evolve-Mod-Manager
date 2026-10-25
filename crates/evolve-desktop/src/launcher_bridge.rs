@@ -1407,7 +1407,13 @@ mod tests {
         assert!(!ready.exists());
         assert_eq!(fs::read(&moved).unwrap(), b"custom-edited-ready-copy");
         assert_eq!(fs::read(&original).unwrap(), b"original-pak");
-        assert!(moved.file_name().unwrap().to_string_lossy().contains(".stale-"));
+        assert!(
+            moved
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains(".stale-")
+        );
     }
 
     #[cfg(windows)]
