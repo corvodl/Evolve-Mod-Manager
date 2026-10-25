@@ -2,7 +2,7 @@
 //! Home deliberately does not enumerate PAKs or scan the user's installation.
 use super::{Message, Page, State};
 use crate::design;
-use iced::widget::{button, column, container, row, scrollable, svg, text};
+use iced::widget::{button, column, container, image, row, scrollable, svg, text};
 use iced::{Background, Border, Element, Fill, Length};
 
 fn surface<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Container<'a, Message> {
@@ -349,8 +349,6 @@ pub(super) fn whats_new(state: &State) -> Element<'_, Message> {
         cards = cards.push(text(&news.release_status).size(11).style(design::muted));
     }
     cards = cards.push(text("DISCORD ANNOUNCEMENTS").size(14).style(design::accent));
-    cards = cards.push(text("Updates from your configured Discord channel, including followed announcements and messages you post.")
-        .size(12).style(design::muted));
 
     if news.cache.announcements.is_empty() {
         cards = cards.push(surface(text(if news.loading {
@@ -359,6 +357,7 @@ pub(super) fn whats_new(state: &State) -> Element<'_, Message> {
             "No Discord channel messages available. Post an update in the configured channel and verify the GitHub Pages feed."
         }).size(13)));
     } else {
+        let displayable_images = crate::whats_new::image_urls(&news.cache.announcements);
         for post in news.cache.announcements.iter().take(20) {
             let mut details = column![].spacing(8);
             if !post.title.is_empty() {
@@ -375,16 +374,30 @@ pub(super) fn whats_new(state: &State) -> Element<'_, Message> {
             if !post.description.is_empty() {
                 details = details.push(text(&post.description).size(13));
             }
-            let mut links = row![
-                design::button("View on Discord").on_press(Message::OpenNewsLink(post.url.clone()))
-            ]
-            .spacing(8);
-            for image in post.image_urls.iter().take(2) {
-                links = links.push(
-                    design::button("View image").on_press(Message::OpenNewsLink(image.clone())),
-                );
+            // Never display a link to a private Discord server or open
+            // attachments using Windows Explorer.
+            for url in post.image_urls.iter().take(2) {
+                if !displayable_images.contains(url) {
+                    continue;
+                }
+                if let Some(handle) = news.image_handles.get(url) {
+                    details = details.push(
+                        image(handle.clone())
+                            .width(Fill)
+                            .height(Length::Fixed(290.0))
+                            .content_fit(iced::ContentFit::Contain),
+                    );
+                } else if news.image_failures.contains(url) {
+                    details = details.push(
+                        text("Image preview unavailable").size(11).style(design::muted),
+                    );
+                } else {
+                    details = details.push(
+                        text("Loading image…").size(11).style(design::muted),
+                    );
+                }
             }
-            cards = cards.push(surface(details.push(links)));
+            cards = cards.push(surface(details));
         }
     }
     if !news.discord_status.is_empty() {
