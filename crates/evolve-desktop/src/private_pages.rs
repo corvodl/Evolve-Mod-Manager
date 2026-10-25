@@ -296,32 +296,53 @@ pub(super) fn whats_new(state: &State) -> Element<'_, Message> {
         text("What's New").size(24),
         row![
             text("Latest published version and community announcements")
-                .size(12).style(design::muted),
-            design::button(if news.loading { "Refreshing..." } else { "Refresh" })
-                .on_press_maybe((!news.loading).then_some(Message::RefreshNews)),
-        ].spacing(15).align_y(iced::Center),
+                .size(12)
+                .style(design::muted),
+            design::button(if news.loading {
+                "Refreshing..."
+            } else {
+                "Refresh"
+            })
+            .on_press_maybe((!news.loading).then_some(Message::RefreshNews)),
+        ]
+        .spacing(15)
+        .align_y(iced::Center),
         text("LATEST VERSION").size(14).style(design::accent),
-    ].spacing(12);
+    ]
+    .spacing(12);
 
     let release_card: Element<'_, Message> = if let Some(release) = &news.cache.release {
-        surface(column![
-            text(&release.title).size(18),
-            text(format!("{}  ·  Published {}", release.version, release.published_at))
-                .size(12).style(design::muted),
-            text(if release.notes.is_empty() {
-                "No release description was published.".to_owned()
-            } else {
-                release.notes.clone()
-            }).size(13),
-            design::button("View full release notes on GitHub")
-                .on_press(Message::OpenNewsLink(release.url.clone())),
-        ].spacing(9)).into()
+        surface(
+            column![
+                text(&release.title).size(18),
+                text(format!(
+                    "{}  ·  Published {}",
+                    release.version, release.published_at
+                ))
+                .size(12)
+                .style(design::muted),
+                text(if release.notes.is_empty() {
+                    "No release description was published.".to_owned()
+                } else {
+                    release.notes.clone()
+                })
+                .size(13),
+                design::button("View full release notes on GitHub")
+                    .on_press(Message::OpenNewsLink(release.url.clone())),
+            ]
+            .spacing(9),
+        )
+        .into()
     } else {
-        surface(text(if news.loading {
-            "Loading release notes from GitHub Releases..."
-        } else {
-            "No published release notes available yet."
-        }).size(13)).into()
+        surface(
+            text(if news.loading {
+                "Loading release notes from GitHub Releases..."
+            } else {
+                "No published release notes available yet."
+            })
+            .size(13),
+        )
+        .into()
     };
     cards = cards.push(release_card);
     if !news.release_status.is_empty() {
@@ -345,7 +366,8 @@ pub(super) fn whats_new(state: &State) -> Element<'_, Message> {
             }
             details = details.push(
                 text(format!("{}  ·  {}", post.author, post.timestamp))
-                    .size(12).style(design::muted)
+                    .size(12)
+                    .style(design::muted),
             );
             if !post.content.is_empty() {
                 details = details.push(text(&post.content).size(13));
@@ -354,13 +376,12 @@ pub(super) fn whats_new(state: &State) -> Element<'_, Message> {
                 details = details.push(text(&post.description).size(13));
             }
             let mut links = row![
-                design::button("View on Discord")
-                    .on_press(Message::OpenNewsLink(post.url.clone()))
-            ].spacing(8);
+                design::button("View on Discord").on_press(Message::OpenNewsLink(post.url.clone()))
+            ]
+            .spacing(8);
             for image in post.image_urls.iter().take(2) {
                 links = links.push(
-                    design::button("View image")
-                        .on_press(Message::OpenNewsLink(image.clone()))
+                    design::button("View image").on_press(Message::OpenNewsLink(image.clone())),
                 );
             }
             cards = cards.push(surface(details.push(links)));
