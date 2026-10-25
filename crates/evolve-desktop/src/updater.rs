@@ -15,7 +15,10 @@ use std::time::Duration;
 const API: &str = "https://api.github.com/repos/corvodl/Evolve-Mod-Manager";
 const OWNER: &str = "corvodl";
 const REPOSITORY: &str = "Evolve-Mod-Manager";
-const MAX_METADATA: u64 = 1_000_000;
+// Release descriptions can be cumulative and large; 50 GitHub Releases
+// regularly exceed 1 MB even though the ZIP and installer are small.
+// Bound response parsing separately from the artifact download cap.
+const MAX_METADATA: u64 = 8 * 1024 * 1024;
 const MAX_DOWNLOAD: u64 = 500 * 1024 * 1024;
 const USER_AGENT: &str = "EvolveModManager-Updater/1.0";
 
@@ -56,6 +59,8 @@ pub enum UpdateError {
     HashMismatch,
     #[error("The selected update exceeds the allowed size")]
     TooLarge,
+    #[error("GitHub release notes exceeded the metadata safety limit")]
+    MetadataTooLarge,
     #[error("File access error: {0}")]
     Io(#[from] io::Error),
 }
@@ -202,7 +207,7 @@ fn read_metadata(mut response: impl Read) -> Result<Vec<u8>, UpdateError> {
     let mut result = Vec::new();
     bounded.read_to_end(&mut result)?;
     if result.len() as u64 > MAX_METADATA {
-        return Err(UpdateError::TooLarge);
+        return Err(UpdateError::MetadataTooLarge);
     }
     Ok(result)
 }
@@ -375,6 +380,24 @@ mod tests {
             ],
         }
     }
+    #[test]
+    fn accepts_cumulative_github_release_metadata_over_one_megabyte() {
+        // The list of up to 50 Nightlies includes large cumulative patch
+        // notes. Those are metadata, not downloaded install artifacts.
+        let response = vec![b'x'; 1_500_000];
+        let read = read_metadata(response.as_slice()).unwrap();
+        assert_eq!(read.len(), response.len());
+    }
+
+    #[test]
+    fn still_rejects_oversized_release_metadata_without_unbounded_read() {
+        let input = io::repeat(b'x').take(MAX_METADATA + 1);
+        assert!(matches!(
+            read_metadata(input),
+            Err(UpdateError::MetadataTooLarge)
+        ));
+    }
+
     #[test]
     fn accepts_only_expected_two_asset_release() {
         let parsed = parse_release(release()).unwrap();
