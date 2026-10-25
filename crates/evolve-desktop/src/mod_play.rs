@@ -212,10 +212,11 @@ pub fn launch_enabled(
     // Existing prepared files are copies of the previous signed set. Refresh
     // only those known temporary copies (never .customkey-original).
     progress.store(85, Ordering::Relaxed);
-    let _preserved_stale_copies = match launcher_bridge::refresh_prepared_offline_cache(&stage, &swap) {
-        Ok(count) => count,
-        Err(issue) => return launch_for_repair(&game, &client, &swap, &issue),
-    };
+    let _preserved_stale_copies =
+        match launcher_bridge::refresh_prepared_offline_cache(&stage, &swap) {
+            Ok(count) => count,
+            Err(issue) => return launch_for_repair(&game, &client, &swap, &issue),
+        };
     // Staging-only self-repair: accept a rebuilt hook ONLY when it hashes
     // exactly to this setup's saved original digest. A changed installed DLL
     // or unresolved game swap still falls back to the regular client.
