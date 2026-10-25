@@ -94,7 +94,9 @@ pub fn view(state: &State) -> Element<'_, Message> {
             "The manager did not confirm that enabled mods were installed. Close Evolve before retrying or restoring. Do not manually delete backup files or the swap journal."
         }
         (Kind::Clean, _) => "Regular-client mode does not apply the modded PAK swap.",
-        (Kind::Manager, _) => "Review this error before repeating the operation. The manager's Activity window retains the detail.",
+        (Kind::Manager, _) => {
+            "Review this error before repeating the operation. The manager's Activity window retains the detail."
+        }
         _ => {
             "You may switch to the client to press Play. This window will show the verified launch outcome."
         }
