@@ -229,7 +229,13 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                 state.preferences.client_executable.clone()
             }
         ),
-        status_card("Client Version", format!("v{}", env!("CARGO_PKG_VERSION"))),
+        status_card(
+            "Client Version",
+            state
+                .client_version
+                .as_ref()
+                .map_or_else(|| "Not detected".to_owned(), |version| format!("v{version}")),
+        ),
         status_card(
             "Signing stage",
             if state.preferences.stage.is_empty() {
