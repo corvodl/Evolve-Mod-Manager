@@ -107,6 +107,10 @@ const NIGHTLY_56_AUTO_LAUNCH_SHA256: &str =
     "8a7c67a33dadf221749b7d29a469a0df692a6245a72ea949d198f778a1fbd0b3";
 const PREVIOUS_CONTROLLED_SWAP_SHA256: &str =
     "5229e00859664c13c846de65e346031d4ff05c77f52170212dcd631a111a614d";
+// Exact bundled controlled_swap.py shipped through Nightly 60 (PR #79/#80).
+// Refresh only recognized published scripts; preserve user-modified helpers.
+const NIGHTLY_60_CONTROLLED_SWAP_SHA256: &str =
+    "9adbb5e58a8cffdccfb952afec88fa4e2d8c9d22e21002973fe314ca4186596d";
 const CURRENT_AUTO_LAUNCH: &str = include_str!("../launcher_support/auto_launch_frida.py");
 const CURRENT_CONTROLLED_SWAP: &str = include_str!("../launcher_support/controlled_swap.py");
 
@@ -220,7 +224,10 @@ pub fn configure_existing_helper(
         &swap,
         "controlled_swap.py",
         CURRENT_CONTROLLED_SWAP,
-        &[PREVIOUS_CONTROLLED_SWAP_SHA256],
+        &[
+            PREVIOUS_CONTROLLED_SWAP_SHA256,
+            NIGHTLY_60_CONTROLLED_SWAP_SHA256,
+        ],
     )?;
     refresh_verified_helper(
         &swap,
