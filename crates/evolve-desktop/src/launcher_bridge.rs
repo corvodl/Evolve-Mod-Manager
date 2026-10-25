@@ -976,11 +976,52 @@ pub fn repair_staged_hook_for_offline_play(stage: &Path, swap: &Path) -> Result<
     Ok(repaired)
 }
 
+/// Preserve an unexpectedly changed *temporary* ready copy separately
+/// from the original-game backup. This is only used after the entire recovery
+/// journal, all paths and the absence of original backups are verified.
+fn quarantine_stale_ready_copy(ready: &Path) -> Result<PathBuf, String> {
+    let basename = ready
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("Prepared copy has no safe filename")?;
+    let parent = ready.parent().ok_or("Prepared copy has no parent")?;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    for attempt in 0..64 {
+        let preserved = parent.join(format!("{basename}.stale-{nonce}-{attempt}"));
+        if fs::symlink_metadata(&preserved).is_ok() {
+            continue;
+        }
+        // Same-directory rename preserves the unexpected bytes without a
+        // second giant PAK copy. Do not rename game targets or originals.
+        fs::rename(ready, &preserved).map_err(|e| {
+            format!(
+                "Could not preserve the changed prepared copy {}: {e}",
+                ready.display()
+            )
+        })?;
+        return Ok(preserved);
+    }
+    Err(format!(
+        "Cannot find an unused preservation name for {}",
+        ready.display()
+    ))
+}
+
 /// Refresh only temporary .customkey-ready copies when enabled mods change.
-/// Existing automatic setups keep their old helper scripts, so recovery
-/// cache maintenance belongs here rather than relying on a newly added
-/// Python subcommand. No installed game target or original backup is written.
-pub fn refresh_prepared_offline_cache(stage: &Path, swap: &Path) -> Result<(), String> {
+///
+/// A valid prepared journal describes disposable copies of the *previous*
+/// signed mod set. If a ready copy has since changed, it is NOT an original
+/// game backup. Verify the complete journal, game/stage mapping, and absence
+/// of all .customkey-original files before preserving unexpected ready bytes
+/// under an unambiguous .stale-* filename. The private helper will then
+/// prepare new signed ready copies from the current stage.
+///
+/// Never remove unknown file types, rewrite an original game file or ignore a
+/// live/interrupted recovery phase.
+pub fn refresh_prepared_offline_cache(stage: &Path, swap: &Path) -> Result<usize, String> {
     games_closed()?;
     let swap = directory(swap)?;
     let stage = directory(stage)?;
@@ -994,36 +1035,49 @@ pub fn refresh_prepared_offline_cache(stage: &Path, swap: &Path) -> Result<(), S
         .as_array()
         .ok_or("Swap ledger is incomplete")?;
     if phase == "restored" && rows.is_empty() && journal["count"].as_u64() == Some(0) {
-        return Ok(());
+        return Ok(0);
     }
     guarded_restore_state(&stage, &swap)?;
     let mut ready_paths = Vec::new();
     for item in rows {
+        let name = item["name"].as_str().ok_or("Prepared entry name missing")?;
         let backup = Path::new(item["backup"].as_str().ok_or("Missing backup path")?);
         if fs::symlink_metadata(backup).is_ok() {
-            return Err(
-                "An original game backup remains. Restore original game files first.".into(),
-            );
+            return Err(format!(
+                "Original backup remains for {name}. Restore original game files first."
+            ));
         }
         let ready = Path::new(item["ready"].as_str().ok_or("Missing prepared file path")?);
         match fs::symlink_metadata(ready) {
             Ok(meta) => {
-                if !meta.file_type().is_file()
-                    || item["bytes"].as_u64() != Some(meta.len())
-                    || item["sha256"].as_str() != Some(sha(ready)?.as_str())
-                {
-                    return Err("A prepared mod copy changed unexpectedly. Restore original game files first.".into());
+                if !meta.file_type().is_file() || meta.len() > 16 * 1024 * 1024 * 1024 {
+                    return Err(format!(
+                        "Unsafe prepared copy for {name}: {}. No file was overwritten.",
+                        ready.display()
+                    ));
                 }
-                ready_paths.push(ready.to_path_buf());
+                let changed = item["bytes"].as_u64() != Some(meta.len())
+                    || item["sha256"].as_str() != Some(sha(ready)?.as_str());
+                ready_paths.push((ready.to_path_buf(), changed, name.to_owned()));
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
-            Err(e) => return Err(e.to_string()),
+            Err(e) => return Err(format!("Cannot inspect prepared {name}: {e}")),
         }
     }
-    // All paths, ownership and old digests were verified before touching
-    // disposable files. A crash partway through can be retried idempotently.
-    for ready in ready_paths {
-        fs::remove_file(ready).map_err(|e| e.to_string())?;
+    // Every file has passed the recovery path checks before changing any
+    // disposable cache. Preserve unexpected contents rather than deleting
+    // them or silently trusting the journal's obsolete digest.
+    let mut preserved = 0usize;
+    for (ready, changed, name) in ready_paths {
+        if changed {
+            quarantine_stale_ready_copy(&ready)
+                .map_err(|e| format!("Prepared copy for {name} changed: {e}"))?;
+            preserved += 1;
+        } else {
+            fs::remove_file(&ready).map_err(|e| {
+                format!("Could not discard previous verified prepared copy for {name}: {e}")
+            })?;
+        }
     }
     journal["phase"] = Value::String("restored".into());
     let mut file = tempfile::NamedTempFile::new_in(&swap).map_err(|e| e.to_string())?;
@@ -1031,7 +1085,7 @@ pub fn refresh_prepared_offline_cache(stage: &Path, swap: &Path) -> Result<(), S
     file.as_file().sync_all().map_err(|e| e.to_string())?;
     file.persist(&journal_path)
         .map_err(|e| e.error.to_string())?;
-    Ok(())
+    Ok(preserved)
 }
 
 /// Reuse the private launcher's already-tested control flow. It performs
@@ -1340,6 +1394,20 @@ mod tests {
         let err = inspect_existing_launcher(&stage, &swap).unwrap_err();
         assert!(err.contains("separate directory trees"), "{err}");
         assert!(!swap.join("controlled_swap_state.json").exists());
+    }
+
+    #[test]
+    fn changed_disposable_ready_copy_is_preserved_without_touching_original() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("UI_Assets.pak");
+        let ready = dir.path().join("UI_Assets.pak.customkey-ready");
+        fs::write(&original, b"original-pak").unwrap();
+        fs::write(&ready, b"custom-edited-ready-copy").unwrap();
+        let moved = quarantine_stale_ready_copy(&ready).unwrap();
+        assert!(!ready.exists());
+        assert_eq!(fs::read(&moved).unwrap(), b"custom-edited-ready-copy");
+        assert_eq!(fs::read(&original).unwrap(), b"original-pak");
+        assert!(moved.file_name().unwrap().to_string_lossy().contains(".stale-"));
     }
 
     #[cfg(windows)]
