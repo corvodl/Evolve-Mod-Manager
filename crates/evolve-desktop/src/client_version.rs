@@ -7,7 +7,11 @@ use std::path::Path;
 /// versions and optional prerelease suffixes. Do not claim a build version
 /// from an empty or arbitrary ProductVersion string.
 fn normalize_version(input: &str) -> Option<String> {
-    let token = input.trim().split_whitespace().next()?.trim_start_matches(['v', 'V']);
+    let token = input
+        .trim()
+        .split_whitespace()
+        .next()?
+        .trim_start_matches(['v', 'V']);
     if token.is_empty() || token.len() > 64 {
         return None;
     }
@@ -17,9 +21,7 @@ fn normalize_version(input: &str) -> Option<String> {
     {
         return None;
     }
-    let numeric = token
-        .split(['-', '+'])
-        .next()?;
+    let numeric = token.split(['-', '+']).next()?;
     let parts: Vec<_> = numeric.split('.').collect();
     if !(2..=4).contains(&parts.len())
         || !parts
@@ -72,8 +74,10 @@ pub fn installed_version(_path: &str) -> Option<String> {
 }
 
 fn is_launcher(path: &Path) -> bool {
-    path.file_name()
-        .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("ModdedEvolveLauncher.exe"))
+    path.file_name().is_some_and(|name| {
+        name.to_string_lossy()
+            .eq_ignore_ascii_case("ModdedEvolveLauncher.exe")
+    })
 }
 
 #[cfg(test)]
@@ -84,7 +88,10 @@ mod tests {
     fn never_confuse_product_names_or_manager_versions_with_client_version() {
         assert_eq!(normalize_version("v0.1.87"), Some("0.1.87".into()));
         assert_eq!(normalize_version("0.1.80.0"), Some("0.1.80.0".into()));
-        assert_eq!(normalize_version("0.1.87-beta.2"), Some("0.1.87-beta.2".into()));
+        assert_eq!(
+            normalize_version("0.1.87-beta.2"),
+            Some("0.1.87-beta.2".into())
+        );
         assert_eq!(normalize_version("Modded Evolve Client"), None);
         assert_eq!(normalize_version(""), None);
         assert_eq!(normalize_version("1"), None);
@@ -93,7 +100,9 @@ mod tests {
     #[test]
     fn only_configured_client_launcher_is_supported() {
         assert!(is_launcher(Path::new("ModdedEvolveLauncher.exe")));
-        assert!(!is_launcher(Path::new(r"C:\Games\Modded Evolve\Evolve.exe")));
+        assert!(!is_launcher(Path::new(
+            r"C:\Games\Modded Evolve\Evolve.exe"
+        )));
         assert!(!is_launcher(Path::new("evolve-mod-manager.exe")));
     }
 }
