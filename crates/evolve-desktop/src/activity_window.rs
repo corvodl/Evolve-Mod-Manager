@@ -12,7 +12,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     let meter: Element<'_, Message> = if let Some(snapshot) = &progress {
         column![
             work_progress::bar(snapshot, Length::Fill, 12.0),
-            text(snapshot.detail.as_str()).size(12),
+            text(snapshot.detail.clone()).size(12),
         ]
         .spacing(6)
         .into()
