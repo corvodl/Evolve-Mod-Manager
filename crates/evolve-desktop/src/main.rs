@@ -40,6 +40,7 @@ mod modding_page;
 mod modding_projects;
 mod orientation_gizmo;
 mod play_setup;
+mod play_dialog;
 mod private_pages;
 mod runtime_armor;
 mod runtime_experiments;
@@ -303,6 +304,8 @@ struct State {
     keyboard_modifiers: iced::keyboard::Modifiers,
     status: String,
     busy: bool,
+    play_notice: Option<play_dialog::Notice>,
+    active_play: Option<play_dialog::Kind>,
     preferences: Preferences,
     settings_status: String,
     settings_advanced_paths: bool,
@@ -1796,6 +1799,7 @@ enum Message {
     StartOfflineLauncherRestore,
     PlayWithMods,
     PlayWithoutMods,
+    DismissPlayNotice,
     SaveGameSetup,
     StartAutomaticSetup,
     PreferenceGameInstall(String),
@@ -6500,12 +6504,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
             }
         }
+        Message::DismissPlayNotice => {
+            state.play_notice = None;
+        }
         Message::PlayWithMods | Message::PlayWithoutMods => {
             if state.busy {
                 state.status = "Finish the current manager task before launching Evolve.".into();
+                state.play_notice = Some(play_dialog::Notice::finished(
+                    play_dialog::Kind::Modded,
+                    play_dialog::Phase::Error,
+                    state.status.clone(),
+                ));
                 return Task::none();
             }
             let is_modded = matches!(message, Message::PlayWithMods);
+            let kind = if is_modded {
+                play_dialog::Kind::Modded
+            } else {
+                play_dialog::Kind::Clean
+            };
+            state.active_play = Some(kind);
+            state.play_notice = Some(play_dialog::Notice::preparing(kind));
             let (game, client) = match play_setup::validate_paths(
                 &state.preferences.game_installation,
                 &state.preferences.client_executable,
@@ -6518,6 +6537,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.status = format!(
                         "Set Up Manager: {error}. Choose your installed game folder and normal Modded Evolve client, then Save Setup."
                     );
+                    state.play_notice = Some(play_dialog::Notice::finished(
+                        kind,
+                        play_dialog::Phase::Error,
+                        state.status.clone(),
+                    ));
+                    state.active_play = None;
                     return Task::none();
                 }
             };
@@ -6529,6 +6554,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.settings_tab = settings_page::Tab::Storage;
                     state.settings_advanced_paths = true;
                     state.status = "Modded play needs a verified signing stage. Use Create Offline Setup in Settings to build the keys, re-signed PAKs and recovery helpers automatically from your game installation. Existing stage/swap folders can also be selected under Advanced paths. No game files were changed.".into();
+                    state.play_notice = Some(play_dialog::Notice::finished(
+                        kind,
+                        play_dialog::Phase::Error,
+                        state.status.clone(),
+                    ));
+                    state.active_play = None;
                     return Task::none();
                 }
                 if state
@@ -6537,6 +6568,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .is_some_and(|session| session.edits > 0 && !session.applied)
                 {
                     state.status = "Save your GFX edits to the Mod Project before playing.".into();
+                    state.play_notice = Some(play_dialog::Notice::finished(
+                        kind,
+                        play_dialog::Phase::Error,
+                        state.status.clone(),
+                    ));
+                    state.active_play = None;
                     return Task::none();
                 }
                 let progress = Arc::new(AtomicUsize::new(0));
@@ -7482,6 +7519,53 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return launch(state, Operation::ExportPng(source, output));
         }
         Message::Finished(result) => {
+            let launch_notice = state.active_play.take().map(|kind| {
+                match &result {
+                    Err(error) => play_dialog::Notice::finished(
+                        kind,
+                        play_dialog::Phase::Error,
+                        format!("Launch failed: {error}"),
+                    ),
+                    Ok(Completed::EnabledModsLaunched(_, _, _, Some(warning))) => {
+                        play_dialog::Notice::finished(
+                            kind,
+                            play_dialog::Phase::Warning,
+                            warning.clone(),
+                        )
+                    }
+                    Ok(Completed::EnabledModsLaunched(count, _, _, None)) => {
+                        play_dialog::Notice::finished(
+                            kind,
+                            play_dialog::Phase::Success,
+                            format!("{count} enabled mod(s) installed for this offline launch. Evolve process creation and swap were verified."),
+                        )
+                    }
+                    Ok(Completed::CleanClientStarted(pid, warnings)) => {
+                        play_dialog::Notice::finished(
+                            kind,
+                            if warnings.is_empty() {
+                                play_dialog::Phase::Success
+                            } else {
+                                play_dialog::Phase::Warning
+                            },
+                            format!("Regular client PID {pid} opened. {}",
+                                if warnings.is_empty() {
+                                    "No mods were installed.".to_owned()
+                                } else {
+                                    warnings.join(" ")
+                                }),
+                        )
+                    }
+                    _ => play_dialog::Notice::finished(
+                        kind,
+                        play_dialog::Phase::Error,
+                        "Unexpected result from the launch operation; no modded swap can be assumed.",
+                    ),
+                }
+            });
+            if let Some(notice) = launch_notice {
+                state.play_notice = Some(notice);
+            }
             state.mod_launch_progress = None;
             // Preserve the footer progress through indexing and the initial
             // file scan; all other completions (including errors) clear it.
@@ -9680,6 +9764,7 @@ struct Desktop {
     inspector_id: Option<window::Id>,
     preferences_id: Option<window::Id>,
     activity_id: Option<window::Id>,
+    play_notice_id: Option<window::Id>,
     export_id: Option<window::Id>,
 }
 
@@ -9708,6 +9793,7 @@ impl Desktop {
                 inspector_id: None,
                 preferences_id: None,
                 activity_id: None,
+                play_notice_id: None,
                 export_id: None,
             },
             Task::batch([opened.map(|_| Message::ViewerOpened), startup]),
@@ -9749,6 +9835,19 @@ impl Desktop {
             ..window::Settings::default()
         });
         self.export_id = Some(id);
+        opened.map(|_| Message::ViewerOpened)
+    }
+
+    fn open_play_notice(&mut self) -> Task<Message> {
+        if self.play_notice_id.is_some() || self.state.play_notice.is_none() {
+            return Task::none();
+        }
+        let (id, opened) = window::open(window::Settings {
+            size: iced::Size::new(640.0, 330.0),
+            min_size: Some(iced::Size::new(510.0, 270.0)),
+            ..window::Settings::default()
+        });
+        self.play_notice_id = Some(id);
         opened.map(|_| Message::ViewerOpened)
     }
 
@@ -9822,6 +9921,11 @@ impl Desktop {
             Message::OpenViewerPreferences => self.open_viewer_preferences(),
             Message::OpenInspectorWindow => self.open_inspector(),
             Message::ToggleActivity => self.open_activity(),
+            Message::DismissPlayNotice => {
+                let command = update(&mut self.state, Message::DismissPlayNotice);
+                let close = self.play_notice_id.take().map_or_else(Task::none, window::close);
+                Task::batch([command, close])
+            },
             Message::ActivityOpened => Task::none(),
             Message::InspectorOpened => Task::none(),
             Message::ViewerOpened => Task::none(),
@@ -9867,6 +9971,10 @@ impl Desktop {
                     if self.activity_id == Some(id) {
                         self.activity_id = None;
                     }
+                    if self.play_notice_id == Some(id) {
+                        self.play_notice_id = None;
+                        self.state.play_notice = None;
+                    }
                     Task::none()
                 }
             }
@@ -9900,18 +10008,20 @@ impl Desktop {
                 let automatic_activity = !was_busy
                     && self.state.busy
                     && self.state.preferences.show_activity_on_tasks
-                    && self.activity_id.is_none();
+                    && self.activity_id.is_none()
+                    && self.state.active_play.is_none();
                 let activity = if automatic_activity {
                     self.open_activity()
                 } else {
                     Task::none()
                 };
+                let notice = self.open_play_notice();
                 if opens_model && self.viewer_id.is_none() {
                     let open = self.open_viewer();
                     self.state.viewer_from_library = launched_from_library;
-                    Task::batch([command, open, activity])
+                    Task::batch([command, open, activity, notice])
                 } else {
-                    Task::batch([command, activity])
+                    Task::batch([command, activity, notice])
                 }
             }
         }
@@ -9922,6 +10032,8 @@ impl Desktop {
             asset_viewer::export_dialog(&self.state)
         } else if self.activity_id == Some(id) {
             activity_window::view(&self.state)
+        } else if self.play_notice_id == Some(id) {
+            play_dialog::view(&self.state)
         } else if self.viewer_id == Some(id) {
             asset_viewer::view(&self.state)
         } else if self.preferences_id == Some(id) {
@@ -9944,6 +10056,8 @@ impl Desktop {
             "Export Settings | Evolve Mod Manager".into()
         } else if self.activity_id == Some(id) {
             "Activity | Evolve Mod Manager".into()
+        } else if self.play_notice_id == Some(id) {
+            "Game Launch | Evolve Mod Manager".into()
         } else if self.preferences_id == Some(id) {
             "Evolve Mod Manager — Viewer Preferences".into()
         } else if self.inspector_id == Some(id) {
