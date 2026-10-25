@@ -1,10 +1,12 @@
 //! Read-only What's New: latest public GitHub release and a separately hosted,
 //! sanitized feed for one selected Discord channel. Neither source receives credentials.
 //! Failures never block game startup, updating, or mod operations.
+use iced::widget::image::Handle;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::Read;
+use std::io::{Cursor, Read};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -12,6 +14,11 @@ const RELEASES_API: &str =
     "https://api.github.com/repos/corvodl/Evolve-Mod-Manager/releases?per_page=20";
 const DISCORD_FEED: &str = "https://corvodl.github.io/Evolve-Mod-Manager/announcements.json";
 const MAX_RESPONSE: u64 = 1_000_000;
+const MAX_IMAGE_BYTES: u64 = 6 * 1024 * 1024;
+const MAX_IMAGE_PIXELS: u64 = 16_000_000;
+const MAX_VISIBLE_IMAGES: usize = 16;
+
+pub type ImageResults = Vec<(String, Result<Handle, String>)>;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -48,6 +55,10 @@ pub struct NewsState {
     pub loaded_at: Option<Instant>,
     pub release_status: String,
     pub discord_status: String,
+    /// Decoded thumbnails are held only in memory, never on the render path.
+    pub image_handles: HashMap<String, Handle>,
+    pub image_failures: HashSet<String>,
+    pub images_loading: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -64,6 +75,11 @@ impl NewsState {
         self.loaded_at = Some(Instant::now());
         self.release_status = result.release_status;
         self.discord_status = result.discord_status;
+        let allowed: HashSet<_> = image_urls(&self.cache.announcements).into_iter().collect();
+        self.image_handles.retain(|url, _| allowed.contains(url));
+        // Retry failed media on the next feed refresh; Discord attachment
+        // URLs are signed and may have been renewed by the publisher.
+        self.image_failures.clear();
     }
 
     pub fn needs_refresh(&self) -> bool {
@@ -296,6 +312,96 @@ pub fn refresh() -> NewsResult {
     result
 }
 
+/// Select a bounded number of distinct inline image URLs in message order.
+/// Do not download arbitrary URLs from a public JSON feed.
+pub fn image_urls(posts: &[Announcement]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut urls = Vec::new();
+    for post in posts.iter().take(20) {
+        for url in post.image_urls.iter().take(2) {
+            if allowed_image_url(url) && seen.insert(url.clone()) {
+                urls.push(url.clone());
+                if urls.len() == MAX_VISIBLE_IMAGES {
+                    return urls;
+                }
+            }
+        }
+    }
+    urls
+}
+
+pub fn allowed_image_url(url: &str) -> bool {
+    url.len() <= 2048
+        && !url.contains(|c: char| c.is_control() || c == '\\' || c == '#')
+        && (url.starts_with("https://cdn.discordapp.com/attachments/")
+            || url.starts_with("https://media.discordapp.net/attachments/"))
+}
+
+/// Download, size-check and decode images off the Iced render thread.
+/// Redirects to untrusted destinations are not followed.
+pub fn load_images(urls: Vec<String>) -> ImageResults {
+    let client = Client::builder()
+        .user_agent("Evolve-Mod-Manager-NewsImages/1.0")
+        .timeout(Duration::from_secs(12))
+        .redirect(reqwest::redirect::Policy::none())
+        .build();
+    urls.into_iter()
+        .take(MAX_VISIBLE_IMAGES)
+        .map(|url| {
+            let result = if !allowed_image_url(&url) {
+                Err("Unsupported image URL".to_owned())
+            } else {
+                client
+                    .as_ref()
+                    .map_err(|e| e.to_string())
+                    .and_then(|client| fetch_one_image(client, &url))
+            };
+            (url, result)
+        })
+        .collect()
+}
+
+fn fetch_one_image(client: &Client, url: &str) -> Result<Handle, String> {
+    let response = client
+        .get(url)
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .map_err(|error| error.to_string())?;
+    if response
+        .content_length()
+        .is_some_and(|size| size > MAX_IMAGE_BYTES)
+    {
+        return Err("Image is larger than the preview limit".to_owned());
+    }
+    let mut bytes = Vec::new();
+    response
+        .take(MAX_IMAGE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > MAX_IMAGE_BYTES {
+        return Err("Image exceeds the preview limit".to_owned());
+    }
+    decode_image(&bytes)
+}
+
+fn decode_image(bytes: &[u8]) -> Result<Handle, String> {
+    let reader = ::image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|error| error.to_string())?;
+    let (width, height) = reader
+        .into_dimensions()
+        .map_err(|error| error.to_string())?;
+    if width == 0 || height == 0 || (width as u64) * (height as u64) > MAX_IMAGE_PIXELS {
+        return Err("Image dimensions exceed the preview limit".to_owned());
+    }
+    let decoded = ::image::load_from_memory(bytes).map_err(|error| error.to_string())?;
+    Ok(Handle::from_rgba(
+        width,
+        height,
+        decoded.into_rgba8().into_raw(),
+    ))
+}
+
 /// Launch only known HTTPS announcement, image or official release links.
 pub fn open_link(url: &str) -> Result<(), String> {
     if !allowed_link(url) {
@@ -350,6 +456,63 @@ mod tests {
         assert!(!allowed_link(
             "https://discord.com\\@evil.example/channels/1"
         ));
+    }
+
+    #[test]
+    fn image_preview_urls_are_trusted_and_bounded() {
+        assert!(allowed_image_url(
+            "https://cdn.discordapp.com/attachments/123/456/a.png?ex=abc"
+        ));
+        assert!(allowed_image_url(
+            "https://media.discordapp.net/attachments/123/456/a.webp"
+        ));
+        assert!(!allowed_image_url(
+            "https://cdn.discordapp.com.evil.test/attachments/a.png"
+        ));
+        assert!(!allowed_image_url("file:///C:/Users/Documents/a.png"));
+        assert!(!allowed_image_url(
+            "https://cdn.discordapp.com/attachments/a#fragment"
+        ));
+    }
+
+    #[test]
+    fn preview_selection_deduplicates_and_limits_attachments() {
+        let posts = (0..20)
+            .map(|index| Announcement {
+                id: index.to_string(),
+                author: String::new(),
+                timestamp: String::new(),
+                title: String::new(),
+                content: String::new(),
+                description: String::new(),
+                url: String::new(),
+                image_urls: vec![
+                    format!("https://cdn.discordapp.com/attachments/a/b/{index}.png"),
+                    "https://cdn.discordapp.com/attachments/a/b/shared.png".into(),
+                    "https://other.example/image.png".into(),
+                ],
+            })
+            .collect::<Vec<_>>();
+        let urls = image_urls(&posts);
+        assert_eq!(urls.len(), MAX_VISIBLE_IMAGES);
+        assert_eq!(
+            urls.iter()
+                .filter(|url| url.ends_with("shared.png"))
+                .count(),
+            1
+        );
+        assert!(urls.iter().all(|url| allowed_image_url(url)));
+    }
+
+    #[test]
+    fn decodes_valid_png_in_memory_but_rejects_invalid_image() {
+        let image = ::image::DynamicImage::new_rgba8(2, 2);
+        let mut output = Cursor::new(Vec::new());
+        image
+            .write_to(&mut output, ::image::ImageFormat::Png)
+            .unwrap();
+        assert!(decode_image(&output.into_inner()).is_ok());
+        assert!(decode_image(&[0, 1, 2, 3]).is_err());
     }
 
     #[test]

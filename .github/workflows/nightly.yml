@@ -27,6 +27,8 @@ jobs:
       VERSION: 0.1.0-nightly.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -85,116 +87,52 @@ jobs:
             if (!(Test-Path $item)) { throw "Missing Nightly release asset: $item" }
             if ((Get-Item $item).Length -lt 1024) { throw "Suspiciously small Nightly asset: $item" }
           }
+          # The previous published nightly is the changelog boundary.
+          # Pull complete history/tags at checkout and list first-parent
+          # merges/direct commits only; never carry old release notes forward.
+          $previousTag = git tag --merged HEAD --list 'v0.1.0-nightly.*' |
+            Where-Object { $_ -match '^v0\.1\.0-nightly\.[0-9]+$' } |
+            Sort-Object { [int]($_ -replace '^v0\.1\.0-nightly\.', '') } -Descending |
+            Select-Object -First 1
+          if ($LASTEXITCODE -ne 0) { throw "Could not inspect previous nightly tags" }
+
           $body = @(
             "Evolve Mod Manager Nightly 0.1.0 (build $env:VERSION)",
             "",
             "Experimental Windows preview. The manager is not yet feature-complete.",
-            "Changes: Grounder/Kraken opacity repair; Kala Banshee Gun animated Decal uses its authored blue tint as a brightness mask, preserving UV movement.",
-            "Original emission remains separate from the optional monster armor glow.",
-            "Nightly 9: replaced the broken Settings navigation SVG with a standard Lucide gear, preserving the original accent.",
-            "Kala (Tech) Model Options: Blue Banshee / Red Armor Reducer tubing selection now follows the original CDF active-attachment visibility groups.",
-            "Nightly 13: original public Qt 3-to-100 GlowAmount preview calibration now applies to ALL authored emissive materials, not just Kala.",
-            "Optional Stage 2 armor glow remains separate from authored emission and receives the same neutral preview brightness reference without borrowing a material GlowAmount.",
-            "Kala: tech_3p.mtl's named body Glow stays its original blue in both weapon states; the previous Armor Reducer red tint override is removed.",
-            "Body ALPHAGLOW keeps its source diffuse RGB, including any genuinely red accents. Separate Banshee blue / Armor Reducer red weapon glows retain their original state selection.",
-            "Original GlowAmounts, source DDS, emissive UV movement, game files and exported FBX data are unchanged; the Emissive strength slider remains a separate viewport adjustment.",
-            "Updater: retains Nightly 8 installer path normalization, clear failure diagnostics, Inno Setup logs and portable locked-file retries.",
-            "Nightly 14: Installer now requests administrator consent and installs the admin-required GUI under protected Program Files rather than user-writable AppData.",
-            "ONE-TIME MANUAL INSTALL required when upgrading from an older LocalAppData Nightly: run Nightly 14 Setup manually, then use the new Program Files shortcut. Existing per-user settings, backups and Asset Library remain untouched; remove old shortcuts only after verifying the new installation.",
-            "Future in-app installer updates work from the new protected location; updater deliberately rejects reinstalling an elevated executable into the old user-writable folder.",
-            "Stage 2 monster Full Armor Glow is now simply Glow. It searches the selected source-build Asset Library across PAKs for the original optional glow DDS; switching off removes only that overlay and retains authored Emittance and diffuse.",
-            "Kala Armor Reducer extra emissive coefficient adjusted from 4x to 2x to match its previously verified 0.5x slider appearance at the new default 1x.",
-            "Nightly 15: includes PR #20 experimental GFX viewer and editing work: source-build UI_Assets DDS atlas reconstruction, native GFX layout editing, external Ruffle ActionScript preview, and FFDec integration.",
-            "Nightly 16: merges PR #21 GFX Tools sidebar and original main_menu.gfx ActionScript preview actions, including isolated menu prompts, navigation controls, and verified UI_Data command inspection.",
-            "Nightly 17 (PR #22): corrected CryEngine Z-up to glTF Y-up basis for unrigged static model and CDF FBX export without reauthoring UVs or mesh normals.",
-            "FBX export reconstructs original per-attachment CryEngine material IDs, retains NoDraw slots, neutral untextured diffuse, and embeds source-verified normal maps directly inside each FBX even with texture embedding OFF. No external normal PNG sidecars.",
-            "Nightly 17 (PR #23): GFX Tools adds a persistent isolated Ruffle Web browser preview with source-verified live original ActionScript callback dispatch, menu action sections, explicit unsupported-handler feedback, and movie reset without restarting the preview server.",
-            "The installer GFX Tools option includes SHA256-verified Ruffle Web alongside desktop Ruffle and FFDec. A portable build without bundled third-party tools cannot use live GFX preview until the verified web runtime is available.",
-            "Nightly 18 (PR #24): FBX exports capture bounded Blender stdout and stderr, exposing the underlying Python traceback in Manager Activity rather than only exit code 1; shared original normal-map images are embedded and validated in every authored FBX Video record without rejecting duplicated references.",
-            "Nightly 18 (PR #25): Settings > Integrations separates Ruffle Web (required for live GFX buttons) from optional Ruffle Desktop, with missing/ready status, ruffle.js path selection, bundled auto-discovery and a SHA256-pinned Ruffle Web installer that writes to the user's settings folder without requiring Program Files access.",
-            "Nightly 19 (PR #26): Fix Blender 5.2 StructRNA removed after successful FBX export by snapshotting primitive object counts before temporary scene reset and reimport verification.",
-            "Nightly 19 (PR #27): Add original source UI_Data menu diagnostics, verified English localization for the inspector, nested exact-build Scaleform font/glyph GFX import resolution, and traceable original Flash button events.",
-            "Nightly 19 (PR #27): Preview may invoke source-verified zero-argument openScreen or transitionToMainMenu callbacks without restarting Ruffle. Native CryEngine UI initialization, in-movie localized fonts, and exact native button-to-command parity are not claimed or reproduced.",
-            "Nightly 20 (PR #29): Original Stage 2 main-menu initial text is localized in a temporary Flash preview; verified nested GFX imports and original Patch Notes dismissal are restored. Dynamic native-host menu state and Scaleform rendering effects still require runtime parity checks.",
-            "Nightly 20 (PR #30): FBX exports organize original character components beneath a named hierarchy, preserve source-authored CDF attachment/material labels, and offer optional Combine meshes while protecting UV0, normal-map links, material IDs and incompatible historical armatures.",
-            "Nightly 21 (PR #31): Live original GFX preview exposes a source-verified sign-in prompt dismissal callback, identifies an exact unique source build when the original movie matches verified library bytes, and explains missing background/video and unresolved localization instead of presenting a blank view without context.",
-            "Nightly 21 (PR #31): Scaleform DDS diagnostics now distinguish absent source atlas tiles, preview safety limits, invalid atlas records, reused or already-defined bitmap IDs, and DDS decoder failures; reports up to 12 missing original DDS virtual paths. This is not full native CryEngine/Scaleform rendering parity.",
-            "Nightly 22 (PR #32): The live GFX inspector can open exact-build, source-verified secondary UI_Assets movies (options, ChallengesPopup, custom-match options, credits where present) and return to the original main-menu instance without resetting its ActionScript state. These are manual screen previews, not native menu-command mappings.",
-            "Nightly 22 (PR #32): Suppress unwanted Windows console popups for PowerShell-backed export folder/file selection, background Blender FBX exports and FFDec CLI/frame rendering; intentional picker dialogs and explicitly launched FFDec GUI remain visible.",
-            "Nightly 23 (PR #34): Resolve original Modded Stage 2 English menu labels using same-build USA-EN_xml.pak CryEngine Strings/Category/String name/value XML; preserve SpreadsheetML support, XML safety constraints and verified source-based lookups.",
-            "Nightly 23 (PR #34): Allow source-qualified original locfont and glyph font GFX imports from USA-EN_xml.pak root. Import the unencrypted archive into the Modded Stage 2 Asset Library build; dynamic ActionScript @ui_ assignments and final font binding still require follow-up.",
-            "Nightly 25 (PR #35): Correct exact-build English XML discovery by retaining each verified language PAK identity when resolving overlapping text_ui_*.xml member paths, instead of silently skipping ambiguous global paths. Provide explicit diagnostics for missing or ambiguous archive-scoped sources. Reopen the GFX editor and live preview to reload translations; dynamic ActionScript @ui_ replacement is still separate.",
-            "Nightly 26 (PR #33): Recover more original GFX bitmap tiles by raising bounded Scaleform preview tile/pixel limits and checking each reconstructed SWF bitmap against the unchanged 32 MiB movie cap. Diagnostics now distinguish bitmap count, pixel budget and reconstructed-SWF byte limit skips.",
-            "Nightly 26 (PR #36): Search exact-build, manifest-verified videos.pak for original main_menu.usm across known authored mount layouts, distinguish videos.pak absent from clip missing, and suppress the Windows FFmpeg conversion console. Original video asset plus compatible browser derivative/FFmpeg remain necessary.",
-            "Nightly 27 (PR #39): Resolve source-verified MenuModeSelect DDS img:// paths for the original Training/Singleplayer Flash mode cards and stage bounded temporary PNG previews in the Ruffle menu viewport. Supports original options/settings movie previews; requires matching UI_Assets.pak in the chosen source build.",
-            "Nightly 27 (PR #40): Rocky 2012 character FBX export tolerates unused bone clusters when Blender omits empty Indexes/Weights arrays, while preserving real weighted clusters and rejecting incomplete weighted data.",
-            "Nightly 29 (PR #44; commit 9ee2314): Add cosmetic/gameplay/review mod classification and filters, searchable guided gameplay-value editing with backups, and model shortcuts/editable imported-asset copies. Cosmetic online launching is not yet complete.",
-            "Nightly 29 (PR #43): Add user-configured FFmpeg for source-verified Goliath CRI USM preview, bounded original movie menu callbacks, AVM1 literal localization lookup, compressed CWS font inspection, and in-preview asset diagnostics. Original game-service callbacks and exact in-movie localization/rendering still require verification.",
-            "Nightly 29 (PR #37): Verify exact-build videos.pak members from the Asset Library inventory, support alternate mount roots for a uniquely identified Goliath USM, and report source video filenames when missing without substituting another background.",
-            "Nightly 29 (PR #42): Experimentally recover authored mesh-normal orientation from supported CryEngine tangent-frame streams when a separate original normal stream is absent; valid original normal streams remain preferred. Actual 2012/Stage 2 samples and Blender unrigged FBX normal fidelity still need real-world verification.",
-            "Nightly 30 (PR #45): Opening an indexed GFX selects the GFX Tools workspace with actionable source validation and render controls rather than the 3D placeholder. Switching to any normal model, DDS, CDF assembly or another asset returns to the corresponding viewer. Delayed GFX/FFDec/Ruffle completions no longer pin the viewport when another file was selected; newly chosen GFX files are queued while prior operations finish.",
-            "Nightly 31 (PR #47): Add bounded preview-only CurrentMenu, NPE and CustomSolo host query values for the original main_menu.gfx Training screen, controlled from the Source UI_Data inspector. Evaluate only recognized source conditions, preserve the original Flash artwork and handlers, and keep native game-service calls disabled. Actual image-card and hover parity still requires verification with the original movie.",
-            "Nightly 32 (PR #48): Fix original Training, NPE and Solo image-card selection by returning the original numeric CryEngine CurrentMenu MMS IDs. Earlier preview string values made the Flash image-button condition false even though source DDS cards were loaded. Original Flash assets and hover actions remain unchanged; real Ruffle visual verification is still required.",
-            "Nightly 33 (PR #49): Restore original GFX Training mode-card MovieClipLoader artwork by routing the source img:// DDS requests to verified imported MenuModeSelect PNG derivatives in an isolated preview. Preserve original Flash button handlers and hover states. Submenu-video transitions and private-style Asset Library import remain under CI review.",
-            "Nightly 39 (PR #55): Developer runtime adds typed read-only previews for health, cooldown, XYZ teleport and weapon-reference values, and validated plans for proposed entity spawning, character swapping and abilities. These do not perform live game writes or execute engine calls.",
-            "PR #57: Adds the read-only Stage 2 Goliath Float32 armor finder in the password-protected Developer panel. Guided Damage / Stable / Feed filtering narrows live process-memory candidates, with offline-session acknowledgment and process-restart recovery. No game memory writes, debugger breakpoints, or pointer scans.",
-            "PR #58: Experimental Developer offline live Float32 editing (single-shot). Read a verified Goliath armor or manually supplied Float32 address, separately authorize offline writes, compare the pre-write value, apply exactly four bytes, and verify readback. Writes are disabled on process restart, developer lock or offline confirmation withdrawal. No freezing, debugger or engine injection; manual addresses and offline detection remain unverified.",
-            "PR #59: Fix 2012 Rocky 3 FBX diffuse maps exporting invisible due to packed DDS alpha. Preserve RGB textures, normal maps, source UVs and material IDs; correct alpha only on source-authored opaque CryTek 0x745 materials. Keep genuine transparency and Stage 2 behavior unchanged.",
-            "PR #60: Experimental first-run offline setup and Play with Mods integration. Detect or browse for EvolveGame and ModdedEvolveLauncher.exe; create a new isolated RSA signing stage, re-sign verified original Stage 2 PAKs, and prepare a matching client hook and recovery journal without modifying installed game files during setup.",
-            "PR #60: Play with Mods uses the established private offline game-creation interception and original-file restoration helper; Play without Mods checks recovery state before normal launch. Python 3.11 x64 and Frida are external prerequisites. Full in-game PAK swap, mount and watchdog restoration are not yet verified; test offline and retain a separate game backup.",
-            "Nightly release (PR #61): Preserve original CryEngine mesh normals where available, reconstruct fallback smooth normals with hard edges/UV seams respected, and export and verify tangent/binormal layers for FBX normal maps. Emet broken, healing, and oh face variants are mutually exclusive while material IDs and separate meshes remain preserved.",
-            "Nightly release (PR #62): Edit imported signed PAKs via authenticated, isolated staged editing copies without modifying the original PAK. Record import provenance and distinguish PAKs with no exact deployment mapping.",
-            "Nightly release (PR #62): Settings > Storage includes Update Staged / Original PAKs after Game Update. Creates a new verified PAK signing baseline only with restored swap state and preserves older stages and project files. Existing edits require compatibility review before use with changed game archives.",
-            "Nightly release (PR #63): Restore existing imported Asset Library manifests automatically when entering Modding or the Asset Library. Directly select imported PAKs for editable staged copies without reimporting every launch; preserve original PAK files and tracked provenance.",
-            "Nightly release (PR #63): Recognize edited Libs/UI/main_menu.gfx and other GFX movie changes in Modding. Apply pending GFX edits to the matching project with EditorBackups before a requested signed test build; refresh changed-file counts after manual Apply.",
-            "Nightly release (PR #63): Signed Mod Project builds fully verify all manifest-listed members instead of relying on the 256 MiB dashboard scan budget, preventing Test B-style menu changes from being overlooked. Older imported manifests without source checksums can be reverified on demand; unsupported signatures still require authentic keys. Offline testing required.",
-            "Nightly release (PR #64): Fix first-run Set Up Manager refusing blank or relative GameSets paths by resolving the manager-owned per-user GameSets storage automatically; keep user-specified safe absolute locations and preserve existing stage/swap folders.",
-            "Nightly release (PR #64): First-run PAK staging now verifies both physical and lowercase RSA-authenticated CryPAK signing names (for example mixed-case AnimationsCAF.pak), records the authenticated spelling and validates re-signed offline copies without renaming or modifying originals. Corrupt and unsupported archives still fail closed; actual game archive verification remains necessary.",
-            "Nightly release (PR #65): Editing an imported PAK whose game source changed now reauthenticates and reimports only that PAK into a new versioned library snapshot. The previous imported archive and the installed game originals remain untouched.",
-            "Nightly release (PR #65): Imported PAKs with a changed game baseline create isolated, non-deployable editing copies instead of guessing stage targets. Retain authenticated filename casing for extracted and signed modified PAKs; update the game's signing stage before deploying those edits.",
-            "Nightly release (PR #65): Correct a Windows case-insensitive filename collision in the signed CryPAK regression test. Actual gameplay deployment and the user's updated UI_Assets.pak still require verification.",
-            "Nightly 49 (PR #66): Add versioned incremental Asset Library snapshots and changed-only PAK imports; allow isolated imported-PAK editing against the current authenticated install, signed Build & Prepare Offline Test profiles, and offline archive member compatibility warnings. Preserve original files and recovery journals. Actual Evolve menu runtime verification remains outstanding.",
-            "Nightly 50 (PR #67): Make Asset Library Edit / Add to Mod Project faster by working directly from the authenticated imported snapshot, copying and verifying each asset in one pass, and indexing the manifest efficiently. Add an operation-aware file/byte progress bar alongside the footer version. Signing, game-target mapping, and deployment checks stay in Build / Prepare Offline Test.",
-            "Nightly 50 (PR #68): Fix Build & Prepare Offline Test profile creation in existing automatically generated Setup_*/staged signing stages. Recognize validated legacy-generated stage layouts and initialize recovery metadata on new setups without deleting user projects or game files. Offline runtime still requires live verification.",
-            "Nightly 51 (PR #69): Recover verified stranded original PAK and injector backups after interrupted offline game swaps. Expose Restore original game files in Modding; retain backup protection and refuse unsafe or unexpected originals.",
-            "Nightly 51 (PR #70): Simplify Modding with custom mod names, persistent On/Off controls, and automatic build/staging of enabled mods when choosing Play with Mods. Conflicting PAK targets are reported clearly; manual profiles move under Advanced.",
-            "Nightly 51 (footer): Show a persistent progress bar beside the version during all tracked manager tasks, with real percentages when provided, processed-file counts when available, and animated indeterminate activity otherwise. Runtime game compatibility still requires verification.",
-            "Nightly 52 (PR #71): Replace plain mod On/Off buttons with animated red sliding toggle switches. Their enabled state persists immediately and the track/thumb animate smoothly after changes.",
-            "Nightly (PR #72): Play with Mods automatically restores a previously active verified staged profile transaction before applying enabled mods, avoiding false unrelated-profile blocking. Unexpected staged edits still fail safely; offline runtime verification remains required.",
-            "Nightly (PR #73): Restore private-manager offline hook compatibility: verify each installed/staged injector RSA key slot, pin the custom DLL to the setup SHA-256, and validate signed PAKs separately without incorrectly requiring all non-key injector bytes to match. Repair only a digest-verified staged hook; preserve game files, backups and rollback, with clearer failure reporting. In-game verification remains required.",
-            "Nightly 55 (PR #74): Play with Mods now accepts intentionally added, removed, or renamed members in independently RSA-verified original and custom-key PAKs instead of failing on an exact inventory comparison (including Game/materials_min_sky.pak). Record differing member inventories as compatibility warnings while retaining signed-archive verification, staged hook safeguards, and original-file rollback. Offline game runtime verification remains outstanding.",
-            "Nightly 56 (PR #75): Correct Python and Frida CreateProcessW executable matching for ordinary and extended Windows drive/UNC paths, the reproduced reason Main Menu Test B stayed staged rather than swapped. Refresh only byte-identical known legacy auto_launch_frida.py helpers in existing setups, preserving customized scripts, signed PAKs, keys, and rollback journals. Added Python and JavaScript matcher regression tests. Confirm a live swap and UI_Assets.pak hash before evaluating Test B in-game; Legacy menu callbacks remain experimental.",
-            "Nightly 57 (PR #76): Use ordinary C:/ game paths in new signing plans and swap journals, normalize legacy extended-path plans when preparing, and refresh known original bundled Python helpers without rebuilding 236 signed PAKs or touching game backups. Play with Mods now distinguishes hook readiness from a verified SWAP COMPLETE, game-process release, and completed helper exit; report if the normal game opens without mods. Runtime Test B compatibility remains to be verified in-game.",
-            "Nightly 62 (PR #83): Fix Nightly update discovery when cumulative GitHub release notes exceed the old 1 MB metadata limit. Bounded release metadata now allows up to 8 MiB with a clearer overflow error; SHA-256 verification, signed release URL validation and the 500 MiB artifact cap remain unchanged.",
-            "Nightly 62 (PR #84): Whats New Discord feed accepts ordinary text posts, bot messages, media links and forwarded announcements from the configured public-update channel, and resolves guild IDs for reliable message links. The separate GitHub Pages feed remains read-only with no bot credentials in the desktop.",
-            "Nightly 61 (PR #81): Recover abandoned .customkey-ready.partial copies from interrupted preparation by preserving safe orphaned temporary bytes under unique .stale-* names after verified journal, game-stage and backup checks; freshly copy and hash-verify signed staged PAKs. Existing known Nightly 60 private helpers migrate by digest; customized scripts, installed originals and recovery backups are untouched.",
-            "Nightly 61 (PR #82): What\u0027s New displays the newest published GitHub release notes (including Nightly prereleases) and forwarded Discord announcements from a read-only GitHub Pages JSON feed, with separate refresh/error handling, cached offline content and source links. Publishing announcements requires configured Discord bot/channel secrets and GitHub Pages Actions deployment; offline/empty feeds never block the manager.",
-            "Nightly release (PR #79): Show the private controlled_swap.py preparation STOPPED reason in the Game Launch window, capture helper stdout/stderr in rust-prepare-bridge.log, and retain existing signing, backup and journal safeguards.",
-            "Nightly release (PR #80): Show the same measured progress in Game Launch and the larger footer bar, label every tracked operation with counters or elapsed time, and use the bundled app icon for all native manager windows.",
-            "Nightly 59 (PR #78): Repair stale .customkey-ready copies during repeated Play with Mods tests: validate the swap journal and absence of original backups first, preserve unexpected disposable cache bytes under .stale-* names, then prepare fresh signed copies rather than falling back to regular Evolve. Add a separate Game Launch window showing preparation, hook readiness vs verified swap, confirmed launch or mod-free fallback, and clear worker errors. Original game PAKs, recovery backups, signed-archive checks and rollback remain protected. Windows CI passed; in-game verification pending.",
-            "Nightly 52 (recovery): Port private manager orphaned original PAK/injector backup recovery for stale or missing swap journals. Report recovery failures as warnings and allow the normal client to open for Repair/Verify. When backups prevent safe modded swapping, clearly explain that enabled mods were not applied and fall back to the normal client.",
-            "Nightly 39 (PR #55): Adds bounded 4 KiB AOB signature probing with wildcards to find candidate memory addresses in a detected Evolve.exe process. Candidates are not automatically verified pointers; injection and arbitrary RMI calls remain unavailable.",
-            "Nightly 39 (PR #56): GFX preview adds source-verified read-only probes for original Training image-button branch selection and pending menu-row population alongside image-request counters; documents featured promotion title and TRY/BUY runtime data limitations. Training cards and promotional content are not yet fully restored.",
-            "Nightly release after PR #54: Fix mixed-case signed PAK imports, persistent GFX featured-promotion suppression and text editing, and add password-gated read-only external runtime process/memory diagnostics. Phase 2 controls and Phase 3 engine operations remain intentionally unavailable.",
-            "Nightly 37: Rebuild the PR #53 legacy Evolve importer with the final Rust formatting correction; Nightly 36 did not publish because its rustfmt check failed.",
-            "Nightly 36 (PR #53): Asset Library now auto-detects ZIP-compatible legacy Evolve PAKs and imports them using bounded path-safe ZIP extraction with CRC32 checks rather than incorrectly demanding Stage 2 RSA verification. Authenticated signed Twofish CryPAKs still require their matching RSA public keys; unsupported or corrupt archive formats remain rejected. Source files are never modified.",
-            "Nightly 35 (PR #52): Rewrite the 24 original MenuModeSelect Flash MovieClipLoader image filenames from .dds to .png in the temporary AVM1 preview, serve verified imported PNG artwork, and report attempted/served/failed image requests in Check preview assets. Original game assets and Flash layout remain unchanged; visual parity still requires verification.",
-            "Nightly 34 (PRs #50 and #51): Bring private-style Asset Library imports back with native multi-PAK and recursive whole-folder selection, preview counts, RSA archive validation and cancellable per-archive progress. Add original FrontEndVideoList submenu backgrounds to GFX previews, selecting verified lobby, options and FoundersPopup USMs on menu transitions and restoring the Goliath main-menu video. PR #49 mode-card source loading remains included.",
-            "Ruffle Web installation requires the adjacent WASM files and still cannot emulate native CryEngine menu services; original ActionScript actions require runtime verification.",
-            "FBX: material-ID preservation from original CryEngine mesh subsets (including sparse IDs and NoDraw), face-count and UV-per-material checks, and safer rig cluster/bind-pose optimization.",
-            "FBX: tangent-space normal maps are embedded in FBX regardless of the optional diffuse/other texture embedding switch. Untextured diffuse materials remain neutral white.",
-            "Exporter validates original armatures, weights, UV0, material assignments, and normal-map links; original CryEngine native callback/runtime parity still needs verification.",
-
-            "Settings > Integrations detects separate Ruffle Web, Desktop Ruffle and FFDec runtimes or offers explicit verified installation; installer adds optional preselected GFX tools. FFDec may require Java. Portable ZIP excludes bundled third-party tools.",
-            "Stage 2 monster Glow lookup includes exact owning _ts.pak split DDS files (including Kraken/Grounder); 2012 Rocky CDF FBX exporter preserves multiple original 47/48-bone armatures without inventing weights.",
-            "Emet CDF model options include authored face attachment selection and Respawn Beacon visibility where present, with options carried into CDF FBX export; original MtlName references are used for authored multi-subset materials.",
-            "These experimental features require source assets and some live-game verification. Ruffle cannot recreate CryEngine native Scaleform callbacks.",
-            "Portable users remain portable; application updates never modify game files.",
-            "Game-exact HDR bloom is not yet reproduced.",
-            "Installer options: desktop shortcut, Start Menu shortcut, launch when finished.",
-            "Only the Windows installer and portable ZIP are published.",
             ""
           )
+          $changes = @()
+          if ($previousTag) {
+            $body += "Changes since $previousTag:"
+            $history = @(git log --first-parent --format="%H" "$previousTag..HEAD")
+            if ($LASTEXITCODE -ne 0) { throw "Unable to compare commits with $previousTag" }
+            foreach ($commit in $history) {
+              if (!$commit) { continue }
+              $lines = @(git log -1 --format="%B" $commit |
+                Where-Object { ![string]::IsNullOrWhiteSpace($_) })
+              if ($LASTEXITCODE -ne 0) { throw "Unable to read commit $commit" }
+              if ($lines.Count -eq 0) { continue }
+              $subject = $lines[0].Trim()
+              # Release publishing metadata is not an application change.
+              if ($subject -match '^build\(nightly\):') { continue }
+              if ($subject -match '^Merge pull request #([0-9]+)\b') {
+                $number = $Matches[1]
+                $title = if ($lines.Count -gt 1) { $lines[1].Trim() } else { $subject }
+                $changes += "- PR #${number}: $title"
+              } else {
+                $changes += "- $subject"
+              }
+            }
+          } else {
+            $body += "Initial Nightly release on this branch."
+          }
+          if ($changes.Count -gt 0) {
+            $body += $changes
+          } elseif ($previousTag) {
+            $body += "- No code changes since the previous published Nightly (scheduled rebuild)."
+          }
+          $body += ""
           foreach ($item in @($installer, $portable)) {
             $name = Split-Path $item -Leaf
             $digest = (Get-FileHash -Algorithm SHA256 $item).Hash.ToLowerInvariant()
