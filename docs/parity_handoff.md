@@ -1,3 +1,10 @@
+## 2026-10-25 — Interrupted .customkey-ready.partial preparation recovery
+
+- **Verified launch failure:** A previous interrupted private helper preparation left `objects_min_level_specific.pak.customkey-ready.partial` next to the live game PAK. Nightly 60 correctly surfaced the actual Python `STOPPED: RuntimeError`; no swap was started.
+- **Recovery:** During the next `controlled_swap.py prepare`, after verifying game and launcher are closed, restored journal phase (or absent journal), fully signed stage identity, installed/staged source presence, and absence of original `.customkey-original` backups, preserve an abandoned ordinary `.customkey-ready.partial` under a unique same-folder `.partial.stale-*` name, then create a new `.partial` from the signed stage and hash-verify its bytes before renaming to `.customkey-ready`. Refuse directories, symlinks/reparse points, oversized or otherwise unsafe partials. Do not resume unverified bytes, overwrite an original game file, delete a recovery journal, or bypass backup protections.
+- **Existing installations:** The manager migrates only the exact SHA-256 of the Nightly 60 published `controlled_swap.py` helper (plus an older allowlisted revision), preserving customized scripts without replacement. Five Python regressions check successful quarantine and rejection when originals, backups or prepared copies are unsafe. The regression suite is included in existing Rust CI.
+- **Verification outstanding:** Windows CI, full-game-volume free-space behavior, and repeated Play with Mods attempts on a real installation. Preserved `.stale-*` files consume space until reviewed; the main game PAKs remain unchanged.
+
 ## 2026-10-25 — Consistent progress indicators and native window icons (PR #80)
 
 - **User request:** Game Launch popup displays the footer's same live bar and progress metrics; the footer bar is more prominent; all manager operations describe progress rather than using generic `Working`; all native windows, including the main manager, show the application's own titlebar icon.
