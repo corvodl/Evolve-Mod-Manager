@@ -290,13 +290,69 @@ def launch_standard_user(executable):
     return proc
 
 
+class PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", wintypes.DWORD),
+        ("cntUsage", wintypes.DWORD),
+        ("th32ProcessID", wintypes.DWORD),
+        ("th32DefaultHeapID", ctypes.c_size_t),
+        ("th32ModuleID", wintypes.DWORD),
+        ("cntThreads", wintypes.DWORD),
+        ("th32ParentProcessID", wintypes.DWORD),
+        ("pcPriClassBase", ctypes.c_long),
+        ("dwFlags", wintypes.DWORD),
+        ("szExeFile", wintypes.WCHAR * 260),
+    ]
+
+
+def diagnose_processes():
+    """Read-only elevation diagnostic for the exact manager/client/game names."""
+    api = _win()
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel.Process32FirstW.restype = wintypes.BOOL
+    kernel.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+    kernel.Process32NextW.restype = wintypes.BOOL
+    kernel.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+    snapshot = kernel.CreateToolhelp32Snapshot(0x00000002, 0)
+    if not snapshot or ctypes.c_void_p(snapshot).value == ctypes.c_void_p(-1).value:
+        raise _error("CreateToolhelp32Snapshot")
+    rows = []
+    wanted = {"evolve-mod-manager.exe", "moddedevolvelauncher.exe", "evolve.exe"}
+    try:
+        item = PROCESSENTRY32W()
+        item.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        present = kernel.Process32FirstW(snapshot, ctypes.byref(item))
+        while present and len(rows) < 24:
+            image = item.szExeFile
+            if image.casefold() in wanted:
+                pid = int(item.th32ProcessID)
+                try:
+                    info = get_elevation(pid)
+                    level = "HIGH" if info["elevated"] else (
+                        "MEDIUM" if info["integrity_rid"] == SECURITY_MANDATORY_MEDIUM_RID
+                        else f"IL 0x{info['integrity_rid']:x}"
+                    )
+                    rows.append(f"{image} PID {pid}: {level}, elevated={str(info['elevated']).lower()}, session={info['session']}")
+                except Exception as error:
+                    rows.append(f"{image} PID {pid}: token query unavailable ({type(error).__name__})")
+            present = kernel.Process32NextW(snapshot, ctypes.byref(item))
+    finally:
+        api["CloseHandle"](snapshot)
+    if not rows:
+        return "No matching Evolve manager/client/game processes were found."
+    return "\n".join(sorted(rows))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--launch", metavar="CLIENT_EXE")
     parser.add_argument("--diagnose-pid", type=int, metavar="PID")
+    parser.add_argument("--diagnose-processes", action="store_true")
     args = parser.parse_args(argv)
-    if bool(args.launch) == (args.diagnose_pid is not None):
-        parser.error("Pass either --launch EXE or --diagnose-pid PID")
+    if sum([bool(args.launch), args.diagnose_pid is not None, args.diagnose_processes]) != 1:
+        parser.error("Pass exactly one --launch EXE, --diagnose-pid PID, or --diagnose-processes")
     if args.launch:
         process = launch_standard_user(args.launch)
         try:
@@ -308,6 +364,8 @@ def main(argv=None):
             )
         finally:
             process.close()  # Does not terminate running client.
+    elif args.diagnose_processes:
+        print(diagnose_processes(), flush=True)
     else:
         info = get_elevation(args.diagnose_pid)
         print(
