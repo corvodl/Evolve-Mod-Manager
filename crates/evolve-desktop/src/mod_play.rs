@@ -242,7 +242,9 @@ pub fn launch_enabled(
     if developer_online {
         // Record the chosen mode in the existing local activity logger.
         // "online" here means permitted by the manager, not server-confirmed.
-        eprintln!("Developer modded-online test requested (client PID {id}); no mod-type filter applied; server acceptance unverified");
+        eprintln!(
+            "Developer modded-online test requested (client PID {id}); no mod-type filter applied; server acceptance unverified"
+        );
     }
     progress.store(100, Ordering::Relaxed);
     Ok((mods.len(), id, ready.compatibility_warnings, None))

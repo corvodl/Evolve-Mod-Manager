@@ -1478,16 +1478,32 @@ impl Operation {
                 let report = inspect_existing_launcher(&stage, &swap)?;
                 Ok(Completed::OfflineLauncherReady(report))
             }
-            Self::PlayEnabledMods(projects, stage, swap, game, client, progress, online_requested) => {
+            Self::PlayEnabledMods(
+                projects,
+                stage,
+                swap,
+                game,
+                client,
+                progress,
+                online_requested,
+            ) => {
                 let mods = discover_projects(&projects, &stage)?
                     .into_iter()
                     .filter(|project| project.enabled)
                     .collect();
-                mod_play::launch_enabled(mods, projects, stage, swap, game, client, progress, online_requested).map(
-                    |(count, id, warnings, recovery)| {
-                        Completed::EnabledModsLaunched(count, id, warnings, recovery, online_requested)
-                    },
+                mod_play::launch_enabled(
+                    mods,
+                    projects,
+                    stage,
+                    swap,
+                    game,
+                    client,
+                    progress,
+                    online_requested,
                 )
+                .map(|(count, id, warnings, recovery)| {
+                    Completed::EnabledModsLaunched(count, id, warnings, recovery, online_requested)
+                })
             }
             Self::StartExistingOfflineLauncher(stage, swap, game, client) => {
                 play_setup::configure_existing_helper(&game, &client, &stage, &swap)?;
@@ -3902,7 +3918,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ArmorOfflineChanged(confirmed) => {
             if confirmed && state.developer_online_mods {
-                state.status = "Disable experimental modded-online mode before arming offline memory tools.".into();
+                state.status =
+                    "Disable experimental modded-online mode before arming offline memory tools."
+                        .into();
                 return Task::none();
             }
             state.armor_offline_confirmed = confirmed;
@@ -4375,8 +4393,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.developer_status.clear();
         }
         Message::DeveloperOnlineMods(allow) => {
-            if !state.developer_unlocked || state.busy
-                || state.runtime_checking || state.live_edit_busy || state.armor_cancel.is_some()
+            if !state.developer_unlocked
+                || state.busy
+                || state.runtime_checking
+                || state.live_edit_busy
+                || state.armor_cancel.is_some()
             {
                 state.status = "Unlock Developer and finish running tasks/scans before changing online mod mode.".into();
                 return Task::none();
@@ -7253,12 +7274,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
             if is_modded {
                 let online_requested = state.developer_unlocked && state.developer_online_mods;
-                if online_requested && (state.armor_offline_confirmed
-                    || state.live_edit_enabled || state.live_edit_busy || state.runtime_checking)
+                if online_requested
+                    && (state.armor_offline_confirmed
+                        || state.live_edit_enabled
+                        || state.live_edit_busy
+                        || state.runtime_checking)
                 {
                     state.status = "Cannot attempt online modded play while offline runtime scans or writes are armed.".into();
                     state.play_notice = Some(play_dialog::Notice::finished(
-                        kind, play_dialog::Phase::Error, state.status.clone(),
+                        kind,
+                        play_dialog::Phase::Error,
+                        state.status.clone(),
                     ));
                     state.active_play = None;
                     return Task::none();
@@ -9511,13 +9537,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     };
                     state.page = Some(Page::Home);
                 }
-                Ok(Completed::EnabledModsLaunched(mod_count, id, _warnings, recovery, online_requested)) => {
+                Ok(Completed::EnabledModsLaunched(
+                    mod_count,
+                    id,
+                    _warnings,
+                    recovery,
+                    online_requested,
+                )) => {
                     state.status = if let Some(warning) = recovery {
                         format!("Regular client opened (PID {id}). {warning}")
                     } else if online_requested {
-                        format!("{mod_count} enabled mod(s) staged with no content-type restriction; helper PID {id}. Developer online test enabled. Use a permitted testing server; client connectivity and server acceptance are unverified.")
+                        format!(
+                            "{mod_count} enabled mod(s) staged with no content-type restriction; helper PID {id}. Developer online test enabled. Use a permitted testing server; client connectivity and server acceptance are unverified."
+                        )
                     } else {
-                        format!("{mod_count} enabled mod(s) ready. Offline client helper started (PID {id}). Press Play in the client.")
+                        format!(
+                            "{mod_count} enabled mod(s) ready. Offline client helper started (PID {id}). Press Play in the client."
+                        )
                     };
                     state.page = Some(Page::Home);
                 }
