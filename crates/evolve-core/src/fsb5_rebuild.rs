@@ -125,8 +125,13 @@ impl Bank {
             offsets.push(((word >> 6) & ((1u64 << 28) - 1)) as usize * 16);
             samples.push(Sample { header: word, extras, data: Vec::new() });
         }
-        if cursor != end_headers || offsets[0] != 0 {
-            return Err(invalid("sample metadata or first sample offset mismatch"));
+        // Legacy banks may end the sample-header table exactly at the last
+        // metadata chunk. Standalone Ogg remuxers can append zero alignment
+        // bytes inside the declared header section instead.
+        if cursor > end_headers || offsets[0] != 0
+            || raw[cursor..end_headers].iter().any(|&byte| byte != 0)
+        {
+            return Err(invalid("sample metadata, padding or first sample offset mismatch"));
         }
         for index in 0..count {
             let start = offsets[index];
