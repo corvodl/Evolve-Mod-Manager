@@ -5660,13 +5660,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return launch(state, operation);
         }
         Message::AudioDecoderPathChanged(path) => {
-            if path.len() <= 4096 && !path.contains(' ') {
+            if path.len() <= 4096 && !path.contains('\0') {
                 state.preferences.vgmstream_executable = path;
                 persist_preferences(state);
             }
         }
         Message::AudioDesignerPathChanged(path) => {
-            if path.len() <= 4096 && !path.contains(' ') {
+            if path.len() <= 4096 && !path.contains('\0') {
                 state.preferences.fmod_designer_executable = path;
                 persist_preferences(state);
             }
