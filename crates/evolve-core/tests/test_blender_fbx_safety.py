@@ -173,16 +173,41 @@ class FBXSafetyTests(unittest.TestCase):
                 optimize_binary_fbx(path, require_tangent_space=True)
             self.assertEqual(path.read_bytes(), broken)
 
-    def test_near_zero_nonzero_tangent_must_not_be_fabricated(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = pathlib.Path(folder) / "invalid_tangent.fbx"
-            original = shaded_sample(
-                tangents=[.0001, 0., 0.] + [1., 0., 0.] * 2,
-            )
-            path.write_bytes(original)
-            with self.assertRaisesRegex(FBXValidationError, "degenerate normal/tangent"):
-                optimize_binary_fbx(path, require_tangent_space=True)
-            self.assertEqual(path.read_bytes(), original)
+    def test_near_zero_nonzero_tangent_uses_valid_perpendicular_binormal(self):
+        # Blender's UV-derivative residual can be nonzero even when no
+        # meaningful unit tangent exists. Recover only that undefined corner.
+        for compressed in (False, True):
+            with self.subTest(compressed=compressed), tempfile.TemporaryDirectory() as folder:
+                path = pathlib.Path(folder) / "emet_3p.fbx"
+                path.write_bytes(shaded_sample(
+                    tangents=[.0001, 0., 0.] + [1., 0., 0.] * 2,
+                    compressed=compressed,
+                ))
+                original = _read_nodes(path.read_bytes())[1][0].children_named(b"Geometry")[0]
+                normal_bytes = original.children_named(b"LayerElementNormal")[0].children[0].props
+                binormal_bytes = original.children_named(b"LayerElementBinormal")[0].children[0].props
+                original_uv = original.children_named(b"LayerElementUV")[0].children[0].props
+                result = optimize_binary_fbx(path, require_tangent_space=True)
+                self.assertEqual(result["repaired_tangent_vectors"], 1)
+                geometry = _read_nodes(path.read_bytes())[1][0].children_named(b"Geometry")[0]
+                self.assertEqual(geometry.children_named(b"LayerElementNormal")[0].children[0].props, normal_bytes)
+                self.assertEqual(geometry.children_named(b"LayerElementBinormal")[0].children[0].props, binormal_bytes)
+                self.assertEqual(geometry.children_named(b"LayerElementUV")[0].children[0].props, original_uv)
+                _validate_geometry(_read_nodes(path.read_bytes())[1][0], require_tangent_space=True)
+
+    def test_ambiguous_nonzero_tangent_and_parallel_partner_fail_closed(self):
+        for tangent, binormal in (
+            ([.02, 0., 0.] + [1., 0., 0.] * 2, None),
+            ([.0001, 0., 0.] + [1., 0., 0.] * 2,
+             [0., 0., 1.] + [0., 1., 0.] * 2),
+        ):
+            with self.subTest(tangent=tangent[0]), tempfile.TemporaryDirectory() as folder:
+                path = pathlib.Path(folder) / "invalid_tangent.fbx"
+                original = shaded_sample(tangents=tangent, binormals=binormal)
+                path.write_bytes(original)
+                with self.assertRaisesRegex(FBXValidationError, "degenerate normal/tangent"):
+                    optimize_binary_fbx(path, require_tangent_space=True)
+                self.assertEqual(path.read_bytes(), original)
 
     def test_rocky_omitted_zero_influence_cluster_arrays(self):
         # Blender can omit Indexes and Weights entirely for unused joints.
