@@ -48,6 +48,8 @@ pub struct Preferences {
     pub ffdec_executable: String,
     /// Optional open-source FSB decoder used for WAV preview/export.
     pub vgmstream_executable: String,
+    /// MIT-licensed Vorbis-to-FSB5 remuxer for native bank rebuilding.
+    pub oggvorbis_remux_executable: String,
     /// User-installed legacy FMOD Designer editor (never bundled).
     pub fmod_designer_executable: String,
     /// Optional separately-installed Ruffle desktop player for ActionScript previews.
@@ -105,6 +107,7 @@ impl Default for Preferences {
             blender_executable: String::new(),
             ffdec_executable: String::new(),
             vgmstream_executable: String::new(),
+            oggvorbis_remux_executable: String::new(),
             fmod_designer_executable: String::new(),
             ruffle_executable: String::new(),
             ruffle_web_runtime: String::new(),
@@ -261,6 +264,7 @@ impl Preferences {
             &self.blender_executable,
             &self.ffdec_executable,
             &self.vgmstream_executable,
+            &self.oggvorbis_remux_executable,
             &self.fmod_designer_executable,
             &self.ruffle_executable,
             &self.ruffle_web_runtime,
