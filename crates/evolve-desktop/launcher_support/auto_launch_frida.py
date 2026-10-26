@@ -17,6 +17,7 @@ import threading
 import time
 
 import controlled_swap as swapper
+import standard_user_launch
 
 LAUNCHER = Path(r'C:\Users\billn\AppData\Local\Programs\Modded Evolve\ModdedEvolveLauncher.exe')
 GAME_EXE = Path(r'C:\Games\ModdedEvolve\EvolveGame\bin64_SteamRetail\Evolve.exe')
@@ -265,8 +266,20 @@ def main() -> int:
             import frida
         except ImportError:
             raise RuntimeError('Frida is not installed. Run Install-Frida.cmd first.') from None
-        launcher = subprocess.Popen([str(LAUNCHER)], cwd=str(LAUNCHER.parent))
-        print(f'Launcher PID {launcher.pid}', flush=True)
+        # The elevated helper retains permission to perform atomic PAK swaps,
+        # but the interactive client and its Evolve.exe child must run under
+        # Explorer's verified MEDIUM-integrity user token. Never silently
+        # fall back to an elevated subprocess on failure.
+        own_privileges = standard_user_launch.get_elevation()
+        launcher = standard_user_launch.launch_standard_user(LAUNCHER)
+        actual_privileges = standard_user_launch.get_elevation(launcher.pid)
+        print(
+            f"Privilege diagnostic: swap_helper_pid={os.getpid()} elevated={own_privileges['elevated']}; "
+            f"client_pid={launcher.pid} elevated={actual_privileges['elevated']} "
+            f"integrity=0x{actual_privileges['integrity_rid']:x}",
+            flush=True,
+        )
+        print(f'Launcher PID {launcher.pid} (standard user, medium integrity)', flush=True)
         # Let the host launch, then instrument it before the user presses Play.
         session = frida.attach(launcher.pid)
         script = session.create_script(make_js())
@@ -307,6 +320,9 @@ def main() -> int:
                       file=sys.stderr, flush=True)
         if session is not None:
             try: session.detach()
+            except Exception: pass
+        if launcher is not None:
+            try: launcher.close()
             except Exception: pass
 
 
