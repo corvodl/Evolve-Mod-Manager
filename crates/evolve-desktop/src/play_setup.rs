@@ -348,7 +348,9 @@ pub fn launch_clean(
     // interrupted modded game. A failure becomes an actionable warning:
     // the ordinary client's Repair/Verify UI must remain accessible.
     if let Err(error) = crate::online_guard::apply(game, true) {
-        warnings.push(format!("Could not remove manager-owned offline firewall rule: {error}"));
+        warnings.push(format!(
+            "Could not remove manager-owned offline firewall rule: {error}"
+        ));
     }
     let mut cmd = Command::new(client);
     cmd.current_dir(

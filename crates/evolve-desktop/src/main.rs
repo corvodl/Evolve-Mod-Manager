@@ -37,10 +37,10 @@ mod level_workspace;
 mod library_picker;
 mod menu_popup;
 mod mod_play;
-mod online_guard;
 mod modding_keys;
 mod modding_page;
 mod modding_projects;
+mod online_guard;
 mod orientation_gizmo;
 mod play_dialog;
 mod play_setup;
@@ -4406,7 +4406,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 || state.live_edit_busy
                 || state.armor_cancel.is_some()
             {
-                state.developer_network_status = "Finish current tasks before switching the game network policy.".into();
+                state.developer_network_status =
+                    "Finish current tasks before switching the game network policy.".into();
                 return Task::none();
             }
             if !allow {
@@ -12180,9 +12181,10 @@ mod project_edit_tests {
         state.armor_offline_confirmed = true;
         state.live_edit_enabled = true;
         state.developer_network_busy = true;
-        let _ = update(&mut state, Message::DeveloperNetworkApplied(Ok(
-            "Removed one Evolve Mod Manager rule".into(),
-        )));
+        let _ = update(
+            &mut state,
+            Message::DeveloperNetworkApplied(Ok("Removed one Evolve Mod Manager rule".into())),
+        );
         assert!(state.developer_online_mods);
         assert!(!state.developer_network_busy);
         assert!(!state.armor_offline_confirmed);
@@ -12192,15 +12194,22 @@ mod project_edit_tests {
         let _ = update(&mut state, Message::DeveloperOnlineMods(false));
         assert!(!state.developer_online_mods);
         state.developer_network_busy = true;
-        let _ = update(&mut state, Message::DeveloperNetworkApplied(Err(
-            "Administrator permission required".into(),
-        )));
-        assert!(!state.developer_online_mods, "Network failure must fail closed");
+        let _ = update(
+            &mut state,
+            Message::DeveloperNetworkApplied(Err("Administrator permission required".into())),
+        );
+        assert!(
+            !state.developer_online_mods,
+            "Network failure must fail closed"
+        );
         assert!(state.developer_network_status.contains("permission"));
         assert!(!state.developer_network_busy);
 
         state.developer_network_busy = true;
-        let _ = update(&mut state, Message::DeveloperNetworkApplied(Ok("Online ready".into())));
+        let _ = update(
+            &mut state,
+            Message::DeveloperNetworkApplied(Ok("Online ready".into())),
+        );
         assert!(state.developer_online_mods);
         let _ = update(&mut state, Message::LockDeveloper);
         assert!(!state.developer_online_mods);

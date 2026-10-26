@@ -35,8 +35,8 @@ pub fn game_executable(game_root: &Path) -> Result<PathBuf, String> {
     let root = std::fs::canonicalize(game_root)
         .map_err(|e| format!("Cannot locate selected EvolveGame folder: {e}"))?;
     let game = root.join("bin64_SteamRetail").join("Evolve.exe");
-    let meta = std::fs::symlink_metadata(&game)
-        .map_err(|e| format!("Cannot locate Evolve.exe: {e}"))?;
+    let meta =
+        std::fs::symlink_metadata(&game).map_err(|e| format!("Cannot locate Evolve.exe: {e}"))?;
     if !meta.file_type().is_file() {
         return Err("Evolve.exe is not a regular file".into());
     }
@@ -75,7 +75,9 @@ pub fn apply(game_root: &Path, allow_online: bool) -> Result<String, String> {
     }
     fn run(args: &[String], verb: &str) -> Result<(), String> {
         let out = command(args)?;
-        if out.status.success() { return Ok(()); }
+        if out.status.success() {
+            return Ok(());
+        }
         let stderr = String::from_utf8_lossy(&out.stderr);
         let stdout = String::from_utf8_lossy(&out.stdout);
         Err(format!(
@@ -88,16 +90,26 @@ pub fn apply(game_root: &Path, allow_online: bool) -> Result<String, String> {
     let exe = game_executable(game_root)?;
     let mut seen = HashSet::new();
     let mut names = Vec::new();
-    for candidate in [&exe, &game_root.join("bin64_SteamRetail").join("Evolve.exe")] {
+    for candidate in [
+        &exe,
+        &game_root.join("bin64_SteamRetail").join("Evolve.exe"),
+    ] {
         let label = named_rule(candidate);
-        if seen.insert(label.clone()) { names.push(label); }
+        if seen.insert(label.clone()) {
+            names.push(label);
+        }
     }
     let mut removed = 0;
     for name in &names {
         if exists(name)? {
-            run(&["delete".into(), "rule".into(), format!("name={name}")], "rule removal")?;
+            run(
+                &["delete".into(), "rule".into(), format!("name={name}")],
+                "rule removal",
+            )?;
             if exists(name)? {
-                return Err(format!("Firewall rule {name} remains active; online mode was NOT enabled."));
+                return Err(format!(
+                    "Firewall rule {name} remains active; online mode was NOT enabled."
+                ));
             }
             removed += 1;
         }
@@ -106,16 +118,25 @@ pub fn apply(game_root: &Path, allow_online: bool) -> Result<String, String> {
         return Ok(if removed == 0 {
             "No manager-owned Evolve outbound block remains. Online connectivity is now permitted by this manager; server acceptance is separate.".into()
         } else {
-            format!("Removed {removed} Evolve Mod Manager offline firewall rule(s). Online connectivity is permitted by this manager; server acceptance is separate.")
+            format!(
+                "Removed {removed} Evolve Mod Manager offline firewall rule(s). Online connectivity is permitted by this manager; server acceptance is separate."
+            )
         });
     }
     let name = named_rule(&exe);
-    run(&[
-        "add".into(), "rule".into(), format!("name={name}"),
-        "dir=out".into(), "action=block".into(),
-        format!("program={}", win_path_text(&exe)),
-        "enable=yes".into(), "profile=any".into(),
-    ], "offline isolation")?;
+    run(
+        &[
+            "add".into(),
+            "rule".into(),
+            format!("name={name}"),
+            "dir=out".into(),
+            "action=block".into(),
+            format!("program={}", win_path_text(&exe)),
+            "enable=yes".into(),
+            "profile=any".into(),
+        ],
+        "offline isolation",
+    )?;
     if !exists(&name)? {
         return Err("Could not verify the Evolve outbound offline firewall rule".into());
     }
@@ -133,7 +154,8 @@ mod tests {
     #[test]
     fn private_rule_id_matches_extended_prefix_and_path_casing() {
         let ordinary = Path::new(r"C:\Games\ModdedEvolve\EvolveGame\bin64_SteamRetail\Evolve.exe");
-        let prefixed = Path::new(r"\\?\C:\Games\ModdedEvolve\EvolveGame\bin64_SteamRetail\Evolve.exe");
+        let prefixed =
+            Path::new(r"\\?\C:\Games\ModdedEvolve\EvolveGame\bin64_SteamRetail\Evolve.exe");
         let lowercase = Path::new(r"c:\games\moddedevolve\evolvegame\bin64_steamretail\evolve.exe");
         assert_eq!(named_rule(ordinary), named_rule(prefixed));
         assert_eq!(named_rule(ordinary), named_rule(lowercase));
@@ -141,6 +163,9 @@ mod tests {
     }
     #[test]
     fn different_game_paths_are_distinct_firewall_rules() {
-        assert_ne!(named_rule(Path::new(r"C:\A\Evolve.exe")), named_rule(Path::new(r"C:\B\Evolve.exe")));
+        assert_ne!(
+            named_rule(Path::new(r"C:\A\Evolve.exe")),
+            named_rule(Path::new(r"C:\B\Evolve.exe"))
+        );
     }
 }
