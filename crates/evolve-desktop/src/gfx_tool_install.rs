@@ -317,9 +317,13 @@ fn install_at(tool: Tool, folder: &Path) -> Result<PathBuf, String> {
         if license.len() < 100 {
             return Err("vgmstream copyright notice unavailable; installation aborted".into());
         }
-        let mut file = fs::OpenOptions::new().write(true).create_new(true)
-            .open(payload.join("COPYING")).map_err(|e| e.to_string())?;
-        file.write_all(&license).map_err(|e| e.to_string())?;
+        if payload.join("COPYING").exists() {
+            validated_file(&payload, "COPYING")?;
+        } else {
+            let mut file = fs::OpenOptions::new().write(true).create_new(true)
+                .open(payload.join("COPYING")).map_err(|e| e.to_string())?;
+            file.write_all(&license).map_err(|e| e.to_string())?;
+        }
     } else {
         if tool == Tool::RuffleWeb {
             locate_ruffle_web(&payload)?;
