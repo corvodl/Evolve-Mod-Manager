@@ -29,6 +29,7 @@ jobs:
             'FFDec/ffdec-cli.exe', 'FFDec/ffdec.exe', 'FFDec/ffdec.jar',
             'Ruffle/ruffle.exe', 'Ruffle/LICENSE.md', 'RuffleWeb/ruffle.js',
             'vgmstream/vgmstream-cli.exe', 'vgmstream/COPYING',
+            'oggvorbis2fsb5/oggvorbis2fsb5.exe', 'oggvorbis2fsb5/LICENSE',
             'RuffleWeb/LICENSE.md', 'THIRD_PARTY_TOOLS.txt'
           )) {
             $path = Join-Path 'dist/third_party' $relative
