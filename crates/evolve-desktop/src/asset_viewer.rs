@@ -1752,6 +1752,51 @@ fn explorer(state: &State) -> Element<'_, Message> {
                                     ),
                                 ]
                                 .spacing(6),
+                                if filename.to_ascii_lowercase().ends_with(".fsb")
+                                    || filename.to_ascii_lowercase().ends_with(".fdp")
+                                    || filename.to_ascii_lowercase().ends_with(".fev")
+                                {
+                                    let fsb = filename.to_ascii_lowercase().ends_with(".fsb");
+                                    let fdp = filename.to_ascii_lowercase().ends_with(".fdp");
+                                    let editable = !state.viewer_from_library && !state.busy;
+                                    Element::from(column![
+                                        text("AUDIO TOOLS · FMOD").size(13),
+                                        design::button("Inspect FMOD asset").on_press_maybe(
+                                            (!state.audio_busy).then_some(Message::AudioInspect)
+                                        ),
+                                        design::text_input(if fdp { "Waveform # (starts at 1)" }
+                                                           else { "Sound sample # (starts at 1)" },
+                                                           &state.audio_subsong)
+                                            .on_input(Message::AudioSubsongChanged),
+                                        row![
+                                            design::button("Preview sound").on_press_maybe(
+                                                (fsb && !state.audio_busy)
+                                                    .then_some(Message::AudioPreviewSample)
+                                            ),
+                                            design::button("Export selected WAV").on_press_maybe(
+                                                (fsb && !state.audio_busy)
+                                                    .then_some(Message::AudioExportSample)
+                                            ),
+                                        ].spacing(6),
+                                        row![
+                                            design::button("Open FMOD Designer").on_press_maybe(
+                                                (fdp && editable).then_some(Message::AudioOpenDesigner)
+                                            ),
+                                            design::button("Replace waveform WAV").on_press_maybe(
+                                                (fdp && editable && !state.audio_busy)
+                                                    .then_some(Message::AudioReplaceWaveform)
+                                            ),
+                                        ].spacing(6),
+                                        design::button("Import rebuilt FSB/FEV").on_press_maybe(
+                                            (!fdp && editable && !state.audio_busy)
+                                                .then_some(Message::AudioImportRebuilt)
+                                        ),
+                                        text(state.audio_status.as_str())
+                                            .size(11).style(design::muted),
+                                    ].spacing(7))
+                                } else {
+                                    Element::from(text(""))
+                                },
                             ]
                             .spacing(6),
                         )
