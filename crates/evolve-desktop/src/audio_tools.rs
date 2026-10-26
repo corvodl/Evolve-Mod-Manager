@@ -176,6 +176,108 @@ pub fn verify_rebuilt(original: &Path, replacement: &Path) -> Result<String, Str
     }
 }
 
+
+/// Show authored source-wave paths and their FMOD Designer ordering, not FSB sample indices.
+pub fn project_waveforms(project: &Path, limit: usize) -> Result<(usize, Vec<String>), String> {
+    if !project.extension().is_some_and(|e| e.eq_ignore_ascii_case("fdp")) {
+        return Err("Select an .fdp project.".into());
+    }
+    let meta = fs::symlink_metadata(project).map_err(|e| e.to_string())?;
+    if !meta.file_type().is_file() || meta.len() > 32 * 1024 * 1024 {
+        return Err("Invalid or oversized FMOD project.".into());
+    }
+    let xml = fs::read_to_string(project).map_err(|e| e.to_string())?;
+    let mut count = 0usize;
+    let mut paths = Vec::new();
+    let mut rest = xml.as_str();
+    while let Some(start) = rest.find("<waveform>") {
+        rest = &rest[start + "<waveform>".len()..];
+        let end = rest.find("</waveform>").ok_or("Unclosed waveform element")?;
+        let body = &rest[..end];
+        let a = body.find("<filename>").ok_or("Waveform is missing its filename")? + "<filename>".len();
+        let b = body[a..].find("</filename>").ok_or("Waveform has an incomplete filename")? + a;
+        count += 1;
+        if count <= limit { paths.push(body[a..b].to_owned()); }
+        rest = &rest[end + "</waveform>".len()..];
+        if count > 100_000 { return Err("Too many source-wave entries.".into()); }
+    }
+    Ok((count, paths))
+}
+
+fn xml_escape(value: &str) -> String {
+    value.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// Create a new FMOD authoring scratch project with only the chosen waveform
+/// path changed. The source and original PAK are never modified. User should
+/// rebuild through legacy Designer and import a matching FSB/FEV afterward.
+pub fn prepare_waveform_override(
+    project: &Path,
+    wav: &Path,
+    one_based: usize,
+    workspace: &Path,
+) -> Result<PathBuf, String> {
+    if one_based == 0 { return Err("Waveform numbers start at 1.".into()); }
+    let original = fs::canonicalize(project).map_err(|e| e.to_string())?;
+    let workspace = fs::canonicalize(workspace).map_err(|e| e.to_string())?;
+    if !original.starts_with(workspace.join("files")) ||
+       !original.extension().is_some_and(|e| e.eq_ignore_ascii_case("fdp")) {
+        return Err("Only an editable project's FDP can be modified.".into());
+    }
+    let wav_meta = fs::symlink_metadata(wav).map_err(|e| e.to_string())?;
+    if !wav_meta.file_type().is_file() || wav_meta.len() < 44 || wav_meta.len() > 64 * 1024 * 1024 {
+        return Err("Choose a regular WAV file smaller than 64 MiB.".into());
+    }
+    let mut header = [0u8; 12];
+    use std::io::Read;
+    fs::File::open(wav).map_err(|e| e.to_string())?
+        .read_exact(&mut header).map_err(|e| e.to_string())?;
+    if &header[..4] != b"RIFF" || &header[8..12] != b"WAVE" {
+        return Err("The selected replacement is not a RIFF WAV.".into());
+    }
+    let xml = fs::read_to_string(&original).map_err(|e| e.to_string())?;
+    if xml.len() > 32 * 1024 * 1024 { return Err("FMOD project exceeds size budget.".into()); }
+    let (_, _) = project_waveforms(&original, 0)?;
+    let mut location = 0usize;
+    let mut segment = None;
+    for _ in 0..one_based {
+        let Some(a) = xml[location..].find("<waveform>") else {
+            return Err("The requested waveform index does not exist.".into());
+        };
+        let start = location + a + "<waveform>".len();
+        let Some(b) = xml[start..].find("</waveform>") else {
+            return Err("Unclosed waveform element.".into());
+        };
+        let end = start + b;
+        segment = Some((start, end));
+        location = end + "</waveform>".len();
+    }
+    let (start, end) = segment.ok_or("Waveform not found")?;
+    let wave = &xml[start..end];
+    let a = wave.find("<filename>").ok_or("Selected waveform has no filename")? + "<filename>".len();
+    let b = a + wave[a..].find("</filename>").ok_or("Missing filename closing tag")?;
+    // Preserve project source wave replacement separately from the PAK's files folder.
+    let output_root = workspace.join("FMOD_Sources");
+    fs::create_dir_all(&output_root).map_err(|e| e.to_string())?;
+    let temporary = tempfile::Builder::new().prefix("wave-").tempdir_in(&output_root)
+        .map_err(|e| e.to_string())?;
+    let audio_copy = temporary.path().join("replacement.wav");
+    fs::copy(wav, &audio_copy).map_err(|e| e.to_string())?;
+    // Match the paths FMOD Designer consumes; local absolute paths are scoped
+    // to the user's machine and are never installed into the game.
+    let resolved = fs::canonicalize(&audio_copy).map_err(|e| e.to_string())?;
+    let mut authored = String::with_capacity(xml.len() + 128);
+    authored.push_str(&xml[..start+a]);
+    authored.push_str(&xml_escape(&resolved.to_string_lossy().replace('\\', "/")));
+    authored.push_str(&xml[start+b..]);
+    let name = original.file_name().ok_or("Project name missing")?;
+    let edit = temporary.path().join(name);
+    fs::write(&edit, authored).map_err(|e| e.to_string())?;
+    inspect_fmod_file(&edit).map_err(|e| e.to_string())?;
+    let saved = temporary.keep();
+    Ok(saved.join(name))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
