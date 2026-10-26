@@ -2071,7 +2071,7 @@ fn is_viewer_model_source(path: &str) -> bool {
 fn is_viewer_preview_source(path: &str) -> bool {
     let name = path.to_ascii_lowercase();
     is_viewer_model_source(&name)
-        || [".cdf", ".dds", ".caf", ".mtl", ".gfx"]
+        || [".cdf", ".dds", ".caf", ".mtl", ".gfx", ".fsb", ".fev", ".fdp"]
             .iter()
             .any(|suffix| name.ends_with(suffix))
         || name.rsplit_once(".dds.").is_some_and(|(_, suffix)| {
@@ -5144,6 +5144,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         Message::ViewerPreviewStaticCdf
                     } else if is_gfx {
                         Message::GfxOpenSelected
+                    } else if state.inventory.as_ref().and_then(|inv| inv.entries.get(index))
+                        .is_some_and(|entry| [".fsb", ".fev", ".fdp"].iter().any(|ext|
+                            entry.relative_path.to_ascii_lowercase().ends_with(ext))) {
+                        Message::AudioInspect
                     } else {
                         Message::ViewerPreviewSelected
                     },
@@ -5607,6 +5611,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             if filename.ends_with(".gfx") {
                 return update(state, Message::GfxOpenSelected);
+            }
+            if [".fsb", ".fev", ".fdp"].iter().any(|ext| filename.ends_with(ext)) {
+                return update(state, Message::AudioInspect);
             }
             state.gfx_active = false;
             if state.viewer_sidebar_active == ViewerSidebarTab::GfxTools {
