@@ -6136,16 +6136,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         let info = evolve_core::fmod::inspect_fmod_file(&worker_path)
                             .map_err(|e| e.to_string())?;
                         let mut description = info.summary();
-                        if matches!(info, evolve_core::fmod::FmodInfo::Project { .. }) {
-                            if let Ok((count, examples)) =
+                        if matches!(info, evolve_core::fmod::FmodInfo::Project { .. })
+                            && let Ok((count, examples)) =
                                 audio_tools::project_waveforms(&worker_path, 8)
-                            {
-                                description.push_str(&format!(
-                                    "\n{count} indexed source-wave entries. First examples:\n"
-                                ));
-                                for (idx, item) in examples.iter().enumerate() {
-                                    description.push_str(&format!("  {}. {}\n", idx + 1, item));
-                                }
+                        {
+                            description.push_str(&format!(
+                                "\n{count} indexed source-wave entries. First examples:\n"
+                            ));
+                            for (idx, item) in examples.iter().enumerate() {
+                                description.push_str(&format!("  {}. {}\n", idx + 1, item));
                             }
                         }
                         Ok(description)
