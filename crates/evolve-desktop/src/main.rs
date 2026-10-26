@@ -359,6 +359,7 @@ struct State {
     /// Session-only opt-in, never restored from settings; does not modify client authentication.
     developer_online_mods: bool,
     developer_network_busy: bool,
+    developer_network_generation: u64,
     developer_network_status: String,
     developer_attempts: u8,
     developer_checking: bool,
@@ -1817,7 +1818,7 @@ enum Message {
     DeveloperChecked(bool),
     LockDeveloper,
     DeveloperOnlineMods(bool),
-    DeveloperNetworkApplied(Result<String, String>),
+    DeveloperNetworkApplied(u64, Result<String, String>),
     RuntimeDetect,
     RuntimeDetected(runtime_memory::Snapshot),
     RuntimeAddressChanged(String),
@@ -4360,6 +4361,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .unwrap_or_else(|error| format!("Phase 3 preview rejected: {error}"));
         }
         Message::LockDeveloper => {
+            state.developer_network_generation = state.developer_network_generation.wrapping_add(1);
+            state.developer_network_busy = false;
             state.developer_online_mods = false;
             state.developer_network_status.clear();
             state.live_edit_enabled = false;
@@ -4429,6 +4432,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     return Task::none();
                 }
             };
+            state.developer_network_generation = state.developer_network_generation.wrapping_add(1);
+            let generation = state.developer_network_generation;
             state.developer_network_busy = true;
             state.developer_network_status =
                 "Checking and removing the Evolve Mod Manager offline firewall rule...".into();
@@ -4438,11 +4443,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         .await
                         .unwrap_or_else(|error| Err(format!("Firewall operation failed: {error}")))
                 },
-                Message::DeveloperNetworkApplied,
+                move |result| Message::DeveloperNetworkApplied(generation, result),
             );
         }
-        Message::DeveloperNetworkApplied(result) => {
-            if !state.developer_network_busy {
+        Message::DeveloperNetworkApplied(generation, result) => {
+            if !state.developer_network_busy || generation != state.developer_network_generation {
                 return Task::none();
             }
             state.developer_network_busy = false;
@@ -12190,7 +12195,7 @@ mod project_edit_tests {
         state.developer_network_busy = true;
         let _ = update(
             &mut state,
-            Message::DeveloperNetworkApplied(Ok("Removed one Evolve Mod Manager rule".into())),
+            Message::DeveloperNetworkApplied(state.developer_network_generation, Ok("Removed one Evolve Mod Manager rule".into())),
         );
         assert!(state.developer_online_mods);
         assert!(!state.developer_network_busy);
@@ -12203,7 +12208,7 @@ mod project_edit_tests {
         state.developer_network_busy = true;
         let _ = update(
             &mut state,
-            Message::DeveloperNetworkApplied(Err("Administrator permission required".into())),
+            Message::DeveloperNetworkApplied(state.developer_network_generation, Err("Administrator permission required".into())),
         );
         assert!(
             !state.developer_online_mods,
@@ -12215,7 +12220,7 @@ mod project_edit_tests {
         state.developer_network_busy = true;
         let _ = update(
             &mut state,
-            Message::DeveloperNetworkApplied(Ok("Online ready".into())),
+            Message::DeveloperNetworkApplied(state.developer_network_generation, Ok("Online ready".into())),
         );
         assert!(state.developer_online_mods);
         let _ = update(&mut state, Message::LockDeveloper);
