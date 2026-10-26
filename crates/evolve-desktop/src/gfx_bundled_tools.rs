@@ -80,6 +80,11 @@ pub fn detected_ruffle_web(configured: &str, executable_dir: &Path) -> Option<Pa
 }
 
 pub fn fill_empty_paths_at(preferences: &mut Preferences, executable_dir: &Path) {
+    if preferences.oggvorbis_remux_executable.trim().is_empty()
+        && let Some(path) = regular_tool(executable_dir, "third_party/oggvorbis2fsb5/oggvorbis2fsb5.exe")
+    {
+        preferences.oggvorbis_remux_executable = path.to_string_lossy().into_owned();
+    }
     if preferences.vgmstream_executable.trim().is_empty()
         && let Some(path) = crate::audio_tools::default_decoder(executable_dir)
     {
