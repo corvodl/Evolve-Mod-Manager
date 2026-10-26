@@ -1802,6 +1802,11 @@ fn explorer(state: &State) -> Element<'_, Message> {
                                                     ),
                                             ]
                                             .spacing(6),
+                                            design::button("Rebuild Sound Bank · Replace WAV/OGG")
+                                                .on_press_maybe(
+                                                    (fsb && editable && !state.audio_busy)
+                                                        .then_some(Message::AudioNativeRebuild)
+                                                ),
                                             design::button("Import rebuilt FSB/FEV")
                                                 .on_press_maybe(
                                                     (!fdp && editable && !state.audio_busy)
