@@ -144,6 +144,8 @@ try {
       const cmd = readWide(args[1]);
       if (!matches(app || cmd)) return;
       blocked = true;
+      this.evolveCandidate = true;
+      this.processInformation = args[9];
       const token = ++seq;
       send({kind:'candidate', token, app, cmd});
       let allowed = false;
@@ -157,7 +159,22 @@ try {
         // Host should terminate this launcher; if still alive, remain blocked.
         recv('resume', function (_) {}).wait();
       }
-      send({kind:'released', token});
+    },
+    onLeave(retval) {
+      if (!this.evolveCandidate) return;
+      if (retval.toInt32() === 0) {
+        send({kind:'spawn_failed', error:'CreateProcessW returned false after swap'});
+        return;
+      }
+      try {
+        const info = this.processInformation;
+        if (info.isNull()) throw new Error('PROCESS_INFORMATION pointer unavailable');
+        const pid = info.add(Process.pointerSize * 2).readU32();
+        if (pid === 0) throw new Error('Game PID missing from PROCESS_INFORMATION');
+        send({kind:'game_spawned', pid});
+      } catch (e) {
+        send({kind:'spawn_failed', error:'Cannot verify Evolve.exe PID: ' + String(e)});
+      }
     }
   });
   send({kind:'ready', address:address.toString()});
@@ -220,10 +237,30 @@ class SwapController:
                 self.failed = f'Swap failed: {type(exc).__name__}: {exc}. Launcher will be stopped.'
                 self._terminate()
                 self.finished.set()
-        elif kind == 'released':
-            if self.swapped:
-                print('Evolve creation released successfully.', flush=True)
+        elif kind == 'game_spawned':
+            if not self.swapped:
+                self.failed = 'Evolve.exe was launched without the verified prepared swap.'
                 self.finished.set()
+                return
+            try:
+                pid = int(payload.get('pid') or 0)
+                if not (0 < pid < 2**32):
+                    raise ValueError('Invalid game process identifier')
+                state = standard_user_launch.get_elevation(pid)
+                print(
+                    f"Game privilege diagnostic: pid={pid} elevated={state['elevated']} "
+                    f"integrity=0x{state['integrity_rid']:x} session={state['session']}",
+                    flush=True,
+                )
+                if state['elevated'] or state['integrity_rid'] != 0x2000:
+                    raise RuntimeError('Evolve.exe is not running at standard-user medium integrity')
+                print('Evolve creation released successfully (standard-user token verified).', flush=True)
+            except Exception as exc:
+                self.failed = 'Evolve.exe privilege verification failed: ' + str(exc)
+            self.finished.set()
+        elif kind == 'spawn_failed':
+            self.failed = str(payload.get('error') or 'Evolve CreateProcessW failed')
+            self.finished.set()
         elif kind == 'blocked':
             self.failed = 'Agent refused to release Evolve creation.'
             self._terminate()
