@@ -132,7 +132,7 @@ impl Bank {
         }
         let mut samples = Vec::with_capacity(count);
         let mut offsets = Vec::with_capacity(count);
-        let mut cursor = 60;
+        let mut cursor: usize = 60;
         for _ in 0..count {
             if cursor.checked_add(8).is_none_or(|end| end > end_headers) {
                 return Err(invalid("sample header outside section"));
