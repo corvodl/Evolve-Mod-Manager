@@ -355,6 +355,8 @@ struct State {
     developer_password: String,
     developer_status: String,
     developer_unlocked: bool,
+    /// Session-only opt-in, never restored from settings; does not modify client authentication.
+    developer_online_mods: bool,
     developer_attempts: u8,
     developer_checking: bool,
     runtime_snapshot: Option<runtime_memory::Snapshot>,
@@ -641,6 +643,7 @@ enum Operation {
         PathBuf,
         PathBuf,
         Arc<AtomicUsize>,
+        bool,
     ),
     LaunchCleanClient(PathBuf, PathBuf, Option<PathBuf>),
     CreateInitialSetup(PathBuf, PathBuf, PathBuf, bool),
@@ -743,7 +746,7 @@ enum Completed {
     SignedHookPreflight(PakHookPairReport),
     OfflineLauncherReady(LaunchReady),
     OfflineLauncherStarted(usize, u32, usize),
-    EnabledModsLaunched(usize, u32, usize, Option<String>),
+    EnabledModsLaunched(usize, u32, usize, Option<String>, bool),
     CleanClientStarted(u32, Vec<String>),
     InitialSetupCreated(initial_setup::InitialSetup),
     GamePakBaselineRefreshed(initial_setup::InitialSetup),
@@ -1475,14 +1478,14 @@ impl Operation {
                 let report = inspect_existing_launcher(&stage, &swap)?;
                 Ok(Completed::OfflineLauncherReady(report))
             }
-            Self::PlayEnabledMods(projects, stage, swap, game, client, progress) => {
+            Self::PlayEnabledMods(projects, stage, swap, game, client, progress, online_requested) => {
                 let mods = discover_projects(&projects, &stage)?
                     .into_iter()
                     .filter(|project| project.enabled)
                     .collect();
-                mod_play::launch_enabled(mods, projects, stage, swap, game, client, progress).map(
+                mod_play::launch_enabled(mods, projects, stage, swap, game, client, progress, online_requested).map(
                     |(count, id, warnings, recovery)| {
-                        Completed::EnabledModsLaunched(count, id, warnings, recovery)
+                        Completed::EnabledModsLaunched(count, id, warnings, recovery, online_requested)
                     },
                 )
             }
@@ -1793,6 +1796,7 @@ enum Message {
     UnlockDeveloper,
     DeveloperChecked(bool),
     LockDeveloper,
+    DeveloperOnlineMods(bool),
     RuntimeDetect,
     RuntimeDetected(runtime_memory::Snapshot),
     RuntimeAddressChanged(String),
@@ -3893,6 +3897,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
         }
         Message::ArmorOfflineChanged(confirmed) => {
+            if confirmed && state.developer_online_mods {
+                state.status = "Disable experimental modded-online mode before arming offline memory tools.".into();
+                return Task::none();
+            }
             state.armor_offline_confirmed = confirmed;
             if confirmed {
                 state.armor_pid_seen = state.runtime_snapshot.as_ref().and_then(|s| s.pid);
@@ -4325,6 +4333,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .unwrap_or_else(|error| format!("Phase 3 preview rejected: {error}"));
         }
         Message::LockDeveloper => {
+            state.developer_online_mods = false;
             state.live_edit_enabled = false;
             if let Some(cancel) = &state.live_edit_cancel {
                 cancel.store(true, Ordering::Relaxed);
@@ -4360,6 +4369,33 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.developer_checking = false;
             state.developer_password.clear();
             state.developer_status.clear();
+        }
+        Message::DeveloperOnlineMods(allow) => {
+            if !state.developer_unlocked || state.busy
+                || state.runtime_checking || state.live_edit_busy || state.armor_cancel.is_some()
+            {
+                state.status = "Unlock Developer and finish running tasks/scans before changing online mod mode.".into();
+                return Task::none();
+            }
+            state.developer_online_mods = allow;
+            if allow {
+                // Never permit an online-intended session to inherit offline live-edit
+                // permissions, a verified memory pointer or a stale offline attestation.
+                state.armor_offline_confirmed = false;
+                state.live_edit_enabled = false;
+                state.live_edit_probe = None;
+                state.live_edit_generation = state.live_edit_generation.wrapping_add(1);
+                if let Some(cancel) = &state.live_edit_cancel {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+                state.live_edit_cancel = None;
+                state.runtime_health_scan = None;
+                state.armor_scan = None;
+                state.armor_live = None;
+                state.status = "Experimental online mod intent armed for this manager session. Only manifest-complete cosmetic candidates can launch; no authentication or anti-cheat restrictions are bypassed.".into();
+            } else {
+                state.status = "Online mod intent disabled; Play with Mods returns to the default offline flow.".into();
+            }
         }
         Message::UnlockDeveloper => {
             if state.developer_unlocked || state.developer_checking {
@@ -7212,6 +7248,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
             };
             if is_modded {
+                let online_requested = state.developer_unlocked && state.developer_online_mods;
+                if online_requested && (state.armor_offline_confirmed
+                    || state.live_edit_enabled || state.live_edit_busy || state.runtime_checking)
+                {
+                    state.status = "Cannot attempt online modded play while offline runtime scans or writes are armed.".into();
+                    state.play_notice = Some(play_dialog::Notice::finished(
+                        kind, play_dialog::Phase::Error, state.status.clone(),
+                    ));
+                    state.active_play = None;
+                    return Task::none();
+                }
                 if state.preferences.stage.trim().is_empty()
                     || state.preferences.swap.trim().is_empty()
                 {
@@ -7252,6 +7299,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         game,
                         client,
                         progress,
+                        online_requested,
                     ),
                 );
             }
@@ -8247,18 +8295,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         play_dialog::Phase::Error,
                         format!("Launch failed: {error}"),
                     ),
-                    Ok(Completed::EnabledModsLaunched(_, _, _, Some(warning))) => {
+                    Ok(Completed::EnabledModsLaunched(_, _, _, Some(warning), _)) => {
                         play_dialog::Notice::finished(
                             kind,
                             play_dialog::Phase::Warning,
                             warning.clone(),
                         )
                     }
-                    Ok(Completed::EnabledModsLaunched(count, _, _, None)) => {
+                    Ok(Completed::EnabledModsLaunched(count, _, _, None, online_requested)) => {
                         play_dialog::Notice::finished(
                             kind,
-                            play_dialog::Phase::Success,
-                            format!("{count} enabled mod(s) installed for this offline launch. Evolve process creation and swap were verified."),
+                            if *online_requested { play_dialog::Phase::Warning }
+                            else { play_dialog::Phase::Success },
+                            if *online_requested {
+                                format!("{count} cosmetic-candidate mod(s) staged for a Developer-requested online attempt. Only the local swap is verified; server acceptance and online authentication are UNVERIFIED.")
+                            } else {
+                                format!("{count} enabled mod(s) installed for this offline launch. Evolve process creation and swap were verified.")
+                            },
                         )
                     }
                     Ok(Completed::CleanClientStarted(pid, warnings)) => {
@@ -9454,13 +9507,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     };
                     state.page = Some(Page::Home);
                 }
-                Ok(Completed::EnabledModsLaunched(mod_count, id, _warnings, recovery)) => {
+                Ok(Completed::EnabledModsLaunched(mod_count, id, _warnings, recovery, online_requested)) => {
                     state.status = if let Some(warning) = recovery {
                         format!("Regular client opened (PID {id}). {warning}")
+                    } else if online_requested {
+                        format!("{mod_count} cosmetic-candidate mod(s) staged; helper PID {id}. Developer online attempt only. Mod acceptance and online authentication are not verified; use authorized private/community servers.")
                     } else {
-                        format!(
-                            "{mod_count} enabled mod(s) ready. Offline client helper started (PID {id}). Press Play in the client."
-                        )
+                        format!("{mod_count} enabled mod(s) ready. Offline client helper started (PID {id}). Press Play in the client.")
                     };
                     state.page = Some(Page::Home);
                 }
