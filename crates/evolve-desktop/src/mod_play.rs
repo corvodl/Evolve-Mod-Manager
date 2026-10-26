@@ -98,8 +98,8 @@ pub fn launch_enabled(
     game: PathBuf,
     client: PathBuf,
     progress: Arc<AtomicUsize>,
-    /// Developer testing override: does not filter mods by their content kind.
-    /// The regular client/server still determines actual network access.
+    // Developer testing override accepts all mod kinds, but the client/server
+    // still determine actual network access.
     developer_online: bool,
 ) -> Result<(usize, u32, usize, Option<String>), String> {
     if mods.is_empty() {
