@@ -1682,6 +1682,12 @@ enum Message {
     AudioReplaceWaveform,
     AudioWaveformPicked(Option<PathBuf>),
     AudioWaveformPrepared(PathBuf, Result<PathBuf, String>),
+    AudioNativeRebuild,
+    AudioNativeReplacementPicked(Option<PathBuf>),
+    AudioNativeRebuilt(PathBuf, Result<(PathBuf, String), String>),
+    AudioRemuxPathChanged(String),
+    AudioPickRemux,
+    AudioRemuxPicked(Option<PathBuf>),
     AudioImportRebuilt,
     AudioRebuiltPicked(Option<PathBuf>),
     AudioRebuiltReady(PathBuf, Result<(PathBuf, String), String>),
@@ -5685,6 +5691,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 persist_preferences(state);
             }
         }
+        Message::AudioRemuxPathChanged(path) => {
+            if path.len() <= 4096 && !path.contains('\0') {
+                state.preferences.oggvorbis_remux_executable = path;
+                persist_preferences(state);
+            }
+        }
+        Message::AudioPickRemux => {
+            return Task::perform(async {
+                tokio::task::spawn_blocking(|| native_export_picker("file"))
+                    .await.ok().flatten()
+            }, Message::AudioRemuxPicked);
+        }
+        Message::AudioRemuxPicked(Some(path)) => {
+            return update(state, Message::AudioRemuxPathChanged(path.to_string_lossy().into_owned()));
+        }
+        Message::AudioRemuxPicked(None) => {}
         Message::AudioDesignerPathChanged(path) => {
             if path.len() <= 4096 && !path.contains('\0') {
                 state.preferences.fmod_designer_executable = path;
@@ -5768,6 +5790,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 gfx_tool_install::Tool::Vgmstream => {
                     audio_tools::valid_decoder(&state.preferences.vgmstream_executable).is_some()
                 }
+                gfx_tool_install::Tool::OggRemux => {
+                    audio_tools::valid_remuxer(&state.preferences.oggvorbis_remux_executable).is_some()
+                }
             };
             if already {
                 state.gfx_install_status = format!("{} is already configured.", tool.name());
@@ -5803,6 +5828,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         gfx_tool_install::Tool::Vgmstream => {
                             state.preferences.vgmstream_executable = path
                         }
+                        gfx_tool_install::Tool::OggRemux => {
+                            state.preferences.oggvorbis_remux_executable = path
+                        }
                     }
                     state.gfx_install_status = format!(
                         "{} installed. {}",
@@ -5816,6 +5844,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                                 "Live GFX preview is ready. Open GFX Tools to use the persistent browser player.",
                             gfx_tool_install::Tool::Vgmstream =>
                                 "FSB audio decoding is available in the Asset Library.",
+                            gfx_tool_install::Tool::OggRemux =>
+                                "Vorbis remuxing is available for experimental native FSB5 rebuilding.",
                         },
                     );
                     persist_preferences(state);
@@ -6228,6 +6258,67 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     return update(state, Message::EditorImportRawMember);
                 }
                 Err(e) => state.audio_status = format!("FMOD waveform replacement failed: {e}"),
+            }
+        }
+        Message::AudioNativeRebuild => {
+            if state.viewer_from_library || state.audio_busy || state.busy {
+                state.audio_status = "Native bank rebuilding requires an idle, editable Modding project.".into();
+                return Task::none();
+            }
+            return Task::perform(async {
+                tokio::task::spawn_blocking(|| native_export_picker("file"))
+                    .await.ok().flatten()
+            }, Message::AudioNativeReplacementPicked);
+        }
+        Message::AudioNativeReplacementPicked(Some(replacement)) => {
+            let original = match verified_viewer_file(state) {
+                Ok(p) if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("fsb")) => p,
+                _ => {
+                    state.audio_status = "Select an existing .fsb sound bank in a Modding project.".into();
+                    return Task::none();
+                }
+            };
+            if state.viewer_from_library || state.busy
+                || state.file_selection.indices.len() != 1
+            {
+                state.audio_status = "Select a single editable FSB5 member before rebuilding.".into();
+                return Task::none();
+            }
+            let Ok(index) = state.audio_subsong.parse::<u32>() else {
+                state.audio_status = "Select an existing 1-based sound sample index.".into();
+                return Task::none();
+            };
+            let ffmpeg = state.preferences.gfx_ffmpeg_executable.clone();
+            let remuxer = state.preferences.oggvorbis_remux_executable.clone();
+            let expected_original = original.clone();
+            state.audio_busy = true;
+            state.audio_status = format!("Encoding and rebuilding sound-bank sample {index}...");
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move ||
+                        audio_tools::rebuild_original_bank(&original, &replacement, index, &ffmpeg, &remuxer)
+                    ).await.unwrap_or_else(|e| Err(e.to_string()))
+                },
+                move |result| Message::AudioNativeRebuilt(expected_original.clone(), result),
+            );
+        }
+        Message::AudioNativeReplacementPicked(None) => {}
+        Message::AudioNativeRebuilt(expected_original, result) => {
+            state.audio_busy = false;
+            if state.viewer_from_library || state.busy
+                || state.file_selection.indices.len() != 1
+                || verified_viewer_file(state).ok().as_ref() != Some(&expected_original)
+            {
+                state.audio_status = "Selected bank changed; rebuilt sound was not imported.".into();
+                return Task::none();
+            }
+            match result {
+                Ok((output, details)) => {
+                    state.audio_status = details;
+                    state.editor_replace_source = output.to_string_lossy().into_owned();
+                    return update(state, Message::EditorImportRawMember);
+                }
+                Err(error) => state.audio_status = format!("Native FSB5 rebuild failed: {error}"),
             }
         }
         Message::AudioImportRebuilt => {
