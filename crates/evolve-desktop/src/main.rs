@@ -362,6 +362,8 @@ struct State {
     developer_network_busy: bool,
     developer_network_generation: u64,
     developer_network_status: String,
+    developer_privilege_busy: bool,
+    developer_privilege_status: String,
     developer_attempts: u8,
     developer_checking: bool,
     runtime_snapshot: Option<runtime_memory::Snapshot>,
@@ -1820,6 +1822,8 @@ enum Message {
     LockDeveloper,
     DeveloperOnlineMods(bool),
     DeveloperNetworkApplied(u64, Result<String, String>),
+    DeveloperInspectProcessPrivileges,
+    DeveloperProcessPrivilegesFinished(Result<String, String>),
     RuntimeDetect,
     RuntimeDetected(runtime_memory::Snapshot),
     RuntimeAddressChanged(String),
@@ -4401,6 +4405,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.developer_checking = false;
             state.developer_password.clear();
             state.developer_status.clear();
+            state.developer_privilege_status.clear();
+        }
+        Message::DeveloperInspectProcessPrivileges => {
+            if !state.developer_unlocked || state.developer_privilege_busy {
+                return Task::none();
+            }
+            state.developer_privilege_busy = true;
+            state.developer_privilege_status = "Reading Windows process tokens...".into();
+            return Task::perform(async {
+                tokio::task::spawn_blocking(standard_user_launch::inspect_privileges)
+                    .await.unwrap_or_else(|error| Err(format!("Privilege inspector stopped: {error}")))
+            }, Message::DeveloperProcessPrivilegesFinished);
+        }
+        Message::DeveloperProcessPrivilegesFinished(result) => {
+            state.developer_privilege_busy = false;
+            state.developer_privilege_status = result.unwrap_or_else(|error|
+                format!("Privilege inspection failed: {error}"));
         }
         Message::DeveloperOnlineMods(allow) => {
             if !state.developer_unlocked
