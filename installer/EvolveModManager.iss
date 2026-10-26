@@ -39,7 +39,7 @@ UsePreviousAppDir=no
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: unchecked
 Name: "startmenuicon"; Description: "Add to the Start Menu"; GroupDescription: "Shortcuts:"; Flags: checkedonce
 Name: "gfxeditors"; Description: "Include Ruffle Desktop/Web and FFDec for live GFX editing (about 50 MB additional download size)"; GroupDescription: "Optional GFX tools:"; Flags: checkedonce
-Name: "audiotools"; Description: "Include vgmstream decoder for FMOD FSB sound preview (about 4.3 MB additional download size)"; GroupDescription: "Optional Audio tools:"; Flags: unchecked
+Name: "audiotools"; Description: "Include vgmstream decoder and Vorbis FSB5 sound compiler tools (about 4.5 MB additional download size)"; GroupDescription: "Optional Audio tools:"; Flags: unchecked
 
 [Files]
 Source: "..\target\release\evolve-mod-manager.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -53,6 +53,7 @@ Source: "..\dist\third_party\Ruffle\*"; DestDir: "{app}\third_party\Ruffle"; Fla
 Source: "..\dist\third_party\RuffleWeb\*"; DestDir: "{app}\third_party\RuffleWeb"; Flags: ignoreversion recursesubdirs createallsubdirs; Tasks: gfxeditors
 Source: "..\dist\third_party\THIRD_PARTY_TOOLS.txt"; DestDir: "{app}\third_party"; Flags: ignoreversion; Tasks: gfxeditors
 Source: "..\dist\third_party\vgmstream\*"; DestDir: "{app}\third_party\vgmstream"; Flags: ignoreversion recursesubdirs createallsubdirs; Tasks: audiotools
+Source: "..\dist\third_party\oggvorbis2fsb5\*"; DestDir: "{app}\third_party\oggvorbis2fsb5"; Flags: ignoreversion recursesubdirs createallsubdirs; Tasks: audiotools
 
 [Icons]
 Name: "{group}\Evolve Mod Manager"; Filename: "{app}\evolve-mod-manager.exe"; IconFilename: "{app}\hunt.ico"; Tasks: startmenuicon
