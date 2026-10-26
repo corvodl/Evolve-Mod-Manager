@@ -208,10 +208,10 @@ def launch_standard_user(executable):
     Requires an accessible, MEDIUM-integrity non-elevated Explorer shell in
     the same interactive session. If absent, fail; never fall back to admin.
     """
-    api = _win()
     exe = Path(executable).resolve(strict=True)
     if not exe.is_file() or exe.name.casefold() != "moddedevolvelauncher.exe":
         raise ValueError("Only a configured ModdedEvolveLauncher.exe may be launched")
+    api = _win()
     shell = api["GetShellWindow"]()
     if not shell:
         raise RuntimeError("Interactive Explorer shell not found; standard-user launch unavailable")
