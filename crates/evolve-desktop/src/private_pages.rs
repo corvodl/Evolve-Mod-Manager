@@ -148,15 +148,19 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
     });
     let quick = column![
         text("PLAY EVOLVE").size(14),
-        text("Choose an offline modded session or launch with original game files.")
+        text(if state.developer_unlocked && state.developer_online_mods {
+            "Developer online testing is armed. All enabled mods are eligible, including gameplay changes. Actual server acceptance is not guaranteed."
+        } else {
+            "Choose an offline modded session or launch with original game files."
+        })
             .size(12)
             .style(design::muted),
         row![
-            design::button("Play with Mods").on_press(Message::PlayWithMods).style(design::primary),
+            design::button(if state.developer_unlocked && state.developer_online_mods { "Play with Mods Online · Dev Test" } else { "Play with Mods" }).on_press(Message::PlayWithMods).style(design::primary),
             design::button("Play without Mods").on_press(Message::PlayWithoutMods).style(design::secondary),
         ]
         .spacing(8),
-        text("First launch: choose your game and normal client in Settings. Modded play requires the existing verified offline swap helper.")
+        text("First launch: choose your game and normal client in Settings. Modded play uses the verified and reversible PAK swap helper; Developer mode removes mod-type restrictions but does not bypass server authentication.")
             .size(12)
             .style(design::muted),
     ]
