@@ -4441,6 +4441,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::DeveloperNetworkApplied(result) => {
+            if !state.developer_network_busy {
+                return Task::none();
+            }
             state.developer_network_busy = false;
             // Closing Developer cancels the local opt-in even if a helper
             // completed after the tab was locked.
@@ -12165,21 +12168,39 @@ mod project_edit_tests {
         assert!(state.status.contains("do not belong"));
     }
     #[test]
-    fn developer_online_mode_accepts_any_mod_type_and_is_session_only() {
+    fn developer_online_requires_verified_network_policy_and_is_session_only() {
         let mut state = State::default();
         let _ = update(&mut state, Message::DeveloperOnlineMods(true));
         assert!(!state.developer_online_mods, "Developer must be unlocked");
         state.developer_unlocked = true;
+        let _ = update(&mut state, Message::DeveloperOnlineMods(true));
+        assert!(!state.developer_online_mods);
+        assert!(state.developer_network_status.contains("installation"));
+
         state.armor_offline_confirmed = true;
         state.live_edit_enabled = true;
-        let _ = update(&mut state, Message::DeveloperOnlineMods(true));
+        state.developer_network_busy = true;
+        let _ = update(&mut state, Message::DeveloperNetworkApplied(Ok(
+            "Removed one Evolve Mod Manager rule".into(),
+        )));
         assert!(state.developer_online_mods);
+        assert!(!state.developer_network_busy);
         assert!(!state.armor_offline_confirmed);
         assert!(!state.live_edit_enabled);
-        assert!(state.status.contains("all enabled mod types"));
+        assert!(state.developer_network_status.contains("Removed"));
+
         let _ = update(&mut state, Message::DeveloperOnlineMods(false));
         assert!(!state.developer_online_mods);
-        let _ = update(&mut state, Message::DeveloperOnlineMods(true));
+        state.developer_network_busy = true;
+        let _ = update(&mut state, Message::DeveloperNetworkApplied(Err(
+            "Administrator permission required".into(),
+        )));
+        assert!(!state.developer_online_mods, "Network failure must fail closed");
+        assert!(state.developer_network_status.contains("permission"));
+        assert!(!state.developer_network_busy);
+
+        state.developer_network_busy = true;
+        let _ = update(&mut state, Message::DeveloperNetworkApplied(Ok("Online ready".into())));
         assert!(state.developer_online_mods);
         let _ = update(&mut state, Message::LockDeveloper);
         assert!(!state.developer_online_mods);
