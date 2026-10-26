@@ -18,6 +18,8 @@ pub mod dds;
 pub mod dependency_graph;
 pub mod export_bundle;
 pub mod fbx;
+pub mod fmod;
+pub mod fsb5_rebuild;
 pub mod gfx;
 pub mod gfx_layout;
 pub mod glb;

@@ -7,6 +7,7 @@ mod assembly_materials;
 mod asset_cache;
 mod asset_library_page;
 mod asset_viewer;
+mod audio_tools;
 mod auto_resources;
 mod blender_install;
 mod client_version;
@@ -216,6 +217,10 @@ struct State {
     gfx_resource: usize,
     gfx_resource_text: String,
     gfx_status: String,
+    audio_status: String,
+    audio_subsong: String,
+    audio_busy: bool,
+    audio_inspected_source: Option<PathBuf>,
     gfx_layout_open: bool,
     gfx_tools_section: GfxToolsSection,
     gfx_layout_selected: Option<usize>,
@@ -350,6 +355,8 @@ struct State {
     developer_password: String,
     developer_status: String,
     developer_unlocked: bool,
+    /// Session-only opt-in, never restored from settings; does not modify client authentication.
+    developer_online_mods: bool,
     developer_attempts: u8,
     developer_checking: bool,
     runtime_snapshot: Option<runtime_memory::Snapshot>,
@@ -636,6 +643,7 @@ enum Operation {
         PathBuf,
         PathBuf,
         Arc<AtomicUsize>,
+        bool,
     ),
     LaunchCleanClient(PathBuf, PathBuf, Option<PathBuf>),
     CreateInitialSetup(PathBuf, PathBuf, PathBuf, bool),
@@ -738,7 +746,7 @@ enum Completed {
     SignedHookPreflight(PakHookPairReport),
     OfflineLauncherReady(LaunchReady),
     OfflineLauncherStarted(usize, u32, usize),
-    EnabledModsLaunched(usize, u32, usize, Option<String>),
+    EnabledModsLaunched(usize, u32, usize, Option<String>, bool),
     CleanClientStarted(u32, Vec<String>),
     InitialSetupCreated(initial_setup::InitialSetup),
     GamePakBaselineRefreshed(initial_setup::InitialSetup),
@@ -1470,16 +1478,32 @@ impl Operation {
                 let report = inspect_existing_launcher(&stage, &swap)?;
                 Ok(Completed::OfflineLauncherReady(report))
             }
-            Self::PlayEnabledMods(projects, stage, swap, game, client, progress) => {
+            Self::PlayEnabledMods(
+                projects,
+                stage,
+                swap,
+                game,
+                client,
+                progress,
+                online_requested,
+            ) => {
                 let mods = discover_projects(&projects, &stage)?
                     .into_iter()
                     .filter(|project| project.enabled)
                     .collect();
-                mod_play::launch_enabled(mods, projects, stage, swap, game, client, progress).map(
-                    |(count, id, warnings, recovery)| {
-                        Completed::EnabledModsLaunched(count, id, warnings, recovery)
-                    },
+                mod_play::launch_enabled(
+                    mods,
+                    projects,
+                    stage,
+                    swap,
+                    game,
+                    client,
+                    progress,
+                    online_requested,
                 )
+                .map(|(count, id, warnings, recovery)| {
+                    Completed::EnabledModsLaunched(count, id, warnings, recovery, online_requested)
+                })
             }
             Self::StartExistingOfflineLauncher(stage, swap, game, client) => {
                 play_setup::configure_existing_helper(&game, &client, &stage, &swap)?;
@@ -1665,6 +1689,33 @@ enum Message {
     ModifiersChanged(iced::keyboard::Modifiers),
     ViewerToggleFolder(String),
     ViewerPreviewSelected,
+    AudioInspect,
+    AudioInspected(PathBuf, Result<String, String>),
+    AudioSubsongChanged(String),
+    AudioPreviewSample,
+    AudioPreviewFinished(Result<String, String>),
+    AudioExportSample,
+    AudioExportFolderPicked(Option<PathBuf>),
+    AudioExportFinished(Result<String, String>),
+    AudioOpenDesigner,
+    AudioReplaceWaveform,
+    AudioWaveformPicked(Option<PathBuf>),
+    AudioWaveformPrepared(PathBuf, Result<PathBuf, String>),
+    AudioNativeRebuild,
+    AudioNativeReplacementPicked(Option<PathBuf>),
+    AudioNativeRebuilt(PathBuf, Result<(PathBuf, String), String>),
+    AudioRemuxPathChanged(String),
+    AudioPickRemux,
+    AudioRemuxPicked(Option<PathBuf>),
+    AudioImportRebuilt,
+    AudioRebuiltPicked(Option<PathBuf>),
+    AudioRebuiltReady(PathBuf, Result<(PathBuf, String), String>),
+    AudioDecoderPathChanged(String),
+    AudioDesignerPathChanged(String),
+    AudioPickDecoder,
+    AudioDecoderPicked(Option<PathBuf>),
+    AudioPickDesigner,
+    AudioDesignerPicked(Option<PathBuf>),
     GfxOpenSelected,
     GfxOpened(PathBuf, Result<gfx_editor::Session, String>),
     GfxConfigChanged(String),
@@ -1761,6 +1812,7 @@ enum Message {
     UnlockDeveloper,
     DeveloperChecked(bool),
     LockDeveloper,
+    DeveloperOnlineMods(bool),
     RuntimeDetect,
     RuntimeDetected(runtime_memory::Snapshot),
     RuntimeAddressChanged(String),
@@ -2046,9 +2098,11 @@ fn is_viewer_model_source(path: &str) -> bool {
 fn is_viewer_preview_source(path: &str) -> bool {
     let name = path.to_ascii_lowercase();
     is_viewer_model_source(&name)
-        || [".cdf", ".dds", ".caf", ".mtl", ".gfx"]
-            .iter()
-            .any(|suffix| name.ends_with(suffix))
+        || [
+            ".cdf", ".dds", ".caf", ".mtl", ".gfx", ".fsb", ".fev", ".fdp",
+        ]
+        .iter()
+        .any(|suffix| name.ends_with(suffix))
         || name.rsplit_once(".dds.").is_some_and(|(_, suffix)| {
             let mip = suffix.strip_suffix('a').unwrap_or(suffix);
             mip.parse::<u8>().is_ok_and(|n| n < 20)
@@ -2311,8 +2365,12 @@ fn launch(state: &mut State, operation: Operation) -> Task<Message> {
         Operation::StartExistingOfflineLauncher(..) => {
             "Preparing offline play...".into()
         }
-        Operation::PlayEnabledMods(..) => {
-            "Building enabled mods and preparing offline play...".into()
+        Operation::PlayEnabledMods(.., online_requested) => {
+            if *online_requested {
+                "Building all enabled mods and launching the regular client for Developer online testing...".into()
+            } else {
+                "Building enabled mods and preparing offline play...".into()
+            }
         }
         Operation::CreateInitialSetup(..) => {
             "Building the isolated offline setup: generating local signing keys, validating/resigning original game PAKs, preparing a verified hook copy and independent recovery scripts. Original game files will not be altered."
@@ -3859,6 +3917,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
         }
         Message::ArmorOfflineChanged(confirmed) => {
+            if confirmed && state.developer_online_mods {
+                state.status =
+                    "Disable experimental modded-online mode before arming offline memory tools."
+                        .into();
+                return Task::none();
+            }
             state.armor_offline_confirmed = confirmed;
             if confirmed {
                 state.armor_pid_seen = state.runtime_snapshot.as_ref().and_then(|s| s.pid);
@@ -4291,6 +4355,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .unwrap_or_else(|error| format!("Phase 3 preview rejected: {error}"));
         }
         Message::LockDeveloper => {
+            state.developer_online_mods = false;
             state.live_edit_enabled = false;
             if let Some(cancel) = &state.live_edit_cancel {
                 cancel.store(true, Ordering::Relaxed);
@@ -4326,6 +4391,36 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.developer_checking = false;
             state.developer_password.clear();
             state.developer_status.clear();
+        }
+        Message::DeveloperOnlineMods(allow) => {
+            if !state.developer_unlocked
+                || state.busy
+                || state.runtime_checking
+                || state.live_edit_busy
+                || state.armor_cancel.is_some()
+            {
+                state.status = "Unlock Developer and finish running tasks/scans before changing online mod mode.".into();
+                return Task::none();
+            }
+            state.developer_online_mods = allow;
+            if allow {
+                // Never permit an online-intended session to inherit offline live-edit
+                // permissions, a verified memory pointer or a stale offline attestation.
+                state.armor_offline_confirmed = false;
+                state.live_edit_enabled = false;
+                state.live_edit_probe = None;
+                state.live_edit_generation = state.live_edit_generation.wrapping_add(1);
+                if let Some(cancel) = &state.live_edit_cancel {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+                state.live_edit_cancel = None;
+                state.runtime_health_scan = None;
+                state.armor_scan = None;
+                state.armor_live = None;
+                state.status = "Developer online mod testing armed for this session: all enabled mod types are allowed, including gameplay and unreviewed changes. The normal client and server still control connectivity and authentication.".into();
+            } else {
+                state.status = "Online mod intent disabled; Play with Mods returns to the default offline flow.".into();
+            }
         }
         Message::UnlockDeveloper => {
             if state.developer_unlocked || state.developer_checking {
@@ -5119,6 +5214,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         Message::ViewerPreviewStaticCdf
                     } else if is_gfx {
                         Message::GfxOpenSelected
+                    } else if state
+                        .inventory
+                        .as_ref()
+                        .and_then(|inv| inv.entries.get(index))
+                        .is_some_and(|entry| {
+                            [".fsb", ".fev", ".fdp"]
+                                .iter()
+                                .any(|ext| entry.relative_path.to_ascii_lowercase().ends_with(ext))
+                        })
+                    {
+                        Message::AudioInspect
                     } else {
                         Message::ViewerPreviewSelected
                     },
@@ -5583,6 +5689,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if filename.ends_with(".gfx") {
                 return update(state, Message::GfxOpenSelected);
             }
+            if [".fsb", ".fev", ".fdp"]
+                .iter()
+                .any(|ext| filename.ends_with(ext))
+            {
+                return update(state, Message::AudioInspect);
+            }
             state.gfx_active = false;
             if state.viewer_sidebar_active == ViewerSidebarTab::GfxTools {
                 state.viewer_sidebar_active = ViewerSidebarTab::Files;
@@ -5634,6 +5746,76 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
             return launch(state, operation);
         }
+        Message::AudioDecoderPathChanged(path) => {
+            if path.len() <= 4096 && !path.contains('\0') {
+                state.preferences.vgmstream_executable = path;
+                persist_preferences(state);
+            }
+        }
+        Message::AudioRemuxPathChanged(path) => {
+            if path.len() <= 4096 && !path.contains('\0') {
+                state.preferences.oggvorbis_remux_executable = path;
+                persist_preferences(state);
+            }
+        }
+        Message::AudioPickRemux => {
+            return Task::perform(
+                async {
+                    tokio::task::spawn_blocking(|| native_export_picker("file"))
+                        .await
+                        .ok()
+                        .flatten()
+                },
+                Message::AudioRemuxPicked,
+            );
+        }
+        Message::AudioRemuxPicked(Some(path)) => {
+            return update(
+                state,
+                Message::AudioRemuxPathChanged(path.to_string_lossy().into_owned()),
+            );
+        }
+        Message::AudioRemuxPicked(None) => {}
+        Message::AudioDesignerPathChanged(path) => {
+            if path.len() <= 4096 && !path.contains('\0') {
+                state.preferences.fmod_designer_executable = path;
+                persist_preferences(state);
+            }
+        }
+        Message::AudioPickDecoder | Message::AudioPickDesigner => {
+            let decoder = matches!(message, Message::AudioPickDecoder);
+            return Task::perform(
+                async {
+                    tokio::task::spawn_blocking(|| native_export_picker("file"))
+                        .await
+                        .ok()
+                        .flatten()
+                },
+                move |result| {
+                    if decoder {
+                        Message::AudioDecoderPicked(result)
+                    } else {
+                        Message::AudioDesignerPicked(result)
+                    }
+                },
+            );
+        }
+        Message::AudioDecoderPicked(path) => {
+            if let Some(p) = path {
+                return update(
+                    state,
+                    Message::AudioDecoderPathChanged(p.to_string_lossy().into_owned()),
+                );
+            }
+        }
+        Message::AudioDesignerPicked(path) => {
+            if let Some(p) = path {
+                return update(
+                    state,
+                    Message::AudioDesignerPathChanged(p.to_string_lossy().into_owned()),
+                );
+            }
+        }
         Message::GfxConfigChanged(path) => {
             if path.len() <= 4096 {
                 state.preferences.ffdec_executable = path;
@@ -5674,6 +5856,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     gfx_bundled_tools::valid_ruffle_web(&state.preferences.ruffle_web_runtime)
                         .is_some()
                 }
+                gfx_tool_install::Tool::Vgmstream => {
+                    audio_tools::valid_decoder(&state.preferences.vgmstream_executable).is_some()
+                }
+                gfx_tool_install::Tool::OggRemux => {
+                    audio_tools::valid_remuxer(&state.preferences.oggvorbis_remux_executable)
+                        .is_some()
+                }
             };
             if already {
                 state.gfx_install_status = format!("{} is already configured.", tool.name());
@@ -5706,6 +5895,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         gfx_tool_install::Tool::RuffleWeb => {
                             state.preferences.ruffle_web_runtime = path
                         }
+                        gfx_tool_install::Tool::Vgmstream => {
+                            state.preferences.vgmstream_executable = path
+                        }
+                        gfx_tool_install::Tool::OggRemux => {
+                            state.preferences.oggvorbis_remux_executable = path
+                        }
                     }
                     state.gfx_install_status = format!(
                         "{} installed. {}",
@@ -5717,6 +5912,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                                 "Standalone desktop Ruffle is ready. Live GFX buttons require Ruffle Web separately.",
                             gfx_tool_install::Tool::RuffleWeb =>
                                 "Live GFX preview is ready. Open GFX Tools to use the persistent browser player.",
+                            gfx_tool_install::Tool::Vgmstream =>
+                                "FSB audio decoding is available in the Asset Library.",
+                            gfx_tool_install::Tool::OggRemux =>
+                                "Vorbis remuxing is available for experimental native FSB5 rebuilding.",
                         },
                     );
                     persist_preferences(state);
@@ -5915,6 +6114,358 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.gfx_resource = index;
             }
         }
+        Message::AudioSubsongChanged(value) => {
+            if value.len() <= 7 && value.chars().all(|c| c.is_ascii_digit()) {
+                state.audio_subsong = value;
+            }
+        }
+        Message::AudioInspect => {
+            let source = match verified_viewer_file(state) {
+                Ok(p) => p,
+                Err(e) => {
+                    state.audio_status = e;
+                    return Task::none();
+                }
+            };
+            state.audio_busy = true;
+            state.audio_status = "Inspecting FMOD source...".into();
+            return Task::perform(
+                async move {
+                    let worker_path = source.clone();
+                    let result = tokio::task::spawn_blocking(move || {
+                        let info = evolve_core::fmod::inspect_fmod_file(&worker_path)
+                            .map_err(|e| e.to_string())?;
+                        let mut description = info.summary();
+                        if matches!(info, evolve_core::fmod::FmodInfo::Project { .. })
+                            && let Ok((count, examples)) =
+                                audio_tools::project_waveforms(&worker_path, 8)
+                        {
+                            description.push_str(&format!(
+                                "\n{count} indexed source-wave entries. First examples:\n"
+                            ));
+                            for (idx, item) in examples.iter().enumerate() {
+                                description.push_str(&format!("  {}. {}\n", idx + 1, item));
+                            }
+                        }
+                        Ok(description)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("FMOD inspector stopped: {e}")));
+                    (source, result)
+                },
+                |(source, result)| Message::AudioInspected(source, result),
+            );
+        }
+        Message::AudioInspected(source, result) => {
+            state.audio_busy = false;
+            if verified_viewer_file(state).ok().as_ref() == Some(&source) {
+                state.audio_inspected_source = Some(source);
+                state.audio_status =
+                    result.unwrap_or_else(|e| format!("FMOD inspection failed: {e}"));
+                if state.audio_subsong.is_empty() {
+                    state.audio_subsong = "1".into();
+                }
+            }
+        }
+        Message::AudioPreviewSample => {
+            if state.audio_busy {
+                return Task::none();
+            }
+            let source = match verified_viewer_file(state) {
+                Ok(p) => p,
+                Err(e) => {
+                    state.audio_status = e;
+                    return Task::none();
+                }
+            };
+            let index = match state.audio_subsong.parse::<u32>() {
+                Ok(n) if n > 0 => n,
+                _ => {
+                    state.audio_status = "Enter a valid 1-based sample number.".into();
+                    return Task::none();
+                }
+            };
+            let decoder = state.preferences.vgmstream_executable.clone();
+            state.audio_busy = true;
+            state.audio_status = format!("Decoding and playing sample {index}...");
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        audio_tools::preview_sample(&source, &decoder, index)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()))
+                },
+                Message::AudioPreviewFinished,
+            );
+        }
+        Message::AudioPreviewFinished(result) => {
+            state.audio_busy = false;
+            state.audio_status = result.unwrap_or_else(|e| format!("Audio preview failed: {e}"));
+        }
+        Message::AudioExportSample => {
+            return Task::perform(
+                async {
+                    tokio::task::spawn_blocking(|| native_export_picker("folder"))
+                        .await
+                        .ok()
+                        .flatten()
+                },
+                Message::AudioExportFolderPicked,
+            );
+        }
+        Message::AudioExportFolderPicked(Some(folder)) => {
+            let source = match verified_viewer_file(state) {
+                Ok(p) => p,
+                Err(e) => {
+                    state.audio_status = e;
+                    return Task::none();
+                }
+            };
+            let Ok(index) = state.audio_subsong.parse::<u32>() else {
+                state.audio_status = "Enter a valid 1-based sample number.".into();
+                return Task::none();
+            };
+            let decoder = state.preferences.vgmstream_executable.clone();
+            state.audio_busy = true;
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        audio_tools::export_sample(&source, &decoder, index, &folder)
+                            .map(|p| format!("Exported sample {index} to {}", p.display()))
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()))
+                },
+                Message::AudioExportFinished,
+            );
+        }
+        Message::AudioExportFolderPicked(None) => {}
+        Message::AudioExportFinished(result) => {
+            state.audio_busy = false;
+            state.audio_status = result.unwrap_or_else(|e| format!("Audio export failed: {e}"));
+        }
+        Message::AudioOpenDesigner => {
+            state.audio_status = if state.viewer_from_library {
+                "Open an editable Modding project before launching FMOD Designer.".into()
+            } else {
+                match verified_viewer_file(state) {
+                    Ok(project) => audio_tools::open_designer(
+                        &project,
+                        &state.preferences.fmod_designer_executable,
+                    )
+                    .unwrap_or_else(|e| format!("Cannot open FMOD Designer: {e}")),
+                    Err(e) => e,
+                }
+            };
+        }
+        Message::AudioReplaceWaveform => {
+            if state.viewer_from_library || state.audio_busy {
+                state.audio_status = "Select a .fdp in an editable Modding project.".into();
+                return Task::none();
+            }
+            return Task::perform(
+                async {
+                    tokio::task::spawn_blocking(|| native_export_picker("file"))
+                        .await
+                        .ok()
+                        .flatten()
+                },
+                Message::AudioWaveformPicked,
+            );
+        }
+        Message::AudioWaveformPicked(Some(wav)) => {
+            let source = match verified_viewer_file(state) {
+                Ok(p) => p,
+                Err(e) => {
+                    state.audio_status = e;
+                    return Task::none();
+                }
+            };
+            let Some(workspace) = state
+                .modding_selected
+                .and_then(|i| state.modding_projects.as_ref()?.get(i))
+                .map(|p| p.workspace.clone())
+            else {
+                state.audio_status = "No editable Modding project is selected.".into();
+                return Task::none();
+            };
+            let Ok(index) = state.audio_subsong.parse::<usize>() else {
+                state.audio_status = "Enter a valid waveform index.".into();
+                return Task::none();
+            };
+            state.audio_busy = true;
+            state.audio_status = "Preparing isolated FMOD project with replacement WAV...".into();
+            let expected_source = source.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        audio_tools::prepare_waveform_override(&source, &wav, index, &workspace)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()))
+                },
+                move |result| Message::AudioWaveformPrepared(expected_source.clone(), result),
+            );
+        }
+        Message::AudioWaveformPicked(None) => {}
+        Message::AudioWaveformPrepared(expected_source, result) => {
+            state.audio_busy = false;
+            // Async work must never apply to a different file selected mid-operation.
+            if state.viewer_from_library
+                || verified_viewer_file(state).ok().as_ref() != Some(&expected_source)
+                || state.file_selection.indices.len() != 1
+            {
+                state.audio_status =
+                    "Selection changed; the prepared waveform is not imported.".into();
+                return Task::none();
+            }
+            match result {
+                Ok(path) => {
+                    state.editor_replace_source = path.to_string_lossy().into_owned();
+                    state.audio_status = "Waveform reference staged; importing modified FDP into the editable project...".into();
+                    return update(state, Message::EditorImportRawMember);
+                }
+                Err(e) => state.audio_status = format!("FMOD waveform replacement failed: {e}"),
+            }
+        }
+        Message::AudioNativeRebuild => {
+            if state.viewer_from_library || state.audio_busy || state.busy {
+                state.audio_status =
+                    "Native bank rebuilding requires an idle, editable Modding project.".into();
+                return Task::none();
+            }
+            return Task::perform(
+                async {
+                    tokio::task::spawn_blocking(|| native_export_picker("file"))
+                        .await
+                        .ok()
+                        .flatten()
+                },
+                Message::AudioNativeReplacementPicked,
+            );
+        }
+        Message::AudioNativeReplacementPicked(Some(replacement)) => {
+            let original = match verified_viewer_file(state) {
+                Ok(p) if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("fsb")) => p,
+                _ => {
+                    state.audio_status =
+                        "Select an existing .fsb sound bank in a Modding project.".into();
+                    return Task::none();
+                }
+            };
+            if state.viewer_from_library || state.busy || state.file_selection.indices.len() != 1 {
+                state.audio_status =
+                    "Select a single editable FSB5 member before rebuilding.".into();
+                return Task::none();
+            }
+            let Ok(index) = state.audio_subsong.parse::<u32>() else {
+                state.audio_status = "Select an existing 1-based sound sample index.".into();
+                return Task::none();
+            };
+            let ffmpeg = state.preferences.gfx_ffmpeg_executable.clone();
+            let remuxer = state.preferences.oggvorbis_remux_executable.clone();
+            let decoder = state.preferences.vgmstream_executable.clone();
+            let expected_original = original.clone();
+            state.audio_busy = true;
+            state.audio_status = format!("Encoding and rebuilding sound-bank sample {index}...");
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        audio_tools::rebuild_original_bank(
+                            &original,
+                            &replacement,
+                            index,
+                            &ffmpeg,
+                            &remuxer,
+                            &decoder,
+                        )
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()))
+                },
+                move |result| Message::AudioNativeRebuilt(expected_original.clone(), result),
+            );
+        }
+        Message::AudioNativeReplacementPicked(None) => {}
+        Message::AudioNativeRebuilt(expected_original, result) => {
+            state.audio_busy = false;
+            if state.viewer_from_library
+                || state.busy
+                || state.file_selection.indices.len() != 1
+                || verified_viewer_file(state).ok().as_ref() != Some(&expected_original)
+            {
+                state.audio_status =
+                    "Selected bank changed; rebuilt sound was not imported.".into();
+                return Task::none();
+            }
+            match result {
+                Ok((output, details)) => {
+                    state.audio_status = details;
+                    state.editor_replace_source = output.to_string_lossy().into_owned();
+                    return update(state, Message::EditorImportRawMember);
+                }
+                Err(error) => state.audio_status = format!("Native FSB5 rebuild failed: {error}"),
+            }
+        }
+        Message::AudioImportRebuilt => {
+            if state.viewer_from_library || state.audio_busy {
+                state.audio_status =
+                    "Select an existing FSB/FEV in an editable Modding project.".into();
+                return Task::none();
+            }
+            return Task::perform(
+                async {
+                    tokio::task::spawn_blocking(|| native_export_picker("file"))
+                        .await
+                        .ok()
+                        .flatten()
+                },
+                Message::AudioRebuiltPicked,
+            );
+        }
+        Message::AudioRebuiltPicked(Some(rebuilt)) => {
+            let source = match verified_viewer_file(state) {
+                Ok(p) => p,
+                Err(e) => {
+                    state.audio_status = e;
+                    return Task::none();
+                }
+            };
+            let expected_source = source.clone();
+            state.audio_busy = true;
+            state.audio_status = "Checking and staging rebuilt FMOD asset...".into();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        audio_tools::prepare_rebuilt_for_import(&source, &rebuilt)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()))
+                },
+                move |result| Message::AudioRebuiltReady(expected_source.clone(), result),
+            );
+        }
+        Message::AudioRebuiltReady(expected_source, result) => {
+            state.audio_busy = false;
+            if state.viewer_from_library
+                || verified_viewer_file(state).ok().as_ref() != Some(&expected_source)
+                || state.file_selection.indices.len() != 1
+            {
+                state.audio_status =
+                    "Selection changed; rebuilt FMOD asset was not imported.".into();
+                return Task::none();
+            }
+            match result {
+                Ok((prepared, report)) => {
+                    state.audio_status = report;
+                    state.editor_replace_source = prepared.to_string_lossy().into_owned();
+                    return update(state, Message::EditorImportRawMember);
+                }
+                Err(e) => state.audio_status = format!("Cannot import rebuilt FMOD asset: {e}"),
+            }
+        }
+        Message::AudioRebuiltPicked(None) => {}
         Message::GfxOpenSelected => {
             if state.gfx_busy {
                 state.viewer_queued_preview = state.selected;
@@ -6721,6 +7272,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
             };
             if is_modded {
+                let online_requested = state.developer_unlocked && state.developer_online_mods;
+                if online_requested
+                    && (state.armor_offline_confirmed
+                        || state.live_edit_enabled
+                        || state.live_edit_busy
+                        || state.runtime_checking)
+                {
+                    state.status = "Cannot attempt online modded play while offline runtime scans or writes are armed.".into();
+                    state.play_notice = Some(play_dialog::Notice::finished(
+                        kind,
+                        play_dialog::Phase::Error,
+                        state.status.clone(),
+                    ));
+                    state.active_play = None;
+                    return Task::none();
+                }
                 if state.preferences.stage.trim().is_empty()
                     || state.preferences.swap.trim().is_empty()
                 {
@@ -6761,6 +7328,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         game,
                         client,
                         progress,
+                        online_requested,
                     ),
                 );
             }
@@ -7756,18 +8324,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         play_dialog::Phase::Error,
                         format!("Launch failed: {error}"),
                     ),
-                    Ok(Completed::EnabledModsLaunched(_, _, _, Some(warning))) => {
+                    Ok(Completed::EnabledModsLaunched(_, _, _, Some(warning), _)) => {
                         play_dialog::Notice::finished(
                             kind,
                             play_dialog::Phase::Warning,
                             warning.clone(),
                         )
                     }
-                    Ok(Completed::EnabledModsLaunched(count, _, _, None)) => {
+                    Ok(Completed::EnabledModsLaunched(count, _, _, None, online_requested)) => {
                         play_dialog::Notice::finished(
                             kind,
-                            play_dialog::Phase::Success,
-                            format!("{count} enabled mod(s) installed for this offline launch. Evolve process creation and swap were verified."),
+                            if *online_requested { play_dialog::Phase::Warning }
+                            else { play_dialog::Phase::Success },
+                            if *online_requested {
+                                format!("{count} enabled mod(s) staged for a Developer-requested online test, regardless of mod type. Local swap verified; actual online connection and server acceptance UNVERIFIED.")
+                            } else {
+                                format!("{count} enabled mod(s) installed for this offline launch. Evolve process creation and swap were verified.")
+                            },
                         )
                     }
                     Ok(Completed::CleanClientStarted(pid, warnings)) => {
@@ -8963,9 +9536,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     };
                     state.page = Some(Page::Home);
                 }
-                Ok(Completed::EnabledModsLaunched(mod_count, id, _warnings, recovery)) => {
+                Ok(Completed::EnabledModsLaunched(
+                    mod_count,
+                    id,
+                    _warnings,
+                    recovery,
+                    online_requested,
+                )) => {
                     state.status = if let Some(warning) = recovery {
                         format!("Regular client opened (PID {id}). {warning}")
+                    } else if online_requested {
+                        format!(
+                            "{mod_count} enabled mod(s) staged with no content-type restriction; helper PID {id}. Developer online test enabled. Use a permitted testing server; client connectivity and server acceptance are unverified."
+                        )
                     } else {
                         format!(
                             "{mod_count} enabled mod(s) ready. Offline client helper started (PID {id}). Press Play in the client."
@@ -11527,6 +12110,29 @@ mod project_edit_tests {
         assert!(!state.busy);
         assert!(state.status.contains("do not belong"));
     }
+    #[test]
+    fn developer_online_mode_accepts_any_mod_type_and_is_session_only() {
+        let mut state = State::default();
+        let _ = update(&mut state, Message::DeveloperOnlineMods(true));
+        assert!(!state.developer_online_mods, "Developer must be unlocked");
+        state.developer_unlocked = true;
+        state.armor_offline_confirmed = true;
+        state.live_edit_enabled = true;
+        let _ = update(&mut state, Message::DeveloperOnlineMods(true));
+        assert!(state.developer_online_mods);
+        assert!(!state.armor_offline_confirmed);
+        assert!(!state.live_edit_enabled);
+        assert!(state.status.contains("all enabled mod types"));
+        let _ = update(&mut state, Message::DeveloperOnlineMods(false));
+        assert!(!state.developer_online_mods);
+        let _ = update(&mut state, Message::DeveloperOnlineMods(true));
+        assert!(state.developer_online_mods);
+        let _ = update(&mut state, Message::LockDeveloper);
+        assert!(!state.developer_online_mods);
+        assert!(!state.developer_unlocked);
+        assert!(!State::default().developer_online_mods);
+    }
+
     #[test]
     fn popup_menus_are_mutually_exclusive_and_dismiss_without_removing_page() {
         let mut state = State {

@@ -67,6 +67,10 @@ jobs:
         shell: pwsh
         run: ./scripts/package-gfx-tools.ps1
 
+      - name: Fetch and verify optional Audio Tools
+        shell: pwsh
+        run: ./scripts/package-audio-tools.ps1
+
       - name: Build Windows installer
         shell: pwsh
         run: |

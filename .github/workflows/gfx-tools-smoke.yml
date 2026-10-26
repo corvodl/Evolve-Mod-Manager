@@ -5,6 +5,7 @@ on:
     paths:
       - installer/EvolveModManager.iss
       - scripts/package-gfx-tools.ps1
+      - scripts/package-audio-tools.ps1
       - .github/workflows/gfx-tools-smoke.yml
       - .github/workflows/nightly.yml
       - .github/workflows/release.yml
@@ -23,9 +24,12 @@ jobs:
         shell: pwsh
         run: |
           ./scripts/package-gfx-tools.ps1
+          ./scripts/package-audio-tools.ps1
           foreach ($relative in @(
             'FFDec/ffdec-cli.exe', 'FFDec/ffdec.exe', 'FFDec/ffdec.jar',
             'Ruffle/ruffle.exe', 'Ruffle/LICENSE.md', 'RuffleWeb/ruffle.js',
+            'vgmstream/vgmstream-cli.exe', 'vgmstream/COPYING',
+            'oggvorbis2fsb5/oggvorbis2fsb5.exe', 'oggvorbis2fsb5/LICENSE',
             'RuffleWeb/LICENSE.md', 'THIRD_PARTY_TOOLS.txt'
           )) {
             $path = Join-Path 'dist/third_party' $relative
@@ -51,4 +55,4 @@ jobs:
           if (!(Test-Path $setup -PathType Leaf)) { throw 'GFX installer artifact missing' }
           $size = (Get-Item $setup).Length / 1MB
           Write-Host "Optional GFX tools setup size: $([math]::Round($size, 1)) MiB (CI placeholder manager EXEs)"
-          if ($size -gt 70) { throw 'GFX tool bundle exceeded the 70 MiB packaging budget' }
+          if ($size -gt 85) { throw 'Optional tools bundle exceeded the 85 MiB packaging budget' }

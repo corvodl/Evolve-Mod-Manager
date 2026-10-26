@@ -485,6 +485,67 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                         .size(11).style(design::muted),
                 ].spacing(8)),
                 panel(column![
+                    text("AUDIO TOOLS · FMOD / FSB SOUND BANKS").size(15),
+                    text("vgmstream decodes original FSB5 samples to WAV for previews and exports. Native rebuilding supports replacement of existing FSB5 Vorbis samples. FMOD Designer remains optional for advanced FDP/FEV authoring.")
+                        .size(12).style(design::muted),
+                    if let Some(decoder) = crate::audio_tools::valid_decoder(&state.preferences.vgmstream_executable) {
+                        Element::from(text(format!("vgmstream ready: {}", decoder.display()))
+                            .size(12).style(design::muted))
+                    } else {
+                        Element::from(column![
+                            text("vgmstream r2117 not configured (verified ~4.3 MiB Windows x64 download).")
+                                .size(12).style(design::muted),
+                            design::button("Install vgmstream")
+                                .on_press_maybe((!state.gfx_install_busy)
+                                    .then_some(Message::GfxInstallTool(crate::gfx_tool_install::Tool::Vgmstream))),
+                        ].spacing(6))
+                    },
+                    row![
+                        design::text_input("Absolute path to vgmstream-cli.exe", &state.preferences.vgmstream_executable)
+                            .on_input(Message::AudioDecoderPathChanged),
+                        design::button("Select existing…").on_press(Message::AudioPickDecoder)
+                            .style(design::secondary),
+                    ].spacing(8).align_y(iced::Center),
+                    text("NATIVE FSB5 COMPILATION · VORBIS REPLACEMENTS").size(12),
+                    text("For WAV replacements, a configured FFmpeg encoder and the MIT-licensed oggvorbis2fsb5 remuxer feed the manager's native multi-sample FSB5 writer. No FMOD Designer required.")
+                        .size(11).style(design::muted),
+                    if let Some(remuxer) = crate::audio_tools::valid_remuxer(&state.preferences.oggvorbis_remux_executable) {
+                        Element::from(text(format!("Remuxer ready: {}", remuxer.display()))
+                            .size(12).style(design::muted))
+                    } else {
+                        Element::from(column![
+                            text("oggvorbis2fsb5 is not configured.")
+                                .size(12).style(design::muted),
+                            design::button("Install Vorbis FSB5 remuxer")
+                                .on_press_maybe((!state.gfx_install_busy)
+                                    .then_some(Message::GfxInstallTool(crate::gfx_tool_install::Tool::OggRemux))),
+                        ].spacing(6))
+                    },
+                    row![
+                        design::text_input("Absolute path to oggvorbis2fsb5.exe", &state.preferences.oggvorbis_remux_executable)
+                            .on_input(Message::AudioRemuxPathChanged),
+                        design::button("Select existing…").on_press(Message::AudioPickRemux)
+                            .style(design::secondary),
+                    ].spacing(8).align_y(iced::Center),
+                    text("OGG inputs can bypass FFmpeg; WAV inputs use the FFmpeg configured below. IMA ADPCM bank writing and in-game compatibility remain unverified.")
+                        .size(11).style(design::muted),
+                    if let Some(designer) = crate::audio_tools::valid_designer(&state.preferences.fmod_designer_executable) {
+                        Element::from(text(format!("Legacy FMOD Designer detected: {}", designer.display()))
+                            .size(12).style(design::muted))
+                    } else {
+                        Element::from(text("Legacy FMOD Designer not configured. Install a licensed copy separately. Modern FMOD Studio does not rebuild legacy FDP projects.")
+                            .size(12).style(design::muted))
+                    },
+                    row![
+                        design::text_input("Absolute path to fmod_designer.exe", &state.preferences.fmod_designer_executable)
+                            .on_input(Message::AudioDesignerPathChanged),
+                        design::button("Select existing…").on_press(Message::AudioPickDesigner)
+                            .style(design::secondary),
+                    ].spacing(8).align_y(iced::Center),
+                    text("Inspect audio in Asset Library → File Explorer. Only editable Modding projects can stage altered FDP projects or rebuilt FSB/FEV files; playback is preview-only.")
+                        .size(11).style(design::muted),
+                ].spacing(8)),
+                panel(column![
                     text("ORIGINAL MAIN-MENU VIDEO · OPTIONAL FFMPEG").size(15),
                     text("The Stage 2 Goliath background is a CRI USM in videos.pak. Select a trusted compatible ffmpeg.exe to convert the verified source in scratch storage without a console window. No game files are modified. If no decoder is configured, an adjacent mainmenu_goliath.preview.mp4 or .webm can be used.")
                         .size(12).style(design::muted),
