@@ -109,6 +109,11 @@ pub fn launch_enabled(
         return Err("Enable at least one mod before pressing Play with Mods.".into());
     }
     launcher_bridge::games_closed()?;
+    // The former Developer toggle only changed status text. This is the real
+    // Windows Firewall switch, matching private-manager outbound rules.
+    // Perform it before staging/launching so a failed policy transition never
+    // silently starts Evolve in the wrong network mode.
+    super::online_guard::apply(&game, developer_online)?;
     // Physical original backups are a warning for client access, but an
     // absolute stop for writing another modded swap over those originals.
     if let Err(issue) = play_setup::audit_backup_files(&game) {

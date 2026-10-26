@@ -342,7 +342,16 @@ pub fn launch_clean(
     swap: Option<&Path>,
 ) -> Result<(u32, Vec<String>), String> {
     crate::launcher_bridge::games_closed()?;
-    let warnings = recovery_warnings(game, swap);
+    let mut warnings = recovery_warnings(game, swap);
+    // The private manager can leave a persistent Evolve-specific block.
+    // Unmodded client access should restore networking even after an
+    // interrupted modded game. A failure becomes an actionable warning:
+    // the ordinary client's Repair/Verify UI must remain accessible.
+    if let Err(error) = crate::online_guard::apply(game, true) {
+        warnings.push(format!(
+            "Could not remove manager-owned offline firewall rule: {error}"
+        ));
+    }
     let mut cmd = Command::new(client);
     cmd.current_dir(
         client

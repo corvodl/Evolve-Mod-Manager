@@ -40,6 +40,7 @@ mod mod_play;
 mod modding_keys;
 mod modding_page;
 mod modding_projects;
+mod online_guard;
 mod orientation_gizmo;
 mod play_dialog;
 mod play_setup;
@@ -357,6 +358,9 @@ struct State {
     developer_unlocked: bool,
     /// Session-only opt-in, never restored from settings; does not modify client authentication.
     developer_online_mods: bool,
+    developer_network_busy: bool,
+    developer_network_generation: u64,
+    developer_network_status: String,
     developer_attempts: u8,
     developer_checking: bool,
     runtime_snapshot: Option<runtime_memory::Snapshot>,
@@ -1506,6 +1510,7 @@ impl Operation {
                 })
             }
             Self::StartExistingOfflineLauncher(stage, swap, game, client) => {
+                online_guard::apply(&game, false)?;
                 play_setup::configure_existing_helper(&game, &client, &stage, &swap)?;
                 let report = inspect_existing_launcher(&stage, &swap)?;
                 if report.game != game {
@@ -1813,6 +1818,7 @@ enum Message {
     DeveloperChecked(bool),
     LockDeveloper,
     DeveloperOnlineMods(bool),
+    DeveloperNetworkApplied(u64, Result<String, String>),
     RuntimeDetect,
     RuntimeDetected(runtime_memory::Snapshot),
     RuntimeAddressChanged(String),
@@ -4355,7 +4361,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .unwrap_or_else(|error| format!("Phase 3 preview rejected: {error}"));
         }
         Message::LockDeveloper => {
+            state.developer_network_generation = state.developer_network_generation.wrapping_add(1);
+            state.developer_network_busy = false;
             state.developer_online_mods = false;
+            state.developer_network_status.clear();
             state.live_edit_enabled = false;
             if let Some(cancel) = &state.live_edit_cancel {
                 cancel.store(true, Ordering::Relaxed);
@@ -4394,33 +4403,87 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::DeveloperOnlineMods(allow) => {
             if !state.developer_unlocked
+                || state.developer_network_busy
                 || state.busy
                 || state.runtime_checking
                 || state.live_edit_busy
                 || state.armor_cancel.is_some()
             {
-                state.status = "Unlock Developer and finish running tasks/scans before changing online mod mode.".into();
+                state.developer_network_status =
+                    "Finish current tasks before switching the game network policy.".into();
                 return Task::none();
             }
-            state.developer_online_mods = allow;
-            if allow {
-                // Never permit an online-intended session to inherit offline live-edit
-                // permissions, a verified memory pointer or a stale offline attestation.
-                state.armor_offline_confirmed = false;
-                state.live_edit_enabled = false;
-                state.live_edit_probe = None;
-                state.live_edit_generation = state.live_edit_generation.wrapping_add(1);
-                if let Some(cancel) = &state.live_edit_cancel {
-                    cancel.store(true, Ordering::Relaxed);
-                }
-                state.live_edit_cancel = None;
-                state.runtime_health_scan = None;
-                state.armor_scan = None;
-                state.armor_live = None;
-                state.status = "Developer online mod testing armed for this session: all enabled mod types are allowed, including gameplay and unreviewed changes. The normal client and server still control connectivity and authentication.".into();
-            } else {
-                state.status = "Online mod intent disabled; Play with Mods returns to the default offline flow.".into();
+            if !allow {
+                // Turning this off is a session policy change. The next modded
+                // offline launch installs its outbound firewall rule; don't
+                // disconnect a game which may still be running right now.
+                state.developer_online_mods = false;
+                state.developer_network_status =
+                    "Online override OFF. The next Play with Mods launch will restore outbound offline isolation.".into();
+                return Task::none();
             }
+            let game = match play_setup::game_root(&state.preferences.game_installation) {
+                Ok(game) => game,
+                Err(error) => {
+                    state.developer_online_mods = false;
+                    state.developer_network_status = format!(
+                        "Cannot enable online testing until the EvolveGame installation is set: {error}"
+                    );
+                    return Task::none();
+                }
+            };
+            state.developer_network_generation = state.developer_network_generation.wrapping_add(1);
+            let generation = state.developer_network_generation;
+            state.developer_network_busy = true;
+            state.developer_network_status =
+                "Checking and removing the Evolve Mod Manager offline firewall rule...".into();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || online_guard::apply(&game, true))
+                        .await
+                        .unwrap_or_else(|error| Err(format!("Firewall operation failed: {error}")))
+                },
+                move |result| Message::DeveloperNetworkApplied(generation, result),
+            );
+        }
+        Message::DeveloperNetworkApplied(generation, result) => {
+            if !state.developer_network_busy || generation != state.developer_network_generation {
+                return Task::none();
+            }
+            state.developer_network_busy = false;
+            // Closing Developer cancels the local opt-in even if a helper
+            // completed after the tab was locked.
+            if !state.developer_unlocked {
+                state.developer_online_mods = false;
+                state.developer_network_status.clear();
+                return Task::none();
+            }
+            match result {
+                Ok(status) => {
+                    state.developer_online_mods = true;
+                    // Online mode must not reuse the separate offline-only
+                    // memory edit permissions or stale memory probes.
+                    state.armor_offline_confirmed = false;
+                    state.live_edit_enabled = false;
+                    state.live_edit_probe = None;
+                    state.live_edit_generation = state.live_edit_generation.wrapping_add(1);
+                    if let Some(cancel) = &state.live_edit_cancel {
+                        cancel.store(true, Ordering::Relaxed);
+                    }
+                    state.live_edit_cancel = None;
+                    state.runtime_health_scan = None;
+                    state.armor_scan = None;
+                    state.armor_live = None;
+                    state.developer_network_status = status;
+                }
+                Err(error) => {
+                    state.developer_online_mods = false;
+                    state.developer_network_status = format!(
+                        "Online switch could not remove the offline firewall restriction: {error}"
+                    );
+                }
+            }
+            state.status = state.developer_network_status.clone();
         }
         Message::UnlockDeveloper => {
             if state.developer_unlocked || state.developer_checking {
@@ -7239,6 +7302,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             } else {
                 play_dialog::Kind::Clean
             };
+            if state.developer_network_busy {
+                state.status = "Finish applying the Developer online firewall setting before launching Evolve.".into();
+                state.play_notice = Some(play_dialog::Notice::finished(
+                    kind,
+                    play_dialog::Phase::Error,
+                    state.status.clone(),
+                ));
+                return Task::none();
+            }
             if state.busy {
                 state.status = "Finish the current manager task before launching Evolve.".into();
                 state.play_notice = Some(play_dialog::Notice::finished(
@@ -12111,21 +12183,56 @@ mod project_edit_tests {
         assert!(state.status.contains("do not belong"));
     }
     #[test]
-    fn developer_online_mode_accepts_any_mod_type_and_is_session_only() {
+    fn developer_online_requires_verified_network_policy_and_is_session_only() {
         let mut state = State::default();
         let _ = update(&mut state, Message::DeveloperOnlineMods(true));
         assert!(!state.developer_online_mods, "Developer must be unlocked");
         state.developer_unlocked = true;
+        let _ = update(&mut state, Message::DeveloperOnlineMods(true));
+        assert!(!state.developer_online_mods);
+        assert!(state.developer_network_status.contains("installation"));
+
         state.armor_offline_confirmed = true;
         state.live_edit_enabled = true;
-        let _ = update(&mut state, Message::DeveloperOnlineMods(true));
+        state.developer_network_busy = true;
+        let generation = state.developer_network_generation;
+        let _ = update(
+            &mut state,
+            Message::DeveloperNetworkApplied(
+                generation,
+                Ok("Removed one Evolve Mod Manager rule".into()),
+            ),
+        );
         assert!(state.developer_online_mods);
+        assert!(!state.developer_network_busy);
         assert!(!state.armor_offline_confirmed);
         assert!(!state.live_edit_enabled);
-        assert!(state.status.contains("all enabled mod types"));
+        assert!(state.developer_network_status.contains("Removed"));
+
         let _ = update(&mut state, Message::DeveloperOnlineMods(false));
         assert!(!state.developer_online_mods);
-        let _ = update(&mut state, Message::DeveloperOnlineMods(true));
+        state.developer_network_busy = true;
+        let generation = state.developer_network_generation;
+        let _ = update(
+            &mut state,
+            Message::DeveloperNetworkApplied(
+                generation,
+                Err("Administrator permission required".into()),
+            ),
+        );
+        assert!(
+            !state.developer_online_mods,
+            "Network failure must fail closed"
+        );
+        assert!(state.developer_network_status.contains("permission"));
+        assert!(!state.developer_network_busy);
+
+        state.developer_network_busy = true;
+        let generation = state.developer_network_generation;
+        let _ = update(
+            &mut state,
+            Message::DeveloperNetworkApplied(generation, Ok("Online ready".into())),
+        );
         assert!(state.developer_online_mods);
         let _ = update(&mut state, Message::LockDeveloper);
         assert!(!state.developer_online_mods);
