@@ -235,7 +235,11 @@ pub fn configure_existing_helper(
         &swap,
         "auto_launch_frida.py",
         CURRENT_AUTO_LAUNCH,
-        &[PREVIOUS_AUTO_LAUNCH_SHA256, NIGHTLY_56_AUTO_LAUNCH_SHA256, NIGHTLY_69_AUTO_LAUNCH_SHA256],
+        &[
+            PREVIOUS_AUTO_LAUNCH_SHA256,
+            NIGHTLY_56_AUTO_LAUNCH_SHA256,
+            NIGHTLY_69_AUTO_LAUNCH_SHA256,
+        ],
     )?;
     crate::standard_user_launch::install_into_swap(&swap)?;
     let config = swap.join("launcher_config.json");

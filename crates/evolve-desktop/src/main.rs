@@ -41,7 +41,6 @@ mod modding_keys;
 mod modding_page;
 mod modding_projects;
 mod online_guard;
-mod standard_user_launch;
 mod orientation_gizmo;
 mod play_dialog;
 mod play_setup;
@@ -56,6 +55,7 @@ mod selection;
 mod settings;
 mod settings_page;
 mod staged_library;
+mod standard_user_launch;
 mod storage_usage;
 mod system_health;
 mod textured;
@@ -4413,15 +4413,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             state.developer_privilege_busy = true;
             state.developer_privilege_status = "Reading Windows process tokens...".into();
-            return Task::perform(async {
-                tokio::task::spawn_blocking(standard_user_launch::inspect_privileges)
-                    .await.unwrap_or_else(|error| Err(format!("Privilege inspector stopped: {error}")))
-            }, Message::DeveloperProcessPrivilegesFinished);
+            return Task::perform(
+                async {
+                    tokio::task::spawn_blocking(standard_user_launch::inspect_privileges)
+                        .await
+                        .unwrap_or_else(|error| {
+                            Err(format!("Privilege inspector stopped: {error}"))
+                        })
+                },
+                Message::DeveloperProcessPrivilegesFinished,
+            );
         }
         Message::DeveloperProcessPrivilegesFinished(result) => {
             state.developer_privilege_busy = false;
-            state.developer_privilege_status = result.unwrap_or_else(|error|
-                format!("Privilege inspection failed: {error}"));
+            state.developer_privilege_status =
+                result.unwrap_or_else(|error| format!("Privilege inspection failed: {error}"));
         }
         Message::DeveloperOnlineMods(allow) => {
             if !state.developer_unlocked

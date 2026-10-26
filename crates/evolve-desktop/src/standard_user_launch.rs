@@ -18,14 +18,18 @@ fn parse_launch_report(stdout: &str) -> Result<u32, String> {
         .find(|line| line.starts_with(prefix))
         .ok_or("Standard-user launcher did not return a verified process ID")?;
     if !line.contains(" elevated=false integrity=medium ") {
-        return Err("Client token verification did not confirm medium-integrity standard user".into());
+        return Err(
+            "Client token verification did not confirm medium-integrity standard user".into(),
+        );
     }
     let token = line[prefix.len()..]
         .split_whitespace()
         .next()
         .ok_or("Missing client PID")?;
     let pid: u32 = token.parse().map_err(|_| "Invalid client PID")?;
-    if pid == 0 { return Err("Client PID was zero".into()); }
+    if pid == 0 {
+        return Err("Client PID was zero".into());
+    }
     Ok(pid)
 }
 
@@ -54,7 +58,11 @@ fn call_broker(args: &[&std::ffi::OsStr]) -> Result<String, String> {
     if !out.status.success() {
         return Err(format!(
             "Standard-user launch failed: {}. Check that Explorer is running normally and launch the manager from the same Windows desktop session.",
-            String::from_utf8_lossy(&out.stderr).trim().chars().take(900).collect::<String>()
+            String::from_utf8_lossy(&out.stderr)
+                .trim()
+                .chars()
+                .take(900)
+                .collect::<String>()
         ));
     }
     String::from_utf8(out.stdout).map_err(|_| "Invalid privilege helper output".into())
@@ -64,13 +72,13 @@ fn call_broker(args: &[&std::ffi::OsStr]) -> Result<String, String> {
 pub fn launch(executable: &Path) -> Result<u32, String> {
     let file = std::fs::canonicalize(executable)
         .map_err(|e| format!("Configured client executable is missing: {e}"))?;
-    if !file.file_name().is_some_and(|n| n.eq_ignore_ascii_case("ModdedEvolveLauncher.exe")) {
+    if !file
+        .file_name()
+        .is_some_and(|n| n.eq_ignore_ascii_case("ModdedEvolveLauncher.exe"))
+    {
         return Err("Only a configured ModdedEvolveLauncher.exe may be launched".into());
     }
-    let report = call_broker(&[
-        std::ffi::OsStr::new("--launch"),
-        file.as_os_str(),
-    ])?;
+    let report = call_broker(&[std::ffi::OsStr::new("--launch"), file.as_os_str()])?;
     parse_launch_report(&report)
 }
 
@@ -111,12 +119,18 @@ pub fn install_into_swap(swap: &Path) -> Result<(), String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let mut scratch = tempfile::Builder::new()
                 .prefix(".evolve-standard-user-")
-                .tempfile_in(swap).map_err(|e| e.to_string())?;
-            scratch.write_all(BROKER_SCRIPT.as_bytes()).map_err(|e| e.to_string())?;
-            scratch.as_file_mut().sync_all().map_err(|e| e.to_string())?;
-            scratch.persist_noclobber(&target).map_err(|e|
-                format!("Cannot publish trusted standard-user helper: {}", e.error)
-            )?;
+                .tempfile_in(swap)
+                .map_err(|e| e.to_string())?;
+            scratch
+                .write_all(BROKER_SCRIPT.as_bytes())
+                .map_err(|e| e.to_string())?;
+            scratch
+                .as_file_mut()
+                .sync_all()
+                .map_err(|e| e.to_string())?;
+            scratch
+                .persist_noclobber(&target)
+                .map_err(|e| format!("Cannot publish trusted standard-user helper: {}", e.error))?;
             Ok(())
         }
         Err(error) => Err(format!("Cannot inspect standard-user helper: {error}")),
@@ -129,9 +143,25 @@ mod tests {
 
     #[test]
     fn report_requires_verified_medium_token_and_real_pid() {
-        assert_eq!(parse_launch_report("STANDARD_USER_LAUNCH pid=345 elevated=false integrity=medium session=1").unwrap(),345);
-        assert!(parse_launch_report("STANDARD_USER_LAUNCH pid=345 elevated=true integrity=high session=1").is_err());
-        assert!(parse_launch_report("STANDARD_USER_LAUNCH pid=0 elevated=false integrity=medium session=1").is_err());
+        assert_eq!(
+            parse_launch_report(
+                "STANDARD_USER_LAUNCH pid=345 elevated=false integrity=medium session=1"
+            )
+            .unwrap(),
+            345
+        );
+        assert!(
+            parse_launch_report(
+                "STANDARD_USER_LAUNCH pid=345 elevated=true integrity=high session=1"
+            )
+            .is_err()
+        );
+        assert!(
+            parse_launch_report(
+                "STANDARD_USER_LAUNCH pid=0 elevated=false integrity=medium session=1"
+            )
+            .is_err()
+        );
         assert!(parse_launch_report("Launching 345").is_err());
     }
 
