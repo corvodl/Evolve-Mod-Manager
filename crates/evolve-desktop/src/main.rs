@@ -6217,7 +6217,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 || verified_viewer_file(state).ok().as_ref() != Some(&expected_source)
                 || state.file_selection.indices.len() != 1
             {
-                state.audio_status = "Selection changed; the prepared waveform is not imported.".into();
+                state.audio_status =
+                    "Selection changed; the prepared waveform is not imported.".into();
                 return Task::none();
             }
             match result {
@@ -6258,9 +6259,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.audio_status = "Checking and staging rebuilt FMOD asset...".into();
             return Task::perform(
                 async move {
-                    tokio::task::spawn_blocking(move ||
-                        audio_tools::prepare_rebuilt_for_import(&source, &rebuilt))
-                        .await.unwrap_or_else(|e| Err(e.to_string()))
+                    tokio::task::spawn_blocking(move || {
+                        audio_tools::prepare_rebuilt_for_import(&source, &rebuilt)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()))
                 },
                 move |result| Message::AudioRebuiltReady(expected_source.clone(), result),
             );
@@ -6271,7 +6274,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 || verified_viewer_file(state).ok().as_ref() != Some(&expected_source)
                 || state.file_selection.indices.len() != 1
             {
-                state.audio_status = "Selection changed; rebuilt FMOD asset was not imported.".into();
+                state.audio_status =
+                    "Selection changed; rebuilt FMOD asset was not imported.".into();
                 return Task::none();
             }
             match result {

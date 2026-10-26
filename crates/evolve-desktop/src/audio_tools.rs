@@ -350,12 +350,20 @@ pub fn prepare_waveform_override(
     // CryEngine's FMOD Designer integration expects authored relative WAV paths.
     // Resolve from the FDP's eventual location inside the editable project,
     // not its temporary validation copy.
-    let relative_parent = original.parent().ok_or("No FMOD project folder")?
-        .strip_prefix(&workspace).map_err(|e| e.to_string())?;
+    let relative_parent = original
+        .parent()
+        .ok_or("No FMOD project folder")?
+        .strip_prefix(&workspace)
+        .map_err(|e| e.to_string())?;
     let climbs = relative_parent.components().count();
-    let audio_relative = audio_copy.strip_prefix(&workspace).map_err(|e| e.to_string())?;
-    let path_in_project = format!("{}{}", "../".repeat(climbs),
-        audio_relative.to_string_lossy().replace('\\', "/"));
+    let audio_relative = audio_copy
+        .strip_prefix(&workspace)
+        .map_err(|e| e.to_string())?;
+    let path_in_project = format!(
+        "{}{}",
+        "../".repeat(climbs),
+        audio_relative.to_string_lossy().replace('\\', "/")
+    );
     let mut authored = String::with_capacity(xml.len() + 128);
     authored.push_str(&xml[..start + a]);
     authored.push_str(&xml_escape(&path_in_project));
@@ -383,9 +391,13 @@ pub fn prepare_rebuilt_for_import(
     rebuilt: &Path,
 ) -> Result<(PathBuf, String), String> {
     let report = verify_rebuilt(original, rebuilt)?;
-    let name = original.file_name().ok_or("Missing original FMOD member name")?;
-    let scratch = tempfile::Builder::new().prefix("evolve-fmod-built-")
-        .tempdir().map_err(|e| e.to_string())?;
+    let name = original
+        .file_name()
+        .ok_or("Missing original FMOD member name")?;
+    let scratch = tempfile::Builder::new()
+        .prefix("evolve-fmod-built-")
+        .tempdir()
+        .map_err(|e| e.to_string())?;
     let output = scratch.path().join(name);
     fs::copy(rebuilt, &output).map_err(|e| e.to_string())?;
     // Recheck the *actual* staged bytes, not just the caller's source.
