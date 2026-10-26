@@ -7297,6 +7297,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             } else {
                 play_dialog::Kind::Clean
             };
+            if state.developer_network_busy {
+                state.status = "Finish applying the Developer online firewall setting before launching Evolve.".into();
+                state.play_notice = Some(play_dialog::Notice::finished(
+                    kind, play_dialog::Phase::Error, state.status.clone(),
+                ));
+                return Task::none();
+            }
             if state.busy {
                 state.status = "Finish the current manager task before launching Evolve.".into();
                 state.play_notice = Some(play_dialog::Notice::finished(
