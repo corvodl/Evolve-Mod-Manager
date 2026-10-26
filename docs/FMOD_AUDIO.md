@@ -8,6 +8,24 @@ The Asset Library recognizes legacy FMOD Designer `.fdp` projects, `.fev` event 
 
 The legacy `fmod_designer.exe` is **not** bundled or downloaded. Point Integrations at a legitimately installed copy; modern FMOD Studio does not directly build these legacy FDP projects.
 
+## Native Rebuild Sound Bank (experimental)
+
+For Evolve's existing **FMOD Vorbis FSB5** sample slots, the Rust manager can rebuild a full multi-sample bank without running FMOD Designer. The supplied monster archive has **33 Vorbis banks and one IMA ADPCM bank**; the latter is not supported by this native path.
+
+Install both **vgmstream** and the MIT-licensed **oggvorbis2fsb5** helper via Settings → Integrations → Audio Tools (or configure their installed executables). For replacement **WAV** files, also configure FFmpeg, which converts WAV to Ogg Vorbis at the exact channel count and sample rate of the selected original sound. For **OGG** input, FFmpeg is not necessary.
+
+In an *editable Modding project*, right-click the existing .fsb, enter the **1-based sample index**, and choose **Rebuild Sound Bank · Replace WAV/OGG**. The audio pipeline is:
+
+1. WAV to Ogg Vorbis (optional configured FFmpeg)
+2. Ogg Vorbis to single-subsound FSB5 (open-source remuxer)
+3. Native Rust FSB5 multi-sample rebuild: preserve original bank sample order, names, unaffected samples and unknown extra chunks; copy the new Vorbis setup chunk and encoded sample bytes; update sample count and aligned data offsets
+4. Decode the rebuilt selected subsound with vgmstream. Abort rather than stage if its Vorbis setup or packet format cannot be decoded.
+5. Stage the modified bank as an *existing manifest-listed file* through the manager's normal EditorBackups/PAK workflow.
+
+The manager rejects mismatched channels/rates, missing Vorbis metadata, malformed donor/header/offsets and unsupported codecs. Original Asset Library PAKs are never changed during editing.
+
+**Compatibility is not yet verified in a running Evolve match**. FMOD Vorbis is not generic Ogg Vorbis; a codebook/setup emitted by an independent encoder may be incompatible with this game's specific FMOD runtime even if the FSB header and standalone decoder pass. The current feature is a guarded experimental replacement builder; it cannot yet add new FMOD events or compile FEV event structures.
+
 ## Using it
 
 1. Open an existing extracted FMOD asset in the **Asset Library → File Explorer**. Inspect the FSB5 bank to see its encoded format and sample count; inspect an FDP project to see waveform references. Right-click a selected asset to access its **Audio Tools** controls.
@@ -18,7 +36,7 @@ The legacy `fmod_designer.exe` is **not** bundled or downloaded. Point Integrati
 
 ## Important restrictions
 
-- There is **no native one-click FSB encoder**. FMOD Designer must compile the FSB/FEV project externally, through its original **Project → Build** UI. The manager handles project waveform substitution, decoding, inspection, and guarded import.
+- The native bank reassembler handles existing **Vorbis FSB5** sample replacements through open-source encoders/remuxers. **FEV** event recompilation and **IMA ADPCM** bank compilation still require separate tooling. For advanced project authoring, FMOD Designer can still compile the FSB/FEV project externally. The manager handles project waveform substitution, decoding, inspection, and guarded import.
 - Decoding a bank does not re-create a complete FMOD project or preserve missing WAV sources automatically; project source paths need to be satisfied for the authoring tool to rebuild a whole bank.
 - FEV preflight validates only its RIFF/FEV container, not event GUID/ID compatibility. FSB preflight checks sample count and encoding, not the game's FMOD runtime version. Testing the result in an **offline** Evolve match is required.
 - Only files already present in an editable project manifest can be safely staged as replacement members. New file insertion, signature verification and sound-event discovery are separate game compatibility issues.
