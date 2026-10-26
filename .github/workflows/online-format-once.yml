@@ -1,0 +1,30 @@
+name: Temporary developer-online formatter
+on:
+  push:
+    branches: [feature/fmod-audio-support]
+permissions:
+  contents: write
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/fmod-audio-support
+          persist-credentials: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format Rust changes on feature branch
+        shell: bash
+        run: |
+          cargo fmt --all
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add crates/evolve-desktop/src/main.rs
+            git add crates/evolve-desktop/src/mod_play.rs
+            git add crates/evolve-desktop/src/private_pages.rs
+            git commit -m "style: format developer online testing controls"
+            git push origin HEAD:feature/fmod-audio-support
+          fi
