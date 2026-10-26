@@ -12193,9 +12193,10 @@ mod project_edit_tests {
         state.armor_offline_confirmed = true;
         state.live_edit_enabled = true;
         state.developer_network_busy = true;
+        let generation = state.developer_network_generation;
         let _ = update(
             &mut state,
-            Message::DeveloperNetworkApplied(state.developer_network_generation, Ok("Removed one Evolve Mod Manager rule".into())),
+            Message::DeveloperNetworkApplied(generation, Ok("Removed one Evolve Mod Manager rule".into())),
         );
         assert!(state.developer_online_mods);
         assert!(!state.developer_network_busy);
@@ -12206,9 +12207,10 @@ mod project_edit_tests {
         let _ = update(&mut state, Message::DeveloperOnlineMods(false));
         assert!(!state.developer_online_mods);
         state.developer_network_busy = true;
+        let generation = state.developer_network_generation;
         let _ = update(
             &mut state,
-            Message::DeveloperNetworkApplied(state.developer_network_generation, Err("Administrator permission required".into())),
+            Message::DeveloperNetworkApplied(generation, Err("Administrator permission required".into())),
         );
         assert!(
             !state.developer_online_mods,
@@ -12218,9 +12220,10 @@ mod project_edit_tests {
         assert!(!state.developer_network_busy);
 
         state.developer_network_busy = true;
+        let generation = state.developer_network_generation;
         let _ = update(
             &mut state,
-            Message::DeveloperNetworkApplied(state.developer_network_generation, Ok("Online ready".into())),
+            Message::DeveloperNetworkApplied(generation, Ok("Online ready".into())),
         );
         assert!(state.developer_online_mods);
         let _ = update(&mut state, Message::LockDeveloper);
