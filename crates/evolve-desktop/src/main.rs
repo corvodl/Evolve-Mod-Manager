@@ -1684,6 +1684,7 @@ enum Message {
     AudioWaveformPrepared(PathBuf, Result<PathBuf, String>),
     AudioImportRebuilt,
     AudioRebuiltPicked(Option<PathBuf>),
+    AudioRebuiltReady(PathBuf, Result<(PathBuf, String), String>),
     AudioDecoderPathChanged(String),
     AudioDesignerPathChanged(String),
     AudioPickDecoder,
@@ -6252,10 +6253,31 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     return Task::none();
                 }
             };
-            match audio_tools::verify_rebuilt(&source, &rebuilt) {
-                Ok(info) => {
-                    state.audio_status = info;
-                    state.editor_replace_source = rebuilt.to_string_lossy().into_owned();
+            let expected_source = source.clone();
+            state.audio_busy = true;
+            state.audio_status = "Checking and staging rebuilt FMOD asset...".into();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move ||
+                        audio_tools::prepare_rebuilt_for_import(&source, &rebuilt))
+                        .await.unwrap_or_else(|e| Err(e.to_string()))
+                },
+                move |result| Message::AudioRebuiltReady(expected_source.clone(), result),
+            );
+        }
+        Message::AudioRebuiltReady(expected_source, result) => {
+            state.audio_busy = false;
+            if state.viewer_from_library
+                || verified_viewer_file(state).ok().as_ref() != Some(&expected_source)
+                || state.file_selection.indices.len() != 1
+            {
+                state.audio_status = "Selection changed; rebuilt FMOD asset was not imported.".into();
+                return Task::none();
+            }
+            match result {
+                Ok((prepared, report)) => {
+                    state.audio_status = report;
+                    state.editor_replace_source = prepared.to_string_lossy().into_owned();
                     return update(state, Message::EditorImportRawMember);
                 }
                 Err(e) => state.audio_status = format!("Cannot import rebuilt FMOD asset: {e}"),
