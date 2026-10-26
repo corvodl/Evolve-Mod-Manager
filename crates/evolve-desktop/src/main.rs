@@ -1681,7 +1681,7 @@ enum Message {
     AudioOpenDesigner,
     AudioReplaceWaveform,
     AudioWaveformPicked(Option<PathBuf>),
-    AudioWaveformPrepared(Result<PathBuf, String>),
+    AudioWaveformPrepared(PathBuf, Result<PathBuf, String>),
     AudioImportRebuilt,
     AudioRebuiltPicked(Option<PathBuf>),
     AudioDecoderPathChanged(String),
@@ -6196,6 +6196,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
             state.audio_busy = true;
             state.audio_status = "Preparing isolated FMOD project with replacement WAV...".into();
+            let expected_source = source.clone();
             return Task::perform(
                 async move {
                     tokio::task::spawn_blocking(move || {
@@ -6204,12 +6205,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .await
                     .unwrap_or_else(|e| Err(e.to_string()))
                 },
-                Message::AudioWaveformPrepared,
+                move |result| Message::AudioWaveformPrepared(expected_source.clone(), result),
             );
         }
         Message::AudioWaveformPicked(None) => {}
-        Message::AudioWaveformPrepared(result) => {
+        Message::AudioWaveformPrepared(expected_source, result) => {
             state.audio_busy = false;
+            // Async work must never apply to a different file selected mid-operation.
+            if state.viewer_from_library
+                || verified_viewer_file(state).ok().as_ref() != Some(&expected_source)
+                || state.file_selection.indices.len() != 1
+            {
+                state.audio_status = "Selection changed; the prepared waveform is not imported.".into();
+                return Task::none();
+            }
             match result {
                 Ok(path) => {
                     state.editor_replace_source = path.to_string_lossy().into_owned();
