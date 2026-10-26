@@ -6290,13 +6290,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
             let ffmpeg = state.preferences.gfx_ffmpeg_executable.clone();
             let remuxer = state.preferences.oggvorbis_remux_executable.clone();
+            let decoder = state.preferences.vgmstream_executable.clone();
             let expected_original = original.clone();
             state.audio_busy = true;
             state.audio_status = format!("Encoding and rebuilding sound-bank sample {index}...");
             return Task::perform(
                 async move {
                     tokio::task::spawn_blocking(move ||
-                        audio_tools::rebuild_original_bank(&original, &replacement, index, &ffmpeg, &remuxer)
+                        audio_tools::rebuild_original_bank(&original, &replacement, index, &ffmpeg, &remuxer, &decoder)
                     ).await.unwrap_or_else(|e| Err(e.to_string()))
                 },
                 move |result| Message::AudioNativeRebuilt(expected_original.clone(), result),
