@@ -142,7 +142,7 @@ def _token_integrity(api, token):
     return rid[0]
 
 
-def _get_process_token(api, pid=None):
+def _get_process_token(api, pid=None, needs_duplicate=False):
     H = wintypes.HANDLE
     p = None
     if pid is None:
@@ -153,7 +153,8 @@ def _get_process_token(api, pid=None):
             raise _error("OpenProcess")
     try:
         token = H()
-        if not api["OpenProcessToken"](p, TOKEN_QUERY | TOKEN_DUPLICATE, ctypes.byref(token)):
+        access = TOKEN_QUERY | (TOKEN_DUPLICATE if needs_duplicate else 0)
+        if not api["OpenProcessToken"](p, access, ctypes.byref(token)):
             raise _error("OpenProcessToken")
         return token
     finally:
@@ -232,7 +233,7 @@ def launch_standard_user(executable):
     finally:
         api["CloseHandle"](shell_process)
 
-    shell_token = _get_process_token(api, shell_pid.value)
+    shell_token = _get_process_token(api, shell_pid.value, needs_duplicate=True)
     try:
         own_token = _get_process_token(api)
         try:
