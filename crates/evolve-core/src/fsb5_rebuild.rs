@@ -228,6 +228,7 @@ pub fn replace_vorbis_sample(
     for extra in &mut old.extras {
         if extra.kind == 11 { extra.bytes = vorbis_data.clone(); }
     }
+    let donor_sample_count = replacement.count();
     old.header = (old.header & !COUNT_MASK) | (replacement.header & COUNT_MASK);
     old.data = replacement.data;
     let output = bank.encode()?;
@@ -235,7 +236,7 @@ pub fn replace_vorbis_sample(
     if check.samples.len() != bank.samples.len()
         || check.names != bank.names
         || check.mode != bank.mode
-        || check.samples[index].count() != replacement.count()
+        || check.samples[index].count() != donor_sample_count
     {
         return Err(invalid("rebuilt bank failed read-after-write verification"));
     }
