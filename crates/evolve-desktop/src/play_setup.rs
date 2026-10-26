@@ -235,6 +235,7 @@ pub fn configure_existing_helper(
         CURRENT_AUTO_LAUNCH,
         &[PREVIOUS_AUTO_LAUNCH_SHA256, NIGHTLY_56_AUTO_LAUNCH_SHA256],
     )?;
+    crate::standard_user_launch::install_into_swap(&swap)?;
     let config = swap.join("launcher_config.json");
     let mut previous = Map::new();
     if config.exists() {
@@ -352,22 +353,10 @@ pub fn launch_clean(
             "Could not remove manager-owned offline firewall rule: {error}"
         ));
     }
-    let mut cmd = Command::new(client);
-    cmd.current_dir(
-        client
-            .parent()
-            .ok_or("Client executable has no installation folder")?,
-    );
-    cmd.stdin(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000);
-    }
-    let process = cmd
-        .spawn()
-        .map_err(|e| format!("Could not start normal Modded Evolve client: {e}"))?;
-    Ok((process.id(), warnings))
+    // Launch through the interactive user's verified Explorer token. An
+    // elevated Mod Manager must NOT silently elevate the normal client/game.
+    let pid = crate::standard_user_launch::launch(client)?;
+    Ok((pid, warnings))
 }
 
 #[cfg(test)]
