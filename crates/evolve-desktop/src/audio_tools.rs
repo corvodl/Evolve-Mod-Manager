@@ -271,10 +271,16 @@ pub fn prepare_waveform_override(
     authored.push_str(&xml_escape(&resolved.to_string_lossy().replace('\\', "/")));
     authored.push_str(&xml[start+b..]);
     let name = original.file_name().ok_or("Project name missing")?;
-    let edit = temporary.path().join(name);
+    // The managed project importer intentionally rejects replacement files
+    // located *inside* the project directory. Keep the authoring WAV in
+    // FMOD_Sources, but stage the edited FDP in independent OS scratch space.
+    let edit_scratch = tempfile::Builder::new().prefix("evolve-fmod-fdp-").tempdir()
+        .map_err(|e| e.to_string())?;
+    let edit = edit_scratch.path().join(name);
     fs::write(&edit, authored).map_err(|e| e.to_string())?;
     inspect_fmod_file(&edit).map_err(|e| e.to_string())?;
-    let saved = temporary.keep();
+    let _wave_files = temporary.keep();
+    let saved = edit_scratch.keep();
     Ok(saved.join(name))
 }
 
