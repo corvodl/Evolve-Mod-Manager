@@ -229,6 +229,38 @@ fn locate_ruffle_web(root: &Path) -> Result<PathBuf, String> {
     Ok(directory)
 }
 
+/// Find the unique directory containing the expected executable. The ZIP
+/// extraction already rejects symlinks and parent/absolute paths.
+fn locate_remuxer(root: &Path) -> Result<PathBuf, String> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut located: Option<PathBuf> = None;
+    let mut visited = 0usize;
+    while let Some(folder) = pending.pop() {
+        visited += 1;
+        if visited > MAX_MEMBERS {
+            return Err("Remuxer archive has too many nested directories".into());
+        }
+        for entry in fs::read_dir(&folder).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let info = fs::symlink_metadata(entry.path()).map_err(|e| e.to_string())?;
+            if info.file_type().is_symlink() {
+                return Err("Remuxer archive contains a symlink".into());
+            }
+            if info.file_type().is_dir() {
+                pending.push(entry.path());
+            } else if entry.file_name().to_string_lossy()
+                .eq_ignore_ascii_case("oggvorbis2fsb5.exe")
+            {
+                if located.is_some() {
+                    return Err("Multiple remuxer binaries found in archive".into());
+                }
+                located = Some(folder.clone());
+            }
+        }
+    }
+    located.ok_or("Remuxer archive has no oggvorbis2fsb5.exe".into())
+}
+
 /// Run only from an explicit Install click in Settings. The existing app
 /// already requires elevation and lives in Program Files when installed;
 /// place tool executables alongside it, not in a writable per-user folder.
@@ -306,6 +338,23 @@ fn install_at(tool: Tool, folder: &Path) -> Result<PathBuf, String> {
             }
         }
         flattened
+    } else if tool == Tool::OggRemux {
+        let folder = locate_remuxer(&extracted)?;
+        if folder == extracted {
+            extracted
+        } else {
+            let flattened = scratch.path().join("payload");
+            fs::create_dir(&flattened).map_err(|e| e.to_string())?;
+            for entry in fs::read_dir(folder).map_err(|e| e.to_string())? {
+                let entry = entry.map_err(|e| e.to_string())?;
+                let info = fs::symlink_metadata(entry.path()).map_err(|e| e.to_string())?;
+                if info.file_type().is_file() {
+                    fs::copy(entry.path(), flattened.join(entry.file_name()))
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+            flattened
+        }
     } else {
         extracted
     };
