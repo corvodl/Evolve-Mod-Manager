@@ -1,7 +1,8 @@
 name: Nightly 0.1.0 Windows release
 
 on:
-  # An update to this workflow triggers a Nightly from main; release notes
+  # A workflow update triggers Nightly from main; this revision packages the
+  # Developer online Firewall override fix merged from PR #90.
   # list only changes merged since the previous published Nightly tag.
   push:
     branches: [main]
