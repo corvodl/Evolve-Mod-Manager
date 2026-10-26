@@ -187,6 +187,20 @@ impl Bank {
     }
 }
 
+/// Read original sample channels and sample rate so the encoder cannot
+/// silently change the monster's playback pitch or spatialization.
+pub fn sample_parameters(original: &[u8], one_based: u32) -> Result<(u32, u32), RebuildError> {
+    let bank = Bank::parse(original)?;
+    let index = one_based.checked_sub(1).ok_or_else(|| invalid("sample indices start at 1"))? as usize;
+    let sample = bank.samples.get(index).ok_or_else(|| invalid("sample index is out of range"))?;
+    let rate = sample.frequency();
+    let channels = sample.channels();
+    if rate == 0 || !(1..=8).contains(&channels) {
+        return Err(invalid("unsupported sample rate or channel count"));
+    }
+    Ok((rate, channels))
+}
+
 /// Replace a *one-based* Vorbis subsound using a single-subsound FSB5 generated
 /// by an independent encoder/remuxer. This is native bank compilation, not
 /// Vorbis packet encoding or a guarantee the target game accepts the bank.
