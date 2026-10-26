@@ -35,6 +35,8 @@ jobs:
         run: python3 -m unittest discover -s crates/evolve-desktop/launcher_support -p 'test_launch_path_matching.py'
       - name: Verify Frida CreateProcessW path matching (JavaScript)
         run: node --test crates/evolve-desktop/tests/launcher_path_matching.test.cjs
+      - name: Validate standard-user launch broker and fail-closed behavior
+        run: python3 -m unittest discover -s crates/evolve-desktop/launcher_support -p 'test_standard_user_launch.py'
       - name: Verify guarded original game backup restoration
         run: python3 -m unittest discover -s crates/evolve-desktop/launcher_support -p 'test_reusable_restore.py'
       - name: Verify journal-independent private manager backup recovery
