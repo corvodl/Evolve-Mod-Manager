@@ -370,6 +370,24 @@ pub fn prepare_waveform_override(
     Ok(saved.join(name))
 }
 
+/// Make a separate copy for the managed importer. A rebuilt bank produced
+/// next to its FDP within the workspace is otherwise intentionally rejected.
+pub fn prepare_rebuilt_for_import(
+    original: &Path,
+    rebuilt: &Path,
+) -> Result<(PathBuf, String), String> {
+    let report = verify_rebuilt(original, rebuilt)?;
+    let name = original.file_name().ok_or("Missing original FMOD member name")?;
+    let scratch = tempfile::Builder::new().prefix("evolve-fmod-built-")
+        .tempdir().map_err(|e| e.to_string())?;
+    let output = scratch.path().join(name);
+    fs::copy(rebuilt, &output).map_err(|e| e.to_string())?;
+    // Recheck the *actual* staged bytes, not just the caller's source.
+    verify_rebuilt(original, &output)?;
+    let stored = scratch.keep();
+    Ok((stored.join(name), report))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
