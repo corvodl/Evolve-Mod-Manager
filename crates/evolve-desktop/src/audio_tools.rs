@@ -347,12 +347,18 @@ pub fn prepare_waveform_override(
         .map_err(|e| e.to_string())?;
     let audio_copy = temporary.path().join("replacement.wav");
     fs::copy(wav, &audio_copy).map_err(|e| e.to_string())?;
-    // Match the paths FMOD Designer consumes; local absolute paths are scoped
-    // to the user's machine and are never installed into the game.
-    let resolved = fs::canonicalize(&audio_copy).map_err(|e| e.to_string())?;
+    // CryEngine's FMOD Designer integration expects authored relative WAV paths.
+    // Resolve from the FDP's eventual location inside the editable project,
+    // not its temporary validation copy.
+    let relative_parent = original.parent().ok_or("No FMOD project folder")?
+        .strip_prefix(&workspace).map_err(|e| e.to_string())?;
+    let climbs = relative_parent.components().count();
+    let audio_relative = audio_copy.strip_prefix(&workspace).map_err(|e| e.to_string())?;
+    let path_in_project = format!("{}{}", "../".repeat(climbs),
+        audio_relative.to_string_lossy().replace('\\', "/"));
     let mut authored = String::with_capacity(xml.len() + 128);
     authored.push_str(&xml[..start + a]);
-    authored.push_str(&xml_escape(&resolved.to_string_lossy().replace('\\', "/")));
+    authored.push_str(&xml_escape(&path_in_project));
     authored.push_str(&xml[start + b..]);
     let name = original.file_name().ok_or("Project name missing")?;
     // The managed project importer intentionally rejects replacement files
