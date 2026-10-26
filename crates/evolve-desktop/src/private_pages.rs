@@ -440,6 +440,17 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
             text("Developer").size(24),
             surface(column![
                 text("Authorized developer access").size(17),
+                text("Modded online testing").size(16),
+                text("Overrides the manager's mod-category restrictions for testing. ALL enabled mods, including gameplay and unreviewed files, are eligible. This setting is OFF by default, resets when Developer is locked or the manager restarts, and does not bypass client/server authentication.")
+                    .size(12).style(design::muted),
+                iced::widget::checkbox(state.developer_online_mods)
+                    .label("Allow Play with Mods online — any mod type (Developer testing)")
+                    .on_toggle(Message::DeveloperOnlineMods),
+                text(if state.developer_online_mods {
+                    "DEVELOPER ONLINE TEST ARMED. The regular client is launched with all enabled mods and no manager-side content filter. Actual online connection and server acceptance are not guaranteed."
+                } else {
+                    "Offline testing is the default. Enable the switch above to permit a modded online launch attempt."
+                }).size(12).style(design::muted),
                 text("Phase 1  /  External memory inspector").size(16),
                 text("Injection-free, read-only. Detect one Evolve.exe process on demand; inspect 32 bytes at an explicit hex address or a validated pointer chain. Offsets are not bundled. Process identity and offline status cannot yet be independently verified.").size(12).style(design::muted),
                 design::button(if state.runtime_checking { "Inspecting..." } else { "Detect Evolve process" })
