@@ -1,4 +1,6 @@
-//! One-click offline play for enabled, locally named Mod Projects.
+//! One-click mod staging for enabled, locally named Mod Projects.
+//! Developer mode permits online testing with any project type; the normal
+//! client and server retain control of networking and authentication.
 //! Signing and recovery remain in the existing isolated stage and helper.
 use super::{launcher_bridge, modding_keys, modding_projects, play_setup};
 use modding_projects::ProjectRow;
@@ -96,6 +98,9 @@ pub fn launch_enabled(
     game: PathBuf,
     client: PathBuf,
     progress: Arc<AtomicUsize>,
+    /// Developer testing override: does not filter mods by their content kind.
+    /// The regular client/server still determines actual network access.
+    developer_online: bool,
 ) -> Result<(usize, u32, usize, Option<String>), String> {
     if mods.is_empty() {
         return Err("Enable at least one mod before pressing Play with Mods.".into());
@@ -228,7 +233,17 @@ pub fn launch_enabled(
         Err(issue) => return launch_for_repair(&game, &client, &swap, &issue),
     };
     progress.store(92, Ordering::Relaxed);
+    // Both modes use the user's normal Modded Evolve client with the same
+    // verified/reversible PAK swap. This manager does not set an offline
+    // network flag in that client, nor can it force server authentication.
+    // Online developer mode intentionally accepts ALL enabled projects,
+    // including gameplay and unreviewed edits; backups and recovery still apply.
     let id = launcher_bridge::launch_existing_offline_client(&ready, &progress)?;
+    if developer_online {
+        // Record the chosen mode in the existing local activity logger.
+        // "online" here means permitted by the manager, not server-confirmed.
+        eprintln!("Developer modded-online test requested (client PID {id}); no mod-type filter applied; server acceptance unverified");
+    }
     progress.store(100, Ordering::Relaxed);
     Ok((mods.len(), id, ready.compatibility_warnings, None))
 }
