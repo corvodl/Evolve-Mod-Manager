@@ -31,3 +31,30 @@ if (-not (Test-Path -LiteralPath $notice -PathType Leaf)) {
 }
 if ((Get-Item -LiteralPath $notice).Length -lt 100) { throw 'vgmstream copyright notice is missing.' }
 Write-Host "Verified and staged optional vgmstream r2117 CLI with copyright notice."
+
+
+# Optional MIT-licensed Ogg Vorbis to FSB5 single-sample remuxer.
+$remuxArchive = Join-Path $temp 'oggvorbis2fsb5-win64.zip'
+$remuxExpanded = Join-Path $temp 'oggvorbis2fsb5-extracted'
+Invoke-WebRequest -Uri 'https://github.com/uyjulian/oggvorbis2fsb5/releases/download/latest/oggvorbis2fsb5-win32-amd64-clang.zip' -OutFile $remuxArchive -MaximumRedirection 5
+$remuxHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $remuxArchive).Hash.ToLowerInvariant()
+if ($remuxHash -ne '6dfdd707d50daa65849c7a9632fdadc2a2b463c377c1830bdb2b64eceef85866') {
+    throw 'Vorbis FSB5 remuxer SHA-256 mismatch; packaging refused.'
+}
+if ((Get-Item -LiteralPath $remuxArchive).Length -gt 5MB) { throw 'Remuxer release ZIP exceeds size budget.' }
+if (Test-Path $remuxExpanded) { Remove-Item -LiteralPath $remuxExpanded -Recurse -Force }
+Expand-Archive -LiteralPath $remuxArchive -DestinationPath $remuxExpanded
+$remuxExe = Get-ChildItem -LiteralPath $remuxExpanded -File -Recurse -Filter 'oggvorbis2fsb5.exe' | Select-Object -First 1
+if (-not $remuxExe) { throw 'Verified remux release lacks oggvorbis2fsb5.exe.' }
+$remuxDest = Join-Path $root 'dist/third_party/oggvorbis2fsb5'
+if (Test-Path $remuxDest) { Remove-Item -LiteralPath $remuxDest -Recurse -Force }
+New-Item -ItemType Directory -Path $remuxDest -Force | Out-Null
+Copy-Item -Path (Join-Path $remuxExe.Directory.FullName '*') -Destination $remuxDest -Recurse -Force
+$remuxLicense = Join-Path $remuxDest 'LICENSE'
+if (-not (Test-Path -LiteralPath $remuxLicense -PathType Leaf)) {
+    Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/uyjulian/oggvorbis2fsb5/master/LICENSE' -OutFile $remuxLicense
+}
+if ((Get-Item -LiteralPath $remuxLicense).Length -lt 100) {
+    throw 'Vorbis remuxer MIT license notice is missing.'
+}
+Write-Host "Verified and staged optional MIT Vorbis-to-FSB5 remuxer."
