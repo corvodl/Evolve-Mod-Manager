@@ -4,10 +4,12 @@
 //! helper; this Rust crate preserves the workspace-wide ban on unsafe code.
 use std::io::Write;
 use std::path::Path;
+#[cfg(windows)]
 use std::process::{Command, Stdio};
 
 const BROKER_SCRIPT: &str = include_str!("../launcher_support/standard_user_launch.py");
 
+#[cfg(any(windows, test))]
 fn parse_launch_report(stdout: &str) -> Result<u32, String> {
     let text = stdout.trim();
     let prefix = "STANDARD_USER_LAUNCH pid=";
