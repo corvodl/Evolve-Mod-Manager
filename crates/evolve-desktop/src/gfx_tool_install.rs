@@ -17,6 +17,7 @@ pub enum Tool {
     Ffdec,
     Ruffle,
     RuffleWeb,
+    Vgmstream,
 }
 impl Tool {
     pub fn name(self) -> &'static str {
@@ -24,6 +25,7 @@ impl Tool {
             Self::Ffdec => "FFDec",
             Self::Ruffle => "Ruffle",
             Self::RuffleWeb => "RuffleWeb",
+            Self::Vgmstream => "vgmstream",
         }
     }
     fn url(self) -> &'static str {
@@ -37,6 +39,7 @@ impl Tool {
             Self::RuffleWeb => {
                 "https://github.com/ruffle-rs/ruffle/releases/download/v0.7.1/ruffle-0.7.1-web-selfhosted.zip"
             }
+            Self::Vgmstream => "https://github.com/vgmstream/vgmstream/releases/download/r2117/vgmstream-win64.zip",
         }
     }
     fn sha256(self) -> &'static str {
@@ -44,6 +47,7 @@ impl Tool {
             Self::Ffdec => "35f4930eb7c380afe66f2117f90b006deac0631473ad7500bb39c78f68645ecd",
             Self::Ruffle => "a5f6df9881771226e330e08a1fa7666f4caff50ddf9f2f993cdd95293edca627",
             Self::RuffleWeb => "ef12edbee135d581a9cd523837d746da30a07a64dbf1cf472d2e472c656f4b5e",
+            Self::Vgmstream => "6c4a8a3813864fefed081bbd337dbc0ad93bf88e0b92f5db98d7ab258b22dc6c",
         }
     }
     fn executable(self) -> &'static str {
@@ -51,6 +55,7 @@ impl Tool {
             Self::Ffdec => "ffdec-cli.exe",
             Self::Ruffle => "ruffle.exe",
             Self::RuffleWeb => "ruffle.js",
+            Self::Vgmstream => "vgmstream-cli.exe",
         }
     }
 }
@@ -300,6 +305,21 @@ fn install_at(tool: Tool, folder: &Path) -> Result<PathBuf, String> {
         validated_file(&payload, "ffdec.jar")?;
         validated_file(&payload, "ffdec.exe")?;
         validated_file(&payload, "license.txt")?;
+    } else if tool == Tool::Vgmstream {
+        // vgmstream release bundles codec dependencies and may ship its own COPYING.
+        // Publish only alongside upstream legal notices.
+        validated_file(&payload, "vgmstream-cli.exe")?;
+        let license = fetch_limited(
+            &client,
+            "https://raw.githubusercontent.com/vgmstream/vgmstream/r2117/COPYING",
+            512 * 1024,
+        )?;
+        if license.len() < 100 {
+            return Err("vgmstream copyright notice unavailable; installation aborted".into());
+        }
+        let mut file = fs::OpenOptions::new().write(true).create_new(true)
+            .open(payload.join("COPYING")).map_err(|e| e.to_string())?;
+        file.write_all(&license).map_err(|e| e.to_string())?;
     } else {
         if tool == Tool::RuffleWeb {
             locate_ruffle_web(&payload)?;
