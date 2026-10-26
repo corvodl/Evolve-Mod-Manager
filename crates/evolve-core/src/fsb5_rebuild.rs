@@ -319,12 +319,13 @@ pub fn replace_vorbis_sample(
     {
         return Err(invalid("Vorbis setup metadata missing or ambiguous"));
     }
-    if let Some(loop_chunk) = old.extras.iter().find(|e| e.kind == 3) {
-        if loop_chunk.bytes.len() != 8 || le32(&loop_chunk.bytes, 4)? as u64 > replacement.count() {
-            return Err(RebuildError::Unsupported(
-                "replacement is shorter than the original loop endpoint",
-            ));
-        }
+    if let Some(loop_chunk) = old.extras.iter().find(|e| e.kind == 3)
+        && (loop_chunk.bytes.len() != 8
+            || le32(&loop_chunk.bytes, 4)? as u64 > replacement.count())
+    {
+        return Err(RebuildError::Unsupported(
+            "replacement is shorter than the original loop endpoint",
+        ));
     }
     let vorbis_data = replacement
         .extras
