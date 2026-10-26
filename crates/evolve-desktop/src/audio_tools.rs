@@ -25,6 +25,10 @@ pub fn valid_decoder(path: &str) -> Option<PathBuf> {
     regular_executable(path, "vgmstream-cli.exe")
 }
 
+pub fn valid_remuxer(path: &str) -> Option<PathBuf> {
+    regular_executable(path, "oggvorbis2fsb5.exe")
+}
+
 pub fn valid_designer(path: &str) -> Option<PathBuf> {
     regular_executable(path, "fmod_designer.exe")
 }
