@@ -3,11 +3,11 @@
 //! Native wgpu-backed desktop shell. Asset operations use blocking workers, so
 //! file I/O/decompression never runs in the interactive Iced view/update path.
 mod activity_window;
-mod audio_tools;
 mod assembly_materials;
 mod asset_cache;
 mod asset_library_page;
 mod asset_viewer;
+mod audio_tools;
 mod auto_resources;
 mod blender_install;
 mod client_version;
@@ -2071,9 +2071,11 @@ fn is_viewer_model_source(path: &str) -> bool {
 fn is_viewer_preview_source(path: &str) -> bool {
     let name = path.to_ascii_lowercase();
     is_viewer_model_source(&name)
-        || [".cdf", ".dds", ".caf", ".mtl", ".gfx", ".fsb", ".fev", ".fdp"]
-            .iter()
-            .any(|suffix| name.ends_with(suffix))
+        || [
+            ".cdf", ".dds", ".caf", ".mtl", ".gfx", ".fsb", ".fev", ".fdp",
+        ]
+        .iter()
+        .any(|suffix| name.ends_with(suffix))
         || name.rsplit_once(".dds.").is_some_and(|(_, suffix)| {
             let mip = suffix.strip_suffix('a').unwrap_or(suffix);
             mip.parse::<u8>().is_ok_and(|n| n < 20)
@@ -5144,9 +5146,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         Message::ViewerPreviewStaticCdf
                     } else if is_gfx {
                         Message::GfxOpenSelected
-                    } else if state.inventory.as_ref().and_then(|inv| inv.entries.get(index))
-                        .is_some_and(|entry| [".fsb", ".fev", ".fdp"].iter().any(|ext|
-                            entry.relative_path.to_ascii_lowercase().ends_with(ext))) {
+                    } else if state
+                        .inventory
+                        .as_ref()
+                        .and_then(|inv| inv.entries.get(index))
+                        .is_some_and(|entry| {
+                            [".fsb", ".fev", ".fdp"]
+                                .iter()
+                                .any(|ext| entry.relative_path.to_ascii_lowercase().ends_with(ext))
+                        })
+                    {
                         Message::AudioInspect
                     } else {
                         Message::ViewerPreviewSelected
@@ -5612,7 +5621,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if filename.ends_with(".gfx") {
                 return update(state, Message::GfxOpenSelected);
             }
-            if [".fsb", ".fev", ".fdp"].iter().any(|ext| filename.ends_with(ext)) {
+            if [".fsb", ".fev", ".fdp"]
+                .iter()
+                .any(|ext| filename.ends_with(ext))
+            {
                 return update(state, Message::AudioInspect);
             }
             state.gfx_active = false;
@@ -5683,20 +5695,33 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return Task::perform(
                 async {
                     tokio::task::spawn_blocking(|| native_export_picker("file"))
-                        .await.ok().flatten()
+                        .await
+                        .ok()
+                        .flatten()
                 },
-                move |result| if decoder { Message::AudioDecoderPicked(result) }
-                               else { Message::AudioDesignerPicked(result) },
+                move |result| {
+                    if decoder {
+                        Message::AudioDecoderPicked(result)
+                    } else {
+                        Message::AudioDesignerPicked(result)
+                    }
+                },
             );
         }
         Message::AudioDecoderPicked(path) => {
             if let Some(p) = path {
-                return update(state, Message::AudioDecoderPathChanged(p.to_string_lossy().into_owned()));
+                return update(
+                    state,
+                    Message::AudioDecoderPathChanged(p.to_string_lossy().into_owned()),
+                );
             }
         }
         Message::AudioDesignerPicked(path) => {
             if let Some(p) = path {
-                return update(state, Message::AudioDesignerPathChanged(p.to_string_lossy().into_owned()));
+                return update(
+                    state,
+                    Message::AudioDesignerPathChanged(p.to_string_lossy().into_owned()),
+                );
             }
         }
         Message::GfxConfigChanged(path) => {
@@ -5996,7 +6021,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::AudioInspect => {
             let source = match verified_viewer_file(state) {
                 Ok(p) => p,
-                Err(e) => { state.audio_status = e; return Task::none(); }
+                Err(e) => {
+                    state.audio_status = e;
+                    return Task::none();
+                }
             };
             state.audio_busy = true;
             state.audio_status = "Inspecting FMOD source...".into();
@@ -6008,15 +6036,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             .map_err(|e| e.to_string())?;
                         let mut description = info.summary();
                         if matches!(info, evolve_core::fmod::FmodInfo::Project { .. }) {
-                            if let Ok((count, examples)) = audio_tools::project_waveforms(&worker_path, 8) {
-                                description.push_str(&format!("\n{count} indexed source-wave entries. First examples:\n"));
+                            if let Ok((count, examples)) =
+                                audio_tools::project_waveforms(&worker_path, 8)
+                            {
+                                description.push_str(&format!(
+                                    "\n{count} indexed source-wave entries. First examples:\n"
+                                ));
                                 for (idx, item) in examples.iter().enumerate() {
-                                    description.push_str(&format!("  {}. {}\n", idx+1, item));
+                                    description.push_str(&format!("  {}. {}\n", idx + 1, item));
                                 }
                             }
                         }
                         Ok(description)
-                    }).await.unwrap_or_else(|e| Err(format!("FMOD inspector stopped: {e}")));
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("FMOD inspector stopped: {e}")));
                     (source, result)
                 },
                 |(source, result)| Message::AudioInspected(source, result),
@@ -6026,39 +6060,67 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.audio_busy = false;
             if verified_viewer_file(state).ok().as_ref() == Some(&source) {
                 state.audio_inspected_source = Some(source);
-                state.audio_status = result.unwrap_or_else(|e| format!("FMOD inspection failed: {e}"));
-                if state.audio_subsong.is_empty() { state.audio_subsong = "1".into(); }
+                state.audio_status =
+                    result.unwrap_or_else(|e| format!("FMOD inspection failed: {e}"));
+                if state.audio_subsong.is_empty() {
+                    state.audio_subsong = "1".into();
+                }
             }
         }
         Message::AudioPreviewSample => {
-            if state.audio_busy { return Task::none(); }
+            if state.audio_busy {
+                return Task::none();
+            }
             let source = match verified_viewer_file(state) {
-                Ok(p) => p, Err(e) => { state.audio_status = e; return Task::none(); }
+                Ok(p) => p,
+                Err(e) => {
+                    state.audio_status = e;
+                    return Task::none();
+                }
             };
             let index = match state.audio_subsong.parse::<u32>() {
                 Ok(n) if n > 0 => n,
-                _ => { state.audio_status = "Enter a valid 1-based sample number.".into(); return Task::none(); }
+                _ => {
+                    state.audio_status = "Enter a valid 1-based sample number.".into();
+                    return Task::none();
+                }
             };
             let decoder = state.preferences.vgmstream_executable.clone();
             state.audio_busy = true;
             state.audio_status = format!("Decoding and playing sample {index}...");
-            return Task::perform(async move {
-                tokio::task::spawn_blocking(move || audio_tools::preview_sample(&source, &decoder, index))
-                    .await.unwrap_or_else(|e| Err(e.to_string()))
-            }, Message::AudioPreviewFinished);
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        audio_tools::preview_sample(&source, &decoder, index)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()))
+                },
+                Message::AudioPreviewFinished,
+            );
         }
         Message::AudioPreviewFinished(result) => {
             state.audio_busy = false;
             state.audio_status = result.unwrap_or_else(|e| format!("Audio preview failed: {e}"));
         }
         Message::AudioExportSample => {
-            return Task::perform(async {
-                tokio::task::spawn_blocking(|| native_export_picker("folder")).await.ok().flatten()
-            }, Message::AudioExportFolderPicked);
+            return Task::perform(
+                async {
+                    tokio::task::spawn_blocking(|| native_export_picker("folder"))
+                        .await
+                        .ok()
+                        .flatten()
+                },
+                Message::AudioExportFolderPicked,
+            );
         }
         Message::AudioExportFolderPicked(Some(folder)) => {
             let source = match verified_viewer_file(state) {
-                Ok(p) => p, Err(e) => { state.audio_status = e; return Task::none(); }
+                Ok(p) => p,
+                Err(e) => {
+                    state.audio_status = e;
+                    return Task::none();
+                }
             };
             let Ok(index) = state.audio_subsong.parse::<u32>() else {
                 state.audio_status = "Enter a valid 1-based sample number.".into();
@@ -6066,11 +6128,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
             let decoder = state.preferences.vgmstream_executable.clone();
             state.audio_busy = true;
-            return Task::perform(async move {
-                tokio::task::spawn_blocking(move || audio_tools::export_sample(&source, &decoder, index, &folder)
-                    .map(|p| format!("Exported sample {index} to {}", p.display())))
-                    .await.unwrap_or_else(|e| Err(e.to_string()))
-            }, Message::AudioExportFinished);
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        audio_tools::export_sample(&source, &decoder, index, &folder)
+                            .map(|p| format!("Exported sample {index} to {}", p.display()))
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()))
+                },
+                Message::AudioExportFinished,
+            );
         }
         Message::AudioExportFolderPicked(None) => {}
         Message::AudioExportFinished(result) => {
@@ -6082,8 +6150,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 "Open an editable Modding project before launching FMOD Designer.".into()
             } else {
                 match verified_viewer_file(state) {
-                    Ok(project) => audio_tools::open_designer(&project, &state.preferences.fmod_designer_executable)
-                        .unwrap_or_else(|e| format!("Cannot open FMOD Designer: {e}")),
+                    Ok(project) => audio_tools::open_designer(
+                        &project,
+                        &state.preferences.fmod_designer_executable,
+                    )
+                    .unwrap_or_else(|e| format!("Cannot open FMOD Designer: {e}")),
                     Err(e) => e,
                 }
             };
@@ -6093,16 +6164,29 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.audio_status = "Select a .fdp in an editable Modding project.".into();
                 return Task::none();
             }
-            return Task::perform(async {
-                tokio::task::spawn_blocking(|| native_export_picker("file")).await.ok().flatten()
-            }, Message::AudioWaveformPicked);
+            return Task::perform(
+                async {
+                    tokio::task::spawn_blocking(|| native_export_picker("file"))
+                        .await
+                        .ok()
+                        .flatten()
+                },
+                Message::AudioWaveformPicked,
+            );
         }
         Message::AudioWaveformPicked(Some(wav)) => {
             let source = match verified_viewer_file(state) {
-                Ok(p) => p, Err(e) => { state.audio_status = e; return Task::none(); }
+                Ok(p) => p,
+                Err(e) => {
+                    state.audio_status = e;
+                    return Task::none();
+                }
             };
-            let Some(workspace) = state.modding_selected.and_then(|i|
-                state.modding_projects.as_ref()?.get(i)).map(|p| p.workspace.clone()) else {
+            let Some(workspace) = state
+                .modding_selected
+                .and_then(|i| state.modding_projects.as_ref()?.get(i))
+                .map(|p| p.workspace.clone())
+            else {
                 state.audio_status = "No editable Modding project is selected.".into();
                 return Task::none();
             };
@@ -6112,11 +6196,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
             state.audio_busy = true;
             state.audio_status = "Preparing isolated FMOD project with replacement WAV...".into();
-            return Task::perform(async move {
-                tokio::task::spawn_blocking(move ||
-                    audio_tools::prepare_waveform_override(&source, &wav, index, &workspace))
-                        .await.unwrap_or_else(|e| Err(e.to_string()))
-            }, Message::AudioWaveformPrepared);
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        audio_tools::prepare_waveform_override(&source, &wav, index, &workspace)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()))
+                },
+                Message::AudioWaveformPrepared,
+            );
         }
         Message::AudioWaveformPicked(None) => {}
         Message::AudioWaveformPrepared(result) => {
@@ -6132,16 +6221,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::AudioImportRebuilt => {
             if state.viewer_from_library || state.audio_busy {
-                state.audio_status = "Select an existing FSB/FEV in an editable Modding project.".into();
+                state.audio_status =
+                    "Select an existing FSB/FEV in an editable Modding project.".into();
                 return Task::none();
             }
-            return Task::perform(async {
-                tokio::task::spawn_blocking(|| native_export_picker("file")).await.ok().flatten()
-            }, Message::AudioRebuiltPicked);
+            return Task::perform(
+                async {
+                    tokio::task::spawn_blocking(|| native_export_picker("file"))
+                        .await
+                        .ok()
+                        .flatten()
+                },
+                Message::AudioRebuiltPicked,
+            );
         }
         Message::AudioRebuiltPicked(Some(rebuilt)) => {
             let source = match verified_viewer_file(state) {
-                Ok(p) => p, Err(e) => { state.audio_status = e; return Task::none(); }
+                Ok(p) => p,
+                Err(e) => {
+                    state.audio_status = e;
+                    return Task::none();
+                }
             };
             match audio_tools::verify_rebuilt(&source, &rebuilt) {
                 Ok(info) => {

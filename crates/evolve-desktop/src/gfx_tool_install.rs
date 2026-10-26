@@ -39,7 +39,9 @@ impl Tool {
             Self::RuffleWeb => {
                 "https://github.com/ruffle-rs/ruffle/releases/download/v0.7.1/ruffle-0.7.1-web-selfhosted.zip"
             }
-            Self::Vgmstream => "https://github.com/vgmstream/vgmstream/releases/download/r2117/vgmstream-win64.zip",
+            Self::Vgmstream => {
+                "https://github.com/vgmstream/vgmstream/releases/download/r2117/vgmstream-win64.zip"
+            }
         }
     }
     fn sha256(self) -> &'static str {
@@ -320,8 +322,11 @@ fn install_at(tool: Tool, folder: &Path) -> Result<PathBuf, String> {
         if payload.join("COPYING").exists() {
             validated_file(&payload, "COPYING")?;
         } else {
-            let mut file = fs::OpenOptions::new().write(true).create_new(true)
-                .open(payload.join("COPYING")).map_err(|e| e.to_string())?;
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(payload.join("COPYING"))
+                .map_err(|e| e.to_string())?;
             file.write_all(&license).map_err(|e| e.to_string())?;
         }
     } else {

@@ -1,7 +1,7 @@
 //! Read-only metadata for legacy Evolve FMOD Designer projects and FSB5 banks.
 //! No proprietary tools, game assets, decoders, or executables are embedded.
-use quick_xml::events::Event;
 use quick_xml::Reader;
+use quick_xml::events::Event;
 use std::fs::{self, File};
 use std::io::{BufReader, Read};
 use std::path::Path;
@@ -36,7 +36,9 @@ pub enum FmodInfo {
         version: u32,
         size: u64,
     },
-    Events { size: u64 },
+    Events {
+        size: u64,
+    },
     Project {
         name: String,
         events: usize,
@@ -48,25 +50,43 @@ pub enum FmodInfo {
 impl FmodInfo {
     pub fn summary(&self) -> String {
         match self {
-            Self::Bank { samples, codec, version, size } =>
-                format!("FMOD FSB5 v{version}: {samples} sound samples, {codec} encoding, {size} bytes. Read-only metadata; use a compatible bank builder to replace sounds."),
-            Self::Events { size } =>
-                format!("FMOD FEV event definitions ({size} bytes). Keep event IDs and bank names unchanged for replacements."),
-            Self::Project { name, events, waveforms, sound_banks } =>
-                format!("FMOD project {name}: {events} events, {waveforms} waveform references and {sound_banks} sound-bank definitions. Source WAV files may be missing."),
+            Self::Bank {
+                samples,
+                codec,
+                version,
+                size,
+            } => format!(
+                "FMOD FSB5 v{version}: {samples} sound samples, {codec} encoding, {size} bytes. Read-only metadata; use a compatible bank builder to replace sounds."
+            ),
+            Self::Events { size } => format!(
+                "FMOD FEV event definitions ({size} bytes). Keep event IDs and bank names unchanged for replacements."
+            ),
+            Self::Project {
+                name,
+                events,
+                waveforms,
+                sound_banks,
+            } => format!(
+                "FMOD project {name}: {events} events, {waveforms} waveform references and {sound_banks} sound-bank definitions. Source WAV files may be missing."
+            ),
         }
     }
 }
 
 fn le32(bytes: &[u8], offset: usize) -> Result<u32, FmodError> {
-    let raw = bytes.get(offset..offset + 4).ok_or(FmodError::InvalidHeader)?;
-    Ok(u32::from_le_bytes(raw.try_into().map_err(|_| FmodError::InvalidHeader)?))
+    let raw = bytes
+        .get(offset..offset + 4)
+        .ok_or(FmodError::InvalidHeader)?;
+    Ok(u32::from_le_bytes(
+        raw.try_into().map_err(|_| FmodError::InvalidHeader)?,
+    ))
 }
 
 fn inspect_bank(path: &Path, size: u64) -> Result<FmodInfo, FmodError> {
     let mut file = File::open(path)?;
     let mut header = [0u8; 60];
-    file.read_exact(&mut header).map_err(|_| FmodError::InvalidHeader)?;
+    file.read_exact(&mut header)
+        .map_err(|_| FmodError::InvalidHeader)?;
     if &header[..4] != b"FSB5" {
         return Err(FmodError::InvalidHeader);
     }
@@ -98,13 +118,19 @@ fn inspect_bank(path: &Path, size: u64) -> Result<FmodInfo, FmodError> {
         16 => "FADPCM",
         _ => "unknown codec",
     };
-    Ok(FmodInfo::Bank { samples, codec, version, size })
+    Ok(FmodInfo::Bank {
+        samples,
+        codec,
+        version,
+        size,
+    })
 }
 
 fn inspect_events(path: &Path, size: u64) -> Result<FmodInfo, FmodError> {
     let mut file = File::open(path)?;
     let mut header = [0u8; 12];
-    file.read_exact(&mut header).map_err(|_| FmodError::InvalidHeader)?;
+    file.read_exact(&mut header)
+        .map_err(|_| FmodError::InvalidHeader)?;
     let riff_size = u64::from(le32(&header, 4)?)
         .checked_add(8)
         .ok_or(FmodError::InvalidHeader)?;
@@ -155,7 +181,10 @@ fn inspect_project(path: &Path, size: u64) -> Result<FmodInfo, FmodError> {
                 }
             }
             Ok(Event::Text(e)) if in_project_name => {
-                name = String::from_utf8_lossy(e.as_ref()).chars().take(160).collect();
+                name = String::from_utf8_lossy(e.as_ref())
+                    .chars()
+                    .take(160)
+                    .collect();
             }
             Ok(Event::End(e)) => {
                 if depth == 2 && e.name().as_ref() == b"name" {
@@ -172,7 +201,12 @@ fn inspect_project(path: &Path, size: u64) -> Result<FmodInfo, FmodError> {
     if !root || depth != 0 {
         return Err(FmodError::InvalidHeader);
     }
-    Ok(FmodInfo::Project { name, events, waveforms, sound_banks })
+    Ok(FmodInfo::Project {
+        name,
+        events,
+        waveforms,
+        sound_banks,
+    })
 }
 
 /// Inspect an indexed local file. Never runs an FMOD executable or modifies the source.
@@ -209,21 +243,37 @@ mod tests {
         bytes[20..24].copy_from_slice(&40u32.to_le_bytes());
         bytes[24..28].copy_from_slice(&15u32.to_le_bytes());
         fs::write(&source, &bytes).unwrap();
-        assert!(inspect_fmod_file(&source).unwrap().summary().contains("3 sound samples"));
+        assert!(
+            inspect_fmod_file(&source)
+                .unwrap()
+                .summary()
+                .contains("3 sound samples")
+        );
         bytes[20..24].copy_from_slice(&400u32.to_le_bytes());
         fs::write(&source, bytes).unwrap();
-        assert!(matches!(inspect_fmod_file(&source), Err(FmodError::InvalidBankSize)));
+        assert!(matches!(
+            inspect_fmod_file(&source),
+            Err(FmodError::InvalidBankSize)
+        ));
     }
     #[test]
     fn checks_fev_riff_and_counts_fdp_events() {
         let temp = tempfile::tempdir().unwrap();
         let fev = temp.path().join("Goliath.fev");
         fs::write(&fev, b"RIFF\x04\x00\x00\x00FEV ").unwrap();
-        assert!(matches!(inspect_fmod_file(&fev), Ok(FmodInfo::Events { .. })));
+        assert!(matches!(
+            inspect_fmod_file(&fev),
+            Ok(FmodInfo::Events { .. })
+        ));
         let fdp = temp.path().join("Goliath.fdp");
         fs::write(&fdp, "<project><name>Goliath</name><soundbank/><eventgroup><event><name>Roar</name></event></eventgroup><waveform/></project>").unwrap();
         match inspect_fmod_file(&fdp).unwrap() {
-            FmodInfo::Project { name, events, waveforms, .. } => {
+            FmodInfo::Project {
+                name,
+                events,
+                waveforms,
+                ..
+            } => {
                 assert_eq!(name, "Goliath");
                 assert_eq!((events, waveforms), (1, 0)); // empty waveform is not a populated reference
             }
