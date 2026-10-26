@@ -48,7 +48,7 @@ pub fn default_designer() -> Option<PathBuf> {
 }
 
 fn run_limited(command: &mut Command, timeout: Duration) -> Result<(), String> {
-    command.stdout(Stdio::null()).stderr(Stdio::piped());
+    command.stdout(Stdio::null()).stderr(Stdio::null());
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -95,8 +95,11 @@ pub fn decode_to_wav(source: &Path, decoder: &str, index: u32, output: &Path) ->
         let _ = fs::remove_file(output);
         return Err("Decoder output is missing or exceeds the preview size limit.".into());
     }
-    let bytes = fs::read(output).map_err(|e| e.to_string())?;
-    if !bytes.starts_with(b"RIFF") || bytes.get(8..12) != Some(b"WAVE") {
+    use std::io::Read;
+    let mut bytes = [0u8; 12];
+    fs::File::open(output).map_err(|e| e.to_string())?
+        .read_exact(&mut bytes).map_err(|e| e.to_string())?;
+    if &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
         let _ = fs::remove_file(output);
         return Err("Decoder did not produce a RIFF WAVE file.".into());
     }
@@ -237,7 +240,7 @@ pub fn prepare_waveform_override(
     }
     let xml = fs::read_to_string(&original).map_err(|e| e.to_string())?;
     if xml.len() > 32 * 1024 * 1024 { return Err("FMOD project exceeds size budget.".into()); }
-    let (_, _) = project_waveforms(&original, 0)?;
+    project_waveforms(&original, 0)?;
     let mut location = 0usize;
     let mut segment = None;
     for _ in 0..one_based {
