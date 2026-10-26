@@ -41,6 +41,7 @@ mod modding_keys;
 mod modding_page;
 mod modding_projects;
 mod online_guard;
+mod standard_user_launch;
 mod orientation_gizmo;
 mod play_dialog;
 mod play_setup;
