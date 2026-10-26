@@ -401,6 +401,7 @@ pub fn rebuild_original_bank(
     sample_index: u32,
     ffmpeg: &str,
     remuxer: &str,
+    decoder: &str,
 ) -> Result<(PathBuf, String), String> {
     let bank_meta = fs::symlink_metadata(original).map_err(|e| e.to_string())?;
     if !bank_meta.file_type().is_file() || bank_meta.len() > 512 * 1024 * 1024 {
@@ -470,8 +471,13 @@ pub fn rebuild_original_bank(
     let filename = original.file_name().ok_or("Original bank has no filename")?;
     let output = scratch.path().join(filename);
     fs::write(&output, rebuilt).map_err(|e| e.to_string())?;
-    // Existing structural preflight checks name, sample count, codec and header.
+    // Verify the rebuilt selected subsound actually decodes, not just that
+    // the bank header parses. This catches unsupported Vorbis setup CRCs
+    // before the new PAK member can be staged into a Modding project.
     verify_rebuilt(original, &output)?;
+    let verification = scratch.path().join("verify.wav");
+    decode_to_wav(&output, decoder, sample_index, &verification)
+        .map_err(|e| format!("Rebuilt sample could not be decoded; original was not modified: {e}"))?;
     let saved = scratch.keep();
     Ok((
         saved.join(filename),
