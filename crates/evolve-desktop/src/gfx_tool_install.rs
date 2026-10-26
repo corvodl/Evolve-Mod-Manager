@@ -18,6 +18,7 @@ pub enum Tool {
     Ruffle,
     RuffleWeb,
     Vgmstream,
+    OggRemux,
 }
 impl Tool {
     pub fn name(self) -> &'static str {
@@ -26,6 +27,7 @@ impl Tool {
             Self::Ruffle => "Ruffle",
             Self::RuffleWeb => "RuffleWeb",
             Self::Vgmstream => "vgmstream",
+            Self::OggRemux => "oggvorbis2fsb5",
         }
     }
     fn url(self) -> &'static str {
@@ -42,6 +44,9 @@ impl Tool {
             Self::Vgmstream => {
                 "https://github.com/vgmstream/vgmstream/releases/download/r2117/vgmstream-win64.zip"
             }
+            Self::OggRemux => {
+                "https://github.com/uyjulian/oggvorbis2fsb5/releases/download/latest/oggvorbis2fsb5-win32-amd64-clang.zip"
+            }
         }
     }
     fn sha256(self) -> &'static str {
@@ -50,6 +55,7 @@ impl Tool {
             Self::Ruffle => "a5f6df9881771226e330e08a1fa7666f4caff50ddf9f2f993cdd95293edca627",
             Self::RuffleWeb => "ef12edbee135d581a9cd523837d746da30a07a64dbf1cf472d2e472c656f4b5e",
             Self::Vgmstream => "6c4a8a3813864fefed081bbd337dbc0ad93bf88e0b92f5db98d7ab258b22dc6c",
+            Self::OggRemux => "6dfdd707d50daa65849c7a9632fdadc2a2b463c377c1830bdb2b64eceef85866",
         }
     }
     fn executable(self) -> &'static str {
@@ -58,6 +64,7 @@ impl Tool {
             Self::Ruffle => "ruffle.exe",
             Self::RuffleWeb => "ruffle.js",
             Self::Vgmstream => "vgmstream-cli.exe",
+            Self::OggRemux => "oggvorbis2fsb5.exe",
         }
     }
 }
@@ -307,6 +314,23 @@ fn install_at(tool: Tool, folder: &Path) -> Result<PathBuf, String> {
         validated_file(&payload, "ffdec.jar")?;
         validated_file(&payload, "ffdec.exe")?;
         validated_file(&payload, "license.txt")?;
+    } else if tool == Tool::OggRemux {
+        validated_file(&payload, "oggvorbis2fsb5.exe")?;
+        let notice = fetch_limited(
+            &client,
+            "https://raw.githubusercontent.com/uyjulian/oggvorbis2fsb5/master/LICENSE",
+            32 * 1024,
+        )?;
+        if notice.len() < 100 || !notice.starts_with(b"Copyright") {
+            return Err("oggvorbis2fsb5 license notice unavailable; installation aborted".into());
+        }
+        if !payload.join("LICENSE").exists() {
+            let mut file = fs::OpenOptions::new().write(true).create_new(true)
+                .open(payload.join("LICENSE")).map_err(|e| e.to_string())?;
+            file.write_all(&notice).map_err(|e| e.to_string())?;
+        } else {
+            validated_file(&payload, "LICENSE")?;
+        }
     } else if tool == Tool::Vgmstream {
         // vgmstream release bundles codec dependencies and may ship its own COPYING.
         // Publish only alongside upstream legal notices.
