@@ -7305,7 +7305,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if state.developer_network_busy {
                 state.status = "Finish applying the Developer online firewall setting before launching Evolve.".into();
                 state.play_notice = Some(play_dialog::Notice::finished(
-                    kind, play_dialog::Phase::Error, state.status.clone(),
+                    kind,
+                    play_dialog::Phase::Error,
+                    state.status.clone(),
                 ));
                 return Task::none();
             }
@@ -12196,7 +12198,10 @@ mod project_edit_tests {
         let generation = state.developer_network_generation;
         let _ = update(
             &mut state,
-            Message::DeveloperNetworkApplied(generation, Ok("Removed one Evolve Mod Manager rule".into())),
+            Message::DeveloperNetworkApplied(
+                generation,
+                Ok("Removed one Evolve Mod Manager rule".into()),
+            ),
         );
         assert!(state.developer_online_mods);
         assert!(!state.developer_network_busy);
@@ -12210,7 +12215,10 @@ mod project_edit_tests {
         let generation = state.developer_network_generation;
         let _ = update(
             &mut state,
-            Message::DeveloperNetworkApplied(generation, Err("Administrator permission required".into())),
+            Message::DeveloperNetworkApplied(
+                generation,
+                Err("Administrator permission required".into()),
+            ),
         );
         assert!(
             !state.developer_online_mods,
