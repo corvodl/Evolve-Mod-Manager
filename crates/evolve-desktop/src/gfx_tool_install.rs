@@ -248,7 +248,9 @@ fn locate_remuxer(root: &Path) -> Result<PathBuf, String> {
             }
             if info.file_type().is_dir() {
                 pending.push(entry.path());
-            } else if entry.file_name().to_string_lossy()
+            } else if entry
+                .file_name()
+                .to_string_lossy()
                 .eq_ignore_ascii_case("oggvorbis2fsb5.exe")
             {
                 if located.is_some() {
@@ -374,8 +376,11 @@ fn install_at(tool: Tool, folder: &Path) -> Result<PathBuf, String> {
             return Err("oggvorbis2fsb5 license notice unavailable; installation aborted".into());
         }
         if !payload.join("LICENSE").exists() {
-            let mut file = fs::OpenOptions::new().write(true).create_new(true)
-                .open(payload.join("LICENSE")).map_err(|e| e.to_string())?;
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(payload.join("LICENSE"))
+                .map_err(|e| e.to_string())?;
             file.write_all(&notice).map_err(|e| e.to_string())?;
         } else {
             validated_file(&payload, "LICENSE")?;

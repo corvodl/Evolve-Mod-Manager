@@ -5698,13 +5698,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::AudioPickRemux => {
-            return Task::perform(async {
-                tokio::task::spawn_blocking(|| native_export_picker("file"))
-                    .await.ok().flatten()
-            }, Message::AudioRemuxPicked);
+            return Task::perform(
+                async {
+                    tokio::task::spawn_blocking(|| native_export_picker("file"))
+                        .await
+                        .ok()
+                        .flatten()
+                },
+                Message::AudioRemuxPicked,
+            );
         }
         Message::AudioRemuxPicked(Some(path)) => {
-            return update(state, Message::AudioRemuxPathChanged(path.to_string_lossy().into_owned()));
+            return update(
+                state,
+                Message::AudioRemuxPathChanged(path.to_string_lossy().into_owned()),
+            );
         }
         Message::AudioRemuxPicked(None) => {}
         Message::AudioDesignerPathChanged(path) => {
@@ -5791,7 +5799,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     audio_tools::valid_decoder(&state.preferences.vgmstream_executable).is_some()
                 }
                 gfx_tool_install::Tool::OggRemux => {
-                    audio_tools::valid_remuxer(&state.preferences.oggvorbis_remux_executable).is_some()
+                    audio_tools::valid_remuxer(&state.preferences.oggvorbis_remux_executable)
+                        .is_some()
                 }
             };
             if already {
@@ -6262,26 +6271,32 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::AudioNativeRebuild => {
             if state.viewer_from_library || state.audio_busy || state.busy {
-                state.audio_status = "Native bank rebuilding requires an idle, editable Modding project.".into();
+                state.audio_status =
+                    "Native bank rebuilding requires an idle, editable Modding project.".into();
                 return Task::none();
             }
-            return Task::perform(async {
-                tokio::task::spawn_blocking(|| native_export_picker("file"))
-                    .await.ok().flatten()
-            }, Message::AudioNativeReplacementPicked);
+            return Task::perform(
+                async {
+                    tokio::task::spawn_blocking(|| native_export_picker("file"))
+                        .await
+                        .ok()
+                        .flatten()
+                },
+                Message::AudioNativeReplacementPicked,
+            );
         }
         Message::AudioNativeReplacementPicked(Some(replacement)) => {
             let original = match verified_viewer_file(state) {
                 Ok(p) if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("fsb")) => p,
                 _ => {
-                    state.audio_status = "Select an existing .fsb sound bank in a Modding project.".into();
+                    state.audio_status =
+                        "Select an existing .fsb sound bank in a Modding project.".into();
                     return Task::none();
                 }
             };
-            if state.viewer_from_library || state.busy
-                || state.file_selection.indices.len() != 1
-            {
-                state.audio_status = "Select a single editable FSB5 member before rebuilding.".into();
+            if state.viewer_from_library || state.busy || state.file_selection.indices.len() != 1 {
+                state.audio_status =
+                    "Select a single editable FSB5 member before rebuilding.".into();
                 return Task::none();
             }
             let Ok(index) = state.audio_subsong.parse::<u32>() else {
@@ -6296,9 +6311,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.audio_status = format!("Encoding and rebuilding sound-bank sample {index}...");
             return Task::perform(
                 async move {
-                    tokio::task::spawn_blocking(move ||
-                        audio_tools::rebuild_original_bank(&original, &replacement, index, &ffmpeg, &remuxer, &decoder)
-                    ).await.unwrap_or_else(|e| Err(e.to_string()))
+                    tokio::task::spawn_blocking(move || {
+                        audio_tools::rebuild_original_bank(
+                            &original,
+                            &replacement,
+                            index,
+                            &ffmpeg,
+                            &remuxer,
+                            &decoder,
+                        )
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()))
                 },
                 move |result| Message::AudioNativeRebuilt(expected_original.clone(), result),
             );
@@ -6306,11 +6330,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::AudioNativeReplacementPicked(None) => {}
         Message::AudioNativeRebuilt(expected_original, result) => {
             state.audio_busy = false;
-            if state.viewer_from_library || state.busy
+            if state.viewer_from_library
+                || state.busy
                 || state.file_selection.indices.len() != 1
                 || verified_viewer_file(state).ok().as_ref() != Some(&expected_original)
             {
-                state.audio_status = "Selected bank changed; rebuilt sound was not imported.".into();
+                state.audio_status =
+                    "Selected bank changed; rebuilt sound was not imported.".into();
                 return Task::none();
             }
             match result {

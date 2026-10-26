@@ -415,35 +415,52 @@ pub fn rebuild_original_bank(
         return Err("Replacement must be a bounded regular WAV or OGG file.".into());
     }
     let original_data = fs::read(original).map_err(|e| e.to_string())?;
-    let (rate, channels) = evolve_core::fsb5_rebuild::sample_parameters(&original_data, sample_index)
-        .map_err(|e| e.to_string())?;
-    let FmodInfo::Bank { codec: "FMOD Vorbis", .. } =
-        inspect_fmod_file(original).map_err(|e| e.to_string())?
+    let (rate, channels) =
+        evolve_core::fsb5_rebuild::sample_parameters(&original_data, sample_index)
+            .map_err(|e| e.to_string())?;
+    let FmodInfo::Bank {
+        codec: "FMOD Vorbis",
+        ..
+    } = inspect_fmod_file(original).map_err(|e| e.to_string())?
     else {
-        return Err("Native rebuilding currently supports FSB5 Vorbis sound slots only (not IMA ADPCM).".into());
+        return Err(
+            "Native rebuilding currently supports FSB5 Vorbis sound slots only (not IMA ADPCM)."
+                .into(),
+        );
     };
     let helper = regular_executable(remuxer, "oggvorbis2fsb5.exe")
         .ok_or("Select or install oggvorbis2fsb5.exe in Settings → Integrations → Audio Tools.")?;
-    let scratch = tempfile::Builder::new().prefix("evolve-fsb5-").tempdir()
+    let scratch = tempfile::Builder::new()
+        .prefix("evolve-fsb5-")
+        .tempdir()
         .map_err(|e| e.to_string())?;
-    let ext = replacement_audio.extension().and_then(|e| e.to_str())
-        .unwrap_or("").to_ascii_lowercase();
+    let ext = replacement_audio
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
     let ogg = scratch.path().join("replacement.ogg");
     if ext == "wav" {
         let mut header = [0u8; 12];
         use std::io::Read;
-        fs::File::open(replacement_audio).map_err(|e| e.to_string())?
-            .read_exact(&mut header).map_err(|e| e.to_string())?;
+        fs::File::open(replacement_audio)
+            .map_err(|e| e.to_string())?
+            .read_exact(&mut header)
+            .map_err(|e| e.to_string())?;
         if &header[..4] != b"RIFF" || &header[8..12] != b"WAVE" {
             return Err("Select a valid RIFF WAVE file.".into());
         }
-        let encoder = regular_executable(ffmpeg, "ffmpeg.exe")
-            .ok_or("Configure ffmpeg.exe in Settings → Integrations to encode replacement WAV as Vorbis.")?;
+        let encoder = regular_executable(ffmpeg, "ffmpeg.exe").ok_or(
+            "Configure ffmpeg.exe in Settings → Integrations to encode replacement WAV as Vorbis.",
+        )?;
         let mut command = Command::new(encoder);
-        command.args(["-nostdin", "-hide_banner", "-loglevel", "error", "-i"])
+        command
+            .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-i"])
             .arg(replacement_audio)
-            .args(["-vn", "-ac"]).arg(channels.to_string())
-            .arg("-ar").arg(rate.to_string())
+            .args(["-vn", "-ac"])
+            .arg(channels.to_string())
+            .arg("-ar")
+            .arg(rate.to_string())
             .args(["-c:a", "libvorbis", "-q:a", "5"])
             .arg(&ogg);
         run_limited(&mut command, Duration::from_secs(120))?;
@@ -454,9 +471,10 @@ pub fn rebuild_original_bank(
         return Err("Native Vorbis bank rebuild requires a .wav or .ogg replacement.".into());
     }
     let ogg_info = fs::symlink_metadata(&ogg).map_err(|e| e.to_string())?;
-    if !ogg_info.file_type().is_file() || ogg_info.len() > 128 * 1024 * 1024
-        || ogg_info.len() < 32
-    { return Err("Vorbis encoding produced invalid or oversized output.".into()); }
+    if !ogg_info.file_type().is_file() || ogg_info.len() > 128 * 1024 * 1024 || ogg_info.len() < 32
+    {
+        return Err("Vorbis encoding produced invalid or oversized output.".into());
+    }
     let donor = scratch.path().join("donor.fsb");
     let mut remux_command = Command::new(helper);
     remux_command.arg(&ogg).arg(&donor);
@@ -466,9 +484,12 @@ pub fn rebuild_original_bank(
         return Err("Vorbis remuxer produced invalid or oversized FSB5 output.".into());
     }
     let donor_data = fs::read(&donor).map_err(|e| e.to_string())?;
-    let rebuilt = evolve_core::fsb5_rebuild::replace_vorbis_sample(&original_data, sample_index, &donor_data)
-        .map_err(|e| e.to_string())?;
-    let filename = original.file_name().ok_or("Original bank has no filename")?;
+    let rebuilt =
+        evolve_core::fsb5_rebuild::replace_vorbis_sample(&original_data, sample_index, &donor_data)
+            .map_err(|e| e.to_string())?;
+    let filename = original
+        .file_name()
+        .ok_or("Original bank has no filename")?;
     let output = scratch.path().join(filename);
     fs::write(&output, rebuilt).map_err(|e| e.to_string())?;
     // Verify the rebuilt selected subsound actually decodes, not just that
@@ -476,12 +497,15 @@ pub fn rebuild_original_bank(
     // before the new PAK member can be staged into a Modding project.
     verify_rebuilt(original, &output)?;
     let verification = scratch.path().join("verify.wav");
-    decode_to_wav(&output, decoder, sample_index, &verification)
-        .map_err(|e| format!("Rebuilt sample could not be decoded; original was not modified: {e}"))?;
+    decode_to_wav(&output, decoder, sample_index, &verification).map_err(|e| {
+        format!("Rebuilt sample could not be decoded; original was not modified: {e}")
+    })?;
     let saved = scratch.keep();
     Ok((
         saved.join(filename),
-        format!("Rebuilt sample {sample_index} as an original-layout Vorbis FSB5. In-game compatibility is unverified; test offline."),
+        format!(
+            "Rebuilt sample {sample_index} as an original-layout Vorbis FSB5. In-game compatibility is unverified; test offline."
+        ),
     ))
 }
 
