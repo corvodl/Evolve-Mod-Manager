@@ -90,6 +90,9 @@ fn restore_previous_staged_profile(stage: &std::path::Path) -> Result<bool, Stri
     Ok(true)
 }
 
+// The launcher accepts a setup bundle, a progress reporter, and a Developer
+// intent flag. Keep the flag explicit so the mode is auditable.
+#[allow(clippy::too_many_arguments)]
 pub fn launch_enabled(
     mods: Vec<ProjectRow>,
     projects_root: PathBuf,
