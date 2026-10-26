@@ -23,6 +23,9 @@ pub enum AssetKind {
     AnimationGraph,
     Level,
     UserInterface,
+    AudioBank,
+    AudioEvents,
+    AudioProject,
     Other,
 }
 
@@ -41,6 +44,9 @@ impl AssetKind {
             Self::AnimationGraph => "Animation graph",
             Self::Level => "Level",
             Self::UserInterface => "UI asset",
+            Self::AudioBank => "FMOD sound bank",
+            Self::AudioEvents => "FMOD event definitions",
+            Self::AudioProject => "FMOD Designer project",
             Self::Other => "Other",
         }
     }
@@ -77,6 +83,9 @@ pub fn classify_path(path: &Path) -> AssetKind {
         "bspace" | "comb" | "chrparams" => AssetKind::AnimationGraph,
         "cry" | "lvl" => AssetKind::Level,
         "gfx" | "swf" | "usm" => AssetKind::UserInterface,
+        "fsb" => AssetKind::AudioBank,
+        "fev" => AssetKind::AudioEvents,
+        "fdp" => AssetKind::AudioProject,
         _ => AssetKind::Other,
     }
 }
