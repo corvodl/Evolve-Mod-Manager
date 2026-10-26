@@ -1,0 +1,28 @@
+name: Temporary audio integration formatter
+on:
+  push:
+    branches: [feature/fmod-audio-support]
+permissions:
+  contents: write
+jobs:
+  rustfmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/fmod-audio-support
+          persist-credentials: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format Rust files on the feature branch
+        shell: bash
+        run: |
+          cargo fmt --all
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add crates
+            git commit -m "style: format FMOD audio feature"
+            git push origin HEAD:feature/fmod-audio-support
+          fi
