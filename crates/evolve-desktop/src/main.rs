@@ -2349,8 +2349,12 @@ fn launch(state: &mut State, operation: Operation) -> Task<Message> {
         Operation::StartExistingOfflineLauncher(..) => {
             "Preparing offline play...".into()
         }
-        Operation::PlayEnabledMods(..) => {
-            "Building enabled mods and preparing offline play...".into()
+        Operation::PlayEnabledMods(.., online_requested) => {
+            if *online_requested {
+                "Building all enabled mods and launching the regular client for Developer online testing...".into()
+            } else {
+                "Building enabled mods and preparing offline play...".into()
+            }
         }
         Operation::CreateInitialSetup(..) => {
             "Building the isolated offline setup: generating local signing keys, validating/resigning original game PAKs, preparing a verified hook copy and independent recovery scripts. Original game files will not be altered."
@@ -4392,7 +4396,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.runtime_health_scan = None;
                 state.armor_scan = None;
                 state.armor_live = None;
-                state.status = "Experimental online mod intent armed for this manager session. Only manifest-complete cosmetic candidates can launch; no authentication or anti-cheat restrictions are bypassed.".into();
+                state.status = "Developer online mod testing armed for this session: all enabled mod types are allowed, including gameplay and unreviewed changes. The normal client and server still control connectivity and authentication.".into();
             } else {
                 state.status = "Online mod intent disabled; Play with Mods returns to the default offline flow.".into();
             }
@@ -8308,7 +8312,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             if *online_requested { play_dialog::Phase::Warning }
                             else { play_dialog::Phase::Success },
                             if *online_requested {
-                                format!("{count} cosmetic-candidate mod(s) staged for a Developer-requested online attempt. Only the local swap is verified; server acceptance and online authentication are UNVERIFIED.")
+                                format!("{count} enabled mod(s) staged for a Developer-requested online test, regardless of mod type. Local swap verified; actual online connection and server acceptance UNVERIFIED.")
                             } else {
                                 format!("{count} enabled mod(s) installed for this offline launch. Evolve process creation and swap were verified.")
                             },
@@ -9511,7 +9515,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.status = if let Some(warning) = recovery {
                         format!("Regular client opened (PID {id}). {warning}")
                     } else if online_requested {
-                        format!("{mod_count} cosmetic-candidate mod(s) staged; helper PID {id}. Developer online attempt only. Mod acceptance and online authentication are not verified; use authorized private/community servers.")
+                        format!("{mod_count} enabled mod(s) staged with no content-type restriction; helper PID {id}. Developer online test enabled. Use a permitted testing server; client connectivity and server acceptance are unverified.")
                     } else {
                         format!("{mod_count} enabled mod(s) ready. Offline client helper started (PID {id}). Press Play in the client.")
                     };
@@ -12071,6 +12075,29 @@ mod project_edit_tests {
         assert!(!state.busy);
         assert!(state.status.contains("do not belong"));
     }
+    #[test]
+    fn developer_online_mode_accepts_any_mod_type_and_is_session_only() {
+        let mut state = State::default();
+        let _ = update(&mut state, Message::DeveloperOnlineMods(true));
+        assert!(!state.developer_online_mods, "Developer must be unlocked");
+        state.developer_unlocked = true;
+        state.armor_offline_confirmed = true;
+        state.live_edit_enabled = true;
+        let _ = update(&mut state, Message::DeveloperOnlineMods(true));
+        assert!(state.developer_online_mods);
+        assert!(!state.armor_offline_confirmed);
+        assert!(!state.live_edit_enabled);
+        assert!(state.status.contains("all enabled mod types"));
+        let _ = update(&mut state, Message::DeveloperOnlineMods(false));
+        assert!(!state.developer_online_mods);
+        let _ = update(&mut state, Message::DeveloperOnlineMods(true));
+        assert!(state.developer_online_mods);
+        let _ = update(&mut state, Message::LockDeveloper);
+        assert!(!state.developer_online_mods);
+        assert!(!state.developer_unlocked);
+        assert!(!State::default().developer_online_mods);
+    }
+
     #[test]
     fn popup_menus_are_mutually_exclusive_and_dismiss_without_removing_page() {
         let mut state = State {
