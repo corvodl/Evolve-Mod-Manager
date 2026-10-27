@@ -115,8 +115,9 @@ class DirectGameTests(unittest.TestCase):
     def test_live_but_invisible_game_never_reports_success(self):
         process = mock.Mock(pid=19328)
         process.poll.return_value = None
+        clock = iter(i * .25 for i in range(100))
         with mock.patch.object(direct,"has_visible_game_window",return_value=False), \
-             mock.patch.object(direct.time,"monotonic",side_effect=[0,0,.3,.6,1.1]), \
+             mock.patch.object(direct.time,"monotonic",side_effect=lambda: next(clock)), \
              mock.patch.object(direct.time,"sleep"):
             with self.assertRaisesRegex(RuntimeError, "never displayed"):
                 direct.wait_for_visible_game_window(process, timeout=1)
