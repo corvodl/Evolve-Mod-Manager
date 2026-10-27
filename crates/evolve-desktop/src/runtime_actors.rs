@@ -39,11 +39,19 @@ impl Field {
         }
     }
     pub fn kind(self) -> &'static str {
-        if self == Self::Stage { "UInt32" } else { "Float32" }
+        if self == Self::Stage {
+            "UInt32"
+        } else {
+            "Float32"
+        }
     }
 }
 const FIELDS: [Field; 5] = [
-    Field::Health, Field::MaxHealth, Field::Armor, Field::MaxArmor, Field::Stage
+    Field::Health,
+    Field::MaxHealth,
+    Field::Armor,
+    Field::MaxArmor,
+    Field::Stage,
 ];
 
 #[derive(Clone, Debug)]
@@ -124,8 +132,7 @@ mod windows {
             return Some(Backlink::Direct(off));
         }
         for &(first, child) in children.iter().take(80) {
-            if let Some(&(second, _)) =
-                pointers(h, child, 0x400).iter().find(|(_, p)| *p == actor)
+            if let Some(&(second, _)) = pointers(h, child, 0x400).iter().find(|(_, p)| *p == actor)
             {
                 return Some(Backlink::Indirect(first, second));
             }
@@ -140,30 +147,65 @@ mod windows {
         (q(h, actor.checked_add(0x38)?)? == entity).then_some(actor)
     }
     fn valid_actor(h: &ProcessHandle, addr: usize, entity: usize) -> bool {
-        if q(h, addr.saturating_add(0x38)) != Some(entity) { return false; }
+        if q(h, addr.saturating_add(0x38)) != Some(entity) {
+            return false;
+        }
         let raw = u32_at(h, addr.saturating_add(0x1260)).unwrap_or(0);
-        if ![0x101, 0x202, 0x303].contains(&raw) { return false; }
+        if ![0x101, 0x202, 0x303].contains(&raw) {
+            return false;
+        }
         let health = f32::from_bits(u32_at(h, addr.saturating_add(0x198)).unwrap_or(0));
         let max = f32::from_bits(u32_at(h, addr.saturating_add(0x1A0)).unwrap_or(0));
-        max.is_finite() && (0.0..=1_000_000.0).contains(&health)
-            && (0.0..=1_000_000.0).contains(&max) && max > 0.0
+        max.is_finite()
+            && (0.0..=1_000_000.0).contains(&health)
+            && (0.0..=1_000_000.0).contains(&max)
+            && max > 0.0
     }
     fn name_from_entity(h: &ProcessHandle, entity: usize) -> Option<String> {
         // Entity-name offset has NOT been reverse engineered. Only display a
         // recognized actor name if it is actually found in a readable string.
         const NAMES: &[&str] = &[
-            "goliath", "meteor", "kraken", "elderkraken", "wraith",
-            "behemoth", "gorgon", "markov", "maggie", "val", "hank",
-            "griffin", "hyde", "lazarus", "parnell", "caira", "sunny",
-            "cab ot", "cabot", "abe", "bucket", "crow", "torvald",
-            "slim", "jack", "lennox", "emet", "kala", "blitzmarkov",
-            "rogueval", "wastelandmaggie", "techsergeanthank",
+            "goliath",
+            "meteor",
+            "kraken",
+            "elderkraken",
+            "wraith",
+            "behemoth",
+            "gorgon",
+            "markov",
+            "maggie",
+            "val",
+            "hank",
+            "griffin",
+            "hyde",
+            "lazarus",
+            "parnell",
+            "caira",
+            "sunny",
+            "cab ot",
+            "cabot",
+            "abe",
+            "bucket",
+            "crow",
+            "torvald",
+            "slim",
+            "jack",
+            "lennox",
+            "emet",
+            "kala",
+            "blitzmarkov",
+            "rogueval",
+            "wastelandmaggie",
+            "techsergeanthank",
         ];
         for (_, ptr) in pointers(h, entity, 0x200) {
-            let Some(bytes) = read_bytes(h, ptr, 64) else { continue };
+            let Some(bytes) = read_bytes(h, ptr, 64) else {
+                continue;
+            };
             let len = bytes.iter().position(|&b| b == 0).unwrap_or(64);
-            if !(3..64).contains(&len) ||
-                !bytes[..len].iter().all(|b| b.is_ascii_graphic()) { continue; }
+            if !(3..64).contains(&len) || !bytes[..len].iter().all(|b| b.is_ascii_graphic()) {
+                continue;
+            }
             let text = String::from_utf8_lossy(&bytes[..len]);
             let lower = text.to_ascii_lowercase();
             if NAMES.iter().any(|name| lower.contains(name)) {
@@ -173,55 +215,75 @@ mod windows {
         None
     }
     fn read_actor(h: &ProcessHandle, id: u32, at: usize, entity: usize, local: bool) -> Actor {
-        let fields = FIELDS.into_iter().filter_map(|field| {
-            let address = at.checked_add(field.offset())?;
-            let bits = u32_at(h, address)?;
-            let display = if field == Field::Stage {
-                format!("{}", bits & 0xFF)
-            } else {
-                let v = f32::from_bits(bits);
-                if !v.is_finite() || v.abs() > 1_000_000.0 { return None; }
-                format!("{v:.3}")
-            };
-            Some(Value { field, address, bits, display })
-        }).collect();
+        let fields = FIELDS
+            .into_iter()
+            .filter_map(|field| {
+                let address = at.checked_add(field.offset())?;
+                let bits = u32_at(h, address)?;
+                let display = if field == Field::Stage {
+                    format!("{}", bits & 0xFF)
+                } else {
+                    let v = f32::from_bits(bits);
+                    if !v.is_finite() || v.abs() > 1_000_000.0 {
+                        return None;
+                    }
+                    format!("{v:.3}")
+                };
+                Some(Value {
+                    field,
+                    address,
+                    bits,
+                    display,
+                })
+            })
+            .collect();
         Actor {
-            id, address: at, entity, local,
+            id,
+            address: at,
+            entity,
+            local,
             name: name_from_entity(h, entity)
                 .unwrap_or_else(|| format!("Actor entity 0x{id:08X} (name unresolved)")),
             fields,
         }
     }
-    fn process_and_handle(snapshot: &Snapshot, root: &str)
-        -> Result<(u32, ProcessHandle, usize), String>
-    {
+    fn process_and_handle(
+        snapshot: &Snapshot,
+        root: &str,
+    ) -> Result<(u32, ProcessHandle, usize), String> {
         let pid = snapshot.pid.ok_or("Detect Evolve.exe first")?;
         let now = runtime_memory::inspect(root);
-        if now.pid != Some(pid) ||
-            snapshot.module_base.is_none() ||
-            now.module_base != snapshot.module_base
+        if now.pid != Some(pid)
+            || snapshot.module_base.is_none()
+            || now.module_base != snapshot.module_base
         {
             return Err("Process or executable base changed; redetect Evolve".into());
         }
-        let handle = pid.try_into().map_err(|e| format!("Cannot read process: {e}"))?;
+        let handle = pid
+            .try_into()
+            .map_err(|e| format!("Cannot read process: {e}"))?;
         Ok((pid, handle, now.module_base.unwrap()))
     }
 
     pub(crate) fn inspect(snapshot: &Snapshot, root: &str) -> Result<Listing, String> {
         let (pid, h, base) = process_and_handle(snapshot, root)?;
-        let anchor = base.checked_add(ENTITY_SYSTEM_RVA).ok_or("Anchor overflow")?;
+        let anchor = base
+            .checked_add(ENTITY_SYSTEM_RVA)
+            .ok_or("Anchor overflow")?;
         let game = q(&h, anchor - 0x10).ok_or("Game unavailable")?;
         let fw = q(&h, game + 0x60).ok_or("Framework unavailable")?;
         let client = q(&h, fw + 0x528).ok_or("Client actor interface unavailable")?;
         let local_actor = q(&h, client + 0x178).ok_or("Spawn in a match first")?;
         let local_id = u32_at(&h, client + 0x170).ok_or("No local entity ID")?;
-        if local_id == 0 { return Err("No local actor spawned".into()); }
+        if local_id == 0 {
+            return Err("No local actor spawned".into());
+        }
         let sys = q(&h, anchor).ok_or("Entity system unavailable")?;
         let table = q(&h, sys + 0xA8).ok_or("Entity table unavailable")?;
-        let local_entity = q(&h, table + ((local_id as usize & 0xFFFF) * 8))
-            .ok_or("Local entity unavailable")?;
-        if u32_at(&h, local_entity + 0x18) != Some(local_id) ||
-            !valid_actor(&h, local_actor, local_entity)
+        let local_entity =
+            q(&h, table + ((local_id as usize & 0xFFFF) * 8)).ok_or("Local entity unavailable")?;
+        if u32_at(&h, local_entity + 0x18) != Some(local_id)
+            || !valid_actor(&h, local_actor, local_entity)
         {
             return Err("Local actor/entity or layout validation failed".into());
         }
@@ -231,18 +293,37 @@ mod windows {
             // Entity IDs are salted 32-bit values with a 16-bit slot index.
             // Read this bounded table in chunks. No execution inside the game.
             for start in (0..MAX_ENTITY_INDEX).step_by(512) {
-                if actors.len() >= MAX_DISCOVERED_ACTORS { break; }
-                let Some(chunk) = read_bytes(&h, table + start * 8, 512 * 8) else { continue };
+                if actors.len() >= MAX_DISCOVERED_ACTORS {
+                    break;
+                }
+                let Some(chunk) = read_bytes(&h, table + start * 8, 512 * 8) else {
+                    continue;
+                };
                 for i in 0..512 {
-                    if actors.len() >= MAX_DISCOVERED_ACTORS { break; }
+                    if actors.len() >= MAX_DISCOVERED_ACTORS {
+                        break;
+                    }
                     let slot = start + i;
-                    if slot == (local_id & 0xFFFF) as usize { continue; }
-                    let p = u64::from_le_bytes(chunk[i*8..i*8+8].try_into().unwrap()) as usize;
-                    if p < 0x10000 { continue; }
-                    let Some(id) = u32_at(&h, p + 0x18) else { continue };
-                    if id == 0 || (id as usize & 0xFFFF) != slot { continue; }
-                    let Some(actor) = actor_for_entity(&h, p, route) else { continue };
-                    if !valid_actor(&h, actor, p) { continue; }
+                    if slot == (local_id & 0xFFFF) as usize {
+                        continue;
+                    }
+                    let p =
+                        u64::from_le_bytes(chunk[i * 8..i * 8 + 8].try_into().unwrap()) as usize;
+                    if p < 0x10000 {
+                        continue;
+                    }
+                    let Some(id) = u32_at(&h, p + 0x18) else {
+                        continue;
+                    };
+                    if id == 0 || (id as usize & 0xFFFF) != slot {
+                        continue;
+                    }
+                    let Some(actor) = actor_for_entity(&h, p, route) else {
+                        continue;
+                    };
+                    if !valid_actor(&h, actor, p) {
+                        continue;
+                    }
                     actors.push(read_actor(&h, id, actor, p, false));
                 }
             }
@@ -254,21 +335,39 @@ mod windows {
         let status = if route.is_none() {
             "Local actor verified. Entity-to-actor mapping is unknown on this build; other actors cannot safely be enumerated.".into()
         } else {
-            format!("{} validated actor(s); only actors matching the verified monster layout are shown. Unknown layouts are omitted.", actors.len())
+            format!(
+                "{} validated actor(s); only actors matching the verified monster layout are shown. Unknown layouts are omitted.",
+                actors.len()
+            )
         };
-        Ok(Listing { pid, actors, status })
+        Ok(Listing {
+            pid,
+            actors,
+            status,
+        })
     }
 
-    pub(crate) fn write(snapshot: &Snapshot, root: &str, id: u32,
-        actor_addr: usize, field: Field, expected: u32, input: &str,
+    pub(crate) fn write(
+        snapshot: &Snapshot,
+        root: &str,
+        id: u32,
+        actor_addr: usize,
+        field: Field,
+        expected: u32,
+        input: &str,
     ) -> Result<WriteResult, String> {
         let pid = snapshot.pid.ok_or("Detect Evolve first")?;
         runtime_armor::offline_guard(pid, true)?;
         let listing = inspect(snapshot, root)?;
-        let actor = listing.actors.iter()
+        let actor = listing
+            .actors
+            .iter()
             .find(|a| a.id == id && a.address == actor_addr)
             .ok_or("Actor moved, despawned or changed; refresh before writing")?;
-        let value = actor.fields.iter().find(|v| v.field == field)
+        let value = actor
+            .fields
+            .iter()
+            .find(|v| v.field == field)
             .ok_or("Requested field unavailable for this actor")?;
         if value.bits != expected {
             return Err("Value changed since last refresh; reread before writing".into());
@@ -276,39 +375,48 @@ mod windows {
         let new_bits = if field == Field::Stage {
             // Stage has been observed as 0x0101, 0x0202, 0x0303;
             // do not silently change only the low byte.
-            let stage: u32 = input.trim().parse().map_err(|_| "Stage must be 1, 2 or 3")?;
-            if !(1..=3).contains(&stage) || ![0x101,0x202,0x303].contains(&expected) {
+            let stage: u32 = input
+                .trim()
+                .parse()
+                .map_err(|_| "Stage must be 1, 2 or 3")?;
+            if !(1..=3).contains(&stage) || ![0x101, 0x202, 0x303].contains(&expected) {
                 return Err("Unsupported evolution stage encoding".into());
             }
             stage | (stage << 8)
         } else {
-            let v: f32 = input.trim().parse()
-                .map_err(|_| "Enter a Float32 value")?;
+            let v: f32 = input.trim().parse().map_err(|_| "Enter a Float32 value")?;
             if !v.is_finite() || !(0.0..=100_000.0).contains(&v) {
                 return Err("Float32 value must be between 0 and 100000".into());
             }
             v.to_bits()
         };
-        if new_bits == expected { return Err("Value is unchanged".into()); }
+        if new_bits == expected {
+            return Err("Value is unchanged".into());
+        }
         runtime_armor::offline_guard(pid, true)?;
         let (_, h, _) = process_and_handle(snapshot, root)?;
         // Revalidate the actor identity and compare the same bytes immediately
         // before the existing single-shot CAS memory writer.
-        if q(&h, actor_addr + 0x38) != Some(actor.entity) ||
-           u32_at(&h, actor.entity + 0x18) != Some(id) ||
-           u32_at(&h, value.address) != Some(expected) {
+        if q(&h, actor_addr + 0x38) != Some(actor.entity)
+            || u32_at(&h, actor.entity + 0x18) != Some(id)
+            || u32_at(&h, value.address) != Some(expected)
+        {
             return Err("Actor/field changed before write; refresh".into());
         }
         runtime_live::write_four(pid, value.address, expected, new_bits)?;
-        let observed = u32_at(&h, value.address)
-            .ok_or("Write performed, but readback failed")?;
-        if observed != new_bits { return Err("Write did not persist at readback".into()); }
+        let observed = u32_at(&h, value.address).ok_or("Write performed, but readback failed")?;
+        if observed != new_bits {
+            return Err("Write did not persist at readback".into());
+        }
         Ok(WriteResult {
-            actor: actor.name.clone(), field,
+            actor: actor.name.clone(),
+            field,
             before: value.display.clone(),
             after: if field == Field::Stage {
                 format!("{}", new_bits & 0xFF)
-            } else { format!("{:.3}", f32::from_bits(new_bits)) },
+            } else {
+                format!("{:.3}", f32::from_bits(new_bits))
+            },
         })
     }
 }
@@ -319,8 +427,15 @@ pub(super) fn inspect(_: &Snapshot, _: &str) -> Result<Listing, String> {
     Err("Runtime actor inspection requires Windows".into())
 }
 #[cfg(not(windows))]
-pub(super) fn write(_: &Snapshot, _: &str, _: u32, _: usize, _: Field, _: u32, _: &str)
-    -> Result<WriteResult, String> {
+pub(super) fn write(
+    _: &Snapshot,
+    _: &str,
+    _: u32,
+    _: usize,
+    _: Field,
+    _: u32,
+    _: &str,
+) -> Result<WriteResult, String> {
     Err("Runtime writes require Windows".into())
 }
 
