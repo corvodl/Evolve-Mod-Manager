@@ -2,7 +2,9 @@
 //! Developer mode permits online testing with any project type; the normal
 //! client and server retain control of networking and authentication.
 //! Signing and recovery remain in the existing isolated stage and helper.
-use super::{launcher_bridge, modding_keys, modding_projects, play_setup};
+use super::{
+    launcher_bridge, modding_keys, modding_projects, official_stage2_tools, play_setup,
+};
 use modding_projects::ProjectRow;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -114,6 +116,11 @@ pub fn launch_enabled(
     if mods.is_empty() {
         return Err("Enable at least one mod before pressing Play with Mods.".into());
     }
+    // Fail before changing firewall state or touching any installed PAKs.
+    // Legacy custom-key stages remain recoverable, but cannot launch new mods.
+    official_stage2_tools::for_stage(&stage)?.ok_or(
+        "Play with Mods requires the developer-provided Stage 2 signing tools. Re-run Set Up Manager with the official toolchain; restore any old swap first."
+    )?;
     if direct_launch {
         super::direct_runtime::require_ready(&game, &client)?;
     }

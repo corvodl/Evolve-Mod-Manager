@@ -6,7 +6,6 @@ use crate::{modding_keys, modding_projects};
 use evolve_core::{
     ImportedPak, imported_archive_files, imported_library, inspect_signed_pak,
     library_import::import_signed_library_pak_with_keys,
-    signed_pak::resign_signed_pak_with_original_name,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -224,7 +223,9 @@ pub fn create_project(
     if basename != pak.name {
         return Err("Source archive basename changed after import".into());
     }
-    let official = crate::official_stage2_tools::for_stage(stage)?;
+    let official = crate::official_stage2_tools::for_stage(stage)?.ok_or(
+        "Preparing new signed PAKs requires the developer-provided Stage 2 tools. Re-run Set Up Manager with the official signer."
+    )?;
     let public = modding_keys::public_key(stage)?;
     let planned = exact_planned_target(stage, &source, &original_sha)?;
     let (staged, launchable) = if let Some(path) = planned {
@@ -233,7 +234,7 @@ pub fn create_project(
         (path, true)
     } else {
         let candidates = modding_keys::archive_verification_keys(stage)?;
-        let original_key = candidates.paths.iter()
+        let _original_key = candidates.paths.iter()
             .find(|key| inspect_signed_pak(&source, key, &authenticated_name).is_ok())
             .ok_or("Imported PAK does not authenticate as a signed CryPAK under configured keys; legacy/plain ZIP editing is not supported by the signed project builder")?;
         let root = stage.join("paks").join("library-imports");
@@ -262,23 +263,9 @@ pub fn create_project(
                 .tempdir_in(&root)
                 .map_err(|e| e.to_string())?;
             let authored = temp.path().join(&basename);
-            if let Some(tools) = official.as_ref() {
-                tools
-                    .rekey_copy(&source, &authenticated_name, &authored)
-                    .map_err(|e| format!("Official imported PAK could not be converted: {e}"))?;
-            } else {
-                let keys = modding_keys::signing_keys(stage)?;
-                resign_signed_pak_with_original_name(
-                    &source,
-                    original_key,
-                    &keys.private,
-                    &keys.public,
-                    &authenticated_name,
-                    &basename,
-                    &authored,
-                )
-                .map_err(|e| format!("Could not sign isolated editing copy: {e}"))?;
-            }
+            official
+                .rekey_copy(&source, &authenticated_name, &authored)
+                .map_err(|e| format!("Official imported PAK could not be converted: {e}"))?;
             if sha(&source)? != original_sha {
                 return Err(
                     "Source changed while preparing staged copy; nothing was published".into(),

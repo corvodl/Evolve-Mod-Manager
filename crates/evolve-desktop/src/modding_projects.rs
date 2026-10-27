@@ -797,14 +797,9 @@ fn build_imported_snapshot(
             "The game's PAK name differs from the imported project's original archive".into(),
         );
     }
-    let official = super::official_stage2_tools::for_stage(stage)?;
-    let signer = if official.is_some() {
-        None
-    } else {
-        Some(super::modding_keys::signing_keys(stage).map_err(|_| {
-            "Editing is available without setup. Run Set Up Manager to configure a signed Stage 2 build.".to_owned()
-        })?)
-    };
+    let official = super::official_stage2_tools::for_stage(stage)?.ok_or(
+        "This signing stage uses an older local key. Run Set Up Manager with the developer-provided Stage 2 tools before building new PAKs."
+    )?;
     let originals = super::modding_keys::archive_verification_keys(stage)?;
     let lowercase = physical_name.to_ascii_lowercase();
     let signed_names = [physical_name.as_str(), lowercase.as_str()];
@@ -883,28 +878,13 @@ fn build_imported_snapshot(
     fs::create_dir(&signed_folder).map_err(|e| e.to_string())?;
     let signed_path = signed_folder.join(&signed_name);
     let output = output_folder.join(&physical_name);
-    let rebuilt: Result<usize, String> = if let Some(tools) = official {
-        // Imported source is a stock-key PAK. The official encoder requires
-        // the isolated once-converted version of that exact installed PAK.
-        let relative = offline_test_target(&verified, stage)?;
-        let converted = stage.join("paks").join(relative);
-        tools
-            .build_changed_pak(&converted, &signed_name, &replacements, &signed_path)
-            .map(|()| replacements.len())
-    } else {
-        let signer = signer.ok_or("Signing stage has no private key")?;
-        evolve_core::rebuild_signed_pak_entries(
-            &source,
-            &original_key,
-            &signer.private,
-            &signer.public,
-            &signed_name,
-            &replacements,
-            &signed_path,
-        )
-        .map(|report| report.len())
-        .map_err(|e| e.to_string())
-    };
+    // Imported source is a stock-key PAK. The official encoder requires
+    // the isolated once-converted version of that exact installed PAK.
+    let relative = offline_test_target(&verified, stage)?;
+    let converted = stage.join("paks").join(relative);
+    let rebuilt: Result<usize, String> = official
+        .build_changed_pak(&converted, &signed_name, &replacements, &signed_path)
+        .map(|()| replacements.len());
     match rebuilt {
         Ok(report) => {
             fs::rename(&signed_path, &output).map_err(|e| e.to_string())?;
@@ -1013,7 +993,9 @@ pub fn build_project_raw(
     {
         return Err("Source PAK changed since extraction; refusing to build".into());
     }
-    let official = super::official_stage2_tools::for_stage(stage)?;
+    let official = super::official_stage2_tools::for_stage(stage)?.ok_or(
+        "This signing stage uses an older local key. Run Set Up Manager with the developer-provided Stage 2 tools before building new PAKs."
+    )?;
     let public = super::modding_keys::public_key(stage)?;
     if let Some(hash) = manifest.get("public_key_sha256").and_then(Value::as_str)
         && !digest(&public)
@@ -1127,24 +1109,9 @@ pub fn build_project_raw(
     // first publish the signed file under that verified spelling, then move
     // it to its original physical basename within the same new output folder.
     let signed_output = output_folder.join(signed_name);
-    let result: Result<usize, String> = if let Some(tools) = official {
-        tools
-            .build_changed_pak(&original, signed_name, &replacements, &signed_output)
-            .map(|()| replacements.len())
-    } else {
-        let keys = super::modding_keys::signing_keys(stage)?;
-        evolve_core::rebuild_signed_pak_entries(
-            &original,
-            &keys.public,
-            &keys.private,
-            &keys.public,
-            signed_name,
-            &replacements,
-            &signed_output,
-        )
-        .map(|report| report.len())
-        .map_err(|e| e.to_string())
-    };
+    let result: Result<usize, String> = official
+        .build_changed_pak(&original, signed_name, &replacements, &signed_output)
+        .map(|()| replacements.len());
     match result {
         Ok(reports) => {
             if signed_output != output {
@@ -1227,12 +1194,16 @@ pub fn prepare_built_offline_test(
     if target.split('/').next_back() != Some(basename.as_str()) {
         return Err("Built PAK basename differs from installed stage destination".into());
     }
-    let keys = super::modding_keys::signing_keys(stage)?;
+    super::official_stage2_tools::for_stage(stage)?.ok_or(
+        "Offline PAK staging requires the developer-provided Stage 2 tools and signing key."
+    )?;
+    let original_public = super::modding_keys::original_public_key(stage)?;
+    let public = super::modding_keys::public_key(stage)?;
     // Verify the exact built archive and stage target before persisting
     // anything. Signed member inventory differences are permitted offline.
     let lowercase = basename.to_ascii_lowercase();
-    evolve_core::inspect_signed_pak(output, &keys.public, &basename)
-        .or_else(|_| evolve_core::inspect_signed_pak(output, &keys.public, &lowercase))
+    evolve_core::inspect_signed_pak(output, &public, &basename)
+        .or_else(|_| evolve_core::inspect_signed_pak(output, &public, &lowercase))
         .map_err(|e| format!("Built offline PAK signature could not be verified: {e}"))?;
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1252,12 +1223,12 @@ pub fn prepare_built_offline_test(
             &profile.id,
             output,
             &target,
-            &keys.original_public,
-            &keys.public,
+            &original_public,
+            &public,
             &basename,
         )
         .map_err(|e| e.to_string())?;
-        evolve_core::apply_profile_stage(stage, &profile.id, &keys.original_public, &keys.public)
+        evolve_core::apply_profile_stage(stage, &profile.id, &original_public, &public)
             .map_err(|e| e.to_string())?;
         Ok(())
     })();

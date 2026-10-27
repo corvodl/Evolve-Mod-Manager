@@ -4,8 +4,12 @@
 
 ## Implementation (PR #101)
 
-The desktop manager now supports the developer's official **2025** encoder as an
-pinned toolchain supplied by the authorized release installer/portable ZIP, with local-tool fallback for development.
+The desktop manager requires the developer-provided **2025** encoder as the
+signing authority for new setup, project builds, and modded launches. The
+verified toolchain is supplied by authorized installer/portable packages or
+configured locally for development. It no longer generates a substitute RSA
+keypair when those tools are missing. Existing legacy stages must be recovered
+or rebuilt through Set Up Manager; never overwrite an active recovery journal.
 
 1. Install a Nightly that includes the official runtime. The installer and
    portable updater place it under `third_party/OfficialStage2` automatically.
