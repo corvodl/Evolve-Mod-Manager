@@ -309,174 +309,414 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
     .into()
 }
 
-fn docs_spec(section: DocsSection) -> (&'static str, &'static str, &'static [(&'static str, &'static str)]) {
+fn docs_spec(
+    section: DocsSection,
+) -> (
+    &'static str,
+    &'static str,
+    &'static [(&'static str, &'static str)],
+) {
     match section {
         DocsSection::GettingStarted => (
             "Getting Started",
             "New to Evolve Mod Manager? Follow these steps in order. You do not need to know Rust, CryEngine, or how PAK files work.",
             &[
-                ("Install Evolve Stage 2", "Install and launch Evolve Stage 2 using your normal Modded Evolve client first. The manager does not include the game or client."),
-                ("Install the manager", "Download the installer or portable ZIP from the project’s GitHub Releases page. The installer can create shortcuts; the portable version runs from its extracted folder."),
-                ("Set your paths", "Open Settings and choose your EvolveGame folder and ModdedEvolveLauncher.exe. Set a safe workspace location for imported assets, projects, and backups."),
-                ("Save Settings", "Save your paths. If the manager offers an initial setup or verification step, complete it before trying to launch modified game files."),
-                ("Explore before editing", "Open Asset Library and import a PAK or a folder of PAKs. Preview a model or texture to learn how the library works; imports are not edits to the installed game."),
-                ("Make your first mod", "Choose an imported asset and create an editable Mod Project. Work inside the project copy rather than changing an original PAK by hand."),
-                ("Test offline", "Enable your Mod Project in Modding, then choose Play with Mods. Use Play without Mods as a clean comparison. Check the launch popup for readiness, warnings, and errors."),
+                (
+                    "Install Evolve Stage 2",
+                    "Install and launch Evolve Stage 2 using your normal Modded Evolve client first. The manager does not include the game or client.",
+                ),
+                (
+                    "Install the manager",
+                    "Download the installer or portable ZIP from the project’s GitHub Releases page. The installer can create shortcuts; the portable version runs from its extracted folder.",
+                ),
+                (
+                    "Set your paths",
+                    "Open Settings and choose your EvolveGame folder and ModdedEvolveLauncher.exe. Set a safe workspace location for imported assets, projects, and backups.",
+                ),
+                (
+                    "Save Settings",
+                    "Save your paths. If the manager offers an initial setup or verification step, complete it before trying to launch modified game files.",
+                ),
+                (
+                    "Explore before editing",
+                    "Open Asset Library and import a PAK or a folder of PAKs. Preview a model or texture to learn how the library works; imports are not edits to the installed game.",
+                ),
+                (
+                    "Make your first mod",
+                    "Choose an imported asset and create an editable Mod Project. Work inside the project copy rather than changing an original PAK by hand.",
+                ),
+                (
+                    "Test offline",
+                    "Enable your Mod Project in Modding, then choose Play with Mods. Use Play without Mods as a clean comparison. Check the launch popup for readiness, warnings, and errors.",
+                ),
             ],
         ),
         DocsSection::Install => (
             "Install or update the manager",
             "Choose the build that fits your needs. Stable is intended for wider use; Nightly contains newer experimental changes.",
             &[
-                ("Download a build", "Use the repository's Releases page, not an unknown mirror. Select the Windows Setup executable or Portable ZIP."),
-                ("Setup vs. Portable", "Setup installs the manager and optionally adds desktop and Start Menu shortcuts. Portable is extracted to a folder and run directly."),
-                ("Start the manager", "Windows may request administrator permission for protected game-file preparation and recovery. The game and its launcher should start with normal user privileges."),
-                ("Update later", "Open Settings > Updates, choose your channel, and use Check for Updates. When offered, Update and restart verifies and installs the matching update."),
-                ("Keep your data", "Do not delete your manager data directory, projects, original snapshots, or recovery files when updating."),
+                (
+                    "Download a build",
+                    "Use the repository's Releases page, not an unknown mirror. Select the Windows Setup executable or Portable ZIP.",
+                ),
+                (
+                    "Setup vs. Portable",
+                    "Setup installs the manager and optionally adds desktop and Start Menu shortcuts. Portable is extracted to a folder and run directly.",
+                ),
+                (
+                    "Start the manager",
+                    "Windows may request administrator permission for protected game-file preparation and recovery. The game and its launcher should start with normal user privileges.",
+                ),
+                (
+                    "Update later",
+                    "Open Settings > Updates, choose your channel, and use Check for Updates. When offered, Update and restart verifies and installs the matching update.",
+                ),
+                (
+                    "Keep your data",
+                    "Do not delete your manager data directory, projects, original snapshots, or recovery files when updating.",
+                ),
             ],
         ),
         DocsSection::Paths => (
             "Set up game and workspace paths",
             "Correct paths are the most common first-run requirement. Keep original game files separate from editable project copies.",
             &[
-                ("Find your game directory", "In Settings, select the EvolveGame installation directory containing the game's bin64_SteamRetail folder."),
-                ("Choose the normal client", "Point the client setting to ModdedEvolveLauncher.exe from your existing Modded Evolve installation—not to Evolve.exe itself."),
-                ("Configure storage", "Use Settings > Storage to inspect or change where the Asset Library, working projects, prepared files and original snapshots are kept."),
-                ("Save and verify", "Save Settings, then follow any first-run setup or health warning. Do not treat a missing path or failed preparation as a completed mod installation."),
-                ("Avoid moving active files", "Close the game and finish restore/recovery before changing storage locations or manually moving a signing workspace."),
+                (
+                    "Find your game directory",
+                    "In Settings, select the EvolveGame installation directory containing the game's bin64_SteamRetail folder.",
+                ),
+                (
+                    "Choose the normal client",
+                    "Point the client setting to ModdedEvolveLauncher.exe from your existing Modded Evolve installation—not to Evolve.exe itself.",
+                ),
+                (
+                    "Configure storage",
+                    "Use Settings > Storage to inspect or change where the Asset Library, working projects, prepared files and original snapshots are kept.",
+                ),
+                (
+                    "Save and verify",
+                    "Save Settings, then follow any first-run setup or health warning. Do not treat a missing path or failed preparation as a completed mod installation.",
+                ),
+                (
+                    "Avoid moving active files",
+                    "Close the game and finish restore/recovery before changing storage locations or manually moving a signing workspace.",
+                ),
             ],
         ),
         DocsSection::Import => (
             "Import PAKs into Asset Library",
             "A PAK is a container of game assets. Importing makes its contents browseable; it does not automatically activate a mod.",
             &[
-                ("Open Asset Library", "Choose Add PAK files for one or several archives, or Import ALL PAKs from folder for a full group."),
-                ("Select the correct build", "Do not mix unrelated Stage 2 and legacy/2012 archives. Use the library's build selection and follow any format warnings."),
-                ("Watch import progress", "Large groups can take time. Keep the originals intact and let the import complete before creating projects from them."),
-                ("Find an asset", "Use the library explorer, search, and tabs to inspect file paths and dependencies. Some signed/legacy formats remain experimental."),
-                ("Create an editable copy", "Select an imported asset or archive and use the available Create editable copy / project action. If the manager asks for a signing stage, configure it first."),
+                (
+                    "Open Asset Library",
+                    "Choose Add PAK files for one or several archives, or Import ALL PAKs from folder for a full group.",
+                ),
+                (
+                    "Select the correct build",
+                    "Do not mix unrelated Stage 2 and legacy/2012 archives. Use the library's build selection and follow any format warnings.",
+                ),
+                (
+                    "Watch import progress",
+                    "Large groups can take time. Keep the originals intact and let the import complete before creating projects from them.",
+                ),
+                (
+                    "Find an asset",
+                    "Use the library explorer, search, and tabs to inspect file paths and dependencies. Some signed/legacy formats remain experimental.",
+                ),
+                (
+                    "Create an editable copy",
+                    "Select an imported asset or archive and use the available Create editable copy / project action. If the manager asks for a signing stage, configure it first.",
+                ),
             ],
         ),
         DocsSection::Browse => (
             "Preview assets and inspect dependencies",
             "The viewer helps you understand files before changing them; a successful preview does not guarantee a game-compatible export.",
             &[
-                ("Pick a supported file", "Double-click a supported DDS, CGF, CHR, SKIN, CDF, or other indexed asset in Asset Library to inspect it."),
-                ("Use the viewer controls", "Orbit and pan around a model, inspect the materials and model parts, and switch tabs for information such as Inspector and Dependency Graph."),
-                ("Check missing pieces", "A character may use models, textures, skeletons and attachments from multiple PAKs. Import dependencies when the viewer reports missing pieces."),
-                ("Try animations carefully", "CAF/DBA inspection and playback are experimental. If a clip has no compatible skeleton or source data, the viewer should report the limitation."),
-                ("Return to the library", "Close the asset preview when finished. The source PAK remains unchanged unless you deliberately make an editable project."),
+                (
+                    "Pick a supported file",
+                    "Double-click a supported DDS, CGF, CHR, SKIN, CDF, or other indexed asset in Asset Library to inspect it.",
+                ),
+                (
+                    "Use the viewer controls",
+                    "Orbit and pan around a model, inspect the materials and model parts, and switch tabs for information such as Inspector and Dependency Graph.",
+                ),
+                (
+                    "Check missing pieces",
+                    "A character may use models, textures, skeletons and attachments from multiple PAKs. Import dependencies when the viewer reports missing pieces.",
+                ),
+                (
+                    "Try animations carefully",
+                    "CAF/DBA inspection and playback are experimental. If a clip has no compatible skeleton or source data, the viewer should report the limitation.",
+                ),
+                (
+                    "Return to the library",
+                    "Close the asset preview when finished. The source PAK remains unchanged unless you deliberately make an editable project.",
+                ),
             ],
         ),
         DocsSection::Projects => (
             "Create and manage Mod Projects",
             "A Mod Project is the manager's editable copy of changed assets. Only enabled projects are included in a modded launch.",
             &[
-                ("Start from an import", "In Asset Library, select the imported source and create an editable copy, or use the Modding project workflow."),
-                ("Give it a clear name", "Use an easy-to-recognize project name. The name helps organize projects; it does not determine whether changes affect gameplay."),
-                ("Edit and save changes", "Work in the project copy, then use the supported build/stage actions. Do not hand-edit the installed game's original files."),
-                ("Enable or disable", "Use the Modding project's enable switch to decide whether it participates in Play with Mods. Disabled projects remain in your workspace."),
-                ("Watch for conflicts", "Two enabled projects targeting the same game archive can conflict. Resolve target overlap or warnings before a launch."),
+                (
+                    "Start from an import",
+                    "In Asset Library, select the imported source and create an editable copy, or use the Modding project workflow.",
+                ),
+                (
+                    "Give it a clear name",
+                    "Use an easy-to-recognize project name. The name helps organize projects; it does not determine whether changes affect gameplay.",
+                ),
+                (
+                    "Edit and save changes",
+                    "Work in the project copy, then use the supported build/stage actions. Do not hand-edit the installed game's original files.",
+                ),
+                (
+                    "Enable or disable",
+                    "Use the Modding project's enable switch to decide whether it participates in Play with Mods. Disabled projects remain in your workspace.",
+                ),
+                (
+                    "Watch for conflicts",
+                    "Two enabled projects targeting the same game archive can conflict. Resolve target overlap or warnings before a launch.",
+                ),
             ],
         ),
         DocsSection::Edit => (
             "Edit and rebuild PAK contents",
             "Make small, reversible changes first. Archive inspection, rebuilding and signing compatibility depend on the source build.",
             &[
-                ("Open a project", "Go to Modding, select your editable project, and inspect its files. Keep the original imported source unchanged."),
-                ("Choose a supported edit", "Modify a texture, model-related asset, GFX resource or other supported file. Not every binary format has a full editor yet."),
-                ("Check dependencies", "Keep the original file path and format requirements in mind. If an asset references another PAK, make sure it is available."),
-                ("Prepare your build", "Use the project build/staging controls rather than replacing installed game PAKs manually. Signed Stage 2 archives require the manager's verified signing setup."),
-                ("Fix warnings before play", "If validation reports a signing, archive or dependency error, correct it first. Do not bypass an original-backup or recovery warning."),
+                (
+                    "Open a project",
+                    "Go to Modding, select your editable project, and inspect its files. Keep the original imported source unchanged.",
+                ),
+                (
+                    "Choose a supported edit",
+                    "Modify a texture, model-related asset, GFX resource or other supported file. Not every binary format has a full editor yet.",
+                ),
+                (
+                    "Check dependencies",
+                    "Keep the original file path and format requirements in mind. If an asset references another PAK, make sure it is available.",
+                ),
+                (
+                    "Prepare your build",
+                    "Use the project build/staging controls rather than replacing installed game PAKs manually. Signed Stage 2 archives require the manager's verified signing setup.",
+                ),
+                (
+                    "Fix warnings before play",
+                    "If validation reports a signing, archive or dependency error, correct it first. Do not bypass an original-backup or recovery warning.",
+                ),
             ],
         ),
         DocsSection::Gfx => (
             "Work with menu and GFX assets",
             "GFX/Scaleform menus contain both artwork and behavior. Cosmetic changes can still affect navigation and runtime callbacks.",
             &[
-                ("Open the relevant GFX", "Import the correct UI assets, then open a GFX file in the library viewer or Modding project."),
-                ("Use GFX tools", "Preview supported frames, inspect text and artwork, and use the editor's exposed GFX controls where available."),
-                ("Expect external dependencies", "Original menus can require DDS images, fonts, localization strings, videos and native game callbacks. A blank preview is not always a missing button."),
-                ("Edit in a project copy", "Save the changed GFX and any supporting DDS resources together, preserving their intended paths and names."),
-                ("Verify in-game", "The preview cannot fully reproduce all game initialization and service callbacks. Test an offline modded launch and compare against clean gameplay."),
+                (
+                    "Open the relevant GFX",
+                    "Import the correct UI assets, then open a GFX file in the library viewer or Modding project.",
+                ),
+                (
+                    "Use GFX tools",
+                    "Preview supported frames, inspect text and artwork, and use the editor's exposed GFX controls where available.",
+                ),
+                (
+                    "Expect external dependencies",
+                    "Original menus can require DDS images, fonts, localization strings, videos and native game callbacks. A blank preview is not always a missing button.",
+                ),
+                (
+                    "Edit in a project copy",
+                    "Save the changed GFX and any supporting DDS resources together, preserving their intended paths and names.",
+                ),
+                (
+                    "Verify in-game",
+                    "The preview cannot fully reproduce all game initialization and service callbacks. Test an offline modded launch and compare against clean gameplay.",
+                ),
             ],
         ),
         DocsSection::Export => (
             "Export models, textures and animations",
             "Exports are for inspection and creative work. Their quality depends on source meshes, rigs, materials and animation dependencies.",
             &[
-                ("Select the asset", "Open a model or character assembly in Asset Library and choose the supported export action."),
-                ("Review the export options", "For FBX exports, select rigging, texture embedding and dependencies when available. A character assembly may need multiple source files."),
-                ("Textures and normal maps", "DDS files can be inspected and supported images exported to PNG. Keep material assignments and normal maps with models when needed."),
-                ("Open in Blender", "Inspect UVs, materials, rigging, and normals after export. Experimental exports may require corrections and are not guaranteed to match in-game rendering."),
-                ("Level exports", "Terrain and scene exports are also experimental. Use source/import warnings to identify missing textures or geometry."),
+                (
+                    "Select the asset",
+                    "Open a model or character assembly in Asset Library and choose the supported export action.",
+                ),
+                (
+                    "Review the export options",
+                    "For FBX exports, select rigging, texture embedding and dependencies when available. A character assembly may need multiple source files.",
+                ),
+                (
+                    "Textures and normal maps",
+                    "DDS files can be inspected and supported images exported to PNG. Keep material assignments and normal maps with models when needed.",
+                ),
+                (
+                    "Open in Blender",
+                    "Inspect UVs, materials, rigging, and normals after export. Experimental exports may require corrections and are not guaranteed to match in-game rendering.",
+                ),
+                (
+                    "Level exports",
+                    "Terrain and scene exports are also experimental. Use source/import warnings to identify missing textures or geometry.",
+                ),
             ],
         ),
         DocsSection::LaunchMods => (
             "Play with Mods (offline)",
             "The normal modded workflow stages enabled projects and launches through the Modded Evolve client with recoverable game-file swaps.",
             &[
-                ("Finish editing", "Save outstanding changes and build your enabled projects in Modding before starting a match."),
-                ("Check configuration", "Make sure game/client paths, signing stage and original backups are ready. Follow any setup prompts."),
-                ("Click Play with Mods", "Use the Home button. The Game Launch popup shows preparation, progress, errors and when the game has been released."),
-                ("Wait for the actual result", "Hook ready, preparing and verified swap are different states. Do not assume the game is running with mods until the popup confirms the relevant step."),
-                ("Keep the session isolated", "Use this as an offline test unless you have an explicit and separately authorized online testing configuration. Regular users should not assume online compatibility."),
+                (
+                    "Finish editing",
+                    "Save outstanding changes and build your enabled projects in Modding before starting a match.",
+                ),
+                (
+                    "Check configuration",
+                    "Make sure game/client paths, signing stage and original backups are ready. Follow any setup prompts.",
+                ),
+                (
+                    "Click Play with Mods",
+                    "Use the Home button. The Game Launch popup shows preparation, progress, errors and when the game has been released.",
+                ),
+                (
+                    "Wait for the actual result",
+                    "Hook ready, preparing and verified swap are different states. Do not assume the game is running with mods until the popup confirms the relevant step.",
+                ),
+                (
+                    "Keep the session isolated",
+                    "Use this as an offline test unless you have an explicit and separately authorized online testing configuration. Regular users should not assume online compatibility.",
+                ),
             ],
         ),
         DocsSection::LaunchClean => (
             "Play without Mods",
             "Use a clean launch when you need to compare behavior or confirm that an issue comes from the modified files.",
             &[
-                ("Return to Home", "Select Play without Mods instead of Play with Mods."),
-                ("Use the normal client", "The manager starts the configured Modded Evolve client without applying enabled Mod Projects."),
-                ("Keep original files safe", "If a previous modded launch was interrupted, resolve any restore/recovery warning before relying on a clean comparison."),
-                ("Compare the result", "If an issue only occurs when playing with mods, check recently edited projects and the Game Launch error details."),
+                (
+                    "Return to Home",
+                    "Select Play without Mods instead of Play with Mods.",
+                ),
+                (
+                    "Use the normal client",
+                    "The manager starts the configured Modded Evolve client without applying enabled Mod Projects.",
+                ),
+                (
+                    "Keep original files safe",
+                    "If a previous modded launch was interrupted, resolve any restore/recovery warning before relying on a clean comparison.",
+                ),
+                (
+                    "Compare the result",
+                    "If an issue only occurs when playing with mods, check recently edited projects and the Game Launch error details.",
+                ),
             ],
         ),
         DocsSection::Recovery => (
             "Restore originals and recover after an interruption",
             "The manager uses original-file backups and a recovery journal. Never delete these files just to silence an error.",
             &[
-                ("Close the game and launcher", "Leave the game before attempting manual recovery, so original files are not in use."),
-                ("Look for the restore status", "The modded launch helper normally restores original PAKs when the game and launcher exit. An interrupted session may require a separate restore action."),
-                ("Follow the recovery prompt", "Use the manager's available restore/recovery control instead of manually swapping .pak, .customkey-original or .ready files."),
-                ("Keep backups intact", "If validation refuses to proceed, retain the source files and logs. Do not delete a partial or stale cache until the actual failure is understood."),
-                ("Try the clean launch", "After recovery reports success, use Play without Mods to confirm the original game still loads."),
+                (
+                    "Close the game and launcher",
+                    "Leave the game before attempting manual recovery, so original files are not in use.",
+                ),
+                (
+                    "Look for the restore status",
+                    "The modded launch helper normally restores original PAKs when the game and launcher exit. An interrupted session may require a separate restore action.",
+                ),
+                (
+                    "Follow the recovery prompt",
+                    "Use the manager's available restore/recovery control instead of manually swapping .pak, .customkey-original or .ready files.",
+                ),
+                (
+                    "Keep backups intact",
+                    "If validation refuses to proceed, retain the source files and logs. Do not delete a partial or stale cache until the actual failure is understood.",
+                ),
+                (
+                    "Try the clean launch",
+                    "After recovery reports success, use Play without Mods to confirm the original game still loads.",
+                ),
             ],
         ),
         DocsSection::Updates => (
             "Updates, settings and logs",
             "The Settings tabs provide updates, storage, integrations, health checks and crash diagnostics.",
             &[
-                ("Choose an update channel", "Settings > Updates lets you choose Stable, Beta or Nightly; Nightly is the fastest-moving experimental channel."),
-                ("Update and restart", "Use the built-in updater when available. It checks and verifies the release before restarting the manager."),
-                ("Check integrations", "Settings > Integrations contains optional tools such as Blender and GFX-related helpers where supported."),
-                ("Check health and storage", "Use System Health and Storage to find missing paths, available space or configuration problems."),
-                ("Find diagnostic files", "Settings > Advanced includes Open logs folder and Open crash log. Use the Game Launch popup for the immediate failure reason."),
+                (
+                    "Choose an update channel",
+                    "Settings > Updates lets you choose Stable, Beta or Nightly; Nightly is the fastest-moving experimental channel.",
+                ),
+                (
+                    "Update and restart",
+                    "Use the built-in updater when available. It checks and verifies the release before restarting the manager.",
+                ),
+                (
+                    "Check integrations",
+                    "Settings > Integrations contains optional tools such as Blender and GFX-related helpers where supported.",
+                ),
+                (
+                    "Check health and storage",
+                    "Use System Health and Storage to find missing paths, available space or configuration problems.",
+                ),
+                (
+                    "Find diagnostic files",
+                    "Settings > Advanced includes Open logs folder and Open crash log. Use the Game Launch popup for the immediate failure reason.",
+                ),
             ],
         ),
         DocsSection::Troubleshoot => (
             "Fix common problems",
             "Start with the simplest checks and avoid changing original PAKs until you know what failed.",
             &[
-                ("Game does not start", "Verify EvolveGame and ModdedEvolveLauncher.exe paths in Settings. Try Play without Mods and inspect the Game Launch report."),
-                ("A modded launch fails early", "Read the popup/error log: preparation, signing, swap, restore and launcher failures have different causes."),
-                ("An asset is missing", "Check whether its PAK and dependencies were imported from the same build. Reopen the library after importing missing archives."),
-                ("The model looks wrong", "Missing materials, high-resolution DDS streams, skeleton data or attachments can affect the viewer and Blender export."),
-                ("The interface appears unresponsive", "Check the footer progress or Activity window for long imports, builds, and exports. Avoid starting competing operations."),
-                ("An update or crash fails", "Open crash logs and updater errors from Settings. Keep the full error text and reproduce the action before reporting a bug."),
+                (
+                    "Game does not start",
+                    "Verify EvolveGame and ModdedEvolveLauncher.exe paths in Settings. Try Play without Mods and inspect the Game Launch report.",
+                ),
+                (
+                    "A modded launch fails early",
+                    "Read the popup/error log: preparation, signing, swap, restore and launcher failures have different causes.",
+                ),
+                (
+                    "An asset is missing",
+                    "Check whether its PAK and dependencies were imported from the same build. Reopen the library after importing missing archives.",
+                ),
+                (
+                    "The model looks wrong",
+                    "Missing materials, high-resolution DDS streams, skeleton data or attachments can affect the viewer and Blender export.",
+                ),
+                (
+                    "The interface appears unresponsive",
+                    "Check the footer progress or Activity window for long imports, builds, and exports. Avoid starting competing operations.",
+                ),
+                (
+                    "An update or crash fails",
+                    "Open crash logs and updater errors from Settings. Keep the full error text and reproduce the action before reporting a bug.",
+                ),
             ],
         ),
         DocsSection::Faq => (
             "Frequently asked questions",
             "Short answers to questions that often come up during a first mod.",
             &[
-                ("Does importing a PAK change my game?", "No. Importing into Asset Library creates an inspection workspace. Playing with mods is a separate launch workflow."),
-                ("Do I need Rust or Visual Studio?", "No, not to run the downloaded installer or portable manager."),
-                ("Can I play online with mods?", "Normal Play with Mods is designed for offline testing. Developer online testing is separate, opt-in, and does not guarantee server acceptance."),
-                ("Will the manager restore my originals?", "The normal modded workflow is designed to restore backed-up original PAKs on exit. Interrupted launches may still require manual recovery."),
-                ("Why is a model or animation incomplete?", "Supported CryEngine assets often reference other archives or formats the preview/export pipeline does not fully implement yet."),
-                ("Should I edit original game PAKs directly?", "No. Use an editable Mod Project and let the manager handle verified staging, backups, and recovery."),
+                (
+                    "Does importing a PAK change my game?",
+                    "No. Importing into Asset Library creates an inspection workspace. Playing with mods is a separate launch workflow.",
+                ),
+                (
+                    "Do I need Rust or Visual Studio?",
+                    "No, not to run the downloaded installer or portable manager.",
+                ),
+                (
+                    "Can I play online with mods?",
+                    "Normal Play with Mods is designed for offline testing. Developer online testing is separate, opt-in, and does not guarantee server acceptance.",
+                ),
+                (
+                    "Will the manager restore my originals?",
+                    "The normal modded workflow is designed to restore backed-up original PAKs on exit. Interrupted launches may still require manual recovery.",
+                ),
+                (
+                    "Why is a model or animation incomplete?",
+                    "Supported CryEngine assets often reference other archives or formats the preview/export pipeline does not fully implement yet.",
+                ),
+                (
+                    "Should I edit original game PAKs directly?",
+                    "No. Use an editable Mod Project and let the manager handle verified staging, backups, and recovery.",
+                ),
             ],
         ),
     }
@@ -487,7 +727,8 @@ fn docs_section(section: DocsSection, expanded: bool) -> Element<'static, Messag
     let arrow = if expanded { "▾" } else { "▸" };
     let header = design::button(
         row![text(arrow).size(17), text(title).size(17)]
-            .spacing(10).align_y(iced::Center)
+            .spacing(10)
+            .align_y(iced::Center),
     )
     .on_press(Message::ToggleDocsSection(section))
     .width(Fill)
@@ -500,14 +741,24 @@ fn docs_section(section: DocsSection, expanded: bool) -> Element<'static, Messag
                 column![
                     text(format!("{}  {}", index + 1, step)).size(14),
                     text(*details).size(12).style(design::muted),
-                ].spacing(4)
+                ]
+                .spacing(4),
             );
         }
         let destination = match section {
-            DocsSection::GettingStarted | DocsSection::Paths | DocsSection::Updates | DocsSection::Install => Some(("Open Settings", Page::Settings)),
-            DocsSection::Import | DocsSection::Browse | DocsSection::Export => Some(("Open Asset Library", Page::AssetLibrary)),
-            DocsSection::Projects | DocsSection::Edit | DocsSection::Gfx => Some(("Open Modding", Page::Files)),
-            DocsSection::LaunchMods | DocsSection::LaunchClean | DocsSection::Recovery => Some(("Go to Home", Page::Home)),
+            DocsSection::GettingStarted
+            | DocsSection::Paths
+            | DocsSection::Updates
+            | DocsSection::Install => Some(("Open Settings", Page::Settings)),
+            DocsSection::Import | DocsSection::Browse | DocsSection::Export => {
+                Some(("Open Asset Library", Page::AssetLibrary))
+            }
+            DocsSection::Projects | DocsSection::Edit | DocsSection::Gfx => {
+                Some(("Open Modding", Page::Files))
+            }
+            DocsSection::LaunchMods | DocsSection::LaunchClean | DocsSection::Recovery => {
+                Some(("Go to Home", Page::Home))
+            }
             DocsSection::Troubleshoot | DocsSection::Faq => None,
         };
         if let Some((label, page)) = destination {
@@ -535,7 +786,10 @@ pub(super) fn docs(state: &State) -> Element<'_, Message> {
             .size(12).style(design::muted),
     ].spacing(11);
     for section in DocsSection::ALL.into_iter().skip(1) {
-        sections = sections.push(docs_section(section, state.docs_expanded.contains(&section)));
+        sections = sections.push(docs_section(
+            section,
+            state.docs_expanded.contains(&section),
+        ));
     }
     scrollable(sections.padding(12)).height(Fill).into()
 }
@@ -677,23 +931,52 @@ pub(super) fn credits() -> Element<'static, Message> {
 
 fn actor_rows(state: &State) -> Element<'_, Message> {
     let Some(listing) = &state.actor_listing else {
-        return text("No actor snapshot. Detect Evolve and refresh actors.").size(12)
-            .style(design::muted).into();
+        return text("No actor snapshot. Detect Evolve and refresh actors.")
+            .size(12)
+            .style(design::muted)
+            .into();
     };
-    let mut list = column![text(format!("{} actor(s), PID {}", listing.actors.len(), listing.pid)).size(13)].spacing(10);
+    let mut list = column![
+        text(format!(
+            "{} actor(s), PID {}",
+            listing.actors.len(),
+            listing.pid
+        ))
+        .size(13)
+    ]
+    .spacing(10);
     for actor in &listing.actors {
         let mut rows = column![
-            text(format!("{}{}  |  ID 0x{:X}  |  Actor 0x{:X}",
-                actor.name, if actor.local { " (Local)" } else { "" }, actor.id, actor.address)).size(14)
-        ].spacing(5);
+            text(format!(
+                "{}{}  |  ID 0x{:X}  |  Actor 0x{:X}",
+                actor.name,
+                if actor.local { " (Local)" } else { "" },
+                actor.id,
+                actor.address
+            ))
+            .size(14)
+        ]
+        .spacing(5);
         for entry in &actor.fields {
             let field = entry.field;
-            rows = rows.push(row![
-                text(format!("{}  +0x{:X}  ({})", field.title(), field.offset(), field.kind())).size(12).width(Fill),
-                text(entry.display.clone()).size(13).width(90),
-                design::button("Edit").on_press_maybe((!state.actor_busy)
-                    .then_some(Message::ActorEdit(actor.id, actor.address, field, entry.bits))),
-            ].align_y(iced::Alignment::Center).spacing(8));
+            rows = rows.push(
+                row![
+                    text(format!(
+                        "{}  +0x{:X}  ({})",
+                        field.title(),
+                        field.offset(),
+                        field.kind()
+                    ))
+                    .size(12)
+                    .width(Fill),
+                    text(entry.display.clone()).size(13).width(90),
+                    design::button("Edit").on_press_maybe((!state.actor_busy).then_some(
+                        Message::ActorEdit(actor.id, actor.address, field, entry.bits)
+                    )),
+                ]
+                .align_y(iced::Alignment::Center)
+                .spacing(8),
+            );
         }
         list = list.push(surface(rows.padding(10)));
     }
