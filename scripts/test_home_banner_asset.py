@@ -65,7 +65,7 @@ class HomeBannerAssetTests(unittest.TestCase):
         news = code.split("fn latest_announcement(", 1)[1].split(
             "fn home_banner(", 1
         )[0]
-        self.assertIn("post.image_urls.iter()", news)
+        self.assertRegex(news, r"\.image_urls\s*\.iter\(\)")
         self.assertIn(".find(|url| crate::whats_new::allowed_image_url(url))", news)
         self.assertIn("row![details, preview]", news)
         self.assertIn("Length::Fixed(125.0)", news)
