@@ -277,6 +277,9 @@ def launch_direct(game_root, stage_root=None, client_exe=None, swap_dir=None, cl
                 exe,game=True,trace_dll=state["trace"],
                 runtime_env=runtime_env)
             try:
+                # Notify the detached supervisor immediately after the child
+                # is created, before waiting for hooks/window readiness.
+                (session/"game.pid").write_text(str(process.pid)+"\n", encoding="utf-8")
                 try:
                     contract.wait_for_hook_startup(
                         hook_log, Path(state["steam_compat"]), state["modes"], process
@@ -286,7 +289,6 @@ def launch_direct(game_root, stage_root=None, client_exe=None, swap_dir=None, cl
                     if process.poll() is None:
                         process.terminate()
                     raise
-                (session/"game.pid").write_text(str(process.pid)+"\n")
                 print(f"DIRECT_GAME_LAUNCHED pid={process.pid} "
                       f"watchdog={watchdog or 0} swap_complete={str(swapped).lower()} "
                       "services_ready=true trace_loaded=true hooks_ready=true "

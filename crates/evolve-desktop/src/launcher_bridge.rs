@@ -379,12 +379,9 @@ fn inspect_existing_launcher_mode(
         140,
     )?;
     let new_key = plain(&stage.join("mykeys/public_key.bin"), 140)?;
-    if old_key == new_key
-        || fs::read(&old_key).map_err(|e| e.to_string())?
-            == fs::read(&new_key).map_err(|e| e.to_string())?
-    {
-        return Err("Original and custom client public keys must be different".into());
-    }
+    // Matching public keys are legitimate when a supplied signing key is
+    // also the stock verifier key. Continue to verify both hook key slots,
+    // the staged DLL digest, and every PAK signature independently.
     let custom = within_file(&stage, "inject-custom.dll")?;
     let original = within_file(&game, "bin64_SteamRetail/inject.dll")?;
     no_orphaned_backup(&original)?;

@@ -61,7 +61,7 @@ class DirectGameTests(unittest.TestCase):
                  mock.patch.object(direct,"start_runtime_supervisor",side_effect=service_start), \
                  mock.patch.object(direct,"environment_for_session",return_value={"MODDED_EVOLVE_STAGE2_MODES":state["modes"],"MODDED_EVOLVE_STAGE2_LOG":str(root/"trace.log")}), \
                  mock.patch.object(direct.contract,"wait_for_hook_startup"), \
-                 mock.patch.object(direct,"wait_for_visible_game_window",side_effect=lambda proc: actions.append("window")), \
+                 mock.patch.object(direct,"wait_for_visible_game_window",side_effect=lambda proc: (self.assertEqual((session/"game.pid").read_text().strip(), str(proc.pid)), actions.append("window"))), \
                  mock.patch.object(direct,"validate_prepared",side_effect=checked), \
                  mock.patch.object(direct,"rename_prepared_into_game",side_effect=swap), \
                  mock.patch.object(direct,"start_restore_watchdog",side_effect=watchdog), \
