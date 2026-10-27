@@ -6,7 +6,13 @@ The first implementation applies a restrained original-menu-inspired system acro
 
 ## User-supplied Legacy UI archive
 
-The uploaded `UI_Assets.zip` contains **one large `UI_Assets.pak`** rather than a directly extractable folder of DDS and GFX files. That retail game archive is **not** a conventional ZIP, and the original art is not embedded or republished in this PR. It must first be authenticated and imported through the manager's configured PAK handling, then its individual artwork can be mapped to the proper widgets.
+The original uploaded `UI_Assets.zip` contains one packed `UI_Assets.pak`, which is not itself a conventional ZIP. The newer upload comprises two parts, `UI.zip.001` and `UI.zip.002`, which together form a standard ZIP containing **1,024 entries (113 GFX movies and 849 DDS .0 texture files)** under `UI/`. We inspected the archive without modifying its original contents.
+
+Two very small authentic menu graphics are now bundled in the optional theme as lossless PNGs:
+- `assets/legacy/legacy-menu-corner.png`: original `UI/button_I8.dds.0` 32×32 red-corner sprite; displayed next to Legacy Home section headings.
+- `assets/legacy/legacy-cursor-art.png`: original `UI/FlashAssets/images/front_end/cursor_evolve.dds.0` 32×32 pointer sprite; displayed beside the Legacy navigation breadcrumb.
+
+Both are embedded at compile time only as part of the optional native skin. The complete ~647 MiB archive, all GFX movies and other game textures are **not** committed or redistributed. Additional atlases, notably `UI/main_menu_I19.dds.0`, `UI/main_menu_I70.dds.0` and `UI/main_menu_ID.dds.0`, are identified for further controlled cropping/integration.
 
 A future asset pass can add the original Legacy button states, panel backgrounds and menu dividers from the user's authenticated extracted `UI_Assets.pak`. The portable visual skin deliberately works without that archive, avoids unverified offsets, and does not present external user-supplied game assets as a bundled resource. It also does not execute the game's Scaleform scripts in native manager controls.
 
