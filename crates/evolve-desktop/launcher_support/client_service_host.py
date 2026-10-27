@@ -100,17 +100,32 @@ def listener_owner(port, pid):
                 return True
     return False
 
-def wait_services(process, timeout=45):
+def wait_services(process, log_path=None, timeout=45):
+    """Accept active service ownership or an explicit client runtime handshake.
+
+    On Windows an HttpListener can expose its sockets under HTTP.sys (PID 4),
+    rather than under the managed process. Requiring both listener PIDs to
+    match the client can incorrectly block a working service-only test.
+    """
     deadline=time.monotonic()+timeout
     while time.monotonic()<deadline:
         if process.poll() is not None:
-            raise RuntimeError("Stage 2 services-only runtime exited during startup; profile and Steam compatibility services are unavailable.")
+            raise RuntimeError("Stage 2 services-only runtime exited during startup; inspect direct-stage2-services.log")
         if listener_owner(2000,process.pid) and listener_owner(2040,process.pid):
-            # Both ports belong to this specific process; not an unrelated
-            # running client. Their presence is necessary, not sufficient.
             return
+        if log_path is not None:
+            try:
+                details=Path(log_path).read_text(encoding="utf-8", errors="replace")
+            except FileNotFoundError:
+                details=""
+            if len(details) > 1024 * 1024:
+                raise RuntimeError("Client service startup log is unexpectedly large")
+            if "STAGE2_SERVICES_STARTED" in details and "SESSION_IDENTITY_STAGE2_READY" in details:
+                # Explicit client-side service and identity readiness is valid
+                # even if kernel-owned HTTP.sys is the reported listener PID.
+                return
         time.sleep(.25)
-    raise RuntimeError("Stage 2 services failed to own loopback ports 2000 and 2040. Choose Client Launch.")
+    raise RuntimeError("Stage 2 profile/Steam service startup was not confirmed after 45 seconds; inspect direct-stage2-services.log.")
 
 def start_services(client_exe, game_exe, swap_dir, broker):
     shadow=ensure_shadow(client_exe,swap_dir)
@@ -122,7 +137,7 @@ def start_services(client_exe, game_exe, swap_dir, broker):
               "--no-launch","--keep"],
         log_path=log)
     try:
-        wait_services(host)
+        wait_services(host, log)
         modes=None
         for line in log.read_text(encoding="utf-8",errors="replace").splitlines():
             if "modes=" in line:
