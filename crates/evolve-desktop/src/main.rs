@@ -3136,8 +3136,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 if let Ok(path) = settings_path()
                     && let Err(error) = save_to(&path, &state.preferences)
                 {
-                    state.settings_status =
-                        format!("Could not remember recent project: {error}");
+                    state.settings_status = format!("Could not remember recent project: {error}");
                 }
             } else {
                 state.preferences.current_workspace.clear();
