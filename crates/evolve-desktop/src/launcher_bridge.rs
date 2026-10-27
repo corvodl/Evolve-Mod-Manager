@@ -282,7 +282,7 @@ fn verify_prepared_journal(
 /// Mirror the private manager's hook key-slot and pinned staged-digest checks
 /// while separately verifying original/replacement PAK signatures. This is a
 /// *prelaunch* check: only a real game session proves what CryEngine mounted.
-pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchReady, String> {
+fn inspect_existing_launcher_mode(stage: &Path, swap: &Path, require_client: bool) -> Result<LaunchReady, String> {
     let stage = directory(stage)?;
     let swap = directory(swap)?;
     let status = json(&stage.join("stage_status.json"))?;
@@ -349,24 +349,26 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
     // Never fall back to the original helper's developer-specific default
     // launcher path. The existing private setup must identify the user's
     // actual installed ModdedEvolveLauncher executable explicitly.
-    let config = json(&swap.join("launcher_config.json"))?;
-    let launcher_path = config["launcher"]
-        .as_str()
-        .ok_or("Missing launcher executable path in private launcher_config.json")?;
-    let launcher = plain(Path::new(launcher_path), 1024 * 1024 * 1024)?;
-    if launcher
-        .file_name()
-        .and_then(|s| s.to_str())
-        .is_none_or(|name| !name.eq_ignore_ascii_case("ModdedEvolveLauncher.exe"))
-    {
-        return Err("Configured executable is not ModdedEvolveLauncher.exe".into());
+    if require_client {
+        let config = json(&swap.join("launcher_config.json"))?;
+        let launcher_path = config["launcher"]
+            .as_str()
+            .ok_or("Missing launcher executable path in private launcher_config.json")?;
+        let launcher = plain(Path::new(launcher_path), 1024 * 1024 * 1024)?;
+        if launcher
+            .file_name()
+            .and_then(|s| s.to_str())
+            .is_none_or(|name| !name.eq_ignore_ascii_case("ModdedEvolveLauncher.exe"))
+        {
+            return Err("Configured executable is not ModdedEvolveLauncher.exe".into());
+        }
     }
-    for name in [
-        "controlled_swap.py",
-        "auto_launch_frida.py",
-        "auto_restore_watch.py",
-        "reusable_restore.py",
-    ] {
+    let scripts: &[&str] = if require_client {
+        &["controlled_swap.py", "auto_launch_frida.py", "auto_restore_watch.py", "reusable_restore.py"]
+    } else {
+        &["controlled_swap.py", "auto_restore_watch.py", "reusable_restore.py"]
+    };
+    for &name in scripts {
         helper(&swap, name)?;
     }
     let entries = plan["entries"]
@@ -475,6 +477,15 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
         compatibility_warnings,
         prepared,
     })
+}
+
+pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchReady, String> {
+    inspect_existing_launcher_mode(stage, swap, true)
+}
+
+/// Same original/staged signature checks, without client executable/config.
+pub fn inspect_existing_direct_game(stage: &Path, swap: &Path) -> Result<LaunchReady, String> {
+    inspect_existing_launcher_mode(stage, swap, false)
 }
 
 /// The private launcher reports a hook-ready progress event *before* the
@@ -1228,7 +1239,7 @@ pub fn launch_direct_offline_game(
                 prepare_recovery_advice(&reason), prepare_log.display(), logged.err()));
         }
     }
-    let verified = inspect_existing_launcher(&plan.stage, swap)?;
+    let verified = inspect_existing_direct_game(&plan.stage, swap)?;
     if !verified.prepared || verified.game != plan.game {
         return Err("Direct launch has no matching verified prepared swap journal.".into());
     }
