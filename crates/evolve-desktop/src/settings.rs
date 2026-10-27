@@ -25,6 +25,9 @@ pub struct Preferences {
     pub appearance_mode: String,
     /// Optional native Evolve Legacy styling; existing Modern UI remains default.
     pub ui_theme: String,
+    /// Keep Evolve artwork and translucent Home panels on by default.
+    /// Turning it off restores opaque Home surfaces, independent of theme.
+    pub show_home_background: bool,
     pub appearance_colors: BTreeMap<String, String>,
     pub theme_presets: BTreeMap<String, BTreeMap<String, String>>,
     pub font_family: String,
@@ -91,6 +94,7 @@ impl Default for Preferences {
             saved_zoom: 1.0,
             appearance_mode: "Dark".into(),
             ui_theme: "Modern".into(),
+            show_home_background: true,
             appearance_colors: BTreeMap::new(),
             theme_presets: BTreeMap::new(),
             font_family: "Default".into(),
@@ -582,6 +586,20 @@ mod tests {
         assert!(save_to(&path, &invalid).is_err());
         assert_eq!(fs::read(&path).unwrap(), original);
     }
+    #[test]
+    fn home_background_setting_defaults_on_and_survives_roundtrip() {
+        let old: Preferences = serde_json::from_str(r#"{"ui_theme":"Modern"}"#).unwrap();
+        assert!(old.show_home_background);
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        let mut prefs = old;
+        prefs.show_home_background = false;
+        save_to(&file, &prefs).unwrap();
+        let loaded = load_from(&file).unwrap();
+        assert!(!loaded.show_home_background);
+        assert_eq!(loaded.ui_theme, "Modern");
+    }
+
     #[test]
     fn crash_diagnostics_default_enabled_even_with_old_preferences() {
         let json = r#"{"show_activity_on_tasks":false}"#;
