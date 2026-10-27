@@ -12,10 +12,9 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import traceback
 
 import controlled_swap as swapper
-import standard_user_launch
+import direct_standard_user_launch as standard_user_launch
 
 
 def _ordinary(value):
@@ -112,7 +111,18 @@ def launch_direct(game_root, stage_root):
     if not _regular(exe):
         raise RuntimeError("Installed Evolve.exe was not found.")
     state = validate_prepared(game, stage)
-    rename_prepared_into_game(state)
+    try:
+        rename_prepared_into_game(state)
+    except Exception as swap_error:
+        # Evolve.exe does not exist yet. Immediately attempt the vetted
+        # original-file recovery; never discard journal/backups on failure.
+        from reusable_restore import main as restore
+        if restore() != 0:
+            raise RuntimeError(
+                f"Pre-launch swap failed ({swap_error}); automatic restore also failed. "
+                "Do not relaunch until originals are recovered.") from swap_error
+        raise RuntimeError(
+            f"Pre-launch swap failed ({swap_error}); originals restored.") from swap_error
     try:
         watch_pid = start_restore_watchdog()
     except Exception as problem:
