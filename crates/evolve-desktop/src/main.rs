@@ -13,6 +13,7 @@ mod blender_install;
 mod client_version;
 mod crash_diagnostics;
 mod design;
+mod direct_runtime;
 mod developer_auth;
 mod explorer_tree;
 mod gfx_bundled_tools;
