@@ -7501,14 +7501,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if state.busy {
                 return Task::none();
             }
-            let (game, client) = match play_setup::validate_paths(
-                &state.preferences.game_installation,
-                &state.preferences.client_executable,
-            ) {
+            let paths = if state.preferences.game_launch_mode == "Direct Launch" {
+                play_setup::game_root(&state.preferences.game_installation)
+                    .map(|game| (game, PathBuf::new()))
+            } else {
+                play_setup::validate_paths(
+                    &state.preferences.game_installation,
+                    &state.preferences.client_executable,
+                )
+            };
+            let (game, client) = match paths {
                 Ok(paths) => paths,
                 Err(error) => {
                     state.status =
-                        format!("Choose and verify the installed game and client first: {error}");
+                        format!("Choose and verify the installed game (and the client when Client Launch is selected): {error}");
                     state.page = Some(Page::Settings);
                     state.settings_tab = settings_page::Tab::Storage;
                     return Task::none();
@@ -7554,6 +7560,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::SaveGameSetup => {
+            if state.preferences.game_launch_mode == "Direct Launch" {
+                match play_setup::game_root(&state.preferences.game_installation) {
+                    Ok(game) => {
+                        state.preferences.game_installation = game.to_string_lossy().into_owned();
+                        persist_preferences(state);
+                        state.status = "Game installation saved for Direct Launch. Client executable is optional; Play with Mods also requires an isolated signing stage.".into();
+                    }
+                    Err(error) => {
+                        state.settings_status = format!("Game setup is incomplete: {error}");
+                        state.status = state.settings_status.clone();
+                    }
+                }
+                return Task::none();
+            }
             match play_setup::validate_paths(
                 &state.preferences.game_installation,
                 &state.preferences.client_executable,
