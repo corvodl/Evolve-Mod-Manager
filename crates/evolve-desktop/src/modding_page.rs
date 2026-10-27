@@ -354,6 +354,25 @@ fn modifications(state: &State) -> Element<'_, Message> {
     ]
     .spacing(5);
     if let Some(record) = record {
+        rows = rows.push(
+            row![
+                design::text_input(
+                    "New relative path under project files/…",
+                    &state.modding_added_member
+                )
+                .on_input(Message::ModdingAddedMemberChanged)
+                .width(Fill),
+                design::button("Register PAK addition")
+                    .style(design::secondary)
+                    .on_press(Message::ModdingRegisterAddedMember),
+                design::button("Unregister")
+                    .style(design::secondary)
+                    .on_press(Message::ModdingUnregisterAddedMember),
+            ]
+            .spacing(8),
+        );
+        rows = rows.push(text("Opt-in: place the file under this project's files/ directory, then register its exact archive path. Unregister leaves your file untouched. Existing members remain strict replacements; unregistered files are ignored. Build Mod signs up to 64 combined changes.")
+            .size(11).style(design::muted));
         let range = page_range(record.modified.len(), state.modding_changes_page);
         for changed in &record.modified[range.clone()] {
             rows = rows.push(

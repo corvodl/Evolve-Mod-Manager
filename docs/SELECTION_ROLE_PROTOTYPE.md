@@ -46,3 +46,12 @@ full monster and hunter model rollout, and in-game verification of ability,
 perk, purchase, skin, readiness and callback paths. The UI_Data probe alone
 disables perks; testing it alongside this role prototype is not a test of
 those missing features.
+
+The user-owned Legacy installation does contain a signed
+`Level_UI_Menu_Levels_data.pak` (25 authenticated members) and a signed
+`Levels/UI_Menu_Levels/CharacterStage/level.pak` (24 authenticated members).
+Stock Stage 2 has neither exact archive target. These are useful source assets
+for porting the stage, **not** ready replacement files for the existing
+manager's authenticated-target profile. Do not create a new live root PAK or
+assume that adding the level members to `UI_Data.pak` makes the map mount; load
+precedence and game-side discovery require a reversible offline test first.
