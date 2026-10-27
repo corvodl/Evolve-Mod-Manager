@@ -50,6 +50,26 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo build --release --workspace --bins
 
+      - name: Retrieve and verify developer-supplied Stage 2 runtime
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.EVOLVE_STAGE2_TOOLS_TOKEN }}
+          OFFICIAL_SOURCE_REPO: ${{ vars.EVOLVE_STAGE2_TOOLS_REPO }}
+          OFFICIAL_SOURCE_TAG: ${{ vars.EVOLVE_STAGE2_TOOLS_TAG }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN) -or [string]::IsNullOrWhiteSpace($env:OFFICIAL_SOURCE_REPO)) {
+            throw 'Set EVOLVE_STAGE2_TOOLS_TOKEN secret and EVOLVE_STAGE2_TOOLS_REPO variable for complete Nightly releases.'
+          }
+          $tag = if ($env:OFFICIAL_SOURCE_TAG) { $env:OFFICIAL_SOURCE_TAG } else { 'official-stage2-2025' }
+          $folder = Join-Path $env:RUNNER_TEMP 'evolve-official-tools'
+          New-Item -Path $folder -ItemType Directory -Force | Out-Null
+          & gh release download $tag --repo $env:OFFICIAL_SOURCE_REPO --pattern 'evolve_tool_stage2_02.05.2025.zip' --dir $folder
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot retrieve official tool archive from private release.' }
+          $archive = Join-Path $folder 'evolve_tool_stage2_02.05.2025.zip'
+          ./scripts/package-official-stage2-tools.ps1 -Archive $archive
+          Remove-Item -LiteralPath $archive -Force
+          # Never print or upload the complete original ZIP or its C# sources.
+
       - name: Create portable ZIP (both Windows executables)
         shell: pwsh
         run: |
@@ -62,6 +82,8 @@ jobs:
           }
           Copy-Item -LiteralPath "assets/hunt.ico" -Destination "$folder/hunt.ico"
           Copy-Item -LiteralPath "README.md" -Destination "$folder/README.md"
+          New-Item -ItemType Directory -Path "$folder/third_party" -Force | Out-Null
+          Copy-Item -LiteralPath "dist/third_party/OfficialStage2" -Destination "$folder/third_party/OfficialStage2" -Recurse -Force
           Compress-Archive -Path (Join-Path $folder '*') -DestinationPath "dist/EvolveModManager-Portable-$env:VERSION.zip" -CompressionLevel Optimal -Force
 
       - name: Fetch and verify optional GFX editor tools
