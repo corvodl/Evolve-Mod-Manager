@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-1250 -1250 2500 2500" role="img" aria-label="Evolve loading wheel">
+  <!-- Vector forms and red palette reconstructed from loading_wheel.gfx. -->
+  <defs>
+    <linearGradient id="fade" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#d02d18" stop-opacity="1"/>
+      <stop offset="1" stop-color="#d02d18" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <path fill="#000000" fill-opacity="0.42" fill-rule="evenodd" d="M681-681 Q963-399 963 0 Q963 399 681 681 Q399 963 0 963 Q-399 963-681 681 Q-963 399-963 0 Q-963-399-681-681 Q-399-963 0-963 Q399-963 681-681Z M388-389 Q549-228 549 0 Q549 227 388 388 Q227 549 0 549 Q-227 549-388 388 Q-549 227-549 0 Q-549-228-388-389 Q-227-549 0-549 Q227-549 388-389Z"/>
+  <g transform="rotate(0 0 0)">
+    <path fill="#d02d18" d="M0-857 Q-356-857-607-606 Q-858-355-858 0 Q-858 355-607 606 Q-356 857 0 857 L0 684 Q-284 684-484 483 Q-684 283-684 0 Q-684-283-484-484 Q-284-684 0-684Z"/>
+    <path fill="url(#fade)" d="M0-857 Q355-857 606-606 Q857-355 857 0 Q857 355 606 606 Q355 857 0 857 L0 684 Q283 684 483 483 Q683 283 683 0 Q683-283 483-484 Q283-684 0-684Z"/>
+  </g>
+  <circle cx="0" cy="0" r="1165" fill="none" stroke="#d02d18" stroke-width="40" stroke-opacity="0.6"/>
+</svg>
