@@ -545,22 +545,19 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
     let content = scrollable(
         column![
             hero,
-            container(quick)
-                .padding(15)
-                .width(Fill)
-                .style(|theme| {
-                    let mut backdrop = design::surface(theme);
-                    backdrop.a = 0.84;
-                    container::Style {
-                        background: Some(Background::Color(backdrop)),
-                        border: Border {
-                            color: design::border(theme),
-                            width: 1.0,
-                            radius: if design::is_legacy(theme) { 1.0 } else { 10.0 }.into(),
-                        },
-                        ..container::Style::default()
-                    }
-                }),
+            container(quick).padding(15).width(Fill).style(|theme| {
+                let mut backdrop = design::surface(theme);
+                backdrop.a = 0.84;
+                container::Style {
+                    background: Some(Background::Color(backdrop)),
+                    border: Border {
+                        color: design::border(theme),
+                        width: 1.0,
+                        radius: if design::is_legacy(theme) { 1.0 } else { 10.0 }.into(),
+                    },
+                    ..container::Style::default()
+                }
+            }),
             latest_announcement(state),
             row![entries, status].spacing(14),
         ]
