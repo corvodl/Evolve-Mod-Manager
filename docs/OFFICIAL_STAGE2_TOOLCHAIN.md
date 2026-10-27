@@ -49,7 +49,7 @@ requires independent RSA verification and preserves failures for inspection.
 
 The Nightly release workflow stages the exact developer ZIP from a **private
 GitHub release** (not from this source repository), verifies its full SHA-256,
-then extracts only six release files: `evolve_tool.exe`, `crypto.dll`,
+then extracts the minimum signing runtime plus its license: `evolve_tool.exe`, `crypto.dll`,
 `inject/inject.dll`, `inject/dbghelp.dll`, `inject/RSAKeyData.bin`, and
 a short README. The verified files are included in both the Inno installer
 and the portable ZIP, and are updated by either in-place upgrade path.
