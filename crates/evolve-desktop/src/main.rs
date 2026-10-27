@@ -661,6 +661,7 @@ enum Operation {
         PathBuf,
         Arc<AtomicUsize>,
         bool,
+        bool,
     ),
     LaunchCleanClient(PathBuf, PathBuf, Option<PathBuf>),
     LaunchDirectGame(PathBuf, Option<PathBuf>),
@@ -1505,6 +1506,7 @@ impl Operation {
                 client,
                 progress,
                 online_requested,
+                direct_launch,
             ) => {
                 let mods = discover_projects(&projects, &stage)?
                     .into_iter()
@@ -1519,6 +1521,7 @@ impl Operation {
                     client,
                     progress,
                     online_requested,
+                    direct_launch,
                 )
                 .map(|(count, id, warnings, recovery)| {
                     Completed::EnabledModsLaunched(count, id, warnings, recovery, online_requested)
@@ -1908,10 +1911,10 @@ enum Message {
     StartOfflineLauncherRestore,
     PlayWithMods,
     PlayWithoutMods,
-    PlayDirectGame,
     DismissPlayNotice,
     SaveGameSetup,
     StartAutomaticSetup,
+    PreferenceGameLaunchMode(&'static str),
     PreferenceGameInstall(String),
     PreferenceClientExecutable(String),
     PickGameInstallation,
@@ -2415,11 +2418,13 @@ fn launch(state: &mut State, operation: Operation) -> Task<Message> {
         Operation::StartExistingOfflineLauncher(..) => {
             "Preparing offline play...".into()
         }
-        Operation::PlayEnabledMods(.., online_requested) => {
-            if *online_requested {
-                "Building all enabled mods and launching the regular client for Developer online testing...".into()
+        Operation::PlayEnabledMods(.., online_requested, direct_launch) => {
+            if *direct_launch {
+                "Building mods, preparing verified backups, and launching Evolve.exe directly…".into()
+            } else if *online_requested {
+                "Building enabled mods and launching the normal client for Developer testing…".into()
             } else {
-                "Building enabled mods and preparing offline play...".into()
+                "Building enabled mods and preparing client-backed play…".into()
             }
         }
         Operation::CreateInitialSetup(..) => {
@@ -7453,6 +7458,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Operation::AnalyzeStorage(data, games, stage, projects, library),
             );
         }
+        Message::PreferenceGameLaunchMode(mode) => {
+            if matches!(mode, "Direct Launch" | "Client Launch") {
+                state.preferences.game_launch_mode = mode.to_owned();
+                persist_preferences(state);
+            }
+        }
         Message::PreferenceGameInstall(value) => state.preferences.game_installation = value,
         Message::PreferenceClientExecutable(value) => {
             state.preferences.client_executable = value;
@@ -7564,19 +7575,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::DismissPlayNotice => {
             state.play_notice = None;
         }
-        Message::PlayDirectGame => {
-            if state.busy { return Task::none(); }
-            let (game, _) = match play_setup::validate_paths(&state.preferences.game_installation, &state.preferences.client_executable) {
-                Ok(paths) => paths,
-                Err(error) => {
-                    state.status = format!("Direct launch setup is incomplete: {error}");
-                    return Task::none();
-                }
-            };
-            state.status = "Experimental direct Evolve startup: local client services and profiles are NOT started. Offline testing only.".into();
-            return launch(state, Operation::LaunchDirectGame(game,
-                (!state.preferences.swap.trim().is_empty()).then(|| PathBuf::from(&state.preferences.swap))));
-        }
         Message::PlayWithMods | Message::PlayWithoutMods => {
             let is_modded = matches!(message, Message::PlayWithMods);
             let kind = if is_modded {
@@ -7604,17 +7602,24 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             state.active_play = Some(kind);
             state.play_notice = Some(play_dialog::Notice::preparing(kind));
-            let (game, client) = match play_setup::validate_paths(
-                &state.preferences.game_installation,
-                &state.preferences.client_executable,
-            ) {
+            let direct_launch = state.preferences.game_launch_mode == "Direct Launch";
+            let paths = if direct_launch && !is_modded {
+                play_setup::game_root(&state.preferences.game_installation)
+                    .map(|game| (game, PathBuf::new()))
+            } else {
+                play_setup::validate_paths(
+                    &state.preferences.game_installation,
+                    &state.preferences.client_executable,
+                )
+            };
+            let (game, client) = match paths {
                 Ok(paths) => paths,
                 Err(error) => {
                     state.page = Some(Page::Settings);
                     state.settings_tab = settings_page::Tab::Storage;
                     state.settings_advanced_paths = true;
                     state.status = format!(
-                        "Set Up Manager: {error}. Choose your installed game folder and normal Modded Evolve client, then Save Setup."
+                        "Set Up Manager: {error}. Choose your installed game folder (and the client for Client Launch), then Save Setup."
                     );
                     state.play_notice = Some(play_dialog::Notice::finished(
                         kind,
@@ -7683,20 +7688,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         client,
                         progress,
                         online_requested,
+                        direct_launch,
                     ),
                 );
             }
-            state.status =
-                "Opening the regular client. Recovery issues will be shown as warnings…".into();
-            return launch(
-                state,
-                Operation::LaunchCleanClient(
-                    game,
-                    client,
-                    (!state.preferences.swap.trim().is_empty())
-                        .then(|| PathBuf::from(&state.preferences.swap)),
-                ),
-            );
+            let swap = (!state.preferences.swap.trim().is_empty())
+                .then(|| PathBuf::from(&state.preferences.swap));
+            if direct_launch {
+                state.status = "Launching unmodded Evolve.exe directly with original PAKs…".into();
+                return launch(state, Operation::LaunchDirectGame(game, swap));
+            }
+            state.status = "Opening the normal client with original PAKs…".into();
+            return launch(state, Operation::LaunchCleanClient(game, client, swap));
         }
         Message::PreferenceStage(value) => {
             state.preferences.stage = value;
@@ -8693,7 +8696,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             if *online_requested {
                                 format!("{count} enabled mod(s) staged for a Developer-requested online test, regardless of mod type. Local swap verified; actual online connection and server acceptance UNVERIFIED.")
                             } else {
-                                format!("{count} enabled mod(s) installed for this offline launch. Evolve process creation and swap were verified.")
+                                format!("{count} enabled mod(s) prepared for this launch. PAK swap and process startup reported complete.")
                             },
                         )
                     }
@@ -9910,13 +9913,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 )) => {
                     state.status = if let Some(warning) = recovery {
                         format!("Regular client opened (PID {id}). {warning}")
+                    } else if state.preferences.game_launch_mode == "Direct Launch" {
+                        format!(
+                            "{mod_count} enabled mod(s) installed; Evolve.exe started directly (PID {id}). Original-file watchdog active. Client profile services and online connection remain unverified."
+                        )
                     } else if online_requested {
                         format!(
-                            "{mod_count} enabled mod(s) staged with no content-type restriction; helper PID {id}. Developer online test enabled. Use a permitted testing server; client connectivity and server acceptance are unverified."
+                            "{mod_count} enabled mod(s) staged; client hook PID {id}. Developer online test enabled; server acceptance is unverified."
                         )
                     } else {
                         format!(
-                            "{mod_count} enabled mod(s) ready. Offline client helper started (PID {id}). Press Play in the client."
+                            "{mod_count} enabled mod(s) ready. Client launch helper started (PID {id}). Press Play in the client."
                         )
                     };
                     state.page = Some(Page::Home);
