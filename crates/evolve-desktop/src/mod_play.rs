@@ -114,6 +114,9 @@ pub fn launch_enabled(
     if mods.is_empty() {
         return Err("Enable at least one mod before pressing Play with Mods.".into());
     }
+    if direct_launch {
+        super::direct_runtime::require_ready(&game)?;
+    }
     launcher_bridge::games_closed()?;
     // The former Developer toggle only changed status text. This is the real
     // Windows Firewall switch, matching private-manager outbound rules.
