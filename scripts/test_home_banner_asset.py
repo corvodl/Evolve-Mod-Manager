@@ -53,7 +53,8 @@ class HomeBannerAssetTests(unittest.TestCase):
             "fn docs_spec(", 1
         )[0]
         self.assertIn("stack![background, shade, content]", home)
-        self.assertIn("home_play_surface(quick)", home)
+        self.assertIn("home_play_surface(quick, wallpaper)", home)
+        self.assertIn("wallpaper.then(home_banner).flatten()", home)
         self.assertIn(".spacing(13)", home)
         self.assertIn("paths_selected", home)
         self.assertIn("Create your first mod", home)
@@ -64,12 +65,15 @@ class HomeBannerAssetTests(unittest.TestCase):
         news = code.split("fn latest_announcement(", 1)[1].split(
             "fn home_banner(", 1
         )[0]
-        self.assertIn("post.image_urls.iter().take(1)", news)
+        self.assertIn("post.image_urls.iter()", news)
+        self.assertIn(".find(|url| crate::whats_new::allowed_image_url(url))", news)
+        self.assertIn("row![details, preview]", news)
         self.assertIn("Length::Fixed(125.0)", news)
-        self.assertIn(".max_width(760.0)", news)
+        self.assertIn("Length::Fixed(340.0)", news)
         self.assertIn('Page::WhatsNew', news)
         self.assertIn("as u16 * 59 / 100", code)
-        self.assertIn("backdrop.a = 0.88", code)
+        self.assertIn("backdrop.a = if wallpaper { 0.88 } else { 1.0 }", code)
+        self.assertIn("backdrop.a = if wallpaper { 0.91 } else { 1.0 }", code)
 
     def test_portable_nightly_includes_banner(self):
         source = (ROOT / ".github/workflows/nightly.yml").read_text()
