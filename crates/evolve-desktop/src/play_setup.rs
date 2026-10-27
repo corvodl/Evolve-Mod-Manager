@@ -115,6 +115,20 @@ const PREVIOUS_CONTROLLED_SWAP_SHA256: &str =
 // Refresh only recognized published scripts; preserve user-modified helpers.
 const NIGHTLY_60_CONTROLLED_SWAP_SHA256: &str =
     "9adbb5e58a8cffdccfb952afec88fa4e2d8c9d22e21002973fe314ca4186596d";
+// Exact published helper from repository commit 43ccad26, shipped before
+// the official Stage 2 signing upgrade. Existing offline installations may
+// still have this helper; migrate it rather than failing modded launch.
+const PRE_OFFICIAL_CONTROLLED_SWAP_SHA256: &str =
+    "fdabe24e1b5659c04a93c4240e50b4c6fcd482a0da1dff08ac86816cd3227341";
+const KNOWN_CONTROLLED_SWAP_SHA256: &[&str] = &[
+    PREVIOUS_CONTROLLED_SWAP_SHA256,
+    NIGHTLY_60_CONTROLLED_SWAP_SHA256,
+    PRE_OFFICIAL_CONTROLLED_SWAP_SHA256,
+];
+// Exact published Frida helper from commit ecf53f3b. Allow it to migrate
+// as well, so existing Client Launch setups can upgrade both scripts.
+const PRE_TOKEN_AUTO_LAUNCH_SHA256: &str =
+    "37ba0586dfbd50ceb791a3156ce2bacb3d01f541b7cebccd21f8d10dc5b99aba";
 const CURRENT_AUTO_LAUNCH: &str = include_str!("../launcher_support/auto_launch_frida.py");
 const CURRENT_CONTROLLED_SWAP: &str = include_str!("../launcher_support/controlled_swap.py");
 
@@ -230,10 +244,7 @@ fn configure_helper(
         &swap,
         "controlled_swap.py",
         CURRENT_CONTROLLED_SWAP,
-        &[
-            PREVIOUS_CONTROLLED_SWAP_SHA256,
-            NIGHTLY_60_CONTROLLED_SWAP_SHA256,
-        ],
+        KNOWN_CONTROLLED_SWAP_SHA256,
     )?;
     if let Some(client) = client {
         refresh_verified_helper(
@@ -245,6 +256,7 @@ fn configure_helper(
                 NIGHTLY_56_AUTO_LAUNCH_SHA256,
                 NIGHTLY_69_AUTO_LAUNCH_SHA256,
                 NIGHTLY_70_AUTO_LAUNCH_SHA256,
+                PRE_TOKEN_AUTO_LAUNCH_SHA256,
             ],
         )?;
         crate::standard_user_launch::install_into_swap(&swap)?;
@@ -520,6 +532,36 @@ mod tests {
             .is_err()
         );
         assert_eq!(fs::read(&helper).unwrap(), custom);
+    }
+
+    #[test]
+    fn published_pre_official_swap_hash_is_recognized() {
+        // The SHA-256 reported by a Nightly user exactly matches the
+        // controlled_swap.py published at commit 43ccad26. Never accept
+        // arbitrary Python helper content simply to bypass migration.
+        assert!(KNOWN_CONTROLLED_SWAP_SHA256.contains(
+            &"fdabe24e1b5659c04a93c4240e50b4c6fcd482a0da1dff08ac86816cd3227341"
+        ));
+    }
+
+    #[test]
+    fn verified_legacy_helper_with_windows_newlines_migrates_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("controlled_swap.py");
+        let old = "import sys\nprint('known script')\n";
+        let old_windows = old.replace('\n', "\r\n");
+        fs::write(&path, old_windows).unwrap();
+        let expected = format!("{:x}", Sha256::digest(old.as_bytes()));
+        assert!(
+            refresh_verified_helper(
+                dir.path(),
+                "controlled_swap.py",
+                CURRENT_CONTROLLED_SWAP,
+                &[expected.as_str()]
+            )
+            .unwrap()
+        );
+        assert_eq!(fs::read(&path).unwrap(), CURRENT_CONTROLLED_SWAP.as_bytes());
     }
 
     #[test]
