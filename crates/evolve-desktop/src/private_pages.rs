@@ -179,8 +179,8 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         let project = state.modding_projects.as_ref().and_then(|projects| {
             projects.iter().find(|project| {
                 project.workspace == workspace
-                    || project.workspace
-                        == std::path::PathBuf::from(&state.preferences.current_workspace)
+                    || project.workspace.as_path()
+                        == std::path::Path::new(&state.preferences.current_workspace)
             })
         });
         let label = project
