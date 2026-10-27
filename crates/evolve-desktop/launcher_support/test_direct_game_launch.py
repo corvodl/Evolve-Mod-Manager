@@ -1,6 +1,7 @@
 """Direct-launch regression tests. These never execute the real client or Evolve."""
 import sys
 import tempfile
+import json
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -150,6 +151,41 @@ class DirectGameTests(unittest.TestCase):
         self.assertEqual(len(service.PATCH_EXPECTED),len(service.PATCH_REPLACEMENT))
         self.assertEqual(len(service.PATCH_REPLACEMENT),18)
         self.assertEqual(len(service.CLIENT_DIGEST),64)
+
+    def test_unknown_client_build_produces_runtime_error_report(self):
+        import direct_runtime_supervisor as supervisor
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            with mock.patch.object(supervisor.client_service_host, "require_client_files",
+                                   side_effect=RuntimeError("Unsupported installed client version")), \
+                 mock.patch.object(supervisor.contract, "verify_trace") as trace, \
+                 mock.patch.object(supervisor.client_service_host, "start_services") as services:
+                with self.assertRaisesRegex(RuntimeError, "Unsupported installed client version"):
+                    supervisor.supervise("client.exe", "Evolve.exe", str(root), str(root))
+            self.assertIn("Unsupported installed client version",
+                          json.loads((root/"error.json").read_text())["error"])
+            self.assertTrue((root/"stopped.json").is_file())
+            trace.assert_not_called()
+            services.assert_not_called()
+
+    def test_unknown_client_fingerprint_is_reported_without_patching(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            launcher=root/"ModdedEvolveLauncher.exe"
+            launcher.write_bytes(b"launcher")
+            for relative in ("ModdedEvolveLauncher.dll",
+                             "Compat/ModdedEvolveSteamCompat.dll",
+                             "Compat/Stage2/Stage2Trace.dll"):
+                target=root/relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b"runtime")
+            installed_hash="a"*64
+            with mock.patch.object(service, "digest", return_value=installed_hash):
+                with self.assertRaises(RuntimeError) as error:
+                    service.require_client_files(launcher)
+            self.assertIn(installed_hash,str(error.exception))
+            self.assertIn(service.CLIENT_DIGEST,str(error.exception))
+            self.assertEqual((root/"ModdedEvolveLauncher.dll").read_bytes(),b"runtime")
 
     def test_session_environment_calls_verified_contract(self):
         import stage2_runtime_contract as contract
