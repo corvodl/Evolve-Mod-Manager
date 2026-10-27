@@ -317,6 +317,7 @@ pub fn create(
         write_new(&original_public, original_key)?;
         let keys = stage.join("mykeys");
         if let Some(tools) = &official {
+            fs::create_dir(&keys).map_err(|e| e.to_string())?;
             write_new(&keys.join("public_key.bin"), &fs::read(&tools.public_key).map_err(|e| e.to_string())?)?;
         } else {
             generate_local_signing_keys(&keys).map_err(|e| e.to_string())?;
@@ -454,6 +455,7 @@ pub fn create(
                 "shim_sha256": shim_sha,
                 "signer": if official.is_some() { "official-2025" } else { "local-custom" },
                 "dbghelp_sha256": if official.is_some() { Some(sha256(&stage.join("dbghelp-custom.dll"))?) } else { None },
+                "original_dbghelp_sha256": if official.is_some() { Some(sha256(&game.join("bin64_SteamRetail/dbghelp.dll"))?) } else { None },
             }),
         )?;
         for (name, source) in HELPERS {
