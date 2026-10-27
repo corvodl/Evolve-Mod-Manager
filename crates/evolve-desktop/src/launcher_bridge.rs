@@ -1188,6 +1188,7 @@ fn record_prepare_output(log_path: &Path, output: &std::process::Output) -> Resu
 const DIRECT_LAUNCH_HELPER: &str = include_str!("../launcher_support/direct_game_launch.py");
 const DIRECT_STD_BROKER: &str = include_str!("../launcher_support/standard_user_launch.py");
 const DIRECT_SERVICE_HOST: &str = include_str!("../launcher_support/client_service_host.py");
+const DIRECT_TRACE_CONTRACT: &str = include_str!("../launcher_support/stage2_runtime_contract.py");
 const DIRECT_SERVICE_SUPERVISOR: &str =
     include_str!("../launcher_support/direct_runtime_supervisor.py");
 
@@ -1202,6 +1203,7 @@ fn install_direct_launch_helper(swap: &Path) -> Result<PathBuf, String> {
         ("direct_standard_user_launch.py", DIRECT_STD_BROKER),
         ("direct_game_launch.py", DIRECT_LAUNCH_HELPER),
         ("client_service_host.py", DIRECT_SERVICE_HOST),
+        ("stage2_runtime_contract.py", DIRECT_TRACE_CONTRACT),
         ("direct_runtime_supervisor.py", DIRECT_SERVICE_SUPERVISOR),
     ] {
         let target = swap.join(name);
