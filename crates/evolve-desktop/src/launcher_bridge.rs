@@ -515,7 +515,12 @@ fn inspect_hook_startup_log(path: &Path, offset: u64) -> Result<PrivateLaunchSig
         }
         signals.hook_ready |= line.contains("Automatic CreateProcessW hook ready at ");
         signals.swap_complete |= line.contains("SWAP COMPLETE. Releasing CreateProcessW...");
-        signals.game_released |= line.contains("Evolve creation released successfully.");
+        // Nightly .70 added a human-readable token-verification suffix
+        // and inadvertently broke the earlier stable Rust completion marker.
+        // Accept both published formats to avoid false failures on migration.
+        signals.game_released |= line.contains("Evolve creation released successfully.")
+            || line
+                .contains("Evolve creation released successfully (standard-user token verified).");
     }
     Ok(signals)
 }
@@ -1540,6 +1545,21 @@ mod tests {
         fs::write(&log, completed).unwrap();
         let state = inspect_hook_startup_log(&log, beginning).unwrap();
         assert!(state.hook_ready && state.swap_complete && state.game_released);
+        // Regression: Nightly .70 successfully spawned the game and verified
+        // medium integrity, but replaced the stable marker with a verbose
+        // message. This previously produced game_released=false and exit 0.
+        let verbose = format!(
+            "{prelude}CreateProcessW candidate: Evolve.exe\nSWAP COMPLETE. Releasing CreateProcessW...\nEvolve creation released successfully (standard-user token verified).\n"
+        );
+        fs::write(&log, verbose).unwrap();
+        let state = inspect_hook_startup_log(&log, beginning).unwrap();
+        assert!(state.hook_ready && state.swap_complete && state.game_released);
+        let incomplete = format!(
+            "{prelude}CreateProcessW candidate: Evolve.exe\nSWAP COMPLETE. Releasing CreateProcessW...\nEvolve.exe privilege verification failed: access denied\n"
+        );
+        fs::write(&log, incomplete).unwrap();
+        let state = inspect_hook_startup_log(&log, beginning).unwrap();
+        assert!(state.hook_ready && state.swap_complete && !state.game_released);
         fs::write(
             &log,
             b"Automatic CreateProcessW hook ready at old run\nAUTOMATIC LAUNCH FAILED: TimeoutError No swap completed\n",
