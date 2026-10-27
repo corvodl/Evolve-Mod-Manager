@@ -84,7 +84,6 @@ pub(super) struct WriteResult {
     pub after: String,
 }
 
-
 // Validate individual fields without making actor discovery depend on them.
 fn stage_number(bits: u32) -> Option<u32> {
     match bits {
@@ -235,8 +234,7 @@ mod windows {
         let armor = u32_at(h, at.saturating_add(Field::Armor.offset()))
             .zip(u32_at(h, at.saturating_add(Field::MaxArmor.offset())))
             .filter(|&(current, maximum)| plausible_pair(current, maximum));
-        let stage = u32_at(h, at.saturating_add(Field::Stage.offset()))
-            .and_then(stage_number);
+        let stage = u32_at(h, at.saturating_add(Field::Stage.offset())).and_then(stage_number);
         let fields = FIELDS
             .into_iter()
             .filter_map(|field| {
@@ -313,7 +311,9 @@ mod windows {
             return Err("Local entity ID mismatch (client vs entity table)".into());
         }
         if !actor_identity(&h, local_actor, local_entity) {
-            return Err("Local actor/entity pointer mismatch; verify build-specific actor layout".into());
+            return Err(
+                "Local actor/entity pointer mismatch; verify build-specific actor layout".into(),
+            );
         }
         // Show the structurally verified local actor even if no Goliath-based
         // field offsets match. Unsupported fields remain hidden and unwritable.
