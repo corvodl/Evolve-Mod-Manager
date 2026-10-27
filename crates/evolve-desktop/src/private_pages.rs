@@ -560,7 +560,7 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                 .style(design::secondary),
         ]
         .spacing(8),
-        text(format!("Launch method: {} (change in Settings). Both Play buttons follow this choice. Direct mode starts Evolve.exe without the client, but client profile services are not yet reproduced.", state.preferences.game_launch_mode))
+        text(format!("Launch method: {} (change in Settings). Client Launch uses the original relay, profiles and friends overlay. Direct Launch is experimental and does not yet reproduce the full client session.", state.preferences.game_launch_mode))
             .size(12)
             .style(design::muted),
     ]

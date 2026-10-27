@@ -104,7 +104,7 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
         column![
             heading(
                 "SET UP MANAGER / INSTALLED GAME",
-                "Both launch modes use the installed game and client files. Direct Launch uses the client's compatibility/profile services in a separate host."
+                "Client Launch uses the real client for relay, profiles and friends overlay. Direct Launch is for experimental startup testing."
             ),
             text("GAME LAUNCH METHOD").size(12),
             row![
@@ -115,7 +115,7 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
                     .on_press(Message::PreferenceGameLaunchMode("Direct Launch"))
                     .style(if state.preferences.game_launch_mode == "Direct Launch" { design::primary } else { design::secondary }),
             ].spacing(8),
-            text("Direct Launch is experimental and enabled for live testing. Both Play buttons start the game directly when selected; the manager reports missing runtime components or recovery errors instead of disabling the feature. Client Launch remains available.")
+            text("Recommended: Client Launch for authenticated profiles, relay and Shift+Tab friends. Direct Launch currently uses a Stage 2 smoke host and does not establish the full relay/overlay session. Explicit Direct selection is preserved.")
                 .size(11).style(design::muted),
             text("Game location (EvolveGame or bin64_SteamRetail)").size(12),
             row![
@@ -145,7 +145,7 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
                 if state.preferences.game_launch_mode == "Direct Launch" {
                     "Game and compatible client selected. Direct modded play also needs verified signing and recovery files."
                 } else {
-                    "Installed game and client found. Modded play also requires a verified signing stage."
+                    "Full client selected for relay, authenticated profile and friends overlay. Modded play also requires a verified signing stage and Frida."
                 }
             } else if state.preferences.game_launch_mode == "Direct Launch" {
                 "Select valid game and client paths for Steam/profile services, then save."

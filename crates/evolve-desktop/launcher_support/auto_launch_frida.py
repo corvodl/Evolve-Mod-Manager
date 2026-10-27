@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import socket
 from pathlib import Path
 import subprocess
 import sys
@@ -189,6 +190,23 @@ def make_js() -> str:
     return FRIDA_JS.replace('__GAME_PATH__', json.dumps(str(GAME_EXE)))
 
 
+def probe_full_client_services():
+    """Read-only loopback readiness snapshot; never synthesize relay credentials.
+
+    The native launcher, not this helper, authenticates the relay and owns the
+    real friends overlay. Lack of a TCP listener is diagnostic only: overlay
+    startup can race Evolve creation on some client revisions.
+    """
+    ready = {}
+    for label, port in (("frontend", 2000), ("friends_overlay", 2002)):
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+                ready[label] = True
+        except OSError:
+            ready[label] = False
+    return ready
+
+
 class SwapController:
     def __init__(self, proc, script):
         self.proc = proc
@@ -227,6 +245,19 @@ class SwapController:
                 self.finished.set()
                 return
             try:
+                services = probe_full_client_services()
+                print(
+                    "CLIENT_LAUNCH_LOCAL_SERVICES "
+                    + "frontend_2000=" + ("reachable" if services["frontend"] else "unavailable")
+                    + " friends_overlay_2002=" + ("reachable" if services["friends_overlay"] else "unavailable"),
+                    flush=True,
+                )
+                if not services["friends_overlay"]:
+                    print(
+                        "WARNING: friends overlay listener is not yet reachable; "
+                        "original client remains responsible for relay/overlay initialization.",
+                        flush=True,
+                    )
                 print('Evolve creation paused inside launcher; swapping prepared archives...', flush=True)
                 from types import SimpleNamespace
                 swapper.swap(SimpleNamespace(confirm_launcher_paused=True))
