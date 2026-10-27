@@ -40,7 +40,7 @@ pub struct Preferences {
     pub game_installation: String,
     /// Normal Modded Evolve launcher EXE selected by the user.
     pub client_executable: String,
-    /// Direct Launch (default) or Client Launch, used for clean and modded Play.
+    /// Client Launch (full relay/profile/overlay) is default; Direct is opt-in testing.
     pub game_launch_mode: String,
     pub stage: String,
     pub swap: String,
@@ -104,7 +104,7 @@ impl Default for Preferences {
             crash_logging_enabled: true,
             game_installation: String::new(),
             client_executable: String::new(),
-            game_launch_mode: "Direct Launch".into(),
+            game_launch_mode: "Client Launch".into(),
             stage: String::new(),
             swap: String::new(),
             projects: String::new(),
@@ -236,7 +236,7 @@ impl Preferences {
             self.ui_density = "Comfortable".into();
         }
         if !["Direct Launch", "Client Launch"].contains(&self.game_launch_mode.as_str()) {
-            self.game_launch_mode = "Direct Launch".into();
+            self.game_launch_mode = "Client Launch".into();
         }
         if !["Right", "Left"].contains(&self.file_explorer_side.as_str()) {
             self.file_explorer_side = "Left".into();
@@ -427,21 +427,21 @@ mod tests {
     }
 
     #[test]
-    fn direct_launch_defaults_for_existing_settings_and_client_choice_persists() {
-        assert_eq!(Preferences::default().game_launch_mode, "Direct Launch");
+    fn full_client_defaults_without_overwriting_explicit_direct_choice() {
+        assert_eq!(Preferences::default().game_launch_mode, "Client Launch");
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("settings.json");
         fs::write(&file, r#"{"ui_density":"Compact"}"#).unwrap();
-        assert_eq!(load_from(&file).unwrap().game_launch_mode, "Direct Launch");
+        assert_eq!(load_from(&file).unwrap().game_launch_mode, "Client Launch");
         let mut p = Preferences {
-            game_launch_mode: "Client Launch".into(),
+            game_launch_mode: "Direct Launch".into(),
             ..Preferences::default()
         };
         save_to(&file, &p).unwrap();
-        assert_eq!(load_from(&file).unwrap().game_launch_mode, "Client Launch");
+        assert_eq!(load_from(&file).unwrap().game_launch_mode, "Direct Launch");
         p.game_launch_mode = "invalid".into();
         p.validate().unwrap();
-        assert_eq!(p.game_launch_mode, "Direct Launch");
+        assert_eq!(p.game_launch_mode, "Client Launch");
     }
 
     #[test]

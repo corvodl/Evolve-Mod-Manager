@@ -379,12 +379,9 @@ fn inspect_existing_launcher_mode(
         140,
     )?;
     let new_key = plain(&stage.join("mykeys/public_key.bin"), 140)?;
-    if old_key == new_key
-        || fs::read(&old_key).map_err(|e| e.to_string())?
-            == fs::read(&new_key).map_err(|e| e.to_string())?
-    {
-        return Err("Original and custom client public keys must be different".into());
-    }
+    // Matching public keys are legitimate when a supplied signing key is
+    // also the stock verifier key. Continue to verify both hook key slots,
+    // the staged DLL digest, and every PAK signature independently.
     let custom = within_file(&stage, "inject-custom.dll")?;
     let original = within_file(&game, "bin64_SteamRetail/inject.dll")?;
     no_orphaned_backup(&original)?;
@@ -1436,8 +1433,11 @@ pub fn launch_direct_offline_game(
         .ok_or("Direct launch returned success without a confirmed game PID; check restore watchdog before another launch.")?;
     if !marker.contains(" swap_complete=true")
         || !marker.contains(" services_ready=true trace_loaded=true hooks_ready=true")
+        || !marker.contains(" window_visible=true")
     {
-        return Err("Direct launch did not confirm its completed file swap.".into());
+        return Err(
+            "Direct launch did not confirm a visible game window and completed file swap.".into(),
+        );
     }
     let pid = marker
         .split_whitespace()
@@ -1538,10 +1538,10 @@ pub fn launch_direct_clean_game(
         .find_map(|line| line.strip_prefix("DIRECT_GAME_LAUNCHED pid="))
         .ok_or("Direct clean startup did not confirm a live game process")?;
     if !marker
-        .contains(" swap_complete=false services_ready=true trace_loaded=true hooks_ready=true")
+        .contains(" swap_complete=false services_ready=true trace_loaded=true hooks_ready=true window_visible=true")
     {
         return Err(
-            "Direct clean startup did not verify its Steam/profile services and Stage2Trace module"
+            "Direct clean startup did not verify a visible game window and its Steam/profile services and Stage2Trace module"
                 .into(),
         );
     }

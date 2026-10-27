@@ -1,5 +1,6 @@
 """Regression coverage for Test B's missed CreateProcessW swap interception."""
 from pathlib import Path
+from unittest import mock
 import unittest
 
 import auto_launch_frida as launcher
@@ -40,6 +41,24 @@ class LaunchPathMatchingTests(unittest.TestCase):
         self.check_both(EXTENDED_UNC, UNC)
         self.check_both(UNC, EXTENDED_UNC)
         self.check_both(EXTENDED_UNC, '"' + UNC + '" -log')
+
+    def test_full_client_port_snapshot_checks_only_loopback_services(self):
+        calls = []
+        class Connected:
+            def __enter__(self): return self
+            def __exit__(self, *_): return None
+        def probe(address, timeout):
+            calls.append((address, timeout))
+            if address[1] == 2002:
+                raise ConnectionRefusedError()
+            return Connected()
+        with mock.patch.object(launcher.socket, "create_connection", side_effect=probe):
+            result = launcher.probe_full_client_services()
+        self.assertEqual(result, {"frontend": True, "friends_overlay": False})
+        self.assertEqual(calls, [
+            (("127.0.0.1", 2000), 0.3),
+            (("127.0.0.1", 2002), 0.3),
+        ])
 
     def test_rejects_other_executables_or_non_boundary_suffixes(self):
         launcher.GAME_EXE = Path(EXTENDED_DRIVE)

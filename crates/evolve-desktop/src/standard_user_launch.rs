@@ -2,6 +2,7 @@
 //! integrity Windows session instead of inheriting this manager's admin token.
 //! The Windows Win32 token boundary lives in a separately checked Python 3.11
 //! helper; this Rust crate preserves the workspace-wide ban on unsafe code.
+use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::Path;
 #[cfg(windows)]
@@ -111,9 +112,49 @@ pub fn install_into_swap(swap: &Path) -> Result<(), String> {
                 return Err("Existing standard-user launch helper is not an ordinary file".into());
             }
             let existing = std::fs::read(&target).map_err(|e| e.to_string())?;
-            if existing != BROKER_SCRIPT.as_bytes() {
-                return Err("An unrecognized standard_user_launch.py already exists. Preserve it and use a clean trusted swap helper folder.".into());
+            if existing == BROKER_SCRIPT.as_bytes() {
+                return Ok(());
             }
+            // Preserve unrecognized and older helpers byte-for-byte, but
+            // execute only the vetted script embedded in this release.
+            let digest = format!("{:x}", Sha256::digest(&existing));
+            let preserved = swap.join(format!(
+                "standard_user_launch.py.previous-{}",
+                &digest[..16]
+            ));
+            match std::fs::symlink_metadata(&preserved) {
+                Ok(meta) => {
+                    if !meta.file_type().is_file()
+                        || std::fs::read(&preserved).map_err(|e| e.to_string())? != existing
+                    {
+                        return Err(
+                            "Conflicting preserved standard-user helper; no files replaced".into(),
+                        );
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) => return Err(format!("Cannot inspect previous helper: {error}")),
+            }
+            let mut scratch = tempfile::Builder::new()
+                .prefix(".evolve-standard-user-")
+                .tempfile_in(swap)
+                .map_err(|e| e.to_string())?;
+            scratch
+                .write_all(BROKER_SCRIPT.as_bytes())
+                .map_err(|e| e.to_string())?;
+            scratch
+                .as_file_mut()
+                .sync_all()
+                .map_err(|e| e.to_string())?;
+            if preserved.exists() {
+                std::fs::remove_file(&target).map_err(|e| e.to_string())?;
+            } else {
+                std::fs::rename(&target, &preserved)
+                    .map_err(|e| format!("Could not preserve existing helper: {e}"))?;
+            }
+            scratch
+                .persist_noclobber(&target)
+                .map_err(|e| format!("Could not publish vetted helper: {}", e.error))?;
             Ok(())
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -166,13 +207,24 @@ mod tests {
     }
 
     #[test]
-    fn private_helper_install_is_idempotent_and_rejects_substitution() {
+    fn private_helper_install_preserves_previous_bytes_and_uses_vetted_script() {
         let root = tempfile::tempdir().unwrap();
         install_into_swap(root.path()).unwrap();
         install_into_swap(root.path()).unwrap();
         let path = root.path().join("standard_user_launch.py");
         std::fs::write(&path, b"unknown script").unwrap();
+        install_into_swap(root.path()).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), BROKER_SCRIPT.as_bytes());
+        let old_sha = format!("{:x}", Sha256::digest(b"unknown script"));
+        let preserved = root.path().join(format!(
+            "standard_user_launch.py.previous-{}",
+            &old_sha[..16]
+        ));
+        assert_eq!(std::fs::read(&preserved).unwrap(), b"unknown script");
+        install_into_swap(root.path()).unwrap();
+        std::fs::write(&path, b"unknown script").unwrap();
+        std::fs::write(&preserved, b"tampered backup").unwrap();
         assert!(install_into_swap(root.path()).is_err());
-        assert_eq!(std::fs::read(path).unwrap(), b"unknown script");
+        assert_eq!(std::fs::read(&path).unwrap(), b"unknown script");
     }
 }

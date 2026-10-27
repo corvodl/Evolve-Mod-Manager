@@ -105,6 +105,15 @@ def listener_owner(port, pid):
                 return True
     return False
 
+def frontend_accepting_connections():
+    """Probe the real frontend listener, including HTTP.sys PID 4."""
+    try:
+        with socket.create_connection(("127.0.0.1", 2000), timeout=0.35):
+            return True
+    except OSError:
+        return False
+
+
 def wait_services(process, log_path=None, timeout=45):
     """Accept active service ownership or an explicit client runtime handshake.
 
@@ -116,7 +125,8 @@ def wait_services(process, log_path=None, timeout=45):
     while time.monotonic()<deadline:
         if process.poll() is not None:
             raise RuntimeError("Stage 2 services-only runtime exited during startup; inspect direct-stage2-services.log")
-        if listener_owner(2000,process.pid) and listener_owner(2040,process.pid):
+        frontend_live = frontend_accepting_connections()
+        if frontend_live and listener_owner(2000,process.pid) and listener_owner(2040,process.pid):
             return
         if log_path is not None:
             try:
@@ -126,11 +136,15 @@ def wait_services(process, log_path=None, timeout=45):
             if len(details) > 1024 * 1024:
                 raise RuntimeError("Client service startup log is unexpectedly large")
             if "STAGE2_SERVICES_STARTED" in details and "SESSION_IDENTITY_STAGE2_READY" in details:
-                # Explicit client-side service and identity readiness is valid
-                # even if kernel-owned HTTP.sys is the reported listener PID.
-                return
+                # The log can precede the listener being connectable.
+                # Require a live TCP connection even for HTTP.sys PID 4.
+                if frontend_live:
+                    return
         time.sleep(.25)
-    raise RuntimeError("Stage 2 profile/Steam service startup was not confirmed after 45 seconds; inspect direct-stage2-services.log.")
+    raise RuntimeError(
+        "Stage 2 frontend 127.0.0.1:2000 did not become connectable, "
+        "or client service readiness was not confirmed. Inspect direct-stage2-services.log."
+    )
 
 def start_services(client_exe, game_exe, swap_dir, broker):
     shadow=ensure_shadow(client_exe,swap_dir)
