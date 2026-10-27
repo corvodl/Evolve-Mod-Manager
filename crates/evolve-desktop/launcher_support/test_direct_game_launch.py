@@ -6,6 +6,10 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# Production publishes this bundled source under a distinct filename to
+# avoid overwriting the client broker. CI maps the same module explicitly.
+import standard_user_launch as _direct_broker
+sys.modules["direct_standard_user_launch"] = _direct_broker
 import direct_game_launch as direct
 
 
