@@ -2,7 +2,7 @@
 //! Home deliberately does not enumerate PAKs or scan the user's installation.
 use super::{Message, Page, State};
 use crate::design;
-use iced::widget::{button, column, container, image, row, scrollable, stack, svg, text};
+use iced::widget::{button, column, container, image, row, scrollable, stack, svg, text, tooltip};
 use iced::{Background, Border, Element, Fill, Length};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -62,10 +62,11 @@ fn surface<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Contai
 /// panels because the artwork is exclusive to the Home view.
 fn home_surface<'a>(
     content: impl Into<Element<'a, Message>>,
+    wallpaper: bool,
 ) -> iced::widget::Container<'a, Message> {
-    surface(content).style(|theme| {
+    surface(content).style(move |theme| {
         let mut backdrop = design::surface(theme);
-        backdrop.a = 0.88;
+        backdrop.a = if wallpaper { 0.88 } else { 1.0 };
         container::Style {
             background: Some(Background::Color(backdrop)),
             border: Border {
@@ -83,17 +84,18 @@ fn home_surface<'a>(
 /// Evolve-red border and a very slight tint, without sacrificing contrast.
 fn home_play_surface<'a>(
     content: impl Into<Element<'a, Message>>,
+    wallpaper: bool,
 ) -> iced::widget::Container<'a, Message> {
     container(content)
         .width(Fill)
         .padding([13, 18])
-        .style(|theme| {
+        .style(move |theme| {
             let mut backdrop = design::surface(theme);
             let accent = theme.palette().primary;
             backdrop.r = backdrop.r * 0.94 + accent.r * 0.06;
             backdrop.g = backdrop.g * 0.94 + accent.g * 0.06;
             backdrop.b = backdrop.b * 0.94 + accent.b * 0.06;
-            backdrop.a = 0.91;
+            backdrop.a = if wallpaper { 0.91 } else { 1.0 };
             container::Style {
                 background: Some(Background::Color(backdrop)),
                 border: Border {
@@ -171,74 +173,114 @@ fn tile(name: &'static str, description: &'static str, page: Page) -> Element<'s
     .into()
 }
 
-fn status_card<'a>(label: &'static str, value: String) -> Element<'a, Message> {
+fn status_card<'a>(
+    label: &'static str,
+    value: String,
+    wallpaper: bool,
+) -> Element<'a, Message> {
     home_surface(
         column![
             text(label).size(13),
             text(value).size(12).style(design::muted),
         ]
         .spacing(8),
+        wallpaper,
     )
     .into()
 }
 
-fn latest_announcement(state: &State) -> Element<'_, Message> {
+/// The long +build identifier remains available on hover, but never
+/// dominates the narrow At a Glance column.
+fn short_client_version(version: &str) -> String {
+    if let Some((release, build)) = version.split_once('+') {
+        let prefix: String = build.chars().take(8).collect();
+        if !release.is_empty() && !prefix.is_empty() {
+            return format!("v{release} · {prefix}");
+        }
+    }
+    if version.chars().count() > 28 {
+        return format!("v{}…", version.chars().take(24).collect::<String>());
+    }
+    format!("v{version}")
+}
+
+fn client_version_card<'a>(version: Option<&str>, wallpaper: bool) -> Element<'a, Message> {
+    let value: Element<'a, Message> = if let Some(version) = version {
+        tooltip(
+            text(short_client_version(version))
+                .size(12)
+                .style(design::muted),
+            text(format!("Full client version: v{version}")).size(11),
+            tooltip::Position::Top,
+        )
+        .into()
+    } else {
+        text("Not detected").size(12).style(design::muted).into()
+    };
+    home_surface(
+        column![text("Client Version").size(13), value].spacing(8),
+        wallpaper,
+    )
+    .into()
+}
+
+/// A horizontal announcement preview uses the wide panel efficiently, with
+/// one small uncropped attachment alongside the excerpt. Full images and
+/// additional embeds remain available on What's New.
+fn latest_announcement(state: &State, wallpaper: bool) -> Element<'_, Message> {
     let news = &state.news;
-    let mut content = column![
-        row![
-            text("Announcements").size(19),
-            design::button("More in What's New")
-                .on_press(Message::Navigate(Page::WhatsNew))
-                .style(design::secondary),
-        ]
-        .spacing(12)
-        .align_y(iced::Center),
+    let heading = row![
+        text("Announcements").size(19),
+        design::button("More in What's New")
+            .on_press(Message::Navigate(Page::WhatsNew))
+            .style(design::secondary),
     ]
-    .spacing(7);
+    .spacing(12)
+    .align_y(iced::Center);
+
+    let mut details = column![].spacing(6).width(Fill);
+    let mut preview: Option<Element<'_, Message>> = None;
     if let Some(post) = news.cache.announcements.first() {
         if !post.title.is_empty() {
-            content = content.push(text(&post.title).size(18));
+            details = details.push(text(&post.title).size(16));
         }
-        content = content.push(
+        details = details.push(
             text(format!("{}  ·  {}", post.author, post.timestamp))
-                .size(12)
+                .size(11)
                 .style(design::muted),
         );
         for body in [&post.content, &post.description] {
             if !body.is_empty() {
                 let excerpt: String = body.chars().take(260).collect();
-                content = content.push(text(excerpt).size(13));
+                details = details.push(text(excerpt).size(12));
             }
         }
-        for url in post.image_urls.iter().take(1) {
-            if !crate::whats_new::allowed_image_url(url) {
-                continue;
-            }
+        if let Some(url) = post.image_urls.iter()
+            .find(|url| crate::whats_new::allowed_image_url(url))
+        {
             if let Some(handle) = news.image_handles.get(url) {
-                // Small, uncropped preview on Home. The full-sized
-                // attachment remains accessible through What's New.
-                content = content.push(
+                preview = Some(
                     container(
                         image(handle.clone())
-                            .width(Fill)
+                            .width(Length::Fixed(340.0))
                             .height(Length::Fixed(125.0))
                             .content_fit(iced::ContentFit::Contain),
                     )
-                    .width(Fill)
-                    .max_width(760.0),
+                    .width(Length::Fixed(340.0))
+                    .into(),
                 );
             } else if news.image_failures.contains(url) {
-                content = content.push(
-                    text("Image preview unavailable")
-                        .size(11)
-                        .style(design::muted),
+                details = details.push(
+                    text("Image preview unavailable").size(11).style(design::muted)
                 );
             } else {
-                content = content.push(text("Loading image…").size(11).style(design::muted));
+                details = details.push(
+                    text("Loading image…").size(11).style(design::muted)
+                );
             }
         }
     } else {
-        content = content.push(
+        details = details.push(
             text(if news.loading {
                 "Loading the latest announcement…"
             } else {
@@ -248,7 +290,15 @@ fn latest_announcement(state: &State) -> Element<'_, Message> {
             .style(design::muted),
         );
     }
-    home_surface(content).padding([12, 15]).into()
+
+    let body: Element<'_, Message> = if let Some(preview) = preview {
+        row![details, preview].spacing(16).align_y(iced::Center).into()
+    } else {
+        details.into()
+    };
+    home_surface(column![heading, body].spacing(7), wallpaper)
+        .padding([12, 15])
+        .into()
 }
 
 /// The optional Home art is distinct from animated progress indicators.
@@ -372,6 +422,7 @@ fn decode_home_dds(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
 }
 
 pub(super) fn home(state: &State) -> Element<'_, Message> {
+    let wallpaper = state.preferences.show_home_background;
     let hero = if let Some(workspace) = super::home_recent_workspace(state) {
         let project = state.modding_projects.as_ref().and_then(|projects| {
             projects.iter().find(|project| {
@@ -432,6 +483,7 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
             ]
             .spacing(12)
             .align_y(iced::Center),
+            wallpaper,
         )
         .padding([13, 18])
     } else {
@@ -478,6 +530,7 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
             ]
             .spacing(12)
             .align_y(iced::Center),
+            wallpaper,
         )
         .padding([12, 18])
     };
@@ -569,7 +622,8 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                 "Select EvolveGame in Settings".to_owned()
             } else {
                 state.preferences.game_installation.clone()
-            }
+            },
+            wallpaper,
         ),
         status_card(
             "Modded Evolve client",
@@ -577,22 +631,18 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                 "Select ModdedEvolveLauncher.exe in Settings".to_owned()
             } else {
                 state.preferences.client_executable.clone()
-            }
+            },
+            wallpaper,
         ),
-        status_card(
-            "Client Version",
-            state.client_version.as_ref().map_or_else(
-                || "Not detected".to_owned(),
-                |version| format!("v{version}")
-            ),
-        ),
+        client_version_card(state.client_version.as_deref(), wallpaper),
         status_card(
             "Signing stage",
             if state.preferences.stage.is_empty() {
                 "Not prepared".to_owned()
             } else {
                 "Isolated offline stage configured".to_owned()
-            }
+            },
+            wallpaper,
         ),
         status_card(
             "Editing project",
@@ -600,7 +650,8 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                 "None selected".to_owned()
             } else {
                 state.preferences.current_workspace.clone()
-            }
+            },
+            wallpaper,
         ),
     ]
     .spacing(9)
@@ -611,8 +662,8 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
     let content = scrollable(
         column![
             hero,
-            home_play_surface(quick),
-            latest_announcement(state),
+            home_play_surface(quick, wallpaper),
+            latest_announcement(state, wallpaper),
             row![entries, status].spacing(14),
         ]
         .spacing(13)
@@ -621,7 +672,7 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
     .width(Fill)
     .height(Fill);
 
-    if let Some(handle) = home_banner() {
+    if let Some(handle) = wallpaper.then(home_banner).flatten() {
         // Cover the available viewport, not a 280px banner. The DDS decoder
         // already darkens the image; a subtle shade ensures text over the
         // artwork stays readable even on bright regions.
