@@ -203,14 +203,19 @@ class StandardUserProcess:
             self.close()
 
 
-def launch_standard_user(executable):
+def launch_standard_user(executable, *, game=False):
     """Use the signed-in Explorer desktop token and CreateProcessWithTokenW.
 
     Requires an accessible, MEDIUM-integrity non-elevated Explorer shell in
     the same interactive session. If absent, fail; never fall back to admin.
     """
     exe = Path(executable).resolve(strict=True)
-    if not exe.is_file() or exe.name.casefold() != "moddedevolvelauncher.exe":
+    if not exe.is_file():
+        raise ValueError("Configured launch target must be an existing file")
+    if game:
+        if exe.name.casefold() != "evolve.exe" or exe.parent.name.casefold() != "bin64_steamretail":
+            raise ValueError("Direct game launch requires bin64_SteamRetail/Evolve.exe")
+    elif exe.name.casefold() != "moddedevolvelauncher.exe":
         raise ValueError("Only a configured ModdedEvolveLauncher.exe may be launched")
     api = _win()
     shell = api["GetShellWindow"]()
@@ -265,9 +270,32 @@ def launch_standard_user(executable):
             startup.lpDesktop = "winsta0\\default"
             info = PROCESS_INFORMATION()
             command = ctypes.create_unicode_buffer(subprocess.list2cmdline([str(exe)]))
+            # Direct game launch reproduces the three Steam IDs recorded in
+            # the normal client's launch trace. The original client path keeps
+            # the exact interactive-user environment without alteration.
+            launch_env = env
+            if game:
+                chars = ctypes.cast(env, ctypes.POINTER(ctypes.c_wchar))
+                entries, part = [], []
+                for index in range(131072):
+                    value = chars[index]
+                    if value == "\\0":
+                        if not part:
+                            break
+                        entries.append("".join(part))
+                        part = []
+                    else:
+                        part.append(value)
+                else:
+                    raise RuntimeError("Interactive user environment is too large")
+                keys = {"steamappid", "steamgameid", "steamoverlaygameid"}
+                entries = [item for item in entries if item.partition("=")[0].casefold() not in keys]
+                entries.extend(("SteamAppId=273350", "SteamGameId=273350", "SteamOverlayGameId=273350"))
+                env_buffer = ctypes.create_unicode_buffer("\\0".join(entries) + "\\0\\0")
+                launch_env = ctypes.cast(env_buffer, ctypes.c_void_p)
             if not api["CreateProcessWithTokenW"](
                 primary, LOGON_WITH_PROFILE, str(exe), command, CREATE_UNICODE_ENVIRONMENT,
-                env, str(exe.parent), ctypes.byref(startup), ctypes.byref(info)
+                launch_env, str(exe.parent), ctypes.byref(startup), ctypes.byref(info)
             ):
                 raise _error("CreateProcessWithTokenW")
         finally:
@@ -349,13 +377,14 @@ def diagnose_processes():
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--launch", metavar="CLIENT_EXE")
+    parser.add_argument("--launch-game", metavar="EVOLVE_EXE")
     parser.add_argument("--diagnose-pid", type=int, metavar="PID")
     parser.add_argument("--diagnose-processes", action="store_true")
     args = parser.parse_args(argv)
-    if sum([bool(args.launch), args.diagnose_pid is not None, args.diagnose_processes]) != 1:
+    if sum([bool(args.launch), bool(args.launch_game), args.diagnose_pid is not None, args.diagnose_processes]) != 1:
         parser.error("Pass exactly one --launch EXE, --diagnose-pid PID, or --diagnose-processes")
-    if args.launch:
-        process = launch_standard_user(args.launch)
+    if args.launch or args.launch_game:
+        process = launch_standard_user(args.launch_game or args.launch, game=bool(args.launch_game))
         try:
             actual = get_elevation(process.pid)
             print(
@@ -364,7 +393,7 @@ def main(argv=None):
                 flush=True,
             )
         finally:
-            process.close()  # Does not terminate running client.
+            process.close()  # Does not terminate the running process.
     elif args.diagnose_processes:
         print(diagnose_processes(), flush=True)
     else:
