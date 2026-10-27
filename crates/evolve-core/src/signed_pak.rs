@@ -565,6 +565,45 @@ pub fn extract_signed_pak(
     Ok(verified.info)
 }
 
+/// Extract one named, authenticated member without expanding a whole multi-GB
+/// archive. The verified directory and the member CRC/length are checked
+/// before publishing a NEW output file. Callers must choose a scratch path
+/// outside the installed game and manager stage.
+pub fn extract_signed_member(
+    source: &Path,
+    der_public_key: &Path,
+    signed_basename: &str,
+    member: &str,
+    destination: &Path,
+) -> Result<SignedEntry, SignedPakError> {
+    if safe_member_name(member).map_err(|_| SignedPakError::UnsafePath(member.into()))? != member {
+        return Err(SignedPakError::UnsafePath(member.into()));
+    }
+    let verified = open_verified_signed_pak(source, der_public_key, signed_basename)?;
+    let entry = verified
+        .info
+        .entries
+        .iter()
+        .find(|e| e.path == member)
+        .ok_or_else(|| SignedPakError::Format("member missing from verified archive".into()))?
+        .clone();
+    let parent = destination.parent().ok_or(SignedPakError::UnsafeOutput)?;
+    if destination == source
+        || fs::symlink_metadata(destination).is_ok()
+        || !fs::symlink_metadata(parent)?.file_type().is_dir()
+        || fs::symlink_metadata(parent)?.file_type().is_symlink()
+    {
+        return Err(SignedPakError::UnsafeOutput);
+    }
+    let content = verified.read_member(source, member, 64 * 1024 * 1024)?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    temp.write_all(&content)?;
+    temp.as_file().sync_all()?;
+    temp.persist_noclobber(destination)
+        .map_err(|e| SignedPakError::Io(e.error))?;
+    Ok(entry)
+}
+
 /// Result of a native Stage 2 signed replacement. Outputs are for explicit
 /// offline modding; signing with a local key does NOT prove retail acceptance.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1491,6 +1530,34 @@ mod tests {
         assert_eq!(fs::read(&differently_cased).unwrap(), bytes);
 
         let extracted = root.path().join("unpacked");
+        let single = root.path().join("single.caf");
+        let one =
+            extract_signed_member(&archive, &key, "sample.pak", "example.caf", &single).unwrap();
+        assert_eq!(one.path, "example.caf");
+        assert_eq!(fs::read(&single).unwrap(), payload);
+        assert!(
+            extract_signed_member(&archive, &key, "sample.pak", "example.caf", &single).is_err()
+        );
+        assert!(
+            extract_signed_member(
+                &archive,
+                &key,
+                "sample.pak",
+                "../example.caf",
+                &root.path().join("bad.caf")
+            )
+            .is_err()
+        );
+        assert!(
+            extract_signed_member(
+                &archive,
+                &key,
+                "wrong.pak",
+                "example.caf",
+                &root.path().join("bad.caf")
+            )
+            .is_err()
+        );
         extract_signed_pak(&archive, &key, "sample.pak", &extracted).unwrap();
         assert_eq!(fs::read(extracted.join("example.caf")).unwrap(), payload);
         assert!(extract_signed_pak(&archive, &key, "sample.pak", &extracted).is_err());

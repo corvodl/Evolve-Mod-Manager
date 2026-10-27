@@ -1,5 +1,5 @@
 //! Safe command-line functions shared with the desktop application.
-use evolve_core::signed_pak::rebuild_signed_pak_with_additions;
+use evolve_core::signed_pak::{extract_signed_member, rebuild_signed_pak_with_additions};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, Transform, add_mod_to_profile, animation_references,
     apply_profile_stage, apply_stage_pak, apply_stage_pak_with_additions, batch_stage_status,
@@ -67,6 +67,7 @@ fn usage() -> String {
         "  evolve-cli fbx export <rigged.glb> <Blender.exe> <new.fbx> [--animations]",
         "  evolve-cli signed inspect <original.pak> <public-key.der> <signed-basename> [info.json]",
         "  evolve-cli signed extract <original.pak> <public-key.der> <signed-basename> <new-folder>",
+        "  evolve-cli signed extract-member <original.pak> <public-key.der> <signed-basename> <exact-member-path> <new-file>",
         "  evolve-cli signed rebuild <original.pak> <old-public.der> <new-private.pem> <new-public.der> <basename> <member> <replacement> <new.pak>",
         "  evolve-cli signed overlay <original.pak> <old-public.der> <new-private.pem> <new-public.der> <basename> <source-folder> <new.pak>",
         "  evolve-cli signed resign <original.pak> <old-public.der> <new-private.pem> <new-public.der> <basename> <new.pak>",
@@ -471,6 +472,21 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
                 plan.mods.len(),
                 plan.total_bytes
             );
+            for change in &plan.member_changes {
+                println!(
+                    "  {}: +{} added, {} changed, -{} removed, {} case-renamed members{}",
+                    change.target,
+                    change.added,
+                    change.changed,
+                    change.removed,
+                    change.case_renamed,
+                    if change.removed > 0 || change.case_renamed > 0 {
+                        " (compatibility warning)"
+                    } else {
+                        ""
+                    }
+                );
+            }
         } else {
             return Err(usage());
         }
@@ -726,6 +742,22 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
         let basename = pop(&mut args)?
             .into_string()
             .map_err(|_| "Signed basename must be UTF-8".to_owned())?;
+        if subcommand == OsStr::new("extract-member") {
+            let member = pop(&mut args)?
+                .into_string()
+                .map_err(|_| "Signed member must be UTF-8".to_owned())?;
+            let target: PathBuf = pop(&mut args)?.into();
+            no_extra(&mut args)?;
+            let entry = extract_signed_member(&source, &key, &basename, &member, &target)
+                .map_err(|e| e.to_string())?;
+            println!(
+                "Verified and extracted {} ({} bytes) to {}",
+                entry.path,
+                entry.size,
+                target.display()
+            );
+            return Ok(());
+        }
         let output: Option<PathBuf> = args.next().map(Into::into);
         no_extra(&mut args)?;
         if subcommand == OsStr::new("inspect") {

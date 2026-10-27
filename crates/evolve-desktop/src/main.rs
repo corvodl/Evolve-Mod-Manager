@@ -9815,10 +9815,26 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                 }
                 Ok(Completed::ProfilePlanned(plan)) => {
+                    let (added, removed, changed, case_renamed) = plan.member_changes.iter().fold(
+                        (0usize, 0usize, 0usize, 0usize),
+                        |totals, item| {
+                            (
+                                totals.0 + item.added,
+                                totals.1 + item.removed,
+                                totals.2 + item.changed,
+                                totals.3 + item.case_renamed,
+                            )
+                        },
+                    );
                     state.profile_feedback = format!(
-                        "Verified {} enabled signed PAKs ({} bytes). This is a read-only plan; no game files changed.",
+                        "Verified {} enabled signed PAKs ({} bytes): {added} added, {changed} replaced, {removed} removed and {case_renamed} case-renamed members. {} This is a read-only plan; no game files changed.",
                         plan.mods.len(),
-                        plan.total_bytes
+                        plan.total_bytes,
+                        if removed > 0 || case_renamed > 0 {
+                            "WARNING: member removals or case changes may break Stage 2."
+                        } else {
+                            "Member counts do not establish in-game compatibility."
+                        },
                     );
                     state.status = state.profile_feedback.clone();
                     state.page = Some(Page::Files);

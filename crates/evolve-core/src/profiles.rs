@@ -5,7 +5,7 @@ use crate::signed_pak::inspect_signed_pak;
 use crate::staging::stage_status;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -60,6 +60,45 @@ pub struct ProfilePlan {
     pub profile_id: String,
     pub mods: Vec<ProfileMod>,
     pub total_bytes: u64,
+    /// Signed-member inventory changes are diagnostic; they are not proof of
+    /// runtime compatibility or game-side mounting.
+    #[serde(default)]
+    pub member_changes: Vec<ProfileMemberChange>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProfileMemberChange {
+    pub target: String,
+    pub added: usize,
+    pub removed: usize,
+    pub changed: usize,
+    pub case_renamed: usize,
+}
+
+fn member_changes(
+    target: &str,
+    old: &[crate::signed_pak::SignedEntry],
+    new: &[crate::signed_pak::SignedEntry],
+) -> ProfileMemberChange {
+    let before: HashMap<_, _> = old.iter().map(|e| (e.path.to_lowercase(), e)).collect();
+    let after: HashMap<_, _> = new.iter().map(|e| (e.path.to_lowercase(), e)).collect();
+    ProfileMemberChange {
+        target: target.to_owned(),
+        added: after.keys().filter(|p| !before.contains_key(*p)).count(),
+        removed: before.keys().filter(|p| !after.contains_key(*p)).count(),
+        changed: before
+            .iter()
+            .filter(|(p, a)| {
+                after
+                    .get(*p)
+                    .is_some_and(|b| a.crc32 != b.crc32 || a.size != b.size)
+            })
+            .count(),
+        case_renamed: before
+            .iter()
+            .filter(|(p, a)| after.get(*p).is_some_and(|b| a.path != b.path))
+            .count(),
+    }
 }
 fn root(stage: &Path, require_clear: bool) -> Result<PathBuf, ProfileError> {
     let state = stage_status(stage).map_err(|e| ProfileError::Invalid(e.to_string()))?;
@@ -217,7 +256,7 @@ fn verify_pair(
     original_key: &Path,
     mod_key: &Path,
     basename: &str,
-) -> Result<(String, u64), ProfileError> {
+) -> Result<(String, u64, ProfileMemberChange), ProfileError> {
     let directory = root(stage, true)?;
     let virtual_path = target(relative)?;
     let staged = directory.join("paks").join(&virtual_path);
@@ -245,13 +284,11 @@ fn verify_pair(
     let new = inspect_signed_pak(file, mod_key, basename)
         .or_else(|_| inspect_signed_pak(file, mod_key, &lowercase))
         .map_err(|e| ProfileError::Verify(e.to_string()))?;
-    let a: HashSet<_> = old.entries.iter().map(|e| e.path.to_lowercase()).collect();
-    let b: HashSet<_> = new.entries.iter().map(|e| e.path.to_lowercase()).collect();
     // Different game revisions can legitimately add or remove PAK members.
     // A mismatch is a compatibility warning, not a failed cryptographic
     // signature. The offline staging journal still preserves exact originals.
-    let _member_inventory_differs = a != b;
-    Ok((digest(file)?, fs::metadata(file)?.len()))
+    let changes = member_changes(&virtual_path, &old.entries, &new.entries);
+    Ok((digest(file)?, fs::metadata(file)?.len(), changes))
 }
 pub fn add_mod_to_profile(
     stage: &Path,
@@ -262,7 +299,7 @@ pub fn add_mod_to_profile(
     mod_key: &Path,
     basename: &str,
 ) -> Result<ProfileMod, ProfileError> {
-    let (sha256, _) = verify_pair(stage, source, relative, original_key, mod_key, basename)?;
+    let (sha256, _, _) = verify_pair(stage, source, relative, original_key, mod_key, basename)?;
     let mut catalog = list_mod_profiles(stage)?;
     let profile = selected(&mut catalog, profile_id)?;
     if profile.mods.len() >= 500
@@ -327,8 +364,9 @@ pub fn plan_mod_profile(
         .ok_or_else(|| ProfileError::Invalid("Unknown profile ID".into()))?;
     let mut mods = Vec::new();
     let mut size = 0u64;
+    let mut member_reports = Vec::new();
     for item in profile.mods.iter().filter(|m| m.enabled) {
-        let (current, bytes) = verify_pair(
+        let (current, bytes, changes) = verify_pair(
             stage,
             Path::new(&item.source),
             &item.target,
@@ -349,11 +387,13 @@ pub fn plan_mod_profile(
             return Err(ProfileError::Invalid("Plan exceeds safety limit".into()));
         }
         mods.push(refreshed);
+        member_reports.push(changes);
     }
     Ok(ProfilePlan {
         profile_id: profile_id.into(),
         mods,
         total_bytes: size,
+        member_changes: member_reports,
     })
 }
 
@@ -361,6 +401,40 @@ pub fn plan_mod_profile(
 mod tests {
     use super::*;
     use crate::staging::initialize_stage;
+    #[test]
+    fn inventory_report_distinguishes_add_replace_remove_and_case_rename() {
+        let entry = |path: &str, crc32: u32| crate::signed_pak::SignedEntry {
+            path: path.into(),
+            method: 14,
+            flags: 0,
+            crc32,
+            compressed_size: 1,
+            size: 2,
+            encrypted_data_offset: 0,
+        };
+        let result = member_changes(
+            "Game/UI_Data.pak",
+            &[
+                entry("Keep.xml", 1),
+                entry("Replace.xml", 2),
+                entry("Lost.xml", 3),
+            ],
+            &[
+                entry("keep.xml", 1),
+                entry("Replace.xml", 4),
+                entry("New.gfx", 5),
+            ],
+        );
+        assert_eq!(
+            (
+                result.added,
+                result.removed,
+                result.changed,
+                result.case_renamed
+            ),
+            (1, 1, 1, 1)
+        );
+    }
     #[test]
     fn profiles_persist_and_reject_broken_sources() {
         let tmp = tempfile::tempdir().unwrap();
