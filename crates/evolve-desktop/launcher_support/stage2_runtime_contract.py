@@ -167,3 +167,47 @@ def build_game_environment(state: dict, swap_dir) -> dict[str, str]:
         "MODDED_EVOLVE_COMPAT_TELEMETRY_PATH": str(Path(swap_dir) / "rust-direct-provider-telemetry.json"),
     })
     return env
+
+
+def validate_hook_startup(log_text: str, provider: Path, modes: str) -> None:
+    """Check hook-side evidence, not just a successful remote LoadLibrary."""
+    if not isinstance(log_text, str) or len(log_text) > 1024 * 1024:
+        raise RuntimeError("Stage2 hook startup log is missing or oversized")
+    if "Stage2Tracer starting;" not in log_text:
+        raise RuntimeError("Stage2Trace did not report startup")
+    if "Hooks enabled status=MH_OK" not in log_text:
+        raise RuntimeError("Stage2Trace failed to enable its game hooks")
+    if f"STEAM_EMU active provider={provider}" not in log_text:
+        raise RuntimeError("Game did not activate the verified Steam compatibility provider")
+    expected_line = "Modes from MODDED_EVOLVE_STAGE2_MODES: " + validate_modes(modes)
+    if expected_line not in log_text:
+        raise RuntimeError("Stage2Trace did not activate the client's intended mode set")
+
+
+def wait_for_hook_startup(log_path: Path, provider: Path, modes: str, process, timeout=20) -> None:
+    """Require positive hook log evidence after process creation/resume.
+
+    The log must be truncated *before* launching the child. A stale previous
+    success is not proof of the current process's startup.
+    """
+    import time
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError("Evolve.exe exited before Stage2Trace/SteamCompat startup completed")
+        try:
+            content = Path(log_path).read_text(encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            content = ""
+        if len(content) > 1024 * 1024:
+            raise RuntimeError("Stage2 hook log exceeded the startup size limit")
+        try:
+            validate_hook_startup(content, provider, modes)
+        except RuntimeError:
+            time.sleep(0.2)
+            continue
+        return
+    raise RuntimeError(
+        "Stage2Trace did not confirm hook startup and the verified Steam provider "
+        "within the startup deadline. Inspect the direct Stage2 hook log."
+    )
