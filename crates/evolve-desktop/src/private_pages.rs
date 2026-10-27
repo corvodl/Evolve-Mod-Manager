@@ -1549,4 +1549,3 @@ mod home_layout_tests {
         assert_eq!(displayed, "v012345678901234567890123…");
     }
 }
-
