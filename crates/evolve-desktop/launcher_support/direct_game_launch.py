@@ -146,6 +146,27 @@ def start_runtime_supervisor(client_exe, game_exe, swap_dir):
     raise RuntimeError("Runtime profile/Steam compatibility initialization timed out; PAK files were not swapped")
 
 
+def stop_runtime_before_restore(session, timeout=30):
+    """Ask the private service host to exit before the normal restore preflight.
+
+    The original-file helper refuses to work while ModdedEvolveLauncher.exe
+    exists, including our own headless service host. Do not force a restore
+    while it is still alive.
+    """
+    if session is None:
+        return
+    (session/"cancel").write_text("cancel", encoding="utf-8")
+    deadline=time.monotonic()+timeout
+    while time.monotonic()<deadline:
+        if (session/"stopped.json").is_file():
+            return
+        time.sleep(0.2)
+    raise RuntimeError(
+        "Client service host did not stop. Original PAK backups and journal "
+        "are preserved. Close the host and use Backups & Recovery before relaunch."
+    )
+
+
 def environment_for_session(state, swap):
     # Every required path, hash and mode is verified here. In particular, do
     # not make up missing relay or identity values: the client must supply
@@ -164,6 +185,7 @@ def launch_direct(game_root, stage_root=None, client_exe=None, swap_dir=None, cl
     session=None
     watchdog=None
     swapped=False
+    swap_attempted=False
     # This preflight requires ALL client/game processes closed; run it BEFORE
     # our own Stage2 profile service host becomes active. Validation doesn't
     # change game files. The actual swap still happens after services are ready.
@@ -182,6 +204,7 @@ def launch_direct(game_root, stage_root=None, client_exe=None, swap_dir=None, cl
         # successes from a previous session must never pass new startup checks.
         hook_log.write_text("", encoding="utf-8")
         if not clean:
+            swap_attempted=True
             rename_prepared_into_game(prepared)
             swapped=True
             watchdog=start_restore_watchdog()
@@ -210,15 +233,21 @@ def launch_direct(game_root, stage_root=None, client_exe=None, swap_dir=None, cl
                 f"Suspended game startup failed ({error}); Stage2 services will stop. "
                 "Original PAK restoration remains owned by the detached watchdog."
             ) from error
-    except BaseException:
+    except BaseException as error:
+        # The session host has the same process name as the normal client, so
+        # even a partial rename cannot be restored until it has really exited.
         if session is not None:
-            (session/"cancel").write_text("cancel")
-        if swapped and watchdog is None:
-            # No watchdog was armed. The game was never created; restore now,
-            # leaving any unknown backup/journal state untouched on failure.
+            stop_runtime_before_restore(session)
+        if swap_attempted and watchdog is None:
+            # This also covers a rename failure that left the journal in
+            # 'interrupted' and one or more original files in backup slots.
+            # The tested restore helper remains the single owner of renames.
             from reusable_restore import main as restore
             if restore()!=0:
-                raise RuntimeError("Direct launch failed and immediate original-file recovery failed. Do not launch again before recovery.")
+                raise RuntimeError(
+                    f"Direct launch failed ({error}) and automatic PAK recovery failed. "
+                    "Keep every backup and the journal, then use Backups & Recovery."
+                ) from error
         raise
 
 
