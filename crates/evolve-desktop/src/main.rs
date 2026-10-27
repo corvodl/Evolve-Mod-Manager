@@ -10343,7 +10343,18 @@ fn view(state: &State) -> Element<'_, Message> {
         )
         .style(design::text_button)
         .on_press(Message::Navigate(Page::Home)),
-        text(format!("  /  {}", page.title())).size(12),
+        if state.preferences.ui_theme == "Evolve Legacy" {
+            Element::<Message>::from(
+                row![
+                    image(image::Handle::from_bytes(
+                        include_bytes!("../../../assets/legacy/legacy-cursor-art.png").to_vec()
+                    )).width(23).height(23),
+                    text(format!("  /  {}", page.title())).size(12)
+                ].spacing(4).align_y(iced::Center)
+            )
+        } else {
+            Element::<Message>::from(text(format!("  /  {}", page.title())).size(12))
+        },
         space().width(Fill),
         design::button("Help")
             .on_press(Message::Navigate(Page::Docs))
