@@ -183,10 +183,10 @@ fn load_home_banner() -> Option<iced::widget::image::Handle> {
         base.join("default_loading.dds"),
     ];
     for path in candidates {
-        if let Ok(data) = std::fs::read(&path) {
-            if let Some((width, height, rgba)) = decode_home_dds(&data) {
-                return Some(iced::widget::image::Handle::from_rgba(width, height, rgba));
-            }
+        if let Ok(data) = std::fs::read(&path)
+            && let Some((width, height, rgba)) = decode_home_dds(&data)
+        {
+            return Some(iced::widget::image::Handle::from_rgba(width, height, rgba));
         }
     }
     None
