@@ -1181,32 +1181,28 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
         scrollable(column![
             text("Developer").size(24),
             surface(column![
-                text("Authorized developer access").size(17),
-                text("Modded online testing").size(16),
-                text("Enabling this removes the manager's Evolve-specific Windows Firewall block (administrator rights may be needed), then permits ALL enabled mod types. OFF by default; disabling uses offline isolation at the next modded launch. Does not bypass client/server authentication.")
-                    .size(12).style(design::muted),
+                text("Network testing").size(19),
+                text("Developer-only · Firewall policy").size(12).style(design::muted),
                 iced::widget::checkbox(state.developer_online_mods)
-                    .label("Allow Play with Mods online — any mod type (Developer testing)")
+                    .label("Allow modded online testing")
                     .on_toggle(Message::DeveloperOnlineMods),
                 text(if state.developer_network_busy {
-                    "Applying Evolve firewall policy... Online mode remains OFF until network-rule removal is verified."
+                    "Applying network policy..."
                 } else if state.developer_online_mods {
-                    "ONLINE MODE ENABLED: Manager-owned Evolve outbound firewall blocks have been removed. All enabled mods can be tested; server acceptance is separate."
+                    "Online testing enabled · Server acceptance not guaranteed"
                 } else {
-                    "Offline mode is selected. The next modded launch installs the manager-specific outbound block."
+                    "Offline isolation selected"
                 }).size(12).style(design::muted),
                 text(state.developer_network_status.as_str())
                     .size(12).style(design::muted),
-                text("Process elevation (read-only)").size(16),
-                text("Check the actual Windows security tokens. Expected: Mod Manager = HIGH; ModdedEvolveLauncher.exe and Evolve.exe = MEDIUM. File preparation remains elevated.")
-                    .size(12).style(design::muted),
+                text("Process privileges").size(19),
+                text("Manager: High · Client/Game: Medium").size(12).style(design::muted),
                 design::button(if state.developer_privilege_busy { "Inspecting process tokens..." } else { "Inspect Client / Game Privileges" })
                     .on_press_maybe((!state.developer_privilege_busy).then_some(Message::DeveloperInspectProcessPrivileges)),
                 text(state.developer_privilege_status.as_str())
                     .size(12).style(design::muted),
-                text("Runtime Actors / Offline memory").size(18),
-                text("Stage 2 actor offsets are based on Goliath observations; other actors require layout validation. Read all discovered actors together; individual values can be selected and edited. Name resolution is best-effort and unidentified actors display entity IDs. No live debugger, injection, or freezing.")
-                    .size(12).style(design::muted),
+                text("Runtime actors").size(19),
+                text("Offline memory · Validate fields before editing").size(12).style(design::muted),
                 design::button(if state.runtime_checking { "Detecting..." } else { "Detect Evolve.exe" })
                     .on_press_maybe((!state.runtime_checking).then_some(Message::RuntimeDetect)),
                 text(state.runtime_snapshot.as_ref().map(|s| s.status.as_str()).unwrap_or("Not detected"))
@@ -1223,14 +1219,14 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
                     .on_press_maybe((!state.actor_busy && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some()).then_some(Message::ActorRefresh)),
                 text(state.actor_status.as_str()).size(12).style(design::muted),
                 actor_rows(state),
-                text("Edit selected actor field").size(16),
+                text("Field editor").size(19),
                 text(state.actor_edit.as_ref().map(|(_,_,field,_)| field.title()).unwrap_or("Click Edit on an actor field above"))
                     .size(12).style(design::muted),
                 design::text_input("New field value", &state.actor_edit_value)
                     .on_input(Message::ActorEditValue),
                 design::button("Write selected field once")
                     .on_press_maybe((state.actor_edit.is_some() && !state.actor_busy && state.live_edit_enabled && state.armor_offline_confirmed && !state.developer_online_mods && !state.actor_edit_value.trim().is_empty()).then_some(Message::ActorWrite)),
-                text("Writes use a fresh actor check and compare the existing bytes before applying exactly one edit. Evolution stage uses UInt32; health and armor use Float32. Every write must be armed for an offline match.")
+                text("One-shot writes · Offline only · Value checked before write")
                     .size(12).style(design::muted),
                 design::button("Lock developer area").on_press(Message::LockDeveloper),
             ].spacing(12)),
