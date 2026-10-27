@@ -995,9 +995,10 @@ pub fn build_project_raw(
     {
         return Err("Source PAK changed since extraction; refusing to build".into());
     }
-    let keys = super::modding_keys::signing_keys(stage)?;
+    let official = super::official_stage2_tools::for_stage(stage)?;
+    let public = super::modding_keys::public_key(stage)?;
     if let Some(hash) = manifest.get("public_key_sha256").and_then(Value::as_str)
-        && !digest(&keys.public)
+        && !digest(&public)
             .map_err(|e| e.to_string())?
             .eq_ignore_ascii_case(hash)
     {
@@ -1013,7 +1014,7 @@ pub fn build_project_raw(
     }
     let source_files = fs::canonicalize(folder.join("files")).map_err(|e| e.to_string())?;
     let original_index =
-        evolve_core::open_verified_signed_pak(&original, &keys.public, signed_name)
+        evolve_core::open_verified_signed_pak(&original, &public, signed_name)
             .map_err(|e| e.to_string())?;
     let serialized = tempfile::Builder::new()
         .prefix(".project-serialization-")
@@ -1072,15 +1073,21 @@ pub fn build_project_raw(
     // first publish the signed file under that verified spelling, then move
     // it to its original physical basename within the same new output folder.
     let signed_output = output_folder.join(signed_name);
-    let result = evolve_core::rebuild_signed_pak_entries(
-        &original,
-        &keys.public,
-        &keys.private,
-        &keys.public,
-        signed_name,
-        &replacements,
-        &signed_output,
-    );
+    let result: Result<usize, String> = if let Some(tools) = official {
+        tools.build_changed_pak(&original, signed_name, &replacements, &signed_output)
+            .map(|()| replacements.len())
+    } else {
+        let keys = super::modding_keys::signing_keys(stage)?;
+        evolve_core::rebuild_signed_pak_entries(
+            &original,
+            &keys.public,
+            &keys.private,
+            &keys.public,
+            signed_name,
+            &replacements,
+            &signed_output,
+        ).map(|report| report.len()).map_err(|e| e.to_string())
+    };
     match result {
         Ok(reports) => {
             if signed_output != output {
@@ -1089,7 +1096,7 @@ pub fn build_project_raw(
                 })?;
             }
             Ok((
-                format!("{} modified member(s)", reports.len()),
+                format!("{} modified member(s)", reports),
                 output,
                 verified,
             ))
@@ -1098,7 +1105,7 @@ pub fn build_project_raw(
             // The core uses an atomic tempfile on failure. Remove only our
             // new empty output directory, never an existing user's path.
             let _ = fs::remove_dir(output_folder);
-            Err(error.to_string())
+            Err(error)
         }
     }
 }
