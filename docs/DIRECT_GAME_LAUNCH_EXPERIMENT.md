@@ -1,8 +1,8 @@
-# Runtime compatibility blocker (October 27, 2026)
+# Experimental Direct Launch enabled for live testing (October 27, 2026)
 
-**Direct Launch is currently blocked before signing-stage mutation or game-process creation.** The UI retains the user-selected Direct Launch default and Client Launch option, but neither Direct Play action will start until the manager has an independent, verified SteamCompat/profile-service host and Stage2Trace initialization. This prevents launching a nonfunctional session or swapping large game files without the required runtime. Choose **Client Launch** for working client-backed startup during development.
+**Direct Launch is enabled for real Windows gameplay testing.** The former unconditional `require_ready()` error was removed; the Rust preflight checks only the installed game and client runtime files. The worker then attempts the actual Stage 2 service startup, verifies the installed game-side SteamCompat/Stage2Trace DLLs and catalog, and launches Evolve. Missing dependencies or failed service startup produce diagnostic errors, not an arbitrary feature lock. Client Launch remains selectable as a fallback.
 
-This is a **real missing implementation**, not a flag to skip. Static inspection of the user-provided Modded Evolve installation and its October 25–26 launcher logs gives the following process-creation contract:
+The services-only host remains **experimental and not yet confirmed through gameplay**; enabling the test path is not proof of runtime parity. The manager does not bypass actual missing files or unresolved original-file backups. Static inspection of the client provides the following background: Static inspection of the user-provided Modded Evolve installation and its October 25–26 launcher logs gives the following process-creation contract:
 
 1. Finish game/runtime preparation and start client-owned **local TLS profile services** at loopback port 2000 and plain services at 2040.
 2. Establish the session-specific identity, profile data, compatibility provider and relay selection. These must remain alive throughout gameplay.
@@ -13,7 +13,7 @@ This is a **real missing implementation**, not a flag to skip. Static inspection
 
 `ModdedEvolveSteamCompat.dll` and `Stage2Trace.dll` are **not** equivalent to process parameters; the client initializes them and exposes services. The supplied .NET launcher advertises smoke-test flags but no verified production service-only mode. Do not assume `--stage2-smoke --no-launch --keep` provides a durable supported background service host; its embedded status text says no-launch stops there.
 
-A real service host implementation should expose an authenticated **local readiness handshake**, own the runtime session, and supply the per-session environment/compatibility DLL locations. Merely finding those DLL files or TCP-listening ports must **not** make `direct_runtime::require_ready` succeed. Replace the fail-closed preflight only when the handshake, injection, full game startup, original-file rollback and service lifetime tests have passed.
+The executable-file preflight no longer substitutes for runtime readiness. The actual worker starts the independently supervised client services, waits for its runtime handshake, then verifies the new Stage2Trace and SteamCompat hook logs. Port ownership and file existence alone are not confirmation of gameplay functionality.
 
 **Never commit or copy the uploaded personal certificates, DPAPI identity files, profile records, secrets, relay tokens or extracted client archives to this public repository.**
 
@@ -85,4 +85,4 @@ The game-side trace should report all of the following before direct launch is c
 `Modes from MODDED_EVOLVE_STAGE2_MODES: <verified modes>`, and
 `Hooks enabled status=MH_OK`. The hook log must be newly truncated before each game launch, so stale results cannot count.
 
-**Important:** These file, environment and trace checks are implemented, but the pinned .NET service-only host adapter and session handoff have **not passed a real Windows game test**. `direct_runtime::require_ready` therefore remains intentionally fail-closed. This update is groundwork for a working runtime, not proof that either direct game mode can play yet. The remaining failure-injection/rollback and private identity handoff requirements are documented above.
+**Important:** Direct Launch can now be exercised on Windows using the selected new DLLs. The pinned .NET service-only host adapter and session handoff have **not passed a real Windows game test**, so successful game startup/profile functionality is not guaranteed. The worker stops on concrete runtime failures. For modded tests, only an already verified original-file backup/journal can be modified, and failed partial swaps are handed to the existing restoration helper after the service host exits. Never retry modded launch over unresolved original-file backups.
