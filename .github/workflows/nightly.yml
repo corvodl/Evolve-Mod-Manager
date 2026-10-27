@@ -1,8 +1,8 @@
 name: Nightly 0.1.0 Windows release
 
 on:
-  # A workflow update triggers Nightly from main; this revision packages the
-  # merged fixes and UI changes from PRs #88, #92 and #93.
+  # Workflow-only push starts a new Nightly after merging PR #94.
+  # Exclude still-open PR #95; publish only commits already merged into main.
   # list only changes merged since the previous published Nightly tag.
   push:
     branches: [main]
