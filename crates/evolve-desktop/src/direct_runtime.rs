@@ -25,7 +25,9 @@ pub fn require_ready(game: &Path, client: &Path) -> Result<(), String> {
             "Direct Launch needs the installed ModdedEvolveLauncher.exe to start its profile and Steam compatibility services. No PAK files changed.".into()
         );
     }
-    let root = client.parent().ok_or("Client executable has no parent directory")?;
+    let root = client
+        .parent()
+        .ok_or("Client executable has no parent directory")?;
     for name in [
         "ModdedEvolveLauncher.dll",
         "Compat/ModdedEvolveSteamCompat.dll",
@@ -71,9 +73,12 @@ mod tests {
         ] {
             std::fs::write(client_dir.join(name), b"test").unwrap();
         }
-        assert!(require_ready(
-            &tmp.path().join("game"),
-            &client_dir.join("ModdedEvolveLauncher.exe")
-        ).is_ok());
+        assert!(
+            require_ready(
+                &tmp.path().join("game"),
+                &client_dir.join("ModdedEvolveLauncher.exe")
+            )
+            .is_ok()
+        );
     }
 }
