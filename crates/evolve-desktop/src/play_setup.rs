@@ -237,64 +237,65 @@ fn configure_helper(
     )?;
     if let Some(client) = client {
         refresh_verified_helper(
-        &swap,
-        "auto_launch_frida.py",
-        CURRENT_AUTO_LAUNCH,
-        &[
-            PREVIOUS_AUTO_LAUNCH_SHA256,
-            NIGHTLY_56_AUTO_LAUNCH_SHA256,
-            NIGHTLY_69_AUTO_LAUNCH_SHA256,
-            NIGHTLY_70_AUTO_LAUNCH_SHA256,
-        ],
-    )?;
+            &swap,
+            "auto_launch_frida.py",
+            CURRENT_AUTO_LAUNCH,
+            &[
+                PREVIOUS_AUTO_LAUNCH_SHA256,
+                NIGHTLY_56_AUTO_LAUNCH_SHA256,
+                NIGHTLY_69_AUTO_LAUNCH_SHA256,
+                NIGHTLY_70_AUTO_LAUNCH_SHA256,
+            ],
+        )?;
         crate::standard_user_launch::install_into_swap(&swap)?;
-    let config = swap.join("launcher_config.json");
-    let mut previous = Map::new();
-    if config.exists() {
-        let raw = fs::read(&config).map_err(|e| e.to_string())?;
-        if raw.len() > 16 * 1024 {
-            return Err("Existing launcher configuration is oversized".into());
+        let config = swap.join("launcher_config.json");
+        let mut previous = Map::new();
+        if config.exists() {
+            let raw = fs::read(&config).map_err(|e| e.to_string())?;
+            if raw.len() > 16 * 1024 {
+                return Err("Existing launcher configuration is oversized".into());
+            }
+            let value: Value = serde_json::from_slice(&raw)
+                .map_err(|e| format!("Invalid existing launcher configuration: {e}"))?;
+            previous = value
+                .as_object()
+                .ok_or("Expected launcher configuration object")?
+                .clone();
         }
-        let value: Value = serde_json::from_slice(&raw)
-            .map_err(|e| format!("Invalid existing launcher configuration: {e}"))?;
-        previous = value
-            .as_object()
-            .ok_or("Expected launcher configuration object")?
-            .clone();
-    }
-    let new_path = ordinary_game_path(client).to_string_lossy().into_owned();
-    if previous.get("launcher").and_then(Value::as_str) == Some(new_path.as_str()) {
-        return Ok(());
-    }
-    // Only this one owned field changes. Tempfile.persist performs a rename;
-    // a failed write leaves the old configuration intact.
-    previous.insert("launcher".into(), Value::String(new_path));
-    let mut staging = tempfile::NamedTempFile::new_in(&swap)
-        .map_err(|e| format!("Cannot stage launcher configuration: {e}"))?;
-    serde_json::to_writer_pretty(&mut staging, &previous)
-        .map_err(|e| format!("Cannot serialize launcher configuration: {e}"))?;
-    staging.write_all(b"\n").map_err(|e| e.to_string())?;
-    staging.as_file().sync_all().map_err(|e| e.to_string())?;
-    staging
-        .persist(&config)
-        .map_err(|e| format!("Cannot save launcher configuration: {e}"))?;
-    Ok(())
+        let new_path = ordinary_game_path(client).to_string_lossy().into_owned();
+        if previous.get("launcher").and_then(Value::as_str) == Some(new_path.as_str()) {
+            return Ok(());
+        }
+        // Only this one owned field changes. Tempfile.persist performs a rename;
+        // a failed write leaves the old configuration intact.
+        previous.insert("launcher".into(), Value::String(new_path));
+        let mut staging = tempfile::NamedTempFile::new_in(&swap)
+            .map_err(|e| format!("Cannot stage launcher configuration: {e}"))?;
+        serde_json::to_writer_pretty(&mut staging, &previous)
+            .map_err(|e| format!("Cannot serialize launcher configuration: {e}"))?;
+        staging.write_all(b"\n").map_err(|e| e.to_string())?;
+        staging.as_file().sync_all().map_err(|e| e.to_string())?;
+        staging
+            .persist(&config)
+            .map_err(|e| format!("Cannot save launcher configuration: {e}"))?;
+        Ok(())
     } else {
         Ok(())
     }
 }
 
 pub fn configure_existing_helper(
-    game: &Path, client: &Path, stage: &Path, swap: &Path,
+    game: &Path,
+    client: &Path,
+    stage: &Path,
+    swap: &Path,
 ) -> Result<(), String> {
     configure_helper(game, Some(client), stage, swap)
 }
 
 /// Direct mode checks the same signed stage and recovery journal, without
 /// requiring or overwriting the legacy ModdedEvolveLauncher installation.
-pub fn configure_direct_helper(
-    game: &Path, stage: &Path, swap: &Path,
-) -> Result<(), String> {
+pub fn configure_direct_helper(game: &Path, stage: &Path, swap: &Path) -> Result<(), String> {
     configure_helper(game, None, stage, swap)
 }
 
