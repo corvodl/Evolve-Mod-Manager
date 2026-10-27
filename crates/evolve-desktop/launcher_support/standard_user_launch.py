@@ -213,6 +213,17 @@ class StandardUserProcess:
             self.close()
 
 
+def _windows_environment_block(entries):
+    """Return a real NUL-delimited Windows Unicode environment block.
+
+    Unlike a literal backslash-zero string, embedded NULs are mandatory for
+    CreateProcessWithTokenW. The final pair of NULs ends the list.
+    """
+    if any(not isinstance(item, str) or not item or "\0" in item for item in entries):
+        raise ValueError("Environment contains a malformed entry")
+    return ctypes.create_unicode_buffer("\0".join(entries) + "\0\0")
+
+
 def _inject_stage2_trace(api, process_info, dll_path):
     """Load Stage2Trace.dll into suspended Evolve; never resume after failure."""
     dll = Path(dll_path).resolve(strict=True)
@@ -339,7 +350,7 @@ def launch_standard_user(executable, *, game=False, args=(), trace_dll=None, run
                 entries, part = [], []
                 for index in range(131072):
                     value = chars[index]
-                    if value == "\\0":
+                    if value == "\0":
                         if not part:
                             break
                         entries.append("".join(part))
@@ -359,7 +370,7 @@ def launch_standard_user(executable, *, game=False, args=(), trace_dll=None, run
                 entries = [item for item in entries if item.partition("=")[0].casefold() not in keys]
                 entries.extend(("SteamAppId=273350", "SteamGameId=273350", "SteamOverlayGameId=273350"))
                 entries.extend(f"{key}={value}" for key, value in extras.items())
-                env_buffer = ctypes.create_unicode_buffer("\\0".join(entries) + "\\0\\0")
+                env_buffer = _windows_environment_block(entries)
                 launch_env = ctypes.cast(env_buffer, ctypes.c_void_p)
             if not api["CreateProcessWithTokenW"](
                 primary, LOGON_WITH_PROFILE, str(exe), command,
