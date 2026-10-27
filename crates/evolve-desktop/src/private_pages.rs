@@ -2,7 +2,7 @@
 //! Home deliberately does not enumerate PAKs or scan the user's installation.
 use super::{Message, Page, State};
 use crate::design;
-use iced::widget::{button, column, container, image, row, scrollable, svg, text};
+use iced::widget::{button, column, container, image, row, scrollable, stack, svg, text};
 use iced::{Background, Border, Element, Fill, Length};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -56,6 +56,26 @@ fn surface<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Contai
             },
             ..container::Style::default()
         })
+}
+
+/// Translucent surfaces belong to Home only. Other pages retain opaque
+/// panels because the artwork is exclusive to the Home view.
+fn home_surface<'a>(
+    content: impl Into<Element<'a, Message>>,
+) -> iced::widget::Container<'a, Message> {
+    surface(content).style(|theme| {
+        let mut backdrop = design::surface(theme);
+        backdrop.a = 0.88;
+        container::Style {
+            background: Some(Background::Color(backdrop)),
+            border: Border {
+                color: design::border(theme),
+                width: 1.0,
+                radius: if design::is_legacy(theme) { 1.0 } else { 10.0 }.into(),
+            },
+            ..container::Style::default()
+        }
+    })
 }
 
 /// Original Evolve red corner atlas sprite, cropped from the uploaded
@@ -124,7 +144,7 @@ fn tile(name: &'static str, description: &'static str, page: Page) -> Element<'s
 }
 
 fn status_card<'a>(label: &'static str, value: String) -> Element<'a, Message> {
-    surface(
+    home_surface(
         column![
             text(label).size(13),
             text(value).size(12).style(design::muted),
@@ -194,7 +214,7 @@ fn latest_announcement(state: &State) -> Element<'_, Message> {
             .style(design::muted),
         );
     }
-    surface(content).into()
+    home_surface(content).into()
 }
 
 /// The optional Home art is distinct from animated progress indicators.
@@ -343,7 +363,7 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                 )
             })
             .unwrap_or_else(|| "Last selected editable project".into());
-        surface(
+        home_surface(
             row![
                 column![
                     legacy_section_label(
@@ -381,7 +401,7 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         )
         .padding([20, 24])
     } else {
-        surface(
+        home_surface(
             row![
                 column![
                     legacy_section_label("GETTING STARTED", state.preferences.ui_theme == "Evolve Legacy"),
@@ -405,18 +425,6 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
             .align_y(iced::Center),
         )
         .padding([20, 24])
-    };
-    let hero: Element<'_, Message> = if let Some(handle) = home_banner() {
-        // Full-width 16:9 hero, darkened so labels remain readable.
-        let picture = image(handle)
-            .width(Fill)
-            .height(Length::Fixed(280.0))
-            .content_fit(iced::ContentFit::Cover);
-        column![container(picture).width(Fill), hero,]
-            .spacing(0)
-            .into()
-    } else {
-        hero.into()
     };
     let quick = column![
         legacy_section_label("PLAY EVOLVE", state.preferences.ui_theme == "Evolve Legacy"),
@@ -531,18 +539,61 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
     ]
     .spacing(9)
     .width(Length::FillPortion(2));
-    scrollable(
+    // Scroll the Home controls above a fixed, viewport-sized background.
+    // The art has no layout height of its own, so it never pushes the page
+    // below the fold; the background stays in place while cards scroll.
+    let content = scrollable(
         column![
             hero,
-            quick,
+            container(quick)
+                .padding(15)
+                .width(Fill)
+                .style(|theme| {
+                    let mut backdrop = design::surface(theme);
+                    backdrop.a = 0.84;
+                    container::Style {
+                        background: Some(Background::Color(backdrop)),
+                        border: Border {
+                            color: design::border(theme),
+                            width: 1.0,
+                            radius: if design::is_legacy(theme) { 1.0 } else { 10.0 }.into(),
+                        },
+                        ..container::Style::default()
+                    }
+                }),
             latest_announcement(state),
             row![entries, status].spacing(14),
         ]
         .spacing(20)
         .padding(12),
     )
-    .height(Fill)
-    .into()
+    .width(Fill)
+    .height(Fill);
+
+    if let Some(handle) = home_banner() {
+        // Cover the available viewport, not a 280px banner. The DDS decoder
+        // already darkens the image; a subtle shade ensures text over the
+        // artwork stays readable even on bright regions.
+        let background = image(handle)
+            .width(Fill)
+            .height(Fill)
+            .content_fit(iced::ContentFit::Cover);
+        let shade = container(iced::widget::space().width(Fill).height(Fill))
+            .width(Fill)
+            .height(Fill)
+            .style(|_| container::Style {
+                background: Some(Background::Color(iced::Color::from_rgba(
+                    0.015, 0.018, 0.025, 0.18,
+                ))),
+                ..container::Style::default()
+            });
+        stack![background, shade, content]
+            .width(Fill)
+            .height(Fill)
+            .into()
+    } else {
+        content.into()
+    }
 }
 
 fn docs_spec(
