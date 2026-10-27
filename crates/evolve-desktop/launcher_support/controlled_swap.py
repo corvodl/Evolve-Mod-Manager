@@ -97,6 +97,44 @@ def all_closed():
         stop('Close Evolve.exe AND ModdedEvolveLauncher.exe before this operation.')
 
 
+def selected_signed_entries(stage, plan):
+    """Choose only profile-target PAKs; keep the full immutable rekey inventory.
+
+    Missing manifest preserves the legacy full-swap workflow for manual stages.
+    A present manifest must be valid; never silently fall back to all PAKs.
+    """
+    signed = [e for e in plan['entries'] if e.get('kind') == 'signed-encrypted']
+    manifest = stage / 'active_mod_paks.json'
+    if not manifest.exists() and not manifest.is_symlink():
+        return signed
+    import stat
+    metadata = manifest.lstat()
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 64 * 1024:
+        stop('Unsafe enabled-profile PAK manifest')
+    spec = read_json(manifest)
+    targets = spec.get('targets')
+    if spec.get('schema') != 1 or not isinstance(targets, list) or not 0 < len(targets) <= 512:
+        stop('Invalid enabled-profile PAK selection')
+    names = set()
+    for raw in targets:
+        if not isinstance(raw, str) or not raw or len(raw) > 1024:
+            stop('Invalid selected PAK path')
+        normalized = raw.replace('\\', '/')
+        parts = normalized.split('/')
+        if (normalized != raw or normalized.startswith('/') or
+                any(part in ('', '.', '..') or ':' in part for part in parts) or
+                not normalized.lower().endswith('.pak')):
+            stop('Unsafe selected PAK path')
+        lowered = normalized.casefold()
+        if lowered in names:
+            stop('Duplicate enabled-profile PAK target')
+        names.add(lowered)
+    selected = [e for e in signed if str(e.get('path', '')).replace('\\', '/').casefold() in names]
+    if len(selected) != len(names):
+        stop('Enabled profile references PAKs missing from signed stage')
+    return selected
+
+
 def list_files(game, stage):
     plan = read_json(stage / 'rekey_plan.json')
     status = read_json(stage / 'stage_status.json')
@@ -110,7 +148,7 @@ def list_files(game, stage):
     if not signed or len(signed) != status.get('count'):
         stop('Archive count differs from verified stage status.')
     files = []
-    for entry in signed:
+    for entry in selected_signed_entries(stage, plan):
         rel = Path(entry['path'])
         if rel.is_absolute() or '..' in rel.parts or rel.suffix.lower() != '.pak':
             stop(f'Unsafe archive path: {rel}')

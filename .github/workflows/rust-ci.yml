@@ -43,6 +43,8 @@ jobs:
         run: python3 -m unittest discover -s crates/evolve-desktop/launcher_support -p 'test_direct_game_launch.py'
       - name: Verify update-tolerant Stage2 runtime interface contract
         run: python3 -m unittest discover -s crates/evolve-desktop/launcher_support -p 'test_stage2_runtime_contract.py'
+      - name: Verify profile-only PAK swap selection and fail-closed manifests
+        run: python3 -m unittest discover -s crates/evolve-desktop/launcher_support -p 'test_sparse_swap.py'
       - name: Verify guarded original game backup restoration
         run: python3 -m unittest discover -s crates/evolve-desktop/launcher_support -p 'test_reusable_restore.py'
       - name: Verify journal-independent private manager backup recovery

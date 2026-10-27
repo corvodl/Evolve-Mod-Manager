@@ -95,6 +95,47 @@ fn restore_previous_staged_profile(stage: &std::path::Path) -> Result<bool, Stri
     Ok(true)
 }
 
+/// Publish a single enabled-profile swap manifest after the old prepared
+/// cache was validated/reset. This never alters the full signing inventory.
+fn publish_active_mod_paks(
+    stage: &std::path::Path,
+    profile_id: &str,
+    targets: &[String],
+) -> Result<(), String> {
+    if targets.is_empty() || targets.len() > 512 {
+        return Err("No supported enabled-profile PAK targets to swap".into());
+    }
+    let mut seen = HashSet::new();
+    for target in targets {
+        if target.is_empty()
+            || target.starts_with('/')
+            || target.contains('\\')
+            || target.contains(':')
+            || !target.to_ascii_lowercase().ends_with(".pak")
+            || target
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+            || !seen.insert(target.to_ascii_lowercase())
+        {
+            return Err("Unsafe or duplicate enabled mod PAK target".into());
+        }
+    }
+    let mut file = tempfile::NamedTempFile::new_in(stage).map_err(|e| e.to_string())?;
+    serde_json::to_writer_pretty(
+        &mut file,
+        &serde_json::json!({
+            "schema": 1,
+            "profile_id": profile_id,
+            "targets": targets
+        }),
+    )
+    .map_err(|e| e.to_string())?;
+    file.as_file().sync_all().map_err(|e| e.to_string())?;
+    file.persist(stage.join("active_mod_paks.json"))
+        .map_err(|e| e.error.to_string())?;
+    Ok(())
+}
+
 // The launcher accepts a setup bundle, a progress reporter, and a Developer
 // intent flag. Keep the flag explicit so the mode is auditable.
 #[allow(clippy::too_many_arguments)]
@@ -247,6 +288,13 @@ pub fn launch_enabled(
             Ok(count) => count,
             Err(issue) => return launch_for_repair(&game, &client, &swap, &issue),
         };
+    // A profile swap contains ONLY the modified PAKs (and the signing
+    // runtime DLLs), leaving all other installed stock PAKs untouched.
+    let active_targets = built
+        .iter()
+        .map(|(_, target, _)| target.clone())
+        .collect::<Vec<_>>();
+    publish_active_mod_paks(&stage, &profile.id, &active_targets)?;
     // Staging-only self-repair: accept a rebuilt hook ONLY when it hashes
     // exactly to this setup's saved original digest. A changed installed DLL
     // or unresolved game swap still falls back to the regular client.
