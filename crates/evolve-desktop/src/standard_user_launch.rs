@@ -82,31 +82,6 @@ pub fn launch(executable: &Path) -> Result<u32, String> {
     parse_launch_report(&report)
 }
 
-/// Launch the installed Evolve executable without delegating process creation
-/// to the graphical client. This does not start the client's local services.
-#[cfg(windows)]
-pub fn launch_game(game_root: &Path) -> Result<u32, String> {
-    let file = std::fs::canonicalize(game_root.join("bin64_SteamRetail").join("Evolve.exe"))
-        .map_err(|e| format!("Configured game executable is missing: {e}"))?;
-    let folder = file.parent().ok_or("Evolve.exe has no binary directory")?;
-    if !folder
-        .file_name()
-        .is_some_and(|name| name.eq_ignore_ascii_case("bin64_SteamRetail"))
-        || !file
-            .file_name()
-            .is_some_and(|name| name.eq_ignore_ascii_case("Evolve.exe"))
-    {
-        return Err("Direct launch is restricted to bin64_SteamRetail/Evolve.exe".into());
-    }
-    let report = call_broker(&[std::ffi::OsStr::new("--launch-game"), file.as_os_str()])?;
-    parse_launch_report(&report)
-}
-
-#[cfg(not(windows))]
-pub fn launch_game(_game_root: &Path) -> Result<u32, String> {
-    Err("Direct Evolve launch requires Windows".into())
-}
-
 #[cfg(not(windows))]
 pub fn launch(_executable: &Path) -> Result<u32, String> {
     Err("Standard-user Evolve launch requires Windows".into())
