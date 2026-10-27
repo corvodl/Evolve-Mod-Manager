@@ -132,6 +132,8 @@ fn dropdown(state: &State) -> Option<Element<'_, Message>> {
             design::button("Verify offline launcher + signed PAKs").on_press(Message::MenuCommand(
                 Box::new(Message::StartOfflineLauncherCheck)
             )),
+            design::button("Audit installed original PAKs (read-only)")
+                .on_press(Message::MenuCommand(Box::new(Message::StartLivePakAudit))),
             design::button("Play with mods (existing private helper)").on_press(
                 Message::MenuCommand(Box::new(Message::StartOfflineLauncherLaunch))
             ),
@@ -770,6 +772,16 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     }
     if state.modding_profiles {
         main = main.push(profiles(state));
+    }
+    if let Some(report) = &state.live_pak_audit {
+        let mut lines = column![text(format!(
+            "INSTALLED ORIGINAL PAK AUDIT — {} verified, {} failed, {} verified but different from baseline (no files changed)",
+            report.verified, report.failed, report.baseline_differences
+        )).size(12)];
+        for issue in &report.issues {
+            lines = lines.push(text(issue.as_str()).size(11));
+        }
+        main = main.push(scrollable(lines.spacing(4)).height(Length::Fixed(145.0)));
     }
     crate::menu_popup::overlay(
         main,

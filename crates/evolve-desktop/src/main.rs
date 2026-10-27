@@ -197,6 +197,7 @@ struct State {
     profile_id: String,
     profile_catalog: Option<ProfileCatalog>,
     profile_feedback: String,
+    live_pak_audit: Option<launcher_bridge::LivePakAudit>,
     diffuse_input: String,
     diffuse: Option<Arc<::image::RgbaImage>>,
     cdf_surfaces: Option<Arc<Vec<textured::Surface>>>,
@@ -655,6 +656,7 @@ enum Operation {
     PrepareClientHook(PathBuf, PathBuf, PathBuf, PathBuf),
     VerifySignedHookPair(PathBuf, PathBuf, PathBuf, PathBuf, PathBuf, PathBuf, String),
     CheckExistingOfflineLauncher(PathBuf, PathBuf),
+    AuditLivePaks(PathBuf),
     StartExistingOfflineLauncher(PathBuf, PathBuf, PathBuf, PathBuf),
     PlayEnabledMods(
         PathBuf,
@@ -767,6 +769,7 @@ enum Completed {
     HookPrepared(HookPairReport, PathBuf),
     SignedHookPreflight(PakHookPairReport),
     OfflineLauncherReady(LaunchReady),
+    LivePaksAudited(launcher_bridge::LivePakAudit),
     OfflineLauncherStarted(usize, u32, usize),
     EnabledModsLaunched(usize, u32, usize, Option<String>, bool),
     CleanClientStarted(u32, Vec<String>),
@@ -1501,6 +1504,9 @@ impl Operation {
                 let report = inspect_existing_launcher(&stage, &swap)?;
                 Ok(Completed::OfflineLauncherReady(report))
             }
+            Self::AuditLivePaks(stage) => {
+                launcher_bridge::audit_live_paks(&stage).map(Completed::LivePaksAudited)
+            }
             Self::PlayEnabledMods(
                 projects,
                 stage,
@@ -1917,6 +1923,7 @@ enum Message {
     StartStageApply,
     StartStageRestore,
     StartOfflineLauncherCheck,
+    StartLivePakAudit,
     StartOfflineLauncherLaunch,
     StartOfflineLauncherRestore,
     PlayWithMods,
@@ -2393,6 +2400,7 @@ fn operation_label(operation: &Operation) -> &'static str {
         Operation::PrepareClientHook(..) => "Preparing offline client hook",
         Operation::VerifySignedHookPair(..) => "Verifying original and custom hook",
         Operation::CheckExistingOfflineLauncher(..) => "Checking offline launch readiness",
+        Operation::AuditLivePaks(..) => "Auditing installed original PAK signatures",
         Operation::StartExistingOfflineLauncher(..) => "Preparing original offline launcher",
         Operation::PlayEnabledMods(..) => "Building and launching enabled mods",
         Operation::LaunchCleanClient(..) => "Opening regular game client",
@@ -8197,6 +8205,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Operation::StartExistingOfflineLauncher(stage, swap, game, client),
             );
         }
+        Message::StartLivePakAudit => {
+            if state.preferences.stage.trim().is_empty() {
+                state.status =
+                    "Configure the private CustomSigning/staged folder in Settings first.".into();
+                return Task::none();
+            }
+            state.live_pak_audit = None;
+            return launch(
+                state,
+                Operation::AuditLivePaks(PathBuf::from(&state.preferences.stage)),
+            );
+        }
         Message::StartStageRestore => {
             if state.preferences.stage.trim().is_empty() {
                 state.status = "Specify the isolated staging workspace path.".into();
@@ -9936,6 +9956,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             "needs preparation"
                         }
                     );
+                    state.page = Some(Page::Files);
+                }
+                Ok(Completed::LivePaksAudited(report)) => {
+                    state.status = format!(
+                        "Read-only installed-PAK audit: {} original-key verified, {} failed authentication or missing, {} verified but changed from recorded baseline. See the report on Modding; launch preflight is unchanged.",
+                        report.verified, report.failed, report.baseline_differences,
+                    );
+                    state.live_pak_audit = Some(report);
                     state.page = Some(Page::Files);
                 }
                 Ok(Completed::GamePakBaselineRefreshed(report)) => {

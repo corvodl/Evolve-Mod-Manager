@@ -55,3 +55,10 @@ for porting the stage, **not** ready replacement files for the existing
 manager's authenticated-target profile. Do not create a new live root PAK or
 assume that adding the level members to `UI_Data.pak` makes the map mount; load
 precedence and game-side discovery require a reversible offline test first.
+
+Modding → Tools → **Audit installed original PAKs (read-only)** checks each
+signed original listed by the configured signing plan against the original
+public key, then compares authenticated files against the recorded SHA-256
+baseline. Its scrollable report distinguishes failed/missing files from valid
+but changed originals. It does not repair, stage, replace or approve any PAK;
+the existing offline launch preflight remains authoritative.

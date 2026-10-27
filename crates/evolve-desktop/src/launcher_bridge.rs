@@ -279,6 +279,99 @@ fn verify_prepared_journal(
     Ok(())
 }
 
+/// Read-only provenance audit of every live PAK named in the configured
+/// signing plan. This is diagnostic only: it does not normalize originals,
+/// adjust the offline launcher's verification policy or touch the game.
+#[derive(Debug, Clone)]
+pub struct LivePakAudit {
+    pub verified: usize,
+    pub failed: usize,
+    pub baseline_differences: usize,
+    pub issues: Vec<String>,
+}
+
+pub fn audit_live_paks(stage: &Path) -> Result<LivePakAudit, String> {
+    let stage = directory(stage)?;
+    let plan = json(&stage.join("rekey_plan.json"))?;
+    let game = directory(Path::new(
+        plan["source_root"]
+            .as_str()
+            .ok_or("Signing plan has no original game root")?,
+    ))?;
+    if stage.starts_with(&game) || game.starts_with(&stage) {
+        return Err("Signing stage overlaps installed game".into());
+    }
+    let original_key = plain(
+        &stage
+            .parent()
+            .ok_or("Signing stage has no parent")?
+            .join("RSAKeyData.bin"),
+        140,
+    )?;
+    let entries = plan["entries"]
+        .as_array()
+        .ok_or("Signing plan has no PAK entries")?;
+    if entries.len() > MAX_ARCHIVES {
+        return Err("Signing plan exceeds PAK audit limit".into());
+    }
+    let mut result = LivePakAudit {
+        verified: 0,
+        failed: 0,
+        baseline_differences: 0,
+        issues: Vec::new(),
+    };
+    let mut seen = std::collections::HashSet::new();
+    for entry in entries
+        .iter()
+        .filter(|e| e["kind"].as_str() == Some("signed-encrypted"))
+    {
+        let path = normalized_pak_name(entry["path"].as_str().ok_or("Invalid signed PAK path")?)?;
+        if !seen.insert(path.to_ascii_lowercase()) {
+            return Err(format!("Duplicate signed PAK destination in plan: {path}"));
+        }
+        let physical = Path::new(&path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or("Invalid signed PAK basename")?;
+        let signed = entry["signed_name"].as_str().unwrap_or(physical);
+        if signed != physical && signed != physical.to_ascii_lowercase() {
+            return Err(format!("Invalid signed basename in plan for {path}"));
+        }
+        let audit = (|| -> Result<bool, String> {
+            let file = within_file(&game, &path)?;
+            let bytes = fs::metadata(&file).map_err(|e| e.to_string())?.len();
+            inspect_signed_pak(&file, &original_key, signed)
+                .map_err(|e| format!("original-key signature mismatch: {e}"))?;
+            let size_differs = entry["bytes"]
+                .as_u64()
+                .is_some_and(|expected| expected != bytes);
+            let hash_differs = if let Some(expected) = entry["sha256"].as_str() {
+                !sha(&file)?.eq_ignore_ascii_case(expected)
+            } else {
+                false
+            };
+            Ok(size_differs || hash_differs)
+        })();
+        match audit {
+            Ok(differs) => {
+                result.verified += 1;
+                result.baseline_differences += usize::from(differs);
+                if differs {
+                    result.issues.push(format!("{path}: authenticates with the original key but differs from the recorded baseline"));
+                }
+            }
+            Err(error) => {
+                result.failed += 1;
+                result.issues.push(format!("{path}: {error}"));
+            }
+        }
+    }
+    if result.verified + result.failed == 0 {
+        return Err("Signing plan has no original-key signed PAKs".into());
+    }
+    Ok(result)
+}
+
 /// Mirror the private manager's hook key-slot and pinned staged-digest checks
 /// while separately verifying original/replacement PAK signatures. This is a
 /// *prelaunch* check: only a real game session proves what CryEngine mounted.
@@ -1604,6 +1697,36 @@ pub fn launch_existing_offline_client(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn live_pak_audit_reports_every_failure_without_changing_originals() {
+        let temp = tempfile::tempdir().unwrap();
+        let stage = temp.path().join("staged");
+        let game = temp.path().join("game");
+        fs::create_dir(&stage).unwrap();
+        fs::create_dir(&game).unwrap();
+        fs::write(temp.path().join("RSAKeyData.bin"), [0u8; 140]).unwrap();
+        fs::write(game.join("invalid.pak"), b"not a signed archive").unwrap();
+        let plan = serde_json::json!({
+            "source_root": game,
+            "entries": [
+                {"kind":"signed-encrypted", "path":"missing.pak", "signed_name":"missing.pak"},
+                {"kind":"signed-encrypted", "path":"invalid.pak", "signed_name":"invalid.pak"}
+            ]
+        });
+        let plan_bytes = serde_json::to_vec(&plan).unwrap();
+        fs::write(stage.join("rekey_plan.json"), &plan_bytes).unwrap();
+        let report = audit_live_paks(&stage).unwrap();
+        assert_eq!((report.verified, report.failed), (0, 2));
+        assert_eq!(report.issues.len(), 2);
+        assert!(report.issues[0].contains("missing.pak"));
+        assert!(report.issues[1].contains("invalid.pak"));
+        assert_eq!(fs::read(stage.join("rekey_plan.json")).unwrap(), plan_bytes);
+        assert_eq!(
+            fs::read(game.join("invalid.pak")).unwrap(),
+            b"not a signed archive"
+        );
+        assert!(!game.join("missing.pak").exists());
+    }
     #[test]
     fn original_hook_lookup_is_bound_to_exact_signed_stage_game_root() {
         let temp = tempfile::tempdir().unwrap();
