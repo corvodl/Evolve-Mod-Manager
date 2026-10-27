@@ -14,7 +14,7 @@ fn panel<'a>(child: impl Into<Element<'a, Message>>) -> iced::widget::Container<
             border: Border {
                 color: design::border(theme),
                 width: 1.0,
-                radius: 7.0.into(),
+                radius: if design::is_legacy(theme) { 1.0 } else { 7.0 }.into(),
             },
             ..container::Style::default()
         })
@@ -409,30 +409,44 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     });
     let content: Element<'_, Message> = match state.settings_tab {
         Tab::Appearance => column![
-        heading("GENERAL & APPEARANCE", "Compact controls with the same sidebar and theme behavior as the private manager."),
+        heading("GENERAL & APPEARANCE", "Optional Legacy Evolve visuals with the familiar Modern interface preserved."),
         panel(column![
+            text("INTERFACE THEME").size(12),
             row![
-                design::button(text(format!("Appearance: {}", state.preferences.appearance_mode))).on_press(Message::PreferenceAppearance).style(design::secondary),
+                design::button("Modern")
+                    .on_press(Message::PreferenceUiTheme("Modern"))
+                    .style(if state.preferences.ui_theme == "Modern" { design::primary } else { design::secondary }),
+                design::button("Evolve Legacy")
+                    .on_press(Message::PreferenceUiTheme("Evolve Legacy"))
+                    .style(if state.preferences.ui_theme == "Evolve Legacy" { design::primary } else { design::secondary }),
+            ].spacing(8),
+            text(if state.preferences.ui_theme == "Evolve Legacy" {
+                "Legacy theme: charcoal panels, red selection, white hover and sharper controls. The original supplied UI_Assets.pak is not bundled or modified; its textures require separate verified extraction."
+            } else {
+                "Modern theme: original color choices and rounder panels. Choose Evolve Legacy to preview the alternative instantly; switching back preserves your Modern colors."
+            }).size(11).style(design::muted),
+            row![
+                design::button(text(format!("Appearance: {}", state.preferences.appearance_mode))).on_press_maybe((state.preferences.ui_theme == "Modern").then_some(Message::PreferenceAppearance)).style(design::secondary),
                 design::button(text(format!("Density: {}", state.preferences.ui_density))).on_press(Message::PreferenceDensity).style(design::secondary),
                 design::button(text(format!("Explorer: {}", state.preferences.file_explorer_side))).on_press(Message::PreferenceExplorerSide).style(design::secondary)
             ].spacing(8),
             design::button(text(format!("Reduce menu animation: {}", if state.preferences.reduce_motion { "On" } else { "Off" }))).on_press(Message::PreferenceReduceMotion).style(design::secondary),
-            text("ACCENT COLOR").size(12),
+            text("MODERN THEME ACCENT COLOR").size(12),
             row![
                 design::button("Default")
-                    .on_press(Message::PreferenceAccentPreset("Default"))
+                    .on_press_maybe((state.preferences.ui_theme == "Modern").then_some(Message::PreferenceAccentPreset("Default")))
                     .style(if !state.preferences.appearance_colors.contains_key("accent") { design::primary } else { design::secondary }),
                 design::button("Classic Red")
-                    .on_press(Message::PreferenceAccentPreset("Classic Red"))
+                    .on_press_maybe((state.preferences.ui_theme == "Modern").then_some(Message::PreferenceAccentPreset("Classic Red")))
                     .style(if state.preferences.appearance_colors.get("accent").is_some_and(|c| c == "#c9384a") { design::primary } else { design::secondary }),
                 design::button("Evolve Red")
-                    .on_press(Message::PreferenceAccentPreset("Evolve Red"))
+                    .on_press_maybe((state.preferences.ui_theme == "Modern").then_some(Message::PreferenceAccentPreset("Evolve Red")))
                     .style(if state.preferences.appearance_colors.get("accent").is_some_and(|c| c == "#e0354f") { design::primary } else { design::secondary }),
                 design::button("Deep Red")
-                    .on_press(Message::PreferenceAccentPreset("Deep Red"))
+                    .on_press_maybe((state.preferences.ui_theme == "Modern").then_some(Message::PreferenceAccentPreset("Deep Red")))
                     .style(if state.preferences.appearance_colors.get("accent").is_some_and(|c| c == "#a91f38") { design::primary } else { design::secondary }),
             ].spacing(8),
-            text("Accent presets update the live theme without overwriting custom background, surface or font settings. Arbitrary color and font pickers remain planned.")
+            text("Modern accent presets and Light/Dark modes are retained separately; selecting Legacy never overwrites those preferences. Original Scaleform assets are not executed by the native theme.")
                 .size(11).style(design::muted),
         ].spacing(8)),
         ].spacing(12).into(),

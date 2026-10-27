@@ -1954,6 +1954,7 @@ enum Message {
     PreferenceDensity,
     PreferenceExplorerSide,
     PreferenceAppearance,
+    PreferenceUiTheme(&'static str),
     PreferenceAccentPreset(&'static str),
     PreferenceReduceMotion,
     PreferenceSnapshots,
@@ -7350,6 +7351,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.settings_status = format!("Appearance preset applied: {preset}");
             }
         }
+        Message::PreferenceUiTheme(name) => {
+            if matches!(name, "Modern" | "Evolve Legacy") {
+                state.preferences.ui_theme = name.into();
+                persist_preferences(state);
+                state.settings_status = format!("Interface theme: {name}. Applies immediately.");
+            }
+        }
         Message::PreferenceAppearance => {
             state.preferences.appearance_mode = if state.preferences.appearance_mode == "Dark" {
                 "Light".into()
@@ -10344,7 +10352,7 @@ fn view(state: &State) -> Element<'_, Message> {
         border: iced::Border {
             color: design::border(theme),
             width: 1.0,
-            radius: 12.0.into(),
+            radius: if design::is_legacy(theme) { 1.0 } else { 12.0 }.into(),
         },
         ..container::Style::default()
     });
@@ -10363,7 +10371,22 @@ fn view(state: &State) -> Element<'_, Message> {
         )
         .style(design::text_button)
         .on_press(Message::Navigate(Page::Home)),
-        text(format!("  /  {}", page.title())).size(12),
+        if state.preferences.ui_theme == "Evolve Legacy" {
+            Element::<Message>::from(
+                row![
+                    image(image::Handle::from_bytes(
+                        include_bytes!("../../../assets/legacy/legacy-cursor-art.png").to_vec()
+                    ))
+                    .width(23)
+                    .height(23),
+                    text(format!("  /  {}", page.title())).size(12)
+                ]
+                .spacing(4)
+                .align_y(iced::Center),
+            )
+        } else {
+            Element::<Message>::from(text(format!("  /  {}", page.title())).size(12))
+        },
         space().width(Fill),
         design::button("Help")
             .on_press(Message::Navigate(Page::Docs))

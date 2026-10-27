@@ -23,6 +23,8 @@ pub struct Preferences {
     pub saved_pitch: f32,
     pub saved_zoom: f32,
     pub appearance_mode: String,
+    /// Optional native Evolve Legacy styling; existing Modern UI remains default.
+    pub ui_theme: String,
     pub appearance_colors: BTreeMap<String, String>,
     pub theme_presets: BTreeMap<String, BTreeMap<String, String>>,
     pub font_family: String,
@@ -88,6 +90,7 @@ impl Default for Preferences {
             saved_pitch: 0.0,
             saved_zoom: 1.0,
             appearance_mode: "Dark".into(),
+            ui_theme: "Modern".into(),
             appearance_colors: BTreeMap::new(),
             theme_presets: BTreeMap::new(),
             font_family: "Default".into(),
@@ -252,6 +255,9 @@ impl Preferences {
             self.saved_zoom = 1.0;
         }
         self.saved_zoom = self.saved_zoom.clamp(0.2, 4.0);
+        if !["Modern", "Evolve Legacy"].contains(&self.ui_theme.as_str()) {
+            self.ui_theme = "Modern".into();
+        }
         if !["Dark", "Light"].contains(&self.appearance_mode.as_str()) {
             self.appearance_mode = "Dark".into();
         }
@@ -367,6 +373,30 @@ pub fn save_to(path: &Path, prefs: &Preferences) -> Result<(), SettingsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legacy_theme_is_optional_and_restores_previous_modern_customizations() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        fs::write(
+            &file,
+            r##"{"appearance_mode":"Light","appearance_colors":{"accent":"#123456"}}"##,
+        )
+        .unwrap();
+        let mut settings = load_from(&file).unwrap();
+        assert_eq!(settings.ui_theme, "Modern");
+        assert_eq!(settings.appearance_mode, "Light");
+        settings.ui_theme = "Evolve Legacy".into();
+        save_to(&file, &settings).unwrap();
+        let mut restored = load_from(&file).unwrap();
+        assert_eq!(restored.ui_theme, "Evolve Legacy");
+        assert_eq!(restored.appearance_colors["accent"], "#123456");
+        restored.ui_theme = "Modern".into();
+        assert_eq!(restored.appearance_mode, "Light");
+        restored.ui_theme = "invalid theme".into();
+        restored.validate().unwrap();
+        assert_eq!(restored.ui_theme, "Modern");
+    }
+
     #[test]
     fn accent_presets_change_only_accent_roles_and_are_valid() {
         let mut prefs = Preferences::default();
