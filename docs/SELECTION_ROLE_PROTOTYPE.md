@@ -77,3 +77,16 @@ possible without changing their payloads, but the private swap helper cannot
 currently install a previously absent PAK target. Signed scratch files must
 not be copied into the installed game as a substitute for a create-only,
 recoverable manager workflow and a game-side archive-discovery test.
+
+If a *previously prepared*, clean private launch journal still pins older
+ready copies after a manual profile changes staged PAKs, the ordinary main
+Play with Mods route will reject the pending stage swap and the advanced
+preflight will reject stale prepared digests. Do **not** erase the journal or
+`.customkey-ready` files. With both game processes closed, zero original
+backups, the exact plan/journal mapping intact and explicit user approval,
+`scripts/refresh-prepared-selection.py --stage <stage> --swap <swap> --cli
+<evolve-cli.exe>` performs a read-only check; its explicit `--apply` mode
+preserves old ready files and journal under unique non-PAK names before
+publishing a clean `restored` journal. Run the existing private helper's
+`prepare` action next, then the manager's advanced signed-PAK verification.
+Neither step authorizes live installation if the manager's guard fails.
