@@ -456,7 +456,9 @@ fn inspect_existing_launcher_mode(
         if sha(&original_dbg)? != status["original_dbghelp_sha256"].as_str().unwrap_or("")
             || sha(&staged_dbg)? != status["dbghelp_sha256"].as_str().unwrap_or("")
         {
-            return Err("Official dbghelp.dll differs from setup's pinned original/staged digests".into());
+            return Err(
+                "Official dbghelp.dll differs from setup's pinned original/staged digests".into(),
+            );
         }
         planned.push((
             "bin64_SteamRetail/dbghelp.dll".into(),
