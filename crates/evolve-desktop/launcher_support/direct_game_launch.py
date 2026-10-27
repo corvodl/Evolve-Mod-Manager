@@ -171,6 +171,12 @@ def launch_direct(game_root, stage_root=None, client_exe=None, swap_dir=None, cl
         # Validate the exact October 15 Stage2Trace build, compatible
         # game-local Steam provider and *file* catalog before any PAK rename.
         runtime_env=environment_for_session(state,swap)
+        hook_log=Path(runtime_env["MODDED_EVOLVE_STAGE2_LOG"])
+        if hook_log.exists() and not _regular(hook_log):
+            raise RuntimeError("Stage2 hook log is not a regular file; refusing startup")
+        # Truncate the manager-owned log before starting the suspended game:
+        # successes from a previous session must never pass new startup checks.
+        hook_log.write_text("", encoding="utf-8")
         if not clean:
             prepared=validate_prepared(game,stage_root)
             rename_prepared_into_game(prepared)
@@ -183,10 +189,18 @@ def launch_direct(game_root, stage_root=None, client_exe=None, swap_dir=None, cl
                 exe,game=True,trace_dll=state["trace"],
                 runtime_env=runtime_env)
             try:
+                try:
+                    contract.wait_for_hook_startup(
+                        hook_log, Path(state["steam_compat"]), state["modes"], process
+                    )
+                except BaseException:
+                    if process.poll() is None:
+                        process.terminate()
+                    raise
                 (session/"game.pid").write_text(str(process.pid)+"\n")
                 print(f"DIRECT_GAME_LAUNCHED pid={process.pid} "
                       f"watchdog={watchdog or 0} swap_complete={str(swapped).lower()} "
-                      "services_ready=true trace_loaded=true",flush=True)
+                      "services_ready=true trace_loaded=true hooks_ready=true",flush=True)
                 return 0
             finally:
                 process.close()
