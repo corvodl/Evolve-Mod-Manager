@@ -171,7 +171,8 @@ fn latest_announcement(state: &State) -> Element<'_, Message> {
 /// A supplied 1920x1080 default_loading.dds is loaded as home art; if
 /// unavailable the Workbench remains completely usable without a placeholder.
 fn home_banner() -> Option<iced::widget::image::Handle> {
-    static CACHE: std::sync::OnceLock<Option<iced::widget::image::Handle>> = std::sync::OnceLock::new();
+    static CACHE: std::sync::OnceLock<Option<iced::widget::image::Handle>> =
+        std::sync::OnceLock::new();
     CACHE.get_or_init(load_home_banner).clone()
 }
 
@@ -193,15 +194,29 @@ fn load_home_banner() -> Option<iced::widget::image::Handle> {
 
 /// Strictly bounded DXT1 (BC1) DDS support for the provided Home banner.
 fn decode_home_dds(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
-    if data.len() < 128 || &data[..4] != b"DDS " || &data[84..88] != b"DXT1" { return None; }
+    if data.len() < 128 || &data[..4] != b"DDS " || &data[84..88] != b"DXT1" {
+        return None;
+    }
     let width = u32::from_le_bytes(data[16..20].try_into().ok()?);
     let height = u32::from_le_bytes(data[12..16].try_into().ok()?);
-    if width == 0 || height == 0 || width > 4096 || height > 4096 { return None; }
+    if width == 0 || height == 0 || width > 4096 || height > 4096 {
+        return None;
+    }
     let blocks_x = width.div_ceil(4) as usize;
     let blocks_y = height.div_ceil(4) as usize;
-    let needed = blocks_x.checked_mul(blocks_y)?.checked_mul(8)?.checked_add(128)?;
-    if data.len() < needed { return None; }
-    let mut rgba = vec![0u8; (width as usize).checked_mul(height as usize)?.checked_mul(4)?];
+    let needed = blocks_x
+        .checked_mul(blocks_y)?
+        .checked_mul(8)?
+        .checked_add(128)?;
+    if data.len() < needed {
+        return None;
+    }
+    let mut rgba = vec![
+        0u8;
+        (width as usize)
+            .checked_mul(height as usize)?
+            .checked_mul(4)?
+    ];
     for by in 0..blocks_y {
         for bx in 0..blocks_x {
             let start = 128 + (by * blocks_x + bx) * 8;
@@ -211,7 +226,11 @@ fn decode_home_dds(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
                 let r = ((c >> 11) & 31) as u32;
                 let g = ((c >> 5) & 63) as u32;
                 let b = (c & 31) as u32;
-                [((r * 255 + 15) / 31) as u8, ((g * 255 + 31) / 63) as u8, ((b * 255 + 15) / 31) as u8]
+                [
+                    ((r * 255 + 15) / 31) as u8,
+                    ((g * 255 + 31) / 63) as u8,
+                    ((b * 255 + 15) / 31) as u8,
+                ]
             };
             let a = color(c0);
             let b = color(c1);
@@ -222,19 +241,34 @@ fn decode_home_dds(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
                     ((x[2] as u16 * mx + y[2] as u16 * my) / d) as u8,
                 ]
             };
-            let palette = [a, b,
-                if c0 > c1 { blend(a, b, 2, 1, 3) } else { blend(a, b, 1, 1, 2) },
-                if c0 > c1 { blend(a, b, 1, 2, 3) } else { [0, 0, 0] }];
+            let palette = [
+                a,
+                b,
+                if c0 > c1 {
+                    blend(a, b, 2, 1, 3)
+                } else {
+                    blend(a, b, 1, 1, 2)
+                },
+                if c0 > c1 {
+                    blend(a, b, 1, 2, 3)
+                } else {
+                    [0, 0, 0]
+                },
+            ];
             let bits = u32::from_le_bytes(data[start + 4..start + 8].try_into().ok()?);
             for dy in 0..4usize {
                 for dx in 0..4usize {
                     let x = bx * 4 + dx;
                     let y = by * 4 + dy;
-                    if x >= width as usize || y >= height as usize { continue; }
+                    if x >= width as usize || y >= height as usize {
+                        continue;
+                    }
                     let index = ((bits >> (2 * (dy * 4 + dx))) & 3) as usize;
                     let out = (y * width as usize + x) * 4;
                     // Subdued artwork lets the controls and workbench remain legible.
-                    for channel in 0..3 { rgba[out + channel] = (palette[index][channel] as u16 * 52 / 100) as u8; }
+                    for channel in 0..3 {
+                        rgba[out + channel] = (palette[index][channel] as u16 * 52 / 100) as u8;
+                    }
                     rgba[out + 3] = if c0 <= c1 && index == 3 { 0 } else { 255 };
                 }
             }
@@ -298,7 +332,6 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                 ]
                 .spacing(12)
                 .width(Fill),
-
             ]
             .spacing(12)
             .align_y(iced::Center),
@@ -332,12 +365,13 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
     };
     let hero: Element<'_, Message> = if let Some(handle) = home_banner() {
         // Full-width 16:9 hero, darkened so labels remain readable.
-        let picture = image(handle).width(Fill).height(Length::Fixed(280.0))
+        let picture = image(handle)
+            .width(Fill)
+            .height(Length::Fixed(280.0))
             .content_fit(iced::ContentFit::Cover);
-        column![
-            container(picture).width(Fill),
-            hero,
-        ].spacing(0).into()
+        column![container(picture).width(Fill), hero,]
+            .spacing(0)
+            .into()
     } else {
         hero.into()
     };
