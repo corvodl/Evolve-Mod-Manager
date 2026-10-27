@@ -98,7 +98,8 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
     let paths_ok = crate::play_setup::validate_paths(
         &state.preferences.game_installation,
         &state.preferences.client_executable,
-    ).is_ok();
+    )
+    .is_ok();
     panel(
         column![
             heading(
