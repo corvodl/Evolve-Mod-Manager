@@ -64,7 +64,7 @@ class DirectGameTests(unittest.TestCase):
                  mock.patch.object(direct,"start_restore_watchdog",side_effect=watchdog), \
                  mock.patch.object(direct.standard_user_launch,"launch_standard_user",side_effect=spawn):
                 self.assertEqual(direct.launch_direct(root,root,"client",root),0)
-            self.assertEqual(actions,["services","verify","swap","watchdog","inject","close"])
+            self.assertEqual(actions,["verify","services","swap","watchdog","inject","close"])
             self.assertEqual((session/"game.pid").read_text().strip(),"12345")
 
     def test_clean_launch_never_swaps_or_starts_watchdog(self):
