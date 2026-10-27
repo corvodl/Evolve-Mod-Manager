@@ -254,13 +254,17 @@ fn apply_portable_update(plan: &PreparedUpdate) -> Result<(), UpdateError> {
     // canonical placement after creation in case a linked path was introduced.
     let canonical_root = fs::canonicalize(folder)?;
     for (name, _) in &destinations {
-        let parent = folder.join(name).parent()
+        let parent = folder
+            .join(name)
+            .parent()
             .ok_or_else(|| UpdateError::Invalid("portable target has no parent".into()))?
             .to_path_buf();
         fs::create_dir_all(&parent)?;
         check_portable_member_parents(folder, name)?;
         if !fs::canonicalize(parent)?.starts_with(&canonical_root) {
-            return Err(UpdateError::Invalid("portable target escaped install root".into()));
+            return Err(UpdateError::Invalid(
+                "portable target escaped install root".into(),
+            ));
         }
     }
     let mut replaced: Vec<(usize, &str, bool)> = Vec::new();
@@ -652,18 +656,28 @@ mod tests {
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(outside.path(), dir.path().join("third_party")).unwrap();
-            assert!(check_portable_member_parents(
-                dir.path(), "third_party/OfficialStage2/evolve_tool.exe"
-            ).is_err());
+            assert!(
+                check_portable_member_parents(
+                    dir.path(),
+                    "third_party/OfficialStage2/evolve_tool.exe"
+                )
+                .is_err()
+            );
         }
         #[cfg(windows)]
         {
             // Symlink creation may require Developer Mode. If unsupported,
             // the portable path contract is still exercised by other tests.
-            if std::os::windows::fs::symlink_dir(outside.path(), dir.path().join("third_party")).is_ok() {
-                assert!(check_portable_member_parents(
-                    dir.path(), "third_party/OfficialStage2/evolve_tool.exe"
-                ).is_err());
+            if std::os::windows::fs::symlink_dir(outside.path(), dir.path().join("third_party"))
+                .is_ok()
+            {
+                assert!(
+                    check_portable_member_parents(
+                        dir.path(),
+                        "third_party/OfficialStage2/evolve_tool.exe"
+                    )
+                    .is_err()
+                );
             }
         }
     }
