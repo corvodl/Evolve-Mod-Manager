@@ -1178,59 +1178,134 @@ fn actor_rows(state: &State) -> Element<'_, Message> {
 
 pub(super) fn developer(state: &State) -> Element<'_, Message> {
     if state.developer_unlocked {
-        scrollable(column![
-            text("Developer").size(24),
-            surface(column![
-                text("Network testing").size(19),
-                text("Developer-only · Firewall policy").size(12).style(design::muted),
-                iced::widget::checkbox(state.developer_online_mods)
-                    .label("Allow modded online testing")
-                    .on_toggle(Message::DeveloperOnlineMods),
-                text(if state.developer_network_busy {
-                    "Applying network policy..."
-                } else if state.developer_online_mods {
-                    "Online testing enabled · Server acceptance not guaranteed"
-                } else {
-                    "Offline isolation selected"
-                }).size(12).style(design::muted),
-                text(state.developer_network_status.as_str())
-                    .size(12).style(design::muted),
-                text("Process privileges").size(19),
-                text("Manager: High · Client/Game: Medium").size(12).style(design::muted),
-                design::button(if state.developer_privilege_busy { "Inspecting process tokens..." } else { "Inspect Client / Game Privileges" })
-                    .on_press_maybe((!state.developer_privilege_busy).then_some(Message::DeveloperInspectProcessPrivileges)),
-                text(state.developer_privilege_status.as_str())
-                    .size(12).style(design::muted),
-                text("Runtime actors").size(19),
-                text("Offline memory · Validate fields before editing").size(12).style(design::muted),
-                design::button(if state.runtime_checking { "Detecting..." } else { "Detect Evolve.exe" })
-                    .on_press_maybe((!state.runtime_checking).then_some(Message::RuntimeDetect)),
-                text(state.runtime_snapshot.as_ref().map(|s| s.status.as_str()).unwrap_or("Not detected"))
-                    .size(12).style(design::muted),
-                text(state.runtime_snapshot.as_ref().map(|s| s.executable.as_str()).unwrap_or("Executable not checked"))
-                    .size(12).style(design::muted),
-                iced::widget::checkbox(state.armor_offline_confirmed)
-                    .label("Confirm isolated offline match (required to write)")
-                    .on_toggle(Message::ArmorOfflineChanged),
-                iced::widget::checkbox(state.live_edit_enabled)
-                    .label("Enable one-shot actor field writes (experimental)")
-                    .on_toggle(Message::LiveEditEnabled),
-                design::button(if state.actor_busy { "Reading actors..." } else { "Refresh all actors" })
-                    .on_press_maybe((!state.actor_busy && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some()).then_some(Message::ActorRefresh)),
-                text(state.actor_status.as_str()).size(12).style(design::muted),
-                actor_rows(state),
-                text("Field editor").size(19),
-                text(state.actor_edit.as_ref().map(|(_,_,field,_)| field.title()).unwrap_or("Click Edit on an actor field above"))
-                    .size(12).style(design::muted),
-                design::text_input("New field value", &state.actor_edit_value)
-                    .on_input(Message::ActorEditValue),
-                design::button("Write selected field once")
-                    .on_press_maybe((state.actor_edit.is_some() && !state.actor_busy && state.live_edit_enabled && state.armor_offline_confirmed && !state.developer_online_mods && !state.actor_edit_value.trim().is_empty()).then_some(Message::ActorWrite)),
-                text("One-shot writes · Offline only · Value checked before write")
-                    .size(12).style(design::muted),
-                design::button("Lock developer area").on_press(Message::LockDeveloper),
-            ].spacing(12)),
-        ].spacing(13).padding(12)).height(Fill).into()
+        scrollable(
+            column![
+                text("Developer").size(24),
+                surface(
+                    column![
+                        text("Network testing").size(19),
+                        text("Developer-only · Firewall policy")
+                            .size(12)
+                            .style(design::muted),
+                        iced::widget::checkbox(state.developer_online_mods)
+                            .label("Allow modded online testing")
+                            .on_toggle(Message::DeveloperOnlineMods),
+                        text(if state.developer_network_busy {
+                            "Applying network policy..."
+                        } else if state.developer_online_mods {
+                            "Online testing enabled · Server acceptance not guaranteed"
+                        } else {
+                            "Offline isolation selected"
+                        })
+                        .size(12)
+                        .style(design::muted),
+                        text(state.developer_network_status.as_str())
+                            .size(12)
+                            .style(design::muted),
+                        text("Process privileges").size(19),
+                        text("Manager: High · Client/Game: Medium")
+                            .size(12)
+                            .style(design::muted),
+                        design::button(if state.developer_privilege_busy {
+                            "Inspecting process tokens..."
+                        } else {
+                            "Inspect Client / Game Privileges"
+                        })
+                        .on_press_maybe(
+                            (!state.developer_privilege_busy)
+                                .then_some(Message::DeveloperInspectProcessPrivileges)
+                        ),
+                        text(state.developer_privilege_status.as_str())
+                            .size(12)
+                            .style(design::muted),
+                        text("Runtime actors").size(19),
+                        text("Offline memory · Validate fields before editing")
+                            .size(12)
+                            .style(design::muted),
+                        design::button(if state.runtime_checking {
+                            "Detecting..."
+                        } else {
+                            "Detect Evolve.exe"
+                        })
+                        .on_press_maybe(
+                            (!state.runtime_checking).then_some(Message::RuntimeDetect)
+                        ),
+                        text(
+                            state
+                                .runtime_snapshot
+                                .as_ref()
+                                .map(|s| s.status.as_str())
+                                .unwrap_or("Not detected")
+                        )
+                        .size(12)
+                        .style(design::muted),
+                        text(
+                            state
+                                .runtime_snapshot
+                                .as_ref()
+                                .map(|s| s.executable.as_str())
+                                .unwrap_or("Executable not checked")
+                        )
+                        .size(12)
+                        .style(design::muted),
+                        iced::widget::checkbox(state.armor_offline_confirmed)
+                            .label("Confirm isolated offline match (required to write)")
+                            .on_toggle(Message::ArmorOfflineChanged),
+                        iced::widget::checkbox(state.live_edit_enabled)
+                            .label("Enable one-shot actor field writes (experimental)")
+                            .on_toggle(Message::LiveEditEnabled),
+                        design::button(if state.actor_busy {
+                            "Reading actors..."
+                        } else {
+                            "Refresh all actors"
+                        })
+                        .on_press_maybe(
+                            (!state.actor_busy
+                                && state
+                                    .runtime_snapshot
+                                    .as_ref()
+                                    .and_then(|s| s.pid)
+                                    .is_some())
+                            .then_some(Message::ActorRefresh)
+                        ),
+                        text(state.actor_status.as_str())
+                            .size(12)
+                            .style(design::muted),
+                        actor_rows(state),
+                        text("Field editor").size(19),
+                        text(
+                            state
+                                .actor_edit
+                                .as_ref()
+                                .map(|(_, _, field, _)| field.title())
+                                .unwrap_or("Click Edit on an actor field above")
+                        )
+                        .size(12)
+                        .style(design::muted),
+                        design::text_input("New field value", &state.actor_edit_value)
+                            .on_input(Message::ActorEditValue),
+                        design::button("Write selected field once").on_press_maybe(
+                            (state.actor_edit.is_some()
+                                && !state.actor_busy
+                                && state.live_edit_enabled
+                                && state.armor_offline_confirmed
+                                && !state.developer_online_mods
+                                && !state.actor_edit_value.trim().is_empty())
+                            .then_some(Message::ActorWrite)
+                        ),
+                        text("One-shot writes · Offline only · Value checked before write")
+                            .size(12)
+                            .style(design::muted),
+                        design::button("Lock developer area").on_press(Message::LockDeveloper),
+                    ]
+                    .spacing(12)
+                ),
+            ]
+            .spacing(13)
+            .padding(12),
+        )
+        .height(Fill)
+        .into()
     } else {
         column![
             text("Developer").size(24),
