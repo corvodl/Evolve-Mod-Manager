@@ -1542,6 +1542,7 @@ impl Operation {
                 Ok(Completed::OfflineLauncherStarted(count, id, warnings))
             }
             Self::LaunchDirectGame(game, swap) => {
+                direct_runtime::require_ready(&game)?;
                 launcher_bridge::games_closed()?;
                 let warnings = play_setup::recovery_warnings(&game, swap.as_deref());
                 if !warnings.is_empty() {
