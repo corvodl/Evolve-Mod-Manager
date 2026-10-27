@@ -5,7 +5,6 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 const GAME_HINT: &str = r"C:\Games\ModdedEvolve\EvolveGame\bin64_SteamRetail";
 const CLIENT_HINT: &str =
