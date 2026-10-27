@@ -519,7 +519,8 @@ fn inspect_hook_startup_log(path: &Path, offset: u64) -> Result<PrivateLaunchSig
         // and inadvertently broke the earlier stable Rust completion marker.
         // Accept both published formats to avoid false failures on migration.
         signals.game_released |= line.contains("Evolve creation released successfully.")
-            || line.contains("Evolve creation released successfully (standard-user token verified).");
+            || line
+                .contains("Evolve creation released successfully (standard-user token verified).");
     }
     Ok(signals)
 }
