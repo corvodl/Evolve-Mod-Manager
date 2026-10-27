@@ -171,6 +171,11 @@ fn latest_announcement(state: &State) -> Element<'_, Message> {
 /// A supplied 1920x1080 default_loading.dds is loaded as home art; if
 /// unavailable the Workbench remains completely usable without a placeholder.
 fn home_banner() -> Option<iced::widget::image::Handle> {
+    static CACHE: std::sync::OnceLock<Option<iced::widget::image::Handle>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(load_home_banner).clone()
+}
+
+fn load_home_banner() -> Option<iced::widget::image::Handle> {
     let base = std::env::current_exe().ok()?.parent()?.to_path_buf();
     let candidates = [
         base.join("assets").join("default_loading.dds"),
@@ -228,7 +233,8 @@ fn decode_home_dds(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
                     if x >= width as usize || y >= height as usize { continue; }
                     let index = ((bits >> (2 * (dy * 4 + dx))) & 3) as usize;
                     let out = (y * width as usize + x) * 4;
-                    rgba[out..out + 3].copy_from_slice(&palette[index]);
+                    // Subdued artwork lets the controls and workbench remain legible.
+                    for channel in 0..3 { rgba[out + channel] = (palette[index][channel] as u16 * 52 / 100) as u8; }
                     rgba[out + 3] = if c0 <= c1 && index == 3 { 0 } else { 255 };
                 }
             }
