@@ -115,6 +115,25 @@ jobs:
             if (!(Test-Path $item)) { throw "Missing Nightly release asset: $item" }
             if ((Get-Item $item).Length -lt 1024) { throw "Suspiciously small Nightly asset: $item" }
           }
+          # Require the complete official runtime in every portable release.
+          Add-Type -AssemblyName System.IO.Compression
+          $archive = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $portable).Path)
+          try {
+            foreach ($name in @(
+              'third_party/OfficialStage2/evolve_tool.exe',
+              'third_party/OfficialStage2/crypto.dll',
+              'third_party/OfficialStage2/inject/inject.dll',
+              'third_party/OfficialStage2/inject/dbghelp.dll',
+              'third_party/OfficialStage2/inject/RSAKeyData.bin',
+              'third_party/OfficialStage2/README.txt'
+            )) {
+              $entry = $archive.GetEntry($name)
+              if ($null -eq $entry -or $entry.Length -le 0) {
+                throw "Portable release is missing official tool component: $name"
+              }
+            }
+          } finally { $archive.Dispose() }
+          Write-Host 'Portable official tool inventory verified.'
           # The previous published nightly is the changelog boundary.
           # Pull complete history/tags at checkout and list first-parent
           # merges/direct commits only; never carry old release notes forward.
