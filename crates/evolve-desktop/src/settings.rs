@@ -35,7 +35,7 @@ pub struct Preferences {
     pub game_installation: String,
     /// Normal Modded Evolve launcher EXE selected by the user.
     pub client_executable: String,
-    /// Client Launch (default) or Direct Launch, used for both clean and modded Play.
+    /// Direct Launch (default) or Client Launch, used for clean and modded Play.
     pub game_launch_mode: String,
     pub stage: String,
     pub swap: String,
@@ -97,7 +97,7 @@ impl Default for Preferences {
             crash_logging_enabled: true,
             game_installation: String::new(),
             client_executable: String::new(),
-            game_launch_mode: "Client Launch".into(),
+            game_launch_mode: "Direct Launch".into(),
             stage: String::new(),
             swap: String::new(),
             projects: String::new(),
@@ -227,6 +227,9 @@ impl Preferences {
     pub fn validate(&mut self) -> Result<(), SettingsError> {
         if !["Compact", "Comfortable"].contains(&self.ui_density.as_str()) {
             self.ui_density = "Comfortable".into();
+        }
+        if !["Direct Launch", "Client Launch"].contains(&self.game_launch_mode.as_str()) {
+            self.game_launch_mode = "Direct Launch".into();
         }
         if !["Right", "Left"].contains(&self.file_explorer_side.as_str()) {
             self.file_explorer_side = "Left".into();
@@ -387,6 +390,22 @@ mod tests {
             prefs.appearance_colors.get("surface").map(String::as_str),
             Some("#15171c")
         );
+    }
+
+    #[test]
+    fn direct_launch_defaults_for_existing_settings_and_client_choice_persists() {
+        assert_eq!(Preferences::default().game_launch_mode, "Direct Launch");
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        fs::write(&file, r#"{"ui_density":"Compact"}"#).unwrap();
+        assert_eq!(load_from(&file).unwrap().game_launch_mode, "Direct Launch");
+        let mut p = Preferences::default();
+        p.game_launch_mode = "Client Launch".into();
+        save_to(&file, &p).unwrap();
+        assert_eq!(load_from(&file).unwrap().game_launch_mode, "Client Launch");
+        p.game_launch_mode = "invalid".into();
+        p.validate().unwrap();
+        assert_eq!(p.game_launch_mode, "Direct Launch");
     }
 
     #[test]
