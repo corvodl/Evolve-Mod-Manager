@@ -1956,6 +1956,7 @@ enum Message {
     PreferenceExplorerSide,
     PreferenceAppearance,
     PreferenceUiTheme(&'static str),
+    PreferenceHomeBackground,
     PreferenceAccentPreset(&'static str),
     PreferenceReduceMotion,
     PreferenceSnapshots,
@@ -7358,6 +7359,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 persist_preferences(state);
                 state.settings_status = format!("Interface theme: {name}. Applies immediately.");
             }
+        }
+        Message::PreferenceHomeBackground => {
+            state.preferences.show_home_background = !state.preferences.show_home_background;
+            persist_preferences(state);
         }
         Message::PreferenceAppearance => {
             state.preferences.appearance_mode = if state.preferences.appearance_mode == "Dark" {
