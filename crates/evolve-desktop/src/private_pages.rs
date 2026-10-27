@@ -58,6 +58,27 @@ fn surface<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Contai
         })
 }
 
+/// Original Evolve red corner atlas sprite, cropped from the uploaded
+/// button_I8.dds.0. Only rendered when the optional Legacy theme is selected.
+fn legacy_section_label(label: &'static str, legacy: bool) -> Element<'static, Message> {
+    let title = text(label).size(12).style(design::accent);
+    if legacy {
+        row![
+            image(image::Handle::from_bytes(
+                include_bytes!("../../../assets/legacy/legacy-menu-corner.png").to_vec(),
+            ))
+            .width(20)
+            .height(20),
+            title
+        ]
+        .spacing(4)
+        .align_y(iced::Center)
+        .into()
+    } else {
+        title.into()
+    }
+}
+
 fn tile(name: &'static str, description: &'static str, page: Page) -> Element<'static, Message> {
     design::button(
         row![
@@ -315,7 +336,7 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         surface(
             row![
                 column![
-                    text("YOUR WORKBENCH").size(12).style(design::accent),
+                    legacy_section_label("YOUR WORKBENCH", state.preferences.ui_theme == "Evolve Legacy"),
                     text("Continue where you left off").size(22),
                     row![
                         svg(Page::Files.icon())
@@ -350,7 +371,7 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         surface(
             row![
                 column![
-                    text("GETTING STARTED").size(12).style(design::accent),
+                    legacy_section_label("GETTING STARTED", state.preferences.ui_theme == "Evolve Legacy"),
                 text("Ready to make your first mod?").size(22),
                 text("Start by importing a PAK into the Asset Library, or follow Docs for a guided setup. Your last selected project will appear here once you have one.")
                     .size(13)
@@ -385,7 +406,7 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         hero.into()
     };
     let quick = column![
-        text("PLAY EVOLVE").size(14),
+        legacy_section_label("PLAY EVOLVE", state.preferences.ui_theme == "Evolve Legacy"),
         text(if state.developer_unlocked && state.developer_online_mods {
             "Developer online testing is armed. All enabled mods are eligible, including gameplay changes. Actual server acceptance is not guaranteed."
         } else {
