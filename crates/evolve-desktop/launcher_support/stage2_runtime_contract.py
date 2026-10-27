@@ -105,16 +105,24 @@ def catalog_from_local_appdata(local_appdata=None) -> Path:
 
 
 def validate_modes(raw: str) -> str:
+    """Accept the client's semicolon log format; pass a canonical list to the DLL.
+
+    The service host reports `modes=Stage2Listener;Stage2ProfileCompat;...`,
+    while Stage2Trace's environment contract uses comma-separated flags.
+    Preserve order and contents; never drop an unknown but valid mode.
+    """
     if not isinstance(raw, str) or not raw or len(raw) > 4096:
         raise RuntimeError("The client did not provide a valid Stage2 modes string")
-    modes = raw.split(",")
+    if ";" in raw and "," in raw:
+        raise RuntimeError("Client's Stage2 modes contain mixed separators")
+    modes = raw.split(";" if ";" in raw else ",")
     if any(not _MODE_PATTERN.fullmatch(item) for item in modes):
         raise RuntimeError("Client's Stage2 modes are malformed")
     if not _REQUIRED_MODES.issubset(set(modes)):
         raise RuntimeError("Client's Stage2 compatibility modes omit profile or listener support")
     if len(modes) != len(set(modes)):
         raise RuntimeError("Client's Stage2 compatibility modes contain duplicates")
-    return raw
+    return ",".join(modes)
 
 
 def validated_optional_session_environment(raw) -> dict[str, str]:
