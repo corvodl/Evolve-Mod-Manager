@@ -34,6 +34,7 @@ mod guided_modding;
 mod initial_setup;
 mod launcher_bridge;
 mod level_workspace;
+mod loading_wheel;
 mod library_picker;
 mod menu_popup;
 mod mod_play;
@@ -457,6 +458,8 @@ struct State {
     mod_toggle_animations: Vec<ModToggleAnimation>,
     /// Indeterminate footer activity only: never presented as a real percent.
     footer_pulse: u16,
+    /// Frame of the two independent 30 FPS timelines from loading_wheel.gfx.
+    loading_wheel_frame: u32,
     /// Named worker operation and real elapsed time, shared by the footer and
     /// all open progress windows; no fabricated percentages.
     busy_operation: Option<String>,
@@ -1688,6 +1691,7 @@ enum Message {
     DropPath(PathBuf),
     CancelScan,
     ScanPulse,
+    LoadingWheelTick,
     ViewerMenu(&'static str),
     ViewerToggleExplorer,
     ViewerResetCamera,
@@ -4779,6 +4783,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 cancel.store(true, Ordering::Relaxed);
                 state.status = "Cancelling asset scan after current entry...".into();
             }
+        }
+        Message::LoadingWheelTick => {
+            state.loading_wheel_frame =
+                (state.loading_wheel_frame + 1) % loading_wheel::LOOP_FRAMES;
         }
         Message::ScanPulse => {
             state.footer_pulse = state.footer_pulse.wrapping_add(1);
@@ -11189,6 +11197,17 @@ impl Desktop {
         } else {
             Subscription::none()
         };
+        // Original GFX playback rate is 30 frames/sec. The footer and the
+        // optional Home watermark share a frame clock but do not fabricate
+        // worker completion percentages from the animation.
+        let wheel = if footer_is_working(&self.state)
+            || self.state.page == Some(Page::Home)
+        {
+            iced::time::every(Duration::from_secs_f64(1.0 / f64::from(loading_wheel::FPS)))
+                .map(|_| Message::LoadingWheelTick)
+        } else {
+            Subscription::none()
+        };
         let startup = if self.state.preferences.automatic_update_checks
             && !self.state.startup_update_checked
         {
@@ -11222,6 +11241,7 @@ impl Desktop {
             playback,
             startup,
             scan_progress,
+            wheel,
             window::close_events().map(Message::WindowClosed),
             iced::event::listen_with(|event, _status, id| match event {
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
