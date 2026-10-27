@@ -170,26 +170,38 @@ fn latest_announcement(state: &State) -> Element<'_, Message> {
 pub(super) fn home(state: &State) -> Element<'_, Message> {
     let hero = if let Some(workspace) = super::home_recent_workspace(state) {
         let project = state.modding_projects.as_ref().and_then(|projects| {
-            projects
-                .iter()
-                .find(|project| project.workspace == workspace ||
-                    project.workspace == std::path::PathBuf::from(&state.preferences.current_workspace))
+            projects.iter().find(|project| {
+                project.workspace == workspace
+                    || project.workspace
+                        == std::path::PathBuf::from(&state.preferences.current_workspace)
+            })
         });
-        let label = project.map(|project| project.label.clone()).unwrap_or_else(|| {
-            workspace
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "Recent project".into())
-        });
-        let details = project.map(|project| {
-            format!("{} · {} changed file(s)", project.status, project.modified.len())
-        }).unwrap_or_else(|| "Last selected editable project".into());
+        let label = project
+            .map(|project| project.label.clone())
+            .unwrap_or_else(|| {
+                workspace
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "Recent project".into())
+            });
+        let details = project
+            .map(|project| {
+                format!(
+                    "{} · {} changed file(s)",
+                    project.status,
+                    project.modified.len()
+                )
+            })
+            .unwrap_or_else(|| "Last selected editable project".into());
         surface(
             column![
                 text("YOUR WORKBENCH").size(12).style(design::accent),
                 text("Continue where you left off").size(22),
                 row![
-                    svg(Page::Files.icon()).style(design::icon).width(30).height(30),
+                    svg(Page::Files.icon())
+                        .style(design::icon)
+                        .width(30)
+                        .height(30),
                     column![
                         text(label).size(16),
                         text(details).size(12).style(design::muted),
