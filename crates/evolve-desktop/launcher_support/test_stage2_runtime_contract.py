@@ -53,6 +53,23 @@ class TraceContractTests(unittest.TestCase):
             target.write_bytes(b"observed catalog test")
             self.assertEqual(contract.catalog_from_local_appdata(base),target.resolve())
 
+    def test_hook_log_requires_provider_and_actual_mode_set(self):
+        provider=Path("C:/Games/EvolveGame/bin64_SteamRetail/ModdedEvolveSteamCompat.dll")
+        success=(
+            "[01:00:00] Stage2Tracer starting; listener_mode=enabled\n"
+            "[01:00:00] STEAM_EMU active provider="+str(provider)+"\n"
+            "[01:00:00] Modes from MODDED_EVOLVE_STAGE2_MODES: "+OBSERVED_MODES+"\n"
+            "[01:00:00] Hooks enabled status=MH_OK\n"
+        )
+        contract.validate_hook_startup(success,provider,OBSERVED_MODES)
+        for item in ("Stage2Tracer starting;", "STEAM_EMU active provider=",
+                     "Modes from MODDED_EVOLVE_STAGE2_MODES:", "Hooks enabled status=MH_OK"):
+            line=next(line for line in success.splitlines(True) if item in line)
+            with self.subTest(item=item), self.assertRaises(RuntimeError):
+                contract.validate_hook_startup(success.replace(line,""),provider,OBSERVED_MODES)
+        with self.assertRaises(RuntimeError):
+            contract.validate_hook_startup(success,Path("C:/Bad/ModdedEvolveSteamCompat.dll"),OBSERVED_MODES)
+
     def test_missing_or_empty_runtime_field_is_never_faked(self):
         for data in [
             {"MODDED_EVOLVE_RELAY_TOKEN":""},
