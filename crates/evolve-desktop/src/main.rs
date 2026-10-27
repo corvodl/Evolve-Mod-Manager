@@ -7515,8 +7515,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let (game, client) = match paths {
                 Ok(paths) => paths,
                 Err(error) => {
-                    state.status =
-                        format!("Choose and verify the installed game (and the client when Client Launch is selected): {error}");
+                    state.status = format!(
+                        "Choose and verify the installed game (and the client when Client Launch is selected): {error}"
+                    );
                     state.page = Some(Page::Settings);
                     state.settings_tab = settings_page::Tab::Storage;
                     return Task::none();
@@ -9910,7 +9911,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.settings_tab = settings_page::Tab::Storage;
                 }
                 Ok(Completed::DirectGameStarted(id, _warnings)) => {
-                    state.status = format!("Experimental direct offline Evolve.exe started (PID {id}); client services and profile authentication are not provided. No modded PAK swap was performed.");
+                    state.status = format!(
+                        "Experimental direct offline Evolve.exe started (PID {id}); client services and profile authentication are not provided. No modded PAK swap was performed."
+                    );
                     state.page = Some(Page::Home);
                 }
                 Ok(Completed::CleanClientStarted(id, warnings)) => {
