@@ -62,3 +62,18 @@ public key, then compares authenticated files against the recorded SHA-256
 baseline. Its scrollable report distinguishes failed/missing files from valid
 but changed originals. It does not repair, stage, replace or approve any PAK;
 the existing offline launch preflight remains authoritative.
+
+For source-only stage dependency triage, `scripts/audit-character-stage-dependencies.py`
+accepts two **already authenticated scratch extractions** (CharacterStage
+`level.pak`, then `Level_UI_Menu_Levels_data.pak`) and optional repeated
+`--inventory` signed-PAK JSON reports. It never writes game files, scans no
+installed folders and reports paths absent from the supplied inventories as
+**unresolved**, not missing. On the authenticated local Legacy extraction,
+211 resource paths were identified; only one is contained in those two
+extractions, so other verified archive inventories and model/menu assets must
+be resolved before either source archive could be a functional 3D port.
+Re-signing both original archives with the local stage key in scratch is
+possible without changing their payloads, but the private swap helper cannot
+currently install a previously absent PAK target. Signed scratch files must
+not be copied into the installed game as a substitute for a create-only,
+recoverable manager workflow and a game-side archive-discovery test.
