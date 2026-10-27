@@ -207,7 +207,7 @@ mod windows {
         Ok((pid, handle, now.module_base.unwrap()))
     }
 
-    pub(super) fn inspect(snapshot: &Snapshot, root: &str) -> Result<Listing, String> {
+    pub(crate) fn inspect(snapshot: &Snapshot, root: &str) -> Result<Listing, String> {
         let (pid, h, base) = process_and_handle(snapshot, root)?;
         let anchor = base.checked_add(ENTITY_SYSTEM_RVA).ok_or("Anchor overflow")?;
         let game = q(&h, anchor - 0x10).ok_or("Game unavailable")?;
@@ -259,7 +259,7 @@ mod windows {
         Ok(Listing { pid, actors, status })
     }
 
-    pub(super) fn write(snapshot: &Snapshot, root: &str, id: u32,
+    pub(crate) fn write(snapshot: &Snapshot, root: &str, id: u32,
         actor_addr: usize, field: Field, expected: u32, input: &str,
     ) -> Result<WriteResult, String> {
         let pid = snapshot.pid.ok_or("Detect Evolve first")?;
