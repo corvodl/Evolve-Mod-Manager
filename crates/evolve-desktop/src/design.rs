@@ -1,7 +1,7 @@
 //! Semantic palette shared with the reference Qt appearance settings.
 use crate::settings::Preferences;
 use iced::theme::{
-    Palette,
+    Base, Palette,
     palette::{Extended, Pair},
 };
 use iced::widget::{button as buttons, text};
