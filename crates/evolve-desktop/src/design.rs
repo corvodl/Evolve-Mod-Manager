@@ -138,44 +138,48 @@ pub fn theme(settings: &Preferences) -> Theme {
         warning: Color::from_rgb8(233, 170, 80),
         danger: accent,
     };
-    Theme::custom_with_fn(if legacy { "Evolve Legacy" } else { "Evolve" }, palette, |base| {
-        let mut extended = Extended::generate(base);
-        extended.background.weak = Pair {
-            color: surface,
-            text: foreground,
-        };
-        extended.background.neutral = Pair {
-            color: field,
-            text: foreground,
-        };
-        extended.background.strong = Pair {
-            color: border,
-            text: foreground,
-        };
-        extended.background.strongest.text = muted;
-        let light_background =
-            background.r * 0.2126 + background.g * 0.7152 + background.b * 0.0722 > 0.55;
-        extended.background.weaker = Pair {
-            color: hex(if legacy {
-                "#0e1012"
-            } else if light_background {
-                "#f0f2f5"
-            } else {
-                "#17191f"
-            })
-            .unwrap(),
-            text: foreground,
-        };
-        extended.secondary.base = Pair {
-            color: button,
-            text: foreground,
-        };
-        extended.primary.weak = Pair {
-            color: selection,
-            text: foreground,
-        };
-        extended
-    })
+    Theme::custom_with_fn(
+        if legacy { "Evolve Legacy" } else { "Evolve" },
+        palette,
+        |base| {
+            let mut extended = Extended::generate(base);
+            extended.background.weak = Pair {
+                color: surface,
+                text: foreground,
+            };
+            extended.background.neutral = Pair {
+                color: field,
+                text: foreground,
+            };
+            extended.background.strong = Pair {
+                color: border,
+                text: foreground,
+            };
+            extended.background.strongest.text = muted;
+            let light_background =
+                background.r * 0.2126 + background.g * 0.7152 + background.b * 0.0722 > 0.55;
+            extended.background.weaker = Pair {
+                color: hex(if legacy {
+                    "#0e1012"
+                } else if light_background {
+                    "#f0f2f5"
+                } else {
+                    "#17191f"
+                })
+                .unwrap(),
+                text: foreground,
+            };
+            extended.secondary.base = Pair {
+                color: button,
+                text: foreground,
+            };
+            extended.primary.weak = Pair {
+                color: selection,
+                text: foreground,
+            };
+            extended
+        },
+    )
 }
 
 pub fn surface(theme: &Theme) -> Color {
@@ -242,10 +246,14 @@ mod tests {
         let hover = secondary(&original, buttons::Status::Hovered);
         assert_eq!(hover.background, Some(Background::Color(Color::WHITE)));
         assert_eq!(hover.border.radius, 1.0.into());
-        assert_eq!(primary(&original, buttons::Status::Hovered).text_color,
-                   Color::from_rgb8(15, 17, 19));
+        assert_eq!(
+            primary(&original, buttons::Status::Hovered).text_color,
+            Color::from_rgb8(15, 17, 19)
+        );
         prefs.appearance_mode = "Light".into();
-        prefs.appearance_colors.insert("background".into(), "#abcdef".into());
+        prefs
+            .appearance_colors
+            .insert("background".into(), "#abcdef".into());
         assert_eq!(theme(&prefs).palette().background, hex("#0a0c0e").unwrap());
         prefs.ui_theme = "Modern".into();
         assert_eq!(theme(&prefs).palette().background, hex("#abcdef").unwrap());
