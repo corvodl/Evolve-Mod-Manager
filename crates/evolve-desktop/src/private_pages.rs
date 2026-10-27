@@ -324,7 +324,6 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                 ]
                 .spacing(12)
                 .width(Fill),
-                subtle_home_wheel(state.loading_wheel_frame),
             ]
             .spacing(12)
             .align_y(iced::Center),
@@ -354,10 +353,9 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         row![
             design::button(if state.developer_unlocked && state.developer_online_mods { "Play with Mods Online · Dev Test" } else { "Play with Mods" }).on_press(Message::PlayWithMods).style(design::primary),
             design::button("Play without Mods").on_press(Message::PlayWithoutMods).style(design::secondary),
-            design::button("Direct Offline Launch · Experimental").on_press(Message::PlayDirectGame).style(design::secondary),
         ]
         .spacing(8),
-        text("First launch: choose your game and normal client in Settings. Modded play uses the verified and reversible PAK swap helper; Developer mode removes mod-type restrictions but does not bypass server authentication.")
+        text(format!("Launch method: {} (change in Settings). Both Play buttons follow this choice. Direct mode starts Evolve.exe without the client, but client profile services are not yet reproduced.", state.preferences.game_launch_mode))
             .size(12)
             .style(design::muted),
     ]
