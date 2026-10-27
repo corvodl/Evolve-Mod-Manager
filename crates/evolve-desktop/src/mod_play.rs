@@ -104,6 +104,7 @@ pub fn launch_enabled(
     // Developer testing override accepts all mod kinds, but the client/server
     // still determine actual network access.
     developer_online: bool,
+    direct_launch: bool,
 ) -> Result<(usize, u32, usize, Option<String>), String> {
     if mods.is_empty() {
         return Err("Enable at least one mod before pressing Play with Mods.".into());
@@ -246,12 +247,16 @@ pub fn launch_enabled(
     // network flag in that client, nor can it force server authentication.
     // Online developer mode intentionally accepts ALL enabled projects,
     // including gameplay and unreviewed edits; backups and recovery still apply.
-    let id = launcher_bridge::launch_existing_offline_client(&ready, &progress)?;
+    let id = if direct_launch {
+        launcher_bridge::launch_direct_offline_game(&ready, &progress)?
+    } else {
+        launcher_bridge::launch_existing_offline_client(&ready, &progress)?
+    };
     if developer_online {
         // Record the chosen mode in the existing local activity logger.
         // "online" here means permitted by the manager, not server-confirmed.
         eprintln!(
-            "Developer modded-online test requested (client PID {id}); no mod-type filter applied; server acceptance unverified"
+            "Developer modded-online test requested (launched PID {id}); no mod-type filter applied; server acceptance unverified"
         );
     }
     progress.store(100, Ordering::Relaxed);
