@@ -52,7 +52,7 @@ fn surface<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Contai
             border: Border {
                 color: design::border(theme),
                 width: 1.0,
-                radius: 10.0.into(),
+                radius: if design::is_legacy(theme) { 1.0 } else { 10.0 }.into(),
             },
             ..container::Style::default()
         })
@@ -73,17 +73,26 @@ fn tile(name: &'static str, description: &'static str, page: Page) -> Element<'s
     )
     .style(|theme, status| {
         let mut style = design::secondary(theme, status);
-        style.background = Some(Background::Color(match status {
-            button::Status::Hovered => design::field(theme),
-            button::Status::Pressed => design::selection(theme),
-            _ => design::surface(theme),
-        }));
-        style.text_color = theme.palette().text;
-        style.border = Border {
-            color: design::border(theme),
-            width: 1.0,
-            radius: 12.0.into(),
-        };
+        if design::is_legacy(theme) {
+            // Legacy's iconic white hover must not be overridden by the
+            // Modern workspace-tile styling.
+            if !matches!(status, button::Status::Hovered | button::Status::Pressed) {
+                style.background = Some(Background::Color(design::surface(theme)));
+            }
+            style.border.radius = 1.0.into();
+        } else {
+            style.background = Some(Background::Color(match status {
+                button::Status::Hovered => design::field(theme),
+                button::Status::Pressed => design::selection(theme),
+                _ => design::surface(theme),
+            }));
+            style.text_color = theme.palette().text;
+            style.border = Border {
+                color: design::border(theme),
+                width: 1.0,
+                radius: 12.0.into(),
+            };
+        }
         style
     })
     .width(Fill)
