@@ -125,7 +125,8 @@ jobs:
               'third_party/OfficialStage2/inject/inject.dll',
               'third_party/OfficialStage2/inject/dbghelp.dll',
               'third_party/OfficialStage2/inject/RSAKeyData.bin',
-              'third_party/OfficialStage2/README.txt'
+              'third_party/OfficialStage2/README.txt',
+              'third_party/OfficialStage2/LICENSE-BOUNCYCASTLE.html'
             )) {
               $entry = $archive.GetEntry($name)
               if ($null -eq $entry -or $entry.Length -le 0) {
