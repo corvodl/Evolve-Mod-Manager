@@ -61,6 +61,14 @@ jobs:
             Copy-Item -LiteralPath $source -Destination (Join-Path $folder $name)
           }
           Copy-Item -LiteralPath "assets/hunt.ico" -Destination "$folder/hunt.ico"
+          $banner = "assets/default_loading.dds"
+          $expectedHash = "2f02f19b085dc7edc5f88b730121ca511bf499b2c3ef1045f4ebe020da3fff5a"
+          if (!(Test-Path -LiteralPath $banner)) { throw "Required Home banner asset missing: $banner" }
+          $actualHash = (Get-FileHash -LiteralPath $banner -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $expectedHash) { throw "Home banner asset SHA256 does not match the verified original DDS" }
+          $assetDir = Join-Path $folder "assets"
+          New-Item -ItemType Directory -Path $assetDir -Force | Out-Null
+          Copy-Item -LiteralPath $banner -Destination (Join-Path $assetDir "default_loading.dds")
           Copy-Item -LiteralPath "README.md" -Destination "$folder/README.md"
           Compress-Archive -Path (Join-Path $folder '*') -DestinationPath "dist/EvolveModManager-Portable-$env:VERSION.zip" -CompressionLevel Optimal -Force
 

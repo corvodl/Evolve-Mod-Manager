@@ -207,19 +207,29 @@ fn home_banner() -> Option<iced::widget::image::Handle> {
 }
 
 fn load_home_banner() -> Option<iced::widget::image::Handle> {
-    let base = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    let candidates = [
-        base.join("assets").join("default_loading.dds"),
-        base.join("default_loading.dds"),
-    ];
-    for path in candidates {
-        if let Ok(data) = std::fs::read(&path)
-            && let Some((width, height, rgba)) = decode_home_dds(&data)
-        {
-            return Some(iced::widget::image::Handle::from_rgba(width, height, rgba));
+    // Let installers or portable users override the bundled image. A missing
+    // or corrupt external DDS should not make the Home artwork disappear.
+    if let Some(base) = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
+    {
+        let candidates = [
+            base.join("assets").join("default_loading.dds"),
+            base.join("default_loading.dds"),
+        ];
+        for path in candidates {
+            if let Ok(data) = std::fs::read(&path)
+                && let Some((width, height, rgba)) = decode_home_dds(&data)
+            {
+                return Some(iced::widget::image::Handle::from_rgba(width, height, rgba));
+            }
         }
     }
-    None
+    // Some updater paths only replace the executable. Embed the verified
+    // 1920×1080 original so the hero art survives those updates as well.
+    let bundled = include_bytes!("../../../assets/default_loading.dds");
+    let (width, height, rgba) = decode_home_dds(bundled)?;
+    Some(iced::widget::image::Handle::from_rgba(width, height, rgba))
 }
 
 /// Strictly bounded DXT1 (BC1) DDS support for the provided Home banner.

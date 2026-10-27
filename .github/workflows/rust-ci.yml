@@ -23,6 +23,8 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Verify original Home banner and release packaging paths
+        run: python3 scripts/test_home_banner_asset.py
       - name: Validate isolated Ruffle Web control and source menu scripts
         run: node --check crates/evolve-desktop/src/gfx_live_player.js
       - name: Verify original GFX hover input routes over background video
