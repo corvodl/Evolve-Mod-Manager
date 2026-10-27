@@ -101,7 +101,7 @@ mod windows {
     fn q(h: &ProcessHandle, at: usize) -> Option<usize> {
         let p = u64::from_le_bytes(read_bytes(h, at, 8)?.try_into().ok()?);
         let p = usize::try_from(p).ok()?;
-        (p >= 0x10000 && p < 0x0000_7FFF_FFFF_FFFF).then_some(p)
+        (0x10000..0x0000_7FFF_FFFF_FFFF).contains(&p).then_some(p)
     }
     fn pointers(h: &ProcessHandle, at: usize, size: usize) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
