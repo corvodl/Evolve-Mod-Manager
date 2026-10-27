@@ -47,37 +47,43 @@ requires independent RSA verification and preserves failures for inspection.
 
 ## Complete installer and updater packaging
 
-The Nightly release workflow stages the exact developer ZIP from a **private
-GitHub release** (not from this source repository), verifies its full SHA-256,
-then extracts the minimum signing runtime plus its license: `evolve_tool.exe`, `crypto.dll`,
-`inject/inject.dll`, `inject/dbghelp.dll`, `inject/RSAKeyData.bin`, and
-a short README. The verified files are included in both the Inno installer
-and the portable ZIP, and are updated by either in-place upgrade path.
+The developer's extracted tool files have been uploaded to the private
+repository `corvodl/Evolve-Official-Tools`, under `evolve_tool_stage2/`.
+**A GitHub Release in the private repository is no longer required.**
 
-To supply the upload already provided to the project owner:
+Nightly builds clone that private repository using a read-only credential,
+check the SHA-256 of each required file, and copy only the five runtime
+files and the BouncyCastle license into the release staging directory.
+The source projects and developer archive are not included in the release.
 
-1. Create a private GitHub repository for the developer archive and upload
-   `evolve_tool_stage2_02.05.2025.zip` to a private release tagged
-   `official-stage2-2025` (or set a different tag variable).
-2. Set repository Actions variable `EVOLVE_STAGE2_TOOLS_REPO` to the private
-   repository's full `owner/name`, and optionally set
-   `EVOLVE_STAGE2_TOOLS_TAG`.
-3. Set Actions secret `EVOLVE_STAGE2_TOOLS_TOKEN` to a token with read access
-   to that private repository's release assets. Do **not** place the 5 MB ZIP
-   itself in an Actions secret; GitHub secrets have a size limit.
-4. Publish a new Nightly only once those values are configured. Packaging
-   intentionally fails closed if the official runtime cannot be fetched or
-   does not match its pinned checksums; it will not silently publish a
-   manager missing required signing components.
+The installer and portable ZIP package the verified runtime at
+`third_party/OfficialStage2/`. The portable updater recognizes the fixed
+nested runtime file list and replaces it through its ordinary recovery-safe
+update transaction.
 
-GitHub Actions Secrets prevent unrelated GitHub users from fetching the
-build-time archive, but **cannot conceal an executable's embedded key from
-users who download the release**. Hashes authenticate content; they do not
-encrypt or protect keys.
+### Remaining Actions credential setup
 
-The installer/updater integration does not need to modify the reversible
-game-launch swap helper. Official signing is used once for the baseline
-and only for PAKs that changed after that.
+In the **public** `corvodl/Evolve-Mod-Manager` repository, configure
+an Actions secret named `EVOLVE_STAGE2_TOOLS_TOKEN`: a fine-grained GitHub
+personal access token with `Contents: Read` permission specifically on
+`corvodl/Evolve-Official-Tools`. The ChatGPT GitHub connection can read
+the private repository, but that does not authorize GitHub Actions in
+another repository. Do not put the token itself in a PR, repository
+variable, source file, issue, or Actions output.
+
+`EVOLVE_STAGE2_TOOLS_REPO` and `EVOLVE_STAGE2_TOOLS_TAG` are no longer
+needed: the workflow uses the verified repository's current default branch,
+not a private release tag. The pipeline deliberately fails if its token
+cannot fetch the files, if a component is missing, or if its checksum
+differs from the pinned 2025 build. It must not publish a Nightly
+silently omitting official signing.
+
+A working signing executable includes recoverable signing material. Hash
+verification proves integrity and **does not** make that key secret.
+
+The existing manager-controlled runtime swap and original-file restoration
+remain unchanged; the official tools are used for isolated initial
+conversion and rebuilding affected PAKs.
 
 ## Verified capabilities and constraints
 
