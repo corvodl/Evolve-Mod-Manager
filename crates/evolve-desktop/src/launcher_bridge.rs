@@ -1161,6 +1161,110 @@ fn record_prepare_output(log_path: &Path, output: &std::process::Output) -> Resu
     writeln!(log).map_err(|e| e.to_string())
 }
 
+
+const DIRECT_LAUNCH_HELPER: &str = include_str!("../launcher_support/direct_game_launch.py");
+
+/// Publish the vetted direct-launch worker into the existing swap folder.
+/// The script intentionally imports the installed controlled_swap and restore
+/// helpers so they retain ownership of the existing journal and backups.
+#[cfg(windows)]
+fn install_direct_launch_helper(swap: &Path) -> Result<PathBuf, String> {
+    let target = swap.join("direct_game_launch.py");
+    match fs::symlink_metadata(&target) {
+        Ok(meta) => {
+            if !meta.file_type().is_file() || meta.len() > 128 * 1024 ||
+                fs::read(&target).map_err(|e| e.to_string())? != DIRECT_LAUNCH_HELPER.as_bytes() {
+                return Err("Unrecognized direct_game_launch.py in swap folder; preserve it and use a trusted clean swap folder.".into());
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut temp = tempfile::NamedTempFile::new_in(swap)
+                .map_err(|e| format!("Could not stage vetted direct launcher: {e}"))?;
+            temp.write_all(DIRECT_LAUNCH_HELPER.as_bytes()).map_err(|e| e.to_string())?;
+            temp.as_file().sync_all().map_err(|e| e.to_string())?;
+            temp.persist_noclobber(&target)
+                .map_err(|e| format!("Could not publish direct launcher: {}", e.error))?;
+        }
+        Err(error) => return Err(format!("Could not inspect direct launch worker: {error}")),
+    }
+    Ok(target)
+}
+
+/// Direct-launch path: prepare all signed PAK copies first, atomically exchange
+/// them before Evolve.exe exists, start independent rollback monitoring, then
+/// create the actual game process at medium integrity. No Frida interception.
+#[cfg(windows)]
+pub fn launch_direct_offline_game(
+    plan: &LaunchReady,
+    progress: &std::sync::atomic::AtomicUsize,
+) -> Result<u32, String> {
+    use std::os::windows::process::CommandExt;
+    games_closed()?;
+    let swap = &plan.swap;
+    let helper = install_direct_launch_helper(swap)?;
+    if !plan.prepared {
+        progress.store(90, std::sync::atomic::Ordering::Relaxed);
+        let output = Command::new("py")
+            .args(["-3.11", "-u"])
+            .arg(swap.join("controlled_swap.py"))
+            .arg("prepare")
+            .arg("--stage-dir").arg(&plan.stage)
+            .arg("--game-root").arg(crate::play_setup::ordinary_game_path(&plan.game))
+            .current_dir(swap).stdin(Stdio::null()).creation_flags(0x08000000)
+            .output().map_err(|e| format!("Python 3.11 prepare failed: {e}"))?;
+        let prepare_log = swap.join("rust-prepare-bridge.log");
+        let logged = record_prepare_output(&prepare_log, &output);
+        if !output.status.success() {
+            let reason = prepare_failure_reason(&output.stdout, &output.stderr);
+            return Err(format!("Direct launch preparation failed: {reason}. {} (log: {}; logging: {:?})",
+                prepare_recovery_advice(&reason), prepare_log.display(), logged.err()));
+        }
+    }
+    let verified = inspect_existing_launcher(&plan.stage, swap)?;
+    if !verified.prepared || verified.game != plan.game {
+        return Err("Direct launch has no matching verified prepared swap journal.".into());
+    }
+    progress.store(95, std::sync::atomic::Ordering::Relaxed);
+    let output = Command::new("py")
+        .args(["-3.11", "-u"])
+        .arg(helper)
+        .arg("--stage-dir").arg(&verified.stage)
+        .arg("--game-root").arg(crate::play_setup::ordinary_game_path(&verified.game))
+        .current_dir(swap)
+        .stdin(Stdio::null())
+        .creation_flags(0x08000000)
+        .output()
+        .map_err(|e| format!("Direct game launch helper unavailable: {e}"))?;
+    let log_path = swap.join("rust-direct-launch.log");
+    let _ = record_prepare_output(&log_path, &output);
+    if !output.status.success() {
+        let error = prepare_failure_reason(&output.stdout, &output.stderr);
+        return Err(format!(
+            "Direct modded launch did not finish: {error}. Check {} and rust-direct-restore-watch.log; do not launch again before recovery.",
+            log_path.display()));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let marker = stdout.lines()
+        .find_map(|line| line.strip_prefix("DIRECT_GAME_LAUNCHED pid="))
+        .ok_or("Direct launch returned success without a confirmed game PID; check restore watchdog before another launch.")?;
+    if !marker.contains(" swap_complete=true") {
+        return Err("Direct launch did not confirm its completed file swap.".into());
+    }
+    let pid = marker.split_whitespace().next()
+        .ok_or("Direct launch returned no game process ID")?
+        .parse::<u32>().map_err(|_| "Direct launch returned invalid game process ID")?;
+    if pid == 0 { return Err("Direct launch returned a zero game process ID".into()); }
+    progress.store(100, std::sync::atomic::Ordering::Relaxed);
+    Ok(pid)
+}
+
+#[cfg(not(windows))]
+pub fn launch_direct_offline_game(
+    _: &LaunchReady, _: &std::sync::atomic::AtomicUsize,
+) -> Result<u32, String> {
+    Err("Direct Evolve launch requires Windows x64".into())
+}
+
 /// Reuse the private launcher's already-tested control flow. It performs
 /// same-volume .customkey-ready renames only during its Frida CreateProcessW
 /// pause and starts an independent restore watchdog. Nothing here injects,
