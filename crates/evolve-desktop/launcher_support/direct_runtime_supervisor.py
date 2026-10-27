@@ -18,6 +18,7 @@ import traceback
 
 import client_service_host
 import direct_standard_user_launch as broker
+import stage2_runtime_contract as contract
 
 
 def atomic_json(path, obj):
@@ -50,16 +51,28 @@ def running_game(pid):
 def supervise(client, game, swap, session):
     session=Path(session).resolve(strict=True)
     client_service_host.require_client_files(client)
+    # The working game loads both modules from bin64_SteamRetail, not from the
+    # shadow client's private Compat folder. Verify exact DLL revisions before
+    # invoking any code that may modify the installed game.
+    trace = contract.verify_trace(game)
+    provider = contract.verify_steam_provider(game)
     service=None
     try:
         service,shadow,modes=client_service_host.start_services(client,game,swap,broker)
+        if contract.verify_trace(game) != trace or contract.verify_steam_provider(game) != provider:
+            raise RuntimeError("Service startup replaced a game runtime DLL; preserving current files for inspection")
         runtime={
+            "status":"ready",
+            "game_exe":str(Path(game).resolve(strict=True)),
             "service_pid":service.pid,
             "shadow":str(shadow),
-            "trace":str(shadow/"Compat"/"Stage2"/"Stage2Trace.dll"),
-            "steam_compat":str(shadow/"Compat"/"ModdedEvolveSteamCompat.dll"),
-            "catalog":str(shadow/"Assets"/"stage2"),
-            "modes":modes,
+            "trace":str(trace),
+            "steam_compat":str(provider),
+            "catalog":str(contract.catalog_from_local_appdata()),
+            "modes":contract.validate_modes(modes),
+            # Identity, relay and overlay state must come from the real client
+            # host if it exports them; do not silently inject empty values.
+            "session_environment":{},
         }
         atomic_json(session/"ready.json",runtime)
         # The parent launches Evolve only AFTER receiving ready.json.
