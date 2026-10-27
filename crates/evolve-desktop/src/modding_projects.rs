@@ -1076,13 +1076,43 @@ pub fn build_project_raw(
     if !fs::symlink_metadata(&built).is_ok_and(|m| m.file_type().is_dir()) {
         return Err("Built output folder cannot be a symlink".into());
     }
-    let number = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_nanos();
-    let output_folder = built.join(format!("Rust-Raw-{:x}", number));
-    fs::create_dir(&output_folder).map_err(|e| e.to_string())?;
+    let output_folder = if official.is_some() {
+        // Reuse only a signature-verified output built from identical original
+        // PAK, member contents, verified public key, tool version and basename.
+        let mut identity = Sha256::new();
+        identity.update(b"official-stage2-2025-encode-v1");
+        identity.update(baseline.as_bytes());
+        identity.update(digest(&public).map_err(|e| e.to_string())?.as_bytes());
+        identity.update(signed_name.as_bytes());
+        let mut members = replacements.iter().map(|(name, file)| {
+            digest(file).map(|hash| (name.clone(), hash))
+        }).collect::<Result<Vec<_>, _>>()?;
+        members.sort_by(|left, right| left.0.cmp(&right.0));
+        for (name, hash) in members {
+            identity.update(name.as_bytes());
+            identity.update([0]);
+            identity.update(hash.as_bytes());
+            identity.update([0]);
+        }
+        built.join("OfficialCache").join(format!("{:x}", identity.finalize()))
+    } else {
+        let number = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos();
+        built.join(format!("Rust-Raw-{:x}", number))
+    };
+    fs::create_dir_all(&output_folder).map_err(|e| e.to_string())?;
     let output = output_folder.join(&basename);
+    if official.is_some() && output.exists() {
+        evolve_core::inspect_signed_pak(&output, &public, signed_name)
+            .map_err(|e| format!("Official PAK cache is not authenticated: {e}"))?;
+        return Ok((
+            format!("{} modified member(s) · cached", replacements.len()),
+            output,
+            verified,
+        ));
+    }
     // The core signs using the authenticated original basename. If retail
     // CryPAK uses ASCII lowercase while the installed file uses mixed case,
     // first publish the signed file under that verified spelling, then move
