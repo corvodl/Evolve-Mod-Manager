@@ -13,13 +13,11 @@ from pathlib import Path
 import re
 import stat
 
-STAGE2_TRACE_SHA256 = "a0219d94b3c7ec4d73999b531adbbf13aa595bf39babc9e7810a1cf6db0d1067"
-STAGE2_TRACE_SIZE = 2217472
-# The supplied current provider and the version packed with the older client.
-STEAM_COMPAT_SHA256 = frozenset((
-    "0485e6aae71784c370e2400a64585b73db88366ad7032dfd071744e1679f35d8",
-    "617deeeec8e5a2e1b81812c1fd6a80c8f9962a0f14a8530194d3ba02a741a785",
-))
+# Accept compatible installed game-local DLL builds by their runtime ABI and
+# required hook markers, not by a frozen version hash. Startup still verifies
+# the game hooks and Steam provider are active for the current session.
+import native_runtime_probe as native_probe
+
 _REQUIRED_MODES = frozenset(("Stage2Listener", "Stage2ProfileCompat", "Stage2ProfileOnly"))
 _MODE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,79}$")
 # These are consumed by Stage2Trace and ModdedEvolveSteamCompat, respectively.
@@ -76,27 +74,17 @@ def verify_trace(game_exe) -> Path:
     binary_dir = game_binary_directory(game_exe)
     path = binary_dir / "Stage2Trace.dll"
     if not _regular(path):
-        raise RuntimeError(
-            "New Stage2Trace.dll not deployed beside Evolve.exe. "
-            "Install the supplied October 15 DLL locally as Stage2Trace.dll; "
-            "do not substitute the older DLL from the client's Compat folder."
-        )
-    if path.stat().st_size != STAGE2_TRACE_SIZE or _sha256(path) != STAGE2_TRACE_SHA256:
-        raise RuntimeError(
-            "Installed Stage2Trace.dll is not the supplied October 15 build "
-            f"(SHA-256 {STAGE2_TRACE_SHA256}); preserve it and install the matching DLL."
-        )
+        raise RuntimeError("Stage2Trace.dll is missing beside Evolve.exe")
+    native_probe.verify(path, "trace")
     return path
 
 
 def verify_steam_provider(game_exe) -> Path:
     binary_dir = game_binary_directory(game_exe)
     path = binary_dir / "ModdedEvolveSteamCompat.dll"
-    if not _regular(path) or _sha256(path) not in STEAM_COMPAT_SHA256:
-        raise RuntimeError(
-            "Steam compatibility provider missing or unrecognized in "
-            "bin64_SteamRetail. The working client deploys it beside Evolve.exe."
-        )
+    if not _regular(path):
+        raise RuntimeError("Steam compatibility provider missing beside Evolve.exe")
+    native_probe.verify(path, "provider")
     return path
 
 

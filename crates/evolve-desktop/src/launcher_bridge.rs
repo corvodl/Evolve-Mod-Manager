@@ -1188,6 +1188,8 @@ fn record_prepare_output(log_path: &Path, output: &std::process::Output) -> Resu
 const DIRECT_LAUNCH_HELPER: &str = include_str!("../launcher_support/direct_game_launch.py");
 const DIRECT_STD_BROKER: &str = include_str!("../launcher_support/standard_user_launch.py");
 const DIRECT_SERVICE_HOST: &str = include_str!("../launcher_support/client_service_host.py");
+const DIRECT_MANAGED_ADAPTER: &str = include_str!("../launcher_support/managed_service_adapter.py");
+const DIRECT_NATIVE_PROBE: &str = include_str!("../launcher_support/native_runtime_probe.py");
 const DIRECT_TRACE_CONTRACT: &str = include_str!("../launcher_support/stage2_runtime_contract.py");
 const DIRECT_SERVICE_SUPERVISOR: &str =
     include_str!("../launcher_support/direct_runtime_supervisor.py");
@@ -1203,32 +1205,57 @@ fn install_direct_launch_helper(swap: &Path) -> Result<PathBuf, String> {
         ("direct_standard_user_launch.py", DIRECT_STD_BROKER),
         ("direct_game_launch.py", DIRECT_LAUNCH_HELPER),
         ("client_service_host.py", DIRECT_SERVICE_HOST),
+        ("managed_service_adapter.py", DIRECT_MANAGED_ADAPTER),
+        ("native_runtime_probe.py", DIRECT_NATIVE_PROBE),
         ("stage2_runtime_contract.py", DIRECT_TRACE_CONTRACT),
         ("direct_runtime_supervisor.py", DIRECT_SERVICE_SUPERVISOR),
     ] {
         let target = swap.join(name);
-        match fs::symlink_metadata(&target) {
+        let old = match fs::symlink_metadata(&target) {
             Ok(meta) => {
-                if !meta.file_type().is_file()
-                    || meta.len() > 128 * 1024
-                    || fs::read(&target).map_err(|e| e.to_string())? != expected.as_bytes()
-                {
-                    return Err(format!(
-                        "Unrecognized {name} in swap folder; preserve this file and use a clean trusted swap folder."
-                    ));
+                if !meta.file_type().is_file() || meta.len() > 128 * 1024 {
+                    return Err(format!("Unsafe existing {name}; preserve and inspect it."));
                 }
+                Some(fs::read(&target).map_err(|e| e.to_string())?)
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let mut temp = tempfile::NamedTempFile::new_in(swap)
-                    .map_err(|e| format!("Could not stage vetted {name}: {e}"))?;
-                temp.write_all(expected.as_bytes())
-                    .map_err(|e| e.to_string())?;
-                temp.as_file_mut().sync_all().map_err(|e| e.to_string())?;
-                temp.persist_noclobber(&target)
-                    .map_err(|e| format!("Could not publish {name}: {}", e.error))?;
-            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(format!("Could not inspect {name}: {error}")),
+        };
+        if old.as_deref() == Some(expected.as_bytes()) {
+            continue;
         }
+        // The script is always selected from this release's embedded bytes.
+        // Preserve a previous version (or locally modified copy) before
+        // updating; never execute unverified code from the swap directory.
+        let mut temp = tempfile::NamedTempFile::new_in(swap)
+            .map_err(|e| format!("Could not stage vetted {name}: {e}"))?;
+        temp.write_all(expected.as_bytes())
+            .map_err(|e| e.to_string())?;
+        temp.as_file_mut().sync_all().map_err(|e| e.to_string())?;
+        if let Some(previous) = old {
+            let digest = format!("{:x}", Sha256::digest(&previous));
+            let preserved = swap.join(format!("{name}.previous-{}", &digest[..16]));
+            match fs::symlink_metadata(&preserved) {
+                Ok(meta) => {
+                    if !meta.file_type().is_file()
+                        || fs::read(&preserved).map_err(|e| e.to_string())? != previous
+                    {
+                        return Err(format!(
+                            "Conflicting preserved {name}; inspect swap folder."
+                        ));
+                    }
+                    fs::remove_file(&target)
+                        .map_err(|e| format!("Cannot replace previous {name}: {e}"))?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    fs::rename(&target, &preserved)
+                        .map_err(|e| format!("Cannot preserve previous {name}: {e}"))?;
+                }
+                Err(error) => return Err(format!("Cannot inspect preserved {name}: {error}")),
+            }
+        }
+        temp.persist_noclobber(&target)
+            .map_err(|e| format!("Could not publish {name}: {}", e.error))?;
     }
     Ok(swap.join("direct_game_launch.py"))
 }

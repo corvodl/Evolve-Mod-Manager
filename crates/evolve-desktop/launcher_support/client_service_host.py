@@ -16,13 +16,7 @@ import subprocess
 import tempfile
 import time
 
-CLIENT_DIGEST = "f933713a9ad1a670c0a83ab3fec6f3720c12d0e794d44643edc82b490a94e039"
-PATCH_OFFSET = 334944
-# Original Stage2Smoke.Run "--no-launch: stopping here" + return.
-PATCH_EXPECTED = bytes.fromhex("72 25 56 02 70 28 33 0b 00 06 16 13 14 dd 6c 04 00 00")
-# Sleep(1000) using existing MemberRef(0x0a00075d); branch back. No RVA
-# changes, metadata edits, new imports, network patches, or key modifications.
-PATCH_REPLACEMENT = bytes.fromhex("20 e8 03 00 00 28 5d 07 00 0a 2b f4") + bytes(6)
+import managed_service_adapter as adapter
 
 def digest(path):
     with open(path, "rb") as stream:
@@ -34,13 +28,14 @@ def digest(path):
 def patch_shadow_client(assembly):
     path=Path(assembly)
     data=bytearray(path.read_bytes())
-    if hashlib.sha256(data).hexdigest() != CLIENT_DIGEST:
-        raise RuntimeError("Installed Modded Evolve client version is not supported by the pinned Stage 2 services-only adapter; no client files changed.")
-    if data[PATCH_OFFSET:PATCH_OFFSET+len(PATCH_EXPECTED)] != PATCH_EXPECTED:
+    offset, expected, replacement = adapter.resolve(data)
+    if len(expected) != len(replacement) or len(expected) != 18:
+        raise RuntimeError("Stage 2 services adapter contains an invalid patch length.")
+    if data[offset:offset+len(expected)] != expected:
         raise RuntimeError("Stage 2 services entry-point layout differs; refusing to modify assembly.")
-    data[PATCH_OFFSET:PATCH_OFFSET+len(PATCH_EXPECTED)] = PATCH_REPLACEMENT
+    data[offset:offset+len(expected)] = replacement
     path.write_bytes(data)
-    if path.read_bytes()[PATCH_OFFSET:PATCH_OFFSET+18] != PATCH_REPLACEMENT:
+    if path.read_bytes()[offset:offset+len(expected)] != replacement:
         raise RuntimeError("Could not verify staged services-only runtime patch.")
 
 def require_client_files(client):
@@ -53,20 +48,30 @@ def require_client_files(client):
         file=root/name
         if file.is_symlink() or not file.is_file():
             raise RuntimeError("Installed client runtime is incomplete: "+name)
-    if digest(root/"ModdedEvolveLauncher.dll") != CLIENT_DIGEST:
-        raise RuntimeError("Unknown Modded Evolve service runtime version. Direct launch is not safe for this client; choose Client Launch.")
+    # Probe the installed assembly read-only; compatible recompilations need
+    # no new hash entry or manager update. Unrecognized IL never gets patched.
+    adapter.resolve((root/"ModdedEvolveLauncher.dll").read_bytes())
     return root
 
 def ensure_shadow(client_exe, swap_dir):
     root=require_client_files(client_exe)
     swap=Path(swap_dir).resolve(strict=True)
-    dest=swap/"direct-client-services"
+    source_data = (root/"ModdedEvolveLauncher.dll").read_bytes()
+    source_digest = hashlib.sha256(source_data).hexdigest()
+    offset, expected, replacement = adapter.resolve(source_data)
+    expected_shadow_digest = hashlib.sha256(
+        source_data[:offset] + replacement + source_data[offset + len(expected):]
+    ).hexdigest()
+    # Keep each version's private shadow distinct; never overwrite a shadow
+    # belonging to a different client revision or a possibly running service.
+    dest=swap/("direct-client-services-"+source_digest[:12])
     marker=dest/"service-source-sha256.txt"
     if dest.exists():
-        if dest.is_symlink() or not dest.is_dir() or not marker.is_file() or marker.read_text().strip()!=CLIENT_DIGEST:
+        if dest.is_symlink() or not dest.is_dir() or not marker.is_file() or marker.read_text().strip()!=source_digest:
             raise RuntimeError("Existing direct services shadow directory is unrecognized; preserve and inspect it.")
-        if (dest/"ModdedEvolveLauncher.dll").read_bytes()[PATCH_OFFSET:PATCH_OFFSET+18]!=PATCH_REPLACEMENT:
-            raise RuntimeError("The staged client service host has changed unexpectedly; refusing to run.")
+        cached_dll = dest/"ModdedEvolveLauncher.dll"
+        if not cached_dll.is_file() or digest(cached_dll) != expected_shadow_digest:
+            raise RuntimeError("Cached services-only client differs from its verified private shadow.")
         return dest
     work=Path(tempfile.mkdtemp(prefix=".direct-client-services-", dir=swap))
     try:
@@ -75,7 +80,7 @@ def ensure_shadow(client_exe, swap_dir):
         shutil.copytree(root,work,dirs_exist_ok=True,
                         ignore=shutil.ignore_patterns("*.log","*.dmp","*.dpapi","*.lock"))
         patch_shadow_client(work/"ModdedEvolveLauncher.dll")
-        (work/"service-source-sha256.txt").write_text(CLIENT_DIGEST+"\n")
+        (work/"service-source-sha256.txt").write_text(source_digest+"\n")
         os.replace(work,dest)
     finally:
         if work.exists():

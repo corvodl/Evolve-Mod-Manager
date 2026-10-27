@@ -1,6 +1,7 @@
 """Direct-launch regression tests. These never execute the real client or Evolve."""
 import sys
 import tempfile
+import json
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -10,6 +11,7 @@ import standard_user_launch as std
 sys.modules["direct_standard_user_launch"]=std
 import direct_game_launch as direct
 import client_service_host as service
+import managed_service_adapter as managed_adapter
 
 
 class DirectGameTests(unittest.TestCase):
@@ -146,10 +148,67 @@ class DirectGameTests(unittest.TestCase):
             with mock.patch.object(client_service_host,"listener_owner",return_value=False):
                 client_service_host.wait_services(Host(),log,timeout=1)
 
-    def test_pinned_shadow_patch_has_fixed_length_and_never_changes_original(self):
-        self.assertEqual(len(service.PATCH_EXPECTED),len(service.PATCH_REPLACEMENT))
-        self.assertEqual(len(service.PATCH_REPLACEMENT),18)
-        self.assertEqual(len(service.CLIENT_DIGEST),64)
+    def test_metadata_adapter_rejects_nonmanaged_files(self):
+        with self.assertRaises(managed_adapter.UnsupportedClient):
+            managed_adapter.resolve(b"not a Windows DLL")
+        with self.assertRaises(managed_adapter.UnsupportedClient):
+            managed_adapter.resolve(b"MZ" + bytes(128))
+
+    def test_runtime_service_patch_resolves_tokens_instead_of_hashes(self):
+        message = 0x70012345
+        logger = 0x06000456
+        sleeper = 0x0A000789
+        prefix = (b"\x72" + message.to_bytes(4, "little")
+                  + b"\x28" + logger.to_bytes(4, "little")
+                  + b"\x16\x13\x14\xdd")
+        source = bytearray(bytes(16) + prefix + (10).to_bytes(4, "little")
+                           + bytes(60))
+        class FakeMetadata:
+            def __init__(self, data): pass
+            def stage2_run(self): return (12345, logger & 0xFFFFFF)
+            def stop_token(self): return message
+            def sleep_token(self): return sleeper
+            def code(self, rva): return (16, len(source) - 16)
+        with mock.patch.object(managed_adapter, "_ManagedMetadata", FakeMetadata):
+            offset, expected, replacement = managed_adapter.resolve(source)
+            self.assertEqual(offset, 16)
+            self.assertEqual(expected, source[16:34])
+            self.assertEqual(replacement[6:10], sleeper.to_bytes(4,"little"))
+            self.assertEqual(len(replacement),18)
+            source[23] = 0xFF
+            with self.assertRaisesRegex(managed_adapter.UnsupportedClient, "changed"):
+                managed_adapter.resolve(source)
+
+    def test_unknown_client_build_produces_runtime_error_report(self):
+        import direct_runtime_supervisor as supervisor
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            with mock.patch.object(supervisor.client_service_host, "require_client_files",
+                                   side_effect=RuntimeError("Unsupported installed client version")), \
+                 mock.patch.object(supervisor.contract, "verify_trace") as trace, \
+                 mock.patch.object(supervisor.client_service_host, "start_services") as services:
+                with self.assertRaisesRegex(RuntimeError, "Unsupported installed client version"):
+                    supervisor.supervise("client.exe", "Evolve.exe", str(root), str(root))
+            self.assertIn("Unsupported installed client version",
+                          json.loads((root/"error.json").read_text())["error"])
+            self.assertTrue((root/"stopped.json").is_file())
+            trace.assert_not_called()
+            services.assert_not_called()
+
+    def test_unknown_client_layout_rejected_without_modifying_source(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            launcher=root/"ModdedEvolveLauncher.exe"
+            launcher.write_bytes(b"launcher")
+            for relative in ("ModdedEvolveLauncher.dll",
+                             "Compat/ModdedEvolveSteamCompat.dll",
+                             "Compat/Stage2/Stage2Trace.dll"):
+                target=root/relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b"runtime")
+            with self.assertRaisesRegex(RuntimeError, "Windows DLL"):
+                service.require_client_files(launcher)
+            self.assertEqual((root/"ModdedEvolveLauncher.dll").read_bytes(),b"runtime")
 
     def test_session_environment_calls_verified_contract(self):
         import stage2_runtime_contract as contract

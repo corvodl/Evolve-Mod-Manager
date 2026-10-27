@@ -17,12 +17,24 @@ OBSERVED_MODES=(
 )
 
 class TraceContractTests(unittest.TestCase):
-    def test_new_dll_is_pinned_to_uploaded_october_build(self):
-        self.assertEqual(contract.STAGE2_TRACE_SHA256,
-                         "a0219d94b3c7ec4d73999b531adbbf13aa595bf39babc9e7810a1cf6db0d1067")
-        self.assertEqual(contract.STAGE2_TRACE_SIZE, 2217472)
-        self.assertNotEqual(contract.STAGE2_TRACE_SHA256,
-                            "e4a1c81e1970de697b271b3756f79040b82633fe4569c3a65bb20787cfa5be5c")
+    def test_game_runtime_contract_is_structure_based(self):
+        with tempfile.TemporaryDirectory() as folder:
+            binary=Path(folder)/"bin64_SteamRetail"
+            binary.mkdir()
+            exe=binary/"Evolve.exe"
+            exe.write_bytes(b"EXE")
+            trace=binary/"Stage2Trace.dll"
+            trace.write_bytes(b"not a PE")
+            with self.assertRaisesRegex(RuntimeError,"native Windows DLL"):
+                contract.verify_trace(exe)
+            provider=binary/"ModdedEvolveSteamCompat.dll"
+            provider.write_bytes(b"not a PE")
+            with self.assertRaisesRegex(RuntimeError,"native Windows DLL"):
+                contract.verify_steam_provider(exe)
+            with mock.patch.object(contract.native_probe,"verify",side_effect=lambda path, kind: path) as verify:
+                self.assertEqual(contract.verify_trace(exe),trace)
+                self.assertEqual(contract.verify_steam_provider(exe),provider)
+            self.assertEqual(verify.call_count,2)
 
     def test_real_client_modes_accept_and_incomplete_reject(self):
         self.assertEqual(contract.validate_modes(OBSERVED_MODES),OBSERVED_MODES)
@@ -40,7 +52,7 @@ class TraceContractTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,"Steam compatibility provider"):
                 contract.verify_steam_provider(exe)
             (binary/"ModdedEvolveSteamCompat.dll").write_bytes(b"dll")
-            with mock.patch.object(contract,"_sha256",return_value=next(iter(contract.STEAM_COMPAT_SHA256))):
+            with mock.patch.object(contract.native_probe,"verify",return_value=None):
                 self.assertEqual(contract.verify_steam_provider(exe),binary/"ModdedEvolveSteamCompat.dll")
 
     def test_catalog_is_generated_file_not_directory(self):
@@ -89,7 +101,7 @@ class TraceContractTests(unittest.TestCase):
             exe=binary/"Evolve.exe"
             exe.write_bytes(b"EXE")
             trace=binary/"Stage2Trace.dll"
-            trace.write_bytes(b"\0"*contract.STAGE2_TRACE_SIZE)
+            trace.write_bytes(b"TRACE FIXTURE")
             provider=binary/"ModdedEvolveSteamCompat.dll"
             provider.write_bytes(b"PROVIDER")
             catalog=base/"ModdedEvolveLauncher"/"stage2"/"ownable-catalog-launch.txt"
@@ -100,9 +112,7 @@ class TraceContractTests(unittest.TestCase):
                 "steam_compat":str(provider),"local_appdata":str(base),
                 "modes":OBSERVED_MODES,
             }
-            def digest(path):
-                return contract.STAGE2_TRACE_SHA256 if Path(path).name=="Stage2Trace.dll" else next(iter(contract.STEAM_COMPAT_SHA256))
-            with mock.patch.object(contract,"_sha256",side_effect=digest):
+            with mock.patch.object(contract.native_probe,"verify",return_value=None):
                 env=contract.build_game_environment(state,base)
                 self.assertEqual(env["MODDED_EVOLVE_STEAM_EMU_DLL"],str(provider))
                 self.assertEqual(env["MODDED_EVOLVE_STAGE2_CATALOG"],str(catalog))

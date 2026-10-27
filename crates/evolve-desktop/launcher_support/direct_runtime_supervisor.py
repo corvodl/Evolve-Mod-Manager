@@ -50,14 +50,16 @@ def running_game(pid):
 
 def supervise(client, game, swap, session):
     session=Path(session).resolve(strict=True)
-    client_service_host.require_client_files(client)
-    # The working game loads both modules from bin64_SteamRetail, not from the
-    # shadow client's private Compat folder. Verify exact DLL revisions before
-    # invoking any code that may modify the installed game.
-    trace = contract.verify_trace(game)
-    provider = contract.verify_steam_provider(game)
     service=None
     try:
+        # These preflight checks must remain inside the protected scope:
+        # otherwise unknown client versions exit without error.json and the
+        # parent only reports an unhelpful "supervisor exited" message.
+        client_service_host.require_client_files(client)
+        # Verify the game-local DLL revisions before service startup or any
+        # modification of installed PAKs.
+        trace = contract.verify_trace(game)
+        provider = contract.verify_steam_provider(game)
         service,shadow,modes=client_service_host.start_services(client,game,swap,broker)
         if contract.verify_trace(game) != trace or contract.verify_steam_provider(game) != provider:
             raise RuntimeError("Service startup replaced a game runtime DLL; preserving current files for inspection")
