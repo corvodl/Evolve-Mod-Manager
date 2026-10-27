@@ -104,8 +104,19 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
         column![
             heading(
                 "SET UP MANAGER / INSTALLED GAME",
-                "Choose your installed EvolveGame directory and the normal Modded Evolve launcher. These locations are saved per user."
+                "Both launch modes use the installed game and client files. Direct Launch uses the client's compatibility/profile services in a separate host."
             ),
+            text("GAME LAUNCH METHOD").size(12),
+            row![
+                design::button("Client Launch")
+                    .on_press(Message::PreferenceGameLaunchMode("Client Launch"))
+                    .style(if state.preferences.game_launch_mode != "Direct Launch" { design::primary } else { design::secondary }),
+                design::button("Direct Launch")
+                    .on_press(Message::PreferenceGameLaunchMode("Direct Launch"))
+                    .style(if state.preferences.game_launch_mode == "Direct Launch" { design::primary } else { design::secondary }),
+            ].spacing(8),
+            text("Direct Launch is experimental and enabled for live testing. Both Play buttons start the game directly when selected; the manager reports missing runtime components or recovery errors instead of disabling the feature. Client Launch remains available.")
+                .size(11).style(design::muted),
             text("Game location (EvolveGame or bin64_SteamRetail)").size(12),
             row![
                 design::text_input(
@@ -118,7 +129,7 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
                     .style(design::secondary),
             ]
             .spacing(8),
-            text("Client executable").size(12),
+            text("Installed client executable (also supplies Direct Launch services)").size(12),
             row![
                 design::text_input(
                     r"C:\Users\billn\AppData\Local\Programs\Modded Evolve\ModdedEvolveLauncher.exe",
@@ -131,14 +142,20 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
             ]
             .spacing(8),
             text(if paths_ok {
-                "Installed game and launcher found. Modded play also requires an existing verified signing stage and recovery helper."
+                if state.preferences.game_launch_mode == "Direct Launch" {
+                    "Game and compatible client selected. Direct modded play also needs verified signing and recovery files."
+                } else {
+                    "Installed game and client found. Modded play also requires a verified signing stage."
+                }
+            } else if state.preferences.game_launch_mode == "Direct Launch" {
+                "Select valid game and client paths for Steam/profile services, then save."
             } else {
-                "Missing or unverified installation paths. Browse to both locations, then save."
+                "Choose valid game and client paths, then save."
             })
             .size(12)
             .style(design::muted),
             row![
-                design::button("Save Game & Client")
+                design::button(if state.preferences.game_launch_mode == "Direct Launch" { "Save Game Setup" } else { "Save Game & Client" })
                     .on_press(Message::SaveGameSetup)
                     .style(design::primary),
                 design::button("Play with Mods")

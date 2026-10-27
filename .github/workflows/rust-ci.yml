@@ -37,6 +37,10 @@ jobs:
         run: node --test crates/evolve-desktop/tests/launcher_path_matching.test.cjs
       - name: Validate standard-user launch broker and fail-closed behavior
         run: python3 -m unittest discover -s crates/evolve-desktop/launcher_support -p 'test_standard_user_launch.py'
+      - name: Validate direct game swap, process ordering, and restore watchdog
+        run: python3 -m unittest discover -s crates/evolve-desktop/launcher_support -p 'test_direct_game_launch.py'
+      - name: Verify October 15 Stage2Trace compatibility contract
+        run: python3 -m unittest discover -s crates/evolve-desktop/launcher_support -p 'test_stage2_runtime_contract.py'
       - name: Verify guarded original game backup restoration
         run: python3 -m unittest discover -s crates/evolve-desktop/launcher_support -p 'test_reusable_restore.py'
       - name: Verify journal-independent private manager backup recovery

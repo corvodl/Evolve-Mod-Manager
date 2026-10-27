@@ -84,6 +84,26 @@ pub(super) struct WriteResult {
     pub after: String,
 }
 
+// Validate individual fields without making actor discovery depend on them.
+fn stage_number(bits: u32) -> Option<u32> {
+    match bits {
+        0x0101 => Some(1),
+        0x0202 => Some(2),
+        0x0303 => Some(3),
+        _ => None,
+    }
+}
+fn plausible_pair(current_bits: u32, max_bits: u32) -> bool {
+    let current = f32::from_bits(current_bits);
+    let maximum = f32::from_bits(max_bits);
+    current.is_finite()
+        && maximum.is_finite()
+        && maximum > 0.0
+        && maximum <= 1_000_000.0
+        && current >= 0.0
+        && current <= maximum + (maximum * 0.01).max(0.01)
+}
+
 #[cfg(windows)]
 mod windows {
     use super::*;
@@ -146,20 +166,11 @@ mod windows {
         };
         (q(h, actor.checked_add(0x38)?)? == entity).then_some(actor)
     }
-    fn valid_actor(h: &ProcessHandle, addr: usize, entity: usize) -> bool {
-        if q(h, addr.saturating_add(0x38)) != Some(entity) {
-            return false;
-        }
-        let raw = u32_at(h, addr.saturating_add(0x1260)).unwrap_or(0);
-        if ![0x101, 0x202, 0x303].contains(&raw) {
-            return false;
-        }
-        let health = f32::from_bits(u32_at(h, addr.saturating_add(0x198)).unwrap_or(0));
-        let max = f32::from_bits(u32_at(h, addr.saturating_add(0x1A0)).unwrap_or(0));
-        max.is_finite()
-            && (0.0..=1_000_000.0).contains(&health)
-            && (0.0..=1_000_000.0).contains(&max)
-            && max > 0.0
+    // Actor identity is established independently of any monster-specific
+    // health/stage offsets. Wraith and other playable actors may differ from
+    // the original Goliath observations.
+    fn actor_identity(h: &ProcessHandle, addr: usize, entity: usize) -> bool {
+        q(h, addr.saturating_add(0x38)) == Some(entity)
     }
     fn name_from_entity(h: &ProcessHandle, entity: usize) -> Option<String> {
         // Entity-name offset has NOT been reverse engineered. Only display a
@@ -215,19 +226,33 @@ mod windows {
         None
     }
     fn read_actor(h: &ProcessHandle, id: u32, at: usize, entity: usize, local: bool) -> Actor {
+        // Never label arbitrary offsets as health or armor. Require both
+        // members of a pair to be readable and mutually plausible first.
+        let health = u32_at(h, at.saturating_add(Field::Health.offset()))
+            .zip(u32_at(h, at.saturating_add(Field::MaxHealth.offset())))
+            .filter(|&(current, maximum)| plausible_pair(current, maximum));
+        let armor = u32_at(h, at.saturating_add(Field::Armor.offset()))
+            .zip(u32_at(h, at.saturating_add(Field::MaxArmor.offset())))
+            .filter(|&(current, maximum)| plausible_pair(current, maximum));
+        let stage = u32_at(h, at.saturating_add(Field::Stage.offset())).and_then(stage_number);
         let fields = FIELDS
             .into_iter()
             .filter_map(|field| {
                 let address = at.checked_add(field.offset())?;
-                let bits = u32_at(h, address)?;
-                let display = if field == Field::Stage {
-                    format!("{}", bits & 0xFF)
-                } else {
-                    let v = f32::from_bits(bits);
-                    if !v.is_finite() || v.abs() > 1_000_000.0 {
-                        return None;
+                let bits = match field {
+                    Field::Health => health?.0,
+                    Field::MaxHealth => health?.1,
+                    Field::Armor => armor?.0,
+                    Field::MaxArmor => armor?.1,
+                    Field::Stage => {
+                        stage?;
+                        u32_at(h, address)?
                     }
-                    format!("{v:.3}")
+                };
+                let display = if field == Field::Stage {
+                    format!("{}", stage?)
+                } else {
+                    format!("{:.3}", f32::from_bits(bits))
                 };
                 Some(Value {
                     field,
@@ -282,11 +307,16 @@ mod windows {
         let table = q(&h, sys + 0xA8).ok_or("Entity table unavailable")?;
         let local_entity =
             q(&h, table + ((local_id as usize & 0xFFFF) * 8)).ok_or("Local entity unavailable")?;
-        if u32_at(&h, local_entity + 0x18) != Some(local_id)
-            || !valid_actor(&h, local_actor, local_entity)
-        {
-            return Err("Local actor/entity or layout validation failed".into());
+        if u32_at(&h, local_entity + 0x18) != Some(local_id) {
+            return Err("Local entity ID mismatch (client vs entity table)".into());
         }
+        if !actor_identity(&h, local_actor, local_entity) {
+            return Err(
+                "Local actor/entity pointer mismatch; verify build-specific actor layout".into(),
+            );
+        }
+        // Show the structurally verified local actor even if no Goliath-based
+        // field offsets match. Unsupported fields remain hidden and unwritable.
         let mut actors = vec![read_actor(&h, local_id, local_actor, local_entity, true)];
         let route = discover_backlink(&h, local_entity, local_actor);
         if let Some(route) = route {
@@ -321,10 +351,15 @@ mod windows {
                     let Some(actor) = actor_for_entity(&h, p, route) else {
                         continue;
                     };
-                    if !valid_actor(&h, actor, p) {
+                    if !actor_identity(&h, actor, p) {
                         continue;
                     }
-                    actors.push(read_actor(&h, id, actor, p, false));
+                    let candidate = read_actor(&h, id, actor, p, false);
+                    // For nonlocal entities, retain the stricter requirement
+                    // that at least one field independently validates.
+                    if !candidate.fields.is_empty() {
+                        actors.push(candidate);
+                    }
                 }
             }
         }
@@ -332,13 +367,18 @@ mod windows {
             return Err("Evolve changed while enumerating actors".into());
         }
         actors.sort_by_key(|a| (!a.local, a.id));
-        let status = if route.is_none() {
-            "Local actor verified. Entity-to-actor mapping is unknown on this build; other actors cannot safely be enumerated.".into()
+        let local_fields = actors.first().map(|a| a.fields.len()).unwrap_or(0);
+        let coverage = format!(
+            "{} actor(s) found; local fields validated: {local_fields}/{}.",
+            actors.len(),
+            FIELDS.len()
+        );
+        let status = if local_fields == 0 {
+            format!("{coverage} Field offsets unverified for this actor/build; writes unavailable.")
+        } else if route.is_none() {
+            format!("{coverage} Other actors unavailable (entity mapping unresolved).")
         } else {
-            format!(
-                "{} validated actor(s); only actors matching the verified monster layout are shown. Unknown layouts are omitted.",
-                actors.len()
-            )
+            coverage
         };
         Ok(Listing {
             pid,
@@ -451,5 +491,17 @@ mod tests {
         assert_eq!(Field::Stage.offset(), 0x1260);
         assert_eq!(Field::Stage.kind(), "UInt32");
         assert_eq!(Field::Health.kind(), "Float32");
+    }
+    #[test]
+    fn independent_field_validation_rejects_invalid_offsets() {
+        assert_eq!(stage_number(0x0101), Some(1));
+        assert_eq!(stage_number(0x0202), Some(2));
+        assert_eq!(stage_number(0x0303), Some(3));
+        assert_eq!(stage_number(0), None);
+        assert_eq!(stage_number(0x0404), None);
+        assert!(plausible_pair(200.0f32.to_bits(), 500.0f32.to_bits()));
+        assert!(!plausible_pair(600.0f32.to_bits(), 500.0f32.to_bits()));
+        assert!(!plausible_pair(f32::NAN.to_bits(), 500.0f32.to_bits()));
+        assert!(!plausible_pair(0.0f32.to_bits(), 0.0f32.to_bits()));
     }
 }

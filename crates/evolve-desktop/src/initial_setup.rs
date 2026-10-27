@@ -204,11 +204,15 @@ pub fn create(
     keep_original_snapshots: bool,
 ) -> Result<InitialSetup, String> {
     launcher_bridge::games_closed()?;
-    let (game, client) =
-        play_setup::validate_paths(&game.to_string_lossy(), &client.to_string_lossy())?;
+    let game = play_setup::game_root(&game.to_string_lossy())?;
+    let client = if client.as_os_str().is_empty() {
+        None
+    } else {
+        Some(play_setup::client_exe(&client.to_string_lossy())?)
+    };
     play_setup::audit_backup_files(&game)?;
     let rows = relative_paks(&game)?;
-    let launcher_folder = client.parent().ok_or("Client has no containing folder")?;
+    let launcher_folder = client.as_ref().and_then(|path| path.parent());
     // Check the resolved destination *before* creating directories, so a
     // mistaken Mod Data Location cannot create setup files in the game/client
     // tree, including when its existing parent is a symlink.
@@ -231,8 +235,8 @@ pub fn create(
         .join(trailing);
     if proposed.starts_with(&game)
         || game.starts_with(&proposed)
-        || proposed.starts_with(launcher_folder)
-        || launcher_folder.starts_with(&proposed)
+        || launcher_folder
+            .is_some_and(|folder| proposed.starts_with(folder) || folder.starts_with(&proposed))
     {
         return Err("Mod Data Location must be separate from the installed game and client".into());
     }
@@ -412,9 +416,13 @@ pub fn create(
         for (name, source) in HELPERS {
             write_new(&swap.join(name), source.as_bytes())?;
         }
+        // Direct signing stages may have no client installed. Client mode
+        // writes the verified path when explicitly selected in Settings.
         json_new(
             &swap.join("launcher_config.json"),
-            &serde_json::json!({"launcher": play_setup::ordinary_game_path(&client)}),
+            &serde_json::json!({
+                "launcher": client.as_ref().map(|path| play_setup::ordinary_game_path(path))
+            }),
         )?;
         json_new(
             &swap.join("controlled_swap_state.json"),
@@ -438,7 +446,11 @@ pub fn create(
         }
         // End-to-end verification against the launch bridge's schema and
         // original/custom PAK signatures. Do not trust a created manifest.
-        let verified = launcher_bridge::inspect_existing_launcher(&stage, &swap)?;
+        let verified = if client.is_some() {
+            launcher_bridge::inspect_existing_launcher(&stage, &swap)?
+        } else {
+            launcher_bridge::inspect_existing_direct_game(&stage, &swap)?
+        };
         if verified.archive_count != signed || verified.game != game {
             return Err(
                 "Generated setup failed final private-launcher compatibility checks".into(),

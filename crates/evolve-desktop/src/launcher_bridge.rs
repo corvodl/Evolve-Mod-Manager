@@ -282,7 +282,11 @@ fn verify_prepared_journal(
 /// Mirror the private manager's hook key-slot and pinned staged-digest checks
 /// while separately verifying original/replacement PAK signatures. This is a
 /// *prelaunch* check: only a real game session proves what CryEngine mounted.
-pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchReady, String> {
+fn inspect_existing_launcher_mode(
+    stage: &Path,
+    swap: &Path,
+    require_client: bool,
+) -> Result<LaunchReady, String> {
     let stage = directory(stage)?;
     let swap = directory(swap)?;
     let status = json(&stage.join("stage_status.json"))?;
@@ -349,24 +353,35 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
     // Never fall back to the original helper's developer-specific default
     // launcher path. The existing private setup must identify the user's
     // actual installed ModdedEvolveLauncher executable explicitly.
-    let config = json(&swap.join("launcher_config.json"))?;
-    let launcher_path = config["launcher"]
-        .as_str()
-        .ok_or("Missing launcher executable path in private launcher_config.json")?;
-    let launcher = plain(Path::new(launcher_path), 1024 * 1024 * 1024)?;
-    if launcher
-        .file_name()
-        .and_then(|s| s.to_str())
-        .is_none_or(|name| !name.eq_ignore_ascii_case("ModdedEvolveLauncher.exe"))
-    {
-        return Err("Configured executable is not ModdedEvolveLauncher.exe".into());
+    if require_client {
+        let config = json(&swap.join("launcher_config.json"))?;
+        let launcher_path = config["launcher"]
+            .as_str()
+            .ok_or("Missing launcher executable path in private launcher_config.json")?;
+        let launcher = plain(Path::new(launcher_path), 1024 * 1024 * 1024)?;
+        if launcher
+            .file_name()
+            .and_then(|s| s.to_str())
+            .is_none_or(|name| !name.eq_ignore_ascii_case("ModdedEvolveLauncher.exe"))
+        {
+            return Err("Configured executable is not ModdedEvolveLauncher.exe".into());
+        }
     }
-    for name in [
-        "controlled_swap.py",
-        "auto_launch_frida.py",
-        "auto_restore_watch.py",
-        "reusable_restore.py",
-    ] {
+    let scripts: &[&str] = if require_client {
+        &[
+            "controlled_swap.py",
+            "auto_launch_frida.py",
+            "auto_restore_watch.py",
+            "reusable_restore.py",
+        ]
+    } else {
+        &[
+            "controlled_swap.py",
+            "auto_restore_watch.py",
+            "reusable_restore.py",
+        ]
+    };
+    for &name in scripts {
         helper(&swap, name)?;
     }
     let entries = plan["entries"]
@@ -475,6 +490,15 @@ pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchRead
         compatibility_warnings,
         prepared,
     })
+}
+
+pub fn inspect_existing_launcher(stage: &Path, swap: &Path) -> Result<LaunchReady, String> {
+    inspect_existing_launcher_mode(stage, swap, true)
+}
+
+/// Same original/staged signature checks, without client executable/config.
+pub fn inspect_existing_direct_game(stage: &Path, swap: &Path) -> Result<LaunchReady, String> {
+    inspect_existing_launcher_mode(stage, swap, false)
 }
 
 /// The private launcher reports a hook-ready progress event *before* the
@@ -1159,6 +1183,256 @@ fn record_prepare_output(log_path: &Path, output: &std::process::Output) -> Resu
     log.write_all(&output.stdout).map_err(|e| e.to_string())?;
     log.write_all(&output.stderr).map_err(|e| e.to_string())?;
     writeln!(log).map_err(|e| e.to_string())
+}
+
+const DIRECT_LAUNCH_HELPER: &str = include_str!("../launcher_support/direct_game_launch.py");
+const DIRECT_STD_BROKER: &str = include_str!("../launcher_support/standard_user_launch.py");
+const DIRECT_SERVICE_HOST: &str = include_str!("../launcher_support/client_service_host.py");
+const DIRECT_TRACE_CONTRACT: &str = include_str!("../launcher_support/stage2_runtime_contract.py");
+const DIRECT_SERVICE_SUPERVISOR: &str =
+    include_str!("../launcher_support/direct_runtime_supervisor.py");
+
+/// Publish the vetted direct-launch worker into the existing swap folder.
+/// The script intentionally imports the installed controlled_swap and restore
+/// helpers so they retain ownership of the existing journal and backups.
+#[cfg(windows)]
+fn install_direct_launch_helper(swap: &Path) -> Result<PathBuf, String> {
+    // Never rewrite the legacy client's standard_user_launch.py. Older
+    // published installers may own that file. Use a separate trusted broker.
+    for (name, expected) in [
+        ("direct_standard_user_launch.py", DIRECT_STD_BROKER),
+        ("direct_game_launch.py", DIRECT_LAUNCH_HELPER),
+        ("client_service_host.py", DIRECT_SERVICE_HOST),
+        ("stage2_runtime_contract.py", DIRECT_TRACE_CONTRACT),
+        ("direct_runtime_supervisor.py", DIRECT_SERVICE_SUPERVISOR),
+    ] {
+        let target = swap.join(name);
+        match fs::symlink_metadata(&target) {
+            Ok(meta) => {
+                if !meta.file_type().is_file()
+                    || meta.len() > 128 * 1024
+                    || fs::read(&target).map_err(|e| e.to_string())? != expected.as_bytes()
+                {
+                    return Err(format!(
+                        "Unrecognized {name} in swap folder; preserve this file and use a clean trusted swap folder."
+                    ));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let mut temp = tempfile::NamedTempFile::new_in(swap)
+                    .map_err(|e| format!("Could not stage vetted {name}: {e}"))?;
+                temp.write_all(expected.as_bytes())
+                    .map_err(|e| e.to_string())?;
+                temp.as_file_mut().sync_all().map_err(|e| e.to_string())?;
+                temp.persist_noclobber(&target)
+                    .map_err(|e| format!("Could not publish {name}: {}", e.error))?;
+            }
+            Err(error) => return Err(format!("Could not inspect {name}: {error}")),
+        }
+    }
+    Ok(swap.join("direct_game_launch.py"))
+}
+
+/// Direct-launch path: prepare all signed PAK copies first, atomically exchange
+/// them before Evolve.exe exists, start independent rollback monitoring, then
+/// create the actual game process at medium integrity. No Frida interception.
+#[cfg(windows)]
+pub fn launch_direct_offline_game(
+    plan: &LaunchReady,
+    client: &Path,
+    progress: &std::sync::atomic::AtomicUsize,
+) -> Result<u32, String> {
+    use std::os::windows::process::CommandExt;
+    games_closed()?;
+    let swap = &plan.swap;
+    let helper = install_direct_launch_helper(swap)?;
+    if !plan.prepared {
+        progress.store(90, std::sync::atomic::Ordering::Relaxed);
+        let output = Command::new("py")
+            .args(["-3.11", "-u"])
+            .arg(swap.join("controlled_swap.py"))
+            .arg("prepare")
+            .arg("--stage-dir")
+            .arg(&plan.stage)
+            .arg("--game-root")
+            .arg(crate::play_setup::ordinary_game_path(&plan.game))
+            .current_dir(swap)
+            .stdin(Stdio::null())
+            .creation_flags(0x08000000)
+            .output()
+            .map_err(|e| format!("Python 3.11 prepare failed: {e}"))?;
+        let prepare_log = swap.join("rust-prepare-bridge.log");
+        let logged = record_prepare_output(&prepare_log, &output);
+        if !output.status.success() {
+            let reason = prepare_failure_reason(&output.stdout, &output.stderr);
+            return Err(format!(
+                "Direct launch preparation failed: {reason}. {} (log: {}; logging: {:?})",
+                prepare_recovery_advice(&reason),
+                prepare_log.display(),
+                logged.err()
+            ));
+        }
+    }
+    let verified = inspect_existing_direct_game(&plan.stage, swap)?;
+    if !verified.prepared || verified.game != plan.game {
+        return Err("Direct launch has no matching verified prepared swap journal.".into());
+    }
+    progress.store(95, std::sync::atomic::Ordering::Relaxed);
+    let output = Command::new("py")
+        .args(["-3.11", "-u"])
+        .arg(helper)
+        .arg("--stage-dir")
+        .arg(&verified.stage)
+        .arg("--game-root")
+        .arg(crate::play_setup::ordinary_game_path(&verified.game))
+        .arg("--client-exe")
+        .arg(client)
+        .arg("--swap-dir")
+        .arg(swap)
+        .current_dir(swap)
+        .stdin(Stdio::null())
+        .creation_flags(0x08000000)
+        .output()
+        .map_err(|e| format!("Direct game launch helper unavailable: {e}"))?;
+    let log_path = swap.join("rust-direct-launch.log");
+    let _ = record_prepare_output(&log_path, &output);
+    if !output.status.success() {
+        let error = prepare_failure_reason(&output.stdout, &output.stderr);
+        return Err(format!(
+            "Direct modded launch did not finish: {error}. Check {} and rust-direct-restore-watch.log; do not launch again before recovery.",
+            log_path.display()
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let marker = stdout.lines()
+        .find_map(|line| line.strip_prefix("DIRECT_GAME_LAUNCHED pid="))
+        .ok_or("Direct launch returned success without a confirmed game PID; check restore watchdog before another launch.")?;
+    if !marker.contains(" swap_complete=true")
+        || !marker.contains(" services_ready=true trace_loaded=true hooks_ready=true")
+    {
+        return Err("Direct launch did not confirm its completed file swap.".into());
+    }
+    let pid = marker
+        .split_whitespace()
+        .next()
+        .ok_or("Direct launch returned no game process ID")?
+        .parse::<u32>()
+        .map_err(|_| "Direct launch returned invalid game process ID")?;
+    if pid == 0 {
+        return Err("Direct launch returned a zero game process ID".into());
+    }
+    progress.store(100, std::sync::atomic::Ordering::Relaxed);
+    Ok(pid)
+}
+
+#[cfg(not(windows))]
+pub fn launch_direct_offline_game(
+    _: &LaunchReady,
+    _: &Path,
+    _: &std::sync::atomic::AtomicUsize,
+) -> Result<u32, String> {
+    Err("Direct Evolve launch requires Windows x64".into())
+}
+
+/// Clean direct game startup: run the same real Steam/profile service host
+/// and suspended Stage2Trace loader, but never rename installed game files.
+#[cfg(windows)]
+pub fn launch_direct_clean_game(
+    game: &Path,
+    client: &Path,
+    swap_opt: Option<&Path>,
+) -> Result<u32, String> {
+    use std::os::windows::process::CommandExt;
+    games_closed()?;
+    let swap = if let Some(folder) = swap_opt {
+        directory(folder)?
+    } else {
+        let base = std::env::var_os("LOCALAPPDATA")
+            .ok_or("Windows LocalAppData is not available for direct runtime")?;
+        let path = PathBuf::from(base)
+            .join("EvolveModManager")
+            .join("DirectRuntime");
+        fs::create_dir_all(&path)
+            .map_err(|e| format!("Cannot create direct runtime folder: {e}"))?;
+        directory(&path)?
+    };
+    // These are import dependencies for both clean and modded helper scripts.
+    // Never overwrite customized or unexpected installed helper code.
+    for (name, code) in [
+        (
+            "controlled_swap.py",
+            include_str!("../launcher_support/controlled_swap.py"),
+        ),
+        (
+            "reusable_restore.py",
+            include_str!("../launcher_support/reusable_restore.py"),
+        ),
+        (
+            "auto_restore_watch.py",
+            include_str!("../launcher_support/auto_restore_watch.py"),
+        ),
+    ] {
+        let target = swap.join(name);
+        if !target.exists() {
+            let mut temp = tempfile::NamedTempFile::new_in(&swap).map_err(|e| e.to_string())?;
+            temp.write_all(code.as_bytes()).map_err(|e| e.to_string())?;
+            temp.persist_noclobber(&target)
+                .map_err(|e| format!("Cannot install verified runtime helper: {}", e.error))?;
+        }
+    }
+    let helper = install_direct_launch_helper(&swap)?;
+    let result = Command::new("py")
+        .args(["-3.11", "-u"])
+        .arg(helper)
+        .arg("--game-root")
+        .arg(crate::play_setup::ordinary_game_path(game))
+        .arg("--client-exe")
+        .arg(client)
+        .arg("--swap-dir")
+        .arg(&swap)
+        .arg("--clean")
+        .current_dir(&swap)
+        .stdin(Stdio::null())
+        .creation_flags(0x08000000)
+        .output()
+        .map_err(|e| format!("Direct clean game helper failed: {e}"))?;
+    let log_path = swap.join("rust-direct-clean.log");
+    let _ = record_prepare_output(&log_path, &result);
+    if !result.status.success() {
+        return Err(format!(
+            "Direct clean game startup failed: {}. Details: {}",
+            prepare_failure_reason(&result.stdout, &result.stderr),
+            log_path.display()
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let marker = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("DIRECT_GAME_LAUNCHED pid="))
+        .ok_or("Direct clean startup did not confirm a live game process")?;
+    if !marker
+        .contains(" swap_complete=false services_ready=true trace_loaded=true hooks_ready=true")
+    {
+        return Err(
+            "Direct clean startup did not verify its Steam/profile services and Stage2Trace module"
+                .into(),
+        );
+    }
+    let pid = marker
+        .split_whitespace()
+        .next()
+        .ok_or("No game PID reported")?
+        .parse::<u32>()
+        .map_err(|_| "Invalid game PID")?;
+    if pid == 0 {
+        return Err("Invalid direct game PID".into());
+    }
+    Ok(pid)
+}
+
+#[cfg(not(windows))]
+pub fn launch_direct_clean_game(_: &Path, _: &Path, _: Option<&Path>) -> Result<u32, String> {
+    Err("Direct Evolve launch requires Windows".into())
 }
 
 /// Reuse the private launcher's already-tested control flow. It performs

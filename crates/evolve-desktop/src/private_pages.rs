@@ -167,11 +167,114 @@ fn latest_announcement(state: &State) -> Element<'_, Message> {
     surface(content).into()
 }
 
-fn subtle_home_wheel(frame: u32) -> Element<'static, Message> {
-    svg(crate::loading_wheel::handle(frame, 0.12))
-        .width(Length::Fixed(128.0))
-        .height(Length::Fixed(128.0))
-        .into()
+/// The optional Home art is distinct from animated progress indicators.
+/// A supplied 1920x1080 default_loading.dds is loaded as home art; if
+/// unavailable the Workbench remains completely usable without a placeholder.
+fn home_banner() -> Option<iced::widget::image::Handle> {
+    static CACHE: std::sync::OnceLock<Option<iced::widget::image::Handle>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(load_home_banner).clone()
+}
+
+fn load_home_banner() -> Option<iced::widget::image::Handle> {
+    let base = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    let candidates = [
+        base.join("assets").join("default_loading.dds"),
+        base.join("default_loading.dds"),
+    ];
+    for path in candidates {
+        if let Ok(data) = std::fs::read(&path)
+            && let Some((width, height, rgba)) = decode_home_dds(&data)
+        {
+            return Some(iced::widget::image::Handle::from_rgba(width, height, rgba));
+        }
+    }
+    None
+}
+
+/// Strictly bounded DXT1 (BC1) DDS support for the provided Home banner.
+fn decode_home_dds(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    if data.len() < 128 || &data[..4] != b"DDS " || &data[84..88] != b"DXT1" {
+        return None;
+    }
+    let width = u32::from_le_bytes(data[16..20].try_into().ok()?);
+    let height = u32::from_le_bytes(data[12..16].try_into().ok()?);
+    if width == 0 || height == 0 || width > 4096 || height > 4096 {
+        return None;
+    }
+    let blocks_x = width.div_ceil(4) as usize;
+    let blocks_y = height.div_ceil(4) as usize;
+    let needed = blocks_x
+        .checked_mul(blocks_y)?
+        .checked_mul(8)?
+        .checked_add(128)?;
+    if data.len() < needed {
+        return None;
+    }
+    let mut rgba = vec![
+        0u8;
+        (width as usize)
+            .checked_mul(height as usize)?
+            .checked_mul(4)?
+    ];
+    for by in 0..blocks_y {
+        for bx in 0..blocks_x {
+            let start = 128 + (by * blocks_x + bx) * 8;
+            let c0 = u16::from_le_bytes([data[start], data[start + 1]]);
+            let c1 = u16::from_le_bytes([data[start + 2], data[start + 3]]);
+            let color = |c: u16| -> [u8; 3] {
+                let r = ((c >> 11) & 31) as u32;
+                let g = ((c >> 5) & 63) as u32;
+                let b = (c & 31) as u32;
+                [
+                    ((r * 255 + 15) / 31) as u8,
+                    ((g * 255 + 31) / 63) as u8,
+                    ((b * 255 + 15) / 31) as u8,
+                ]
+            };
+            let a = color(c0);
+            let b = color(c1);
+            let blend = |x: [u8; 3], y: [u8; 3], mx: u16, my: u16, d: u16| -> [u8; 3] {
+                [
+                    ((x[0] as u16 * mx + y[0] as u16 * my) / d) as u8,
+                    ((x[1] as u16 * mx + y[1] as u16 * my) / d) as u8,
+                    ((x[2] as u16 * mx + y[2] as u16 * my) / d) as u8,
+                ]
+            };
+            let palette = [
+                a,
+                b,
+                if c0 > c1 {
+                    blend(a, b, 2, 1, 3)
+                } else {
+                    blend(a, b, 1, 1, 2)
+                },
+                if c0 > c1 {
+                    blend(a, b, 1, 2, 3)
+                } else {
+                    [0, 0, 0]
+                },
+            ];
+            let bits = u32::from_le_bytes(data[start + 4..start + 8].try_into().ok()?);
+            for dy in 0..4usize {
+                for dx in 0..4usize {
+                    let x = bx * 4 + dx;
+                    let y = by * 4 + dy;
+                    if x >= width as usize || y >= height as usize {
+                        continue;
+                    }
+                    let index = ((bits >> (2 * (dy * 4 + dx))) & 3) as usize;
+                    let out = (y * width as usize + x) * 4;
+                    // Subdued artwork lets the controls and workbench remain legible.
+                    for channel in 0..3 {
+                        rgba[out + channel] = (palette[index][channel] as u16 * 52 / 100) as u8;
+                    }
+                    rgba[out + 3] = if c0 <= c1 && index == 3 { 0 } else { 255 };
+                }
+            }
+        }
+    }
+    Some((width, height, rgba))
 }
 
 pub(super) fn home(state: &State) -> Element<'_, Message> {
@@ -229,7 +332,6 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                 ]
                 .spacing(12)
                 .width(Fill),
-                subtle_home_wheel(state.loading_wheel_frame),
             ]
             .spacing(12)
             .align_y(iced::Center),
@@ -255,12 +357,23 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                 ]
                 .spacing(12)
                 .width(Fill),
-                subtle_home_wheel(state.loading_wheel_frame),
             ]
             .spacing(12)
             .align_y(iced::Center),
         )
         .padding([20, 24])
+    };
+    let hero: Element<'_, Message> = if let Some(handle) = home_banner() {
+        // Full-width 16:9 hero, darkened so labels remain readable.
+        let picture = image(handle)
+            .width(Fill)
+            .height(Length::Fixed(280.0))
+            .content_fit(iced::ContentFit::Cover);
+        column![container(picture).width(Fill), hero,]
+            .spacing(0)
+            .into()
+    } else {
+        hero.into()
     };
     let quick = column![
         text("PLAY EVOLVE").size(14),
@@ -276,7 +389,7 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
             design::button("Play without Mods").on_press(Message::PlayWithoutMods).style(design::secondary),
         ]
         .spacing(8),
-        text("First launch: choose your game and normal client in Settings. Modded play uses the verified and reversible PAK swap helper; Developer mode removes mod-type restrictions but does not bypass server authentication.")
+        text(format!("Launch method: {} (change in Settings). Both Play buttons follow this choice. Direct mode starts Evolve.exe without the client, but client profile services are not yet reproduced.", state.preferences.game_launch_mode))
             .size(12)
             .style(design::muted),
     ]
@@ -1065,63 +1178,134 @@ fn actor_rows(state: &State) -> Element<'_, Message> {
 
 pub(super) fn developer(state: &State) -> Element<'_, Message> {
     if state.developer_unlocked {
-        scrollable(column![
-            text("Developer").size(24),
-            surface(column![
-                text("Authorized developer access").size(17),
-                text("Modded online testing").size(16),
-                text("Enabling this removes the manager's Evolve-specific Windows Firewall block (administrator rights may be needed), then permits ALL enabled mod types. OFF by default; disabling uses offline isolation at the next modded launch. Does not bypass client/server authentication.")
-                    .size(12).style(design::muted),
-                iced::widget::checkbox(state.developer_online_mods)
-                    .label("Allow Play with Mods online — any mod type (Developer testing)")
-                    .on_toggle(Message::DeveloperOnlineMods),
-                text(if state.developer_network_busy {
-                    "Applying Evolve firewall policy... Online mode remains OFF until network-rule removal is verified."
-                } else if state.developer_online_mods {
-                    "ONLINE MODE ENABLED: Manager-owned Evolve outbound firewall blocks have been removed. All enabled mods can be tested; server acceptance is separate."
-                } else {
-                    "Offline mode is selected. The next modded launch installs the manager-specific outbound block."
-                }).size(12).style(design::muted),
-                text(state.developer_network_status.as_str())
-                    .size(12).style(design::muted),
-                text("Process elevation (read-only)").size(16),
-                text("Check the actual Windows security tokens. Expected: Mod Manager = HIGH; ModdedEvolveLauncher.exe and Evolve.exe = MEDIUM. File preparation remains elevated.")
-                    .size(12).style(design::muted),
-                design::button(if state.developer_privilege_busy { "Inspecting process tokens..." } else { "Inspect Client / Game Privileges" })
-                    .on_press_maybe((!state.developer_privilege_busy).then_some(Message::DeveloperInspectProcessPrivileges)),
-                text(state.developer_privilege_status.as_str())
-                    .size(12).style(design::muted),
-                text("Runtime Actors / Offline memory").size(18),
-                text("Stage 2 actor offsets are based on Goliath observations; other actors require layout validation. Read all discovered actors together; individual values can be selected and edited. Name resolution is best-effort and unidentified actors display entity IDs. No live debugger, injection, or freezing.")
-                    .size(12).style(design::muted),
-                design::button(if state.runtime_checking { "Detecting..." } else { "Detect Evolve.exe" })
-                    .on_press_maybe((!state.runtime_checking).then_some(Message::RuntimeDetect)),
-                text(state.runtime_snapshot.as_ref().map(|s| s.status.as_str()).unwrap_or("Not detected"))
-                    .size(12).style(design::muted),
-                text(state.runtime_snapshot.as_ref().map(|s| s.executable.as_str()).unwrap_or("Executable not checked"))
-                    .size(12).style(design::muted),
-                iced::widget::checkbox(state.armor_offline_confirmed)
-                    .label("Confirm isolated offline match (required to write)")
-                    .on_toggle(Message::ArmorOfflineChanged),
-                iced::widget::checkbox(state.live_edit_enabled)
-                    .label("Enable one-shot actor field writes (experimental)")
-                    .on_toggle(Message::LiveEditEnabled),
-                design::button(if state.actor_busy { "Reading actors..." } else { "Refresh all actors" })
-                    .on_press_maybe((!state.actor_busy && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some()).then_some(Message::ActorRefresh)),
-                text(state.actor_status.as_str()).size(12).style(design::muted),
-                actor_rows(state),
-                text("Edit selected actor field").size(16),
-                text(state.actor_edit.as_ref().map(|(_,_,field,_)| field.title()).unwrap_or("Click Edit on an actor field above"))
-                    .size(12).style(design::muted),
-                design::text_input("New field value", &state.actor_edit_value)
-                    .on_input(Message::ActorEditValue),
-                design::button("Write selected field once")
-                    .on_press_maybe((state.actor_edit.is_some() && !state.actor_busy && state.live_edit_enabled && state.armor_offline_confirmed && !state.developer_online_mods && !state.actor_edit_value.trim().is_empty()).then_some(Message::ActorWrite)),
-                text("Writes use a fresh actor check and compare the existing bytes before applying exactly one edit. Evolution stage uses UInt32; health and armor use Float32. Every write must be armed for an offline match.")
-                    .size(12).style(design::muted),
-                design::button("Lock developer area").on_press(Message::LockDeveloper),
-            ].spacing(12)),
-        ].spacing(13).padding(12)).height(Fill).into()
+        scrollable(
+            column![
+                text("Developer").size(24),
+                surface(
+                    column![
+                        text("Network testing").size(19),
+                        text("Developer-only · Firewall policy")
+                            .size(12)
+                            .style(design::muted),
+                        iced::widget::checkbox(state.developer_online_mods)
+                            .label("Allow modded online testing")
+                            .on_toggle(Message::DeveloperOnlineMods),
+                        text(if state.developer_network_busy {
+                            "Applying network policy..."
+                        } else if state.developer_online_mods {
+                            "Online testing enabled · Server acceptance not guaranteed"
+                        } else {
+                            "Offline isolation selected"
+                        })
+                        .size(12)
+                        .style(design::muted),
+                        text(state.developer_network_status.as_str())
+                            .size(12)
+                            .style(design::muted),
+                        text("Process privileges").size(19),
+                        text("Manager: High · Client/Game: Medium")
+                            .size(12)
+                            .style(design::muted),
+                        design::button(if state.developer_privilege_busy {
+                            "Inspecting process tokens..."
+                        } else {
+                            "Inspect Client / Game Privileges"
+                        })
+                        .on_press_maybe(
+                            (!state.developer_privilege_busy)
+                                .then_some(Message::DeveloperInspectProcessPrivileges)
+                        ),
+                        text(state.developer_privilege_status.as_str())
+                            .size(12)
+                            .style(design::muted),
+                        text("Runtime actors").size(19),
+                        text("Offline memory · Validate fields before editing")
+                            .size(12)
+                            .style(design::muted),
+                        design::button(if state.runtime_checking {
+                            "Detecting..."
+                        } else {
+                            "Detect Evolve.exe"
+                        })
+                        .on_press_maybe(
+                            (!state.runtime_checking).then_some(Message::RuntimeDetect)
+                        ),
+                        text(
+                            state
+                                .runtime_snapshot
+                                .as_ref()
+                                .map(|s| s.status.as_str())
+                                .unwrap_or("Not detected")
+                        )
+                        .size(12)
+                        .style(design::muted),
+                        text(
+                            state
+                                .runtime_snapshot
+                                .as_ref()
+                                .map(|s| s.executable.as_str())
+                                .unwrap_or("Executable not checked")
+                        )
+                        .size(12)
+                        .style(design::muted),
+                        iced::widget::checkbox(state.armor_offline_confirmed)
+                            .label("Confirm isolated offline match (required to write)")
+                            .on_toggle(Message::ArmorOfflineChanged),
+                        iced::widget::checkbox(state.live_edit_enabled)
+                            .label("Enable one-shot actor field writes (experimental)")
+                            .on_toggle(Message::LiveEditEnabled),
+                        design::button(if state.actor_busy {
+                            "Reading actors..."
+                        } else {
+                            "Refresh all actors"
+                        })
+                        .on_press_maybe(
+                            (!state.actor_busy
+                                && state
+                                    .runtime_snapshot
+                                    .as_ref()
+                                    .and_then(|s| s.pid)
+                                    .is_some())
+                            .then_some(Message::ActorRefresh)
+                        ),
+                        text(state.actor_status.as_str())
+                            .size(12)
+                            .style(design::muted),
+                        actor_rows(state),
+                        text("Field editor").size(19),
+                        text(
+                            state
+                                .actor_edit
+                                .as_ref()
+                                .map(|(_, _, field, _)| field.title())
+                                .unwrap_or("Click Edit on an actor field above")
+                        )
+                        .size(12)
+                        .style(design::muted),
+                        design::text_input("New field value", &state.actor_edit_value)
+                            .on_input(Message::ActorEditValue),
+                        design::button("Write selected field once").on_press_maybe(
+                            (state.actor_edit.is_some()
+                                && !state.actor_busy
+                                && state.live_edit_enabled
+                                && state.armor_offline_confirmed
+                                && !state.developer_online_mods
+                                && !state.actor_edit_value.trim().is_empty())
+                            .then_some(Message::ActorWrite)
+                        ),
+                        text("One-shot writes · Offline only · Value checked before write")
+                            .size(12)
+                            .style(design::muted),
+                        design::button("Lock developer area").on_press(Message::LockDeveloper),
+                    ]
+                    .spacing(12)
+                ),
+            ]
+            .spacing(13)
+            .padding(12),
+        )
+        .height(Fill)
+        .into()
     } else {
         column![
             text("Developer").size(24),

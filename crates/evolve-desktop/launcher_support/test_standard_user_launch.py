@@ -52,6 +52,24 @@ class LaunchBrokerTests(unittest.TestCase):
         child.close()
         self.assertEqual(calls, ["poll", "poll", "terminate", "close"])
 
+    def test_game_environment_has_real_nul_delimiters(self):
+        block = broker._windows_environment_block([
+            "SteamAppId=273350",
+            "SteamGameId=273350",
+            "SteamOverlayGameId=273350",
+            "MODDED_EVOLVE_STAGE2_FRONTEND=127.0.0.1:2000",
+        ])
+        chars = block[:]
+        self.assertEqual(
+            chars,
+            "SteamAppId=273350\0SteamGameId=273350\0"
+            "SteamOverlayGameId=273350\0"
+            "MODDED_EVOLVE_STAGE2_FRONTEND=127.0.0.1:2000\0\0",
+        )
+        self.assertNotIn(chr(92) + "0", chars)
+        with self.assertRaises(ValueError):
+            broker._windows_environment_block(["A=valid", "B=bad\0data"])
+
     def test_cli_fails_if_two_commands_supplied(self):
         with self.assertRaises(SystemExit):
             broker.main(["--launch", "x.exe", "--diagnose-processes"])
