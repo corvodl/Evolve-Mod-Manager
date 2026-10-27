@@ -18,6 +18,7 @@ import uuid
 
 import controlled_swap as swapper
 import direct_standard_user_launch as standard_user_launch
+import stage2_runtime_contract as contract
 
 
 def _ordinary(value):
@@ -146,24 +147,10 @@ def start_runtime_supervisor(client_exe, game_exe, swap_dir):
 
 
 def environment_for_session(state, swap):
-    """Use live host-advertised mode/config locations, never private IDs."""
-    swap=Path(swap)
-    return {
-        "MODDED_EVOLVE_GAME":"stage2",
-        "MODDED_EVOLVE_DIRECT":"0",
-        "MODDED_EVOLVE_DIRECT_BROKER":"",
-        "MODDED_EVOLVE_DIRECT_STUN":"",
-        "MODDED_EVOLVE_RELAY":"",
-        "MODDED_EVOLVE_RELAY_TOKEN":"",
-        "MODDED_EVOLVE_STAGE2_FRONTEND":"127.0.0.1:2000",
-        "MODDED_EVOLVE_STAGE2_MODES":state["modes"],
-        "MODDED_EVOLVE_STAGE2_CATALOG":state["catalog"],
-        "MODDED_EVOLVE_STAGE2_LOG":str(swap/"rust-direct-stage2-hook.log"),
-        "MODDED_EVOLVE_OVERLAY":"0",
-        "MODDED_EVOLVE_OVERLAY_LOG":str(swap/"rust-direct-overlay.log"),
-        "MODDED_EVOLVE_STEAM_EMU_DLL":state["steam_compat"],
-        "MODDED_EVOLVE_COMPAT_TELEMETRY_PATH":str(swap/"rust-direct-provider-telemetry.json"),
-    }
+    # Every required path, hash and mode is verified here. In particular, do
+    # not make up missing relay or identity values: the client must supply
+    # them through the services supervisor when that interface is available.
+    return contract.build_game_environment(state, swap)
 
 
 def launch_direct(game_root, stage_root=None, client_exe=None, swap_dir=None, clean=False):
@@ -181,6 +168,9 @@ def launch_direct(game_root, stage_root=None, client_exe=None, swap_dir=None, cl
         # Run services/identity/profile bootstrap while originals are installed.
         # Only a successful services host may proceed to the PAK swap.
         session,state=start_runtime_supervisor(client_exe,exe,swap)
+        # Validate the exact October 15 Stage2Trace build, compatible
+        # game-local Steam provider and *file* catalog before any PAK rename.
+        runtime_env=environment_for_session(state,swap)
         if not clean:
             prepared=validate_prepared(game,stage_root)
             rename_prepared_into_game(prepared)
@@ -191,7 +181,7 @@ def launch_direct(game_root, stage_root=None, client_exe=None, swap_dir=None, cl
         try:
             process=standard_user_launch.launch_standard_user(
                 exe,game=True,trace_dll=state["trace"],
-                runtime_env=environment_for_session(state,swap))
+                runtime_env=runtime_env)
             try:
                 (session/"game.pid").write_text(str(process.pid)+"\n")
                 print(f"DIRECT_GAME_LAUNCHED pid={process.pid} "
