@@ -282,7 +282,11 @@ fn verify_prepared_journal(
 /// Mirror the private manager's hook key-slot and pinned staged-digest checks
 /// while separately verifying original/replacement PAK signatures. This is a
 /// *prelaunch* check: only a real game session proves what CryEngine mounted.
-fn inspect_existing_launcher_mode(stage: &Path, swap: &Path, require_client: bool) -> Result<LaunchReady, String> {
+fn inspect_existing_launcher_mode(
+    stage: &Path,
+    swap: &Path,
+    require_client: bool,
+) -> Result<LaunchReady, String> {
     let stage = directory(stage)?;
     let swap = directory(swap)?;
     let status = json(&stage.join("stage_status.json"))?;
@@ -364,9 +368,18 @@ fn inspect_existing_launcher_mode(stage: &Path, swap: &Path, require_client: boo
         }
     }
     let scripts: &[&str] = if require_client {
-        &["controlled_swap.py", "auto_launch_frida.py", "auto_restore_watch.py", "reusable_restore.py"]
+        &[
+            "controlled_swap.py",
+            "auto_launch_frida.py",
+            "auto_restore_watch.py",
+            "reusable_restore.py",
+        ]
     } else {
-        &["controlled_swap.py", "auto_restore_watch.py", "reusable_restore.py"]
+        &[
+            "controlled_swap.py",
+            "auto_restore_watch.py",
+            "reusable_restore.py",
+        ]
     };
     for &name in scripts {
         helper(&swap, name)?;
@@ -1172,7 +1185,6 @@ fn record_prepare_output(log_path: &Path, output: &std::process::Output) -> Resu
     writeln!(log).map_err(|e| e.to_string())
 }
 
-
 const DIRECT_LAUNCH_HELPER: &str = include_str!("../launcher_support/direct_game_launch.py");
 const DIRECT_STD_BROKER: &str = include_str!("../launcher_support/standard_user_launch.py");
 
@@ -1190,15 +1202,20 @@ fn install_direct_launch_helper(swap: &Path) -> Result<PathBuf, String> {
         let target = swap.join(name);
         match fs::symlink_metadata(&target) {
             Ok(meta) => {
-                if !meta.file_type().is_file() || meta.len() > 128 * 1024 ||
-                    fs::read(&target).map_err(|e| e.to_string())? != expected.as_bytes() {
-                    return Err(format!("Unrecognized {name} in swap folder; preserve this file and use a clean trusted swap folder."));
+                if !meta.file_type().is_file()
+                    || meta.len() > 128 * 1024
+                    || fs::read(&target).map_err(|e| e.to_string())? != expected.as_bytes()
+                {
+                    return Err(format!(
+                        "Unrecognized {name} in swap folder; preserve this file and use a clean trusted swap folder."
+                    ));
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 let mut temp = tempfile::NamedTempFile::new_in(swap)
                     .map_err(|e| format!("Could not stage vetted {name}: {e}"))?;
-                temp.write_all(expected.as_bytes()).map_err(|e| e.to_string())?;
+                temp.write_all(expected.as_bytes())
+                    .map_err(|e| e.to_string())?;
                 temp.as_file_mut().sync_all().map_err(|e| e.to_string())?;
                 temp.persist_noclobber(&target)
                     .map_err(|e| format!("Could not publish {name}: {}", e.error))?;
@@ -1227,16 +1244,25 @@ pub fn launch_direct_offline_game(
             .args(["-3.11", "-u"])
             .arg(swap.join("controlled_swap.py"))
             .arg("prepare")
-            .arg("--stage-dir").arg(&plan.stage)
-            .arg("--game-root").arg(crate::play_setup::ordinary_game_path(&plan.game))
-            .current_dir(swap).stdin(Stdio::null()).creation_flags(0x08000000)
-            .output().map_err(|e| format!("Python 3.11 prepare failed: {e}"))?;
+            .arg("--stage-dir")
+            .arg(&plan.stage)
+            .arg("--game-root")
+            .arg(crate::play_setup::ordinary_game_path(&plan.game))
+            .current_dir(swap)
+            .stdin(Stdio::null())
+            .creation_flags(0x08000000)
+            .output()
+            .map_err(|e| format!("Python 3.11 prepare failed: {e}"))?;
         let prepare_log = swap.join("rust-prepare-bridge.log");
         let logged = record_prepare_output(&prepare_log, &output);
         if !output.status.success() {
             let reason = prepare_failure_reason(&output.stdout, &output.stderr);
-            return Err(format!("Direct launch preparation failed: {reason}. {} (log: {}; logging: {:?})",
-                prepare_recovery_advice(&reason), prepare_log.display(), logged.err()));
+            return Err(format!(
+                "Direct launch preparation failed: {reason}. {} (log: {}; logging: {:?})",
+                prepare_recovery_advice(&reason),
+                prepare_log.display(),
+                logged.err()
+            ));
         }
     }
     let verified = inspect_existing_direct_game(&plan.stage, swap)?;
@@ -1247,8 +1273,10 @@ pub fn launch_direct_offline_game(
     let output = Command::new("py")
         .args(["-3.11", "-u"])
         .arg(helper)
-        .arg("--stage-dir").arg(&verified.stage)
-        .arg("--game-root").arg(crate::play_setup::ordinary_game_path(&verified.game))
+        .arg("--stage-dir")
+        .arg(&verified.stage)
+        .arg("--game-root")
+        .arg(crate::play_setup::ordinary_game_path(&verified.game))
         .current_dir(swap)
         .stdin(Stdio::null())
         .creation_flags(0x08000000)
@@ -1260,7 +1288,8 @@ pub fn launch_direct_offline_game(
         let error = prepare_failure_reason(&output.stdout, &output.stderr);
         return Err(format!(
             "Direct modded launch did not finish: {error}. Check {} and rust-direct-restore-watch.log; do not launch again before recovery.",
-            log_path.display()));
+            log_path.display()
+        ));
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     let marker = stdout.lines()
@@ -1269,17 +1298,23 @@ pub fn launch_direct_offline_game(
     if !marker.contains(" swap_complete=true") {
         return Err("Direct launch did not confirm its completed file swap.".into());
     }
-    let pid = marker.split_whitespace().next()
+    let pid = marker
+        .split_whitespace()
+        .next()
         .ok_or("Direct launch returned no game process ID")?
-        .parse::<u32>().map_err(|_| "Direct launch returned invalid game process ID")?;
-    if pid == 0 { return Err("Direct launch returned a zero game process ID".into()); }
+        .parse::<u32>()
+        .map_err(|_| "Direct launch returned invalid game process ID")?;
+    if pid == 0 {
+        return Err("Direct launch returned a zero game process ID".into());
+    }
     progress.store(100, std::sync::atomic::Ordering::Relaxed);
     Ok(pid)
 }
 
 #[cfg(not(windows))]
 pub fn launch_direct_offline_game(
-    _: &LaunchReady, _: &std::sync::atomic::AtomicUsize,
+    _: &LaunchReady,
+    _: &std::sync::atomic::AtomicUsize,
 ) -> Result<u32, String> {
     Err("Direct Evolve launch requires Windows x64".into())
 }
