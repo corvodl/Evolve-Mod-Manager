@@ -45,6 +45,7 @@ mod orientation_gizmo;
 mod play_dialog;
 mod play_setup;
 mod private_pages;
+mod runtime_actors;
 mod runtime_armor;
 mod runtime_experiments;
 mod runtime_health;
@@ -366,6 +367,11 @@ struct State {
     developer_privilege_status: String,
     developer_attempts: u8,
     developer_checking: bool,
+    actor_listing: Option<runtime_actors::Listing>,
+    actor_busy: bool,
+    actor_status: String,
+    actor_edit: Option<(u32, usize, runtime_actors::Field, u32)>,
+    actor_edit_value: String,
     runtime_snapshot: Option<runtime_memory::Snapshot>,
     runtime_checking: bool,
     runtime_address: String,
@@ -1824,6 +1830,12 @@ enum Message {
     DeveloperNetworkApplied(u64, Result<String, String>),
     DeveloperInspectProcessPrivileges,
     DeveloperProcessPrivilegesFinished(Result<String, String>),
+    ActorRefresh,
+    ActorRefreshed(Result<runtime_actors::Listing, String>),
+    ActorEdit(u32, usize, runtime_actors::Field, u32),
+    ActorEditValue(String),
+    ActorWrite,
+    ActorWritten(Result<runtime_actors::WriteResult, String>),
     RuntimeDetect,
     RuntimeDetected(runtime_memory::Snapshot),
     RuntimeAddressChanged(String),
@@ -3759,6 +3771,76 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.developer_password = value;
             }
         }
+        Message::ActorRefresh => {
+            if !state.developer_unlocked || state.actor_busy { return Task::none(); }
+            let Some(snapshot) = state.runtime_snapshot.clone() else {
+                state.actor_status = "Detect Evolve.exe before reading actors.".into();
+                return Task::none();
+            };
+            state.actor_busy = true;
+            state.actor_edit = None;
+            let root = state.preferences.game_storage_root.clone();
+            return Task::perform(async move {
+                tokio::task::spawn_blocking(move || runtime_actors::inspect(&snapshot, &root))
+                    .await.unwrap_or_else(|e| Err(format!("Actor scan failed: {e}")))
+            }, Message::ActorRefreshed);
+        }
+        Message::ActorRefreshed(result) => {
+            state.actor_busy = false;
+            if state.developer_unlocked {
+                match result {
+                    Ok(listing) => {
+                        state.actor_status = listing.status.clone();
+                        state.actor_listing = Some(listing);
+                    }
+                    Err(err) => {
+                        state.actor_listing = None;
+                        state.actor_status = err;
+                    }
+                }
+            }
+        }
+        Message::ActorEdit(id, address, field, bits) => {
+            if !state.developer_unlocked || state.actor_busy { return Task::none(); }
+            let Some(value) = state.actor_listing.as_ref()
+                .and_then(|s| s.actors.iter().find(|a| a.id == id && a.address == address))
+                .and_then(|a| a.fields.iter().find(|v| v.field == field && v.bits == bits))
+            else { return Task::none(); };
+            state.actor_edit = Some((id, address, field, bits));
+            state.actor_edit_value = value.display.clone();
+            state.actor_status = format!("Selected {}. Enable offline writes to apply changes.", field.title());
+        }
+        Message::ActorEditValue(v) => {
+            if state.developer_unlocked && v.len() <= 32 { state.actor_edit_value = v; }
+        }
+        Message::ActorWrite => {
+            if !state.developer_unlocked || !state.armor_offline_confirmed ||
+                !state.live_edit_enabled || state.developer_online_mods || state.actor_busy {
+                return Task::none();
+            }
+            let (Some(snapshot), Some((id, address, field, bits))) =
+                (state.runtime_snapshot.clone(), state.actor_edit.take())
+            else { return Task::none(); };
+            state.actor_busy = true;
+            let root = state.preferences.game_storage_root.clone();
+            let value = state.actor_edit_value.clone();
+            return Task::perform(async move {
+                tokio::task::spawn_blocking(move ||
+                    runtime_actors::write(&snapshot, &root, id, address, field, bits, &value))
+                .await.unwrap_or_else(|e| Err(format!("Actor write failed: {e}")))
+            }, Message::ActorWritten);
+        }
+        Message::ActorWritten(result) => {
+            state.actor_busy = false;
+            if state.developer_unlocked {
+                state.actor_status = match result {
+                    Ok(outcome) => format!("{} {}: {} -> {}. Refresh to read current values.",
+                        outcome.actor, outcome.field.title(), outcome.before, outcome.after),
+                    Err(e) => format!("Write refused or unconfirmed: {e}"),
+                };
+                return Task::done(Message::ActorRefresh);
+            }
+        }
         Message::RuntimeAddressChanged(value) => {
             if state.developer_unlocked && value.len() <= 32 {
                 state.runtime_address = value;
@@ -3928,6 +4010,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
         }
         Message::ArmorOfflineChanged(confirmed) => {
+            if !confirmed { state.actor_edit = None; }
+
             if confirmed && state.developer_online_mods {
                 state.status =
                     "Disable experimental modded-online mode before arming offline memory tools."
@@ -4171,6 +4255,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::RuntimeDetected(snapshot) => {
+            state.actor_listing = None;
+            state.actor_edit = None;
             state.runtime_checking = false;
             if state.developer_unlocked {
                 state.armor_pid_seen = snapshot.pid;
@@ -4366,6 +4452,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .unwrap_or_else(|error| format!("Phase 3 preview rejected: {error}"));
         }
         Message::LockDeveloper => {
+            state.actor_listing = None;
+            state.actor_edit = None;
+            state.actor_status.clear();
             state.developer_network_generation = state.developer_network_generation.wrapping_add(1);
             state.developer_network_busy = false;
             state.developer_online_mods = false;
