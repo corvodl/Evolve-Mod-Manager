@@ -797,9 +797,14 @@ fn build_imported_snapshot(
             "The game's PAK name differs from the imported project's original archive".into(),
         );
     }
-    let signer = super::modding_keys::signing_keys(stage).map_err(|_| {
-        "Editing is available without setup. To build a playable signed PAK, run Set Up Manager once to create local signing keys.".to_owned()
-    })?;
+    let official = super::official_stage2_tools::for_stage(stage)?;
+    let signer = if official.is_some() {
+        None
+    } else {
+        Some(super::modding_keys::signing_keys(stage).map_err(|_| {
+            "Editing is available without setup. Run Set Up Manager to configure a signed Stage 2 build.".to_owned()
+        })?)
+    };
     let originals = super::modding_keys::archive_verification_keys(stage)?;
     let lowercase = physical_name.to_ascii_lowercase();
     let signed_names = [physical_name.as_str(), lowercase.as_str()];
@@ -878,15 +883,25 @@ fn build_imported_snapshot(
     fs::create_dir(&signed_folder).map_err(|e| e.to_string())?;
     let signed_path = signed_folder.join(&signed_name);
     let output = output_folder.join(&physical_name);
-    let rebuilt = evolve_core::rebuild_signed_pak_entries(
-        &source,
-        &original_key,
-        &signer.private,
-        &signer.public,
-        &signed_name,
-        &replacements,
-        &signed_path,
-    );
+    let rebuilt: Result<usize, String> = if let Some(tools) = official {
+        // Imported source is a stock-key PAK. The official encoder requires
+        // the isolated once-converted version of that exact installed PAK.
+        let relative = offline_test_target(&verified, stage)?;
+        let converted = stage.join("paks").join(relative);
+        tools.build_changed_pak(&converted, &signed_name, &replacements, &signed_path)
+            .map(|()| replacements.len())
+    } else {
+        let signer = signer.ok_or("Signing stage has no private key")?;
+        evolve_core::rebuild_signed_pak_entries(
+            &source,
+            &original_key,
+            &signer.private,
+            &signer.public,
+            &signed_name,
+            &replacements,
+            &signed_path,
+        ).map(|report| report.len()).map_err(|e| e.to_string())
+    };
     match rebuilt {
         Ok(report) => {
             fs::rename(&signed_path, &output).map_err(|e| e.to_string())?;
@@ -894,7 +909,7 @@ fn build_imported_snapshot(
             Ok((
                 format!(
                     "{} modified member(s); source version differences accepted",
-                    report.len()
+                    report
                 ),
                 output,
                 verified,
