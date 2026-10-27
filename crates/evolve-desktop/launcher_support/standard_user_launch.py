@@ -27,6 +27,7 @@ SE_IMPERSONATION = 2
 TOKEN_PRIMARY = 1
 LOGON_WITH_PROFILE = 0x00000001
 CREATE_UNICODE_ENVIRONMENT = 0x00000400
+CREATE_SUSPENDED = 0x00000004
 STILL_ACTIVE = 259
 TOKEN_SESSION_ID = 12
 TOKEN_ELEVATION = 20
@@ -106,6 +107,15 @@ def _win():
              P(STARTUPINFOW), P(PROCESS_INFORMATION)]),
         "GetExitCodeProcess": bind(kernel, "GetExitCodeProcess", wintypes.BOOL, [H, P(D)]),
         "TerminateProcess": bind(kernel, "TerminateProcess", wintypes.BOOL, [H, D]),
+        "ResumeThread": bind(kernel, "ResumeThread", D, [H]),
+        "GetModuleHandleW": bind(kernel, "GetModuleHandleW", H, [wintypes.LPCWSTR]),
+        "GetProcAddress": bind(kernel, "GetProcAddress", ctypes.c_void_p, [H, ctypes.c_char_p]),
+        "VirtualAllocEx": bind(kernel, "VirtualAllocEx", ctypes.c_void_p, [H, ctypes.c_void_p, ctypes.c_size_t, D, D]),
+        "VirtualFreeEx": bind(kernel, "VirtualFreeEx", wintypes.BOOL, [H, ctypes.c_void_p, ctypes.c_size_t, D]),
+        "WriteProcessMemory": bind(kernel, "WriteProcessMemory", wintypes.BOOL, [H, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]),
+        "CreateRemoteThread": bind(kernel, "CreateRemoteThread", H, [H, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_void_p, D, ctypes.c_void_p]),
+        "WaitForSingleObject": bind(kernel, "WaitForSingleObject", D, [H, D]),
+        "GetExitCodeThread": bind(kernel, "GetExitCodeThread", wintypes.BOOL, [H, ctypes.POINTER(D)]),
     }
     return api
 
@@ -203,7 +213,47 @@ class StandardUserProcess:
             self.close()
 
 
-def launch_standard_user(executable, *, game=False):
+def _inject_stage2_trace(api, process_info, dll_path):
+    """Load Stage2Trace.dll into suspended Evolve; never resume after failure."""
+    dll = Path(dll_path).resolve(strict=True)
+    if dll.name.casefold() != "stage2trace.dll" or not dll.is_file():
+        raise ValueError("Game integration module must be Stage2Trace.dll")
+    data = ctypes.create_unicode_buffer(str(dll))
+    size = ctypes.sizeof(data)
+    remote = api["VirtualAllocEx"](process_info.hProcess, None, size, 0x3000, 0x04)
+    if not remote:
+        raise _error("VirtualAllocEx")
+    try:
+        written = ctypes.c_size_t()
+        if not api["WriteProcessMemory"](process_info.hProcess, remote, data, size, ctypes.byref(written)) or written.value != size:
+            raise _error("WriteProcessMemory")
+        kernel = api["GetModuleHandleW"]("kernel32.dll")
+        if not kernel:
+            raise _error("GetModuleHandleW(kernel32)")
+        loader = api["GetProcAddress"](kernel, b"LoadLibraryW")
+        if not loader:
+            raise _error("GetProcAddress(LoadLibraryW)")
+        thread = api["CreateRemoteThread"](process_info.hProcess, None, 0, loader, remote, 0, None)
+        if not thread:
+            raise _error("CreateRemoteThread")
+        try:
+            if api["WaitForSingleObject"](thread, 15000) != 0:
+                raise RuntimeError("Stage2Trace.dll load timed out or failed")
+            outcome = wintypes.DWORD()
+            if not api["GetExitCodeThread"](thread, ctypes.byref(outcome)) or not outcome.value:
+                raise RuntimeError("Stage2Trace.dll did not load into Evolve.exe")
+        finally:
+            api["CloseHandle"](thread)
+    finally:
+        api["VirtualFreeEx"](process_info.hProcess, remote, 0, 0x8000)
+
+
+def launch_standard_user(executable, *, game=False, args=(), trace_dll=None, runtime_env=None):
+    if trace_dll and not game:
+        raise ValueError("Stage2Trace injection is restricted to Evolve.exe")
+    if not game and args and (list(args)[0] != "--stage2-smoke"
+                             or "--no-launch" not in args):
+        raise ValueError("Only client services-only smoke arguments are allowed")
     """Use the signed-in Explorer desktop token and CreateProcessWithTokenW.
 
     Requires an accessible, MEDIUM-integrity non-elevated Explorer shell in
@@ -269,7 +319,7 @@ def launch_standard_user(executable, *, game=False):
             startup.cb = ctypes.sizeof(startup)
             startup.lpDesktop = "winsta0\\default"
             info = PROCESS_INFORMATION()
-            command = ctypes.create_unicode_buffer(subprocess.list2cmdline([str(exe)]))
+            command = ctypes.create_unicode_buffer(subprocess.list2cmdline([str(exe), *map(str, args)]))
             # Direct game launch reproduces the three Steam IDs recorded in
             # the normal client's launch trace. The original client path keeps
             # the exact interactive-user environment without alteration.
@@ -291,12 +341,19 @@ def launch_standard_user(executable, *, game=False):
                 # Windows client records omit STEAM_COMPAT_DATA_PATH. Do not
                 # accidentally inherit a stale Linux/Proton compatibility root.
                 keys = {"steamappid", "steamgameid", "steamoverlaygameid", "steam_compat_data_path"}
+                extras = dict(runtime_env or {})
+                if any(not key.startswith("MODDED_EVOLVE_") or "\0" in key or "\0" in str(value)
+                       for key, value in extras.items()):
+                    raise ValueError("Unexpected Stage2 runtime environment key/value")
+                keys.update(key.casefold() for key in extras)
                 entries = [item for item in entries if item.partition("=")[0].casefold() not in keys]
                 entries.extend(("SteamAppId=273350", "SteamGameId=273350", "SteamOverlayGameId=273350"))
+                entries.extend(f"{key}={value}" for key, value in extras.items())
                 env_buffer = ctypes.create_unicode_buffer("\\0".join(entries) + "\\0\\0")
                 launch_env = ctypes.cast(env_buffer, ctypes.c_void_p)
             if not api["CreateProcessWithTokenW"](
-                primary, LOGON_WITH_PROFILE, str(exe), command, CREATE_UNICODE_ENVIRONMENT,
+                primary, LOGON_WITH_PROFILE, str(exe), command,
+                CREATE_UNICODE_ENVIRONMENT | (CREATE_SUSPENDED if trace_dll else 0),
                 launch_env, str(exe.parent), ctypes.byref(startup), ctypes.byref(info)
             ):
                 raise _error("CreateProcessWithTokenW")
@@ -305,19 +362,25 @@ def launch_standard_user(executable, *, game=False):
     finally:
         api["CloseHandle"](primary)
 
-    api["CloseHandle"](info.hThread)
     proc = StandardUserProcess(api, info.dwProcessId, info.hProcess)
     try:
         actual = get_elevation(proc.pid)
         if actual["elevated"] or actual["integrity_rid"] != SECURITY_MANDATORY_MEDIUM_RID:
-            proc.terminate()
-            raise RuntimeError("Client did not start as a verified standard-user process")
+            raise RuntimeError("Process was not created at verified medium integrity")
         if actual["session"] != shell_session:
-            proc.terminate()
-            raise RuntimeError("Client started in the wrong interactive session")
+            raise RuntimeError("Process started in the wrong interactive session")
+        if trace_dll:
+            _inject_stage2_trace(api, info, trace_dll)
+            if api["ResumeThread"](info.hThread) == 0xffffffff:
+                raise _error("ResumeThread")
     except Exception:
-        proc.close()
+        try:
+            proc.terminate()
+        finally:
+            proc.close()
         raise
+    finally:
+        api["CloseHandle"](info.hThread)
     return proc
 
 
