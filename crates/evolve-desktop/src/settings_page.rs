@@ -106,6 +106,17 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
                 "SET UP MANAGER / INSTALLED GAME",
                 "Choose your installed EvolveGame directory and the normal Modded Evolve launcher. These locations are saved per user."
             ),
+            text("GAME LAUNCH METHOD").size(12),
+            row![
+                design::button("Client Launch")
+                    .on_press(Message::PreferenceGameLaunchMode("Client Launch"))
+                    .style(if state.preferences.game_launch_mode != "Direct Launch" { design::primary } else { design::secondary }),
+                design::button("Direct Launch")
+                    .on_press(Message::PreferenceGameLaunchMode("Direct Launch"))
+                    .style(if state.preferences.game_launch_mode == "Direct Launch" { design::primary } else { design::secondary }),
+            ].spacing(8),
+            text("Both Play buttons use the selected method. Client Launch retains the normal launcher and its profile services. Direct Launch creates Evolve.exe itself; modded play swaps verified PAKs before startup, and restores originals after the game exits. Client service / online parity is not guaranteed.")
+                .size(11).style(design::muted),
             text("Game location (EvolveGame or bin64_SteamRetail)").size(12),
             row![
                 design::text_input(
