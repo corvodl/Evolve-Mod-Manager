@@ -43,6 +43,27 @@ class TraceContractTests(unittest.TestCase):
             with self.subTest(modes=modes), self.assertRaises(RuntimeError):
                 contract.validate_modes(modes)
 
+    def test_actual_client_service_log_modes_round_trip(self):
+        # Exact delimiter and order from the supplied direct-stage2-services.log.
+        reported = (
+            "Stage2Listener;Stage2OwnableCompat;Stage2OwnableVtableCompat;"
+            "Stage2ProfileCompat;Stage2ProfileOnly;Stage2LobbyTaskMap;"
+            "Stage3GameContextTrace;Stage3RouteObjectTrace;Stage3NativeListen;"
+            "Stage2LobbyTaskDataBridge;Stage2ArbitrationTrace;"
+            "Stage2ArbitrationComplete"
+        )
+        normalized = contract.validate_modes(reported)
+        self.assertEqual(normalized, reported.replace(";", ","))
+        self.assertEqual(contract.validate_modes(normalized), normalized)
+        self.assertEqual(len(normalized.split(",")), 12)
+
+        with self.assertRaisesRegex(RuntimeError, "mixed separators"):
+            contract.validate_modes(normalized.replace(",", ";", 1))
+        with self.assertRaisesRegex(RuntimeError, "malformed"):
+            contract.validate_modes(reported + ";")
+        with self.assertRaisesRegex(RuntimeError, "duplicates"):
+            contract.validate_modes(reported + ";Stage2Listener")
+
     def test_provider_must_be_installed_next_to_game_binary(self):
         with tempfile.TemporaryDirectory() as folder:
             binary=Path(folder)/"bin64_SteamRetail"
