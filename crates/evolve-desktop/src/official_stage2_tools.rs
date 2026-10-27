@@ -59,6 +59,27 @@ pub fn discover(storage: &Path) -> Result<Option<OfficialTools>, String> {
     Ok(Some(OfficialTools { exe, public_key, inject, dbghelp }))
 }
 
+/// Official stages require their original local tool installation; never
+/// silently fall back to a different keypair.
+pub fn for_stage(stage: &Path) -> Result<Option<OfficialTools>, String> {
+    let status = stage.join("stage_status.json");
+    let doc: serde_json::Value = serde_json::from_slice(
+        &fs::read(&status).map_err(|e| e.to_string())?
+    ).map_err(|e| e.to_string())?;
+    if doc["signer"].as_str() != Some("official-2025") {
+        return Ok(None);
+    }
+    let storage = stage.parent().and_then(Path::parent)
+        .ok_or("Official signing stage has no storage root")?;
+    let tools = discover(storage)?.ok_or(
+        "Official Stage 2 tools missing. Restore the local tools folder or set EVOLVE_STAGE2_TOOLS_DIR."
+    )?;
+    if !tools.matches_stage(stage)? {
+        return Err("Official signing stage and developer RSA verification key disagree".into());
+    }
+    Ok(Some(tools))
+}
+
 impl OfficialTools {
     pub fn matches_stage(&self, stage: &Path) -> Result<bool, String> {
         let expected = fs::read(&self.public_key).map_err(|e| e.to_string())?;
