@@ -438,6 +438,31 @@ pub(super) fn credits() -> Element<'static, Message> {
     ].spacing(12).padding(12)).height(Fill).into()
 }
 
+fn actor_rows(state: &State) -> Element<'_, Message> {
+    let Some(listing) = &state.actor_listing else {
+        return text("No actor snapshot. Detect Evolve and refresh actors.").size(12)
+            .style(design::muted).into();
+    };
+    let mut list = column![text(format!("{} actor(s), PID {}", listing.actors.len(), listing.pid)).size(13)].spacing(10);
+    for actor in &listing.actors {
+        let mut rows = column![
+            text(format!("{}{}  |  ID 0x{:X}  |  Actor 0x{:X}",
+                actor.name, if actor.local { " (Local)" } else { "" }, actor.id, actor.address)).size(14)
+        ].spacing(5);
+        for entry in &actor.fields {
+            let field = entry.field;
+            rows = rows.push(row![
+                text(format!("{}  +0x{:X}  ({})", field.title(), field.offset(), field.kind())).size(12).width(Fill),
+                text(entry.display.clone()).size(13).width(90),
+                design::button("Edit").on_press_maybe((!state.actor_busy)
+                    .then_some(Message::ActorEdit(actor.id, actor.address, field, entry.bits))),
+            ].align_y(iced::Alignment::Center).spacing(8));
+        }
+        list = list.push(surface(rows.padding(10)));
+    }
+    list.into()
+}
+
 pub(super) fn developer(state: &State) -> Element<'_, Message> {
     if state.developer_unlocked {
         scrollable(column![
@@ -466,92 +491,32 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
                     .on_press_maybe((!state.developer_privilege_busy).then_some(Message::DeveloperInspectProcessPrivileges)),
                 text(state.developer_privilege_status.as_str())
                     .size(12).style(design::muted),
-                text("Phase 1  /  External memory inspector").size(16),
-                text("Injection-free, read-only. Detect one Evolve.exe process on demand; inspect 32 bytes at an explicit hex address or a validated pointer chain. Offsets are not bundled. Process identity and offline status cannot yet be independently verified.").size(12).style(design::muted),
-                design::button(if state.runtime_checking { "Inspecting..." } else { "Detect Evolve process" })
+                text("Runtime Actors / Offline memory").size(18),
+                text("Stage 2 actor offsets are based on Goliath observations; other actors require layout validation. Read all discovered actors together; individual values can be selected and edited. Name resolution is best-effort and unidentified actors display entity IDs. No live debugger, injection, or freezing.")
+                    .size(12).style(design::muted),
+                design::button(if state.runtime_checking { "Detecting..." } else { "Detect Evolve.exe" })
                     .on_press_maybe((!state.runtime_checking).then_some(Message::RuntimeDetect)),
-                text(state.runtime_snapshot.as_ref().map(|s| s.status.as_str()).unwrap_or("Not scanned")).size(12).style(design::muted),
-                text(state.runtime_snapshot.as_ref().map(|s| s.executable.as_str()).unwrap_or("Executable not checked")).size(12).style(design::muted),
-                design::text_input("Address (0x... or Evolve.exe+0x...)", &state.runtime_address).on_input(Message::RuntimeAddressChanged),
-                design::text_input("Pointer offsets (optional: 0x10,0x20)", &state.runtime_offsets).on_input(Message::RuntimeOffsetsChanged),
-                design::button("Read 32 bytes")
-                    .on_press_maybe((!state.runtime_checking && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some()).then_some(Message::RuntimeRead)),
-                text(state.runtime_result.as_str()).size(12).style(design::muted),
-                text("Stage 2 Goliath armor / guided Float32 finder").size(16),
-                text("Read-only full-process search for values near the observed internal full-armor scale of ~1000. Requires full armor at the first scan. No debugger, pointer scan, injection, or memory writes. Match verification is behavioral, not an actor identity guarantee.").size(12).style(design::muted),
-                iced::widget::checkbox(state.armor_offline_confirmed).label("I am in a local OFFLINE match; disable when online").on_toggle(Message::ArmorOfflineChanged),
-                design::button("Find full-armor Float32 candidates")
-                    .on_press_maybe((state.armor_offline_confirmed && !state.runtime_checking && state.runtime_snapshot.as_ref().and_then(|s|s.pid).is_some()).then_some(Message::ArmorBegin)),
-                text("After the scan: lose armor and press Damage; stand with constant armor and press Stable; feed to restore armor and press Feed. Keep armor below maximum when feeding.").size(12).style(design::muted),
-                row![
-                    design::button("Damage").on_press_maybe((state.armor_offline_confirmed && !state.runtime_checking && state.armor_scan.is_some()).then_some(Message::ArmorRefine(super::runtime_armor::Step::Damage))),
-                    design::button("Stable").on_press_maybe((state.armor_offline_confirmed && !state.runtime_checking && state.armor_scan.is_some()).then_some(Message::ArmorRefine(super::runtime_armor::Step::Stable))),
-                    design::button("Feed").on_press_maybe((state.armor_offline_confirmed && !state.runtime_checking && state.armor_scan.is_some()).then_some(Message::ArmorRefine(super::runtime_armor::Step::Feed))),
-                ].spacing(8),
-                text(state.armor_report.as_str()).size(12).style(design::muted),
-                text(state.armor_live.map(|v|format!("Live armor (internal units): {v:.2}")).unwrap_or_else(||"Live armor: awaiting verified candidate".into())).size(13),
-                text("Offline live Float32 editing  /  Experimental").size(16),
-                text("Writes EXACTLY four bytes to a freshly read address, once per button press. Requires Developer unlock, offline confirmation above and a second explicit enable switch. Use only in an isolated offline match. Wrong addresses or values can crash Evolve. No value freezing, pointer editing, teleport, injection or auto-write. TCP detection is best-effort and is not proof of offline mode.").size(12).style(design::muted),
-                iced::widget::checkbox(state.live_edit_enabled).label("Enable experimental offline Float32 writes (I accept the risk)").on_toggle(Message::LiveEditEnabled),
-                row![
-                    design::button("Read verified Goliath armor")
-                        .on_press_maybe((state.live_edit_enabled && state.armor_offline_confirmed && !state.live_edit_busy && !state.runtime_checking && state.armor_scan.as_ref().is_some_and(|s|s.ready())).then_some(Message::LiveEditProbe(super::runtime_live::Source::VerifiedArmor))),
-                    design::button("Read manual Float32 address")
-                        .on_press_maybe((state.live_edit_enabled && state.armor_offline_confirmed && !state.live_edit_busy && !state.runtime_checking && state.runtime_snapshot.as_ref().and_then(|s|s.pid).is_some()).then_some(Message::LiveEditProbe(super::runtime_live::Source::ManualFloat))),
-                ].spacing(8),
-                text("The manual address uses the Address field above, not pointer offsets. Confirm the Float32 value matches your in-game stat before writing. Health/cooldown addresses are not automatically identified.").size(12).style(design::muted),
-                design::text_input("New Float32 value (0 to 100000)", &state.live_edit_value).on_input(Message::LiveEditValueChanged),
-                design::button(if state.live_edit_busy { "Editing..." } else { "Write Float32 once" })
-                    .on_press_maybe((state.live_edit_enabled && state.armor_offline_confirmed && !state.live_edit_busy && !state.runtime_checking && state.live_edit_probe.is_some() && !state.live_edit_value.trim().is_empty()).then_some(Message::LiveEditApply)),
-                text(state.live_edit_report.as_str()).size(12).style(design::muted),
-                text("Health candidates  /  Read-only").size(16),
-                text("Uses the hexadecimal address above to inspect one containing 4 KiB page. It cannot identify actors or find health across the entire game yet. Optional expected HP narrows initial candidates; blank starts an unknown-value scan. Use only in an offline match.").size(12).style(design::muted),
-                design::text_input("Expected health (optional, e.g. 1500)", &state.runtime_health_value)
-                    .on_input(Message::RuntimeHealthValueChanged),
-                row![
-                    design::button("Find Float candidates")
-                        .on_press_maybe((!state.runtime_checking && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some()).then_some(Message::RuntimeHealthStart(super::runtime_health::Kind::Float))),
-                    design::button("Find 4-Byte candidates")
-                        .on_press_maybe((!state.runtime_checking && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some()).then_some(Message::RuntimeHealthStart(super::runtime_health::Kind::Integer))),
-                ].spacing(8),
-                text("Take damage in-game, then narrow candidates with Decreased. Use Unchanged when no damage occurred. Candidates are NOT confirmed health or actors.").size(12).style(design::muted),
-                row![
-                    design::button("Decreased")
-                        .on_press_maybe((!state.runtime_checking && state.runtime_health_scan.is_some()).then_some(Message::RuntimeHealthRefine(super::runtime_health::Filter::Decreased))),
-                    design::button("Unchanged")
-                        .on_press_maybe((!state.runtime_checking && state.runtime_health_scan.is_some()).then_some(Message::RuntimeHealthRefine(super::runtime_health::Filter::Unchanged))),
-                    design::button("Increased")
-                        .on_press_maybe((!state.runtime_checking && state.runtime_health_scan.is_some()).then_some(Message::RuntimeHealthRefine(super::runtime_health::Filter::Increased))),
-                    design::button("Changed")
-                        .on_press_maybe((!state.runtime_checking && state.runtime_health_scan.is_some()).then_some(Message::RuntimeHealthRefine(super::runtime_health::Filter::Changed))),
-                ].spacing(8),
-                text(state.runtime_health_report.as_str()).size(12).style(design::muted),
-                text("Phase 2  /  Offline runtime controls").size(16),
-                text("Preview typed field changes against a manually entered address above. Health/cooldowns are f32, teleport is X,Y,Z and weapon reference is 0x... . These are BYTE PREVIEWS ONLY; live edits remain locked until verified offline and exact-build actor layouts are available.").size(12).style(design::muted),
-                design::text_input("Desired value (e.g. 100000 / 0 / 1,2,3 / 0x10008)", &state.runtime_phase2_value)
-                    .on_input(Message::RuntimePhase2ValueChanged),
-                row![
-                    design::button("Preview health").on_press(Message::PreviewRuntimePhase2(super::runtime_experiments::Phase2Action::Health)),
-                    design::button("Preview cooldown").on_press(Message::PreviewRuntimePhase2(super::runtime_experiments::Phase2Action::Cooldown)),
-                    design::button("Preview teleport").on_press(Message::PreviewRuntimePhase2(super::runtime_experiments::Phase2Action::Teleport)),
-                    design::button("Preview weapon").on_press(Message::PreviewRuntimePhase2(super::runtime_experiments::Phase2Action::Equip)),
-                ].spacing(8),
-                text("Phase 3  /  Advanced engine operations").size(16),
-                text("Preview candidate engine class operations. Spawns accept ClassName,Count (up to 32). Character swaps and abilities accept a single identifier. This validates inputs only: no injection, entity creation, native function execution, or RMI calls.").size(12).style(design::muted),
-                design::text_input("Class/ability identifier (e.g. Goliath,2)", &state.runtime_phase3_value)
-                    .on_input(Message::RuntimePhase3ValueChanged),
-                row![
-                    design::button("Preview spawn").on_press(Message::PreviewRuntimePhase3(super::runtime_experiments::Phase3Action::Spawn)),
-                    design::button("Preview character").on_press(Message::PreviewRuntimePhase3(super::runtime_experiments::Phase3Action::SwapCharacter)),
-                    design::button("Preview ability").on_press(Message::PreviewRuntimePhase3(super::runtime_experiments::Phase3Action::Ability)),
-                ].spacing(8),
-                text("Engine signature probe / read-only").size(16),
-                text("Search exactly 4 KiB from the manual address above for a Ghidra-style byte signature (AA BB ?? CC). Candidate addresses require verification in the actual game build.").size(12).style(design::muted),
-                design::text_input("AOB signature, e.g. 48 8B ?? ?? 89", &state.runtime_signature)
-                    .on_input(Message::RuntimeSignatureChanged),
-                design::button("Scan 4 KiB for signature")
-                    .on_press_maybe((!state.runtime_checking && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some()).then_some(Message::RuntimeScanSignature)),
-                text(state.runtime_plan_result.as_str()).size(12).style(design::muted),
+                text(state.runtime_snapshot.as_ref().map(|s| s.status.as_str()).unwrap_or("Not detected"))
+                    .size(12).style(design::muted),
+                iced::widget::checkbox(state.armor_offline_confirmed)
+                    .label("Confirm isolated offline match (required to write)")
+                    .on_toggle(Message::ArmorOfflineChanged),
+                iced::widget::checkbox(state.live_edit_enabled)
+                    .label("Enable one-shot actor field writes (experimental)")
+                    .on_toggle(Message::LiveEditEnabled),
+                design::button(if state.actor_busy { "Reading actors..." } else { "Refresh all actors" })
+                    .on_press_maybe((!state.actor_busy && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some()).then_some(Message::ActorRefresh)),
+                text(state.actor_status.as_str()).size(12).style(design::muted),
+                actor_rows(state),
+                text("Edit selected actor field").size(16),
+                text(state.actor_edit.as_ref().map(|(_,_,field,_)| field.title()).unwrap_or("Click Edit on an actor field above"))
+                    .size(12).style(design::muted),
+                design::text_input("New field value", &state.actor_edit_value)
+                    .on_input(Message::ActorEditValue),
+                design::button("Write selected field once")
+                    .on_press_maybe((state.actor_edit.is_some() && !state.actor_busy && state.live_edit_enabled && state.armor_offline_confirmed && !state.developer_online_mods && !state.actor_edit_value.trim().is_empty()).then_some(Message::ActorWrite)),
+                text("Writes use a fresh actor check and compare the existing bytes before applying exactly one edit. Evolution stage uses UInt32; health and armor use Float32. Every write must be armed for an offline match.")
+                    .size(12).style(design::muted),
                 design::button("Lock developer area").on_press(Message::LockDeveloper),
             ].spacing(12)),
         ].spacing(13).padding(12)).height(Fill).into()
