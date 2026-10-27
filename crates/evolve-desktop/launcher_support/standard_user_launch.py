@@ -221,7 +221,7 @@ def _windows_environment_block(entries):
     """
     if any(not isinstance(item, str) or not item or "\0" in item for item in entries):
         raise ValueError("Environment contains a malformed entry")
-    return ctypes.create_unicode_buffer("\0".join(entries) + "\0\0")
+    return ctypes.create_unicode_buffer("\0".join(entries) + "\0")
 
 
 def _inject_stage2_trace(api, process_info, dll_path):
