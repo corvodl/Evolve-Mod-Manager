@@ -114,13 +114,22 @@ def wait_services(process, timeout=45):
 
 def start_services(client_exe, game_exe, swap_dir, broker):
     shadow=ensure_shadow(client_exe,swap_dir)
+    log=Path(swap_dir)/"direct-stage2-services.log"
+    log.write_bytes(b"")
     host=broker.launch_standard_user(
         shadow/"ModdedEvolveLauncher.exe",
         args=["--stage2-smoke",str(Path(game_exe).resolve(strict=True)),
-              "--no-launch","--keep"])
+              "--no-launch","--keep"],
+        log_path=log)
     try:
         wait_services(host)
-        return host,shadow
+        modes=None
+        for line in log.read_text(encoding="utf-8",errors="replace").splitlines():
+            if "modes=" in line:
+                modes=line.rsplit("modes=",1)[1].strip()
+        if not modes or len(modes)>8192 or not all(x.isascii() for x in modes):
+            raise RuntimeError("Client service host did not publish its Stage2 compatibility modes. Refusing incomplete game startup.")
+        return host,shadow,modes
     except Exception:
         host.terminate()
         host.close()
