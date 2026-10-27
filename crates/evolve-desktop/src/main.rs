@@ -1608,6 +1608,9 @@ impl Operation {
     }
 }
 
+// Legacy message variants are retained for compatibility with the hidden
+// experimental workflow, but the replacement Developer UI does not emit them.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 enum Message {
     Navigate(Page),
@@ -3130,11 +3133,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = format!("Selected {} · {}", project.label, project.details);
                 // Remember the user's last selected project across launches.
                 // This is already part of saved preferences, not a separate recent-file list.
-                if let Ok(path) = settings_path() {
-                    if let Err(error) = save_to(&path, &state.preferences) {
-                        state.settings_status =
-                            format!("Could not remember recent project: {error}");
-                    }
+                if let Ok(path) = settings_path()
+                    && let Err(error) = save_to(&path, &state.preferences)
+                {
+                    state.settings_status =
+                        format!("Could not remember recent project: {error}");
                 }
             } else {
                 state.preferences.current_workspace.clear();
