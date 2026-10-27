@@ -3,7 +3,7 @@
 //! is measured in files/bytes/elapsed time and uses an animated (unknown
 //! completion) bar, not a fictional percent.
 use super::{Message, State};
-use iced::widget::{container, progress_bar, row, text};
+use iced::widget::{container, progress_bar, row, svg, text};
 use iced::{Alignment, Element, Length};
 use std::sync::atomic::Ordering;
 
@@ -159,8 +159,10 @@ pub fn footer(state: &State) -> Element<'_, Message> {
         |value| format!("{value}% · {}", status.detail),
     );
     row![
+        svg(super::loading_wheel::handle(state.loading_wheel_frame, 1.0))
+            .width(Length::Fixed(26.0))
+            .height(Length::Fixed(26.0)),
         text(status.label.clone()).size(12),
-        bar(&status, Length::Fixed(180.0), 14.0),
         text(metric).size(11)
     ]
     .spacing(10)

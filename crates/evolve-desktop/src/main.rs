@@ -35,6 +35,7 @@ mod initial_setup;
 mod launcher_bridge;
 mod level_workspace;
 mod library_picker;
+mod loading_wheel;
 mod menu_popup;
 mod mod_play;
 mod modding_keys;
@@ -45,6 +46,7 @@ mod orientation_gizmo;
 mod play_dialog;
 mod play_setup;
 mod private_pages;
+mod runtime_actors;
 mod runtime_armor;
 mod runtime_experiments;
 mod runtime_health;
@@ -118,7 +120,7 @@ use viewport::MeshViewport;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Page {
     Home,
-    Instructions,
+    Docs,
     AssetLibrary,
     Files,
     WhatsNew,
@@ -132,7 +134,7 @@ enum Page {
 impl Page {
     const ALL: [Self; 7] = [
         Self::Home,
-        Self::Instructions,
+        Self::Docs,
         Self::AssetLibrary,
         Self::Files,
         Self::WhatsNew,
@@ -143,7 +145,7 @@ impl Page {
     fn icon(self) -> svg::Handle {
         let data: &'static [u8] = match self {
             Self::Home => include_bytes!("../../../assets/nav/home.svg"),
-            Self::Instructions => include_bytes!("../../../assets/nav/instructions.svg"),
+            Self::Docs => include_bytes!("../../../assets/nav/instructions.svg"),
             Self::AssetLibrary => include_bytes!("../../../assets/nav/asset-library.svg"),
             Self::Files => include_bytes!("../../../assets/nav/modding.svg"),
             Self::WhatsNew => include_bytes!("../../../assets/nav/whats-new.svg"),
@@ -159,7 +161,7 @@ impl Page {
     fn title(self) -> &'static str {
         match self {
             Self::Home => "Home",
-            Self::Instructions => "Instructions",
+            Self::Docs => "Docs",
             Self::AssetLibrary => "Asset Library",
             Self::Files => "Modding",
             Self::WhatsNew => "What's New",
@@ -366,6 +368,11 @@ struct State {
     developer_privilege_status: String,
     developer_attempts: u8,
     developer_checking: bool,
+    actor_listing: Option<runtime_actors::Listing>,
+    actor_busy: bool,
+    actor_status: String,
+    actor_edit: Option<(u32, usize, runtime_actors::Field, u32)>,
+    actor_edit_value: String,
     runtime_snapshot: Option<runtime_memory::Snapshot>,
     runtime_checking: bool,
     runtime_address: String,
@@ -392,6 +399,7 @@ struct State {
     runtime_phase3_value: String,
     runtime_signature: String,
     runtime_plan_result: String,
+    docs_expanded: HashSet<private_pages::DocsSection>,
     show_advanced_tools: bool,
     activity_log: Vec<String>,
     health_expanded: bool,
@@ -450,6 +458,8 @@ struct State {
     mod_toggle_animations: Vec<ModToggleAnimation>,
     /// Indeterminate footer activity only: never presented as a real percent.
     footer_pulse: u16,
+    /// Frame of the two independent 30 FPS timelines from loading_wheel.gfx.
+    loading_wheel_frame: u32,
     /// Named worker operation and real elapsed time, shared by the footer and
     /// all open progress windows; no fabricated percentages.
     busy_operation: Option<String>,
@@ -1598,6 +1608,9 @@ impl Operation {
     }
 }
 
+// Legacy message variants are retained for compatibility with the hidden
+// experimental workflow, but the replacement Developer UI does not emit them.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 enum Message {
     Navigate(Page),
@@ -1631,6 +1644,8 @@ enum Message {
     ModdingSelectImported(usize),
     ModdingReloadLibrary,
     ModdingOpenProject,
+    HomeContinueEditing,
+    HomeOpenProject,
     ModdingKind(Option<evolve_core::mod_safety::ModKind>),
     GuidedEdit(guided_modding::Action),
     ModdingReviewChanges,
@@ -1679,6 +1694,7 @@ enum Message {
     DropPath(PathBuf),
     CancelScan,
     ScanPulse,
+    LoadingWheelTick,
     ViewerMenu(&'static str),
     ViewerToggleExplorer,
     ViewerResetCamera,
@@ -1812,6 +1828,8 @@ enum Message {
     LevelExportEdits,
     ToggleAdvancedTools,
     ToggleActivity,
+    ToggleDocsSection(private_pages::DocsSection),
+    DocsExpandAll(bool),
     ClearActivity,
     ToggleSystemHealth,
     CheckSystemHealth,
@@ -1824,6 +1842,12 @@ enum Message {
     DeveloperNetworkApplied(u64, Result<String, String>),
     DeveloperInspectProcessPrivileges,
     DeveloperProcessPrivilegesFinished(Result<String, String>),
+    ActorRefresh,
+    ActorRefreshed(Result<runtime_actors::Listing, String>),
+    ActorEdit(u32, usize, runtime_actors::Field, u32),
+    ActorEditValue(String),
+    ActorWrite,
+    ActorWritten(Result<runtime_actors::WriteResult, String>),
     RuntimeDetect,
     RuntimeDetected(runtime_memory::Snapshot),
     RuntimeAddressChanged(String),
@@ -2831,8 +2855,73 @@ fn refresh_viewer_rows(state: &mut State) {
     state.viewer_rows = visible;
 }
 
+/// Resolve the last selected editable project from the configured projects root.
+/// A stale, removed or unrelated path must not produce a working Home shortcut.
+fn home_recent_workspace(state: &State) -> Option<PathBuf> {
+    let workspace = PathBuf::from(state.preferences.current_workspace.trim());
+    let project_root = PathBuf::from(state.preferences.projects.trim());
+    if workspace.as_os_str().is_empty() || project_root.as_os_str().is_empty() {
+        return None;
+    }
+    let root = std::fs::canonicalize(project_root).ok()?;
+    let path = std::fs::canonicalize(workspace).ok()?;
+    if path == root || !path.starts_with(&root) || !path.is_dir() {
+        return None;
+    }
+    Some(path)
+}
+
 fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
+        Message::HomeContinueEditing | Message::HomeOpenProject => {
+            if state.busy {
+                state.status = "Finish the current operation before opening a project.".into();
+                return Task::none();
+            }
+            let Some(path) = home_recent_workspace(state) else {
+                state.status = "The previous project is no longer available. Open Modding to choose a project.".into();
+                return update(state, Message::Navigate(Page::Files));
+            };
+            let continue_editing = matches!(message, Message::HomeContinueEditing);
+            state.page = Some(Page::Files);
+            state.modding_filter.clear();
+            state.modding_kind = None;
+            if let Some(index) = state.modding_projects.as_ref().and_then(|projects| {
+                projects.iter().position(|p| {
+                    std::fs::canonicalize(&p.workspace).ok().as_deref() == Some(path.as_path())
+                })
+            }) {
+                state.project_selection.clear();
+                state.project_selection.click(&[index], index, false, false);
+                state.modding_selected = Some(index);
+                state.modding_page = index / modding_page::PAGE;
+                state.modding_changes_page = 0;
+                if let Some(project) = state.modding_projects.as_ref().and_then(|p| p.get(index)) {
+                    state.modding_name_input = project.label.clone();
+                    state.status = format!("Opened {} in Modding.", project.label);
+                }
+                if continue_editing {
+                    return update(state, Message::ModdingOpenProject);
+                }
+                return Task::none();
+            }
+            if state.preferences.projects.trim().is_empty() {
+                state.status = "Configure a Projects folder in Settings first.".into();
+                return Task::none();
+            }
+            if continue_editing {
+                // Project index completion validates the workspace and opens
+                // its extracted files; never scan an unindexed arbitrary folder.
+                state.modding_pending_focus = Some(path);
+            }
+            return launch(
+                state,
+                Operation::IndexProjects(
+                    PathBuf::from(&state.preferences.projects),
+                    PathBuf::from(&state.preferences.stage),
+                ),
+            );
+        }
         Message::Navigate(page) => {
             state.page = Some(page);
             let mut tasks = Vec::new();
@@ -3042,6 +3131,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .to_string_lossy()
                     .into_owned();
                 state.status = format!("Selected {} · {}", project.label, project.details);
+                // Remember the user's last selected project across launches.
+                // This is already part of saved preferences, not a separate recent-file list.
+                if let Ok(path) = settings_path()
+                    && let Err(error) = save_to(&path, &state.preferences)
+                {
+                    state.settings_status = format!("Could not remember recent project: {error}");
+                }
             } else {
                 state.preferences.current_workspace.clear();
                 state.modding_name_input.clear();
@@ -3754,9 +3850,123 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.health_checking = false;
             state.status = "Read-only System Health check completed.".into();
         }
+        Message::ToggleDocsSection(section) => {
+            if !state.docs_expanded.insert(section) {
+                state.docs_expanded.remove(&section);
+            }
+        }
+        Message::DocsExpandAll(expand) => {
+            state.docs_expanded.clear();
+            if expand {
+                state.docs_expanded.extend(private_pages::DocsSection::ALL);
+            }
+        }
         Message::DeveloperPasswordChanged(value) => {
             if !state.developer_checking && value.len() <= 128 {
                 state.developer_password = value;
+            }
+        }
+        Message::ActorRefresh => {
+            if !state.developer_unlocked || state.actor_busy {
+                return Task::none();
+            }
+            let Some(snapshot) = state.runtime_snapshot.clone() else {
+                state.actor_status = "Detect Evolve.exe before reading actors.".into();
+                return Task::none();
+            };
+            state.actor_busy = true;
+            state.actor_edit = None;
+            let root = state.preferences.game_storage_root.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || runtime_actors::inspect(&snapshot, &root))
+                        .await
+                        .unwrap_or_else(|e| Err(format!("Actor scan failed: {e}")))
+                },
+                Message::ActorRefreshed,
+            );
+        }
+        Message::ActorRefreshed(result) => {
+            state.actor_busy = false;
+            if state.developer_unlocked {
+                match result {
+                    Ok(listing) => {
+                        state.actor_status = listing.status.clone();
+                        state.actor_listing = Some(listing);
+                    }
+                    Err(err) => {
+                        state.actor_listing = None;
+                        state.actor_status = err;
+                    }
+                }
+            }
+        }
+        Message::ActorEdit(id, address, field, bits) => {
+            if !state.developer_unlocked || state.actor_busy {
+                return Task::none();
+            }
+            let Some(value) = state
+                .actor_listing
+                .as_ref()
+                .and_then(|s| s.actors.iter().find(|a| a.id == id && a.address == address))
+                .and_then(|a| a.fields.iter().find(|v| v.field == field && v.bits == bits))
+            else {
+                return Task::none();
+            };
+            state.actor_edit = Some((id, address, field, bits));
+            state.actor_edit_value = value.display.clone();
+            state.actor_status = format!(
+                "Selected {}. Enable offline writes to apply changes.",
+                field.title()
+            );
+        }
+        Message::ActorEditValue(v) => {
+            if state.developer_unlocked && v.len() <= 32 {
+                state.actor_edit_value = v;
+            }
+        }
+        Message::ActorWrite => {
+            if !state.developer_unlocked
+                || !state.armor_offline_confirmed
+                || !state.live_edit_enabled
+                || state.developer_online_mods
+                || state.actor_busy
+            {
+                return Task::none();
+            }
+            let (Some(snapshot), Some((id, address, field, bits))) =
+                (state.runtime_snapshot.clone(), state.actor_edit.take())
+            else {
+                return Task::none();
+            };
+            state.actor_busy = true;
+            let root = state.preferences.game_storage_root.clone();
+            let value = state.actor_edit_value.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        runtime_actors::write(&snapshot, &root, id, address, field, bits, &value)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Actor write failed: {e}")))
+                },
+                Message::ActorWritten,
+            );
+        }
+        Message::ActorWritten(result) => {
+            state.actor_busy = false;
+            if state.developer_unlocked {
+                state.actor_status = match result {
+                    Ok(outcome) => format!(
+                        "{} {}: {} -> {}. Refresh to read current values.",
+                        outcome.actor,
+                        outcome.field.title(),
+                        outcome.before,
+                        outcome.after
+                    ),
+                    Err(e) => format!("Write refused or unconfirmed: {e}"),
+                };
+                return Task::done(Message::ActorRefresh);
             }
         }
         Message::RuntimeAddressChanged(value) => {
@@ -3928,6 +4138,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
         }
         Message::ArmorOfflineChanged(confirmed) => {
+            if !confirmed {
+                state.actor_edit = None;
+            }
+
             if confirmed && state.developer_online_mods {
                 state.status =
                     "Disable experimental modded-online mode before arming offline memory tools."
@@ -4171,6 +4385,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::RuntimeDetected(snapshot) => {
+            state.actor_listing = None;
+            state.actor_edit = None;
             state.runtime_checking = false;
             if state.developer_unlocked {
                 state.armor_pid_seen = snapshot.pid;
@@ -4366,6 +4582,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .unwrap_or_else(|error| format!("Phase 3 preview rejected: {error}"));
         }
         Message::LockDeveloper => {
+            state.actor_listing = None;
+            state.actor_edit = None;
+            state.actor_status.clear();
             state.developer_network_generation = state.developer_network_generation.wrapping_add(1);
             state.developer_network_busy = false;
             state.developer_online_mods = false;
@@ -4566,6 +4785,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 cancel.store(true, Ordering::Relaxed);
                 state.status = "Cancelling asset scan after current entry...".into();
             }
+        }
+        Message::LoadingWheelTick => {
+            state.loading_wheel_frame =
+                (state.loading_wheel_frame + 1) % loading_wheel::LOOP_FRAMES;
         }
         Message::ScanPulse => {
             state.footer_pulse = state.footer_pulse.wrapping_add(1);
@@ -8635,14 +8858,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::Projects(projects)) => {
                     let focus = state.modding_pending_focus.take();
-                    let previous = focus.clone().or_else(|| {
-                        state
-                            .modding_selected
-                            .and_then(|i| {
-                                state.modding_projects.as_ref().and_then(|old| old.get(i))
-                            })
-                            .map(|p| p.workspace.clone())
-                    });
+                    let previous = focus
+                        .clone()
+                        .or_else(|| {
+                            state
+                                .modding_selected
+                                .and_then(|i| {
+                                    state.modding_projects.as_ref().and_then(|old| old.get(i))
+                                })
+                                .map(|p| p.workspace.clone())
+                        })
+                        .or_else(|| home_recent_workspace(state));
                     state.modding_selected =
                         previous.and_then(|path| projects.iter().position(|p| p.workspace == path));
                     state.status = format!("Loaded {} editable project(s).", projects.len());
@@ -10057,7 +10283,7 @@ fn view(state: &State) -> Element<'_, Message> {
         text(format!("  /  {}", page.title())).size(12),
         space().width(Fill),
         design::button("Help")
-            .on_press(Message::Navigate(Page::Instructions))
+            .on_press(Message::Navigate(Page::Docs))
             .style(design::secondary),
         design::button("Activity")
             .on_press(Message::ToggleActivity)
@@ -10169,7 +10395,7 @@ fn view(state: &State) -> Element<'_, Message> {
 
     let workspace: Element<'_, Message> = match page {
         Page::Home => private_pages::home(state),
-        Page::Instructions => private_pages::instructions(),
+        Page::Docs => private_pages::docs(state),
         Page::WhatsNew => private_pages::whats_new(state),
         Page::Credits => private_pages::credits(),
         Page::Developer => private_pages::developer(state),
@@ -10482,6 +10708,7 @@ fn view(state: &State) -> Element<'_, Message> {
 
 fn initial_state() -> State {
     let mut result = State {
+        docs_expanded: HashSet::from([private_pages::DocsSection::GettingStarted]),
         zoom: 1.0,
         playback_speed: 1.0,
         export_rigged: true,
@@ -10972,6 +11199,15 @@ impl Desktop {
         } else {
             Subscription::none()
         };
+        // Original GFX playback rate is 30 frames/sec. The footer and the
+        // optional Home watermark share a frame clock but do not fabricate
+        // worker completion percentages from the animation.
+        let wheel = if footer_is_working(&self.state) || self.state.page == Some(Page::Home) {
+            iced::time::every(Duration::from_secs_f64(1.0 / f64::from(loading_wheel::FPS)))
+                .map(|_| Message::LoadingWheelTick)
+        } else {
+            Subscription::none()
+        };
         let startup = if self.state.preferences.automatic_update_checks
             && !self.state.startup_update_checked
         {
@@ -11005,6 +11241,7 @@ impl Desktop {
             playback,
             startup,
             scan_progress,
+            wheel,
             window::close_events().map(Message::WindowClosed),
             iced::event::listen_with(|event, _status, id| match event {
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
@@ -12210,6 +12447,50 @@ mod project_edit_tests {
         assert!(!state.busy);
         assert!(state.status.contains("do not belong"));
     }
+    #[test]
+    fn home_project_shortcut_rejects_missing_or_outside_workspaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path().join("Projects");
+        let recent = project_root.join("SampleProject");
+        let unrelated = dir.path().join("OtherProject");
+        std::fs::create_dir_all(&recent).unwrap();
+        std::fs::create_dir_all(&unrelated).unwrap();
+        let mut state = State::default();
+        state.preferences.projects = project_root.to_string_lossy().into_owned();
+        state.preferences.current_workspace = recent.to_string_lossy().into_owned();
+        assert_eq!(
+            home_recent_workspace(&state),
+            Some(recent.canonicalize().unwrap())
+        );
+        state.preferences.current_workspace = unrelated.to_string_lossy().into_owned();
+        assert!(home_recent_workspace(&state).is_none());
+        state.preferences.current_workspace =
+            dir.path().join("missing").to_string_lossy().into_owned();
+        assert!(home_recent_workspace(&state).is_none());
+    }
+
+    #[test]
+    fn docs_sections_can_expand_and_collapse_independently() {
+        let mut state = initial_state();
+        assert!(
+            state
+                .docs_expanded
+                .contains(&private_pages::DocsSection::GettingStarted)
+        );
+        let section = private_pages::DocsSection::Projects;
+        let _ = update(&mut state, Message::ToggleDocsSection(section));
+        assert!(state.docs_expanded.contains(&section));
+        let _ = update(&mut state, Message::ToggleDocsSection(section));
+        assert!(!state.docs_expanded.contains(&section));
+        let _ = update(&mut state, Message::DocsExpandAll(true));
+        assert_eq!(
+            state.docs_expanded.len(),
+            private_pages::DocsSection::ALL.len()
+        );
+        let _ = update(&mut state, Message::DocsExpandAll(false));
+        assert!(state.docs_expanded.is_empty());
+    }
+
     #[test]
     fn developer_online_requires_verified_network_policy_and_is_session_only() {
         let mut state = State::default();

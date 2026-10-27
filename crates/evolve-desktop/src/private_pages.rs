@@ -1,9 +1,47 @@
-//! Private-manager-aligned landing, instructions and informational pages.
+//! Private-manager-aligned landing, documentation and informational pages.
 //! Home deliberately does not enumerate PAKs or scan the user's installation.
 use super::{Message, Page, State};
 use crate::design;
 use iced::widget::{button, column, container, image, row, scrollable, svg, text};
 use iced::{Background, Border, Element, Fill, Length};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub(super) enum DocsSection {
+    GettingStarted,
+    Install,
+    Paths,
+    Import,
+    Browse,
+    Projects,
+    Edit,
+    Gfx,
+    Export,
+    LaunchMods,
+    LaunchClean,
+    Recovery,
+    Updates,
+    Troubleshoot,
+    Faq,
+}
+impl DocsSection {
+    pub(super) const ALL: [Self; 15] = [
+        Self::GettingStarted,
+        Self::Install,
+        Self::Paths,
+        Self::Import,
+        Self::Browse,
+        Self::Projects,
+        Self::Edit,
+        Self::Gfx,
+        Self::Export,
+        Self::LaunchMods,
+        Self::LaunchClean,
+        Self::Recovery,
+        Self::Updates,
+        Self::Troubleshoot,
+        Self::Faq,
+    ];
+}
 
 fn surface<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Container<'a, Message> {
     container(content)
@@ -70,9 +108,7 @@ fn latest_announcement(state: &State) -> Element<'_, Message> {
     let news = &state.news;
     let mut content = column![
         row![
-            text("LATEST DISCORD ANNOUNCEMENT")
-                .size(14)
-                .style(design::accent),
+            text("Announcements").size(19),
             design::button("More in What's New")
                 .on_press(Message::Navigate(Page::WhatsNew))
                 .style(design::secondary),
@@ -131,21 +167,101 @@ fn latest_announcement(state: &State) -> Element<'_, Message> {
     surface(content).into()
 }
 
+fn subtle_home_wheel(frame: u32) -> Element<'static, Message> {
+    svg(crate::loading_wheel::handle(frame, 0.12))
+        .width(Length::Fixed(128.0))
+        .height(Length::Fixed(128.0))
+        .into()
+}
+
 pub(super) fn home(state: &State) -> Element<'_, Message> {
-    let hero = surface(column![
-        text("EVOLVE STAGE 2  /  MODDING WORKSPACE").size(12).style(design::accent),
-        text("Make something different.").size(32),
-        text("A unified workspace for CryEngine assets, visual editing, signed PAK builds, and safe offline testing.").size(13),
-        row![
-            design::button("Modding").on_press(Message::Navigate(Page::Files)).style(design::primary),
-            design::button("Asset Library").on_press(Message::Navigate(Page::AssetLibrary)).style(design::secondary),
-            design::button("Instructions").on_press(Message::Navigate(Page::Instructions)).style(design::secondary),
-        ].spacing(9),
-    ].spacing(11)).padding([25, 28]).style(|theme| container::Style {
-        background: Some(Background::Color(design::surface(theme))),
-        border: Border { color: design::border(theme), width: 1.0, radius: 16.0.into() },
-        ..container::Style::default()
-    });
+    let hero = if let Some(workspace) = super::home_recent_workspace(state) {
+        let project = state.modding_projects.as_ref().and_then(|projects| {
+            projects.iter().find(|project| {
+                project.workspace == workspace
+                    || project.workspace.as_path()
+                        == std::path::Path::new(&state.preferences.current_workspace)
+            })
+        });
+        let label = project
+            .map(|project| project.label.clone())
+            .unwrap_or_else(|| {
+                workspace
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "Recent project".into())
+            });
+        let details = project
+            .map(|project| {
+                format!(
+                    "{} · {} changed file(s)",
+                    project.status,
+                    project.modified.len()
+                )
+            })
+            .unwrap_or_else(|| "Last selected editable project".into());
+        surface(
+            row![
+                column![
+                    text("YOUR WORKBENCH").size(12).style(design::accent),
+                    text("Continue where you left off").size(22),
+                    row![
+                        svg(Page::Files.icon())
+                            .style(design::icon)
+                            .width(30)
+                            .height(30),
+                        column![
+                            text(label).size(16),
+                            text(details).size(12).style(design::muted),
+                        ]
+                        .spacing(5),
+                    ]
+                    .align_y(iced::Center)
+                    .spacing(13),
+                    row![
+                        design::button("Continue Editing")
+                            .on_press_maybe((!state.busy).then_some(Message::HomeContinueEditing))
+                            .style(design::primary),
+                        design::button("Open Project")
+                            .on_press_maybe((!state.busy).then_some(Message::HomeOpenProject)),
+                    ]
+                    .spacing(9),
+                ]
+                .spacing(12)
+                .width(Fill),
+                subtle_home_wheel(state.loading_wheel_frame),
+            ]
+            .spacing(12)
+            .align_y(iced::Center),
+        )
+        .padding([20, 24])
+    } else {
+        surface(
+            row![
+                column![
+                    text("GETTING STARTED").size(12).style(design::accent),
+                text("Ready to make your first mod?").size(22),
+                text("Start by importing a PAK into the Asset Library, or follow Docs for a guided setup. Your last selected project will appear here once you have one.")
+                    .size(13)
+                    .style(design::muted),
+                row![
+                    design::button("Getting Started")
+                        .on_press(Message::Navigate(Page::Docs))
+                        .style(design::primary),
+                    design::button("Open Asset Library")
+                        .on_press(Message::Navigate(Page::AssetLibrary)),
+                ]
+                .spacing(9),
+                ]
+                .spacing(12)
+                .width(Fill),
+                subtle_home_wheel(state.loading_wheel_frame),
+            ]
+            .spacing(12)
+            .align_y(iced::Center),
+        )
+        .padding([20, 24])
+    };
     let quick = column![
         text("PLAY EVOLVE").size(14),
         text(if state.developer_unlocked && state.developer_online_mods {
@@ -185,9 +301,9 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         .spacing(10),
         row![
             tile(
-                "Instructions",
-                "First-time setup and safe modding workflow.",
-                Page::Instructions
+                "Docs",
+                "Getting started guides and step-by-step How To topics.",
+                Page::Docs
             ),
             tile(
                 "Settings",
@@ -263,8 +379,8 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         column![
             hero,
             quick,
-            row![entries, status].spacing(14),
             latest_announcement(state),
+            row![entries, status].spacing(14),
         ]
         .spacing(20)
         .padding(12),
@@ -273,34 +389,489 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
     .into()
 }
 
-fn workflow_step(name: &'static str, description: &'static str) -> Element<'static, Message> {
-    surface(
-        column![
-            text(name).size(15),
-            text(description).size(12).style(design::muted),
-        ]
-        .spacing(7),
-    )
-    .into()
+fn docs_spec(
+    section: DocsSection,
+) -> (
+    &'static str,
+    &'static str,
+    &'static [(&'static str, &'static str)],
+) {
+    match section {
+        DocsSection::GettingStarted => (
+            "Getting Started",
+            "New to Evolve Mod Manager? Follow these steps in order. You do not need to know Rust, CryEngine, or how PAK files work.",
+            &[
+                (
+                    "Install Evolve Stage 2",
+                    "Install and launch Evolve Stage 2 using your normal Modded Evolve client first. The manager does not include the game or client.",
+                ),
+                (
+                    "Install the manager",
+                    "Download the installer or portable ZIP from the project’s GitHub Releases page. The installer can create shortcuts; the portable version runs from its extracted folder.",
+                ),
+                (
+                    "Set your paths",
+                    "Open Settings and choose your EvolveGame folder and ModdedEvolveLauncher.exe. Set a safe workspace location for imported assets, projects, and backups.",
+                ),
+                (
+                    "Save Settings",
+                    "Save your paths. If the manager offers an initial setup or verification step, complete it before trying to launch modified game files.",
+                ),
+                (
+                    "Explore before editing",
+                    "Open Asset Library and import a PAK or a folder of PAKs. Preview a model or texture to learn how the library works; imports are not edits to the installed game.",
+                ),
+                (
+                    "Make your first mod",
+                    "Choose an imported asset and create an editable Mod Project. Work inside the project copy rather than changing an original PAK by hand.",
+                ),
+                (
+                    "Test offline",
+                    "Enable your Mod Project in Modding, then choose Play with Mods. Use Play without Mods as a clean comparison. Check the launch popup for readiness, warnings, and errors.",
+                ),
+            ],
+        ),
+        DocsSection::Install => (
+            "Install or update the manager",
+            "Choose the build that fits your needs. Stable is intended for wider use; Nightly contains newer experimental changes.",
+            &[
+                (
+                    "Download a build",
+                    "Use the repository's Releases page, not an unknown mirror. Select the Windows Setup executable or Portable ZIP.",
+                ),
+                (
+                    "Setup vs. Portable",
+                    "Setup installs the manager and optionally adds desktop and Start Menu shortcuts. Portable is extracted to a folder and run directly.",
+                ),
+                (
+                    "Start the manager",
+                    "Windows may request administrator permission for protected game-file preparation and recovery. The game and its launcher should start with normal user privileges.",
+                ),
+                (
+                    "Update later",
+                    "Open Settings > Updates, choose your channel, and use Check for Updates. When offered, Update and restart verifies and installs the matching update.",
+                ),
+                (
+                    "Keep your data",
+                    "Do not delete your manager data directory, projects, original snapshots, or recovery files when updating.",
+                ),
+            ],
+        ),
+        DocsSection::Paths => (
+            "Set up game and workspace paths",
+            "Correct paths are the most common first-run requirement. Keep original game files separate from editable project copies.",
+            &[
+                (
+                    "Find your game directory",
+                    "In Settings, select the EvolveGame installation directory containing the game's bin64_SteamRetail folder.",
+                ),
+                (
+                    "Choose the normal client",
+                    "Point the client setting to ModdedEvolveLauncher.exe from your existing Modded Evolve installation—not to Evolve.exe itself.",
+                ),
+                (
+                    "Configure storage",
+                    "Use Settings > Storage to inspect or change where the Asset Library, working projects, prepared files and original snapshots are kept.",
+                ),
+                (
+                    "Save and verify",
+                    "Save Settings, then follow any first-run setup or health warning. Do not treat a missing path or failed preparation as a completed mod installation.",
+                ),
+                (
+                    "Avoid moving active files",
+                    "Close the game and finish restore/recovery before changing storage locations or manually moving a signing workspace.",
+                ),
+            ],
+        ),
+        DocsSection::Import => (
+            "Import PAKs into Asset Library",
+            "A PAK is a container of game assets. Importing makes its contents browseable; it does not automatically activate a mod.",
+            &[
+                (
+                    "Open Asset Library",
+                    "Choose Add PAK files for one or several archives, or Import ALL PAKs from folder for a full group.",
+                ),
+                (
+                    "Select the correct build",
+                    "Do not mix unrelated Stage 2 and legacy/2012 archives. Use the library's build selection and follow any format warnings.",
+                ),
+                (
+                    "Watch import progress",
+                    "Large groups can take time. Keep the originals intact and let the import complete before creating projects from them.",
+                ),
+                (
+                    "Find an asset",
+                    "Use the library explorer, search, and tabs to inspect file paths and dependencies. Some signed/legacy formats remain experimental.",
+                ),
+                (
+                    "Create an editable copy",
+                    "Select an imported asset or archive and use the available Create editable copy / project action. If the manager asks for a signing stage, configure it first.",
+                ),
+            ],
+        ),
+        DocsSection::Browse => (
+            "Preview assets and inspect dependencies",
+            "The viewer helps you understand files before changing them; a successful preview does not guarantee a game-compatible export.",
+            &[
+                (
+                    "Pick a supported file",
+                    "Double-click a supported DDS, CGF, CHR, SKIN, CDF, or other indexed asset in Asset Library to inspect it.",
+                ),
+                (
+                    "Use the viewer controls",
+                    "Orbit and pan around a model, inspect the materials and model parts, and switch tabs for information such as Inspector and Dependency Graph.",
+                ),
+                (
+                    "Check missing pieces",
+                    "A character may use models, textures, skeletons and attachments from multiple PAKs. Import dependencies when the viewer reports missing pieces.",
+                ),
+                (
+                    "Try animations carefully",
+                    "CAF/DBA inspection and playback are experimental. If a clip has no compatible skeleton or source data, the viewer should report the limitation.",
+                ),
+                (
+                    "Return to the library",
+                    "Close the asset preview when finished. The source PAK remains unchanged unless you deliberately make an editable project.",
+                ),
+            ],
+        ),
+        DocsSection::Projects => (
+            "Create and manage Mod Projects",
+            "A Mod Project is the manager's editable copy of changed assets. Only enabled projects are included in a modded launch.",
+            &[
+                (
+                    "Start from an import",
+                    "In Asset Library, select the imported source and create an editable copy, or use the Modding project workflow.",
+                ),
+                (
+                    "Give it a clear name",
+                    "Use an easy-to-recognize project name. The name helps organize projects; it does not determine whether changes affect gameplay.",
+                ),
+                (
+                    "Edit and save changes",
+                    "Work in the project copy, then use the supported build/stage actions. Do not hand-edit the installed game's original files.",
+                ),
+                (
+                    "Enable or disable",
+                    "Use the Modding project's enable switch to decide whether it participates in Play with Mods. Disabled projects remain in your workspace.",
+                ),
+                (
+                    "Watch for conflicts",
+                    "Two enabled projects targeting the same game archive can conflict. Resolve target overlap or warnings before a launch.",
+                ),
+            ],
+        ),
+        DocsSection::Edit => (
+            "Edit and rebuild PAK contents",
+            "Make small, reversible changes first. Archive inspection, rebuilding and signing compatibility depend on the source build.",
+            &[
+                (
+                    "Open a project",
+                    "Go to Modding, select your editable project, and inspect its files. Keep the original imported source unchanged.",
+                ),
+                (
+                    "Choose a supported edit",
+                    "Modify a texture, model-related asset, GFX resource or other supported file. Not every binary format has a full editor yet.",
+                ),
+                (
+                    "Check dependencies",
+                    "Keep the original file path and format requirements in mind. If an asset references another PAK, make sure it is available.",
+                ),
+                (
+                    "Prepare your build",
+                    "Use the project build/staging controls rather than replacing installed game PAKs manually. Signed Stage 2 archives require the manager's verified signing setup.",
+                ),
+                (
+                    "Fix warnings before play",
+                    "If validation reports a signing, archive or dependency error, correct it first. Do not bypass an original-backup or recovery warning.",
+                ),
+            ],
+        ),
+        DocsSection::Gfx => (
+            "Work with menu and GFX assets",
+            "GFX/Scaleform menus contain both artwork and behavior. Cosmetic changes can still affect navigation and runtime callbacks.",
+            &[
+                (
+                    "Open the relevant GFX",
+                    "Import the correct UI assets, then open a GFX file in the library viewer or Modding project.",
+                ),
+                (
+                    "Use GFX tools",
+                    "Preview supported frames, inspect text and artwork, and use the editor's exposed GFX controls where available.",
+                ),
+                (
+                    "Expect external dependencies",
+                    "Original menus can require DDS images, fonts, localization strings, videos and native game callbacks. A blank preview is not always a missing button.",
+                ),
+                (
+                    "Edit in a project copy",
+                    "Save the changed GFX and any supporting DDS resources together, preserving their intended paths and names.",
+                ),
+                (
+                    "Verify in-game",
+                    "The preview cannot fully reproduce all game initialization and service callbacks. Test an offline modded launch and compare against clean gameplay.",
+                ),
+            ],
+        ),
+        DocsSection::Export => (
+            "Export models, textures and animations",
+            "Exports are for inspection and creative work. Their quality depends on source meshes, rigs, materials and animation dependencies.",
+            &[
+                (
+                    "Select the asset",
+                    "Open a model or character assembly in Asset Library and choose the supported export action.",
+                ),
+                (
+                    "Review the export options",
+                    "For FBX exports, select rigging, texture embedding and dependencies when available. A character assembly may need multiple source files.",
+                ),
+                (
+                    "Textures and normal maps",
+                    "DDS files can be inspected and supported images exported to PNG. Keep material assignments and normal maps with models when needed.",
+                ),
+                (
+                    "Open in Blender",
+                    "Inspect UVs, materials, rigging, and normals after export. Experimental exports may require corrections and are not guaranteed to match in-game rendering.",
+                ),
+                (
+                    "Level exports",
+                    "Terrain and scene exports are also experimental. Use source/import warnings to identify missing textures or geometry.",
+                ),
+            ],
+        ),
+        DocsSection::LaunchMods => (
+            "Play with Mods (offline)",
+            "The normal modded workflow stages enabled projects and launches through the Modded Evolve client with recoverable game-file swaps.",
+            &[
+                (
+                    "Finish editing",
+                    "Save outstanding changes and build your enabled projects in Modding before starting a match.",
+                ),
+                (
+                    "Check configuration",
+                    "Make sure game/client paths, signing stage and original backups are ready. Follow any setup prompts.",
+                ),
+                (
+                    "Click Play with Mods",
+                    "Use the Home button. The Game Launch popup shows preparation, progress, errors and when the game has been released.",
+                ),
+                (
+                    "Wait for the actual result",
+                    "Hook ready, preparing and verified swap are different states. Do not assume the game is running with mods until the popup confirms the relevant step.",
+                ),
+                (
+                    "Keep the session isolated",
+                    "Use this as an offline test unless you have an explicit and separately authorized online testing configuration. Regular users should not assume online compatibility.",
+                ),
+            ],
+        ),
+        DocsSection::LaunchClean => (
+            "Play without Mods",
+            "Use a clean launch when you need to compare behavior or confirm that an issue comes from the modified files.",
+            &[
+                (
+                    "Return to Home",
+                    "Select Play without Mods instead of Play with Mods.",
+                ),
+                (
+                    "Use the normal client",
+                    "The manager starts the configured Modded Evolve client without applying enabled Mod Projects.",
+                ),
+                (
+                    "Keep original files safe",
+                    "If a previous modded launch was interrupted, resolve any restore/recovery warning before relying on a clean comparison.",
+                ),
+                (
+                    "Compare the result",
+                    "If an issue only occurs when playing with mods, check recently edited projects and the Game Launch error details.",
+                ),
+            ],
+        ),
+        DocsSection::Recovery => (
+            "Restore originals and recover after an interruption",
+            "The manager uses original-file backups and a recovery journal. Never delete these files just to silence an error.",
+            &[
+                (
+                    "Close the game and launcher",
+                    "Leave the game before attempting manual recovery, so original files are not in use.",
+                ),
+                (
+                    "Look for the restore status",
+                    "The modded launch helper normally restores original PAKs when the game and launcher exit. An interrupted session may require a separate restore action.",
+                ),
+                (
+                    "Follow the recovery prompt",
+                    "Use the manager's available restore/recovery control instead of manually swapping .pak, .customkey-original or .ready files.",
+                ),
+                (
+                    "Keep backups intact",
+                    "If validation refuses to proceed, retain the source files and logs. Do not delete a partial or stale cache until the actual failure is understood.",
+                ),
+                (
+                    "Try the clean launch",
+                    "After recovery reports success, use Play without Mods to confirm the original game still loads.",
+                ),
+            ],
+        ),
+        DocsSection::Updates => (
+            "Updates, settings and logs",
+            "The Settings tabs provide updates, storage, integrations, health checks and crash diagnostics.",
+            &[
+                (
+                    "Choose an update channel",
+                    "Settings > Updates lets you choose Stable, Beta or Nightly; Nightly is the fastest-moving experimental channel.",
+                ),
+                (
+                    "Update and restart",
+                    "Use the built-in updater when available. It checks and verifies the release before restarting the manager.",
+                ),
+                (
+                    "Check integrations",
+                    "Settings > Integrations contains optional tools such as Blender and GFX-related helpers where supported.",
+                ),
+                (
+                    "Check health and storage",
+                    "Use System Health and Storage to find missing paths, available space or configuration problems.",
+                ),
+                (
+                    "Find diagnostic files",
+                    "Settings > Advanced includes Open logs folder and Open crash log. Use the Game Launch popup for the immediate failure reason.",
+                ),
+            ],
+        ),
+        DocsSection::Troubleshoot => (
+            "Fix common problems",
+            "Start with the simplest checks and avoid changing original PAKs until you know what failed.",
+            &[
+                (
+                    "Game does not start",
+                    "Verify EvolveGame and ModdedEvolveLauncher.exe paths in Settings. Try Play without Mods and inspect the Game Launch report.",
+                ),
+                (
+                    "A modded launch fails early",
+                    "Read the popup/error log: preparation, signing, swap, restore and launcher failures have different causes.",
+                ),
+                (
+                    "An asset is missing",
+                    "Check whether its PAK and dependencies were imported from the same build. Reopen the library after importing missing archives.",
+                ),
+                (
+                    "The model looks wrong",
+                    "Missing materials, high-resolution DDS streams, skeleton data or attachments can affect the viewer and Blender export.",
+                ),
+                (
+                    "The interface appears unresponsive",
+                    "Check the footer progress or Activity window for long imports, builds, and exports. Avoid starting competing operations.",
+                ),
+                (
+                    "An update or crash fails",
+                    "Open crash logs and updater errors from Settings. Keep the full error text and reproduce the action before reporting a bug.",
+                ),
+            ],
+        ),
+        DocsSection::Faq => (
+            "Frequently asked questions",
+            "Short answers to questions that often come up during a first mod.",
+            &[
+                (
+                    "Does importing a PAK change my game?",
+                    "No. Importing into Asset Library creates an inspection workspace. Playing with mods is a separate launch workflow.",
+                ),
+                (
+                    "Do I need Rust or Visual Studio?",
+                    "No, not to run the downloaded installer or portable manager.",
+                ),
+                (
+                    "Can I play online with mods?",
+                    "Normal Play with Mods is designed for offline testing. Developer online testing is separate, opt-in, and does not guarantee server acceptance.",
+                ),
+                (
+                    "Will the manager restore my originals?",
+                    "The normal modded workflow is designed to restore backed-up original PAKs on exit. Interrupted launches may still require manual recovery.",
+                ),
+                (
+                    "Why is a model or animation incomplete?",
+                    "Supported CryEngine assets often reference other archives or formats the preview/export pipeline does not fully implement yet.",
+                ),
+                (
+                    "Should I edit original game PAKs directly?",
+                    "No. Use an editable Mod Project and let the manager handle verified staging, backups, and recovery.",
+                ),
+            ],
+        ),
+    }
 }
 
-pub(super) fn instructions() -> Element<'static, Message> {
-    scrollable(column![
-        text("WELCOME TO EVOLVE MOD MANAGER").size(24),
-        text("Everything you need to prepare, edit and launch mods in one place.").size(12).style(design::muted),
-        surface(column![
-            text("STEP 01 / INSTALL EVOLVE STAGE 2").size(15),
-            text("Install Evolve Stage 2 through the normal Modded Evolve client from modded-evolve.com before configuring this manager.").size(12).style(design::muted),
-            design::button("Set Up Manager").on_press(Message::Navigate(Page::Settings)).width(Fill),
-        ].spacing(8)),
-        text("YOUR WORKFLOW").size(13),
-        workflow_step("1  Set up your installation", "Choose EvolveGame and ModdedEvolveLauncher.exe in Settings. For offline mods, reuse a verified signed stage and journalled launcher helper."),
-        workflow_step("2  Unpack and edit PAKs", "From Modding, inspect archives, browse files, edit supported assets and sign a new offline PAK."),
-        workflow_step("3  Play offline with mods", "The established offline helper prepares PAKs, starts the normal client, pauses the exact Evolve.exe creation event and swaps only the verified staged files."),
-        workflow_step("4  Restore original game files", "The detached watchdog restores originals when Evolve.exe and the launcher exit; use manual Restore if interrupted."),
-        text("Keep the entire manager data folder, signing keys, projects and original backups when updating.").size(12).style(design::muted),
-        design::button("Go to Modding  →").on_press(Message::Navigate(Page::Files)).width(Fill),
-    ].spacing(12).padding(12)).height(Fill).into()
+fn docs_section(section: DocsSection, expanded: bool) -> Element<'static, Message> {
+    let (title, summary, steps) = docs_spec(section);
+    let arrow = if expanded { "▾" } else { "▸" };
+    let header = design::button(
+        row![text(arrow).size(17), text(title).size(17)]
+            .spacing(10)
+            .align_y(iced::Center),
+    )
+    .on_press(Message::ToggleDocsSection(section))
+    .width(Fill)
+    .style(design::secondary);
+    let mut content = column![header].spacing(11);
+    if expanded {
+        content = content.push(text(summary).size(13).style(design::muted));
+        for (index, (step, details)) in steps.iter().enumerate() {
+            content = content.push(
+                column![
+                    text(format!("{}  {}", index + 1, step)).size(14),
+                    text(*details).size(12).style(design::muted),
+                ]
+                .spacing(4),
+            );
+        }
+        let destination = match section {
+            DocsSection::GettingStarted
+            | DocsSection::Paths
+            | DocsSection::Updates
+            | DocsSection::Install => Some(("Open Settings", Page::Settings)),
+            DocsSection::Import | DocsSection::Browse | DocsSection::Export => {
+                Some(("Open Asset Library", Page::AssetLibrary))
+            }
+            DocsSection::Projects | DocsSection::Edit | DocsSection::Gfx => {
+                Some(("Open Modding", Page::Files))
+            }
+            DocsSection::LaunchMods | DocsSection::LaunchClean | DocsSection::Recovery => {
+                Some(("Go to Home", Page::Home))
+            }
+            DocsSection::Troubleshoot | DocsSection::Faq => None,
+        };
+        if let Some((label, page)) = destination {
+            content = content.push(design::button(label).on_press(Message::Navigate(page)));
+        }
+    }
+    surface(content).into()
+}
+
+pub(super) fn docs(state: &State) -> Element<'_, Message> {
+    let mut sections = column![
+        text("Docs").size(24),
+        text("Easy guides for getting started and finding your way around Evolve Mod Manager.")
+            .size(13).style(design::muted),
+        row![
+            design::button("Expand all").on_press(Message::DocsExpandAll(true)),
+            design::button("Collapse all").on_press(Message::DocsExpandAll(false)),
+            design::button("Go to Settings").on_press(Message::Navigate(Page::Settings)),
+        ].spacing(8),
+        text("Getting Started").size(19),
+        docs_section(DocsSection::GettingStarted,
+            state.docs_expanded.contains(&DocsSection::GettingStarted)),
+        text("How To").size(19),
+        text("Choose a topic to open its step-by-step guide. You can keep several topics open at once.")
+            .size(12).style(design::muted),
+    ].spacing(11);
+    for section in DocsSection::ALL.into_iter().skip(1) {
+        sections = sections.push(docs_section(
+            section,
+            state.docs_expanded.contains(&section),
+        ));
+    }
+    scrollable(sections.padding(12)).height(Fill).into()
 }
 
 pub(super) fn whats_new(state: &State) -> Element<'_, Message> {
@@ -438,6 +1009,60 @@ pub(super) fn credits() -> Element<'static, Message> {
     ].spacing(12).padding(12)).height(Fill).into()
 }
 
+fn actor_rows(state: &State) -> Element<'_, Message> {
+    let Some(listing) = &state.actor_listing else {
+        return text("No actor snapshot. Detect Evolve and refresh actors.")
+            .size(12)
+            .style(design::muted)
+            .into();
+    };
+    let mut list = column![
+        text(format!(
+            "{} actor(s), PID {}",
+            listing.actors.len(),
+            listing.pid
+        ))
+        .size(13)
+    ]
+    .spacing(10);
+    for actor in &listing.actors {
+        let mut rows = column![
+            text(format!(
+                "{}{}  |  ID 0x{:X}  |  Actor 0x{:X}",
+                actor.name,
+                if actor.local { " (Local)" } else { "" },
+                actor.id,
+                actor.address
+            ))
+            .size(14)
+        ]
+        .spacing(5);
+        for entry in &actor.fields {
+            let field = entry.field;
+            rows = rows.push(
+                row![
+                    text(format!(
+                        "{}  +0x{:X}  ({})",
+                        field.title(),
+                        field.offset(),
+                        field.kind()
+                    ))
+                    .size(12)
+                    .width(Fill),
+                    text(entry.display.clone()).size(13).width(90),
+                    design::button("Edit").on_press_maybe((!state.actor_busy).then_some(
+                        Message::ActorEdit(actor.id, actor.address, field, entry.bits)
+                    )),
+                ]
+                .align_y(iced::Alignment::Center)
+                .spacing(8),
+            );
+        }
+        list = list.push(surface(rows.padding(10)));
+    }
+    list.into()
+}
+
 pub(super) fn developer(state: &State) -> Element<'_, Message> {
     if state.developer_unlocked {
         scrollable(column![
@@ -466,92 +1091,34 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
                     .on_press_maybe((!state.developer_privilege_busy).then_some(Message::DeveloperInspectProcessPrivileges)),
                 text(state.developer_privilege_status.as_str())
                     .size(12).style(design::muted),
-                text("Phase 1  /  External memory inspector").size(16),
-                text("Injection-free, read-only. Detect one Evolve.exe process on demand; inspect 32 bytes at an explicit hex address or a validated pointer chain. Offsets are not bundled. Process identity and offline status cannot yet be independently verified.").size(12).style(design::muted),
-                design::button(if state.runtime_checking { "Inspecting..." } else { "Detect Evolve process" })
+                text("Runtime Actors / Offline memory").size(18),
+                text("Stage 2 actor offsets are based on Goliath observations; other actors require layout validation. Read all discovered actors together; individual values can be selected and edited. Name resolution is best-effort and unidentified actors display entity IDs. No live debugger, injection, or freezing.")
+                    .size(12).style(design::muted),
+                design::button(if state.runtime_checking { "Detecting..." } else { "Detect Evolve.exe" })
                     .on_press_maybe((!state.runtime_checking).then_some(Message::RuntimeDetect)),
-                text(state.runtime_snapshot.as_ref().map(|s| s.status.as_str()).unwrap_or("Not scanned")).size(12).style(design::muted),
-                text(state.runtime_snapshot.as_ref().map(|s| s.executable.as_str()).unwrap_or("Executable not checked")).size(12).style(design::muted),
-                design::text_input("Address (0x... or Evolve.exe+0x...)", &state.runtime_address).on_input(Message::RuntimeAddressChanged),
-                design::text_input("Pointer offsets (optional: 0x10,0x20)", &state.runtime_offsets).on_input(Message::RuntimeOffsetsChanged),
-                design::button("Read 32 bytes")
-                    .on_press_maybe((!state.runtime_checking && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some()).then_some(Message::RuntimeRead)),
-                text(state.runtime_result.as_str()).size(12).style(design::muted),
-                text("Stage 2 Goliath armor / guided Float32 finder").size(16),
-                text("Read-only full-process search for values near the observed internal full-armor scale of ~1000. Requires full armor at the first scan. No debugger, pointer scan, injection, or memory writes. Match verification is behavioral, not an actor identity guarantee.").size(12).style(design::muted),
-                iced::widget::checkbox(state.armor_offline_confirmed).label("I am in a local OFFLINE match; disable when online").on_toggle(Message::ArmorOfflineChanged),
-                design::button("Find full-armor Float32 candidates")
-                    .on_press_maybe((state.armor_offline_confirmed && !state.runtime_checking && state.runtime_snapshot.as_ref().and_then(|s|s.pid).is_some()).then_some(Message::ArmorBegin)),
-                text("After the scan: lose armor and press Damage; stand with constant armor and press Stable; feed to restore armor and press Feed. Keep armor below maximum when feeding.").size(12).style(design::muted),
-                row![
-                    design::button("Damage").on_press_maybe((state.armor_offline_confirmed && !state.runtime_checking && state.armor_scan.is_some()).then_some(Message::ArmorRefine(super::runtime_armor::Step::Damage))),
-                    design::button("Stable").on_press_maybe((state.armor_offline_confirmed && !state.runtime_checking && state.armor_scan.is_some()).then_some(Message::ArmorRefine(super::runtime_armor::Step::Stable))),
-                    design::button("Feed").on_press_maybe((state.armor_offline_confirmed && !state.runtime_checking && state.armor_scan.is_some()).then_some(Message::ArmorRefine(super::runtime_armor::Step::Feed))),
-                ].spacing(8),
-                text(state.armor_report.as_str()).size(12).style(design::muted),
-                text(state.armor_live.map(|v|format!("Live armor (internal units): {v:.2}")).unwrap_or_else(||"Live armor: awaiting verified candidate".into())).size(13),
-                text("Offline live Float32 editing  /  Experimental").size(16),
-                text("Writes EXACTLY four bytes to a freshly read address, once per button press. Requires Developer unlock, offline confirmation above and a second explicit enable switch. Use only in an isolated offline match. Wrong addresses or values can crash Evolve. No value freezing, pointer editing, teleport, injection or auto-write. TCP detection is best-effort and is not proof of offline mode.").size(12).style(design::muted),
-                iced::widget::checkbox(state.live_edit_enabled).label("Enable experimental offline Float32 writes (I accept the risk)").on_toggle(Message::LiveEditEnabled),
-                row![
-                    design::button("Read verified Goliath armor")
-                        .on_press_maybe((state.live_edit_enabled && state.armor_offline_confirmed && !state.live_edit_busy && !state.runtime_checking && state.armor_scan.as_ref().is_some_and(|s|s.ready())).then_some(Message::LiveEditProbe(super::runtime_live::Source::VerifiedArmor))),
-                    design::button("Read manual Float32 address")
-                        .on_press_maybe((state.live_edit_enabled && state.armor_offline_confirmed && !state.live_edit_busy && !state.runtime_checking && state.runtime_snapshot.as_ref().and_then(|s|s.pid).is_some()).then_some(Message::LiveEditProbe(super::runtime_live::Source::ManualFloat))),
-                ].spacing(8),
-                text("The manual address uses the Address field above, not pointer offsets. Confirm the Float32 value matches your in-game stat before writing. Health/cooldown addresses are not automatically identified.").size(12).style(design::muted),
-                design::text_input("New Float32 value (0 to 100000)", &state.live_edit_value).on_input(Message::LiveEditValueChanged),
-                design::button(if state.live_edit_busy { "Editing..." } else { "Write Float32 once" })
-                    .on_press_maybe((state.live_edit_enabled && state.armor_offline_confirmed && !state.live_edit_busy && !state.runtime_checking && state.live_edit_probe.is_some() && !state.live_edit_value.trim().is_empty()).then_some(Message::LiveEditApply)),
-                text(state.live_edit_report.as_str()).size(12).style(design::muted),
-                text("Health candidates  /  Read-only").size(16),
-                text("Uses the hexadecimal address above to inspect one containing 4 KiB page. It cannot identify actors or find health across the entire game yet. Optional expected HP narrows initial candidates; blank starts an unknown-value scan. Use only in an offline match.").size(12).style(design::muted),
-                design::text_input("Expected health (optional, e.g. 1500)", &state.runtime_health_value)
-                    .on_input(Message::RuntimeHealthValueChanged),
-                row![
-                    design::button("Find Float candidates")
-                        .on_press_maybe((!state.runtime_checking && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some()).then_some(Message::RuntimeHealthStart(super::runtime_health::Kind::Float))),
-                    design::button("Find 4-Byte candidates")
-                        .on_press_maybe((!state.runtime_checking && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some()).then_some(Message::RuntimeHealthStart(super::runtime_health::Kind::Integer))),
-                ].spacing(8),
-                text("Take damage in-game, then narrow candidates with Decreased. Use Unchanged when no damage occurred. Candidates are NOT confirmed health or actors.").size(12).style(design::muted),
-                row![
-                    design::button("Decreased")
-                        .on_press_maybe((!state.runtime_checking && state.runtime_health_scan.is_some()).then_some(Message::RuntimeHealthRefine(super::runtime_health::Filter::Decreased))),
-                    design::button("Unchanged")
-                        .on_press_maybe((!state.runtime_checking && state.runtime_health_scan.is_some()).then_some(Message::RuntimeHealthRefine(super::runtime_health::Filter::Unchanged))),
-                    design::button("Increased")
-                        .on_press_maybe((!state.runtime_checking && state.runtime_health_scan.is_some()).then_some(Message::RuntimeHealthRefine(super::runtime_health::Filter::Increased))),
-                    design::button("Changed")
-                        .on_press_maybe((!state.runtime_checking && state.runtime_health_scan.is_some()).then_some(Message::RuntimeHealthRefine(super::runtime_health::Filter::Changed))),
-                ].spacing(8),
-                text(state.runtime_health_report.as_str()).size(12).style(design::muted),
-                text("Phase 2  /  Offline runtime controls").size(16),
-                text("Preview typed field changes against a manually entered address above. Health/cooldowns are f32, teleport is X,Y,Z and weapon reference is 0x... . These are BYTE PREVIEWS ONLY; live edits remain locked until verified offline and exact-build actor layouts are available.").size(12).style(design::muted),
-                design::text_input("Desired value (e.g. 100000 / 0 / 1,2,3 / 0x10008)", &state.runtime_phase2_value)
-                    .on_input(Message::RuntimePhase2ValueChanged),
-                row![
-                    design::button("Preview health").on_press(Message::PreviewRuntimePhase2(super::runtime_experiments::Phase2Action::Health)),
-                    design::button("Preview cooldown").on_press(Message::PreviewRuntimePhase2(super::runtime_experiments::Phase2Action::Cooldown)),
-                    design::button("Preview teleport").on_press(Message::PreviewRuntimePhase2(super::runtime_experiments::Phase2Action::Teleport)),
-                    design::button("Preview weapon").on_press(Message::PreviewRuntimePhase2(super::runtime_experiments::Phase2Action::Equip)),
-                ].spacing(8),
-                text("Phase 3  /  Advanced engine operations").size(16),
-                text("Preview candidate engine class operations. Spawns accept ClassName,Count (up to 32). Character swaps and abilities accept a single identifier. This validates inputs only: no injection, entity creation, native function execution, or RMI calls.").size(12).style(design::muted),
-                design::text_input("Class/ability identifier (e.g. Goliath,2)", &state.runtime_phase3_value)
-                    .on_input(Message::RuntimePhase3ValueChanged),
-                row![
-                    design::button("Preview spawn").on_press(Message::PreviewRuntimePhase3(super::runtime_experiments::Phase3Action::Spawn)),
-                    design::button("Preview character").on_press(Message::PreviewRuntimePhase3(super::runtime_experiments::Phase3Action::SwapCharacter)),
-                    design::button("Preview ability").on_press(Message::PreviewRuntimePhase3(super::runtime_experiments::Phase3Action::Ability)),
-                ].spacing(8),
-                text("Engine signature probe / read-only").size(16),
-                text("Search exactly 4 KiB from the manual address above for a Ghidra-style byte signature (AA BB ?? CC). Candidate addresses require verification in the actual game build.").size(12).style(design::muted),
-                design::text_input("AOB signature, e.g. 48 8B ?? ?? 89", &state.runtime_signature)
-                    .on_input(Message::RuntimeSignatureChanged),
-                design::button("Scan 4 KiB for signature")
-                    .on_press_maybe((!state.runtime_checking && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some()).then_some(Message::RuntimeScanSignature)),
-                text(state.runtime_plan_result.as_str()).size(12).style(design::muted),
+                text(state.runtime_snapshot.as_ref().map(|s| s.status.as_str()).unwrap_or("Not detected"))
+                    .size(12).style(design::muted),
+                text(state.runtime_snapshot.as_ref().map(|s| s.executable.as_str()).unwrap_or("Executable not checked"))
+                    .size(12).style(design::muted),
+                iced::widget::checkbox(state.armor_offline_confirmed)
+                    .label("Confirm isolated offline match (required to write)")
+                    .on_toggle(Message::ArmorOfflineChanged),
+                iced::widget::checkbox(state.live_edit_enabled)
+                    .label("Enable one-shot actor field writes (experimental)")
+                    .on_toggle(Message::LiveEditEnabled),
+                design::button(if state.actor_busy { "Reading actors..." } else { "Refresh all actors" })
+                    .on_press_maybe((!state.actor_busy && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some()).then_some(Message::ActorRefresh)),
+                text(state.actor_status.as_str()).size(12).style(design::muted),
+                actor_rows(state),
+                text("Edit selected actor field").size(16),
+                text(state.actor_edit.as_ref().map(|(_,_,field,_)| field.title()).unwrap_or("Click Edit on an actor field above"))
+                    .size(12).style(design::muted),
+                design::text_input("New field value", &state.actor_edit_value)
+                    .on_input(Message::ActorEditValue),
+                design::button("Write selected field once")
+                    .on_press_maybe((state.actor_edit.is_some() && !state.actor_busy && state.live_edit_enabled && state.armor_offline_confirmed && !state.developer_online_mods && !state.actor_edit_value.trim().is_empty()).then_some(Message::ActorWrite)),
+                text("Writes use a fresh actor check and compare the existing bytes before applying exactly one edit. Evolution stage uses UInt32; health and armor use Float32. Every write must be armed for an offline match.")
+                    .size(12).style(design::muted),
                 design::button("Lock developer area").on_press(Message::LockDeveloper),
             ].spacing(12)),
         ].spacing(13).padding(12)).height(Fill).into()
