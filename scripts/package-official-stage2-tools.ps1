@@ -1,11 +1,9 @@
-# Stage the five immutable runtime files from the developer-supplied 2025 ZIP.
-# The release runner fetches that ZIP from a private GitHub release, NOT this repo.
-# Do not publish source code, development builds, symbols or the raw developer ZIP.
-param([Parameter(Mandatory=$true)][string]$Archive)
+# Package only the pinned, developer-provided Stage 2 runtime from the
+# private source repository. Never publish the original source tree or keys.
+param([Parameter(Mandatory=$true)][string]$SourceDirectory)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$expectedZip = '5b187f60ede62776f6d48f6605ef02e78e98b0b9d48e8568a6469f906b781119'
 $componentHashes = @{
   'evolve_tool.exe' = 'c37e21134d7442c3fa195f9b09d8b951af0ee03b2c7617fe86ba5a7e7cbd4b9e'
   'crypto.dll' = '841105bb6703206cae4d5c73d8d0ced5c50240d9595090a2a09dc2963fd22f78'
@@ -15,45 +13,57 @@ $componentHashes = @{
   'LICENSE-BOUNCYCASTLE.html' = '96bf2877756c135014a20942b1060d9850b047ee59f9becd5b4c0e574733d5ed'
 }
 
-if (!(Test-Path -LiteralPath $Archive -PathType Leaf)) { throw 'Developer archive missing.' }
-if ((Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedZip) {
-  throw 'Developer tool archive SHA256 mismatch; refusing to package.'
+$source = (Resolve-Path -LiteralPath $SourceDirectory -ErrorAction Stop).Path
+if (-not (Test-Path -LiteralPath $source -PathType Container)) {
+  throw 'Developer tool source directory is missing.'
 }
-Add-Type -AssemblyName System.IO.Compression
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $dest = Join-Path $root 'dist/third_party/OfficialStage2'
+# Verify every input before modifying any previous output directory.
+foreach ($relative in ($componentHashes.Keys | Sort-Object)) {
+  $from = if ($relative -eq 'LICENSE-BOUNCYCASTLE.html') {
+    Join-Path $source 'src/evolve_tool/packages/Portable.BouncyCastle-Signed.1.7.0.2/License.html'
+  } else {
+    Join-Path $source ($relative -replace '/', [IO.Path]::DirectorySeparatorChar)
+  }
+  if (!(Test-Path -LiteralPath $from -PathType Leaf)) {
+    throw "Missing official tool component: $relative"
+  }
+  $file = Get-Item -LiteralPath $from -Force
+  if ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+    throw "Symlinked official tool component rejected: $relative"
+  }
+  if ($file.Length -le 0 -or $file.Length -gt 5MB) {
+    throw "Unexpected official tool component size: $relative"
+  }
+  $digest = (Get-FileHash -LiteralPath $from -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($digest -ne $componentHashes[$relative]) {
+    throw "Official tool component hash mismatch: $relative"
+  }
+}
 if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force }
 New-Item -Path $dest -ItemType Directory -Force | Out-Null
-$zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $Archive).Path)
-try {
-  foreach ($relative in ($componentHashes.Keys | Sort-Object)) {
-    $entryPath = if ($relative -eq 'LICENSE-BOUNCYCASTLE.html') {
-      'evolve_tool_stage2/src/evolve_tool/packages/Portable.BouncyCastle-Signed.1.7.0.2/License.html'
-    } else { "evolve_tool_stage2/$relative" }
-    $member = $zip.GetEntry($entryPath)
-    if ($null -eq $member -or $member.Length -le 0 -or $member.Length -gt 5MB) {
-      throw "Missing or unsafe official tool component: $relative"
-    }
-    $output = Join-Path $dest ($relative -replace '/', [IO.Path]::DirectorySeparatorChar)
-    $parent = Split-Path -Parent $output
-    New-Item -Path $parent -ItemType Directory -Force | Out-Null
-    $sourceStream = $member.Open()
-    $targetStream = [System.IO.File]::Create($output)
-    try { $sourceStream.CopyTo($targetStream) }
-    finally { $targetStream.Dispose(); $sourceStream.Dispose() }
-    $digest = (Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($digest -ne $componentHashes[$relative]) {
-      throw "Official tool component hash mismatch: $relative"
-    }
+foreach ($relative in ($componentHashes.Keys | Sort-Object)) {
+  $from = if ($relative -eq 'LICENSE-BOUNCYCASTLE.html') {
+    Join-Path $source 'src/evolve_tool/packages/Portable.BouncyCastle-Signed.1.7.0.2/License.html'
+  } else {
+    Join-Path $source ($relative -replace '/', [IO.Path]::DirectorySeparatorChar)
   }
-} finally { $zip.Dispose() }
+  $to = Join-Path $dest ($relative -replace '/', [IO.Path]::DirectorySeparatorChar)
+  New-Item -Path (Split-Path -Parent $to) -ItemType Directory -Force | Out-Null
+  Copy-Item -LiteralPath $from -Destination $to
+  $digest = (Get-FileHash -LiteralPath $to -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($digest -ne $componentHashes[$relative]) {
+    throw "Staged official component changed during copy: $relative"
+  }
+}
 $notice = @'
 Evolve Stage 2 developer toolchain, dated 02.05.2025.
 Supplied by the game's developers for use with Evolve Stage 2.
 The signing executable embeds a private RSA signing key.
-Do not treat embedded binaries, hashed binaries, or packaging as key secrecy.
-Distributed as separate third-party runtime components of Evolve Mod Manager.
-Source/debug projects from the developer ZIP are not distributed.
+Hash verification checks file integrity; it does not hide signing material.
+This distribution contains only verified runtime components and license.
+The developer source tree is not included.
 '@
 [System.IO.File]::WriteAllText((Join-Path $dest 'README.txt'), $notice)
-Write-Host 'Verified official Stage 2 runtime files staged for both installer and portable releases.'
+Write-Host 'Verified official Stage 2 runtime staged for installer and portable releases.'
