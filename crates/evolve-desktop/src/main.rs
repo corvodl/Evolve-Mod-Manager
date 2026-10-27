@@ -665,7 +665,7 @@ enum Operation {
         bool,
     ),
     LaunchCleanClient(PathBuf, PathBuf, Option<PathBuf>),
-    LaunchDirectGame(PathBuf, Option<PathBuf>),
+    LaunchDirectGame(PathBuf, PathBuf, Option<PathBuf>),
     CreateInitialSetup(PathBuf, PathBuf, PathBuf, bool),
     RestoreExistingOfflineLauncher(PathBuf, PathBuf),
     RebuildSignedPak(
@@ -1541,8 +1541,8 @@ impl Operation {
                 let id = launch_existing_offline_client(&report, &launch_progress)?;
                 Ok(Completed::OfflineLauncherStarted(count, id, warnings))
             }
-            Self::LaunchDirectGame(game, swap) => {
-                direct_runtime::require_ready(&game)?;
+            Self::LaunchDirectGame(game, client, swap) => {
+                direct_runtime::require_ready(&game, &client)?;
                 launcher_bridge::games_closed()?;
                 let warnings = play_setup::recovery_warnings(&game, swap.as_deref());
                 if !warnings.is_empty() {
@@ -1552,7 +1552,7 @@ impl Operation {
                 // Clean/direct must not inherit the manager's modded-only
                 // offline network restriction. Profile services remain separate.
                 online_guard::apply(&game, true)?;
-                let pid = standard_user_launch::launch_game(&game)?;
+                let pid = launcher_bridge::launch_direct_clean_game(&game, &client, swap.as_deref())?;
                 Ok(Completed::DirectGameStarted(pid, warnings))
             }
             Self::LaunchCleanClient(game, client, swap) => {
@@ -7628,15 +7628,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.active_play = Some(kind);
             state.play_notice = Some(play_dialog::Notice::preparing(kind));
             let direct_launch = state.preferences.game_launch_mode == "Direct Launch";
-            let paths = if direct_launch {
-                play_setup::game_root(&state.preferences.game_installation)
-                    .map(|game| (game, PathBuf::new()))
-            } else {
-                play_setup::validate_paths(
-                    &state.preferences.game_installation,
-                    &state.preferences.client_executable,
-                )
-            };
+            let paths = play_setup::validate_paths(
+                &state.preferences.game_installation,
+                &state.preferences.client_executable,
+            );
             let (game, client) = match paths {
                 Ok(paths) => paths,
                 Err(error) => {
@@ -7721,7 +7716,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .then(|| PathBuf::from(&state.preferences.swap));
             if direct_launch {
                 state.status = "Launching unmodded Evolve.exe directly with original PAKs…".into();
-                return launch(state, Operation::LaunchDirectGame(game, swap));
+                return launch(state, Operation::LaunchDirectGame(game, client, swap));
             }
             state.status = "Opening the normal client with original PAKs…".into();
             return launch(state, Operation::LaunchCleanClient(game, client, swap));
@@ -8727,7 +8722,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                     Ok(Completed::DirectGameStarted(pid, warnings)) => {
                         play_dialog::Notice::finished(kind, play_dialog::Phase::Warning,
-                            format!("Evolve started directly (PID {pid}); client services, authentication and online profiles were NOT initialized. {}", warnings.join(" ")))
+                            format!("Evolve started directly (PID {pid}); local profile/Steam compatibility services and Stage2Trace startup were initialized. Verify the game and connectivity in-game. {}", warnings.join(" ")))
                     }
                     Ok(Completed::CleanClientStarted(pid, warnings)) => {
                         play_dialog::Notice::finished(
@@ -9914,7 +9909,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::DirectGameStarted(id, _warnings)) => {
                     state.status = format!(
-                        "Experimental direct offline Evolve.exe started (PID {id}); client services and profile authentication are not provided. No modded PAK swap was performed."
+                        "Direct Evolve.exe started (PID {id}) with local client profile/Steam compatibility services and Stage2Trace loaded. Original PAKs unchanged; verify gameplay in-game."
                     );
                     state.page = Some(Page::Home);
                 }
