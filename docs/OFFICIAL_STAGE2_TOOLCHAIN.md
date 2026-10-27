@@ -35,9 +35,7 @@ Switching to a sparse *runtime* swap is not safe until verified in a live game.
 The developer's own instructions explicitly call for a one-time conversion of
 the full PAK library.
 
-**Never** run the supplied `r` directly against your only installed copy of
-the game; the manager only runs it against isolated copies. Do not commit
-the supplied ZIP, DLLs, executable, embedded private key or extracted source.
+**Never** run the official `r` command directly against your installed game. The manager applies it only to isolated copies. The source ZIP and C# projects remain private; authorized release packages carry the verified signing executable and runtime DLLs.
 
 ### Validation not yet performed
 
