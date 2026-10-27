@@ -3786,7 +3786,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::ActorRefresh => {
-            if !state.developer_unlocked || state.actor_busy { return Task::none(); }
+            if !state.developer_unlocked || state.actor_busy {
+                return Task::none();
+            }
             let Some(snapshot) = state.runtime_snapshot.clone() else {
                 state.actor_status = "Detect Evolve.exe before reading actors.".into();
                 return Task::none();
@@ -3794,10 +3796,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.actor_busy = true;
             state.actor_edit = None;
             let root = state.preferences.game_storage_root.clone();
-            return Task::perform(async move {
-                tokio::task::spawn_blocking(move || runtime_actors::inspect(&snapshot, &root))
-                    .await.unwrap_or_else(|e| Err(format!("Actor scan failed: {e}")))
-            }, Message::ActorRefreshed);
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || runtime_actors::inspect(&snapshot, &root))
+                        .await
+                        .unwrap_or_else(|e| Err(format!("Actor scan failed: {e}")))
+                },
+                Message::ActorRefreshed,
+            );
         }
         Message::ActorRefreshed(result) => {
             state.actor_busy = false;
@@ -3815,41 +3821,68 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::ActorEdit(id, address, field, bits) => {
-            if !state.developer_unlocked || state.actor_busy { return Task::none(); }
-            let Some(value) = state.actor_listing.as_ref()
+            if !state.developer_unlocked || state.actor_busy {
+                return Task::none();
+            }
+            let Some(value) = state
+                .actor_listing
+                .as_ref()
                 .and_then(|s| s.actors.iter().find(|a| a.id == id && a.address == address))
                 .and_then(|a| a.fields.iter().find(|v| v.field == field && v.bits == bits))
-            else { return Task::none(); };
+            else {
+                return Task::none();
+            };
             state.actor_edit = Some((id, address, field, bits));
             state.actor_edit_value = value.display.clone();
-            state.actor_status = format!("Selected {}. Enable offline writes to apply changes.", field.title());
+            state.actor_status = format!(
+                "Selected {}. Enable offline writes to apply changes.",
+                field.title()
+            );
         }
         Message::ActorEditValue(v) => {
-            if state.developer_unlocked && v.len() <= 32 { state.actor_edit_value = v; }
+            if state.developer_unlocked && v.len() <= 32 {
+                state.actor_edit_value = v;
+            }
         }
         Message::ActorWrite => {
-            if !state.developer_unlocked || !state.armor_offline_confirmed ||
-                !state.live_edit_enabled || state.developer_online_mods || state.actor_busy {
+            if !state.developer_unlocked
+                || !state.armor_offline_confirmed
+                || !state.live_edit_enabled
+                || state.developer_online_mods
+                || state.actor_busy
+            {
                 return Task::none();
             }
             let (Some(snapshot), Some((id, address, field, bits))) =
                 (state.runtime_snapshot.clone(), state.actor_edit.take())
-            else { return Task::none(); };
+            else {
+                return Task::none();
+            };
             state.actor_busy = true;
             let root = state.preferences.game_storage_root.clone();
             let value = state.actor_edit_value.clone();
-            return Task::perform(async move {
-                tokio::task::spawn_blocking(move ||
-                    runtime_actors::write(&snapshot, &root, id, address, field, bits, &value))
-                .await.unwrap_or_else(|e| Err(format!("Actor write failed: {e}")))
-            }, Message::ActorWritten);
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        runtime_actors::write(&snapshot, &root, id, address, field, bits, &value)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Actor write failed: {e}")))
+                },
+                Message::ActorWritten,
+            );
         }
         Message::ActorWritten(result) => {
             state.actor_busy = false;
             if state.developer_unlocked {
                 state.actor_status = match result {
-                    Ok(outcome) => format!("{} {}: {} -> {}. Refresh to read current values.",
-                        outcome.actor, outcome.field.title(), outcome.before, outcome.after),
+                    Ok(outcome) => format!(
+                        "{} {}: {} -> {}. Refresh to read current values.",
+                        outcome.actor,
+                        outcome.field.title(),
+                        outcome.before,
+                        outcome.after
+                    ),
                     Err(e) => format!("Write refused or unconfirmed: {e}"),
                 };
                 return Task::done(Message::ActorRefresh);
@@ -4024,7 +4057,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
         }
         Message::ArmorOfflineChanged(confirmed) => {
-            if !confirmed { state.actor_edit = None; }
+            if !confirmed {
+                state.actor_edit = None;
+            }
 
             if confirmed && state.developer_online_mods {
                 state.status =
@@ -12317,14 +12352,21 @@ mod project_edit_tests {
     #[test]
     fn docs_sections_can_expand_and_collapse_independently() {
         let mut state = initial_state();
-        assert!(state.docs_expanded.contains(&private_pages::DocsSection::GettingStarted));
+        assert!(
+            state
+                .docs_expanded
+                .contains(&private_pages::DocsSection::GettingStarted)
+        );
         let section = private_pages::DocsSection::Projects;
         let _ = update(&mut state, Message::ToggleDocsSection(section));
         assert!(state.docs_expanded.contains(&section));
         let _ = update(&mut state, Message::ToggleDocsSection(section));
         assert!(!state.docs_expanded.contains(&section));
         let _ = update(&mut state, Message::DocsExpandAll(true));
-        assert_eq!(state.docs_expanded.len(), private_pages::DocsSection::ALL.len());
+        assert_eq!(
+            state.docs_expanded.len(),
+            private_pages::DocsSection::ALL.len()
+        );
         let _ = update(&mut state, Message::DocsExpandAll(false));
         assert!(state.docs_expanded.is_empty());
     }
