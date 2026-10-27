@@ -2884,6 +2884,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     std::fs::canonicalize(&p.workspace).ok().as_deref() == Some(path.as_path())
                 })
             }) {
+                state.project_selection.clear();
+                state.project_selection.click(&[index], index, false, false);
                 state.modding_selected = Some(index);
                 state.modding_page = index / modding_page::PAGE;
                 state.modding_changes_page = 0;
@@ -3122,6 +3124,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .to_string_lossy()
                     .into_owned();
                 state.status = format!("Selected {} · {}", project.label, project.details);
+                // Remember the user's last selected project across launches.
+                // This is already part of saved preferences, not a separate recent-file list.
+                if let Ok(path) = settings_path() {
+                    if let Err(error) = save_to(&path, &state.preferences) {
+                        state.settings_status = format!("Could not remember recent project: {error}");
+                    }
+                }
             } else {
                 state.preferences.current_workspace.clear();
                 state.modding_name_input.clear();
