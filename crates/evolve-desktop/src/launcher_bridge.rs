@@ -1435,7 +1435,9 @@ pub fn launch_direct_offline_game(
         || !marker.contains(" services_ready=true trace_loaded=true hooks_ready=true")
         || !marker.contains(" window_visible=true")
     {
-        return Err("Direct launch did not confirm a visible game window and completed file swap.".into());
+        return Err(
+            "Direct launch did not confirm a visible game window and completed file swap.".into(),
+        );
     }
     let pid = marker
         .split_whitespace()

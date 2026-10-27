@@ -118,13 +118,18 @@ pub fn install_into_swap(swap: &Path) -> Result<(), String> {
             // Preserve unrecognized and older helpers byte-for-byte, but
             // execute only the vetted script embedded in this release.
             let digest = format!("{:x}", Sha256::digest(&existing));
-            let preserved = swap.join(format!("standard_user_launch.py.previous-{}", &digest[..16]));
+            let preserved = swap.join(format!(
+                "standard_user_launch.py.previous-{}",
+                &digest[..16]
+            ));
             match std::fs::symlink_metadata(&preserved) {
                 Ok(meta) => {
                     if !meta.file_type().is_file()
                         || std::fs::read(&preserved).map_err(|e| e.to_string())? != existing
                     {
-                        return Err("Conflicting preserved standard-user helper; no files replaced".into());
+                        return Err(
+                            "Conflicting preserved standard-user helper; no files replaced".into(),
+                        );
                     }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
@@ -134,15 +139,21 @@ pub fn install_into_swap(swap: &Path) -> Result<(), String> {
                 .prefix(".evolve-standard-user-")
                 .tempfile_in(swap)
                 .map_err(|e| e.to_string())?;
-            scratch.write_all(BROKER_SCRIPT.as_bytes()).map_err(|e| e.to_string())?;
-            scratch.as_file_mut().sync_all().map_err(|e| e.to_string())?;
+            scratch
+                .write_all(BROKER_SCRIPT.as_bytes())
+                .map_err(|e| e.to_string())?;
+            scratch
+                .as_file_mut()
+                .sync_all()
+                .map_err(|e| e.to_string())?;
             if preserved.exists() {
                 std::fs::remove_file(&target).map_err(|e| e.to_string())?;
             } else {
                 std::fs::rename(&target, &preserved)
                     .map_err(|e| format!("Could not preserve existing helper: {e}"))?;
             }
-            scratch.persist_noclobber(&target)
+            scratch
+                .persist_noclobber(&target)
                 .map_err(|e| format!("Could not publish vetted helper: {}", e.error))?;
             Ok(())
         }
@@ -206,7 +217,8 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), BROKER_SCRIPT.as_bytes());
         let old_sha = format!("{:x}", Sha256::digest(b"unknown script"));
         let preserved = root.path().join(format!(
-            "standard_user_launch.py.previous-{}", &old_sha[..16]
+            "standard_user_launch.py.previous-{}",
+            &old_sha[..16]
         ));
         assert_eq!(std::fs::read(&preserved).unwrap(), b"unknown script");
         install_into_swap(root.path()).unwrap();
