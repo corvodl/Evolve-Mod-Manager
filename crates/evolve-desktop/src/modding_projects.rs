@@ -888,7 +888,8 @@ fn build_imported_snapshot(
         // the isolated once-converted version of that exact installed PAK.
         let relative = offline_test_target(&verified, stage)?;
         let converted = stage.join("paks").join(relative);
-        tools.build_changed_pak(&converted, &signed_name, &replacements, &signed_path)
+        tools
+            .build_changed_pak(&converted, &signed_name, &replacements, &signed_path)
             .map(|()| replacements.len())
     } else {
         let signer = signer.ok_or("Signing stage has no private key")?;
@@ -900,7 +901,9 @@ fn build_imported_snapshot(
             &signed_name,
             &replacements,
             &signed_path,
-        ).map(|report| report.len()).map_err(|e| e.to_string())
+        )
+        .map(|report| report.len())
+        .map_err(|e| e.to_string())
     };
     match rebuilt {
         Ok(report) => {
@@ -1028,9 +1031,8 @@ pub fn build_project_raw(
         return Err("Archive signed basename is not an authenticated filename variant".into());
     }
     let source_files = fs::canonicalize(folder.join("files")).map_err(|e| e.to_string())?;
-    let original_index =
-        evolve_core::open_verified_signed_pak(&original, &public, signed_name)
-            .map_err(|e| e.to_string())?;
+    let original_index = evolve_core::open_verified_signed_pak(&original, &public, signed_name)
+        .map_err(|e| e.to_string())?;
     let serialized = tempfile::Builder::new()
         .prefix(".project-serialization-")
         .tempdir_in(&folder)
@@ -1084,9 +1086,10 @@ pub fn build_project_raw(
         identity.update(baseline.as_bytes());
         identity.update(digest(&public).map_err(|e| e.to_string())?.as_bytes());
         identity.update(signed_name.as_bytes());
-        let mut members = replacements.iter().map(|(name, file)| {
-            digest(file).map(|hash| (name.clone(), hash))
-        }).collect::<Result<Vec<_>, _>>()?;
+        let mut members = replacements
+            .iter()
+            .map(|(name, file)| digest(file).map(|hash| (name.clone(), hash)))
+            .collect::<Result<Vec<_>, _>>()?;
         members.sort_by(|left, right| left.0.cmp(&right.0));
         for (name, hash) in members {
             identity.update(name.as_bytes());
@@ -1094,7 +1097,9 @@ pub fn build_project_raw(
             identity.update(hash.as_bytes());
             identity.update([0]);
         }
-        built.join("OfficialCache").join(format!("{:x}", identity.finalize()))
+        built
+            .join("OfficialCache")
+            .join(format!("{:x}", identity.finalize()))
     } else {
         let number = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1119,7 +1124,8 @@ pub fn build_project_raw(
     // it to its original physical basename within the same new output folder.
     let signed_output = output_folder.join(signed_name);
     let result: Result<usize, String> = if let Some(tools) = official {
-        tools.build_changed_pak(&original, signed_name, &replacements, &signed_output)
+        tools
+            .build_changed_pak(&original, signed_name, &replacements, &signed_output)
             .map(|()| replacements.len())
     } else {
         let keys = super::modding_keys::signing_keys(stage)?;
@@ -1131,7 +1137,9 @@ pub fn build_project_raw(
             signed_name,
             &replacements,
             &signed_output,
-        ).map(|report| report.len()).map_err(|e| e.to_string())
+        )
+        .map(|report| report.len())
+        .map_err(|e| e.to_string())
     };
     match result {
         Ok(reports) => {
@@ -1140,11 +1148,7 @@ pub fn build_project_raw(
                     format!("Cannot restore the original PAK filename after signing: {e}")
                 })?;
             }
-            Ok((
-                format!("{} modified member(s)", reports),
-                output,
-                verified,
-            ))
+            Ok((format!("{} modified member(s)", reports), output, verified))
         }
         Err(error) => {
             // The core uses an atomic tempfile on failure. Remove only our
