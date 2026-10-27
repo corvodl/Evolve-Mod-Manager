@@ -663,6 +663,7 @@ enum Operation {
         bool,
     ),
     LaunchCleanClient(PathBuf, PathBuf, Option<PathBuf>),
+    LaunchDirectGame(PathBuf, Option<PathBuf>),
     CreateInitialSetup(PathBuf, PathBuf, PathBuf, bool),
     RestoreExistingOfflineLauncher(PathBuf, PathBuf),
     RebuildSignedPak(
@@ -765,6 +766,7 @@ enum Completed {
     OfflineLauncherStarted(usize, u32, usize),
     EnabledModsLaunched(usize, u32, usize, Option<String>, bool),
     CleanClientStarted(u32, Vec<String>),
+    DirectGameStarted(u32, Vec<String>),
     InitialSetupCreated(initial_setup::InitialSetup),
     GamePakBaselineRefreshed(initial_setup::InitialSetup),
     OfflineLauncherRestored(usize, bool),
@@ -1535,6 +1537,17 @@ impl Operation {
                 let id = launch_existing_offline_client(&report, &launch_progress)?;
                 Ok(Completed::OfflineLauncherStarted(count, id, warnings))
             }
+            Self::LaunchDirectGame(game, swap) => {
+                launcher_bridge::games_closed()?;
+                let warnings = play_setup::recovery_warnings(&game, swap.as_deref());
+                if !warnings.is_empty() {
+                    return Err("Unresolved recovery warnings prevent direct game launch; restore originals or use the regular client.".into());
+                }
+                play_setup::audit_backup_files(&game)?;
+                online_guard::apply(&game, false)?;
+                let pid = standard_user_launch::launch_game(&game)?;
+                Ok(Completed::DirectGameStarted(pid, warnings))
+            }
             Self::LaunchCleanClient(game, client, swap) => {
                 let (id, warnings) = play_setup::launch_clean(&game, &client, swap.as_deref())?;
                 Ok(Completed::CleanClientStarted(id, warnings))
@@ -1895,6 +1908,7 @@ enum Message {
     StartOfflineLauncherRestore,
     PlayWithMods,
     PlayWithoutMods,
+    PlayDirectGame,
     DismissPlayNotice,
     SaveGameSetup,
     StartAutomaticSetup,
@@ -2367,6 +2381,7 @@ fn operation_label(operation: &Operation) -> &'static str {
         Operation::StartExistingOfflineLauncher(..) => "Preparing original offline launcher",
         Operation::PlayEnabledMods(..) => "Building and launching enabled mods",
         Operation::LaunchCleanClient(..) => "Opening regular game client",
+        Operation::LaunchDirectGame(..) => "Starting Evolve directly (experimental)",
         Operation::CreateInitialSetup(..) => "Creating isolated offline setup",
         Operation::RestoreExistingOfflineLauncher(..) => "Restoring original game files",
         Operation::ExportLevelGlb(..) | Operation::ExportLevelFbx(..) => "Exporting level scene",
@@ -2410,6 +2425,9 @@ fn launch(state: &mut State, operation: Operation) -> Task<Message> {
         Operation::CreateInitialSetup(..) => {
             "Building the isolated offline setup: generating local signing keys, validating/resigning original game PAKs, preparing a verified hook copy and independent recovery scripts. Original game files will not be altered."
                 .into()
+        }
+        Operation::LaunchDirectGame(..) => {
+            "Checking originals before experimental direct offline game launch...".into()
         }
         Operation::LaunchCleanClient(..) => {
             "Checking that original PAKs and the recovery journal are clean before opening the normal client..."
@@ -7546,6 +7564,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::DismissPlayNotice => {
             state.play_notice = None;
         }
+        Message::PlayDirectGame => {
+            if state.busy { return Task::none(); }
+            let (game, _) = match play_setup::validate_paths(&state.preferences.game_installation, &state.preferences.client_executable) {
+                Ok(paths) => paths,
+                Err(error) => {
+                    state.status = format!("Direct launch setup is incomplete: {error}");
+                    return Task::none();
+                }
+            };
+            state.status = "Experimental direct Evolve startup: local client services and profiles are NOT started. Offline testing only.".into();
+            return launch(state, Operation::LaunchDirectGame(game,
+                (!state.preferences.swap.trim().is_empty()).then(|| PathBuf::from(&state.preferences.swap))));
+        }
         Message::PlayWithMods | Message::PlayWithoutMods => {
             let is_modded = matches!(message, Message::PlayWithMods);
             let kind = if is_modded {
@@ -8665,6 +8696,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                                 format!("{count} enabled mod(s) installed for this offline launch. Evolve process creation and swap were verified.")
                             },
                         )
+                    }
+                    Ok(Completed::DirectGameStarted(pid, warnings)) => {
+                        play_dialog::Notice::finished(kind, play_dialog::Phase::Warning,
+                            format!("Evolve started directly (PID {pid}); client services, authentication and online profiles were NOT initialized. {}", warnings.join(" ")))
                     }
                     Ok(Completed::CleanClientStarted(pid, warnings)) => {
                         play_dialog::Notice::finished(
