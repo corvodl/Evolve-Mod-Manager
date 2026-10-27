@@ -119,7 +119,7 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
                     .on_press(Message::PreferenceGameLaunchMode("Direct Launch"))
                     .style(if state.preferences.game_launch_mode == "Direct Launch" { design::primary } else { design::secondary }),
             ].spacing(8),
-            text("Both Play buttons use the selected method. Client Launch retains the normal launcher and its profile services. Direct Launch creates Evolve.exe itself; modded play swaps verified PAKs before startup, and restores originals after the game exits. Client service / online parity is not guaranteed.")
+            text("Both Play buttons follow this setting. Direct Launch is currently blocked: it needs a standalone Steam compatibility and profile-service host plus Stage2Trace initialization. Choose Client Launch for working game startup until that integration is complete.")
                 .size(11).style(design::muted),
             text("Game location (EvolveGame or bin64_SteamRetail)").size(12),
             row![
