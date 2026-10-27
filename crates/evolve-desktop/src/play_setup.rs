@@ -162,9 +162,11 @@ fn refresh_verified_helper(
 
 /// Only enable the existing private helper for exactly the selected game and
 /// client. Never repoint a signing stage to a different installed game.
-pub fn configure_existing_helper(
+/// Common path/journal verification; direct mode does not need an installed
+/// Modded Evolve launcher or its Frida / standard-user client broker.
+fn configure_helper(
     game: &Path,
-    client: &Path,
+    client: Option<&Path>,
     stage: &Path,
     swap: &Path,
 ) -> Result<(), String> {
@@ -233,7 +235,8 @@ pub fn configure_existing_helper(
             NIGHTLY_60_CONTROLLED_SWAP_SHA256,
         ],
     )?;
-    refresh_verified_helper(
+    if let Some(client) = client {
+        refresh_verified_helper(
         &swap,
         "auto_launch_frida.py",
         CURRENT_AUTO_LAUNCH,
@@ -244,7 +247,7 @@ pub fn configure_existing_helper(
             NIGHTLY_70_AUTO_LAUNCH_SHA256,
         ],
     )?;
-    crate::standard_user_launch::install_into_swap(&swap)?;
+        crate::standard_user_launch::install_into_swap(&swap)?;
     let config = swap.join("launcher_config.json");
     let mut previous = Map::new();
     if config.exists() {
@@ -276,6 +279,23 @@ pub fn configure_existing_helper(
         .persist(&config)
         .map_err(|e| format!("Cannot save launcher configuration: {e}"))?;
     Ok(())
+    } else {
+        Ok(())
+    }
+}
+
+pub fn configure_existing_helper(
+    game: &Path, client: &Path, stage: &Path, swap: &Path,
+) -> Result<(), String> {
+    configure_helper(game, Some(client), stage, swap)
+}
+
+/// Direct mode checks the same signed stage and recovery journal, without
+/// requiring or overwriting the legacy ModdedEvolveLauncher installation.
+pub fn configure_direct_helper(
+    game: &Path, stage: &Path, swap: &Path,
+) -> Result<(), String> {
+    configure_helper(game, None, stage, swap)
 }
 
 pub(super) fn audit_backup_files(game: &Path) -> Result<(), String> {
