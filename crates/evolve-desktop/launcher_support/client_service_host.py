@@ -53,8 +53,14 @@ def require_client_files(client):
         file=root/name
         if file.is_symlink() or not file.is_file():
             raise RuntimeError("Installed client runtime is incomplete: "+name)
-    if digest(root/"ModdedEvolveLauncher.dll") != CLIENT_DIGEST:
-        raise RuntimeError("Unknown Modded Evolve service runtime version. Direct launch is not safe for this client; choose Client Launch.")
+    actual_digest = digest(root/"ModdedEvolveLauncher.dll")
+    if actual_digest != CLIENT_DIGEST:
+        raise RuntimeError(
+            "Unsupported Modded Evolve service runtime version "
+            f"(installed SHA-256: {actual_digest}; supported adapter SHA-256: {CLIENT_DIGEST}). "
+            "The services-only adapter must be updated and validated for this client build. "
+            "Use Client Launch until then; installed client files were not modified."
+        )
     return root
 
 def ensure_shadow(client_exe, swap_dir):
