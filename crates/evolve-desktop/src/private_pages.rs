@@ -167,6 +167,16 @@ fn latest_announcement(state: &State) -> Element<'_, Message> {
     surface(content).into()
 }
 
+fn subtle_home_wheel() -> Element<'static, Message> {
+    // Source-derived vector artwork, faded so project labels remain readable.
+    let art = include_str!("../../../assets/loading_wheel.svg")
+        .replace("<svg ", "<svg opacity=\"0.12\" ");
+    svg(svg::Handle::from_memory(art.into_bytes()))
+        .width(Length::Fixed(128.0))
+        .height(Length::Fixed(128.0))
+        .into()
+}
+
 pub(super) fn home(state: &State) -> Element<'_, Message> {
     let hero = if let Some(workspace) = super::home_recent_workspace(state) {
         let project = state.modding_projects.as_ref().and_then(|projects| {
@@ -194,8 +204,9 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
             })
             .unwrap_or_else(|| "Last selected editable project".into());
         surface(
-            column![
-                text("YOUR WORKBENCH").size(12).style(design::accent),
+            row![
+                column![
+                    text("YOUR WORKBENCH").size(12).style(design::accent),
                 text("Continue where you left off").size(22),
                 row![
                     svg(Page::Files.icon())
@@ -218,14 +229,20 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                         .on_press_maybe((!state.busy).then_some(Message::HomeOpenProject)),
                 ]
                 .spacing(9),
+                ]
+                .spacing(12)
+                .width(Fill),
+                subtle_home_wheel(),
             ]
-            .spacing(12),
+            .spacing(12)
+            .align_y(iced::Center),
         )
         .padding([20, 24])
     } else {
         surface(
-            column![
-                text("GETTING STARTED").size(12).style(design::accent),
+            row![
+                column![
+                    text("GETTING STARTED").size(12).style(design::accent),
                 text("Ready to make your first mod?").size(22),
                 text("Start by importing a PAK into the Asset Library, or follow Docs for a guided setup. Your last selected project will appear here once you have one.")
                     .size(13)
@@ -238,8 +255,13 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                         .on_press(Message::Navigate(Page::AssetLibrary)),
                 ]
                 .spacing(9),
+                ]
+                .spacing(12)
+                .width(Fill),
+                subtle_home_wheel(),
             ]
-            .spacing(12),
+            .spacing(12)
+            .align_y(iced::Center),
         )
         .padding([20, 24])
     };
