@@ -145,7 +145,7 @@ pub(super) fn probe(
 /// comparison immediately before the write in the *same* Windows helper.
 /// Neither VirtualProtectEx nor remote execution is needed or permitted.
 #[cfg(windows)]
-fn write_four(pid: u32, at: usize, old_bits: u32, new_bits: u32) -> Result<(), String> {
+pub(super) fn write_four(pid: u32, at: usize, old_bits: u32, new_bits: u32) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     let script = format!(
         r#"
