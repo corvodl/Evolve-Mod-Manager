@@ -92,7 +92,9 @@ impl OfficialTools {
         {
             // This old program sometimes returns success even after an operation
             // fails; callers MUST verify the resulting signed archive themselves.
+            use std::os::windows::process::CommandExt;
             let mut command = Command::new(&self.exe);
+            command.creation_flags(0x08000000); // CREATE_NO_WINDOW
             command.arg(action).arg(a);
             if let Some(b) = b { command.arg(b); }
             let output = command.output().map_err(|e| format!("Official Stage 2 encoder failed to start: {e}"))?;
