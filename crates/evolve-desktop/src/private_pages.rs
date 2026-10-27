@@ -167,11 +167,74 @@ fn latest_announcement(state: &State) -> Element<'_, Message> {
     surface(content).into()
 }
 
-fn subtle_home_wheel(frame: u32) -> Element<'static, Message> {
-    svg(crate::loading_wheel::handle(frame, 0.12))
-        .width(Length::Fixed(128.0))
-        .height(Length::Fixed(128.0))
-        .into()
+/// The optional Home art is distinct from animated progress indicators.
+/// A supplied 1920x1080 default_loading.dds is loaded as home art; if
+/// unavailable the Workbench remains completely usable without a placeholder.
+fn home_banner() -> Option<iced::widget::image::Handle> {
+    let base = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    let candidates = [
+        base.join("assets").join("default_loading.dds"),
+        base.join("default_loading.dds"),
+    ];
+    for path in candidates {
+        if let Ok(data) = std::fs::read(&path) {
+            if let Some((width, height, rgba)) = decode_home_dds(&data) {
+                return Some(iced::widget::image::Handle::from_rgba(width, height, rgba));
+            }
+        }
+    }
+    None
+}
+
+/// Strictly bounded DXT1 (BC1) DDS support for the provided Home banner.
+fn decode_home_dds(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    if data.len() < 128 || &data[..4] != b"DDS " || &data[84..88] != b"DXT1" { return None; }
+    let width = u32::from_le_bytes(data[16..20].try_into().ok()?);
+    let height = u32::from_le_bytes(data[12..16].try_into().ok()?);
+    if width == 0 || height == 0 || width > 4096 || height > 4096 { return None; }
+    let blocks_x = width.div_ceil(4) as usize;
+    let blocks_y = height.div_ceil(4) as usize;
+    let needed = blocks_x.checked_mul(blocks_y)?.checked_mul(8)?.checked_add(128)?;
+    if data.len() < needed { return None; }
+    let mut rgba = vec![0u8; (width as usize).checked_mul(height as usize)?.checked_mul(4)?];
+    for by in 0..blocks_y {
+        for bx in 0..blocks_x {
+            let start = 128 + (by * blocks_x + bx) * 8;
+            let c0 = u16::from_le_bytes([data[start], data[start + 1]]);
+            let c1 = u16::from_le_bytes([data[start + 2], data[start + 3]]);
+            let color = |c: u16| -> [u8; 3] {
+                let r = ((c >> 11) & 31) as u32;
+                let g = ((c >> 5) & 63) as u32;
+                let b = (c & 31) as u32;
+                [((r * 255 + 15) / 31) as u8, ((g * 255 + 31) / 63) as u8, ((b * 255 + 15) / 31) as u8]
+            };
+            let a = color(c0);
+            let b = color(c1);
+            let blend = |x: [u8; 3], y: [u8; 3], mx: u16, my: u16, d: u16| -> [u8; 3] {
+                [
+                    ((x[0] as u16 * mx + y[0] as u16 * my) / d) as u8,
+                    ((x[1] as u16 * mx + y[1] as u16 * my) / d) as u8,
+                    ((x[2] as u16 * mx + y[2] as u16 * my) / d) as u8,
+                ]
+            };
+            let palette = [a, b,
+                if c0 > c1 { blend(a, b, 2, 1, 3) } else { blend(a, b, 1, 1, 2) },
+                if c0 > c1 { blend(a, b, 1, 2, 3) } else { [0, 0, 0] }];
+            let bits = u32::from_le_bytes(data[start + 4..start + 8].try_into().ok()?);
+            for dy in 0..4usize {
+                for dx in 0..4usize {
+                    let x = bx * 4 + dx;
+                    let y = by * 4 + dy;
+                    if x >= width as usize || y >= height as usize { continue; }
+                    let index = ((bits >> (2 * (dy * 4 + dx))) & 3) as usize;
+                    let out = (y * width as usize + x) * 4;
+                    rgba[out..out + 3].copy_from_slice(&palette[index]);
+                    rgba[out + 3] = if c0 <= c1 && index == 3 { 0 } else { 255 };
+                }
+            }
+        }
+    }
+    Some((width, height, rgba))
 }
 
 pub(super) fn home(state: &State) -> Element<'_, Message> {
@@ -229,7 +292,7 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                 ]
                 .spacing(12)
                 .width(Fill),
-                subtle_home_wheel(state.loading_wheel_frame),
+
             ]
             .spacing(12)
             .align_y(iced::Center),
@@ -262,6 +325,17 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         )
         .padding([20, 24])
     };
+    let hero: Element<'_, Message> = if let Some(handle) = home_banner() {
+        // Full-width 16:9 hero, darkened so labels remain readable.
+        let picture = image(handle).width(Fill).height(Length::Fixed(280.0))
+            .content_fit(iced::ContentFit::Cover);
+        column![
+            container(picture).width(Fill),
+            hero,
+        ].spacing(0).into()
+    } else {
+        hero.into()
+    };
     let quick = column![
         text("PLAY EVOLVE").size(14),
         text(if state.developer_unlocked && state.developer_online_mods {
@@ -274,6 +348,7 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         row![
             design::button(if state.developer_unlocked && state.developer_online_mods { "Play with Mods Online · Dev Test" } else { "Play with Mods" }).on_press(Message::PlayWithMods).style(design::primary),
             design::button("Play without Mods").on_press(Message::PlayWithoutMods).style(design::secondary),
+            design::button("Direct Offline Launch · Experimental").on_press(Message::PlayDirectGame).style(design::secondary),
         ]
         .spacing(8),
         text("First launch: choose your game and normal client in Settings. Modded play uses the verified and reversible PAK swap helper; Developer mode removes mod-type restrictions but does not bypass server authentication.")
