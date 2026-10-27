@@ -318,7 +318,10 @@ pub fn create(
         let keys = stage.join("mykeys");
         if let Some(tools) = &official {
             fs::create_dir(&keys).map_err(|e| e.to_string())?;
-            write_new(&keys.join("public_key.bin"), &fs::read(&tools.public_key).map_err(|e| e.to_string())?)?;
+            write_new(
+                &keys.join("public_key.bin"),
+                &fs::read(&tools.public_key).map_err(|e| e.to_string())?,
+            )?;
         } else {
             generate_local_signing_keys(&keys).map_err(|e| e.to_string())?;
         }
@@ -371,7 +374,9 @@ pub fn create(
                     // Copy only into the isolated stage. A single official 'r'
                     // below converts the stage exactly once, not on each launch.
                     if fs::copy(&authored, &destination).map_err(|e| e.to_string())? != *bytes {
-                        return Err(format!("Incomplete copy of {relative} into the official stage"));
+                        return Err(format!(
+                            "Incomplete copy of {relative} into the official stage"
+                        ));
                     }
                 } else {
                     resign_signed_pak_with_original_name(
@@ -420,19 +425,29 @@ pub fn create(
             // errors. Reauthenticate every converted archive before publishing.
             for row in &entries {
                 if row.kind == "signed-encrypted" {
-                    let basename = Path::new(&row.path).file_name()
-                        .and_then(|name| name.to_str()).ok_or("Bad staged PAK name")?;
+                    let basename = Path::new(&row.path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .ok_or("Bad staged PAK name")?;
                     let signed_name = row.signed_name.as_deref().unwrap_or(basename);
                     inspect_signed_pak(&stage.join("paks").join(&row.path), &public, signed_name)
-                        .map_err(|e| format!("Official signing conversion failed for {}: {e}", row.path))?;
+                        .map_err(|e| {
+                        format!("Official signing conversion failed for {}: {e}", row.path)
+                    })?;
                 }
             }
         }
         let shim_dst = stage.join("inject-custom.dll");
         let shim_sha = if let Some(tools) = &official {
-            write_new(&shim_dst, &fs::read(&tools.inject).map_err(|e| e.to_string())?)?;
+            write_new(
+                &shim_dst,
+                &fs::read(&tools.inject).map_err(|e| e.to_string())?,
+            )?;
             let dbghelp = stage.join("dbghelp-custom.dll");
-            write_new(&dbghelp, &fs::read(&tools.dbghelp).map_err(|e| e.to_string())?)?;
+            write_new(
+                &dbghelp,
+                &fs::read(&tools.dbghelp).map_err(|e| e.to_string())?,
+            )?;
             sha256(&shim_dst)?
         } else {
             prepare_client_hook(&original_shim, &original_public, &public, &shim_dst)
