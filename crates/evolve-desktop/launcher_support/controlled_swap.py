@@ -123,6 +123,16 @@ def list_files(game, stage):
     files.append({'name':'bin64_SteamRetail/inject.dll', 'target':str(shim_target),
                   'source':str(shim_source), 'ready':str(shim_target) + READY,
                   'backup':str(shim_target) + BACKUP})
+    if status.get('signer') == 'official-2025':
+        original_debug = game / 'bin64_SteamRetail' / 'dbghelp.dll'
+        custom_debug = stage / 'dbghelp-custom.dll'
+        if (not original_debug.is_file() or not custom_debug.is_file()
+                or sha(original_debug) != status.get('original_dbghelp_sha256', '').lower()
+                or sha(custom_debug) != status.get('dbghelp_sha256', '').lower()):
+            stop('Official dbghelp.dll original/stage mismatch; restore normal client first.')
+        files.append({'name':'bin64_SteamRetail/dbghelp.dll', 'target':str(original_debug),
+                      'source':str(custom_debug), 'ready':str(original_debug) + READY,
+                      'backup':str(original_debug) + BACKUP})
     return files, status
 
 
@@ -151,7 +161,7 @@ def check(args):
     shim=(game/'bin64_SteamRetail'/'inject.dll').read_bytes()
     if not oldkey.exists() or len(shim)!=4096 or shim[0x870:0x870+140]!=oldkey.read_bytes():
         stop('Installed inject.dll does not match original public key.')
-    print(f'CHECK PASSED: {len(files)-1} signed archives and one custom RSA shim are available.')
+    print(f'CHECK PASSED: {status["count"]} signed archives and matching runtime DLLs are available.')
     print(f'Estimated temporary staging volume: {total_bytes/1024**3:.2f} GiB plus reserve.')
     print(f'Free space on game volume: {shutil.disk_usage(game).free/1024**3:.2f} GiB.')
     print('No game files changed. Next: verify x64dbg can pause BEFORE Evolve.exe creation.')

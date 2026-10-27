@@ -42,6 +42,7 @@ mod mod_play;
 mod modding_keys;
 mod modding_page;
 mod modding_projects;
+mod official_stage2_tools;
 mod online_guard;
 mod orientation_gizmo;
 mod play_dialog;

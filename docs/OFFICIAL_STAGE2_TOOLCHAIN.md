@@ -1,0 +1,124 @@
+# Official Stage 2 developer toolchain: integration assessment
+
+> Source: developer-provided `evolve_tool_stage2_02.05.2025.zip`. Static inspection only. Neither the Windows binaries nor game runtime were executed. This does **not** change the current launch pipeline or establish redistribution permission.
+
+## Implementation (PR #101)
+
+The desktop manager now supports the developer's official **2025** encoder as an
+pinned toolchain supplied by the authorized release installer/portable ZIP, with local-tool fallback for development.
+
+1. Install a Nightly that includes the official runtime. The installer and
+   portable updater place it under `third_party/OfficialStage2` automatically.
+   Existing independent installations can instead use
+   `<Mod Data Location>/official-stage2-tools/evolve_tool_stage2`, or set
+   `EVOLVE_STAGE2_TOOLS_DIR` to the directory containing `evolve_tool.exe`.
+2. Keep the original game/client installation intact. In particular, the
+   official tools currently require an existing original
+   `bin64_SteamRetail/dbghelp.dll` so a complete, reversible swap is possible.
+3. Choose **Set Up Manager** with the game and storage root. It detects and
+   checksum-verifies the installed local developer tools, creates the public
+   key stage, copies original signed PAKs into **isolated** storage and runs
+   the official `r` conversion there **once**. It authenticates all resulting
+   signed PAKs against the developer's public key before marking setup ready.
+4. Import/edit a PAK through the normal Modding page. **Build** uses the
+   official `d` and `e` commands for only the PAK containing edited assets,
+   verifies original member inventory, validates the signed result, and
+   reuses a SHA-keyed cache when the mod has not changed.
+5. **Play with Mods** stages only the enabled project's changed PAK outputs,
+   preserving the offline recovery journal. The launch helper continues to
+   swap the **one-time converted baseline** plus both official runtime DLLs
+   because the supplied RSA hook has only one active verification key.
+
+This changes the per-mod build cost but does **not** yet establish that
+unconverted stock-key PAKs can be mounted alongside official-new-key PAKs.
+Switching to a sparse *runtime* swap is not safe until verified in a live game.
+The developer's own instructions explicitly call for a one-time conversion of
+the full PAK library.
+
+**Never** run the official `r` command directly against your installed game. The manager applies it only to isolated copies. The source ZIP and C# projects remain private; authorized release packages carry the verified signing executable and runtime DLLs.
+
+### Validation not yet performed
+
+Windows build/CI checks are required. The provided binaries have not been
+executed in this environment, and in-game acceptance, alternative engine builds
+and the DLL compatibility offset need testing before a release. The tool may
+return success even if a particular PAK failed; the integration therefore
+requires independent RSA verification and preserves failures for inspection.
+
+## Complete installer and updater packaging
+
+The developer's extracted tool files have been uploaded to the private
+repository `corvodl/Evolve-Official-Tools`, under `evolve_tool_stage2/`.
+**A GitHub Release in the private repository is no longer required.**
+
+Nightly builds clone that private repository using a read-only credential,
+check the SHA-256 of each required file, and copy only the five runtime
+files and the BouncyCastle license into the release staging directory.
+The source projects and developer archive are not included in the release.
+
+The installer and portable ZIP package the verified runtime at
+`third_party/OfficialStage2/`. The portable updater recognizes the fixed
+nested runtime file list and replaces it through its ordinary recovery-safe
+update transaction.
+
+### Remaining Actions credential setup
+
+In the **public** `corvodl/Evolve-Mod-Manager` repository, configure
+an Actions secret named `EVOLVE_STAGE2_TOOLS_TOKEN`: a fine-grained GitHub
+personal access token with `Contents: Read` permission specifically on
+`corvodl/Evolve-Official-Tools`. The ChatGPT GitHub connection can read
+the private repository, but that does not authorize GitHub Actions in
+another repository. Do not put the token itself in a PR, repository
+variable, source file, issue, or Actions output.
+
+`EVOLVE_STAGE2_TOOLS_REPO` and `EVOLVE_STAGE2_TOOLS_TAG` are no longer
+needed: the workflow uses the verified repository's current default branch,
+not a private release tag. The pipeline deliberately fails if its token
+cannot fetch the files, if a component is missing, or if its checksum
+differs from the pinned 2025 build. It must not publish a Nightly
+silently omitting official signing.
+
+A working signing executable includes recoverable signing material. Hash
+verification proves integrity and **does not** make that key secret.
+
+The existing manager-controlled runtime swap and original-file restoration
+remain unchanged; the official tools are used for isolated initial
+conversion and rebuilding affected PAKs.
+
+## Verified capabilities and constraints
+
+- `evolve_tool.exe d <pak> <dir>` decrypts and unpacks a PAK; `evolve_tool.exe e <dir> <pak>` packs a **complete** directory as one PAK. These are not in-place single-member editing commands.
+- `evolve_tool.exe r <game dir>` traverses the existing PAK library and changes each archive's authenticated trailer to use the **new** RSA keypair, without necessarily rewriting encrypted member payloads.
+- The instructions require the supplied `inject.dll` and `dbghelp.dll` in `Bin64_SteamRetail`. The inject assembly has a game-executable-specific hook offset that needs validation for each supported build.
+- The C# source contains an embedded RSA signing key. Public release bundles contain only the approved runtime executable and dependencies, and do not include the developer's source project, debug artifacts or original ZIP.
+- The original Stage 2 verification key in this source is **public**, not the original private signing key. A PAK signed with the new private key cannot be assumed compatible with the unmodified stock verifier. Mixing stock old-key archives and new-key mod archives is unverified.
+
+## Goal: only process PAKs containing edited assets
+
+1. Verify the installed game's original PAK hashes, file ownership, public key and binary/hook compatibility. Preserve an untouched clean backup and recovery journal.
+2. If the runtime only supports the new verifier, perform the stock archive key transition **once per exact game build**. Persist and reuse the verified converted baseline; revalidate after a game update.
+3. Map changed mod members to the PAKs that contain them. Detect conflicting edits and compute a deterministic effective member set.
+4. Rebuild **only affected PAKs**. Because official `e` encodes a whole directory, any official-backend integration must first preserve all unmodified members of that PAK, not create an incomplete delta PAK. The current Rust builder can already replace individual members; compare both backends' authenticated outputs before switching the production implementation.
+5. Cache the replacement PAK by stock digest, selected changed member digests, active public/signing-key identity, and tool version. Rebuilding or re-signing unrelated PAKs after every mod change is unnecessary.
+6. Reduce the **runtime swap list** separately: a single new-key verifier may still require mounting the once-converted stock set even though only one mod PAK is new. A sparse swap with unconverted original PAKs must not be enabled without in-game proof that the verifier supports both keys or that supported overlays work.
+7. Restore the original key configuration and all original assets for an explicitly clean launch; verify interrupted and crash recovery.
+
+## Protect the supplied key
+
+- Do not commit the original ZIP, C# source, executable, or private key to the public Git repository; do not echo key contents to logs or reports. Authorized release binaries contain an embedded signing key that recipients can extract.
+- The official runtime can be installed by the release or supplied locally. Exact file digests are verified when packaging and again before use. The build runner never executes the signing executable.
+- GitHub Actions Secrets protect trusted build/server operations, **not** anything shipped inside a client-side executable. Keys embedded in binaries can be extracted.
+- Public verification keys may be bundled; never confuse them with private signing credentials.
+- `.gitignore` and the CI credential check help prevent accidents; they do not prove a compiled binary is secret-free.
+
+## Gates before replacing the production backend
+
+- Successful original PAK signature verification and decoding.
+- One changed asset rebuilt into the target PAK; all other member contents identical by hash.
+- Signed output verifies under the runtime key and actually loads in an **offline** match.
+- Two mods in different PAKs rebuild only those PAKs; conflicts are deterministic.
+- Exact game-build hook compatibility; no infinite wait/hardcoded-offset corruption after an update.
+- Clean game launch remains functional; recovery works after failed, interrupted or killed launches.
+- Public Git history and generated diagnostics must contain no raw key material or vendor-source archive. Authorized installers and ZIPs contain the official runtime executable, whose embedded signing material is inherently extractable.
+
+Until these tests pass, retain the current functioning launch/recovery route rather than making an unsafe mixed-key switch.

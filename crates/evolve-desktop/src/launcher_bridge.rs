@@ -88,6 +88,9 @@ fn normalized_swap_name(raw: &str) -> Result<String, String> {
     if normalized.eq_ignore_ascii_case("bin64_SteamRetail/inject.dll") {
         return Ok("bin64_SteamRetail/inject.dll".into());
     }
+    if normalized.eq_ignore_ascii_case("bin64_SteamRetail/dbghelp.dll") {
+        return Ok("bin64_SteamRetail/dbghelp.dll".into());
+    }
     normalized_pak_name(&normalized)
 }
 
@@ -446,6 +449,23 @@ fn inspect_existing_launcher_mode(
         original.clone(),
         custom.clone(),
     ));
+    if status["signer"].as_str() == Some("official-2025") {
+        let original_dbg = within_file(&game, "bin64_SteamRetail/dbghelp.dll")?;
+        let staged_dbg = within_file(&stage, "dbghelp-custom.dll")?;
+        no_orphaned_backup(&original_dbg)?;
+        if sha(&original_dbg)? != status["original_dbghelp_sha256"].as_str().unwrap_or("")
+            || sha(&staged_dbg)? != status["dbghelp_sha256"].as_str().unwrap_or("")
+        {
+            return Err(
+                "Official dbghelp.dll differs from setup's pinned original/staged digests".into(),
+            );
+        }
+        planned.push((
+            "bin64_SteamRetail/dbghelp.dll".into(),
+            original_dbg,
+            staged_dbg,
+        ));
+    }
     let journal = swap.join("controlled_swap_state.json");
     let mut prepared = false;
     if fs::symlink_metadata(&journal).is_ok() {
@@ -466,7 +486,7 @@ fn inspect_existing_launcher_mode(
                 ))?;
                 if journal_game != game
                     || journal_stage != stage
-                    || prior["count"].as_u64() != Some((seen.len() + 1) as u64)
+                    || prior["count"].as_u64() != Some(planned.len() as u64)
                 {
                     return Err(
                         "Prepared swap belongs to another game/stage; restore or reset it".into(),

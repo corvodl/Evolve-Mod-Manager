@@ -156,7 +156,10 @@ pub fn launch_enabled(
         }
         targets.push(target);
     }
-    let keys = modding_keys::signing_keys(&stage)?;
+    // Profile staging needs verification keys, not a locally generated private key.
+    // Official stages deliberately have no private PEM on disk.
+    let original_public = modding_keys::original_public_key(&stage)?;
+    let public = modding_keys::public_key(&stage)?;
 
     // A manual "Build & Prepare Offline Test" profile may remain staged
     // from before the enabled-mod workflow existed. Its ID legitimately
@@ -213,14 +216,14 @@ pub fn launch_enabled(
                 &profile.id,
                 output,
                 target,
-                &keys.original_public,
-                &keys.public,
+                &original_public,
+                &public,
                 &basename,
             )
             .map_err(|e| format!("Could not add {target}: {e}"))?;
         }
         progress.store(78, Ordering::Relaxed);
-        evolve_core::apply_profile_stage(&stage, &profile.id, &keys.original_public, &keys.public)
+        evolve_core::apply_profile_stage(&stage, &profile.id, &original_public, &public)
             .map_err(|e| format!("Could not activate enabled mods: {e}"))?;
         Ok(())
     })();
