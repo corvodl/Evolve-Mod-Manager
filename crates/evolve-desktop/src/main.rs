@@ -7603,7 +7603,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.active_play = Some(kind);
             state.play_notice = Some(play_dialog::Notice::preparing(kind));
             let direct_launch = state.preferences.game_launch_mode == "Direct Launch";
-            let paths = if direct_launch && !is_modded {
+            let paths = if direct_launch {
                 play_setup::game_root(&state.preferences.game_installation)
                     .map(|game| (game, PathBuf::new()))
             } else {
