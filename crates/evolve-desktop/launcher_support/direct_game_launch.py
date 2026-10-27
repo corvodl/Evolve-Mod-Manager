@@ -164,6 +164,10 @@ def launch_direct(game_root, stage_root=None, client_exe=None, swap_dir=None, cl
     session=None
     watchdog=None
     swapped=False
+    # This preflight requires ALL client/game processes closed; run it BEFORE
+    # our own Stage2 profile service host becomes active. Validation doesn't
+    # change game files. The actual swap still happens after services are ready.
+    prepared = validate_prepared(game,stage_root) if not clean else None
     try:
         # Run services/identity/profile bootstrap while originals are installed.
         # Only a successful services host may proceed to the PAK swap.
@@ -178,12 +182,9 @@ def launch_direct(game_root, stage_root=None, client_exe=None, swap_dir=None, cl
         # successes from a previous session must never pass new startup checks.
         hook_log.write_text("", encoding="utf-8")
         if not clean:
-            prepared=validate_prepared(game,stage_root)
             rename_prepared_into_game(prepared)
             swapped=True
             watchdog=start_restore_watchdog()
-        else:
-            swapper.all_closed()
         try:
             process=standard_user_launch.launch_standard_user(
                 exe,game=True,trace_dll=state["trace"],
