@@ -78,6 +78,34 @@ fn home_surface<'a>(
     })
 }
 
+/// The launch actions are the most important Home controls. Keep the panel
+/// compact, but distinguish it from news and onboarding with a restrained
+/// Evolve-red border and a very slight tint, without sacrificing contrast.
+fn home_play_surface<'a>(
+    content: impl Into<Element<'a, Message>>,
+) -> iced::widget::Container<'a, Message> {
+    container(content)
+        .width(Fill)
+        .padding([13, 18])
+        .style(|theme| {
+            let mut backdrop = design::surface(theme);
+            let accent = theme.palette().primary;
+            backdrop.r = backdrop.r * 0.94 + accent.r * 0.06;
+            backdrop.g = backdrop.g * 0.94 + accent.g * 0.06;
+            backdrop.b = backdrop.b * 0.94 + accent.b * 0.06;
+            backdrop.a = 0.91;
+            container::Style {
+                background: Some(Background::Color(backdrop)),
+                border: Border {
+                    color: accent,
+                    width: 1.25,
+                    radius: if design::is_legacy(theme) { 1.0 } else { 10.0 }.into(),
+                },
+                ..container::Style::default()
+            }
+        })
+}
+
 /// Original Evolve red corner atlas sprite, cropped from the uploaded
 /// button_I8.dds.0. Only rendered when the optional Legacy theme is selected.
 fn legacy_section_label(label: &'static str, legacy: bool) -> Element<'static, Message> {
@@ -166,7 +194,7 @@ fn latest_announcement(state: &State) -> Element<'_, Message> {
         .spacing(12)
         .align_y(iced::Center),
     ]
-    .spacing(10);
+    .spacing(7);
     if let Some(post) = news.cache.announcements.first() {
         if !post.title.is_empty() {
             content = content.push(text(&post.title).size(18));
@@ -178,20 +206,26 @@ fn latest_announcement(state: &State) -> Element<'_, Message> {
         );
         for body in [&post.content, &post.description] {
             if !body.is_empty() {
-                let excerpt: String = body.chars().take(700).collect();
+                let excerpt: String = body.chars().take(260).collect();
                 content = content.push(text(excerpt).size(13));
             }
         }
-        for url in post.image_urls.iter().take(2) {
+        for url in post.image_urls.iter().take(1) {
             if !crate::whats_new::allowed_image_url(url) {
                 continue;
             }
             if let Some(handle) = news.image_handles.get(url) {
+                // Small, uncropped preview on Home. The full-sized
+                // attachment remains accessible through What's New.
                 content = content.push(
-                    image(handle.clone())
-                        .width(Fill)
-                        .height(Length::Fixed(260.0))
-                        .content_fit(iced::ContentFit::Contain),
+                    container(
+                        image(handle.clone())
+                            .width(Fill)
+                            .height(Length::Fixed(125.0))
+                            .content_fit(iced::ContentFit::Contain),
+                    )
+                    .width(Fill)
+                    .max_width(760.0),
                 );
             } else if news.image_failures.contains(url) {
                 content = content.push(
@@ -214,7 +248,7 @@ fn latest_announcement(state: &State) -> Element<'_, Message> {
             .style(design::muted),
         );
     }
-    home_surface(content).into()
+    home_surface(content).padding([12, 15]).into()
 }
 
 /// The optional Home art is distinct from animated progress indicators.
@@ -327,7 +361,7 @@ fn decode_home_dds(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
                     let out = (y * width as usize + x) * 4;
                     // Subdued artwork lets the controls and workbench remain legible.
                     for channel in 0..3 {
-                        rgba[out + channel] = (palette[index][channel] as u16 * 52 / 100) as u8;
+                        rgba[out + channel] = (palette[index][channel] as u16 * 59 / 100) as u8;
                     }
                     rgba[out + 3] = if c0 <= c1 && index == 3 { 0 } else { 255 };
                 }
@@ -399,35 +433,62 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
             .spacing(12)
             .align_y(iced::Center),
         )
-        .padding([20, 24])
+        .padding([13, 18])
     } else {
+        let paths_selected = !state.preferences.game_installation.is_empty()
+            && !state.preferences.client_executable.is_empty();
+        let primary_action = if paths_selected {
+            design::button("Open Asset Library")
+                .on_press(Message::Navigate(Page::AssetLibrary))
+                .style(design::primary)
+        } else {
+            design::button("Getting Started")
+                .on_press(Message::Navigate(Page::Docs))
+                .style(design::primary)
+        };
+        let secondary_action = if paths_selected {
+            design::button("Getting Started").on_press(Message::Navigate(Page::Docs))
+        } else {
+            design::button("Open Asset Library")
+                .on_press(Message::Navigate(Page::AssetLibrary))
+        };
         home_surface(
             row![
                 column![
-                    legacy_section_label("GETTING STARTED", state.preferences.ui_theme == "Evolve Legacy"),
-                text("Ready to make your first mod?").size(22),
-                text("Start by importing a PAK into the Asset Library, or follow Docs for a guided setup. Your last selected project will appear here once you have one.")
-                    .size(13)
+                    legacy_section_label(
+                        "GETTING STARTED",
+                        state.preferences.ui_theme == "Evolve Legacy"
+                    ),
+                    text(if paths_selected {
+                        "Create your first mod"
+                    } else {
+                        "Ready to make your first mod?"
+                    })
+                    .size(18),
+                    text(if paths_selected {
+                        "Import a PAK into the Asset Library to begin editing."
+                    } else {
+                        "Configure your paths in Settings, then import a PAK to begin."
+                    })
+                    .size(12)
                     .style(design::muted),
-                row![
-                    design::button("Getting Started")
-                        .on_press(Message::Navigate(Page::Docs))
-                        .style(design::primary),
-                    design::button("Open Asset Library")
-                        .on_press(Message::Navigate(Page::AssetLibrary)),
+                    row![primary_action, secondary_action].spacing(8),
                 ]
-                .spacing(9),
-                ]
-                .spacing(12)
+                .spacing(7)
                 .width(Fill),
             ]
             .spacing(12)
             .align_y(iced::Center),
         )
-        .padding([20, 24])
+        .padding([12, 18])
     };
     let quick = column![
-        legacy_section_label("PLAY EVOLVE", state.preferences.ui_theme == "Evolve Legacy"),
+        row![
+            legacy_section_label("PLAY EVOLVE", state.preferences.ui_theme == "Evolve Legacy"),
+            text("Launch Evolve").size(20),
+        ]
+        .spacing(12)
+        .align_y(iced::Center),
         text(if state.developer_unlocked && state.developer_online_mods {
             "Developer online testing is armed. All enabled mods are eligible, including gameplay changes. Actual server acceptance is not guaranteed."
         } else {
@@ -436,15 +497,21 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
             .size(12)
             .style(design::muted),
         row![
-            design::button(if state.developer_unlocked && state.developer_online_mods { "Play with Mods Online · Dev Test" } else { "Play with Mods" }).on_press(Message::PlayWithMods).style(design::primary),
-            design::button("Play without Mods").on_press(Message::PlayWithoutMods).style(design::secondary),
+            design::button(if state.developer_unlocked && state.developer_online_mods { "Play with Mods Online · Dev Test" } else { "Play with Mods" })
+                .on_press(Message::PlayWithMods)
+                .padding([10, 17])
+                .style(design::primary),
+            design::button("Play without Mods")
+                .on_press(Message::PlayWithoutMods)
+                .padding([10, 15])
+                .style(design::secondary),
         ]
         .spacing(8),
         text(format!("Launch method: {} (change in Settings). Both Play buttons follow this choice. Direct mode starts Evolve.exe without the client, but client profile services are not yet reproduced.", state.preferences.game_launch_mode))
             .size(12)
             .style(design::muted),
     ]
-    .spacing(9);
+    .spacing(8);
     let entries = column![
         text("Your workspace").size(19),
         text("Everything in the manager, one click away.")
@@ -545,23 +612,11 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
     let content = scrollable(
         column![
             hero,
-            container(quick).padding(15).width(Fill).style(|theme| {
-                let mut backdrop = design::surface(theme);
-                backdrop.a = 0.84;
-                container::Style {
-                    background: Some(Background::Color(backdrop)),
-                    border: Border {
-                        color: design::border(theme),
-                        width: 1.0,
-                        radius: if design::is_legacy(theme) { 1.0 } else { 10.0 }.into(),
-                    },
-                    ..container::Style::default()
-                }
-            }),
+            home_play_surface(quick),
             latest_announcement(state),
             row![entries, status].spacing(14),
         ]
-        .spacing(20)
+        .spacing(13)
         .padding(12),
     )
     .width(Fill)
