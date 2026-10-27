@@ -3,6 +3,7 @@
 use sha2::{Digest, Sha256};
 use std::{collections::{HashMap, HashSet}, ffi::OsStr, fs, path::{Path, PathBuf}, process::Command};
 
+const CRYPTO_SHA: &str = "841105bb6703206cae4d5c73d8d0ced5c50240d9595090a2a09dc2963fd22f78";
 const EXE_SHA: &str = "c37e21134d7442c3fa195f9b09d8b951af0ee03b2c7617fe86ba5a7e7cbd4b9e";
 const INJECT_SHA: &str = "62da468d2a8d98edfc5f9e9e1f6d7f74ca2a9d00712bfa8f163d674ec15ded91";
 const PUBLIC_SHA: &str = "cec8d89e39db3f10d5f6cff984f713fe59cf84914f2df1294a27daeb21c42c18";
@@ -44,10 +45,7 @@ pub fn discover(storage: &Path) -> Result<Option<OfficialTools>, String> {
     }
     let exe = checked(&folder.join("evolve_tool.exe"), EXE_SHA)?;
     // The supplied executable requires crypto.dll beside it.
-    let crypto = folder.join("crypto.dll");
-    if !fs::symlink_metadata(&crypto).is_ok_and(|m| m.file_type().is_file()) {
-        return Err("Official encoder is missing crypto.dll".into());
-    }
+    let _crypto = checked(&folder.join("crypto.dll"), CRYPTO_SHA)?;
     let inject = checked(&folder.join("inject/inject.dll"), INJECT_SHA)?;
     let dbghelp = checked(&folder.join("inject/dbghelp.dll"), DBGHELP_SHA)?;
     let public_key = checked(&folder.join("inject/RSAKeyData.bin"), PUBLIC_SHA)?;
