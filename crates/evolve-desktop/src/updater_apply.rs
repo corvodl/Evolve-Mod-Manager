@@ -19,7 +19,7 @@ use std::time::Duration;
 
 const HELPER_FLAG: &str = "--apply-verified-evolve-update";
 const MAX_ZIP_CONTENTS: u64 = 256 * 1024 * 1024;
-const PORTABLE_MEMBERS: [&str; 10] = [
+const PORTABLE_MEMBERS: [&str; 11] = [
     "evolve-mod-manager.exe",
     "evolve-cli.exe",
     "hunt.ico",
@@ -30,6 +30,7 @@ const PORTABLE_MEMBERS: [&str; 10] = [
     "third_party/OfficialStage2/inject/dbghelp.dll",
     "third_party/OfficialStage2/inject/RSAKeyData.bin",
     "third_party/OfficialStage2/README.txt",
+    "third_party/OfficialStage2/LICENSE-BOUNCYCASTLE.html",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
