@@ -1,7 +1,7 @@
 //! First-run signing and launch-helper setup for an installed Evolve Stage 2
 //! game. New isolated files only: original game PAKs and inject.dll are never
 //! modified by setup. A failed setup stays outside the installed game.
-use crate::{launcher_bridge, play_setup};
+use crate::{launcher_bridge, official_stage2_tools, play_setup};
 use evolve_core::{
     client_hook::prepare_client_hook,
     signed_pak::{
@@ -245,6 +245,13 @@ pub fn create(
     }
     let storage =
         fs::canonicalize(storage).map_err(|e| format!("Cannot inspect Game Storage: {e}"))?;
+    let official = official_stage2_tools::discover(&storage)?;
+    // The developer-provided injection shim depends on its matching dbghelp.dll.
+    // Only support an already-present original file until recovery is proven
+    // for installing a DLL where no original file existed.
+    if official.is_some() && !game.join("bin64_SteamRetail/dbghelp.dll").is_file() {
+        return Err("Official Stage 2 setup requires an existing original bin64_SteamRetail/dbghelp.dll for reversible swapping. Restore/install the normal game client first.".into());
+    }
     let original_shim = game.join("bin64_SteamRetail").join("inject.dll");
     let shim = fs::read(&original_shim).map_err(|e| e.to_string())?;
     if shim.len() != 4096 {
@@ -309,7 +316,11 @@ pub fn create(
         let original_public = output.join("RSAKeyData.bin");
         write_new(&original_public, original_key)?;
         let keys = stage.join("mykeys");
-        generate_local_signing_keys(&keys).map_err(|e| e.to_string())?;
+        if let Some(tools) = &official {
+            write_new(&keys.join("public_key.bin"), &fs::read(&tools.public_key).map_err(|e| e.to_string())?)?;
+        } else {
+            generate_local_signing_keys(&keys).map_err(|e| e.to_string())?;
+        }
         let private = keys.join("private_key.pem");
         let public = keys.join("public_key.bin");
         let mut entries = Vec::with_capacity(rows.len());
@@ -355,16 +366,24 @@ pub fn create(
                 let destination = stage.join("paks").join(relative);
                 fs::create_dir_all(destination.parent().ok_or("Staged PAK has no parent")?)
                     .map_err(|e| e.to_string())?;
-                resign_signed_pak_with_original_name(
-                    &authored,
-                    &original_public,
-                    &private,
-                    &public,
-                    &signed_name,
-                    basename,
-                    &destination,
-                )
-                .map_err(|e| format!("Cannot re-sign {relative}: {e}"))?;
+                if official.is_some() {
+                    // Copy only into the isolated stage. A single official 'r'
+                    // below converts the stage exactly once, not on each launch.
+                    if fs::copy(&authored, &destination).map_err(|e| e.to_string())? != *bytes {
+                        return Err(format!("Incomplete copy of {relative} into the official stage"));
+                    }
+                } else {
+                    resign_signed_pak_with_original_name(
+                        &authored,
+                        &original_public,
+                        &private,
+                        &public,
+                        &signed_name,
+                        basename,
+                        &destination,
+                    )
+                    .map_err(|e| format!("Cannot re-sign {relative}: {e}"))?;
+                }
                 signed += 1;
                 ("signed-encrypted", Some(signed_name))
             } else {
@@ -394,9 +413,31 @@ pub fn create(
         if signed == 0 {
             return Err("No signed Stage 2 PAKs were found in the installed game".into());
         }
+        if let Some(tools) = &official {
+            tools.rekey_stage(&stage.join("paks"))?;
+            // The legacy developer tool can report success after per-file
+            // errors. Reauthenticate every converted archive before publishing.
+            for row in &entries {
+                if row.kind == "signed-encrypted" {
+                    let basename = Path::new(&row.path).file_name()
+                        .and_then(|name| name.to_str()).ok_or("Bad staged PAK name")?;
+                    let signed_name = row.signed_name.as_deref().unwrap_or(basename);
+                    inspect_signed_pak(&stage.join("paks").join(&row.path), &public, signed_name)
+                        .map_err(|e| format!("Official signing conversion failed for {}: {e}", row.path))?;
+                }
+            }
+        }
         let shim_dst = stage.join("inject-custom.dll");
-        let shim_report = prepare_client_hook(&original_shim, &original_public, &public, &shim_dst)
-            .map_err(|e| format!("Custom offline injector preparation failed: {e}"))?;
+        let shim_sha = if let Some(tools) = &official {
+            write_new(&shim_dst, &fs::read(&tools.inject).map_err(|e| e.to_string())?)?;
+            let dbghelp = stage.join("dbghelp-custom.dll");
+            write_new(&dbghelp, &fs::read(&tools.dbghelp).map_err(|e| e.to_string())?)?;
+            sha256(&shim_dst)?
+        } else {
+            prepare_client_hook(&original_shim, &original_public, &public, &shim_dst)
+                .map_err(|e| format!("Custom offline injector preparation failed: {e}"))?
+                .custom_sha256
+        };
         json_new(
             &stage.join("rekey_plan.json"),
             &serde_json::json!({
@@ -410,7 +451,9 @@ pub fn create(
             &serde_json::json!({
                 "status": "fully-staged-offline",
                 "count": signed,
-                "shim_sha256": shim_report.custom_sha256,
+                "shim_sha256": shim_sha,
+                "signer": if official.is_some() { "official-2025" } else { "local-custom" },
+                "dbghelp_sha256": if official.is_some() { Some(sha256(&stage.join("dbghelp-custom.dll"))?) } else { None },
             }),
         )?;
         for (name, source) in HELPERS {
