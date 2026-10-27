@@ -449,8 +449,7 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         let secondary_action = if paths_selected {
             design::button("Getting Started").on_press(Message::Navigate(Page::Docs))
         } else {
-            design::button("Open Asset Library")
-                .on_press(Message::Navigate(Page::AssetLibrary))
+            design::button("Open Asset Library").on_press(Message::Navigate(Page::AssetLibrary))
         };
         home_surface(
             row![
