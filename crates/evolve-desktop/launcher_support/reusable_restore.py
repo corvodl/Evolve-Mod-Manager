@@ -22,7 +22,8 @@ def _validate_stranded_clean_state(state):
               if entry.get('kind') == 'signed-encrypted']
     expected = [str(entry['path']).replace('\\', '/') for entry in signed]
     expected.append('bin64_SteamRetail/inject.dll')
-    status = swap.read_json(stage / 'stage_status.json')
+    status_file = stage / 'stage_status.json'
+    status = swap.read_json(status_file) if status_file.is_file() else {}
     if status.get('signer') == 'official-2025':
         expected.append('bin64_SteamRetail/dbghelp.dll')
     if (len(expected) != len(state['files'])
