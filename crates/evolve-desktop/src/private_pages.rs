@@ -168,20 +168,69 @@ fn latest_announcement(state: &State) -> Element<'_, Message> {
 }
 
 pub(super) fn home(state: &State) -> Element<'_, Message> {
-    let hero = surface(column![
-        text("EVOLVE STAGE 2  /  MODDING WORKSPACE").size(12).style(design::accent),
-        text("Make something different.").size(32),
-        text("A unified workspace for CryEngine assets, visual editing, signed PAK builds, and safe offline testing.").size(13),
-        row![
-            design::button("Modding").on_press(Message::Navigate(Page::Files)).style(design::primary),
-            design::button("Asset Library").on_press(Message::Navigate(Page::AssetLibrary)).style(design::secondary),
-            design::button("Docs").on_press(Message::Navigate(Page::Docs)).style(design::secondary),
-        ].spacing(9),
-    ].spacing(11)).padding([25, 28]).style(|theme| container::Style {
-        background: Some(Background::Color(design::surface(theme))),
-        border: Border { color: design::border(theme), width: 1.0, radius: 16.0.into() },
-        ..container::Style::default()
-    });
+    let hero = if let Some(workspace) = super::home_recent_workspace(state) {
+        let project = state.modding_projects.as_ref().and_then(|projects| {
+            projects
+                .iter()
+                .find(|project| project.workspace == workspace ||
+                    project.workspace == std::path::PathBuf::from(&state.preferences.current_workspace))
+        });
+        let label = project.map(|project| project.label.clone()).unwrap_or_else(|| {
+            workspace
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Recent project".into())
+        });
+        let details = project.map(|project| {
+            format!("{} · {} changed file(s)", project.status, project.modified.len())
+        }).unwrap_or_else(|| "Last selected editable project".into());
+        surface(
+            column![
+                text("YOUR WORKBENCH").size(12).style(design::accent),
+                text("Continue where you left off").size(22),
+                row![
+                    svg(Page::Files.icon()).style(design::icon).width(30).height(30),
+                    column![
+                        text(label).size(16),
+                        text(details).size(12).style(design::muted),
+                    ]
+                    .spacing(5),
+                ]
+                .align_y(iced::Center)
+                .spacing(13),
+                row![
+                    design::button("Continue Editing")
+                        .on_press_maybe((!state.busy).then_some(Message::HomeContinueEditing))
+                        .style(design::primary),
+                    design::button("Open Project")
+                        .on_press_maybe((!state.busy).then_some(Message::HomeOpenProject)),
+                ]
+                .spacing(9),
+            ]
+            .spacing(12),
+        )
+        .padding([20, 24])
+    } else {
+        surface(
+            column![
+                text("GETTING STARTED").size(12).style(design::accent),
+                text("Ready to make your first mod?").size(22),
+                text("Start by importing a PAK into the Asset Library, or follow Docs for a guided setup. Your last selected project will appear here once you have one.")
+                    .size(13)
+                    .style(design::muted),
+                row![
+                    design::button("Getting Started")
+                        .on_press(Message::Navigate(Page::Docs))
+                        .style(design::primary),
+                    design::button("Open Asset Library")
+                        .on_press(Message::Navigate(Page::AssetLibrary)),
+                ]
+                .spacing(9),
+            ]
+            .spacing(12),
+        )
+        .padding([20, 24])
+    };
     let quick = column![
         text("PLAY EVOLVE").size(14),
         text(if state.developer_unlocked && state.developer_online_mods {
