@@ -254,7 +254,11 @@ class SwapController:
                 )
                 if state['elevated'] or state['integrity_rid'] != 0x2000:
                     raise RuntimeError('Evolve.exe is not running at standard-user medium integrity')
-                print('Evolve creation released successfully (standard-user token verified).', flush=True)
+                # Keep the original stable completion marker consumed by Rust.
+                # Privilege verification is a separate diagnostic; don't put
+                # qualifiers inside the machine-readable success sentence.
+                print('Evolve.exe standard-user medium-integrity token verified.', flush=True)
+                print('Evolve creation released successfully.', flush=True)
             except Exception as exc:
                 self.failed = 'Evolve.exe privilege verification failed: ' + str(exc)
             self.finished.set()
