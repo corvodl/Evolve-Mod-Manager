@@ -115,7 +115,7 @@ pub fn launch_enabled(
         return Err("Enable at least one mod before pressing Play with Mods.".into());
     }
     if direct_launch {
-        super::direct_runtime::require_ready(&game)?;
+        super::direct_runtime::require_ready(&game, &client)?;
     }
     launcher_bridge::games_closed()?;
     // The former Developer toggle only changed status text. This is the real
@@ -264,7 +264,7 @@ pub fn launch_enabled(
     // files first, starts its restore watchdog, then creates Evolve.exe.
     // Neither mode guarantees profile-server authentication.
     let id = if direct_launch {
-        launcher_bridge::launch_direct_offline_game(&ready, &progress)?
+        launcher_bridge::launch_direct_offline_game(&ready, &client, &progress)?
     } else {
         launcher_bridge::launch_existing_offline_client(&ready, &progress)?
     };
