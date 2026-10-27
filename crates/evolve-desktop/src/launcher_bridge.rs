@@ -1999,6 +1999,9 @@ mod tests {
         fs::create_dir(&swap).unwrap();
         fs::write(stage.join("paks/Game/libs.pak"), b"signed staged archive").unwrap();
         fs::write(stage.join("inject-custom.dll"), b"stage hook bytes").unwrap();
+        // Recovery validation also checks signer metadata when deciding
+        // whether the optional official dbghelp.dll belongs in the journal.
+        fs::write(stage.join("stage_status.json"), br#"{"signer":"local-custom"}"#).unwrap();
         fs::write(
             stage.join("rekey_plan.json"),
             serde_json::to_vec(&serde_json::json!({
