@@ -115,7 +115,7 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
                     .on_press(Message::PreferenceGameLaunchMode("Direct Launch"))
                     .style(if state.preferences.game_launch_mode == "Direct Launch" { design::primary } else { design::secondary }),
             ].spacing(8),
-            text("Direct Launch is still under Windows/runtime verification and is blocked before game-file changes. The original client must provide Steam compatibility and profile services. Select Client Launch to play until Direct Launch passes end-to-end testing.")
+            text("Direct Launch is experimental and enabled for live testing. Both Play buttons start the game directly when selected; the manager reports missing runtime components or recovery errors instead of disabling the feature. Client Launch remains available.")
                 .size(11).style(design::muted),
             text("Game location (EvolveGame or bin64_SteamRetail)").size(12),
             row![
