@@ -8,6 +8,8 @@ use crate::runtime_memory::{self, Snapshot};
 const PAGE_BYTES: usize = 4096;
 const MAX_CANDIDATES: usize = PAGE_BYTES / 4;
 
+// The legacy guided memory scanner remains available internally but is no longer in the Developer UI.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Kind {
     Float,
@@ -23,6 +25,8 @@ impl Kind {
     }
 }
 
+// The legacy guided memory scanner remains available internally but is no longer in the Developer UI.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Filter {
     Decreased,
