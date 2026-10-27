@@ -539,9 +539,10 @@ mod tests {
         // The SHA-256 reported by a Nightly user exactly matches the
         // controlled_swap.py published at commit 43ccad26. Never accept
         // arbitrary Python helper content simply to bypass migration.
-        assert!(KNOWN_CONTROLLED_SWAP_SHA256.contains(
-            &"fdabe24e1b5659c04a93c4240e50b4c6fcd482a0da1dff08ac86816cd3227341"
-        ));
+        assert!(
+            KNOWN_CONTROLLED_SWAP_SHA256
+                .contains(&"fdabe24e1b5659c04a93c4240e50b4c6fcd482a0da1dff08ac86816cd3227341")
+        );
     }
 
     #[test]
