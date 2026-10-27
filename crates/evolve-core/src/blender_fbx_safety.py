@@ -258,12 +258,13 @@ def _store_fbx_vectors(node, vectors):
 
 
 def _repair_zero_tangent_vectors(objects):
-    """Repair only zero Blender FBX tangent/binormal vectors.
+    """Repair undefined Blender FBX tangent/binormal vectors, not source normals.
 
-    Blender can emit literal zero vectors at a collapsed UV triangle, even
-    though the CryEngine surface normals, material IDs, UV0 and skin weights
-    are still valid. Never substitute missing or degenerate *normals*, and
-    never modify valid tangent-space vectors or source mesh geometry.
+    Blender may emit zero or very small nonzero TBN vectors on collapsed UV
+    triangles (float residuals make an exact-zero check insufficient). Only
+    vectors with squared magnitude <= 1e-6 are considered undefined; valid
+    vectors, imported CryEngine normals, UV0, geometry and skinning stay intact.
+    A valid perpendicular partner anchors the replacement when available.
     """
     repaired = 0
     for mesh in objects.children_named(b"Geometry"):
@@ -300,8 +301,10 @@ def _repair_zero_tangent_vectors(objects):
                 continue
             if not (0.1 < _vector_length_squared(n) < 2.1):
                 continue
-            t_zero = _vector_length_squared(t) < 1e-12
-            b_zero = _vector_length_squared(b) < 1e-12
+            # Rounded float residuals at singular UV corners can be nonzero
+            # while remaining far below the unit-length validation threshold.
+            t_zero = _vector_length_squared(t) <= 1e-6
+            b_zero = _vector_length_squared(b) <= 1e-6
             if not (t_zero or b_zero):
                 continue
             n = _unit(n)
@@ -313,13 +316,19 @@ def _repair_zero_tangent_vectors(objects):
                 # missing partner. Reject parallel/inconsistent inputs.
                 if not 0.1 < _vector_length_squared(b) < 2.1:
                     continue
-                replacement_t = _unit(_cross(_unit(b), n))
+                candidate = _cross(_unit(b), n)
+                if _vector_length_squared(candidate) <= 1e-6:
+                    continue  # Partner cannot define a perpendicular axis.
+                replacement_t = _unit(candidate)
                 replacement_b = None
             else:
                 if not 0.1 < _vector_length_squared(t) < 2.1:
                     continue
+                candidate = _cross(n, _unit(t))
+                if _vector_length_squared(candidate) <= 1e-6:
+                    continue
                 replacement_t = None
-                replacement_b = _unit(_cross(n, _unit(t)))
+                replacement_b = _unit(candidate)
             if replacement_t is not None:
                 new_tangents[index:index+3] = replacement_t
                 changes_t += 1
@@ -380,7 +389,9 @@ def _validate_geometry(objects, require_tangent_space=False):
                             raise FBXValidationError(
                                 "FBX has degenerate normal/tangent-space vectors: "
                                 + element.decode() + " on " + identity
-                                + " at vector " + str(i // 3))
+                                + " at vector " + str(i // 3)
+                                + " (length squared=" + format(magnitude, ".8g")
+                                + ", components=" + repr(tuple(vectors[i:i+3])) + ")")
         for layer in layers:
             uv_node = layer.get(b"UV")
             if uv_node is None:
