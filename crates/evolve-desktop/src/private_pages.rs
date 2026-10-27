@@ -698,6 +698,26 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
     }
 }
 
+#[cfg(test)]
+mod home_layout_tests {
+    use super::short_client_version;
+
+    #[test]
+    fn client_build_is_short_but_release_is_preserved() {
+        assert_eq!(
+            short_client_version("0.1.95+b45fa23dbded9764d99cd3e021ba40fb8e6d3a93"),
+            "v0.1.95 · b45fa23d"
+        );
+        assert_eq!(short_client_version("1.2.3"), "v1.2.3");
+    }
+
+    #[test]
+    fn older_long_versions_are_bounded() {
+        let displayed = short_client_version("012345678901234567890123456789");
+        assert_eq!(displayed, "v012345678901234567890123…");
+    }
+}
+
 fn docs_spec(
     section: DocsSection,
 ) -> (
