@@ -595,6 +595,22 @@ fn profiles(state: &State) -> Element<'_, Message> {
             ]
             .spacing(8),
             scrollable(catalog).height(Length::Fixed(110.0)),
+            text(format!(
+                "Staged target: {}",
+                if state.input.is_empty() {
+                    "Select a PAK in the archive browser"
+                } else {
+                    &state.input
+                }
+            ))
+                .size(12)
+                .style(design::muted),
+            design::text_input(
+                "Signed PAK file to add to selected staged target…",
+                &state.profile_source,
+            )
+            .on_input(Message::ProfileSourceChanged)
+            .width(Fill),
             row![
                 design::button("Add signed PAK")
                     .style(design::secondary)
@@ -613,6 +629,9 @@ fn profiles(state: &State) -> Element<'_, Message> {
                     .on_press(Message::StartProfileRecover),
             ]
             .spacing(8),
+            text("A signed PAK with added members can be registered here. Verify and apply it to the isolated stage, then use Tools → Play with mods (existing private helper). The main Play with Mods button builds enabled projects instead. The launcher still requires authenticated original game PAKs; never overwrite a live PAK to make this check pass.")
+                .size(12)
+                .style(design::muted),
             text(state.profile_feedback.as_str())
                 .size(12)
                 .style(design::muted)

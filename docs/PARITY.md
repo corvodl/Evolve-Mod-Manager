@@ -149,6 +149,8 @@ The page now mirrors the private Qt manager's **project-first workflow** instead
   `source-folder` is the archive root (its relative paths become member names), not a parent directory containing `Game/`. The output directory must exist and its destination must not; use the archive's exact signed basename even if the on-disk filename has different capitalization.
 
   `evolve-cli stage apply-add <stage> <replacement.pak> <target-relative.pak> <original.der> <replacement.der> <basename>` modifies **only the isolated stage**, rejecting missing original members, case-only renames, and an unchanged member inventory. `stage restore <stage>` restores the verified original. This is not a live-game installer.
+
+  For an externally built signed PAK, the desktop manager's **Installed Mods / Profiles** panel now has a separate source-file field: select its staged target PAK in the archive browser, enter the external signed PAK path, create/select a profile, then **Add signed PAK → Verify selected → Apply to offline stage**. The manual profile uses the advanced **Tools → Play with mods (existing private helper)** action, not the main enabled-project Play button. Profile verification passes the original and custom public keys separately. The existing private launcher independently authenticates the exact installed original PAKs and refuses unknown-key/changed live files; profile registration alone does not install anything. Archive additions have been authenticated and staged, but the game loading them has not been verified.
 - The UI no longer requests PEM, DER or basename manually. No private keys are included in the repository, executable or update downloads.
 
 ## Rust/Iced/wgpu interactive GUI improvements (development preview)
