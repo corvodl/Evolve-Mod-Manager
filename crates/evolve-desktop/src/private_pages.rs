@@ -173,11 +173,7 @@ fn tile(name: &'static str, description: &'static str, page: Page) -> Element<'s
     .into()
 }
 
-fn status_card<'a>(
-    label: &'static str,
-    value: String,
-    wallpaper: bool,
-) -> Element<'a, Message> {
+fn status_card<'a>(label: &'static str, value: String, wallpaper: bool) -> Element<'a, Message> {
     home_surface(
         column![
             text(label).size(13),
@@ -255,7 +251,9 @@ fn latest_announcement(state: &State, wallpaper: bool) -> Element<'_, Message> {
                 details = details.push(text(excerpt).size(12));
             }
         }
-        if let Some(url) = post.image_urls.iter()
+        if let Some(url) = post
+            .image_urls
+            .iter()
             .find(|url| crate::whats_new::allowed_image_url(url))
         {
             if let Some(handle) = news.image_handles.get(url) {
@@ -271,12 +269,12 @@ fn latest_announcement(state: &State, wallpaper: bool) -> Element<'_, Message> {
                 );
             } else if news.image_failures.contains(url) {
                 details = details.push(
-                    text("Image preview unavailable").size(11).style(design::muted)
+                    text("Image preview unavailable")
+                        .size(11)
+                        .style(design::muted),
                 );
             } else {
-                details = details.push(
-                    text("Loading image…").size(11).style(design::muted)
-                );
+                details = details.push(text("Loading image…").size(11).style(design::muted));
             }
         }
     } else {
@@ -292,7 +290,10 @@ fn latest_announcement(state: &State, wallpaper: bool) -> Element<'_, Message> {
     }
 
     let body: Element<'_, Message> = if let Some(preview) = preview {
-        row![details, preview].spacing(16).align_y(iced::Center).into()
+        row![details, preview]
+            .spacing(16)
+            .align_y(iced::Center)
+            .into()
     } else {
         details.into()
     };
