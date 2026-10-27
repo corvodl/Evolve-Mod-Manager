@@ -47,6 +47,30 @@ class HomeBannerAssetTests(unittest.TestCase):
         self.assertNotIn("Length::Fixed(280.0)", home)
         self.assertNotIn("column![container(picture)", home)
 
+    def test_home_keeps_background_but_brings_workspace_into_view(self):
+        code = (ROOT / "crates/evolve-desktop/src/private_pages.rs").read_text()
+        home = code.split("pub(super) fn home(state: &State)", 1)[1].split(
+            "fn docs_spec(", 1
+        )[0]
+        self.assertIn("stack![background, shade, content]", home)
+        self.assertIn("home_play_surface(quick)", home)
+        self.assertIn(".spacing(13)", home)
+        self.assertIn("paths_selected", home)
+        self.assertIn("Create your first mod", home)
+        self.assertNotIn("Length::Fixed(280.0)", home)
+
+    def test_home_news_is_thumbnail_and_art_is_brighter(self):
+        code = (ROOT / "crates/evolve-desktop/src/private_pages.rs").read_text()
+        news = code.split("fn latest_announcement(", 1)[1].split(
+            "fn home_banner(", 1
+        )[0]
+        self.assertIn("post.image_urls.iter().take(1)", news)
+        self.assertIn("Length::Fixed(125.0)", news)
+        self.assertIn(".max_width(760.0)", news)
+        self.assertIn('Page::WhatsNew', news)
+        self.assertIn("as u16 * 59 / 100", code)
+        self.assertIn("backdrop.a = 0.88", code)
+
     def test_portable_nightly_includes_banner(self):
         source = (ROOT / ".github/workflows/nightly.yml").read_text()
         self.assertIn('"assets/default_loading.dds"', source)
