@@ -12,6 +12,9 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import json
+import time
+import uuid
 
 import controlled_swap as swapper
 import direct_standard_user_launch as standard_user_launch
@@ -104,67 +107,132 @@ def start_restore_watchdog():
     return child.pid
 
 
-def launch_direct(game_root, stage_root):
-    game = _ordinary(game_root)
-    stage = _ordinary(stage_root)
-    exe = game / "bin64_SteamRetail" / "Evolve.exe"
-    if not _regular(exe):
-        raise RuntimeError("Installed Evolve.exe was not found.")
-    state = validate_prepared(game, stage)
-    try:
-        rename_prepared_into_game(state)
-    except Exception as swap_error:
-        # Evolve.exe does not exist yet. Immediately attempt the vetted
-        # original-file recovery; never discard journal/backups on failure.
-        from reusable_restore import main as restore
-        if restore() != 0:
-            raise RuntimeError(
-                f"Pre-launch swap failed ({swap_error}); automatic restore also failed. "
-                "Do not relaunch until originals are recovered.") from swap_error
-        raise RuntimeError(
-            f"Pre-launch swap failed ({swap_error}); originals restored.") from swap_error
-    try:
-        watch_pid = start_restore_watchdog()
-    except Exception as problem:
-        # No game exists yet; best-effort immediate rollback through the
-        # existing verified restoration helper, never delete backups.
-        try:
-            from reusable_restore import main as restore
-            if restore() != 0:
-                raise RuntimeError("Restoration helper reported an error.")
-        except Exception as recovery:
-            raise RuntimeError(
-                f"Watchdog unavailable ({problem}); recovery failed ({recovery}). "
-                "Do not launch again until originals are restored.") from problem
-        raise RuntimeError(f"Watchdog unavailable ({problem}); originals restored.") from problem
+def start_runtime_supervisor(client_exe, game_exe, swap_dir):
+    """Start the independent session host before modifying any installed PAK."""
+    swap=Path(swap_dir).resolve(strict=True)
+    session=swap/("direct-runtime-"+uuid.uuid4().hex)
+    session.mkdir(mode=0o700)
+    script=Path(__file__).with_name("direct_runtime_supervisor.py")
+    if not _regular(script):
+        raise RuntimeError("The direct runtime service supervisor was not installed")
+    log=swap/"rust-direct-runtime-supervisor.log"
+    creationflags=(getattr(subprocess,"DETACHED_PROCESS",0) |
+                   getattr(subprocess,"CREATE_NEW_PROCESS_GROUP",0) |
+                   getattr(subprocess,"CREATE_NO_WINDOW",0))
+    with log.open("ab") as output:
+        process=subprocess.Popen(
+            [sys.executable,"-u",str(script),"--client",str(client_exe),
+             "--game",str(game_exe),"--swap",str(swap),"--session",str(session)],
+            cwd=str(swap),stdin=subprocess.DEVNULL,stdout=output,
+            stderr=subprocess.STDOUT,close_fds=True,creationflags=creationflags)
+    deadline=time.monotonic()+65
+    while time.monotonic()<deadline:
+        if (session/"error.json").is_file():
+            detail=json.loads((session/"error.json").read_text())
+            raise RuntimeError("SteamCompat/profile service startup failed: "+str(detail.get("error","unknown")))
+        if (session/"ready.json").is_file():
+            state=json.loads((session/"ready.json").read_text())
+            if state.get("service_pid",0)>0 and all(
+                Path(state[field]).is_file()
+                for field in ("trace","steam_compat")
+            ) and state.get("modes"):
+                return session,state
+            raise RuntimeError("Runtime host returned incomplete compatibility initialization")
+        if process.poll() is not None:
+            raise RuntimeError("Runtime service supervisor exited before the game was ready")
+        time.sleep(.25)
+    (session/"cancel").write_text("cancel")
+    raise RuntimeError("Runtime profile/Steam compatibility initialization timed out; PAK files were not swapped")
 
+
+def environment_for_session(state, swap):
+    """Use live host-advertised mode/config locations, never private IDs."""
+    swap=Path(swap)
+    return {
+        "MODDED_EVOLVE_GAME":"stage2",
+        "MODDED_EVOLVE_DIRECT":"0",
+        "MODDED_EVOLVE_DIRECT_BROKER":"",
+        "MODDED_EVOLVE_DIRECT_STUN":"",
+        "MODDED_EVOLVE_RELAY":"",
+        "MODDED_EVOLVE_RELAY_TOKEN":"",
+        "MODDED_EVOLVE_STAGE2_FRONTEND":"127.0.0.1:2000",
+        "MODDED_EVOLVE_STAGE2_MODES":state["modes"],
+        "MODDED_EVOLVE_STAGE2_CATALOG":state["catalog"],
+        "MODDED_EVOLVE_STAGE2_LOG":str(swap/"rust-direct-stage2-hook.log"),
+        "MODDED_EVOLVE_OVERLAY":"0",
+        "MODDED_EVOLVE_OVERLAY_LOG":str(swap/"rust-direct-overlay.log"),
+        "MODDED_EVOLVE_STEAM_EMU_DLL":state["steam_compat"],
+        "MODDED_EVOLVE_COMPAT_TELEMETRY_PATH":str(swap/"rust-direct-provider-telemetry.json"),
+    }
+
+
+def launch_direct(game_root, stage_root=None, client_exe=None, swap_dir=None, clean=False):
+    game=_ordinary(game_root)
+    exe=game/"bin64_SteamRetail"/"Evolve.exe"
+    if not _regular(exe):
+        raise RuntimeError("Installed Evolve.exe was not found")
+    if not client_exe or not swap_dir:
+        raise RuntimeError("Direct Launch requires the original client runtime to host profile and Steam services")
+    swap=Path(swap_dir).resolve(strict=True)
+    session=None
+    watchdog=None
+    swapped=False
     try:
-        process = standard_user_launch.launch_standard_user(exe, game=True)
+        # Run services/identity/profile bootstrap while originals are installed.
+        # Only a successful services host may proceed to the PAK swap.
+        session,state=start_runtime_supervisor(client_exe,exe,swap)
+        if not clean:
+            prepared=validate_prepared(game,stage_root)
+            rename_prepared_into_game(prepared)
+            swapped=True
+            watchdog=start_restore_watchdog()
+        else:
+            swapper.all_closed()
         try:
-            print(f"DIRECT_GAME_LAUNCHED pid={process.pid} watchdog={watch_pid} swap_complete=true",
-                  flush=True)
-            return 0
-        finally:
-            process.close()  # Closes only our handle; game continues running.
-    except Exception as error:
-        # Watchdog remains independently alive and restores when all game and
-        # launcher processes are gone, even if the manager itself exits.
-        raise RuntimeError(
-            f"Game creation failed ({error}); the active restore watchdog "
-            f"(PID {watch_pid}) will restore originals. Do not relaunch until restored.") from error
+            process=standard_user_launch.launch_standard_user(
+                exe,game=True,trace_dll=state["trace"],
+                runtime_env=environment_for_session(state,swap))
+            try:
+                (session/"game.pid").write_text(str(process.pid)+"\n")
+                print(f"DIRECT_GAME_LAUNCHED pid={process.pid} "
+                      f"watchdog={watchdog or 0} swap_complete={str(swapped).lower()} "
+                      "services_ready=true trace_loaded=true",flush=True)
+                return 0
+            finally:
+                process.close()
+        except BaseException as error:
+            raise RuntimeError(
+                f"Suspended game startup failed ({error}); Stage2 services will stop. "
+                "Original PAK restoration remains owned by the detached watchdog."
+            ) from error
+    except BaseException:
+        if session is not None:
+            (session/"cancel").write_text("cancel")
+        if swapped and watchdog is None:
+            # No watchdog was armed. The game was never created; restore now,
+            # leaving any unknown backup/journal state untouched on failure.
+            from reusable_restore import main as restore
+            if restore()!=0:
+                raise RuntimeError("Direct launch failed and immediate original-file recovery failed. Do not launch again before recovery.")
+        raise
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--game-root", required=True)
-    parser.add_argument("--stage-dir", required=True)
-    args = parser.parse_args(argv)
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--game-root",required=True)
+    parser.add_argument("--stage-dir")
+    parser.add_argument("--client-exe",required=True)
+    parser.add_argument("--swap-dir",required=True)
+    parser.add_argument("--clean",action="store_true")
+    args=parser.parse_args(argv)
     try:
-        return launch_direct(args.game_root, args.stage_dir)
-    except Exception as error:
-        print(f"DIRECT_LAUNCH_FAILED: {error}", file=sys.stderr, flush=True)
+        if not args.clean and not args.stage_dir:
+            raise RuntimeError("A verified signing stage is required for modded direct play")
+        return launch_direct(args.game_root,args.stage_dir,args.client_exe,args.swap_dir,args.clean)
+    except BaseException as error:
+        print(f"DIRECT_LAUNCH_FAILED: {error}",file=sys.stderr,flush=True)
         return 1
 
 
-if __name__ == "__main__":
+if __name__=="__main__":
     sys.exit(main())
