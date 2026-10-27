@@ -13,6 +13,7 @@ import ctypes
 from ctypes import wintypes
 import os
 from pathlib import Path
+import msvcrt
 import subprocess
 import sys
 
@@ -248,7 +249,7 @@ def _inject_stage2_trace(api, process_info, dll_path):
         api["VirtualFreeEx"](process_info.hProcess, remote, 0, 0x8000)
 
 
-def launch_standard_user(executable, *, game=False, args=(), trace_dll=None, runtime_env=None):
+def launch_standard_user(executable, *, game=False, args=(), trace_dll=None, runtime_env=None, log_path=None):
     if trace_dll and not game:
         raise ValueError("Stage2Trace injection is restricted to Evolve.exe")
     if not game and args and (list(args)[0] != "--stage2-smoke"
@@ -318,6 +319,15 @@ def launch_standard_user(executable, *, game=False, args=(), trace_dll=None, run
             startup = STARTUPINFOW()
             startup.cb = ctypes.sizeof(startup)
             startup.lpDesktop = "winsta0\\default"
+            output_stream = None
+            if log_path is not None:
+                output_stream = open(Path(log_path).resolve(), "ab", buffering=0)
+                handle = msvcrt.get_osfhandle(output_stream.fileno())
+                os.set_handle_inheritable(handle, True)
+                startup.dwFlags |= 0x00000100
+                startup.hStdOutput = wintypes.HANDLE(handle)
+                startup.hStdError = wintypes.HANDLE(handle)
+                startup.hStdInput = wintypes.HANDLE(0)
             info = PROCESS_INFORMATION()
             command = ctypes.create_unicode_buffer(subprocess.list2cmdline([str(exe), *map(str, args)]))
             # Direct game launch reproduces the three Steam IDs recorded in
@@ -359,6 +369,8 @@ def launch_standard_user(executable, *, game=False, args=(), trace_dll=None, run
                 raise _error("CreateProcessWithTokenW")
         finally:
             api["DestroyEnvironmentBlock"](env)
+            if output_stream is not None:
+                output_stream.close()
     finally:
         api["CloseHandle"](primary)
 
