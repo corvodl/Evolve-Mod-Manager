@@ -207,28 +207,28 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
             row![
                 column![
                     text("YOUR WORKBENCH").size(12).style(design::accent),
-                text("Continue where you left off").size(22),
-                row![
-                    svg(Page::Files.icon())
-                        .style(design::icon)
-                        .width(30)
-                        .height(30),
-                    column![
-                        text(label).size(16),
-                        text(details).size(12).style(design::muted),
+                    text("Continue where you left off").size(22),
+                    row![
+                        svg(Page::Files.icon())
+                            .style(design::icon)
+                            .width(30)
+                            .height(30),
+                        column![
+                            text(label).size(16),
+                            text(details).size(12).style(design::muted),
+                        ]
+                        .spacing(5),
                     ]
-                    .spacing(5),
-                ]
-                .align_y(iced::Center)
-                .spacing(13),
-                row![
-                    design::button("Continue Editing")
-                        .on_press_maybe((!state.busy).then_some(Message::HomeContinueEditing))
-                        .style(design::primary),
-                    design::button("Open Project")
-                        .on_press_maybe((!state.busy).then_some(Message::HomeOpenProject)),
-                ]
-                .spacing(9),
+                    .align_y(iced::Center)
+                    .spacing(13),
+                    row![
+                        design::button("Continue Editing")
+                            .on_press_maybe((!state.busy).then_some(Message::HomeContinueEditing))
+                            .style(design::primary),
+                        design::button("Open Project")
+                            .on_press_maybe((!state.busy).then_some(Message::HomeOpenProject)),
+                    ]
+                    .spacing(9),
                 ]
                 .spacing(12)
                 .width(Fill),
