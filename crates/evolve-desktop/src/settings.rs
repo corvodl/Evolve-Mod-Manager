@@ -377,7 +377,11 @@ mod tests {
     fn legacy_theme_is_optional_and_restores_previous_modern_customizations() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("settings.json");
-        fs::write(&file, r##"{"appearance_mode":"Light","appearance_colors":{"accent":"#123456"}}"##).unwrap();
+        fs::write(
+            &file,
+            r##"{"appearance_mode":"Light","appearance_colors":{"accent":"#123456"}}"##,
+        )
+        .unwrap();
         let mut settings = load_from(&file).unwrap();
         assert_eq!(settings.ui_theme, "Modern");
         assert_eq!(settings.appearance_mode, "Light");
