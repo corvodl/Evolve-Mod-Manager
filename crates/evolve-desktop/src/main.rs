@@ -1638,6 +1638,8 @@ enum Message {
     ModdingSelectImported(usize),
     ModdingReloadLibrary,
     ModdingOpenProject,
+    HomeContinueEditing,
+    HomeOpenProject,
     ModdingKind(Option<evolve_core::mod_safety::ModKind>),
     GuidedEdit(guided_modding::Action),
     ModdingReviewChanges,
@@ -2846,8 +2848,71 @@ fn refresh_viewer_rows(state: &mut State) {
     state.viewer_rows = visible;
 }
 
+/// Resolve the last selected editable project from the configured projects root.
+/// A stale, removed or unrelated path must not produce a working Home shortcut.
+fn home_recent_workspace(state: &State) -> Option<PathBuf> {
+    let workspace = PathBuf::from(state.preferences.current_workspace.trim());
+    let project_root = PathBuf::from(state.preferences.projects.trim());
+    if workspace.as_os_str().is_empty() || project_root.as_os_str().is_empty() {
+        return None;
+    }
+    let root = std::fs::canonicalize(project_root).ok()?;
+    let path = std::fs::canonicalize(workspace).ok()?;
+    if path == root || !path.starts_with(&root) || !path.is_dir() {
+        return None;
+    }
+    Some(path)
+}
+
 fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
+        Message::HomeContinueEditing | Message::HomeOpenProject => {
+            if state.busy {
+                state.status = "Finish the current operation before opening a project.".into();
+                return Task::none();
+            }
+            let Some(path) = home_recent_workspace(state) else {
+                state.status = "The previous project is no longer available. Open Modding to choose a project.".into();
+                return update(state, Message::Navigate(Page::Files));
+            };
+            let continue_editing = matches!(message, Message::HomeContinueEditing);
+            state.page = Some(Page::Files);
+            state.modding_filter.clear();
+            state.modding_kind = None;
+            if let Some(index) = state.modding_projects.as_ref().and_then(|projects| {
+                projects.iter().position(|p| {
+                    std::fs::canonicalize(&p.workspace).ok().as_deref() == Some(path.as_path())
+                })
+            }) {
+                state.modding_selected = Some(index);
+                state.modding_page = index / modding_page::PAGE;
+                state.modding_changes_page = 0;
+                if let Some(project) = state.modding_projects.as_ref().and_then(|p| p.get(index)) {
+                    state.modding_name_input = project.label.clone();
+                    state.status = format!("Opened {} in Modding.", project.label);
+                }
+                if continue_editing {
+                    return update(state, Message::ModdingOpenProject);
+                }
+                return Task::none();
+            }
+            if state.preferences.projects.trim().is_empty() {
+                state.status = "Configure a Projects folder in Settings first.".into();
+                return Task::none();
+            }
+            if continue_editing {
+                // Project index completion validates the workspace and opens
+                // its extracted files; never scan an unindexed arbitrary folder.
+                state.modding_pending_focus = Some(path);
+            }
+            return launch(
+                state,
+                Operation::IndexProjects(
+                    PathBuf::from(&state.preferences.projects),
+                    PathBuf::from(&state.preferences.stage),
+                ),
+            );
+        }
         Message::Navigate(page) => {
             state.page = Some(page);
             let mut tasks = Vec::new();
@@ -8780,7 +8845,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                                 state.modding_projects.as_ref().and_then(|old| old.get(i))
                             })
                             .map(|p| p.workspace.clone())
-                    });
+                    }).or_else(|| home_recent_workspace(state));
                     state.modding_selected =
                         previous.and_then(|path| projects.iter().position(|p| p.workspace == path));
                     state.status = format!("Loaded {} editable project(s).", projects.len());
@@ -12349,6 +12414,24 @@ mod project_edit_tests {
         assert!(!state.busy);
         assert!(state.status.contains("do not belong"));
     }
+    #[test]
+    fn home_project_shortcut_rejects_missing_or_outside_workspaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_root = dir.path().join("Projects");
+        let recent = project_root.join("SampleProject");
+        let unrelated = dir.path().join("OtherProject");
+        std::fs::create_dir_all(&recent).unwrap();
+        std::fs::create_dir_all(&unrelated).unwrap();
+        let mut state = State::default();
+        state.preferences.projects = project_root.to_string_lossy().into_owned();
+        state.preferences.current_workspace = recent.to_string_lossy().into_owned();
+        assert_eq!(home_recent_workspace(&state), Some(recent.canonicalize().unwrap()));
+        state.preferences.current_workspace = unrelated.to_string_lossy().into_owned();
+        assert!(home_recent_workspace(&state).is_none());
+        state.preferences.current_workspace = dir.path().join("missing").to_string_lossy().into_owned();
+        assert!(home_recent_workspace(&state).is_none());
+    }
+
     #[test]
     fn docs_sections_can_expand_and_collapse_independently() {
         let mut state = initial_state();
