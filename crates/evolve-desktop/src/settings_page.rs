@@ -114,7 +114,7 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
                     .on_press(Message::PreferenceGameLaunchMode("Direct Launch"))
                     .style(if state.preferences.game_launch_mode == "Direct Launch" { design::primary } else { design::secondary }),
             ].spacing(8),
-            text("Both Play buttons follow this setting. Direct Launch uses an isolated, version-pinned client service host and loads Stage2Trace before game startup. Unsupported client versions are rejected. Client Launch remains the proven fallback.")
+            text("Direct Launch is still under Windows/runtime verification and is blocked before game-file changes. The original client must provide Steam compatibility and profile services. Select Client Launch to play until Direct Launch passes end-to-end testing.")
                 .size(11).style(design::muted),
             text("Game location (EvolveGame or bin64_SteamRetail)").size(12),
             row![
