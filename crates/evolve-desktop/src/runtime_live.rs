@@ -10,6 +10,8 @@ const MIN_USER_ADDRESS: usize = 0x10000;
 const MAX_USER_ADDRESS: usize = 0x0000_7FFF_FFFF_FFFC;
 const MAX_WRITE_VALUE: f32 = 100_000.0;
 
+// Legacy manual Float32 actions are retained for compatibility but hidden by the new actor UI.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Source {
     VerifiedArmor,
