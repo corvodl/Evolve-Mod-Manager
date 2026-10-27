@@ -120,7 +120,12 @@ const NIGHTLY_60_CONTROLLED_SWAP_SHA256: &str =
 // still have this helper; migrate it rather than failing modded launch.
 const PRE_OFFICIAL_CONTROLLED_SWAP_SHA256: &str =
     "fdabe24e1b5659c04a93c4240e50b4c6fcd482a0da1dff08ac86816cd3227341";
+// The full-inventory helper immediately before experimental sparse profile swaps.
+// Only auto-migrate this exact published source; never replace user edits.
+const PRE_SPARSE_CONTROLLED_SWAP_SHA256: &str =
+    "1b40d8a9e17cef3df82ca9a776f134319223219e59e33b117672d91e9219e0a2";
 const KNOWN_CONTROLLED_SWAP_SHA256: &[&str] = &[
+    PRE_SPARSE_CONTROLLED_SWAP_SHA256,
     PREVIOUS_CONTROLLED_SWAP_SHA256,
     NIGHTLY_60_CONTROLLED_SWAP_SHA256,
     PRE_OFFICIAL_CONTROLLED_SWAP_SHA256,

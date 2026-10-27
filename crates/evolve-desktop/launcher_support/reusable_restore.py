@@ -18,8 +18,7 @@ def _validate_stranded_clean_state(state):
     plan = swap.read_json(stage / 'rekey_plan.json')
     if Path(plan['source_root']).resolve(strict=True) != game:
         raise RuntimeError('Recovery journal and signed game baseline differ')
-    signed = [entry for entry in plan['entries']
-              if entry.get('kind') == 'signed-encrypted']
+    signed = swap.selected_signed_entries(stage, plan)
     expected = [str(entry['path']).replace('\\', '/') for entry in signed]
     expected.append('bin64_SteamRetail/inject.dll')
     status_file = stage / 'stage_status.json'
