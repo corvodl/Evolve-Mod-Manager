@@ -95,20 +95,15 @@ fn mib(bytes: u64) -> String {
 }
 
 fn game_client_setup(state: &State) -> Element<'_, Message> {
-    let paths_ok = if state.preferences.game_launch_mode == "Direct Launch" {
-        crate::play_setup::game_root(&state.preferences.game_installation).is_ok()
-    } else {
-        crate::play_setup::validate_paths(
-            &state.preferences.game_installation,
-            &state.preferences.client_executable,
-        )
-        .is_ok()
-    };
+    let paths_ok = crate::play_setup::validate_paths(
+        &state.preferences.game_installation,
+        &state.preferences.client_executable,
+    ).is_ok();
     panel(
         column![
             heading(
                 "SET UP MANAGER / INSTALLED GAME",
-                "Direct Launch is the default and needs only the installed EvolveGame directory; Client Launch additionally needs ModdedEvolveLauncher.exe."
+                "Both launch modes use the installed game and client files. Direct Launch uses the client's compatibility/profile services in a separate host."
             ),
             text("GAME LAUNCH METHOD").size(12),
             row![
@@ -119,7 +114,7 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
                     .on_press(Message::PreferenceGameLaunchMode("Direct Launch"))
                     .style(if state.preferences.game_launch_mode == "Direct Launch" { design::primary } else { design::secondary }),
             ].spacing(8),
-            text("Both Play buttons follow this setting. Direct Launch is currently blocked: it needs a standalone Steam compatibility and profile-service host plus Stage2Trace initialization. Choose Client Launch for working game startup until that integration is complete.")
+            text("Both Play buttons follow this setting. Direct Launch uses an isolated, version-pinned client service host and loads Stage2Trace before game startup. Unsupported client versions are rejected. Client Launch remains the proven fallback.")
                 .size(11).style(design::muted),
             text("Game location (EvolveGame or bin64_SteamRetail)").size(12),
             row![
@@ -133,7 +128,7 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
                     .style(design::secondary),
             ]
             .spacing(8),
-            text("Client executable (only required for Client Launch)").size(12),
+            text("Installed client executable (also supplies Direct Launch services)").size(12),
             row![
                 design::text_input(
                     r"C:\Users\billn\AppData\Local\Programs\Modded Evolve\ModdedEvolveLauncher.exe",
@@ -147,12 +142,12 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
             .spacing(8),
             text(if paths_ok {
                 if state.preferences.game_launch_mode == "Direct Launch" {
-                    "Installed game verified. Direct modded play also needs a prepared signing stage and recovery helper."
+                    "Game and compatible client selected. Direct modded play also needs verified signing and recovery files."
                 } else {
                     "Installed game and client found. Modded play also requires a verified signing stage."
                 }
             } else if state.preferences.game_launch_mode == "Direct Launch" {
-                "Select a valid EvolveGame installation, then save."
+                "Select valid game and client paths for Steam/profile services, then save."
             } else {
                 "Choose valid game and client paths, then save."
             })
