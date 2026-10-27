@@ -12,6 +12,7 @@ $componentHashes = @{
   'inject/inject.dll' = '62da468d2a8d98edfc5f9e9e1f6d7f74ca2a9d00712bfa8f163d674ec15ded91'
   'inject/dbghelp.dll' = '937f09c6eba49294f2d5495e7b4065aeae66047d65e7cc92bab92c8a702f74aa'
   'inject/RSAKeyData.bin' = 'cec8d89e39db3f10d5f6cff984f713fe59cf84914f2df1294a27daeb21c42c18'
+  'LICENSE-BOUNCYCASTLE.html' = '96bf2877756c135014a20942b1060d9850b047ee59f9becd5b4c0e574733d5ed'
 }
 
 if (!(Test-Path -LiteralPath $Archive -PathType Leaf)) { throw 'Developer archive missing.' }
@@ -26,7 +27,10 @@ New-Item -Path $dest -ItemType Directory -Force | Out-Null
 $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $Archive).Path)
 try {
   foreach ($relative in ($componentHashes.Keys | Sort-Object)) {
-    $member = $zip.GetEntry("evolve_tool_stage2/$relative")
+    $entryPath = if ($relative -eq 'LICENSE-BOUNCYCASTLE.html') {
+      'evolve_tool_stage2/src/evolve_tool/packages/Portable.BouncyCastle-Signed.1.7.0.2/License.html'
+    } else { "evolve_tool_stage2/$relative" }
+    $member = $zip.GetEntry($entryPath)
     if ($null -eq $member -or $member.Length -le 0 -or $member.Length -gt 5MB) {
       throw "Missing or unsafe official tool component: $relative"
     }
