@@ -129,7 +129,9 @@ const SOLID_HALF: &str = "M0 857 Q-356 857 -607 606 Q-858 355 -858 0 Q-858 -355 
 const GRADIENT_HALF: &str = "M0 857 Q355 857 606 606 Q857 355 857 0 Q857 -355 606 -606 Q355 -857 0 -857 L0 -684 Q283 -684 483 -484 Q683 -283 683 0 Q683 283 483 483 Q283 684 0 684 L0 857 Z";
 const OUTER_RING: &str = "M-1 -1165 Q481 -1165 822 -825 Q1164 -482 1164 0 Q1164 482 822 822 Q481 1164 -1 1164 Q-483 1164 -825 822 Q-1165 482 -1165 0 Q-1165 -482 -825 -825 Q-483 -1165 -1 -1165 Z";
 
-fn fixed(raw: i32) -> f64 { f64::from(raw) / 65536.0 }
+fn fixed(raw: i32) -> f64 {
+    f64::from(raw) / 65536.0
+}
 
 /// Build one composite frame from BOTH original nested movie timelines.
 /// dim = 1.0 in the footer, 0.12 as a passive workbench watermark.
@@ -149,7 +151,10 @@ gradientTransform="matrix(0.0190887451171875 -0.020965576171875 -0.0088195800781
 <path fill="#d02d18" d="{SOLID_HALF}"/>
 <path fill="url(#sourceGradient)" d="{GRADIENT_HALF}"/>
 </g>"##,
-        fixed(a), fixed(b), fixed(c), fixed(d)
+        fixed(a),
+        fixed(b),
+        fixed(c),
+        fixed(d)
     );
     // The pulse sprite has parent alpha 218/256. Every individual alpha
     // and scale is read from its respective original PlaceObject2 record.
