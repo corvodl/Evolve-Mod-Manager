@@ -64,7 +64,9 @@ fn launch_for_repair(
     issue: &str,
 ) -> Result<(usize, u32, usize, Option<String>), String> {
     if client.as_os_str().is_empty() {
-        return Err(format!("Direct modded launch stopped safely: {issue}. Restore original game files or repair the signed stage before retrying."));
+        return Err(format!(
+            "Direct modded launch stopped safely: {issue}. Restore original game files or repair the signed stage before retrying."
+        ));
     }
     let (pid, warnings) = play_setup::launch_clean(game, client, Some(swap))?;
     let mut message = format!(
