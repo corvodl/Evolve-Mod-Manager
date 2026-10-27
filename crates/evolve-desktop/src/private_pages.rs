@@ -1067,6 +1067,8 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
                     .on_press_maybe((!state.runtime_checking).then_some(Message::RuntimeDetect)),
                 text(state.runtime_snapshot.as_ref().map(|s| s.status.as_str()).unwrap_or("Not detected"))
                     .size(12).style(design::muted),
+                text(state.runtime_snapshot.as_ref().map(|s| s.executable.as_str()).unwrap_or("Executable not checked"))
+                    .size(12).style(design::muted),
                 iced::widget::checkbox(state.armor_offline_confirmed)
                     .label("Confirm isolated offline match (required to write)")
                     .on_toggle(Message::ArmorOfflineChanged),
