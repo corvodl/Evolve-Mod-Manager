@@ -199,9 +199,7 @@ fn load_home_banner() -> Option<iced::widget::image::Handle> {
     // 1920×1080 original so the hero art survives those updates as well.
     let bundled = include_bytes!("../../../assets/default_loading.dds");
     let (width, height, rgba) = decode_home_dds(bundled)?;
-    Some(iced::widget::image::Handle::from_rgba(
-        width, height, rgba,
-    ))
+    Some(iced::widget::image::Handle::from_rgba(width, height, rgba))
 }
 
 /// Strictly bounded DXT1 (BC1) DDS support for the provided Home banner.
