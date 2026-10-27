@@ -1187,6 +1187,8 @@ fn record_prepare_output(log_path: &Path, output: &std::process::Output) -> Resu
 
 const DIRECT_LAUNCH_HELPER: &str = include_str!("../launcher_support/direct_game_launch.py");
 const DIRECT_STD_BROKER: &str = include_str!("../launcher_support/standard_user_launch.py");
+const DIRECT_SERVICE_HOST: &str = include_str!("../launcher_support/client_service_host.py");
+const DIRECT_SERVICE_SUPERVISOR: &str = include_str!("../launcher_support/direct_runtime_supervisor.py");
 
 /// Publish the vetted direct-launch worker into the existing swap folder.
 /// The script intentionally imports the installed controlled_swap and restore
@@ -1198,6 +1200,8 @@ fn install_direct_launch_helper(swap: &Path) -> Result<PathBuf, String> {
     for (name, expected) in [
         ("direct_standard_user_launch.py", DIRECT_STD_BROKER),
         ("direct_game_launch.py", DIRECT_LAUNCH_HELPER),
+        ("client_service_host.py", DIRECT_SERVICE_HOST),
+        ("direct_runtime_supervisor.py", DIRECT_SERVICE_SUPERVISOR),
     ] {
         let target = swap.join(name);
         match fs::symlink_metadata(&target) {
@@ -1232,6 +1236,7 @@ fn install_direct_launch_helper(swap: &Path) -> Result<PathBuf, String> {
 #[cfg(windows)]
 pub fn launch_direct_offline_game(
     plan: &LaunchReady,
+    client: &Path,
     progress: &std::sync::atomic::AtomicUsize,
 ) -> Result<u32, String> {
     use std::os::windows::process::CommandExt;
@@ -1277,6 +1282,10 @@ pub fn launch_direct_offline_game(
         .arg(&verified.stage)
         .arg("--game-root")
         .arg(crate::play_setup::ordinary_game_path(&verified.game))
+        .arg("--client-exe")
+        .arg(client)
+        .arg("--swap-dir")
+        .arg(swap)
         .current_dir(swap)
         .stdin(Stdio::null())
         .creation_flags(0x08000000)
@@ -1295,7 +1304,7 @@ pub fn launch_direct_offline_game(
     let marker = stdout.lines()
         .find_map(|line| line.strip_prefix("DIRECT_GAME_LAUNCHED pid="))
         .ok_or("Direct launch returned success without a confirmed game PID; check restore watchdog before another launch.")?;
-    if !marker.contains(" swap_complete=true") {
+    if !marker.contains(" swap_complete=true") || !marker.contains(" services_ready=true trace_loaded=true") {
         return Err("Direct launch did not confirm its completed file swap.".into());
     }
     let pid = marker
@@ -1314,9 +1323,72 @@ pub fn launch_direct_offline_game(
 #[cfg(not(windows))]
 pub fn launch_direct_offline_game(
     _: &LaunchReady,
+    _: &Path,
     _: &std::sync::atomic::AtomicUsize,
 ) -> Result<u32, String> {
     Err("Direct Evolve launch requires Windows x64".into())
+}
+
+/// Clean direct game startup: run the same real Steam/profile service host
+/// and suspended Stage2Trace loader, but never rename installed game files.
+#[cfg(windows)]
+pub fn launch_direct_clean_game(game: &Path, client: &Path, swap_opt: Option<&Path>) -> Result<u32, String> {
+    use std::os::windows::process::CommandExt;
+    games_closed()?;
+    let swap = if let Some(folder) = swap_opt {
+        directory(folder)?
+    } else {
+        let base = std::env::var_os("LOCALAPPDATA")
+            .ok_or("Windows LocalAppData is not available for direct runtime")?;
+        let path = PathBuf::from(base).join("EvolveModManager").join("DirectRuntime");
+        fs::create_dir_all(&path).map_err(|e| format!("Cannot create direct runtime folder: {e}"))?;
+        directory(&path)?
+    };
+    // These are import dependencies for both clean and modded helper scripts.
+    // Never overwrite customized or unexpected installed helper code.
+    for (name, code) in [
+        ("controlled_swap.py", include_str!("../launcher_support/controlled_swap.py")),
+        ("reusable_restore.py", include_str!("../launcher_support/reusable_restore.py")),
+        ("auto_restore_watch.py", include_str!("../launcher_support/auto_restore_watch.py")),
+    ] {
+        let target = swap.join(name);
+        if !target.exists() {
+            let mut temp = tempfile::NamedTempFile::new_in(&swap).map_err(|e| e.to_string())?;
+            temp.write_all(code.as_bytes()).map_err(|e| e.to_string())?;
+            temp.persist_noclobber(&target).map_err(|e| format!("Cannot install verified runtime helper: {}", e.error))?;
+        }
+    }
+    let helper = install_direct_launch_helper(&swap)?;
+    let result = Command::new("py")
+        .args(["-3.11","-u"]).arg(helper)
+        .arg("--game-root").arg(crate::play_setup::ordinary_game_path(game))
+        .arg("--client-exe").arg(client)
+        .arg("--swap-dir").arg(&swap)
+        .arg("--clean")
+        .current_dir(&swap).stdin(Stdio::null()).creation_flags(0x08000000)
+        .output().map_err(|e| format!("Direct clean game helper failed: {e}"))?;
+    let log_path = swap.join("rust-direct-clean.log");
+    let _ = record_prepare_output(&log_path, &result);
+    if !result.status.success() {
+        return Err(format!("Direct clean game startup failed: {}. Details: {}",
+            prepare_failure_reason(&result.stdout,&result.stderr),log_path.display()));
+    }
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let marker = stdout.lines()
+        .find_map(|line| line.strip_prefix("DIRECT_GAME_LAUNCHED pid="))
+        .ok_or("Direct clean startup did not confirm a live game process")?;
+    if !marker.contains(" swap_complete=false services_ready=true trace_loaded=true") {
+        return Err("Direct clean startup did not verify its Steam/profile services and Stage2Trace module".into());
+    }
+    let pid = marker.split_whitespace().next().ok_or("No game PID reported")?
+        .parse::<u32>().map_err(|_| "Invalid game PID")?;
+    if pid == 0 { return Err("Invalid direct game PID".into()); }
+    Ok(pid)
+}
+
+#[cfg(not(windows))]
+pub fn launch_direct_clean_game(_: &Path, _: &Path, _: Option<&Path>) -> Result<u32, String> {
+    Err("Direct Evolve launch requires Windows".into())
 }
 
 /// Reuse the private launcher's already-tested control flow. It performs
