@@ -57,7 +57,8 @@ class DirectGameTests(unittest.TestCase):
             with mock.patch.object(direct,"_ordinary",return_value=root), \
                  mock.patch.object(direct,"_regular",return_value=True), \
                  mock.patch.object(direct,"start_runtime_supervisor",side_effect=service_start), \
-                 mock.patch.object(direct,"environment_for_session",return_value={"MODDED_EVOLVE_STAGE2_MODES":state["modes"]}), \
+                 mock.patch.object(direct,"environment_for_session",return_value={"MODDED_EVOLVE_STAGE2_MODES":state["modes"],"MODDED_EVOLVE_STAGE2_LOG":str(root/"trace.log")}), \
+                 mock.patch.object(direct.contract,"wait_for_hook_startup"), \
                  mock.patch.object(direct,"validate_prepared",side_effect=checked), \
                  mock.patch.object(direct,"rename_prepared_into_game",side_effect=swap), \
                  mock.patch.object(direct,"start_restore_watchdog",side_effect=watchdog), \
@@ -78,7 +79,8 @@ class DirectGameTests(unittest.TestCase):
             with mock.patch.object(direct,"_ordinary",return_value=root), \
                  mock.patch.object(direct,"_regular",return_value=True), \
                  mock.patch.object(direct,"start_runtime_supervisor",return_value=(session,state)), \
-                 mock.patch.object(direct,"environment_for_session",return_value={"MODDED_EVOLVE_STAGE2_MODES":"X"}), \
+                 mock.patch.object(direct,"environment_for_session",return_value={"MODDED_EVOLVE_STAGE2_MODES":"X","MODDED_EVOLVE_STAGE2_LOG":str(root/"trace.log")}), \
+                 mock.patch.object(direct.contract,"wait_for_hook_startup"), \
                  mock.patch.object(direct.swapper,"all_closed"), \
                  mock.patch.object(direct,"rename_prepared_into_game") as rename, \
                  mock.patch.object(direct,"start_restore_watchdog") as watch, \
