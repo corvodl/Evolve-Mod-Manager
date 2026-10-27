@@ -336,7 +336,10 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         surface(
             row![
                 column![
-                    legacy_section_label("YOUR WORKBENCH", state.preferences.ui_theme == "Evolve Legacy"),
+                    legacy_section_label(
+                        "YOUR WORKBENCH",
+                        state.preferences.ui_theme == "Evolve Legacy"
+                    ),
                     text("Continue where you left off").size(22),
                     row![
                         svg(Page::Files.icon())
