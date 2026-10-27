@@ -1547,7 +1547,9 @@ impl Operation {
                     return Err("Unresolved recovery warnings prevent direct game launch; restore originals or use the regular client.".into());
                 }
                 play_setup::audit_backup_files(&game)?;
-                online_guard::apply(&game, false)?;
+                // Clean/direct must not inherit the manager's modded-only
+                // offline network restriction. Profile services remain separate.
+                online_guard::apply(&game, true)?;
                 let pid = standard_user_launch::launch_game(&game)?;
                 Ok(Completed::DirectGameStarted(pid, warnings))
             }
