@@ -167,11 +167,8 @@ fn latest_announcement(state: &State) -> Element<'_, Message> {
     surface(content).into()
 }
 
-fn subtle_home_wheel() -> Element<'static, Message> {
-    // Source-derived vector artwork, faded so project labels remain readable.
-    let art = include_str!("../../../assets/loading_wheel.svg")
-        .replace("<svg ", "<svg opacity=\"0.12\" ");
-    svg(svg::Handle::from_memory(art.into_bytes()))
+fn subtle_home_wheel(frame: u32) -> Element<'static, Message> {
+    svg(crate::loading_wheel::handle(frame, 0.12))
         .width(Length::Fixed(128.0))
         .height(Length::Fixed(128.0))
         .into()
@@ -232,7 +229,7 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                 ]
                 .spacing(12)
                 .width(Fill),
-                subtle_home_wheel(),
+                subtle_home_wheel(state.loading_wheel_frame),
             ]
             .spacing(12)
             .align_y(iced::Center),
@@ -258,7 +255,7 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                 ]
                 .spacing(12)
                 .width(Fill),
-                subtle_home_wheel(),
+                subtle_home_wheel(state.loading_wheel_frame),
             ]
             .spacing(12)
             .align_y(iced::Center),
