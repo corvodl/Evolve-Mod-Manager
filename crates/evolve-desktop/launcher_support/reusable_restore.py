@@ -22,6 +22,9 @@ def _validate_stranded_clean_state(state):
               if entry.get('kind') == 'signed-encrypted']
     expected = [str(entry['path']).replace('\\', '/') for entry in signed]
     expected.append('bin64_SteamRetail/inject.dll')
+    status = swap.read_json(stage / 'stage_status.json')
+    if status.get('signer') == 'official-2025':
+        expected.append('bin64_SteamRetail/dbghelp.dll')
     if (len(expected) != len(state['files'])
             or len(set(name.casefold() for name in expected)) != len(expected)):
         raise RuntimeError('Recovery journal does not match signed PAK inventory')
@@ -42,6 +45,8 @@ def _validate_stranded_clean_state(state):
         expected_target = game / relative
         expected_source = (stage / 'inject-custom.dll'
                            if name == 'bin64_steamretail/inject.dll'
+                           else stage / 'dbghelp-custom.dll'
+                           if name == 'bin64_steamretail/dbghelp.dll'
                            else stage / 'paks' / relative)
         source = Path(item['source'])
         if (target.resolve(strict=False) != expected_target.resolve(strict=False)
@@ -58,6 +63,9 @@ def _validate_stranded_clean_state(state):
             original = backup.read_bytes()
             if len(original) != 4096 or original[0x870:0x870 + 140] != old_key:
                 raise RuntimeError('Stranded injector backup does not match original RSA key')
+        elif name == 'bin64_steamretail/dbghelp.dll':
+            if swap.sha(backup) != status.get('original_dbghelp_sha256', '').lower():
+                raise RuntimeError('Stranded dbghelp.dll backup differs from the original')
         else:
             entry = signed[expected.index(expected_name)]
             recorded = entry.get('sha256', '')
