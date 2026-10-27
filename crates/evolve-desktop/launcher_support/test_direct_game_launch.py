@@ -132,6 +132,20 @@ class DirectGameTests(unittest.TestCase):
             self.assertEqual(order,["partial_swap","host_closed","restore_originals"])
             watchdog.assert_not_called()
 
+    def test_http_sys_service_ownership_does_not_block_live_testing(self):
+        import client_service_host
+        with tempfile.TemporaryDirectory() as folder:
+            log=Path(folder)/"stage2.log"
+            log.write_text(
+                "STAGE2_SERVICES_STARTED listener loopback 2000/2040\n"
+                "SESSION_IDENTITY_STAGE2_READY\n", encoding="utf-8")
+            class Host:
+                pid=8765
+                def poll(self):
+                    return None
+            with mock.patch.object(client_service_host,"listener_owner",return_value=False):
+                client_service_host.wait_services(Host(),log,timeout=1)
+
     def test_pinned_shadow_patch_has_fixed_length_and_never_changes_original(self):
         self.assertEqual(len(service.PATCH_EXPECTED),len(service.PATCH_REPLACEMENT))
         self.assertEqual(len(service.PATCH_REPLACEMENT),18)
