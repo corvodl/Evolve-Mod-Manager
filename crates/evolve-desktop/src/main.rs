@@ -119,7 +119,7 @@ use viewport::MeshViewport;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Page {
     Home,
-    Instructions,
+    Docs,
     AssetLibrary,
     Files,
     WhatsNew,
@@ -133,7 +133,7 @@ enum Page {
 impl Page {
     const ALL: [Self; 7] = [
         Self::Home,
-        Self::Instructions,
+        Self::Docs,
         Self::AssetLibrary,
         Self::Files,
         Self::WhatsNew,
@@ -144,7 +144,7 @@ impl Page {
     fn icon(self) -> svg::Handle {
         let data: &'static [u8] = match self {
             Self::Home => include_bytes!("../../../assets/nav/home.svg"),
-            Self::Instructions => include_bytes!("../../../assets/nav/instructions.svg"),
+            Self::Docs => include_bytes!("../../../assets/nav/instructions.svg"),
             Self::AssetLibrary => include_bytes!("../../../assets/nav/asset-library.svg"),
             Self::Files => include_bytes!("../../../assets/nav/modding.svg"),
             Self::WhatsNew => include_bytes!("../../../assets/nav/whats-new.svg"),
@@ -160,7 +160,7 @@ impl Page {
     fn title(self) -> &'static str {
         match self {
             Self::Home => "Home",
-            Self::Instructions => "Instructions",
+            Self::Docs => "Docs",
             Self::AssetLibrary => "Asset Library",
             Self::Files => "Modding",
             Self::WhatsNew => "What's New",
@@ -398,6 +398,7 @@ struct State {
     runtime_phase3_value: String,
     runtime_signature: String,
     runtime_plan_result: String,
+    docs_expanded: HashSet<private_pages::DocsSection>,
     show_advanced_tools: bool,
     activity_log: Vec<String>,
     health_expanded: bool,
@@ -1818,6 +1819,8 @@ enum Message {
     LevelExportEdits,
     ToggleAdvancedTools,
     ToggleActivity,
+    ToggleDocsSection(private_pages::DocsSection),
+    DocsExpandAll(bool),
     ClearActivity,
     ToggleSystemHealth,
     CheckSystemHealth,
@@ -3765,6 +3768,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.health_report = Some(report);
             state.health_checking = false;
             state.status = "Read-only System Health check completed.".into();
+        }
+        Message::ToggleDocsSection(section) => {
+            if !state.docs_expanded.insert(section) {
+                state.docs_expanded.remove(&section);
+            }
+        }
+        Message::DocsExpandAll(expand) => {
+            state.docs_expanded.clear();
+            if expand {
+                state.docs_expanded.extend(private_pages::DocsSection::ALL);
+            }
         }
         Message::DeveloperPasswordChanged(value) => {
             if !state.developer_checking && value.len() <= 128 {
@@ -10146,7 +10160,7 @@ fn view(state: &State) -> Element<'_, Message> {
         text(format!("  /  {}", page.title())).size(12),
         space().width(Fill),
         design::button("Help")
-            .on_press(Message::Navigate(Page::Instructions))
+            .on_press(Message::Navigate(Page::Docs))
             .style(design::secondary),
         design::button("Activity")
             .on_press(Message::ToggleActivity)
@@ -10258,7 +10272,7 @@ fn view(state: &State) -> Element<'_, Message> {
 
     let workspace: Element<'_, Message> = match page {
         Page::Home => private_pages::home(state),
-        Page::Instructions => private_pages::instructions(),
+        Page::Docs => private_pages::docs(state),
         Page::WhatsNew => private_pages::whats_new(state),
         Page::Credits => private_pages::credits(),
         Page::Developer => private_pages::developer(state),
@@ -10571,6 +10585,7 @@ fn view(state: &State) -> Element<'_, Message> {
 
 fn initial_state() -> State {
     let mut result = State {
+        docs_expanded: HashSet::from([private_pages::DocsSection::GettingStarted]),
         zoom: 1.0,
         playback_speed: 1.0,
         export_rigged: true,
@@ -12299,6 +12314,21 @@ mod project_edit_tests {
         assert!(!state.busy);
         assert!(state.status.contains("do not belong"));
     }
+    #[test]
+    fn docs_sections_can_expand_and_collapse_independently() {
+        let mut state = initial_state();
+        assert!(state.docs_expanded.contains(&private_pages::DocsSection::GettingStarted));
+        let section = private_pages::DocsSection::Projects;
+        let _ = update(&mut state, Message::ToggleDocsSection(section));
+        assert!(state.docs_expanded.contains(&section));
+        let _ = update(&mut state, Message::ToggleDocsSection(section));
+        assert!(!state.docs_expanded.contains(&section));
+        let _ = update(&mut state, Message::DocsExpandAll(true));
+        assert_eq!(state.docs_expanded.len(), private_pages::DocsSection::ALL.len());
+        let _ = update(&mut state, Message::DocsExpandAll(false));
+        assert!(state.docs_expanded.is_empty());
+    }
+
     #[test]
     fn developer_online_requires_verified_network_policy_and_is_session_only() {
         let mut state = State::default();
