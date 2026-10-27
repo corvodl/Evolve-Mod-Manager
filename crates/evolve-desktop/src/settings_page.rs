@@ -431,6 +431,17 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 design::button(text(format!("Explorer: {}", state.preferences.file_explorer_side))).on_press(Message::PreferenceExplorerSide).style(design::secondary)
             ].spacing(8),
             design::button(text(format!("Reduce menu animation: {}", if state.preferences.reduce_motion { "On" } else { "Off" }))).on_press(Message::PreferenceReduceMotion).style(design::secondary),
+            text("HOME SCREEN ARTWORK").size(12),
+            row![
+                design::button("Background On")
+                    .on_press_maybe((!state.preferences.show_home_background).then_some(Message::PreferenceHomeBackground))
+                    .style(if state.preferences.show_home_background { design::primary } else { design::secondary }),
+                design::button("Background Off")
+                    .on_press_maybe(state.preferences.show_home_background.then_some(Message::PreferenceHomeBackground))
+                    .style(if !state.preferences.show_home_background { design::primary } else { design::secondary }),
+            ].spacing(8),
+            text("Off hides the Evolve artwork and restores opaque Home panels. This only affects Home, keeps other themes and pages unchanged, and is saved automatically.")
+                .size(11).style(design::muted),
             text("MODERN THEME ACCENT COLOR").size(12),
             row![
                 design::button("Default")
