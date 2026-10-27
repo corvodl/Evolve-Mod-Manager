@@ -35,6 +35,8 @@ pub struct Preferences {
     pub game_installation: String,
     /// Normal Modded Evolve launcher EXE selected by the user.
     pub client_executable: String,
+    /// Client Launch (default) or Direct Launch, used for both clean and modded Play.
+    pub game_launch_mode: String,
     pub stage: String,
     pub swap: String,
     pub projects: String,
@@ -95,6 +97,7 @@ impl Default for Preferences {
             crash_logging_enabled: true,
             game_installation: String::new(),
             client_executable: String::new(),
+            game_launch_mode: "Client Launch".into(),
             stage: String::new(),
             swap: String::new(),
             projects: String::new(),
