@@ -488,6 +488,12 @@ mod tests {
         assert!(verify_portable_contents(&mut archive).is_err());
     }
 
+    fn mock_member(root: &Path, name: &str, contents: &[u8]) {
+        let path = root.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, contents).unwrap();
+    }
+
     fn make_test_portable_zip(path: &Path) {
         let mut writer = zip::ZipWriter::new(File::create(path).unwrap());
         for name in PORTABLE_MEMBERS {
@@ -521,7 +527,7 @@ mod tests {
     fn portable_in_place_update_preserves_unrelated_files() {
         let dir = tempfile::tempdir().unwrap();
         for name in PORTABLE_MEMBERS {
-            fs::write(dir.path().join(name), format!("old-{name}")).unwrap();
+            mock_member(dir.path(), name, format!("old-{name}").as_bytes());
         }
         fs::write(dir.path().join("settings.json"), b"keep settings").unwrap();
         let plan = mock_plan(dir.path());
@@ -545,7 +551,7 @@ mod tests {
             if name == "evolve-cli.exe" {
                 fs::create_dir(dir.path().join(name)).unwrap();
             } else {
-                fs::write(dir.path().join(name), format!("old-{name}")).unwrap();
+                mock_member(dir.path(), name, format!("old-{name}").as_bytes());
             }
         }
         let plan = mock_plan(dir.path());
@@ -637,6 +643,29 @@ mod tests {
             previous_update_failure(root.path()).as_deref(),
             Some("setup failed")
         );
+    }
+
+    #[test]
+    fn official_nested_portable_files_cannot_escape_through_linked_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outside.path(), dir.path().join("third_party")).unwrap();
+            assert!(check_portable_member_parents(
+                dir.path(), "third_party/OfficialStage2/evolve_tool.exe"
+            ).is_err());
+        }
+        #[cfg(windows)]
+        {
+            // Symlink creation may require Developer Mode. If unsupported,
+            // the portable path contract is still exercised by other tests.
+            if std::os::windows::fs::symlink_dir(outside.path(), dir.path().join("third_party")).is_ok() {
+                assert!(check_portable_member_parents(
+                    dir.path(), "third_party/OfficialStage2/evolve_tool.exe"
+                ).is_err());
+            }
+        }
     }
 
     #[test]
