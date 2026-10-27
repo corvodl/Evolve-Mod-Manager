@@ -209,7 +209,7 @@ def has_visible_game_window(pid):
     return bool(found)
 
 
-def wait_for_visible_game_window(process, timeout=45, stable_seconds=2):
+def wait_for_visible_game_window(process, timeout=45, stable_seconds=5):
     """Do not claim success until Evolve has a visible, stable game window.
 
     Loading Stage2Trace/SteamCompat only proves a suspended game process was
