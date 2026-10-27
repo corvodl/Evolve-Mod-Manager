@@ -200,9 +200,44 @@ impl OfficialTools {
                 return Err(format!("Official encoder changed untouched member: {name}"));
             }
         }
+        // Confirm the signed directory describes the exact replacement bytes,
+        // not merely a PAK that passes its outer RSA signature.
+        let rebuilt_index = open_verified_signed_pak(&signed, public, signed_name)
+            .map_err(|e| format!("Cannot independently open signed official output: {e}"))?;
+        for (member, edited_path) in replacements {
+            let entry = rebuilt_index.info.entries.iter()
+                .find(|entry| entry.path == *member)
+                .ok_or("Official encoder omitted a replaced member")?;
+            let (size, crc) = file_crc(edited_path)?;
+            if entry.size != size || entry.crc32 != crc {
+                return Err(format!("Official encoder payload CRC/size mismatch for {member}"));
+            }
+            if size <= 64 * 1024 * 1024 {
+                let decrypted = rebuilt_index.read_member(&signed, member, size)
+                    .map_err(|e| format!("Official edited member failed decryption: {e}"))?;
+                if decrypted != fs::read(edited_path).map_err(|e| e.to_string())? {
+                    return Err(format!("Official edited member content differs: {member}"));
+                }
+            }
+        }
         fs::rename(&signed, output).map_err(|e| format!("Cannot publish verified official PAK: {e}"))?;
         Ok(())
     }
+}
+
+fn file_crc(path: &Path) -> Result<(u64, u32), String> {
+    use std::io::Read;
+    let mut input = fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut hash = crc32fast::Hasher::new();
+    let mut length = 0u64;
+    let mut buffer = [0u8; 256 * 1024];
+    loop {
+        let count = input.read(&mut buffer).map_err(|e| e.to_string())?;
+        if count == 0 { break; }
+        length = length.checked_add(count as u64).ok_or("Member size overflow")?;
+        hash.update(&buffer[..count]);
+    }
+    Ok((length, hash.finalize()))
 }
 
 fn safe_member(name: &str) -> bool {
