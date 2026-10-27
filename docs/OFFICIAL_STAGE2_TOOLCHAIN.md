@@ -2,6 +2,51 @@
 
 > Source: developer-provided `evolve_tool_stage2_02.05.2025.zip`. Static inspection only. Neither the Windows binaries nor game runtime were executed. This does **not** change the current launch pipeline or establish redistribution permission.
 
+## Implementation (PR #101)
+
+The desktop manager now supports the developer's official **2025** encoder as an
+explicitly local, pinned toolchain.
+
+1. Extract the developer ZIP privately. Put its \`evolve_tool_stage2\` folder at
+   \`<Mod Data Location>/official-stage2-tools/evolve_tool_stage2\`, with the
+   original \`evolve_tool.exe\`, \`crypto.dll\`, and \`inject/\` directory inside.
+   Alternatively, set \`EVOLVE_STAGE2_TOOLS_DIR\` to the directory containing
+   \`evolve_tool.exe\`.
+2. Keep the original game/client installation intact. In particular, the
+   official tools currently require an existing original
+   \`bin64_SteamRetail/dbghelp.dll\` so a complete, reversible swap is possible.
+3. Choose **Set Up Manager** with the game and storage root. It detects and
+   checksum-verifies the installed local developer tools, creates the public
+   key stage, copies original signed PAKs into **isolated** storage and runs
+   the official \`r\` conversion there **once**. It authenticates all resulting
+   signed PAKs against the developer's public key before marking setup ready.
+4. Import/edit a PAK through the normal Modding page. **Build** uses the
+   official \`d\` and \`e\` commands for only the PAK containing edited assets,
+   verifies original member inventory, validates the signed result, and
+   reuses a SHA-keyed cache when the mod has not changed.
+5. **Play with Mods** stages only the enabled project's changed PAK outputs,
+   preserving the offline recovery journal. The launch helper continues to
+   swap the **one-time converted baseline** plus both official runtime DLLs
+   because the supplied RSA hook has only one active verification key.
+
+This changes the per-mod build cost but does **not** yet establish that
+unconverted stock-key PAKs can be mounted alongside official-new-key PAKs.
+Switching to a sparse *runtime* swap is not safe until verified in a live game.
+The developer's own instructions explicitly call for a one-time conversion of
+the full PAK library.
+
+**Never** run the supplied \`r\` directly against your only installed copy of
+the game; the manager only runs it against isolated copies. Do not commit
+the supplied ZIP, DLLs, executable, embedded private key or extracted source.
+
+### Validation not yet performed
+
+Windows build/CI checks are required. The provided binaries have not been
+executed in this environment, and in-game acceptance, alternative engine builds
+and the DLL compatibility offset need testing before a release. The tool may
+return success even if a particular PAK failed; the integration therefore
+requires independent RSA verification and preserves failures for inspection.
+
 ## Verified capabilities and constraints
 
 - `evolve_tool.exe d <pak> <dir>` decrypts and unpacks a PAK; `evolve_tool.exe e <dir> <pak>` packs a **complete** directory as one PAK. These are not in-place single-member editing commands.
