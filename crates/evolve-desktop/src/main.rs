@@ -34,8 +34,8 @@ mod guided_modding;
 mod initial_setup;
 mod launcher_bridge;
 mod level_workspace;
-mod loading_wheel;
 mod library_picker;
+mod loading_wheel;
 mod menu_popup;
 mod mod_play;
 mod modding_keys;
@@ -11200,9 +11200,7 @@ impl Desktop {
         // Original GFX playback rate is 30 frames/sec. The footer and the
         // optional Home watermark share a frame clock but do not fabricate
         // worker completion percentages from the animation.
-        let wheel = if footer_is_working(&self.state)
-            || self.state.page == Some(Page::Home)
-        {
+        let wheel = if footer_is_working(&self.state) || self.state.page == Some(Page::Home) {
             iced::time::every(Duration::from_secs_f64(1.0 / f64::from(loading_wheel::FPS)))
                 .map(|_| Message::LoadingWheelTick)
         } else {
