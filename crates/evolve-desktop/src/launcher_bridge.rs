@@ -1163,31 +1163,39 @@ fn record_prepare_output(log_path: &Path, output: &std::process::Output) -> Resu
 
 
 const DIRECT_LAUNCH_HELPER: &str = include_str!("../launcher_support/direct_game_launch.py");
+const DIRECT_STD_BROKER: &str = include_str!("../launcher_support/standard_user_launch.py");
 
 /// Publish the vetted direct-launch worker into the existing swap folder.
 /// The script intentionally imports the installed controlled_swap and restore
 /// helpers so they retain ownership of the existing journal and backups.
 #[cfg(windows)]
 fn install_direct_launch_helper(swap: &Path) -> Result<PathBuf, String> {
-    let target = swap.join("direct_game_launch.py");
-    match fs::symlink_metadata(&target) {
-        Ok(meta) => {
-            if !meta.file_type().is_file() || meta.len() > 128 * 1024 ||
-                fs::read(&target).map_err(|e| e.to_string())? != DIRECT_LAUNCH_HELPER.as_bytes() {
-                return Err("Unrecognized direct_game_launch.py in swap folder; preserve it and use a trusted clean swap folder.".into());
+    // Never rewrite the legacy client's standard_user_launch.py. Older
+    // published installers may own that file. Use a separate trusted broker.
+    for (name, expected) in [
+        ("direct_standard_user_launch.py", DIRECT_STD_BROKER),
+        ("direct_game_launch.py", DIRECT_LAUNCH_HELPER),
+    ] {
+        let target = swap.join(name);
+        match fs::symlink_metadata(&target) {
+            Ok(meta) => {
+                if !meta.file_type().is_file() || meta.len() > 128 * 1024 ||
+                    fs::read(&target).map_err(|e| e.to_string())? != expected.as_bytes() {
+                    return Err(format!("Unrecognized {name} in swap folder; preserve this file and use a clean trusted swap folder."));
+                }
             }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let mut temp = tempfile::NamedTempFile::new_in(swap)
+                    .map_err(|e| format!("Could not stage vetted {name}: {e}"))?;
+                temp.write_all(expected.as_bytes()).map_err(|e| e.to_string())?;
+                temp.as_file_mut().sync_all().map_err(|e| e.to_string())?;
+                temp.persist_noclobber(&target)
+                    .map_err(|e| format!("Could not publish {name}: {}", e.error))?;
+            }
+            Err(error) => return Err(format!("Could not inspect {name}: {error}")),
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let mut temp = tempfile::NamedTempFile::new_in(swap)
-                .map_err(|e| format!("Could not stage vetted direct launcher: {e}"))?;
-            temp.write_all(DIRECT_LAUNCH_HELPER.as_bytes()).map_err(|e| e.to_string())?;
-            temp.as_file().sync_all().map_err(|e| e.to_string())?;
-            temp.persist_noclobber(&target)
-                .map_err(|e| format!("Could not publish direct launcher: {}", e.error))?;
-        }
-        Err(error) => return Err(format!("Could not inspect direct launch worker: {error}")),
     }
-    Ok(target)
+    Ok(swap.join("direct_game_launch.py"))
 }
 
 /// Direct-launch path: prepare all signed PAK copies first, atomically exchange
