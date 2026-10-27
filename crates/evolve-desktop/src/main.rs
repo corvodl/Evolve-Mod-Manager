@@ -7566,20 +7566,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::SaveGameSetup => {
-            if state.preferences.game_launch_mode == "Direct Launch" {
-                match play_setup::game_root(&state.preferences.game_installation) {
-                    Ok(game) => {
-                        state.preferences.game_installation = game.to_string_lossy().into_owned();
-                        persist_preferences(state);
-                        state.status = "Game installation saved for Direct Launch. Client executable is optional; Play with Mods also requires an isolated signing stage.".into();
-                    }
-                    Err(error) => {
-                        state.settings_status = format!("Game setup is incomplete: {error}");
-                        state.status = state.settings_status.clone();
-                    }
-                }
-                return Task::none();
-            }
             match play_setup::validate_paths(
                 &state.preferences.game_installation,
                 &state.preferences.client_executable,
@@ -7589,7 +7575,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.preferences.client_executable = client.to_string_lossy().into_owned();
                     state.client_version = None;
                     persist_preferences(state);
-                    state.status = "Game and client paths verified and saved. For modded play, the original signed staging set and private swap helper must also be configured below.".into();
+                    state.status = "Game and client paths saved. Direct Launch can now be tested using the client runtime services; modded play also needs a verified signing stage and restore helper.".into();
                     return inspect_client_version_task(&state.preferences.client_executable);
                 }
                 Err(error) => {
