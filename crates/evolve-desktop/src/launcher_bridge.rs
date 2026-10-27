@@ -1308,7 +1308,7 @@ pub fn launch_direct_offline_game(
         .find_map(|line| line.strip_prefix("DIRECT_GAME_LAUNCHED pid="))
         .ok_or("Direct launch returned success without a confirmed game PID; check restore watchdog before another launch.")?;
     if !marker.contains(" swap_complete=true")
-        || !marker.contains(" services_ready=true trace_loaded=true")
+        || !marker.contains(" services_ready=true trace_loaded=true hooks_ready=true")
     {
         return Err("Direct launch did not confirm its completed file swap.".into());
     }
@@ -1410,7 +1410,7 @@ pub fn launch_direct_clean_game(
         .lines()
         .find_map(|line| line.strip_prefix("DIRECT_GAME_LAUNCHED pid="))
         .ok_or("Direct clean startup did not confirm a live game process")?;
-    if !marker.contains(" swap_complete=false services_ready=true trace_loaded=true") {
+    if !marker.contains(" swap_complete=false services_ready=true trace_loaded=true hooks_ready=true") {
         return Err(
             "Direct clean startup did not verify its Steam/profile services and Stage2Trace module"
                 .into(),
