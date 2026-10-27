@@ -176,8 +176,37 @@ class DirectGameTests(unittest.TestCase):
                 pid=8765
                 def poll(self):
                     return None
-            with mock.patch.object(client_service_host,"listener_owner",return_value=False):
+            with mock.patch.object(client_service_host,"listener_owner",return_value=False), \
+             mock.patch.object(client_service_host,"frontend_accepting_connections",return_value=True):
                 client_service_host.wait_services(Host(),log,timeout=1)
+
+    def test_unreachable_frontend_does_not_accept_service_log_as_ready(self):
+        with tempfile.TemporaryDirectory() as folder:
+            log=Path(folder)/"services.log"
+            log.write_text(
+                "STAGE2_SERVICES_STARTED listener loopback 2000/2040\n"
+                "SESSION_IDENTITY_STAGE2_READY\n", encoding="utf-8")
+            class Host:
+                pid=8765
+                def poll(self): return None
+            with mock.patch.object(service,"listener_owner",return_value=False), \
+                 mock.patch.object(service,"frontend_accepting_connections",return_value=False), \
+                 mock.patch.object(service.time,"sleep"):
+                with self.assertRaisesRegex(RuntimeError,"127.0.0.1:2000"):
+                    service.wait_services(Host(),log,timeout=.002)
+
+    def test_frontend_connectivity_confirms_service_readiness(self):
+        with tempfile.TemporaryDirectory() as folder:
+            log=Path(folder)/"services.log"
+            log.write_text(
+                "STAGE2_SERVICES_STARTED listener loopback 2000/2040\n"
+                "SESSION_IDENTITY_STAGE2_READY\n", encoding="utf-8")
+            class Host:
+                pid=8765
+                def poll(self): return None
+            with mock.patch.object(service,"listener_owner",return_value=False), \
+                 mock.patch.object(service,"frontend_accepting_connections",return_value=True):
+                service.wait_services(Host(),log,timeout=1)
 
     def test_metadata_adapter_rejects_nonmanaged_files(self):
         with self.assertRaises(managed_adapter.UnsupportedClient):
