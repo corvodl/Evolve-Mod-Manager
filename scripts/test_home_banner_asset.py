@@ -29,6 +29,12 @@ class HomeBannerAssetTests(unittest.TestCase):
         self.assertIn("decode_home_dds(&data)", code)
         self.assertIn("from_rgba(width, height, rgba)", code)
 
+    def test_bundled_fallback_survives_executable_only_updates(self):
+        code = (ROOT / "crates/evolve-desktop/src/private_pages.rs").read_text()
+        self.assertIn('include_bytes!("../../../assets/default_loading.dds")', code)
+        self.assertIn("decode_home_dds(bundled)", code)
+        self.assertIn("from_rgba(", code)
+
     def test_portable_nightly_includes_banner(self):
         source = (ROOT / ".github/workflows/nightly.yml").read_text()
         self.assertIn('"assets/default_loading.dds"', source)
