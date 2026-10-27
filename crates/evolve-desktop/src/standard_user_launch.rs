@@ -89,8 +89,12 @@ pub fn launch_game(game_root: &Path) -> Result<u32, String> {
     let file = std::fs::canonicalize(game_root.join("bin64_SteamRetail").join("Evolve.exe"))
         .map_err(|e| format!("Configured game executable is missing: {e}"))?;
     let folder = file.parent().ok_or("Evolve.exe has no binary directory")?;
-    if !folder.file_name().is_some_and(|name| name.eq_ignore_ascii_case("bin64_SteamRetail"))
-        || !file.file_name().is_some_and(|name| name.eq_ignore_ascii_case("Evolve.exe"))
+    if !folder
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("bin64_SteamRetail"))
+        || !file
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("Evolve.exe"))
     {
         return Err("Direct launch is restricted to bin64_SteamRetail/Evolve.exe".into());
     }
