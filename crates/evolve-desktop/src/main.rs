@@ -13,8 +13,8 @@ mod blender_install;
 mod client_version;
 mod crash_diagnostics;
 mod design;
-mod direct_runtime;
 mod developer_auth;
+mod direct_runtime;
 mod explorer_tree;
 mod gfx_bundled_tools;
 mod gfx_dependencies;
@@ -1552,7 +1552,8 @@ impl Operation {
                 // Clean/direct must not inherit the manager's modded-only
                 // offline network restriction. Profile services remain separate.
                 online_guard::apply(&game, true)?;
-                let pid = launcher_bridge::launch_direct_clean_game(&game, &client, swap.as_deref())?;
+                let pid =
+                    launcher_bridge::launch_direct_clean_game(&game, &client, swap.as_deref())?;
                 Ok(Completed::DirectGameStarted(pid, warnings))
             }
             Self::LaunchCleanClient(game, client, swap) => {
