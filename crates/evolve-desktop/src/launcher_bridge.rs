@@ -1240,7 +1240,9 @@ fn install_direct_launch_helper(swap: &Path) -> Result<PathBuf, String> {
                     if !meta.file_type().is_file()
                         || fs::read(&preserved).map_err(|e| e.to_string())? != previous
                     {
-                        return Err(format!("Conflicting preserved {name}; inspect swap folder."));
+                        return Err(format!(
+                            "Conflicting preserved {name}; inspect swap folder."
+                        ));
                     }
                     fs::remove_file(&target)
                         .map_err(|e| format!("Cannot replace previous {name}: {e}"))?;
