@@ -459,6 +459,13 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
                 }).size(12).style(design::muted),
                 text(state.developer_network_status.as_str())
                     .size(12).style(design::muted),
+                text("Process elevation (read-only)").size(16),
+                text("Check the actual Windows security tokens. Expected: Mod Manager = HIGH; ModdedEvolveLauncher.exe and Evolve.exe = MEDIUM. File preparation remains elevated.")
+                    .size(12).style(design::muted),
+                design::button(if state.developer_privilege_busy { "Inspecting process tokens..." } else { "Inspect Client / Game Privileges" })
+                    .on_press_maybe((!state.developer_privilege_busy).then_some(Message::DeveloperInspectProcessPrivileges)),
+                text(state.developer_privilege_status.as_str())
+                    .size(12).style(design::muted),
                 text("Phase 1  /  External memory inspector").size(16),
                 text("Injection-free, read-only. Detect one Evolve.exe process on demand; inspect 32 bytes at an explicit hex address or a validated pointer chain. Offsets are not bundled. Process identity and offline status cannot yet be independently verified.").size(12).style(design::muted),
                 design::button(if state.runtime_checking { "Inspecting..." } else { "Detect Evolve process" })

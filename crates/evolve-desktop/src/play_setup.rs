@@ -5,7 +5,6 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 const GAME_HINT: &str = r"C:\Games\ModdedEvolve\EvolveGame\bin64_SteamRetail";
 const CLIENT_HINT: &str =
@@ -105,6 +104,8 @@ const PREVIOUS_AUTO_LAUNCH_SHA256: &str =
     "833c057c42846d51793e52fc429c506a6623c4ee59dade9df7e019a59d4ddc07";
 const NIGHTLY_56_AUTO_LAUNCH_SHA256: &str =
     "8a7c67a33dadf221749b7d29a469a0df692a6245a72ea949d198f778a1fbd0b3";
+const NIGHTLY_69_AUTO_LAUNCH_SHA256: &str =
+    "3145d8feb68d0ea61f8bf7c960ed7dfd2bb2a983cb9b56a6bcc7b68f7b5dd09a";
 const PREVIOUS_CONTROLLED_SWAP_SHA256: &str =
     "5229e00859664c13c846de65e346031d4ff05c77f52170212dcd631a111a614d";
 // Exact bundled controlled_swap.py shipped through Nightly 60 (PR #79/#80).
@@ -233,8 +234,13 @@ pub fn configure_existing_helper(
         &swap,
         "auto_launch_frida.py",
         CURRENT_AUTO_LAUNCH,
-        &[PREVIOUS_AUTO_LAUNCH_SHA256, NIGHTLY_56_AUTO_LAUNCH_SHA256],
+        &[
+            PREVIOUS_AUTO_LAUNCH_SHA256,
+            NIGHTLY_56_AUTO_LAUNCH_SHA256,
+            NIGHTLY_69_AUTO_LAUNCH_SHA256,
+        ],
     )?;
+    crate::standard_user_launch::install_into_swap(&swap)?;
     let config = swap.join("launcher_config.json");
     let mut previous = Map::new();
     if config.exists() {
@@ -352,22 +358,10 @@ pub fn launch_clean(
             "Could not remove manager-owned offline firewall rule: {error}"
         ));
     }
-    let mut cmd = Command::new(client);
-    cmd.current_dir(
-        client
-            .parent()
-            .ok_or("Client executable has no installation folder")?,
-    );
-    cmd.stdin(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000);
-    }
-    let process = cmd
-        .spawn()
-        .map_err(|e| format!("Could not start normal Modded Evolve client: {e}"))?;
-    Ok((process.id(), warnings))
+    // Launch through the interactive user's verified Explorer token. An
+    // elevated Mod Manager must NOT silently elevate the normal client/game.
+    let pid = crate::standard_user_launch::launch(client)?;
+    Ok((pid, warnings))
 }
 
 #[cfg(test)]
