@@ -13,7 +13,6 @@ import ctypes
 from ctypes import wintypes
 import os
 from pathlib import Path
-import msvcrt
 import subprocess
 import sys
 
@@ -321,6 +320,7 @@ def launch_standard_user(executable, *, game=False, args=(), trace_dll=None, run
             startup.lpDesktop = "winsta0\\default"
             output_stream = None
             if log_path is not None:
+                import msvcrt
                 output_stream = open(Path(log_path).resolve(), "ab", buffering=0)
                 handle = msvcrt.get_osfhandle(output_stream.fileno())
                 os.set_handle_inheritable(handle, True)
