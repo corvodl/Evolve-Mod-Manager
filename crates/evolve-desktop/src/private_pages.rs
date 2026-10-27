@@ -70,9 +70,7 @@ fn latest_announcement(state: &State) -> Element<'_, Message> {
     let news = &state.news;
     let mut content = column![
         row![
-            text("LATEST DISCORD ANNOUNCEMENT")
-                .size(14)
-                .style(design::accent),
+            text("Announcements").size(19),
             design::button("More in What's New")
                 .on_press(Message::Navigate(Page::WhatsNew))
                 .style(design::secondary),
@@ -263,8 +261,8 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
         column![
             hero,
             quick,
-            row![entries, status].spacing(14),
             latest_announcement(state),
+            row![entries, status].spacing(14),
         ]
         .spacing(20)
         .padding(12),
