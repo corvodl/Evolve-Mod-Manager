@@ -304,17 +304,16 @@ fn active_swap_filter(
     let targets = manifest["targets"]
         .as_array()
         .ok_or("Enabled profile PAK list is missing")?;
-    if manifest["schema"].as_u64() != Some(1)
-        || targets.is_empty()
-        || targets.len() > MAX_ARCHIVES
+    if manifest["schema"].as_u64() != Some(1) || targets.is_empty() || targets.len() > MAX_ARCHIVES
     {
         return Err("Invalid enabled profile PAK manifest".into());
     }
     let available = signed
         .iter()
-        .map(|row| normalized_pak_name(
-            row["path"].as_str().ok_or("Missing signed PAK target")?
-        ).map(|name| name.to_ascii_lowercase()))
+        .map(|row| {
+            normalized_pak_name(row["path"].as_str().ok_or("Missing signed PAK target")?)
+                .map(|name| name.to_ascii_lowercase())
+        })
         .collect::<Result<std::collections::HashSet<_>, _>>()?;
     if available.len() != signed.len() {
         return Err("Duplicate signed PAK target in signing stage".into());
@@ -565,7 +564,9 @@ fn inspect_existing_launcher_mode(
         stage,
         swap,
         game,
-        archive_count: selected.as_ref().map_or(seen.len(), |targets| targets.len()),
+        archive_count: selected
+            .as_ref()
+            .map_or(seen.len(), |targets| targets.len()),
         compatibility_warnings,
         prepared,
     })

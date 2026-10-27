@@ -112,7 +112,9 @@ fn publish_active_mod_paks(
             || target.contains('\\')
             || target.contains(':')
             || !target.to_ascii_lowercase().ends_with(".pak")
-            || target.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+            || target
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
             || !seen.insert(target.to_ascii_lowercase())
         {
             return Err("Unsafe or duplicate enabled mod PAK target".into());
@@ -288,7 +290,10 @@ pub fn launch_enabled(
         };
     // A profile swap contains ONLY the modified PAKs (and the signing
     // runtime DLLs), leaving all other installed stock PAKs untouched.
-    let active_targets = built.iter().map(|(_, target, _)| target.clone()).collect::<Vec<_>>();
+    let active_targets = built
+        .iter()
+        .map(|(_, target, _)| target.clone())
+        .collect::<Vec<_>>();
     publish_active_mod_paks(&stage, &profile.id, &active_targets)?;
     // Staging-only self-repair: accept a rebuilt hook ONLY when it hashes
     // exactly to this setup's saved original digest. A changed installed DLL
