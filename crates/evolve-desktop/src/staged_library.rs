@@ -263,7 +263,8 @@ pub fn create_project(
                 .map_err(|e| e.to_string())?;
             let authored = temp.path().join(&basename);
             if let Some(tools) = official.as_ref() {
-                tools.rekey_copy(&source, &authenticated_name, &authored)
+                tools
+                    .rekey_copy(&source, &authenticated_name, &authored)
                     .map_err(|e| format!("Official imported PAK could not be converted: {e}"))?;
             } else {
                 let keys = modding_keys::signing_keys(stage)?;
