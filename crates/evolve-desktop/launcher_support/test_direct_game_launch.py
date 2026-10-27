@@ -61,12 +61,13 @@ class DirectGameTests(unittest.TestCase):
                  mock.patch.object(direct,"start_runtime_supervisor",side_effect=service_start), \
                  mock.patch.object(direct,"environment_for_session",return_value={"MODDED_EVOLVE_STAGE2_MODES":state["modes"],"MODDED_EVOLVE_STAGE2_LOG":str(root/"trace.log")}), \
                  mock.patch.object(direct.contract,"wait_for_hook_startup"), \
+                 mock.patch.object(direct,"wait_for_visible_game_window",side_effect=lambda proc: actions.append("window")), \
                  mock.patch.object(direct,"validate_prepared",side_effect=checked), \
                  mock.patch.object(direct,"rename_prepared_into_game",side_effect=swap), \
                  mock.patch.object(direct,"start_restore_watchdog",side_effect=watchdog), \
                  mock.patch.object(direct.standard_user_launch,"launch_standard_user",side_effect=spawn):
                 self.assertEqual(direct.launch_direct(root,root,"client",root),0)
-            self.assertEqual(actions,["verify","services","swap","watchdog","inject","close"])
+            self.assertEqual(actions,["verify","services","swap","watchdog","inject","window","close"])
             self.assertEqual((session/"game.pid").read_text().strip(),"12345")
 
     def test_clean_launch_never_swaps_or_starts_watchdog(self):
@@ -83,6 +84,7 @@ class DirectGameTests(unittest.TestCase):
                  mock.patch.object(direct,"start_runtime_supervisor",return_value=(session,state)), \
                  mock.patch.object(direct,"environment_for_session",return_value={"MODDED_EVOLVE_STAGE2_MODES":"X","MODDED_EVOLVE_STAGE2_LOG":str(root/"trace.log")}), \
                  mock.patch.object(direct.contract,"wait_for_hook_startup"), \
+                 mock.patch.object(direct,"wait_for_visible_game_window"), \
                  mock.patch.object(direct.swapper,"all_closed"), \
                  mock.patch.object(direct,"rename_prepared_into_game") as rename, \
                  mock.patch.object(direct,"start_restore_watchdog") as watch, \
@@ -90,6 +92,34 @@ class DirectGameTests(unittest.TestCase):
                 self.assertEqual(direct.launch_direct(root,None,"client",root,True),0)
             rename.assert_not_called()
             watch.assert_not_called()
+
+    def test_hook_success_does_not_hide_early_game_exit(self):
+        process = mock.Mock(pid=19328)
+        process.poll.return_value = 0xC0000005
+        with mock.patch.object(direct,"has_visible_game_window") as visible:
+            with self.assertRaisesRegex(RuntimeError, "exit code 3221225477"):
+                direct.wait_for_visible_game_window(process, timeout=1)
+        visible.assert_not_called()
+
+    def test_visible_window_must_be_stable(self):
+        process = mock.Mock(pid=19328)
+        process.poll.return_value = None
+        with mock.patch.object(direct,"has_visible_game_window",
+                               side_effect=[False, True, True]) as window, \
+             mock.patch.object(direct.time,"monotonic",
+                               side_effect=[0,0,0,.1,.2,.4,.6]), \
+             mock.patch.object(direct.time,"sleep"):
+            direct.wait_for_visible_game_window(process, timeout=1, stable_seconds=.35)
+        self.assertEqual(window.call_count,3)
+
+    def test_live_but_invisible_game_never_reports_success(self):
+        process = mock.Mock(pid=19328)
+        process.poll.return_value = None
+        with mock.patch.object(direct,"has_visible_game_window",return_value=False), \
+             mock.patch.object(direct.time,"monotonic",side_effect=[0,0,.3,.6,1.1]), \
+             mock.patch.object(direct.time,"sleep"):
+            with self.assertRaisesRegex(RuntimeError, "never displayed"):
+                direct.wait_for_visible_game_window(process, timeout=1)
 
     def test_swap_journal_is_written_before_renames_and_interrupted_on_error(self):
         state={"phase":"prepared","files":[{"target":"live","backup":"backup","ready":"prepared"}]}

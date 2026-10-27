@@ -174,6 +174,70 @@ def environment_for_session(state, swap):
     return contract.build_game_environment(state, swap)
 
 
+def has_visible_game_window(pid):
+    """Check for a real top-level window owned by this game PID, not a hook log."""
+    if os.name != "nt":
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user32.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
+    user32.EnumWindows.restype = wintypes.BOOL
+    user32.GetWindowThreadProcessId.argtypes = [
+        wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsWindowVisible.restype = wintypes.BOOL
+    found = []
+
+    @callback_type
+    def check(hwnd, _):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if owner.value == pid and user32.IsWindowVisible(hwnd):
+            found.append(hwnd)
+            return False
+        return True
+
+    result = user32.EnumWindows(check, 0)
+    if not result and not found:
+        raise RuntimeError(
+            "Cannot enumerate game windows (Windows error "
+            + str(ctypes.get_last_error()) + ")")
+    return bool(found)
+
+
+def wait_for_visible_game_window(process, timeout=45, stable_seconds=2):
+    """Do not claim success until Evolve has a visible, stable game window.
+
+    Loading Stage2Trace/SteamCompat only proves a suspended game process was
+    resumed. A process that exits a few seconds later is a failed launch.
+    """
+    deadline = time.monotonic() + timeout
+    visible_since = None
+    while time.monotonic() < deadline:
+        code = process.poll()
+        if code is not None:
+            raise RuntimeError(
+                f"Evolve.exe exited before a stable visible window "
+                f"(PID {process.pid}, exit code {code}). "
+                "Inspect rust-direct-stage2-hook.log and the game's crash logs.")
+        now = time.monotonic()
+        if has_visible_game_window(process.pid):
+            if visible_since is None:
+                visible_since = now
+            if now - visible_since >= stable_seconds:
+                return
+        else:
+            visible_since = None
+        time.sleep(0.2)
+    raise RuntimeError(
+        f"Evolve.exe PID {process.pid} never displayed a stable visible "
+        f"game window within {timeout} seconds. Check the game's crash logs.")
+
+
 def launch_direct(game_root, stage_root=None, client_exe=None, swap_dir=None, clean=False):
     game=_ordinary(game_root)
     exe=game/"bin64_SteamRetail"/"Evolve.exe"
@@ -217,6 +281,7 @@ def launch_direct(game_root, stage_root=None, client_exe=None, swap_dir=None, cl
                     contract.wait_for_hook_startup(
                         hook_log, Path(state["steam_compat"]), state["modes"], process
                     )
+                    wait_for_visible_game_window(process)
                 except BaseException:
                     if process.poll() is None:
                         process.terminate()
@@ -224,7 +289,8 @@ def launch_direct(game_root, stage_root=None, client_exe=None, swap_dir=None, cl
                 (session/"game.pid").write_text(str(process.pid)+"\n")
                 print(f"DIRECT_GAME_LAUNCHED pid={process.pid} "
                       f"watchdog={watchdog or 0} swap_complete={str(swapped).lower()} "
-                      "services_ready=true trace_loaded=true hooks_ready=true",flush=True)
+                      "services_ready=true trace_loaded=true hooks_ready=true "
+                      "window_visible=true",flush=True)
                 return 0
             finally:
                 process.close()
