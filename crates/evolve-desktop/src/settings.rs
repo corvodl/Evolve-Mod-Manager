@@ -399,8 +399,10 @@ mod tests {
         let file = dir.path().join("settings.json");
         fs::write(&file, r#"{"ui_density":"Compact"}"#).unwrap();
         assert_eq!(load_from(&file).unwrap().game_launch_mode, "Direct Launch");
-        let mut p = Preferences::default();
-        p.game_launch_mode = "Client Launch".into();
+        let mut p = Preferences {
+            game_launch_mode: "Client Launch".into(),
+            ..Preferences::default()
+        };
         save_to(&file, &p).unwrap();
         assert_eq!(load_from(&file).unwrap().game_launch_mode, "Client Launch");
         p.game_launch_mode = "invalid".into();
