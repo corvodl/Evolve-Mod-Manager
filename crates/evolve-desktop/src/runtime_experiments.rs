@@ -7,6 +7,8 @@
 //! deliberately not an executable command or a serialization format.
 use std::fmt::Write;
 
+// Retained for optional legacy Developer diagnostics not exposed in the new panel.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Phase2Action {
     Health,
@@ -26,6 +28,8 @@ impl Phase2Action {
     }
 }
 
+// Retained for optional legacy Developer diagnostics not exposed in the new panel.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Phase3Action {
     Spawn,
