@@ -111,6 +111,26 @@ impl OfficialTools {
         self.invoke("r", staged_paks, None)
     }
 
+    /// Re-sign ONE already verified stock PAK for an isolated editing stage.
+    /// Never modify the original source or invoke 'r' against a live game.
+    pub fn rekey_copy(&self, source: &Path, signed_name: &str, output: &Path) -> Result<(), String> {
+        use evolve_core::signed_pak::inspect_signed_pak;
+        if output.exists() { return Err("Official target already exists".into()); }
+        let parent = output.parent().ok_or("Official target needs parent directory")?;
+        let scratch = tempfile::Builder::new().prefix(".official-rekey-")
+            .tempdir_in(parent).map_err(|e| e.to_string())?;
+        let name = source.file_name().ok_or("Source PAK has no name")?;
+        let staged = scratch.path().join(name);
+        fs::copy(source, &staged).map_err(|e| e.to_string())?;
+        if inspect_signed_pak(&staged, &self.public_key, signed_name).is_err() {
+            self.rekey_stage(scratch.path())?;
+        }
+        inspect_signed_pak(&staged, &self.public_key, signed_name)
+            .map_err(|e| format!("Official single-PAK conversion did not authenticate: {e}"))?;
+        fs::rename(staged, output).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     /// Rebuild just one edited PAK with the original developer encoder.
     /// The encoder takes a full directory, so decode + overlay is required.
     /// Output is only published after signature/member verification.
