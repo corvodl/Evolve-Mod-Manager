@@ -1,22 +1,27 @@
 //! Safe command-line functions shared with the desktop application.
+use evolve_core::signed_pak::{extract_signed_member, rebuild_signed_pak_with_additions};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, Transform, add_mod_to_profile, animation_references,
-    apply_profile_stage, apply_stage_pak, batch_stage_status, convert_glb_to_fbx,
-    convert_original_motion, create_mod_profile, delete_mod_profile, enable_profile_mod,
-    export_dds_png, export_edited_layer, export_level_scene_glb, export_model_glb,
-    export_model_obj, export_rigged_character_fbx, export_rigged_character_glb, export_terrain_obj,
-    extract_legacy_pak, extract_signed_pak, import_stage_pak, initialize_stage, inspect_caf_file,
-    inspect_client_hook_pair, inspect_dds, inspect_legacy_pak, inspect_pak_hook_pair,
-    inspect_signed_pak, list_mod_profiles, load_level_scene, plan_mod_profile, prepare_client_hook,
-    read_cdf, read_material, read_model, read_terrain, rebuild_legacy_pak,
-    rebuild_signed_pak_entry, resign_signed_pak, resolve_cdf, resolve_materials,
-    restore_profile_stage, restore_stage, scan_directory, stage_status, write_inventory_json,
+    apply_profile_stage, apply_stage_pak, apply_stage_pak_with_additions, batch_stage_status,
+    convert_glb_to_fbx, convert_original_motion, create_mod_profile, delete_mod_profile,
+    enable_profile_mod, export_dds_png, export_edited_layer, export_level_scene_glb,
+    export_model_glb, export_model_obj, export_rigged_character_fbx, export_rigged_character_glb,
+    export_terrain_obj, extract_legacy_pak, extract_signed_pak, import_stage_pak, initialize_stage,
+    inspect_caf_file, inspect_client_hook_pair, inspect_dds, inspect_legacy_pak,
+    inspect_pak_hook_pair, inspect_signed_pak, list_mod_profiles, load_level_scene,
+    plan_mod_profile, prepare_client_hook, read_cdf, read_material, read_model, read_terrain,
+    rebuild_legacy_pak, rebuild_signed_pak_entry, resign_signed_pak, resolve_cdf,
+    resolve_materials, restore_profile_stage, restore_stage, scan_directory, stage_status,
+    write_inventory_json,
 };
 use serde::Serialize;
+use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+
+const OVERLAY_MAX_MEMBERS: usize = 64;
 
 fn main() {
     if let Err(message) = run(std::env::args_os().skip(1).collect()) {
@@ -45,6 +50,7 @@ fn usage() -> String {
         "  evolve-cli stage restore <stage>",
         "  evolve-cli stage import <stage> <original.pak> <target-relative.pak> <public.der> <basename>",
         "  evolve-cli stage apply <stage> <replacement.pak> <target-relative.pak> <original.der> <replacement.der> <basename>",
+        "  evolve-cli stage apply-add <stage> <replacement.pak> <target-relative.pak> <original.der> <replacement.der> <basename> (isolated stage only)",
         "  evolve-cli pak inspect <legacy.pak> [pak-inventory.json]",
         "  evolve-cli pak extract <legacy.pak> <new-output-directory>",
         "  evolve-cli pak rebuild <legacy.pak> <overrides-folder> <new-output.pak>",
@@ -61,7 +67,9 @@ fn usage() -> String {
         "  evolve-cli fbx export <rigged.glb> <Blender.exe> <new.fbx> [--animations]",
         "  evolve-cli signed inspect <original.pak> <public-key.der> <signed-basename> [info.json]",
         "  evolve-cli signed extract <original.pak> <public-key.der> <signed-basename> <new-folder>",
+        "  evolve-cli signed extract-member <original.pak> <public-key.der> <signed-basename> <exact-member-path> <new-file>",
         "  evolve-cli signed rebuild <original.pak> <old-public.der> <new-private.pem> <new-public.der> <basename> <member> <replacement> <new.pak>",
+        "  evolve-cli signed overlay <original.pak> <old-public.der> <new-private.pem> <new-public.der> <basename> <source-folder> <new.pak>",
         "  evolve-cli signed resign <original.pak> <old-public.der> <new-private.pem> <new-public.der> <basename> <new.pak>",
         "  evolve-cli hook prepare <original-inject.dll> <old-public.der> <new-public.der> <new-staging/inject.dll>",
         "  evolve-cli hook verify <original-inject.dll> <custom-inject.dll> <old-public.der> <new-public.der>",
@@ -81,6 +89,7 @@ fn usage() -> String {
         "",
         "Signed Stage 2 PAKs require the matching local PUBLIC RSA key and exact signed basename.",
         "Signed Stage 2 replacement requires a separate local RSA private key; game acceptance is unverified.",
+        "Overlay rebuild accepts 1-64 regular files; symlinks/reparse points are skipped and duplicate member names are refused.",
         "Hook preparation only writes a NEW copy; it does not patch or run the installed client.",
         "PAK/hook preflight does not verify Evolve mounted the PAK; real offline Stage 2 launch testing remains necessary.",
         "Outputs are never silently overwritten.",
@@ -98,6 +107,106 @@ fn no_extra(args: &mut std::vec::IntoIter<OsString>) -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+
+fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+fn overlay_member_name(relative: &Path) -> Result<String, String> {
+    let mut parts = Vec::new();
+    for component in relative.components() {
+        let std::path::Component::Normal(part) = component else {
+            return Err("Overlay file paths must stay inside the source folder".into());
+        };
+        parts.push(
+            part.to_str()
+                .ok_or_else(|| "Overlay file names must be valid UTF-8".to_owned())?,
+        );
+    }
+    if parts.is_empty() {
+        return Err("Overlay member path is empty".into());
+    }
+    let name = parts.join("/");
+    if evolve_core::archive::safe_member_name(&name).map_err(|e| e.to_string())? != name {
+        return Err(format!("Unsafe overlay member path: {name}"));
+    }
+    Ok(name)
+}
+
+fn collect_overlay_dir(
+    root: &Path,
+    folder: &Path,
+    files: &mut Vec<(String, PathBuf)>,
+    skipped_links: &mut usize,
+) -> Result<(), String> {
+    let mut entries = fs::read_dir(folder)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    entries.sort_by_key(fs::DirEntry::file_name);
+    for entry in entries {
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if is_link_or_reparse(&metadata) {
+            *skipped_links += 1;
+            continue;
+        }
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| "Overlay path escaped the source folder".to_owned())?;
+        let member = overlay_member_name(relative)?;
+        if metadata.file_type().is_dir() {
+            collect_overlay_dir(root, &path, files, skipped_links)?;
+        } else if metadata.file_type().is_file() {
+            if files.len() >= OVERLAY_MAX_MEMBERS {
+                return Err(format!(
+                    "Overlay source must contain at most {OVERLAY_MAX_MEMBERS} files"
+                ));
+            }
+            files.push((member, path));
+        } else {
+            return Err(format!(
+                "Overlay source contains a non-regular file: {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn collect_overlay_files(root: &Path) -> Result<(Vec<(String, PathBuf)>, usize), String> {
+    let metadata = fs::symlink_metadata(root).map_err(|e| e.to_string())?;
+    if !metadata.file_type().is_dir() || is_link_or_reparse(&metadata) {
+        return Err(
+            "Overlay source must be a regular directory, not a link or reparse point".into(),
+        );
+    }
+    let mut files = Vec::new();
+    let mut skipped_links = 0;
+    collect_overlay_dir(root, root, &mut files, &mut skipped_links)?;
+    if files.is_empty() {
+        return Err("Overlay source folder contains no files".into());
+    }
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut seen = HashSet::new();
+    for (member, _) in &files {
+        if !seen.insert(member.to_ascii_lowercase()) {
+            return Err(format!("Duplicate overlay member path: {member}"));
+        }
+    }
+    Ok((files, skipped_links))
 }
 
 fn parse_vector<const N: usize>(value: &OsStr) -> Result<[f32; N], String> {
@@ -363,6 +472,21 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
                 plan.mods.len(),
                 plan.total_bytes
             );
+            for change in &plan.member_changes {
+                println!(
+                    "  {}: +{} added, {} changed, -{} removed, {} case-renamed members{}",
+                    change.target,
+                    change.added,
+                    change.changed,
+                    change.removed,
+                    change.case_renamed,
+                    if change.removed > 0 || change.case_renamed > 0 {
+                        " (compatibility warning)"
+                    } else {
+                        ""
+                    }
+                );
+            }
         } else {
             return Err(usage());
         }
@@ -394,14 +518,19 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
             let digest = import_stage_pak(&root, &original, &target, &public_key, &basename)
                 .map_err(|e| e.to_string())?;
             println!("Imported verified signed archive into isolated stage (SHA256 {digest})");
-        } else if action == OsStr::new("apply") {
+        } else if action == OsStr::new("apply") || action == OsStr::new("apply-add") {
             let replacement: PathBuf = pop(&mut args)?.into();
             let target = pop(&mut args)?.into_string().map_err(|_| usage())?;
             let original_key: PathBuf = pop(&mut args)?.into();
             let replacement_key: PathBuf = pop(&mut args)?.into();
             let basename = pop(&mut args)?.into_string().map_err(|_| usage())?;
             no_extra(&mut args)?;
-            let tx = apply_stage_pak(
+            let apply = if action == OsStr::new("apply-add") {
+                apply_stage_pak_with_additions
+            } else {
+                apply_stage_pak
+            };
+            let tx = apply(
                 &root,
                 &replacement,
                 &target,
@@ -530,6 +659,46 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
         );
         return Ok(());
     }
+    if verb == OsStr::new("signed") && subcommand == OsStr::new("overlay") {
+        let old_public: PathBuf = pop(&mut args)?.into();
+        let new_private: PathBuf = pop(&mut args)?.into();
+        let new_public: PathBuf = pop(&mut args)?.into();
+        let basename = pop(&mut args)?
+            .into_string()
+            .map_err(|_| "Signed basename must be UTF-8".to_owned())?;
+        let folder: PathBuf = pop(&mut args)?.into();
+        let destination: PathBuf = pop(&mut args)?.into();
+        no_extra(&mut args)?;
+        let (changes, skipped_links) = collect_overlay_files(&folder)?;
+        if skipped_links != 0 {
+            println!("Skipped {skipped_links} symlink/reparse point(s) in the overlay source.");
+        }
+        let reports = rebuild_signed_pak_with_additions(
+            &source,
+            &old_public,
+            &new_private,
+            &new_public,
+            &basename,
+            &changes,
+            &destination,
+        )
+        .map_err(|e| e.to_string())?;
+        println!(
+            "Rebuilt and independently verified {} overlay member(s) with the new public key.",
+            reports.len()
+        );
+        for report in &reports {
+            println!(
+                "  {} ({} -> {} bytes)",
+                report.changed_entry, report.original_bytes, report.replacement_bytes
+            );
+        }
+        println!(
+            "Output: {}. Original PAK was not modified.",
+            destination.display()
+        );
+        return Ok(());
+    }
     if verb == OsStr::new("level") && subcommand == OsStr::new("glb") {
         let library: PathBuf = pop(&mut args)?.into();
         let destination: PathBuf = pop(&mut args)?.into();
@@ -573,6 +742,22 @@ fn run(args: Vec<OsString>) -> Result<(), String> {
         let basename = pop(&mut args)?
             .into_string()
             .map_err(|_| "Signed basename must be UTF-8".to_owned())?;
+        if subcommand == OsStr::new("extract-member") {
+            let member = pop(&mut args)?
+                .into_string()
+                .map_err(|_| "Signed member must be UTF-8".to_owned())?;
+            let target: PathBuf = pop(&mut args)?.into();
+            no_extra(&mut args)?;
+            let entry = extract_signed_member(&source, &key, &basename, &member, &target)
+                .map_err(|e| e.to_string())?;
+            println!(
+                "Verified and extracted {} ({} bytes) to {}",
+                entry.path,
+                entry.size,
+                target.display()
+            );
+            return Ok(());
+        }
         let output: Option<PathBuf> = args.next().map(Into::into);
         no_extra(&mut args)?;
         if subcommand == OsStr::new("inspect") {
@@ -897,5 +1082,61 @@ mod tests {
     fn rejects_unsupported_usage_without_side_effects() {
         assert!(run(vec![]).is_err());
         assert!(run(vec![OsString::from("pak"), OsString::from("extract")]).is_err());
+    }
+
+    #[test]
+    fn collects_sorted_normalized_overlay_members() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("Libs").join("UI")).unwrap();
+        fs::write(
+            temp.path().join("Libs").join("UI").join("Widget.xml"),
+            b"ui",
+        )
+        .unwrap();
+        fs::write(temp.path().join("root.txt"), b"root").unwrap();
+        let files = collect_overlay_files(temp.path()).unwrap();
+        assert_eq!(files.1, 0);
+        assert_eq!(
+            files
+                .0
+                .iter()
+                .map(|(member, _)| member.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Libs/UI/Widget.xml", "root.txt"]
+        );
+    }
+
+    #[test]
+    fn refuses_empty_overlay_folder() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(collect_overlay_files(temp.path()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skips_symlinked_overlay_entries() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("real.txt"), b"x").unwrap();
+        symlink(temp.path().join("real.txt"), temp.path().join("link.txt")).unwrap();
+        let (files, skipped_links) = collect_overlay_files(temp.path()).unwrap();
+        assert_eq!(skipped_links, 1);
+        assert_eq!(
+            files
+                .iter()
+                .map(|(member, _)| member.as_str())
+                .collect::<Vec<_>>(),
+            vec!["real.txt"]
+        );
+    }
+
+    #[test]
+    fn refuses_overlay_folder_above_member_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        for index in 0..=OVERLAY_MAX_MEMBERS {
+            fs::write(temp.path().join(format!("file-{index}.txt")), b"x").unwrap();
+        }
+        assert!(collect_overlay_files(temp.path()).is_err());
     }
 }

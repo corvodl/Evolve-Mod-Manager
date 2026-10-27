@@ -152,8 +152,8 @@ pub use terrain::{
 };
 
 pub use staging::{
-    StageError, StageTransaction, apply_stage_pak, import_stage_pak, initialize_stage,
-    restore_stage, stage_status,
+    StageError, StageTransaction, apply_stage_pak, apply_stage_pak_with_additions,
+    import_stage_pak, initialize_stage, restore_stage, stage_status,
 };
 
 pub use profiles::{

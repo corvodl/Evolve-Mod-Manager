@@ -193,6 +193,7 @@ struct State {
     hook_prepared: String,
     stage_feedback: String,
     profile_name: String,
+    profile_source: String,
     profile_id: String,
     profile_catalog: Option<ProfileCatalog>,
     profile_feedback: String,
@@ -1927,6 +1928,7 @@ enum Message {
     PickedGameInstallation(Option<PathBuf>),
     PickedClientExecutable(Option<PathBuf>),
     ProfileNameChanged(String),
+    ProfileSourceChanged(String),
     SelectProfile(String),
     StartProfileList,
     StartProfileCreate,
@@ -3266,6 +3268,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                     state.selected = state.file_selection.primary_after(index);
                     state.input = candidate.to_string_lossy().into_owned();
+                    // The archive selection is now the explicit profile target;
+                    // do not silently reuse an older selected project's PAK.
+                    state.modding_selected = None;
                     state.status = format!("Selected original staged PAK: {}", entry.relative_path);
                 } else {
                     state.status = "Select a regular PAK inside the configured stage/paks.".into();
@@ -7875,6 +7880,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::HookOriginalChanged(value) => state.hook_original = value,
         Message::HookPreparedChanged(value) => state.hook_prepared = value,
         Message::ProfileNameChanged(value) => state.profile_name = value,
+        Message::ProfileSourceChanged(value) => state.profile_source = value,
         Message::SelectProfile(value) => state.profile_id = value,
         Message::StartProfileRecover => {
             if state.preferences.stage.trim().is_empty() {
@@ -7901,21 +7907,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Select an offline profile and prepared stage.".into();
                 return Task::none();
             }
-            let key =
-                match modding_keys::public_key(PathBuf::from(&state.preferences.stage).as_path()) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        state.status = error;
-                        return Task::none();
-                    }
-                };
+            let stage = PathBuf::from(&state.preferences.stage);
+            let keys = match modding_keys::signing_keys(&stage) {
+                Ok(value) => value,
+                Err(error) => {
+                    state.status = error;
+                    return Task::none();
+                }
+            };
             return launch(
                 state,
                 Operation::ApplyProfile(
-                    PathBuf::from(&state.preferences.stage),
+                    stage,
                     state.profile_id.clone(),
-                    key.clone(),
-                    key,
+                    keys.original_public,
+                    keys.public,
                 ),
             );
         }
@@ -7943,8 +7949,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::StartProfileAdd => {
-            if state.profile_id.trim().is_empty() || state.input.trim().is_empty() {
-                state.status = "Select a profile and signed replacement file.".into();
+            if state.profile_id.trim().is_empty() || state.profile_source.trim().is_empty() {
+                state.status =
+                    "Select a profile, a staged PAK target and a signed replacement file.".into();
                 return Task::none();
             }
             let target = match selected_stage_target(state) {
@@ -7955,8 +7962,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
             };
             let stage = PathBuf::from(&state.preferences.stage);
-            let key = match modding_keys::public_key(&stage) {
-                Ok(key) => key,
+            let keys = match modding_keys::signing_keys(&stage) {
+                Ok(keys) => keys,
                 Err(error) => {
                     state.status = error;
                     return Task::none();
@@ -7974,10 +7981,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Operation::AddProfileMod(
                     stage,
                     state.profile_id.clone(),
-                    PathBuf::from(&state.input),
+                    PathBuf::from(&state.profile_source),
                     target,
-                    key.clone(),
-                    key,
+                    keys.original_public,
+                    keys.public,
                     basename,
                 ),
             );
@@ -7988,8 +7995,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             }
             let stage = PathBuf::from(&state.preferences.stage);
-            let key = match modding_keys::public_key(&stage) {
-                Ok(key) => key,
+            let keys = match modding_keys::signing_keys(&stage) {
+                Ok(keys) => keys,
                 Err(error) => {
                     state.status = error;
                     return Task::none();
@@ -7997,7 +8004,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
             return launch(
                 state,
-                Operation::PlanProfile(stage, state.profile_id.clone(), key.clone(), key),
+                Operation::PlanProfile(
+                    stage,
+                    state.profile_id.clone(),
+                    keys.original_public,
+                    keys.public,
+                ),
             );
         }
         Message::StartStageInit => {
@@ -10084,10 +10096,26 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                 }
                 Ok(Completed::ProfilePlanned(plan)) => {
+                    let (added, removed, changed, case_renamed) = plan.member_changes.iter().fold(
+                        (0usize, 0usize, 0usize, 0usize),
+                        |totals, item| {
+                            (
+                                totals.0 + item.added,
+                                totals.1 + item.removed,
+                                totals.2 + item.changed,
+                                totals.3 + item.case_renamed,
+                            )
+                        },
+                    );
                     state.profile_feedback = format!(
-                        "Verified {} enabled signed PAKs ({} bytes). This is a read-only plan; no game files changed.",
+                        "Verified {} enabled signed PAKs ({} bytes): {added} added, {changed} replaced, {removed} removed and {case_renamed} case-renamed members. {} This is a read-only plan; no game files changed.",
                         plan.mods.len(),
-                        plan.total_bytes
+                        plan.total_bytes,
+                        if removed > 0 || case_renamed > 0 {
+                            "WARNING: member removals or case changes may break Stage 2."
+                        } else {
+                            "Member counts do not establish in-game compatibility."
+                        },
                     );
                     state.status = state.profile_feedback.clone();
                     state.page = Some(Page::Files);

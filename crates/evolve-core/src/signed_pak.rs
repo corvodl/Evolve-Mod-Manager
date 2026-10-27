@@ -565,6 +565,45 @@ pub fn extract_signed_pak(
     Ok(verified.info)
 }
 
+/// Extract one named, authenticated member without expanding a whole multi-GB
+/// archive. The verified directory and the member CRC/length are checked
+/// before publishing a NEW output file. Callers must choose a scratch path
+/// outside the installed game and manager stage.
+pub fn extract_signed_member(
+    source: &Path,
+    der_public_key: &Path,
+    signed_basename: &str,
+    member: &str,
+    destination: &Path,
+) -> Result<SignedEntry, SignedPakError> {
+    if safe_member_name(member).map_err(|_| SignedPakError::UnsafePath(member.into()))? != member {
+        return Err(SignedPakError::UnsafePath(member.into()));
+    }
+    let verified = open_verified_signed_pak(source, der_public_key, signed_basename)?;
+    let entry = verified
+        .info
+        .entries
+        .iter()
+        .find(|e| e.path == member)
+        .ok_or_else(|| SignedPakError::Format("member missing from verified archive".into()))?
+        .clone();
+    let parent = destination.parent().ok_or(SignedPakError::UnsafeOutput)?;
+    if destination == source
+        || fs::symlink_metadata(destination).is_ok()
+        || !fs::symlink_metadata(parent)?.file_type().is_dir()
+        || fs::symlink_metadata(parent)?.file_type().is_symlink()
+    {
+        return Err(SignedPakError::UnsafeOutput);
+    }
+    let content = verified.read_member(source, member, 64 * 1024 * 1024)?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    temp.write_all(&content)?;
+    temp.as_file().sync_all()?;
+    temp.persist_noclobber(destination)
+        .map_err(|e| SignedPakError::Io(e.error))?;
+    Ok(entry)
+}
+
 /// Result of a native Stage 2 signed replacement. Outputs are for explicit
 /// offline modding; signing with a local key does NOT prove retail acceptance.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -990,6 +1029,54 @@ pub fn rebuild_signed_pak_entries(
     changes: &[(String, PathBuf)],
     destination: &Path,
 ) -> Result<Vec<SignedRebuildReport>, SignedPakError> {
+    rebuild_signed_pak_changes(
+        source,
+        original_public,
+        signing_private,
+        signing_public,
+        basename,
+        changes,
+        destination,
+        false,
+    )
+}
+
+/// Rebuild a verified signed PAK with replacement and new members. The source
+/// remains untouched; the resulting archive is verified before publication.
+/// New members use encrypted DEFLATE (method 14), matching existing CryPAKs.
+pub fn rebuild_signed_pak_with_additions(
+    source: &Path,
+    original_public: &Path,
+    signing_private: &Path,
+    signing_public: &Path,
+    basename: &str,
+    changes: &[(String, PathBuf)],
+    destination: &Path,
+) -> Result<Vec<SignedRebuildReport>, SignedPakError> {
+    rebuild_signed_pak_changes(
+        source,
+        original_public,
+        signing_private,
+        signing_public,
+        basename,
+        changes,
+        destination,
+        true,
+    )
+}
+
+// The internal mode shares the public rebuild contract's seven parameters.
+#[allow(clippy::too_many_arguments)]
+fn rebuild_signed_pak_changes(
+    source: &Path,
+    original_public: &Path,
+    signing_private: &Path,
+    signing_public: &Path,
+    basename: &str,
+    changes: &[(String, PathBuf)],
+    destination: &Path,
+    allow_additions: bool,
+) -> Result<Vec<SignedRebuildReport>, SignedPakError> {
     const MAX_BATCH: usize = 64;
     if changes.is_empty() || changes.len() > MAX_BATCH {
         return Err(SignedPakError::Limits);
@@ -1006,20 +1093,36 @@ pub fn rebuild_signed_pak_entries(
     // Verify the source and *all* requested entries before starting any
     // potentially costly encryption or output staging.
     let original = open_verified_signed_pak(source, original_public, basename)?;
+    let old_paths: HashSet<_> = original
+        .info
+        .entries
+        .iter()
+        .map(|entry| entry.path.to_ascii_lowercase())
+        .collect();
     let mut seen = HashSet::new();
     let mut replacement_total = 0u64;
+    let mut additions = 0usize;
     for (path, replacement) in changes {
-        if safe_member_name(path).map_err(|_| SignedPakError::UnsafePath(path.clone()))? != *path
+        let valid =
+            safe_member_name(path).map_err(|_| SignedPakError::UnsafePath(path.clone()))? == *path;
+        let existing = original
+            .info
+            .entries
+            .iter()
+            .find(|member| member.path == *path);
+        if !valid
+            || path.len() > u16::MAX as usize
             || !seen.insert(path.to_ascii_lowercase())
-            || !original
-                .info
-                .entries
-                .iter()
-                .any(|member| member.path == *path && matches!(member.method, 13 | 14))
+            || (existing.is_none()
+                && (!allow_additions || old_paths.contains(&path.to_ascii_lowercase())))
+            || existing.is_some_and(|member| !matches!(member.method, 13 | 14))
         {
             return Err(SignedPakError::Format(format!(
                 "Unsupported, missing, or duplicate replacement entry: {path}"
             )));
+        }
+        if existing.is_none() {
+            additions += 1;
         }
         let metadata = fs::symlink_metadata(replacement)?;
         if !metadata.file_type().is_file() || metadata.len() > MAX_ENTRY_BYTES {
@@ -1031,6 +1134,16 @@ pub fn rebuild_signed_pak_entries(
         if replacement_total > MAX_TOTAL_BYTES {
             return Err(SignedPakError::Limits);
         }
+    }
+    if original.info.entries.len() + additions > MAX_ENTRIES
+        || original.info.entries.len() + additions > u16::MAX as usize
+        || original
+            .info
+            .total_expanded_bytes
+            .checked_add(replacement_total)
+            .is_none_or(|sum| sum > MAX_TOTAL_BYTES)
+    {
+        return Err(SignedPakError::Limits);
     }
     let source_meta = fs::symlink_metadata(source)?;
     if !source_meta.file_type().is_file() {
@@ -1058,32 +1171,38 @@ pub fn rebuild_signed_pak_entries(
     }
     let mut reports = Vec::with_capacity(changes.len());
     for (expected, replacement) in changes {
-        let old = verified
-            .info
-            .entries
-            .iter()
-            .find(|e| e.path == *expected)
-            .ok_or_else(|| SignedPakError::Format("replacement disappeared from index".into()))?;
+        let old = verified.info.entries.iter().find(|e| e.path == *expected);
         let old_cdr_pos = out.stream_position()?;
-        let offset = scan_cdr_entry(&verified.cdr, expected)?;
+        let offset = if old.is_some() {
+            Some(scan_cdr_entry(&verified.cdr, expected)?)
+        } else {
+            None
+        };
         let name = expected.as_bytes();
-        let nlen = read_u16(&verified.cdr, offset + 28)? as usize;
-        if name.len() != nlen {
-            return Err(SignedPakError::Limits);
-        }
-        let version = read_u16(&verified.cdr, offset + 6)?;
-        let flags = read_u16(&verified.cdr, offset + 8)?;
-        let method = read_u16(&verified.cdr, offset + 10)?;
-        let timestamp = read_u16(&verified.cdr, offset + 12)?;
-        let date = read_u16(&verified.cdr, offset + 14)?;
-        if old.method != method
-            || !matches!(method, 13 | 14)
-            || read_u16(&verified.cdr, offset + 30)? != 0
-        {
-            return Err(SignedPakError::Format(
-                "unsupported signed replacement layout".into(),
-            ));
-        }
+        let (version, flags, method, timestamp, date) = if let Some(offset) = offset {
+            if name.len() != read_u16(&verified.cdr, offset + 28)? as usize
+                || read_u16(&verified.cdr, offset + 30)? != 0
+            {
+                return Err(SignedPakError::Format(
+                    "unsupported signed replacement layout".into(),
+                ));
+            }
+            let method = read_u16(&verified.cdr, offset + 10)?;
+            if old.is_none_or(|entry| entry.method != method) || !matches!(method, 13 | 14) {
+                return Err(SignedPakError::Format(
+                    "unsupported signed replacement method".into(),
+                ));
+            }
+            (
+                read_u16(&verified.cdr, offset + 6)?,
+                read_u16(&verified.cdr, offset + 8)?,
+                method,
+                read_u16(&verified.cdr, offset + 12)?,
+                read_u16(&verified.cdr, offset + 14)?,
+            )
+        } else {
+            (20, if expected.is_ascii() { 0 } else { 0x800 }, 14, 0, 0)
+        };
         let mut temporary = tempfile::tempfile_in(parent)?;
         let mut replacement_file = File::open(replacement)?;
         let mut crc = Hasher::new();
@@ -1139,10 +1258,37 @@ pub fn rebuild_signed_pak_entries(
             encrypted_data_offset: old_cdr_pos + 30 + name.len() as u64,
         };
         let slot = (!(crc >> 2) & 15) as usize;
-        put_u32(&mut cdr, offset + 16, crc as u64)?;
-        put_u32(&mut cdr, offset + 20, compressed_size)?;
-        put_u32(&mut cdr, offset + 24, original_size)?;
-        put_u32(&mut cdr, offset + 42, old_cdr_pos)?;
+        if let Some(offset) = offset {
+            put_u32(&mut cdr, offset + 16, crc as u64)?;
+            put_u32(&mut cdr, offset + 20, compressed_size)?;
+            put_u32(&mut cdr, offset + 24, original_size)?;
+            put_u32(&mut cdr, offset + 42, old_cdr_pos)?;
+        } else {
+            // Standard 46-byte ZIP central record with CryPAK's encrypted
+            // method 14. The signed directory authenticates this new record.
+            let mut record = Vec::with_capacity(46 + name.len());
+            record.extend_from_slice(b"PK\x01\x02");
+            for value in [20u16, version, flags, method, timestamp, date] {
+                record.extend_from_slice(&value.to_le_bytes());
+            }
+            for value in [crc as u64, compressed_size, original_size] {
+                record.extend_from_slice(
+                    &u32::try_from(value)
+                        .map_err(|_| SignedPakError::Limits)?
+                        .to_le_bytes(),
+                );
+            }
+            record.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            record.extend_from_slice(&[0u8; 8]); // extra/comment lengths, disk, internal attributes
+            record.extend_from_slice(&0u32.to_le_bytes()); // external attributes
+            record.extend_from_slice(
+                &u32::try_from(old_cdr_pos)
+                    .map_err(|_| SignedPakError::Limits)?
+                    .to_le_bytes(),
+            );
+            record.extend_from_slice(name);
+            cdr.extend_from_slice(&record);
+        }
         let cdr_pos = old_cdr_pos
             .checked_add(30 + name.len() as u64)
             .and_then(|v| v.checked_add(compressed_size))
@@ -1172,11 +1318,14 @@ pub fn rebuild_signed_pak_entries(
         }
         reports.push(SignedRebuildReport {
             changed_entry: expected.clone(),
-            original_bytes: old.size,
+            original_bytes: old.map_or(0, |entry| entry.size),
             replacement_bytes: original_size,
             signed_basename: basename.into(),
             verified_with_new_public_key: true,
         });
+    }
+    if cdr.len() > MAX_CDR_BYTES {
+        return Err(SignedPakError::Limits);
     }
     let cdr_pos = out.stream_position()?;
     let altered_comment = signed_comment(
@@ -1191,6 +1340,10 @@ pub fn rebuild_signed_pak_entries(
     let encrypted_cdr = crypt_bytes(&cdr, &verified.keys[0], verified.iv)?;
     put_u32(&mut eocd, 12, cdr.len() as u64)?;
     put_u32(&mut eocd, 16, cdr_pos)?;
+    let count = u16::try_from(verified.info.entries.len() + additions)
+        .map_err(|_| SignedPakError::Limits)?;
+    eocd[8..10].copy_from_slice(&count.to_le_bytes());
+    eocd[10..12].copy_from_slice(&count.to_le_bytes());
     out.write_all(&encrypted_cdr)?;
     out.write_all(&eocd)?;
     out.write_all(&altered_comment)?;
@@ -1377,6 +1530,34 @@ mod tests {
         assert_eq!(fs::read(&differently_cased).unwrap(), bytes);
 
         let extracted = root.path().join("unpacked");
+        let single = root.path().join("single.caf");
+        let one =
+            extract_signed_member(&archive, &key, "sample.pak", "example.caf", &single).unwrap();
+        assert_eq!(one.path, "example.caf");
+        assert_eq!(fs::read(&single).unwrap(), payload);
+        assert!(
+            extract_signed_member(&archive, &key, "sample.pak", "example.caf", &single).is_err()
+        );
+        assert!(
+            extract_signed_member(
+                &archive,
+                &key,
+                "sample.pak",
+                "../example.caf",
+                &root.path().join("bad.caf")
+            )
+            .is_err()
+        );
+        assert!(
+            extract_signed_member(
+                &archive,
+                &key,
+                "wrong.pak",
+                "example.caf",
+                &root.path().join("bad.caf")
+            )
+            .is_err()
+        );
         extract_signed_pak(&archive, &key, "sample.pak", &extracted).unwrap();
         assert_eq!(fs::read(extracted.join("example.caf")).unwrap(), payload);
         assert!(extract_signed_pak(&archive, &key, "sample.pak", &extracted).is_err());
@@ -1661,6 +1842,62 @@ mod tests {
             )
             .is_err()
         );
+
+        // Adding a new CryPAK member must update the signed directory and
+        // EOCD count, preserve the old member and verify decrypted contents.
+        let added = root.path().join("added.bin");
+        fs::write(&added, b"brand new signed encrypted member").unwrap();
+        let add_dir = root.path().join("with-addition");
+        fs::create_dir(&add_dir).unwrap();
+        let add_output = add_dir.join("sample.pak");
+        let added_changes = vec![
+            ("example.caf".into(), replacement.clone()),
+            ("new/folder/member.dds".into(), added.clone()),
+        ];
+        let added_reports = rebuild_signed_pak_with_additions(
+            &archive,
+            &key,
+            &new_private_file,
+            &new_public_file,
+            "sample.pak",
+            &added_changes,
+            &add_output,
+        )
+        .unwrap();
+        assert_eq!(added_reports.len(), 2);
+        assert_eq!(added_reports[1].original_bytes, 0);
+        let verified_add =
+            open_verified_signed_pak(&add_output, &new_public_file, "sample.pak").unwrap();
+        assert_eq!(verified_add.info.entries.len(), 2);
+        assert_eq!(verified_add.info.entries[1].method, 14);
+        assert_eq!(
+            verified_add
+                .read_member(&add_output, "new/folder/member.dds", 1024)
+                .unwrap(),
+            fs::read(&added).unwrap()
+        );
+        assert_eq!(
+            verified_add
+                .read_member(&add_output, "example.caf", 1024)
+                .unwrap(),
+            fs::read(&replacement).unwrap()
+        );
+        let collision_dir = root.path().join("case-collision");
+        fs::create_dir(&collision_dir).unwrap();
+        let collision_output = collision_dir.join("sample.pak");
+        assert!(
+            rebuild_signed_pak_with_additions(
+                &archive,
+                &key,
+                &new_private_file,
+                &new_public_file,
+                "sample.pak",
+                &[("EXAMPLE.CAF".into(), added.clone())],
+                &collision_output,
+            )
+            .is_err()
+        );
+        assert!(!collision_output.exists());
 
         // Two distinct local records, two modified paths: the final archive
         // must retain both changed bytes, not just the last signed CDR patch.
