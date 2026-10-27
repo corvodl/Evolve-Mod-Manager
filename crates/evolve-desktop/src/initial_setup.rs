@@ -235,8 +235,8 @@ pub fn create(
         .join(trailing);
     if proposed.starts_with(&game)
         || game.starts_with(&proposed)
-        || launcher_folder.is_some_and(|folder|
-            proposed.starts_with(folder) || folder.starts_with(&proposed))
+        || launcher_folder
+            .is_some_and(|folder| proposed.starts_with(folder) || folder.starts_with(&proposed))
     {
         return Err("Mod Data Location must be separate from the installed game and client".into());
     }
