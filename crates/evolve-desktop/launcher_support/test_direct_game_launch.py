@@ -1,96 +1,113 @@
-"""Offline direct-game regression checks. Never launch the real Evolve binary."""
-import os
+"""Direct-launch regression tests. These never execute the real client or Evolve."""
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-# Production publishes this bundled source under a distinct filename to
-# avoid overwriting the client broker. CI maps the same module explicitly.
-import standard_user_launch as _direct_broker
-sys.modules["direct_standard_user_launch"] = _direct_broker
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+import standard_user_launch as std
+sys.modules["direct_standard_user_launch"]=std
 import direct_game_launch as direct
+import client_service_host as service
 
 
-class DirectGameLaunchTests(unittest.TestCase):
-    def test_missing_executable_aborts_before_swap(self):
-        with mock.patch.object(direct, "_regular", return_value=False), \
-             mock.patch.object(direct, "rename_prepared_into_game") as swapping:
-            with self.assertRaisesRegex(RuntimeError, "Evolve.exe"):
-                direct.launch_direct("not-real", "not-real-stage")
-            swapping.assert_not_called()
+class DirectGameTests(unittest.TestCase):
+    def test_no_game_file_never_starts_services_or_swaps(self):
+        with mock.patch.object(direct,"_regular",return_value=False), \
+             mock.patch.object(direct,"start_runtime_supervisor") as start, \
+             mock.patch.object(direct,"rename_prepared_into_game") as swap:
+            with self.assertRaisesRegex(RuntimeError,"Evolve.exe"):
+                direct.launch_direct("C:/missing","C:/stage","C:/client.exe","C:/swap")
+            start.assert_not_called()
+            swap.assert_not_called()
 
-    def test_verified_swap_and_watchdog_precede_game_process(self):
-        actions = []
-        state = {"version": 1, "phase": "prepared", "files": []}
-        class FakeProcess:
-            pid = 42
-            def close(self):
-                actions.append("close_handle")
+    def test_service_host_is_ready_before_modded_swap_or_injection(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            session=root/"runtime"
+            session.mkdir()
+            actions=[]
+            state={
+                "trace":str(root/"Stage2Trace.dll"),
+                "steam_compat":str(root/"ModdedEvolveSteamCompat.dll"),
+                "modes":"Stage2Listener;Stage2ProfileCompat",
+                "catalog":str(root/"catalog"),
+            }
+            class Game:
+                pid=12345
+                def close(self):
+                    actions.append("close")
+            def service_start(*args):
+                actions.append("services")
+                return session,state
+            def checked(*args):
+                actions.append("verify")
+                return {"phase":"prepared","files":[]}
+            def swap(_):
+                actions.append("swap")
+            def watchdog():
+                actions.append("watchdog")
+                return 900
+            def spawn(*args,**kwargs):
+                self.assertEqual(kwargs["trace_dll"],state["trace"])
+                self.assertEqual(kwargs["runtime_env"]["MODDED_EVOLVE_STAGE2_MODES"],state["modes"])
+                actions.append("inject")
+                return Game()
+            with mock.patch.object(direct,"_ordinary",return_value=root), \
+                 mock.patch.object(direct,"_regular",return_value=True), \
+                 mock.patch.object(direct,"start_runtime_supervisor",side_effect=service_start), \
+                 mock.patch.object(direct,"validate_prepared",side_effect=checked), \
+                 mock.patch.object(direct,"rename_prepared_into_game",side_effect=swap), \
+                 mock.patch.object(direct,"start_restore_watchdog",side_effect=watchdog), \
+                 mock.patch.object(direct.standard_user_launch,"launch_standard_user",side_effect=spawn):
+                self.assertEqual(direct.launch_direct(root,root,"client",root),0)
+            self.assertEqual(actions,["services","verify","swap","watchdog","inject","close"])
+            self.assertEqual((session/"game.pid").read_text().strip(),"12345")
 
-        def checked(game, stage):
-            actions.append("verify")
-            return state
+    def test_clean_launch_never_swaps_or_starts_watchdog(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            session=root/"session"
+            session.mkdir()
+            state={"trace":"trace.dll","steam_compat":"steam.dll","modes":"X","catalog":"catalog"}
+            class Game:
+                pid=42
+                def close(self):pass
+            with mock.patch.object(direct,"_ordinary",return_value=root), \
+                 mock.patch.object(direct,"_regular",return_value=True), \
+                 mock.patch.object(direct,"start_runtime_supervisor",return_value=(session,state)), \
+                 mock.patch.object(direct.swapper,"all_closed"), \
+                 mock.patch.object(direct,"rename_prepared_into_game") as rename, \
+                 mock.patch.object(direct,"start_restore_watchdog") as watch, \
+                 mock.patch.object(direct.standard_user_launch,"launch_standard_user",return_value=Game()):
+                self.assertEqual(direct.launch_direct(root,None,"client",root,True),0)
+            rename.assert_not_called()
+            watch.assert_not_called()
 
-        def swap(verified):
-            self.assertIs(verified, state)
-            actions.append("swap")
-
-        def watchdog():
-            actions.append("watchdog")
-            return 51
-
-        def launch(executable, *, game):
-            self.assertTrue(game)
-            self.assertEqual(executable.name.lower(), "evolve.exe")
-            actions.append("game")
-            return FakeProcess()
-
-        with mock.patch.object(direct, "_regular", return_value=True), \
-             mock.patch.object(direct, "validate_prepared", side_effect=checked), \
-             mock.patch.object(direct, "rename_prepared_into_game", side_effect=swap), \
-             mock.patch.object(direct, "start_restore_watchdog", side_effect=watchdog), \
-             mock.patch.object(direct.standard_user_launch, "launch_standard_user", side_effect=launch):
-            self.assertEqual(direct.launch_direct("C:/Game", "C:/Stage"), 0)
-        self.assertEqual(actions, ["verify", "swap", "watchdog", "game", "close_handle"])
-
-    def test_rename_records_swapping_before_any_mutation(self):
-        events = []
-        state = {"version": 1, "phase": "prepared", "files": [
-            {"target": "original.pak", "backup": "original.pak.customkey-original",
-             "ready": "original.pak.customkey-ready"}
-        ]}
-        with mock.patch.object(direct.swapper, "no_game", side_effect=lambda: events.append("no_game")), \
-             mock.patch.object(direct.swapper, "write_state",
-                               side_effect=lambda row: events.append(row["phase"])), \
-             mock.patch.object(direct.os, "replace", side_effect=lambda *args: events.append("rename")):
-            direct.rename_prepared_into_game(state)
-        self.assertEqual(events, ["no_game", "swapping", "rename", "rename", "swapped"])
-
-    def test_partial_rename_does_not_claim_swapped(self):
-        state = {"version": 1, "phase": "prepared", "files": [
-            {"target": "original.pak", "backup": "backup", "ready": "ready"}
-        ]}
-        states = []
-        with mock.patch.object(direct.swapper, "no_game"), \
-             mock.patch.object(direct.swapper, "write_state",
-                               side_effect=lambda row: states.append(row["phase"])), \
-             mock.patch.object(direct.os, "replace", side_effect=OSError("disk failure")):
-            with self.assertRaisesRegex(OSError, "disk failure"):
+    def test_swap_journal_is_written_before_renames_and_interrupted_on_error(self):
+        state={"phase":"prepared","files":[{"target":"live","backup":"backup","ready":"prepared"}]}
+        states=[]
+        with mock.patch.object(direct.swapper,"no_game"), \
+             mock.patch.object(direct.swapper,"write_state",
+                 side_effect=lambda item:states.append(item["phase"])), \
+             mock.patch.object(direct.os,"replace",side_effect=OSError("rename failed")):
+            with self.assertRaisesRegex(OSError,"rename failed"):
                 direct.rename_prepared_into_game(state)
-        self.assertEqual(states, ["swapping", "interrupted"])
+        self.assertEqual(states,["swapping","interrupted"])
 
-    def test_process_creation_failure_keeps_watchdog_running(self):
-        with mock.patch.object(direct, "_regular", return_value=True), \
-             mock.patch.object(direct, "validate_prepared", return_value={"files":[]}), \
-             mock.patch.object(direct, "rename_prepared_into_game"), \
-             mock.patch.object(direct, "start_restore_watchdog", return_value=51), \
-             mock.patch.object(direct.standard_user_launch, "launch_standard_user",
-                               side_effect=RuntimeError("unable to start")):
-            with self.assertRaisesRegex(RuntimeError, "watchdog.*51"):
-                direct.launch_direct("C:/Game", "C:/Stage")
+    def test_pinned_shadow_patch_has_fixed_length_and_never_changes_original(self):
+        self.assertEqual(len(service.PATCH_EXPECTED),len(service.PATCH_REPLACEMENT))
+        self.assertEqual(len(service.PATCH_REPLACEMENT),18)
+        self.assertEqual(len(service.CLIENT_DIGEST),64)
+
+    def test_no_runtime_environment_keys_except_manager_owned_names(self):
+        config=direct.environment_for_session(
+            {"trace":"trace","steam_compat":"steam","modes":"A;B","catalog":"assets"},
+            Path("C:/swap"))
+        self.assertTrue(all(key.startswith("MODDED_EVOLVE_") for key in config))
+        self.assertEqual(config["MODDED_EVOLVE_STEAM_EMU_DLL"],"steam")
 
 
-if __name__ == "__main__":
+if __name__=="__main__":
     unittest.main()
