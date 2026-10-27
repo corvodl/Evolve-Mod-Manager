@@ -9884,6 +9884,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::Settings);
                     state.settings_tab = settings_page::Tab::Storage;
                 }
+                Ok(Completed::DirectGameStarted(id, _warnings)) => {
+                    state.status = format!("Experimental direct offline Evolve.exe started (PID {id}); client services and profile authentication are not provided. No modded PAK swap was performed.");
+                    state.page = Some(Page::Home);
+                }
                 Ok(Completed::CleanClientStarted(id, warnings)) => {
                     state.status = if warnings.is_empty() {
                         format!(
