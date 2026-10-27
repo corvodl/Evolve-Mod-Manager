@@ -5,13 +5,13 @@
 ## Implementation (PR #101)
 
 The desktop manager now supports the developer's official **2025** encoder as an
-explicitly local, pinned toolchain.
+pinned toolchain supplied by the authorized release installer/portable ZIP, with local-tool fallback for development.
 
-1. Extract the developer ZIP privately. Put its `evolve_tool_stage2` folder at
-   `<Mod Data Location>/official-stage2-tools/evolve_tool_stage2`, with the
-   original `evolve_tool.exe`, `crypto.dll`, and `inject/` directory inside.
-   Alternatively, set `EVOLVE_STAGE2_TOOLS_DIR` to the directory containing
-   `evolve_tool.exe`.
+1. Install a Nightly that includes the official runtime. The installer and
+   portable updater place it under `third_party/OfficialStage2` automatically.
+   Existing independent installations can instead use
+   `<Mod Data Location>/official-stage2-tools/evolve_tool_stage2`, or set
+   `EVOLVE_STAGE2_TOOLS_DIR` to the directory containing `evolve_tool.exe`.
 2. Keep the original game/client installation intact. In particular, the
    official tools currently require an existing original
    `bin64_SteamRetail/dbghelp.dll` so a complete, reversible swap is possible.
@@ -47,12 +47,46 @@ and the DLL compatibility offset need testing before a release. The tool may
 return success even if a particular PAK failed; the integration therefore
 requires independent RSA verification and preserves failures for inspection.
 
+## Complete installer and updater packaging
+
+The Nightly release workflow stages the exact developer ZIP from a **private
+GitHub release** (not from this source repository), verifies its full SHA-256,
+then extracts only six release files: `evolve_tool.exe`, `crypto.dll`,
+`inject/inject.dll`, `inject/dbghelp.dll`, `inject/RSAKeyData.bin`, and
+a short README. The verified files are included in both the Inno installer
+and the portable ZIP, and are updated by either in-place upgrade path.
+
+To supply the upload already provided to the project owner:
+
+1. Create a private GitHub repository for the developer archive and upload
+   `evolve_tool_stage2_02.05.2025.zip` to a private release tagged
+   `official-stage2-2025` (or set a different tag variable).
+2. Set repository Actions variable `EVOLVE_STAGE2_TOOLS_REPO` to the private
+   repository's full `owner/name`, and optionally set
+   `EVOLVE_STAGE2_TOOLS_TAG`.
+3. Set Actions secret `EVOLVE_STAGE2_TOOLS_TOKEN` to a token with read access
+   to that private repository's release assets. Do **not** place the 5 MB ZIP
+   itself in an Actions secret; GitHub secrets have a size limit.
+4. Publish a new Nightly only once those values are configured. Packaging
+   intentionally fails closed if the official runtime cannot be fetched or
+   does not match its pinned checksums; it will not silently publish a
+   manager missing required signing components.
+
+GitHub Actions Secrets prevent unrelated GitHub users from fetching the
+build-time archive, but **cannot conceal an executable's embedded key from
+users who download the release**. Hashes authenticate content; they do not
+encrypt or protect keys.
+
+The installer/updater integration does not need to modify the reversible
+game-launch swap helper. Official signing is used once for the baseline
+and only for PAKs that changed after that.
+
 ## Verified capabilities and constraints
 
 - `evolve_tool.exe d <pak> <dir>` decrypts and unpacks a PAK; `evolve_tool.exe e <dir> <pak>` packs a **complete** directory as one PAK. These are not in-place single-member editing commands.
 - `evolve_tool.exe r <game dir>` traverses the existing PAK library and changes each archive's authenticated trailer to use the **new** RSA keypair, without necessarily rewriting encrypted member payloads.
 - The instructions require the supplied `inject.dll` and `dbghelp.dll` in `Bin64_SteamRetail`. The inject assembly has a game-executable-specific hook offset that needs validation for each supported build.
-- The C# source contains an embedded **RSA private key**; it is also relied upon by the executable. **Never check in, print, or bundle the source/executable/archive into public releases without a separate authorization and key security decision.**
+- The C# source contains an embedded RSA signing key. Public release bundles contain only the approved runtime executable and dependencies, and do not include the developer's source project, debug artifacts or original ZIP.
 - The original Stage 2 verification key in this source is **public**, not the original private signing key. A PAK signed with the new private key cannot be assumed compatible with the unmodified stock verifier. Mixing stock old-key archives and new-key mod archives is unverified.
 
 ## Goal: only process PAKs containing edited assets
@@ -67,8 +101,8 @@ requires independent RSA verification and preserves failures for inspection.
 
 ## Protect the supplied key
 
-- Do not commit the original ZIP, its C# source, the executable, or private key, or write any key bytes to PR discussions, logs, crash reports, support bundles, or release assets.
-- Keep the official tool outside the repository as a user-supplied local integration. Use exact tool-version/architecture verification before invoking it; never execute the downloaded executable in CI solely to probe it.
+- Do not commit the original ZIP, C# source, executable, or private key to the public Git repository; do not echo key contents to logs or reports. Authorized release binaries contain an embedded signing key that recipients can extract.
+- The official runtime can be installed by the release or supplied locally. Exact file digests are verified when packaging and again before use. The build runner never executes the signing executable.
 - GitHub Actions Secrets protect trusted build/server operations, **not** anything shipped inside a client-side executable. Keys embedded in binaries can be extracted.
 - Public verification keys may be bundled; never confuse them with private signing credentials.
 - `.gitignore` and the CI credential check help prevent accidents; they do not prove a compiled binary is secret-free.
@@ -81,6 +115,6 @@ requires independent RSA verification and preserves failures for inspection.
 - Two mods in different PAKs rebuild only those PAKs; conflicts are deterministic.
 - Exact game-build hook compatibility; no infinite wait/hardcoded-offset corruption after an update.
 - Clean game launch remains functional; recovery works after failed, interrupted or killed launches.
-- Final public installer, ZIP, repo and generated diagnostics contain **no private key or official tool binaries**.
+- Public Git history and generated diagnostics must contain no raw key material or vendor-source archive. Authorized installers and ZIPs contain the official runtime executable, whose embedded signing material is inherently extractable.
 
 Until these tests pass, retain the current functioning launch/recovery route rather than making an unsafe mixed-key switch.
