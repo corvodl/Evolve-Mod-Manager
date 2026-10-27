@@ -100,6 +100,38 @@ class DirectGameTests(unittest.TestCase):
                 direct.rename_prepared_into_game(state)
         self.assertEqual(states,["swapping","interrupted"])
 
+    def test_partial_prelaunch_swap_stops_own_service_then_restores(self):
+        import reusable_restore
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            session=root/"session"
+            session.mkdir()
+            state={"trace":"trace.dll","steam_compat":"compat.dll",
+                   "modes":"Stage2Listener,Stage2ProfileCompat,Stage2ProfileOnly"}
+            order=[]
+            def interrupt(_):
+                order.append("partial_swap")
+                raise OSError("simulated rename failure")
+            def shut_down(_session):
+                self.assertEqual(_session,session)
+                order.append("host_closed")
+            def restore():
+                order.append("restore_originals")
+                return 0
+            with mock.patch.object(direct,"_ordinary",return_value=root), \
+                 mock.patch.object(direct,"_regular",return_value=True), \
+                 mock.patch.object(direct,"validate_prepared",return_value={"files":[]}), \
+                 mock.patch.object(direct,"start_runtime_supervisor",return_value=(session,state)), \
+                 mock.patch.object(direct,"environment_for_session",return_value={"MODDED_EVOLVE_STAGE2_LOG":str(root/"hook.log")}), \
+                 mock.patch.object(direct,"rename_prepared_into_game",side_effect=interrupt), \
+                 mock.patch.object(direct,"stop_runtime_before_restore",side_effect=shut_down), \
+                 mock.patch.object(direct,"start_restore_watchdog") as watchdog, \
+                 mock.patch.object(reusable_restore,"main",side_effect=restore):
+                with self.assertRaisesRegex(OSError,"simulated rename failure"):
+                    direct.launch_direct(root,root,"client",root)
+            self.assertEqual(order,["partial_swap","host_closed","restore_originals"])
+            watchdog.assert_not_called()
+
     def test_pinned_shadow_patch_has_fixed_length_and_never_changes_original(self):
         self.assertEqual(len(service.PATCH_EXPECTED),len(service.PATCH_REPLACEMENT))
         self.assertEqual(len(service.PATCH_REPLACEMENT),18)
