@@ -95,16 +95,19 @@ fn mib(bytes: u64) -> String {
 }
 
 fn game_client_setup(state: &State) -> Element<'_, Message> {
-    let paths_ok = crate::play_setup::validate_paths(
-        &state.preferences.game_installation,
-        &state.preferences.client_executable,
-    )
-    .is_ok();
+    let paths_ok = if state.preferences.game_launch_mode == "Direct Launch" {
+        crate::play_setup::game_root(&state.preferences.game_installation).is_ok()
+    } else {
+        crate::play_setup::validate_paths(
+            &state.preferences.game_installation,
+            &state.preferences.client_executable,
+        ).is_ok()
+    };
     panel(
         column![
             heading(
                 "SET UP MANAGER / INSTALLED GAME",
-                "Choose your installed EvolveGame directory and the normal Modded Evolve launcher. These locations are saved per user."
+                "Direct Launch is the default and needs only the installed EvolveGame directory; Client Launch additionally needs ModdedEvolveLauncher.exe."
             ),
             text("GAME LAUNCH METHOD").size(12),
             row![
@@ -129,7 +132,7 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
                     .style(design::secondary),
             ]
             .spacing(8),
-            text("Client executable").size(12),
+            text("Client executable (only required for Client Launch)").size(12),
             row![
                 design::text_input(
                     r"C:\Users\billn\AppData\Local\Programs\Modded Evolve\ModdedEvolveLauncher.exe",
@@ -142,14 +145,20 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
             ]
             .spacing(8),
             text(if paths_ok {
-                "Installed game and launcher found. Modded play also requires an existing verified signing stage and recovery helper."
+                if state.preferences.game_launch_mode == "Direct Launch" {
+                    "Installed game verified. Direct modded play also needs a prepared signing stage and recovery helper."
+                } else {
+                    "Installed game and client found. Modded play also requires a verified signing stage."
+                }
+            } else if state.preferences.game_launch_mode == "Direct Launch" {
+                "Select a valid EvolveGame installation, then save."
             } else {
-                "Missing or unverified installation paths. Browse to both locations, then save."
+                "Choose valid game and client paths, then save."
             })
             .size(12)
             .style(design::muted),
             row![
-                design::button("Save Game & Client")
+                design::button(if state.preferences.game_launch_mode == "Direct Launch" { "Save Game Setup" } else { "Save Game & Client" })
                     .on_press(Message::SaveGameSetup)
                     .style(design::primary),
                 design::button("Play with Mods")
