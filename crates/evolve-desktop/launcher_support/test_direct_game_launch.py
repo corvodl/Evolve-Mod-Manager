@@ -57,6 +57,7 @@ class DirectGameTests(unittest.TestCase):
             with mock.patch.object(direct,"_ordinary",return_value=root), \
                  mock.patch.object(direct,"_regular",return_value=True), \
                  mock.patch.object(direct,"start_runtime_supervisor",side_effect=service_start), \
+                 mock.patch.object(direct,"environment_for_session",return_value={"MODDED_EVOLVE_STAGE2_MODES":state["modes"]}), \
                  mock.patch.object(direct,"validate_prepared",side_effect=checked), \
                  mock.patch.object(direct,"rename_prepared_into_game",side_effect=swap), \
                  mock.patch.object(direct,"start_restore_watchdog",side_effect=watchdog), \
@@ -77,6 +78,7 @@ class DirectGameTests(unittest.TestCase):
             with mock.patch.object(direct,"_ordinary",return_value=root), \
                  mock.patch.object(direct,"_regular",return_value=True), \
                  mock.patch.object(direct,"start_runtime_supervisor",return_value=(session,state)), \
+                 mock.patch.object(direct,"environment_for_session",return_value={"MODDED_EVOLVE_STAGE2_MODES":"X"}), \
                  mock.patch.object(direct.swapper,"all_closed"), \
                  mock.patch.object(direct,"rename_prepared_into_game") as rename, \
                  mock.patch.object(direct,"start_restore_watchdog") as watch, \
@@ -101,12 +103,15 @@ class DirectGameTests(unittest.TestCase):
         self.assertEqual(len(service.PATCH_REPLACEMENT),18)
         self.assertEqual(len(service.CLIENT_DIGEST),64)
 
-    def test_no_runtime_environment_keys_except_manager_owned_names(self):
-        config=direct.environment_for_session(
-            {"trace":"trace","steam_compat":"steam","modes":"A;B","catalog":"assets"},
-            Path("C:/swap"))
-        self.assertTrue(all(key.startswith("MODDED_EVOLVE_") for key in config))
-        self.assertEqual(config["MODDED_EVOLVE_STEAM_EMU_DLL"],"steam")
+    def test_session_environment_calls_verified_contract(self):
+        import stage2_runtime_contract as contract
+        with mock.patch.object(contract,"build_game_environment",return_value={
+            "MODDED_EVOLVE_STAGE2_MODES":"Stage2Listener,Stage2ProfileCompat,Stage2ProfileOnly"
+        }) as builder:
+            state={"status":"ready"}
+            environment=direct.environment_for_session(state,Path("C:/swap"))
+        builder.assert_called_once_with(state,Path("C:/swap"))
+        self.assertNotIn("MODDED_EVOLVE_RELAY_TOKEN",environment)
 
 
 if __name__=="__main__":
