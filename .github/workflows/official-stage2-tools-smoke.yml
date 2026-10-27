@@ -41,6 +41,15 @@ jobs:
           New-Item -ItemType Directory -Force 'target/release' | Out-Null
           Set-Content -Path 'target/release/evolve-mod-manager.exe' -Value 'CI placeholder only'
           Set-Content -Path 'target/release/evolve-cli.exe' -Value 'CI placeholder only'
+          # All optional tools are packaged by a separate job. The installer
+          # references their paths unconditionally, so provide inert fixtures
+          # here rather than downloading unrelated vendors twice.
+          foreach ($component in @('FFDec', 'Ruffle', 'RuffleWeb', 'vgmstream', 'oggvorbis2fsb5')) {
+            $placeholder = Join-Path "dist/third_party/$component" 'CI-placeholder.txt'
+            New-Item -ItemType Directory -Force (Split-Path -Parent $placeholder) | Out-Null
+            Set-Content -LiteralPath $placeholder -Value 'CI fixture, not a redistributable tool'
+          }
+          Set-Content -Path 'dist/third_party/THIRD_PARTY_TOOLS.txt' -Value 'CI fixture'
           $compiler = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Inno Setup 6/ISCC.exe'
           if (!(Test-Path $compiler)) {
             choco install innosetup --no-progress -y
