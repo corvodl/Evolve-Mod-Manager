@@ -43,8 +43,13 @@ fn checked(path: &Path, expected: &str) -> Result<PathBuf, String> {
 /// or explicitly set EVOLVE_STAGE2_TOOLS_DIR; never include them in releases.
 pub fn discover(storage: &Path) -> Result<Option<OfficialTools>, String> {
     let selected = std::env::var_os("EVOLVE_STAGE2_TOOLS_DIR").map(PathBuf::from);
+    let installed = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|p| p.join("third_party/OfficialStage2")));
+    let bundled = installed.filter(|dir| dir.is_dir());
     let base = selected
         .clone()
+        .or(bundled)
         .unwrap_or_else(|| storage.join("official-stage2-tools"));
     if selected.is_none() && !base.exists() {
         return Ok(None);
