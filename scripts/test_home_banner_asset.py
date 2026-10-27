@@ -37,8 +37,8 @@ class HomeBannerAssetTests(unittest.TestCase):
 
     def test_windows_installer_includes_banner(self):
         source = (ROOT / "installer/EvolveModManager.iss").read_text()
-        self.assertIn('Source: "..\\\\assets\\\\default_loading.dds"', source)
-        self.assertIn('DestDir: "{app}\\\\assets"', source)
+        self.assertIn('Source: "..\\assets\\default_loading.dds"', source)
+        self.assertIn('DestDir: "{app}\\assets"', source)
 
 
 if __name__ == "__main__":
