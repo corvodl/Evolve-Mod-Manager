@@ -150,16 +150,6 @@ pub fn bar<'a>(snapshot: &Snapshot, width: Length, height: f32) -> Element<'a, M
     .into()
 }
 
-/// Animate the red vector wheel from loading_wheel.gfx without running a
-/// Flash/Scaleform interpreter in the footer. The original has a 40-frame
-/// rotating sprite; the manager reuses its existing 40-step activity pulse.
-fn wheel_frame(pulse: u16) -> svg::Handle {
-    let angle = u32::from(pulse % 40) * 9;
-    let art = include_str!("../../../assets/loading_wheel.svg")
-        .replace("rotate(0 0 0)", &format!("rotate({angle} 0 0)"));
-    svg::Handle::from_memory(art.into_bytes())
-}
-
 pub fn footer(state: &State) -> Element<'_, Message> {
     let Some(status) = snapshot(state) else {
         return row![].into();
@@ -169,7 +159,7 @@ pub fn footer(state: &State) -> Element<'_, Message> {
         |value| format!("{value}% · {}", status.detail),
     );
     row![
-        svg(wheel_frame(state.footer_pulse))
+        svg(super::loading_wheel::handle(state.loading_wheel_frame, 1.0))
             .width(Length::Fixed(26.0))
             .height(Length::Fixed(26.0)),
         text(status.label.clone()).size(12),
@@ -184,16 +174,6 @@ pub fn footer(state: &State) -> Element<'_, Message> {
 mod tests {
     use super::*;
     use std::sync::{Arc, atomic::AtomicUsize};
-
-    #[test]
-    fn wheel_frames_rotate_while_progress_data_remains_independent() {
-        let first = include_str!("../../../assets/loading_wheel.svg");
-        assert!(first.contains("rotate(0 0 0)"));
-        let rotated = first.replace("rotate(0 0 0)", "rotate(9 0 0)");
-        assert!(rotated.contains("rotate(9 0 0)"));
-        let _ = wheel_frame(0);
-        let _ = wheel_frame(1);
-    }
 
     #[test]
     fn unmeasured_work_reports_a_named_task_and_elapsed_time_not_percentage() {
