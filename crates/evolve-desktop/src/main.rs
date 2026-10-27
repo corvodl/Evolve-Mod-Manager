@@ -3128,7 +3128,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 // This is already part of saved preferences, not a separate recent-file list.
                 if let Ok(path) = settings_path() {
                     if let Err(error) = save_to(&path, &state.preferences) {
-                        state.settings_status = format!("Could not remember recent project: {error}");
+                        state.settings_status =
+                            format!("Could not remember recent project: {error}");
                     }
                 }
             } else {
@@ -8847,14 +8848,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::Projects(projects)) => {
                     let focus = state.modding_pending_focus.take();
-                    let previous = focus.clone().or_else(|| {
-                        state
-                            .modding_selected
-                            .and_then(|i| {
-                                state.modding_projects.as_ref().and_then(|old| old.get(i))
-                            })
-                            .map(|p| p.workspace.clone())
-                    }).or_else(|| home_recent_workspace(state));
+                    let previous = focus
+                        .clone()
+                        .or_else(|| {
+                            state
+                                .modding_selected
+                                .and_then(|i| {
+                                    state.modding_projects.as_ref().and_then(|old| old.get(i))
+                                })
+                                .map(|p| p.workspace.clone())
+                        })
+                        .or_else(|| home_recent_workspace(state));
                     state.modding_selected =
                         previous.and_then(|path| projects.iter().position(|p| p.workspace == path));
                     state.status = format!("Loaded {} editable project(s).", projects.len());
@@ -12434,10 +12438,14 @@ mod project_edit_tests {
         let mut state = State::default();
         state.preferences.projects = project_root.to_string_lossy().into_owned();
         state.preferences.current_workspace = recent.to_string_lossy().into_owned();
-        assert_eq!(home_recent_workspace(&state), Some(recent.canonicalize().unwrap()));
+        assert_eq!(
+            home_recent_workspace(&state),
+            Some(recent.canonicalize().unwrap())
+        );
         state.preferences.current_workspace = unrelated.to_string_lossy().into_owned();
         assert!(home_recent_workspace(&state).is_none());
-        state.preferences.current_workspace = dir.path().join("missing").to_string_lossy().into_owned();
+        state.preferences.current_workspace =
+            dir.path().join("missing").to_string_lossy().into_owned();
         assert!(home_recent_workspace(&state).is_none());
     }
 
