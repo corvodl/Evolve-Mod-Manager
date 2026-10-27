@@ -456,6 +456,7 @@ struct State {
     modding_projects: Option<Vec<ProjectRow>>,
     modding_selected: Option<usize>,
     modding_name_input: String,
+    modding_added_member: String,
     mod_launch_progress: Option<Arc<AtomicUsize>>,
     mod_toggle_animations: Vec<ModToggleAnimation>,
     /// Indeterminate footer activity only: never presented as a real percent.
@@ -1658,6 +1659,9 @@ enum Message {
     ModdingSelectProject(usize),
     ModdingToggleEnabled(usize),
     ModdingNameChanged(String),
+    ModdingAddedMemberChanged(String),
+    ModdingRegisterAddedMember,
+    ModdingUnregisterAddedMember,
     ModdingSaveName,
     ModdingRefresh,
     ModdingToggleAdvanced,
@@ -3038,6 +3042,59 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ModifiersChanged(modifiers) => state.keyboard_modifiers = modifiers,
         Message::ModdingNameChanged(value) => state.modding_name_input = value,
+        Message::ModdingAddedMemberChanged(value) => state.modding_added_member = value,
+        Message::ModdingRegisterAddedMember => {
+            if state.busy {
+                return Task::none();
+            }
+            let Some(project) = state
+                .modding_selected
+                .and_then(|index| state.modding_projects.as_ref()?.get(index))
+                .cloned()
+            else {
+                state.status = "Select an editable project first.".into();
+                return Task::none();
+            };
+            match modding_projects::register_added_member(
+                Path::new(&state.preferences.projects),
+                &project,
+                &state.modding_added_member,
+            ) {
+                Ok(()) => {
+                    state.status = format!(
+                        "Registered {} for this project's next signed build; nothing was installed.",
+                        state.modding_added_member
+                    );
+                    state.modding_added_member.clear();
+                    return update(state, Message::ModdingRefresh);
+                }
+                Err(error) => state.status = format!("Cannot register added member: {error}"),
+            }
+        }
+        Message::ModdingUnregisterAddedMember => {
+            if state.busy {
+                return Task::none();
+            }
+            let Some(project) = state
+                .modding_selected
+                .and_then(|index| state.modding_projects.as_ref()?.get(index))
+                .cloned()
+            else {
+                state.status = "Select an editable project first.".into();
+                return Task::none();
+            };
+            match modding_projects::unregister_added_member(
+                Path::new(&state.preferences.projects),
+                &project,
+                &state.modding_added_member,
+            ) {
+                Ok(()) => {
+                    state.modding_added_member.clear();
+                    return update(state, Message::ModdingRefresh);
+                }
+                Err(error) => state.status = format!("Cannot remove addition: {error}"),
+            }
+        }
         Message::ModdingSaveName => {
             if state.busy {
                 return Task::none();

@@ -129,6 +129,133 @@ fn safe_member(raw: &str) -> bool {
             .all(|s| !s.is_empty() && s != "." && s != "..")
         && !raw.starts_with('/')
 }
+
+/// Only explicitly registered paths may become new signed PAK members.
+/// Existing manifest records remain the sole authority for replacements.
+fn additions(manifest: &Value, originals: &[Value]) -> Result<Vec<String>, String> {
+    let Some(items) = manifest.get("add_members") else {
+        return Ok(Vec::new());
+    };
+    let items = items.as_array().ok_or("Invalid added-member list")?;
+    if items.len() > 64 {
+        return Err("More than 64 added members in one project".into());
+    }
+    let existing: HashSet<_> = originals
+        .iter()
+        .filter_map(|row| row["path"].as_str())
+        .map(str::to_ascii_lowercase)
+        .collect();
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+    for value in items {
+        let path = value.as_str().ok_or("Added member name is not text")?;
+        if !safe_member(path)
+            || !evolve_core::archive::safe_member_name(path).is_ok_and(|safe| safe == path)
+            || existing.contains(&path.to_ascii_lowercase())
+            || !seen.insert(path.to_ascii_lowercase())
+        {
+            return Err(format!(
+                "Unsafe, duplicate, or existing added member: {path}"
+            ));
+        }
+        result.push(path.to_owned());
+    }
+    Ok(result)
+}
+
+/// Register a user-owned file in an editable project; never infer additions
+/// by scanning unrelated workspace files. Build Mod revalidates everything.
+pub fn register_added_member(
+    projects: &Path,
+    project: &ProjectRow,
+    member: &str,
+) -> Result<(), String> {
+    let root = fs::canonicalize(projects).map_err(|e| e.to_string())?;
+    let folder = fs::canonicalize(&project.workspace).map_err(|e| e.to_string())?;
+    if !folder.starts_with(&root)
+        || folder == root
+        || !safe_member(member)
+        || !evolve_core::archive::safe_member_name(member).is_ok_and(|safe| safe == member)
+    {
+        return Err("Choose a safe relative member path in the selected project".into());
+    }
+    let manifest_path = folder.join(".evolve-pak-workspace.json");
+    let mut manifest = read_json(&manifest_path, 8 * 1024 * 1024)?;
+    if manifest["version"].as_u64() != Some(1) || manifest["reference_only"].as_bool() == Some(true)
+    {
+        return Err("Project is not an editable signed-PAK workspace".into());
+    }
+    let originals = manifest["entries"]
+        .as_array()
+        .ok_or("Missing original member index")?;
+    let mut list = additions(&manifest, originals)?;
+    if list.len() >= 64
+        || list.iter().any(|value| value.eq_ignore_ascii_case(member))
+        || originals.iter().any(|row| {
+            row["path"]
+                .as_str()
+                .is_some_and(|value| value.eq_ignore_ascii_case(member))
+        })
+    {
+        return Err("Member already exists or addition limit reached".into());
+    }
+    let files = fs::canonicalize(folder.join("files")).map_err(|e| e.to_string())?;
+    let source = folder.join("files").join(member);
+    if !regular(&source, 16 * 1024 * 1024 * 1024)
+        || !fs::canonicalize(&source)
+            .map_err(|e| e.to_string())?
+            .starts_with(&files)
+    {
+        return Err("Place a regular new file under this project's files/ directory first".into());
+    }
+    list.push(member.to_owned());
+    manifest["add_members"] = serde_json::to_value(list).map_err(|e| e.to_string())?;
+    let mut temp = tempfile::NamedTempFile::new_in(&folder).map_err(|e| e.to_string())?;
+    serde_json::to_writer_pretty(&mut temp, &manifest).map_err(|e| e.to_string())?;
+    temp.flush().map_err(|e| e.to_string())?;
+    temp.as_file().sync_all().map_err(|e| e.to_string())?;
+    temp.persist(&manifest_path)
+        .map_err(|e| e.error.to_string())?;
+    Ok(())
+}
+
+/// Remove only an explicit registration; retain the user's file and all
+/// original project records. A later build again becomes replacement-only
+/// when this was the last addition.
+pub fn unregister_added_member(
+    projects: &Path,
+    project: &ProjectRow,
+    member: &str,
+) -> Result<(), String> {
+    let root = fs::canonicalize(projects).map_err(|e| e.to_string())?;
+    let folder = fs::canonicalize(&project.workspace).map_err(|e| e.to_string())?;
+    if folder == root || !folder.starts_with(&root) || !safe_member(member) {
+        return Err("Choose an exact registered member in the selected project".into());
+    }
+    let manifest_path = folder.join(".evolve-pak-workspace.json");
+    let mut manifest = read_json(&manifest_path, 8 * 1024 * 1024)?;
+    if manifest["version"].as_u64() != Some(1) || manifest["reference_only"].as_bool() == Some(true)
+    {
+        return Err("Project is not an editable signed-PAK workspace".into());
+    }
+    let entries = manifest["entries"]
+        .as_array()
+        .ok_or("Missing original member index")?;
+    let mut list = additions(&manifest, entries)?;
+    let count = list.len();
+    list.retain(|path| path != member);
+    if count == list.len() {
+        return Err("That path is not an exact registered addition".into());
+    }
+    manifest["add_members"] = serde_json::to_value(list).map_err(|e| e.to_string())?;
+    let mut temp = tempfile::NamedTempFile::new_in(&folder).map_err(|e| e.to_string())?;
+    serde_json::to_writer_pretty(&mut temp, &manifest).map_err(|e| e.to_string())?;
+    temp.flush().map_err(|e| e.to_string())?;
+    temp.as_file().sync_all().map_err(|e| e.to_string())?;
+    temp.persist(&manifest_path)
+        .map_err(|e| e.error.to_string())?;
+    Ok(())
+}
 fn inspect_project(
     folder: &Path,
     stage: &Path,
@@ -199,6 +326,26 @@ fn inspect_project(
         let mut checked = 0u64;
         let mut known = true;
         let mut seen = HashSet::new();
+        // Registered additions are deliberately first: huge unchanged source
+        // PAKs must not hide a newly added UI asset in the dashboard budget.
+        for name in additions(&manifest, entries)? {
+            let path = folder.join("files").join(&name);
+            if !regular(&path, 16 * 1024 * 1024 * 1024) {
+                known = false;
+                continue;
+            }
+            let canonical = fs::canonicalize(&path).map_err(|e| e.to_string())?;
+            if !canonical.starts_with(&files) {
+                return Err("Added project file escaped its workspace".into());
+            }
+            let size = fs::metadata(&path).map_err(|e| e.to_string())?.len();
+            if checked.saturating_add(size) > hash_budget {
+                known = false;
+                continue;
+            }
+            checked += size;
+            changed.push(name);
+        }
         // Inspect GFX movie edits first. UI PAKs may contain hundreds of MiB
         // of unrelated assets; otherwise a main_menu.gfx edit near the end
         // of the manifest is invisible in the bounded dashboard scan.
@@ -266,7 +413,7 @@ fn inspect_project(
                 format!("{} changed asset(s)", modified.len())
             } else {
                 format!(
-                    "{} changed asset(s) found; other files exceed fast-scan budget and will be fully verified during Build Mod",
+                    "{} changed asset(s) found; some files are missing or exceed the fast-scan budget. Build Mod will fully recheck them",
                     modified.len()
                 )
             };
@@ -828,6 +975,10 @@ fn build_imported_snapshot(
     let entries = manifest["entries"]
         .as_array()
         .ok_or("Missing extracted member index")?;
+    let added: HashSet<String> = additions(manifest, entries)?.into_iter().collect();
+    if modified.len() > 64 {
+        return Err("Signed build is limited to 64 changes including additions".into());
+    }
     let mut replacements = Vec::with_capacity(modified.len());
     for rel in modified {
         if !safe_member(rel) {
@@ -840,9 +991,23 @@ fn build_imported_snapshot(
         }
         let record = entries
             .iter()
-            .find(|row| row["path"].as_str() == Some(rel.as_str()))
-            .ok_or("Selected file is missing from the imported snapshot")?;
-        if editable_format(record)? == "cryxml" {
+            .find(|row| row["path"].as_str() == Some(rel.as_str()));
+        if added.contains(rel) {
+            if index
+                .info
+                .entries
+                .iter()
+                .any(|row| row.path.eq_ignore_ascii_case(rel))
+            {
+                return Err(format!(
+                    "Current source PAK already contains added member {rel}; re-import instead of replacing it"
+                ));
+            }
+            replacements.push((rel.clone(), file));
+        } else if editable_format(
+            record.ok_or("Selected file is missing from the imported snapshot")?,
+        )? == "cryxml"
+        {
             let prior = index
                 .read_member(&source, rel, MAX_XML_BYTES as u64)
                 .map_err(|e| e.to_string())?;
@@ -878,23 +1043,36 @@ fn build_imported_snapshot(
     fs::create_dir(&signed_folder).map_err(|e| e.to_string())?;
     let signed_path = signed_folder.join(&signed_name);
     let output = output_folder.join(&physical_name);
-    let rebuilt = evolve_core::rebuild_signed_pak_entries(
-        &source,
-        &original_key,
-        &signer.private,
-        &signer.public,
-        &signed_name,
-        &replacements,
-        &signed_path,
-    );
+    let rebuilt = if added.is_empty() {
+        evolve_core::rebuild_signed_pak_entries(
+            &source,
+            &original_key,
+            &signer.private,
+            &signer.public,
+            &signed_name,
+            &replacements,
+            &signed_path,
+        )
+    } else {
+        evolve_core::signed_pak::rebuild_signed_pak_with_additions(
+            &source,
+            &original_key,
+            &signer.private,
+            &signer.public,
+            &signed_name,
+            &replacements,
+            &signed_path,
+        )
+    };
     match rebuilt {
         Ok(report) => {
             fs::rename(&signed_path, &output).map_err(|e| e.to_string())?;
             fs::remove_dir(&signed_folder).map_err(|e| e.to_string())?;
             Ok((
                 format!(
-                    "{} modified member(s); source version differences accepted",
-                    report.len()
+                    "{} modified member(s), {} registered addition(s); source version differences accepted",
+                    report.len(),
+                    added.len()
                 ),
                 output,
                 verified,
@@ -961,15 +1139,18 @@ pub fn build_project_raw(
         .get("entries")
         .and_then(Value::as_array)
         .ok_or("Original manifest has no file records")?;
+    let added: HashSet<String> = additions(&manifest, records)?.into_iter().collect();
     for rel in modified {
         if !safe_member(rel) {
             return Err("Unsafe modified member".into());
         }
-        let expected = records
-            .iter()
-            .find(|entry| entry.get("path").and_then(Value::as_str) == Some(rel.as_str()))
-            .ok_or("Modified member is absent from the verified original manifest")?;
-        editable_format(expected)?;
+        if !added.contains(rel) {
+            let expected = records
+                .iter()
+                .find(|entry| entry.get("path").and_then(Value::as_str) == Some(rel.as_str()))
+                .ok_or("Modified member is absent from the verified original manifest")?;
+            editable_format(expected)?;
+        }
     }
     let original = stage.join("paks").join(&project.target);
     let relative = super::modding_keys::staged_target(stage, &original)?;
@@ -1015,6 +1196,18 @@ pub fn build_project_raw(
     let original_index =
         evolve_core::open_verified_signed_pak(&original, &keys.public, signed_name)
             .map_err(|e| e.to_string())?;
+    for rel in &added {
+        if original_index
+            .info
+            .entries
+            .iter()
+            .any(|entry| entry.path.eq_ignore_ascii_case(rel))
+        {
+            return Err(format!(
+                "Source PAK already contains added member {rel}; re-extract this project instead"
+            ));
+        }
+    }
     let serialized = tempfile::Builder::new()
         .prefix(".project-serialization-")
         .tempdir_in(&folder)
@@ -1030,9 +1223,12 @@ pub fn build_project_raw(
         }
         let record = records
             .iter()
-            .find(|entry| entry.get("path").and_then(Value::as_str) == Some(rel.as_str()))
-            .ok_or("Modified member is absent from manifest")?;
-        if editable_format(record)? == "cryxml" {
+            .find(|entry| entry.get("path").and_then(Value::as_str) == Some(rel.as_str()));
+        if added.contains(rel) {
+            replacements.push((rel.clone(), replacement));
+        } else if editable_format(record.ok_or("Modified member is absent from manifest")?)?
+            == "cryxml"
+        {
             if !regular(&replacement, MAX_XML_BYTES as u64) {
                 return Err("Edited XML exceeds document limit".into());
             }
@@ -1042,7 +1238,7 @@ pub fn build_project_raw(
             let encoded = serialize_project_xml(
                 &prior,
                 &fs::read(&replacement).map_err(|e| e.to_string())?,
-                record,
+                record.ok_or("Modified member is absent from manifest")?,
             )?;
             let staged = serialized
                 .path()
@@ -1072,15 +1268,27 @@ pub fn build_project_raw(
     // first publish the signed file under that verified spelling, then move
     // it to its original physical basename within the same new output folder.
     let signed_output = output_folder.join(signed_name);
-    let result = evolve_core::rebuild_signed_pak_entries(
-        &original,
-        &keys.public,
-        &keys.private,
-        &keys.public,
-        signed_name,
-        &replacements,
-        &signed_output,
-    );
+    let result = if added.is_empty() {
+        evolve_core::rebuild_signed_pak_entries(
+            &original,
+            &keys.public,
+            &keys.private,
+            &keys.public,
+            signed_name,
+            &replacements,
+            &signed_output,
+        )
+    } else {
+        evolve_core::signed_pak::rebuild_signed_pak_with_additions(
+            &original,
+            &keys.public,
+            &keys.private,
+            &keys.public,
+            signed_name,
+            &replacements,
+            &signed_output,
+        )
+    };
     match result {
         Ok(reports) => {
             if signed_output != output {
@@ -1089,7 +1297,11 @@ pub fn build_project_raw(
                 })?;
             }
             Ok((
-                format!("{} modified member(s)", reports.len()),
+                format!(
+                    "{} modified member(s), {} registered addition(s)",
+                    reports.len(),
+                    added.len()
+                ),
                 output,
                 verified,
             ))
@@ -1630,6 +1842,40 @@ pub fn guided_import_members(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn explicit_additions_are_detected_without_turning_existing_files_into_additions() {
+        let temp = tempfile::tempdir().unwrap();
+        let stage = temp.path().join("staged");
+        let pak = stage.join("paks/Game/UI_Data.pak");
+        fs::create_dir_all(pak.parent().unwrap()).unwrap();
+        fs::write(&pak, b"unchanged source").unwrap();
+        let projects = temp.path().join("Projects");
+        let folder = projects.join("Project");
+        let files = folder.join("files");
+        fs::create_dir_all(files.join("Libs/UI")).unwrap();
+        fs::write(files.join("Libs/UI/stock.gfx"), b"stock").unwrap();
+        fs::write(files.join("Libs/UI/extra.gfx"), b"new").unwrap();
+        fs::write(folder.join(".evolve-pak-workspace.json"), serde_json::to_vec(&serde_json::json!({
+            "version":1,"source_pak":pak,
+            "entries":[{"path":"Libs/UI/stock.gfx","format":"raw","sha256":format!("{:x}", Sha256::digest(b"stock"))}]
+        })).unwrap()).unwrap();
+        let before = inspect_project(&folder, &stage, "Project".into(), "".into(), u64::MAX);
+        assert_eq!(before.status, "Draft");
+        register_added_member(&projects, &before, "Libs/UI/extra.gfx").unwrap();
+        assert!(register_added_member(&projects, &before, "libs/ui/EXTRA.gfx").is_err());
+        assert!(register_added_member(&projects, &before, "Libs/UI/stock.gfx").is_err());
+        assert!(register_added_member(&projects, &before, "../outside.gfx").is_err());
+        let after = inspect_project(&folder, &stage, "Project".into(), "".into(), u64::MAX);
+        assert_eq!(after.modified, vec!["Libs/UI/extra.gfx"]);
+        assert!(after.changed_known);
+        assert!(unregister_added_member(&projects, &before, "libs/UI/extra.gfx").is_err());
+        unregister_added_member(&projects, &before, "Libs/UI/extra.gfx").unwrap();
+        assert_eq!(
+            inspect_project(&folder, &stage, "Project".into(), "".into(), u64::MAX).status,
+            "Draft"
+        );
+        assert!(files.join("Libs/UI/extra.gfx").is_file());
+    }
     #[test]
     fn changed_gfx_is_found_by_full_build_scan_after_dashboard_budget_exceeded() {
         let temp = tempfile::tempdir().unwrap();
