@@ -1088,7 +1088,7 @@ pub fn build_project_raw(
         identity.update(signed_name.as_bytes());
         let mut members = replacements
             .iter()
-            .map(|(name, file)| digest(file).map(|hash| (name.clone(), hash)))
+            .map(|(name, file)| digest(file).map(|hash| (name.clone(), hash)).map_err(|e| e.to_string()))
             .collect::<Result<Vec<_>, _>>()?;
         members.sort_by(|left, right| left.0.cmp(&right.0));
         for (name, hash) in members {
