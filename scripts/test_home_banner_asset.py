@@ -35,6 +35,18 @@ class HomeBannerAssetTests(unittest.TestCase):
         self.assertIn("decode_home_dds(bundled)", code)
         self.assertIn("from_rgba(", code)
 
+    def test_home_art_covers_viewport_without_a_separate_banner_row(self):
+        code = (ROOT / "crates/evolve-desktop/src/private_pages.rs").read_text()
+        home = code.split("pub(super) fn home(state: &State)", 1)[1].split(
+            "fn docs_spec(", 1
+        )[0]
+        self.assertIn("stack![background, shade, content]", home)
+        self.assertIn("image(handle)", home)
+        self.assertIn(".content_fit(iced::ContentFit::Cover)", home)
+        self.assertIn("scrollable(", home)
+        self.assertNotIn("Length::Fixed(280.0)", home)
+        self.assertNotIn("column![container(picture)", home)
+
     def test_portable_nightly_includes_banner(self):
         source = (ROOT / ".github/workflows/nightly.yml").read_text()
         self.assertIn('"assets/default_loading.dds"', source)
