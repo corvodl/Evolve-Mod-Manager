@@ -288,7 +288,9 @@ def launch_standard_user(executable, *, game=False):
                         part.append(value)
                 else:
                     raise RuntimeError("Interactive user environment is too large")
-                keys = {"steamappid", "steamgameid", "steamoverlaygameid"}
+                # Windows client records omit STEAM_COMPAT_DATA_PATH. Do not
+                # accidentally inherit a stale Linux/Proton compatibility root.
+                keys = {"steamappid", "steamgameid", "steamoverlaygameid", "steam_compat_data_path"}
                 entries = [item for item in entries if item.partition("=")[0].casefold() not in keys]
                 entries.extend(("SteamAppId=273350", "SteamGameId=273350", "SteamOverlayGameId=273350"))
                 env_buffer = ctypes.create_unicode_buffer("\\0".join(entries) + "\\0\\0")
