@@ -62,13 +62,13 @@ class LaunchBrokerTests(unittest.TestCase):
         chars = block[:]
         self.assertEqual(
             chars,
-            "SteamAppId=273350\\0SteamGameId=273350\\0"
-            "SteamOverlayGameId=273350\\0"
-            "MODDED_EVOLVE_STAGE2_FRONTEND=127.0.0.1:2000\\0\\0",
+            "SteamAppId=273350\0SteamGameId=273350\0"
+            "SteamOverlayGameId=273350\0"
+            "MODDED_EVOLVE_STAGE2_FRONTEND=127.0.0.1:2000\0\0",
         )
         self.assertNotIn(chr(92) + "0", chars)
         with self.assertRaises(ValueError):
-            broker._windows_environment_block(["A=valid", "B=bad\\0data"])
+            broker._windows_environment_block(["A=valid", "B=bad\0data"])
 
     def test_cli_fails_if_two_commands_supplied(self):
         with self.assertRaises(SystemExit):
