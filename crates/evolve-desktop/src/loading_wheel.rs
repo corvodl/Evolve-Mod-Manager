@@ -137,7 +137,7 @@ pub fn svg_for_frame(frame: u32, dim: f64) -> String {
     let [a, b, c, d] = ROTATION[(frame % 40) as usize];
     let [s1, alpha1, s2, alpha2] = PULSES[(frame % 65) as usize];
     let mut art = format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="-1240 -1240 2480 2480" opacity="{dim}">
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="-1240 -1240 2480 2480" opacity="{dim}">
 <defs><linearGradient id="sourceGradient" gradientUnits="userSpaceOnUse"
 x1="-16384" y1="0" x2="16384" y2="0"
 gradientTransform="matrix(0.0190887451171875 -0.020965576171875 -0.008819580078125 -0.045379638671875 37 28)">
@@ -148,7 +148,7 @@ gradientTransform="matrix(0.0190887451171875 -0.020965576171875 -0.0088195800781
 <g transform="matrix({} {} {} {} -1 0)">
 <path fill="#d02d18" d="{SOLID_HALF}"/>
 <path fill="url(#sourceGradient)" d="{GRADIENT_HALF}"/>
-</g>"#,
+</g>"##,
         fixed(a), fixed(b), fixed(c), fixed(d)
     );
     // The pulse sprite has parent alpha 218/256. Every individual alpha
@@ -157,7 +157,7 @@ gradientTransform="matrix(0.0190887451171875 -0.020965576171875 -0.0088195800781
         if alpha > 0 {
             let opacity = (218.0 / 256.0) * (f64::from(alpha) / 256.0);
             art.push_str(&format!(
-                r#"<g opacity="{opacity}" transform="matrix({0} 0 0 {0} -1 -1)"><path d="{OUTER_RING}" fill="none" stroke="#d02d18" stroke-width="40"/></g>"#,
+                r##"<g opacity="{opacity}" transform="matrix({0} 0 0 {0} -1 -1)"><path d="{OUTER_RING}" fill="none" stroke="#d02d18" stroke-width="40"/></g>"##,
                 fixed(scale)
             ));
         }
