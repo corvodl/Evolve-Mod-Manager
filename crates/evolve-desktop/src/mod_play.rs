@@ -63,6 +63,9 @@ fn launch_for_repair(
     swap: &std::path::Path,
     issue: &str,
 ) -> Result<(usize, u32, usize, Option<String>), String> {
+    if client.as_os_str().is_empty() {
+        return Err(format!("Direct modded launch stopped safely: {issue}. Restore original game files or repair the signed stage before retrying."));
+    }
     let (pid, warnings) = play_setup::launch_clean(game, client, Some(swap))?;
     let mut message = format!(
         "Enabled mods were not installed: {issue}. The regular client opened instead; use its Repair or Verify option if needed."
@@ -120,7 +123,12 @@ pub fn launch_enabled(
     if let Err(issue) = play_setup::audit_backup_files(&game) {
         return launch_for_repair(&game, &client, &swap, &issue);
     }
-    if let Err(issue) = play_setup::configure_existing_helper(&game, &client, &stage, &swap) {
+    let setup = if direct_launch {
+        play_setup::configure_direct_helper(&game, &stage, &swap)
+    } else {
+        play_setup::configure_existing_helper(&game, &client, &stage, &swap)
+    };
+    if let Err(issue) = setup {
         let recovery_problem = ["journal", "backup", "restore", "recovery"]
             .iter()
             .any(|word| issue.to_ascii_lowercase().contains(word));
@@ -237,16 +245,19 @@ pub fn launch_enabled(
     if let Err(issue) = launcher_bridge::repair_staged_hook_for_offline_play(&stage, &swap) {
         return launch_for_repair(&game, &client, &swap, &issue);
     }
-    let ready = match launcher_bridge::inspect_existing_launcher(&stage, &swap) {
+    let inspected = if direct_launch {
+        launcher_bridge::inspect_existing_direct_game(&stage, &swap)
+    } else {
+        launcher_bridge::inspect_existing_launcher(&stage, &swap)
+    };
+    let ready = match inspected {
         Ok(ready) => ready,
         Err(issue) => return launch_for_repair(&game, &client, &swap, &issue),
     };
     progress.store(92, Ordering::Relaxed);
-    // Both modes use the user's normal Modded Evolve client with the same
-    // verified/reversible PAK swap. This manager does not set an offline
-    // network flag in that client, nor can it force server authentication.
-    // Online developer mode intentionally accepts ALL enabled projects,
-    // including gameplay and unreviewed edits; backups and recovery still apply.
+    // Client mode preserves the CreateProcessW hook. Direct mode swaps staged
+    // files first, starts its restore watchdog, then creates Evolve.exe.
+    // Neither mode guarantees profile-server authentication.
     let id = if direct_launch {
         launcher_bridge::launch_direct_offline_game(&ready, &progress)?
     } else {
