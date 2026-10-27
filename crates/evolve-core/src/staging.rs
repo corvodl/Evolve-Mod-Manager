@@ -6,7 +6,7 @@ use crate::archive::safe_member_name;
 use crate::signed_pak::inspect_signed_pak;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -16,6 +16,8 @@ const MARKER: &str = "workspace.json";
 const JOURNAL: &str = "active.json";
 const HISTORY: &str = ".evolve-history";
 const LIMIT: u64 = 16 * 1024 * 1024 * 1024;
+/// Opt-in additions stay at or below the rebuilder's single-batch limit.
+const MAX_ADDED_MEMBERS: usize = 64;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StageError {
@@ -251,13 +253,82 @@ pub(crate) fn stage_target(
 }
 
 fn verify(path: &Path, public_key: &Path, basename: &str) -> Result<HashSet<String>, StageError> {
+    Ok(member_names(path, public_key, basename)?
+        .into_iter()
+        .map(|name| name.to_lowercase())
+        .collect())
+}
+
+/// Authenticated member paths exactly as the signed directory spells them.
+fn member_names(path: &Path, public_key: &Path, basename: &str) -> Result<Vec<String>, StageError> {
     let report = inspect_signed_pak(path, public_key, basename)
         .map_err(|e| StageError::Verification(e.to_string()))?;
-    Ok(report
-        .entries
-        .into_iter()
-        .map(|e| e.path.to_lowercase())
-        .collect())
+    Ok(report.entries.into_iter().map(|e| e.path).collect())
+}
+
+/// Member-list policy shared by strict replacement and opt-in additions.
+///
+/// Strict mode keeps the original exact member-list rule. Additions mode
+/// requires every original member to survive with identical spelling, rejects
+/// case-insensitive aliases or collisions, and permits 1..=64 new members.
+fn plan_member_changes(
+    original: &[String],
+    replacement: &[String],
+    allow_additions: bool,
+) -> Result<Vec<String>, StageError> {
+    let mut old_lower = HashMap::with_capacity(original.len());
+    for name in original {
+        old_lower.insert(name.to_lowercase(), name.as_str());
+    }
+    let new_lower = replacement
+        .iter()
+        .map(|name| name.to_lowercase())
+        .collect::<HashSet<_>>();
+    if !old_lower.keys().all(|name| new_lower.contains(name)) {
+        return Err(StageError::Verification(if allow_additions {
+            "Replacement removed a signed PAK member".into()
+        } else {
+            "PAK member list changed".into()
+        }));
+    }
+    if !allow_additions {
+        if old_lower.len() != new_lower.len() {
+            return Err(StageError::Verification("PAK member list changed".into()));
+        }
+        return Ok(Vec::new());
+    }
+    let mut seen = HashSet::new();
+    let mut added = Vec::new();
+    for name in replacement {
+        let lower = name.to_lowercase();
+        // Signed archives reject internal aliases, but never accept a
+        // case-insensitive duplicate or a case-only rename from any source.
+        if !seen.insert(lower.clone()) {
+            return Err(StageError::UnsafePath(format!(
+                "Case-insensitive PAK member collision: {name}"
+            )));
+        }
+        match old_lower.get(&lower) {
+            Some(existing) if *existing != name.as_str() => {
+                return Err(StageError::UnsafePath(format!(
+                    "Case-insensitive PAK member collision: {name}"
+                )));
+            }
+            Some(_) => {}
+            None => added.push(name.clone()),
+        }
+    }
+    if added.is_empty() {
+        return Err(StageError::Verification(
+            "Replacement adds no signed PAK members".into(),
+        ));
+    }
+    if added.len() > MAX_ADDED_MEMBERS {
+        return Err(StageError::Verification(format!(
+            "Replacement adds more than {MAX_ADDED_MEMBERS} signed PAK members"
+        )));
+    }
+    Ok(added)
 }
 
 fn active(root: &Path) -> Result<Option<StageTransaction>, StageError> {
@@ -359,9 +430,10 @@ pub fn import_stage_pak(
     Ok(expected)
 }
 
-/// Apply ONE verified mod PAK to an isolated stage. Backup and replacement
-/// bytes are durable before publishing the journal. The journal is saved
-/// before moving the original, making an interrupted swap recoverable.
+/// Apply ONE verified mod PAK to an isolated stage, keeping the original exact
+/// member-list rule. Backup and replacement bytes are durable before
+/// publishing the journal. The journal is saved before moving the original,
+/// making an interrupted swap recoverable.
 pub fn apply_stage_pak(
     root: &Path,
     replacement: &Path,
@@ -369,6 +441,54 @@ pub fn apply_stage_pak(
     original_key: &Path,
     replacement_key: &Path,
     basename: &str,
+) -> Result<StageTransaction, StageError> {
+    apply_stage_pak_mode(
+        root,
+        replacement,
+        relative,
+        original_key,
+        replacement_key,
+        basename,
+        false,
+    )
+}
+
+/// Explicit opt-in addition of signed PAK members to an isolated stage.
+///
+/// Every original member must survive with exactly the same spelling, and the
+/// replacement may add 1..=64 new members. Removals, case-only renames and
+/// case-insensitive collisions are rejected. The source must stay outside the
+/// workspace; byte-exact backups and the same recovery journal/rollback path
+/// as [`apply_stage_pak`] are used, and nothing in an installed game is read or
+/// written.
+pub fn apply_stage_pak_with_additions(
+    root: &Path,
+    replacement: &Path,
+    relative: &str,
+    original_key: &Path,
+    replacement_key: &Path,
+    basename: &str,
+) -> Result<StageTransaction, StageError> {
+    apply_stage_pak_mode(
+        root,
+        replacement,
+        relative,
+        original_key,
+        replacement_key,
+        basename,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_stage_pak_mode(
+    root: &Path,
+    replacement: &Path,
+    relative: &str,
+    original_key: &Path,
+    replacement_key: &Path,
+    basename: &str,
+    allow_additions: bool,
 ) -> Result<StageTransaction, StageError> {
     let root = workspace(root)?;
     if active(&root)?.is_some() {
@@ -390,11 +510,9 @@ pub fn apply_stage_pak(
     }
     let target = stage_target(&root, &name, false)?;
     ordinary(&target)?;
-    let old_entries = verify(&target, original_key, basename)?;
-    let new_entries = verify(replacement, replacement_key, basename)?;
-    if old_entries != new_entries {
-        return Err(StageError::Verification("PAK member list changed".into()));
-    }
+    let old_members = member_names(&target, original_key, basename)?;
+    let new_members = member_names(replacement, replacement_key, basename)?;
+    plan_member_changes(&old_members, &new_members, allow_additions)?;
     let before = digest(&target)?;
     let after = digest(replacement)?;
     if before == after {
@@ -599,5 +717,371 @@ mod tests {
         initialize_stage(&root).unwrap();
         symlink(temp.path(), root.join("paks/linked")).unwrap();
         assert!(stage_target(&root, "linked/trap.pak", true).is_err());
+    }
+
+    #[test]
+    fn additions_policy_requires_a_safe_nonempty_superset() {
+        let base = vec!["Game/a.caf".to_string(), "Game/b.caf".to_string()];
+        assert!(plan_member_changes(&base, &base, false).unwrap().is_empty());
+        assert!(
+            plan_member_changes(&base, &base, true).is_err(),
+            "an additions swap must actually add a member"
+        );
+        let mut with_add = base.clone();
+        with_add.push("Game/new.dds".into());
+        assert!(
+            plan_member_changes(&base, &with_add, false).is_err(),
+            "strict application keeps the exact member-list rule"
+        );
+        assert_eq!(
+            plan_member_changes(&base, &with_add, true).unwrap(),
+            vec!["Game/new.dds".to_string()]
+        );
+        assert!(
+            plan_member_changes(&base, &base[..1], true).is_err(),
+            "removing a member is never an addition"
+        );
+        for (label, replacement) in [
+            (
+                "case-only rename of an existing member",
+                vec![
+                    "GAME/A.CAF".to_string(),
+                    "Game/b.caf".to_string(),
+                    "Game/new.dds".to_string(),
+                ],
+            ),
+            (
+                "case-insensitive addition collision",
+                vec![
+                    "Game/a.caf".to_string(),
+                    "Game/b.caf".to_string(),
+                    "Game/new.dds".to_string(),
+                    "GAME/NEW.DDS".to_string(),
+                ],
+            ),
+        ] {
+            assert!(
+                matches!(
+                    plan_member_changes(&base, &replacement, true),
+                    Err(StageError::UnsafePath(_))
+                ),
+                "{label} must be rejected"
+            );
+        }
+        let mut maximum = base.clone();
+        for index in 0..MAX_ADDED_MEMBERS {
+            maximum.push(format!("Game/new{index}.dds"));
+        }
+        assert_eq!(
+            plan_member_changes(&base, &maximum, true).unwrap().len(),
+            MAX_ADDED_MEMBERS
+        );
+        maximum.push("Game/one-too-many.dds".into());
+        assert!(
+            matches!(
+                plan_member_changes(&base, &maximum, true),
+                Err(StageError::Verification(_))
+            ),
+            "the 65th addition must be rejected"
+        );
+    }
+
+    const SYNTHETIC_TRAILER: usize = 2320;
+    const SYNTHETIC_RSA: usize = 128;
+
+    fn synthetic_mgf1(seed: &[u8], length: usize) -> Vec<u8> {
+        let mut output = Vec::with_capacity(length);
+        let mut counter = 0u32;
+        while output.len() < length {
+            let mut hash = Sha256::new();
+            hash.update(seed);
+            hash.update(counter.to_be_bytes());
+            output.extend_from_slice(&hash.finalize());
+            counter += 1;
+        }
+        output.truncate(length);
+        output
+    }
+
+    /// Synthetic OAEP-shaped public-key unwrap used only to build local
+    /// fixtures; this is not game key material.
+    fn synthetic_wrap(secret: &[u8; 16], private: &rsa::RsaPrivateKey) -> [u8; SYNTHETIC_RSA] {
+        use rsa::BigUint;
+        use rsa::traits::{PrivateKeyParts, PublicKeyParts};
+        let mut db = [0u8; 95];
+        db[..32].copy_from_slice(&Sha256::digest([]));
+        db[78] = 1;
+        db[79..].copy_from_slice(secret);
+        let mut seed = [7u8; 32];
+        let db_mask = synthetic_mgf1(&seed, db.len());
+        for (value, mask) in db.iter_mut().zip(db_mask) {
+            *value ^= mask;
+        }
+        let seed_mask = synthetic_mgf1(&db, 32);
+        for (value, mask) in seed.iter_mut().zip(seed_mask) {
+            *value ^= mask;
+        }
+        let mut encoded = [0u8; SYNTHETIC_RSA];
+        encoded[1..33].copy_from_slice(&seed);
+        encoded[33..].copy_from_slice(&db);
+        let integer = BigUint::from_bytes_be(&encoded).modpow(private.d(), private.n());
+        let bytes = integer.to_bytes_be();
+        let mut wrapped = [0u8; SYNTHETIC_RSA];
+        wrapped[SYNTHETIC_RSA - bytes.len()..].copy_from_slice(&bytes);
+        wrapped
+    }
+
+    fn synthetic_ctr(data: &[u8], key: &[u8; 16], iv: [u8; 16]) -> Vec<u8> {
+        use cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray};
+        use twofish::Twofish;
+        let cipher = Twofish::new_from_slice(key).unwrap();
+        let mut counter = u128::from_le_bytes(iv);
+        let mut output = data.to_vec();
+        for chunk in output.chunks_mut(16) {
+            let mut block = GenericArray::clone_from_slice(&counter.to_le_bytes());
+            cipher.encrypt_block(&mut block);
+            for (byte, mask) in chunk.iter_mut().zip(block.iter()) {
+                *byte ^= mask;
+            }
+            counter = counter.wrapping_add(1);
+        }
+        output
+    }
+
+    fn synthetic_entry_iv(crc: u32, compressed: u32, size: u32) -> [u8; 16] {
+        let values = [
+            size ^ compressed.wrapping_shl(12),
+            u32::from(compressed == 0),
+            crc ^ compressed.wrapping_shl(12),
+            u32::from(size == 0) ^ compressed,
+        ];
+        let mut bytes = [0u8; 16];
+        for (index, value) in values.iter().enumerate() {
+            bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes
+    }
+
+    /// Build a minimal authentic signed PAK (stored method 13) so staging can
+    /// be exercised end to end without any installed game files.
+    fn synthetic_signed_pak(
+        basename: &str,
+        members: &[(&str, &[u8])],
+        private: &rsa::RsaPrivateKey,
+    ) -> Vec<u8> {
+        let keys = [[4u8; 16]; 16];
+        let iv = [9u8; 16];
+        let mut bytes = Vec::new();
+        let mut directory = Vec::new();
+        for (name, payload) in members {
+            let offset = bytes.len() as u32;
+            let crc = crc32fast::hash(payload);
+            let size = u32::try_from(payload.len()).unwrap();
+            let compressed = size;
+            let mut local = [0u8; 30];
+            local[..4].copy_from_slice(b"PK\x03\x04");
+            local[8..10].copy_from_slice(&13u16.to_le_bytes());
+            local[14..18].copy_from_slice(&crc.to_le_bytes());
+            local[18..22].copy_from_slice(&compressed.to_le_bytes());
+            local[22..26].copy_from_slice(&size.to_le_bytes());
+            local[26..28].copy_from_slice(&(name.len() as u16).to_le_bytes());
+            bytes.extend_from_slice(&local);
+            bytes.extend_from_slice(name.as_bytes());
+            let slot = (!(crc >> 2) & 15) as usize;
+            bytes.extend_from_slice(&synthetic_ctr(
+                payload,
+                &keys[slot],
+                synthetic_entry_iv(crc, compressed, size),
+            ));
+            let mut record = [0u8; 46];
+            record[..4].copy_from_slice(b"PK\x01\x02");
+            record[10..12].copy_from_slice(&13u16.to_le_bytes());
+            record[16..20].copy_from_slice(&crc.to_le_bytes());
+            record[20..24].copy_from_slice(&compressed.to_le_bytes());
+            record[24..28].copy_from_slice(&size.to_le_bytes());
+            record[28..30].copy_from_slice(&(name.len() as u16).to_le_bytes());
+            record[42..46].copy_from_slice(&offset.to_le_bytes());
+            directory.extend_from_slice(&record);
+            directory.extend_from_slice(name.as_bytes());
+        }
+        let directory_at = bytes.len() as u32;
+        bytes.extend_from_slice(&synthetic_ctr(&directory, &keys[0], iv));
+        let mut message = directory.clone();
+        message.extend_from_slice(basename.as_bytes());
+        let signature = private
+            .sign_with_rng(
+                &mut rand::rngs::OsRng,
+                rsa::Pss::new_with_salt::<Sha256>(0),
+                &Sha256::digest(&message),
+            )
+            .unwrap();
+        let mut comment = [0u8; SYNTHETIC_TRAILER];
+        comment[..6].copy_from_slice(b"\x06\x00\x00\x00\x01\x03");
+        comment[6..10].copy_from_slice(&133u32.to_le_bytes());
+        comment[11..139].copy_from_slice(&signature);
+        comment[139..143].copy_from_slice(&2181u32.to_le_bytes());
+        comment[143..271].copy_from_slice(&synthetic_wrap(&iv, private));
+        for (index, key) in keys.iter().enumerate() {
+            let at = 272 + index * SYNTHETIC_RSA;
+            comment[at..at + SYNTHETIC_RSA].copy_from_slice(&synthetic_wrap(key, private));
+        }
+        let mut eocd = [0u8; 22];
+        eocd[..4].copy_from_slice(b"PK\x05\x06");
+        let count = u16::try_from(members.len()).unwrap();
+        eocd[8..10].copy_from_slice(&count.to_le_bytes());
+        eocd[10..12].copy_from_slice(&count.to_le_bytes());
+        eocd[12..16].copy_from_slice(&(directory.len() as u32).to_le_bytes());
+        eocd[16..20].copy_from_slice(&directory_at.to_le_bytes());
+        eocd[20..22].copy_from_slice(&(SYNTHETIC_TRAILER as u16).to_le_bytes());
+        bytes.extend_from_slice(&eocd);
+        bytes.extend_from_slice(&comment);
+        bytes
+    }
+
+    #[test]
+    fn additions_apply_requires_opt_in_and_retains_rollback() {
+        use rsa::pkcs1::EncodeRsaPublicKey;
+        let temp = tempfile::tempdir().unwrap();
+        let private = rsa::RsaPrivateKey::new(&mut rand::rngs::OsRng, 1024).unwrap();
+        let public = rsa::RsaPublicKey::from(&private);
+        let key = temp.path().join("public.der");
+        fs::write(&key, public.to_pkcs1_der().unwrap().as_bytes()).unwrap();
+        let root = temp.path().join("stage");
+        initialize_stage(&root).unwrap();
+
+        let original_members: [(&str, &[u8]); 2] = [
+            ("Game/base.caf", b"base original"),
+            ("Game/other.caf", b"other original"),
+        ];
+        let base = synthetic_signed_pak("sample.pak", &original_members, &private);
+        let original_dir = temp.path().join("original");
+        fs::create_dir(&original_dir).unwrap();
+        let original = original_dir.join("sample.pak");
+        fs::write(&original, &base).unwrap();
+        import_stage_pak(&root, &original, "Game/sample.pak", &key, "sample.pak").unwrap();
+        let staged = root.join("paks/Game/sample.pak");
+        assert_eq!(fs::read(&staged).unwrap(), base);
+
+        let fixture = |label: &str, members: &[(&str, &[u8])]| {
+            let folder = temp.path().join(label);
+            fs::create_dir(&folder).unwrap();
+            let path = folder.join("sample.pak");
+            let bytes = synthetic_signed_pak("sample.pak", members, &private);
+            fs::write(&path, &bytes).unwrap();
+            assert!(inspect_signed_pak(&path, &key, "sample.pak").is_ok());
+            path
+        };
+        let added_members: [(&str, &[u8]); 3] = [
+            ("Game/base.caf", b"base changed"),
+            ("Game/other.caf", b"other original"),
+            ("Game/added.dds", b"added payload"),
+        ];
+        let replacement = fixture("added", &added_members);
+        let replacement_bytes = fs::read(&replacement).unwrap();
+
+        assert!(
+            matches!(
+                apply_stage_pak(
+                    &root,
+                    &replacement,
+                    "Game/sample.pak",
+                    &key,
+                    &key,
+                    "sample.pak"
+                ),
+                Err(StageError::Verification(_))
+            ),
+            "the default path must keep the exact member-list rule"
+        );
+        assert_eq!(fs::read(&staged).unwrap(), base);
+        assert!(stage_status(&root).unwrap().is_none());
+
+        let removal_members: [(&str, &[u8]); 2] = [
+            ("Game/base.caf", b"base changed"),
+            ("Game/added.dds", b"added payload"),
+        ];
+        let removal = fixture("removal", &removal_members);
+        assert!(
+            apply_stage_pak_with_additions(
+                &root,
+                &removal,
+                "Game/sample.pak",
+                &key,
+                &key,
+                "sample.pak"
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read(&staged).unwrap(), base);
+        assert!(stage_status(&root).unwrap().is_none());
+
+        let unchanged_members: [(&str, &[u8]); 2] = [
+            ("Game/base.caf", b"base changed"),
+            ("Game/other.caf", b"other original"),
+        ];
+        let unchanged = fixture("unchanged", &unchanged_members);
+        assert!(
+            apply_stage_pak_with_additions(
+                &root,
+                &unchanged,
+                "Game/sample.pak",
+                &key,
+                &key,
+                "sample.pak"
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read(&staged).unwrap(), base);
+        assert!(stage_status(&root).unwrap().is_none());
+
+        let renamed_members: [(&str, &[u8]); 3] = [
+            ("GAME/BASE.CAF", b"base changed"),
+            ("Game/other.caf", b"other original"),
+            ("Game/added.dds", b"added payload"),
+        ];
+        let renamed = fixture("renamed", &renamed_members);
+        assert!(matches!(
+            apply_stage_pak_with_additions(
+                &root,
+                &renamed,
+                "Game/sample.pak",
+                &key,
+                &key,
+                "sample.pak"
+            ),
+            Err(StageError::UnsafePath(_))
+        ));
+        assert_eq!(fs::read(&staged).unwrap(), base);
+        assert!(stage_status(&root).unwrap().is_none());
+
+        let tx = apply_stage_pak_with_additions(
+            &root,
+            &replacement,
+            "Game/sample.pak",
+            &key,
+            &key,
+            "sample.pak",
+        )
+        .unwrap();
+        assert_eq!(tx.target, "Game/sample.pak");
+        assert_eq!(tx.before_sha256, digest(&original).unwrap());
+        assert_eq!(tx.after_sha256, digest(&replacement).unwrap());
+        assert_eq!(fs::read(&staged).unwrap(), replacement_bytes);
+        assert_eq!(
+            inspect_signed_pak(&staged, &key, "sample.pak")
+                .unwrap()
+                .entries
+                .len(),
+            3
+        );
+        assert_eq!(stage_status(&root).unwrap().unwrap().id, tx.id);
+        assert_eq!(
+            fs::read(root.join(HISTORY).join(&tx.id).join("before.pak")).unwrap(),
+            base
+        );
+        // The existing journal/rollback path restores the pre-addition archive.
+        restore_stage(&root).unwrap();
+        assert_eq!(fs::read(&staged).unwrap(), base);
+        assert!(stage_status(&root).unwrap().is_none());
     }
 }
