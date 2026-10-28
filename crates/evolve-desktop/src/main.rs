@@ -55,6 +55,7 @@ mod runtime_health;
 mod runtime_live;
 mod runtime_memory;
 mod runtime_signatures;
+mod runtime_teleport;
 mod selection;
 mod settings;
 mod settings_page;
@@ -374,6 +375,13 @@ struct State {
     developer_attempts: u8,
     developer_checking: bool,
     actor_listing: Option<runtime_actors::Listing>,
+    teleport_reading: Option<runtime_teleport::Reading>,
+    teleport_saved: Option<runtime_teleport::Reading>,
+    teleport_busy: bool,
+    teleport_status: String,
+    teleport_x: String,
+    teleport_y: String,
+    teleport_z: String,
     actor_busy: bool,
     actor_status: String,
     actor_edit: Option<(u32, usize, runtime_actors::Field, u32)>,
@@ -1889,6 +1897,14 @@ enum Message {
     DeveloperProcessPrivilegesFinished(Result<String, String>),
     ActorRefresh,
     ActorRefreshed(Result<runtime_actors::Listing, String>),
+    TeleportCapture(bool),
+    TeleportCaptured(bool, Result<runtime_teleport::Reading, String>),
+    TeleportXYZChanged(usize, String),
+    TeleportAbsolute,
+    TeleportRelative(f32, f32, f32),
+    TeleportReturnSaved,
+    TeleportDo(runtime_teleport::Destination, Option<(u32, u32)>),
+    TeleportMoved(Result<runtime_teleport::Reading, String>),
     ActorEdit(u32, usize, runtime_actors::Field, u32),
     ActorEditValue(String),
     ActorWrite,
@@ -3948,6 +3964,130 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.developer_password = value;
             }
         }
+        Message::TeleportCapture(save) => {
+            if !state.developer_unlocked || state.developer_online_mods
+                || !state.armor_offline_confirmed || !state.live_edit_enabled || state.teleport_busy
+            {
+                state.teleport_status = "Enable offline editing in an isolated match".into();
+                return Task::none();
+            }
+            let Some(snapshot) = state.runtime_snapshot.clone() else {
+                state.teleport_status = "Detect Evolve.exe first".into();
+                return Task::none();
+            };
+            state.teleport_busy = true;
+            state.teleport_status = "Reading local physics coordinates...".into();
+            let root = state.preferences.game_storage_root.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || runtime_teleport::inspect(&snapshot, &root, true))
+                        .await
+                        .unwrap_or_else(|e| Err(format!("Teleport read failed: {e}")))
+                },
+                move |result| Message::TeleportCaptured(save, result),
+            );
+        }
+        Message::TeleportCaptured(save, result) => {
+            state.teleport_busy = false;
+            if !state.developer_unlocked || state.developer_online_mods
+                || !state.armor_offline_confirmed || !state.live_edit_enabled {
+                return Task::none();
+            }
+            match result {
+                Ok(reading) => {
+                    state.teleport_reading = Some(reading);
+                    state.teleport_x = format!("{:.3}", reading.position.x);
+                    state.teleport_y = format!("{:.3}", reading.position.y);
+                    state.teleport_z = format!("{:.3}", reading.position.z);
+                    if save {
+                        state.teleport_saved = Some(reading);
+                        state.teleport_status = format!("Saved position: {}", reading.position.label());
+                    } else {
+                        state.teleport_status = format!("Local player: {}", reading.position.label());
+                    }
+                }
+                Err(error) => state.teleport_status = format!("Teleport unavailable: {error}"),
+            }
+        }
+        Message::TeleportXYZChanged(axis, value) => {
+            if state.developer_unlocked && !state.teleport_busy && value.len() <= 24 {
+                match axis {
+                    0 => state.teleport_x = value,
+                    1 => state.teleport_y = value,
+                    2 => state.teleport_z = value,
+                    _ => {}
+                }
+            }
+        }
+        Message::TeleportAbsolute => {
+            if let Ok(pos) = runtime_teleport::parse_position(
+                &state.teleport_x, &state.teleport_y, &state.teleport_z,
+            ) {
+                return Task::done(Message::TeleportDo(
+                    runtime_teleport::Destination::Absolute(pos), None
+                ));
+            }
+            state.teleport_status = "Enter valid X, Y, Z coordinates".into();
+        }
+        Message::TeleportRelative(x, y, z) => {
+            return Task::done(Message::TeleportDo(
+                runtime_teleport::Destination::Relative(runtime_teleport::Position {x, y, z}), None,
+            ));
+        }
+        Message::TeleportReturnSaved => {
+            let Some(saved) = state.teleport_saved else {
+                state.teleport_status = "Save a position first".into();
+                return Task::none();
+            };
+            return Task::done(Message::TeleportDo(
+                runtime_teleport::Destination::Absolute(saved.position),
+                Some((saved.pid, saved.actor_id)),
+            ));
+        }
+        Message::TeleportDo(destination, identity) => {
+            if !state.developer_unlocked || state.developer_online_mods
+                || !state.armor_offline_confirmed || !state.live_edit_enabled || state.teleport_busy
+            {
+                state.teleport_status = "Teleport requires unlocked offline writes".into();
+                return Task::none();
+            }
+            let Some(snapshot) = state.runtime_snapshot.clone() else {
+                state.teleport_status = "Detect Evolve.exe first".into();
+                return Task::none();
+            };
+            state.teleport_busy = true;
+            state.teleport_status = "Applying one-shot physics teleport...".into();
+            let root = state.preferences.game_storage_root.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move ||
+                        runtime_teleport::teleport(&snapshot, &root, true, destination, identity))
+                        .await
+                        .unwrap_or_else(|e| Err(format!("Teleport failed: {e}")))
+                },
+                Message::TeleportMoved,
+            );
+        }
+        Message::TeleportMoved(result) => {
+            state.teleport_busy = false;
+            if !state.developer_unlocked || state.developer_online_mods
+                || !state.armor_offline_confirmed || !state.live_edit_enabled {
+                return Task::none();
+            }
+            match result {
+                Ok(reading) => {
+                    state.teleport_reading = Some(reading);
+                    state.teleport_x = format!("{:.3}", reading.position.x);
+                    state.teleport_y = format!("{:.3}", reading.position.y);
+                    state.teleport_z = format!("{:.3}", reading.position.z);
+                    state.teleport_status = format!(
+                        "Teleported to {}. Movement input may resume falling.",
+                        reading.position.label()
+                    );
+                }
+                Err(error) => state.teleport_status = format!("Teleport refused: {error}"),
+            }
+        }
         Message::ActorRefresh => {
             if !state.developer_unlocked || state.actor_busy {
                 return Task::none();
@@ -4592,6 +4732,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
             state.actor_listing = None;
             state.actor_edit = None;
+            state.teleport_reading = None;
+            state.teleport_saved = None;
+            state.teleport_status.clear();
             state.runtime_checking = false;
             if state.developer_unlocked {
                 state.armor_pid_seen = snapshot.pid;
@@ -4792,6 +4935,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.actor_listing = None;
             state.actor_edit = None;
             state.actor_status.clear();
+            state.teleport_reading = None;
+            state.teleport_saved = None;
+            state.teleport_status.clear();
             state.developer_network_generation = state.developer_network_generation.wrapping_add(1);
             state.developer_network_busy = false;
             state.developer_online_mods = false;
@@ -4921,6 +5067,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     // memory edit permissions or stale memory probes.
                     state.armor_offline_confirmed = false;
                     state.live_edit_enabled = false;
+                    state.teleport_reading = None;
+                    state.teleport_saved = None;
+                    state.teleport_status.clear();
                     state.live_edit_probe = None;
                     state.live_edit_generation = state.live_edit_generation.wrapping_add(1);
                     if let Some(cancel) = &state.live_edit_cancel {
