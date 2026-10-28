@@ -1,5 +1,5 @@
 {
-  "schema": 2,
+  "schema": 3,
   "discord_application_id": "1565093139616763987",
   "portrait_count": 39,
   "upload_status": "not_uploaded",
@@ -328,9 +328,13 @@
       "source": "scrap.dds",
       "asset_key": "scrap",
       "filename": "scrap.png",
-      "display_name": "Scrap",
-      "team": "unknown",
-      "internal_names": []
+      "display_name": "Jack",
+      "team": "hunter",
+      "internal_names": [
+        "Scrap",
+        "TrackingGBot",
+        "SupportGBot"
+      ]
     },
     {
       "source": "slim.dds",
@@ -399,23 +403,6 @@
       "team": "hunter",
       "internal_names": [
         "MedicE_RogueBot"
-      ]
-    }
-  ],
-  "unillustrated_characters": [
-    {
-      "display_name": "Jack",
-      "team": "hunter",
-      "internal_names": [
-        "TrackingGBot",
-        "SupportGBot"
-      ]
-    },
-    {
-      "display_name": "Necro Lazarus",
-      "team": "hunter",
-      "internal_names": [
-        "MedicB_NecroBot"
       ]
     }
   ],
