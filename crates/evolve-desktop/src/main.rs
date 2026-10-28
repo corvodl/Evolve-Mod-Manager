@@ -4009,9 +4009,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     Err(e) => format!("Write refused or unconfirmed: {e}"),
                 };
                 if let Ok(outcome) = &result {
-                    if let Some((_, _, _, _)) = state.actor_edit {
-                        state.actor_edit = None;
-                    }
+                    let edited = state.actor_edit.take();
                     if let Some(list) = &mut state.actor_listing {
                         for actor in &mut list.actors {
                             if actor.name == outcome.actor {
@@ -4023,6 +4021,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                                     } {
                                         value.bits = bits;
                                         value.display = outcome.after.clone();
+                                        if let Some((id, addr, field, _)) = edited {
+                                            if let Some(held) = state.actor_frozen.get_mut(&(id, addr, field)) {
+                                                *held = bits;
+                                                state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -11439,7 +11443,7 @@ impl Desktop {
         let actor_freeze = if !self.state.actor_frozen.is_empty()
             && self.state.developer_unlocked && self.state.live_edit_enabled
             && self.state.armor_offline_confirmed && !self.state.developer_online_mods {
-            iced::time::every(Duration::from_millis(500)).map(|_| Message::ActorFreezeTick)
+            iced::time::every(Duration::from_secs(2)).map(|_| Message::ActorFreezeTick)
         } else { Subscription::none() };
         let news_poll = if matches!(self.state.page, Some(Page::Home | Page::WhatsNew)) {
             iced::time::every(Duration::from_secs(600)).map(|_| Message::RefreshNews)
