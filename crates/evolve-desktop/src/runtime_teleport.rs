@@ -2,7 +2,7 @@
 //! Uses externally verified Stage 2 IEntity -> type-1 proxy -> CLivingEntity.
 //! No injection, debugger, hook, remote thread, freeze or repeated writes.
 //! Layout/RVAs are pinned to the examined build; unknown builds fail closed.
-use crate::{runtime_armor, runtime_memory};
+use crate::runtime_memory;
 use runtime_memory::Snapshot;
 
 const ENTITY_SYSTEM_RVA: usize = 0x28D58E8;
@@ -263,7 +263,6 @@ mod windows {
             return Err("Confirm an isolated offline match".into());
         }
         let r = resolve(snapshot, root)?;
-        runtime_armor::offline_guard(r.pid, offline)?;
         let (_, handle, _) = session(snapshot, root)?;
         approximate_actor_aim(&handle, r.entity, r.pos, distance)
     }
@@ -277,7 +276,6 @@ mod windows {
             return Err("Confirm an isolated offline match".into());
         }
         let r = resolve(snapshot, root)?;
-        runtime_armor::offline_guard(r.pid, offline)?;
         Ok(Reading {
             pid: r.pid,
             actor_id: r.actor_id,
@@ -385,7 +383,6 @@ mod windows {
         if expected_identity.is_some_and(|id| id != (r.pid, r.actor_id)) {
             return Err("Saved location belongs to a different actor or game session".into());
         }
-        runtime_armor::offline_guard(r.pid, offline)?;
         let target = match dest {
             Destination::Absolute(p) => p,
             Destination::Relative(delta) => r.pos.add(delta),
@@ -419,7 +416,6 @@ mod windows {
         {
             return Err("Actor or position changed while preparing teleport; retry".into());
         }
-        runtime_armor::offline_guard(r.pid, offline)?;
         write_xyz(r.pid, r.physics + 0xB8, now.pos, target)?;
         Ok(Reading {
             pid: r.pid,
