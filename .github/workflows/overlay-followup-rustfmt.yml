@@ -1,0 +1,28 @@
+name: Format developer overlay follow-up
+on:
+  push:
+    branches: [feat/developer-offline-teleport]
+permissions:
+  contents: write
+jobs:
+  rustfmt:
+    if: github.repository == 'corvodl/Evolve-Mod-Manager'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/developer-offline-teleport
+          persist-credentials: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format overlay follow-up
+        run: |
+          cargo fmt --all
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add crates/evolve-desktop/src/bin/evolve-teleport-overlay.rs
+          if ! git diff --cached --quiet; then
+            git commit -m 'style: rustfmt overlay toast behavior'
+            git push origin HEAD:feat/developer-offline-teleport
+          fi
