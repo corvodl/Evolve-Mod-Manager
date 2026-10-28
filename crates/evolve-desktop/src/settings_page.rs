@@ -556,7 +556,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                         .size(12).style(design::muted),
                     design::button(if state.preferences.discord_presence_enabled { "Rich Presence: On" } else { "Rich Presence: Off" })
                         .on_press(Message::PreferenceDiscordToggle("enabled")).style(design::secondary),
-                    text("The official Modded Evolve Discord application ID is embedded in release builds; developers may override it here. Leave blank for the bundled ID.")
+                    text("Modded Evolve uses the shared Discord application automatically. No account linking is needed. Leave this blank unless testing a different developer application.")
                         .size(11).style(design::muted),
                     design::text_input("Discord application ID (optional override)", &state.preferences.discord_application_id)
                         .on_input(Message::PreferenceDiscordAppId),
