@@ -89,6 +89,37 @@ pub(super) struct LocalActor {
     pub armor: Option<String>,
 }
 
+// Explicit internal IEntity names. The first five were observed through the
+// live name resolver; monster aliases below were supplied by the user and still
+// need runtime verification. Match the complete base name, never a substring.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Team { Monster, Hunter }
+
+fn character_from_entity_name(raw: &str) -> Option<(&'static str, Team)> {
+    let lower = raw.trim().to_ascii_lowercase();
+    // Evolve samples end with "ABot", "BBot", "DBot" or "EBot".
+    // Strip only the two common trailing characters after the variant letter.
+    // Keep the character/variant letter in names like "AssaultEBot".
+    let name = lower.strip_suffix("bot").unwrap_or(&lower);
+    let result = match name {
+        "goliatha" => ("Goliath", Team::Monster),
+        "teleportera" => ("Wraith", Team::Monster),
+        "assaulte" => ("Markov", Team::Hunter),
+        "assaultb" => ("Parnell", Team::Hunter),
+        "assaultd" => ("Hyde", Team::Hunter),
+        // The next six internal aliases have not yet been confirmed by a
+        // running-game probe; support their likely *ABot suffix forms.
+        "groundera" | "grounder" => ("Kraken", Team::Monster),
+        "rockya" | "rocky" => ("Behemoth", Team::Monster),
+        "rockybobsiclea" | "rockybobsicle" => ("Glacial Behemoth", Team::Monster),
+        "lurkera" | "lurker" => ("Gorgon", Team::Monster),
+        "krakena" | "kraken" => ("Elder Kraken", Team::Monster),
+        "goliathmeteora" | "goliathmeteor" => ("Meteor Goliath", Team::Monster),
+        _ => return None,
+    };
+    Some(result)
+}
+
 fn label(input: &str) -> String {
     input.chars().filter(|c| !c.is_control()).take(128).collect()
 }
@@ -100,9 +131,13 @@ fn format_activity(cfg: &Config, game_pid: Option<u32>, actor: Option<&LocalActo
         if cfg.minimal {
             ("Playing Evolve".to_owned(), "In game".to_owned())
         } else {
-            // No character name is published until its source is confirmed
-            // against the verified local IEntity and multiple playable actors.
-            let details = "Playing Evolve".to_owned();
+            let details = if cfg.show_character {
+                actor.and_then(|a| a.name.as_deref())
+                    .map(|name| format!("Playing as {name}"))
+                    .unwrap_or_else(|| "Playing Evolve".to_owned())
+            } else {
+                "Playing Evolve".to_owned()
+            };
             let mut values = vec![cfg.game_version.clone()];
             if cfg.show_character {
                 if let Some(stage) = actor.filter(|a| a.verified_monster)
@@ -207,19 +242,18 @@ mod windows {
         let listing = runtime_actors::inspect(snapshot, root).ok()?;
         let actor = listing.actors.iter().find(|actor| actor.local)?;
         let mut info = LocalActor::default();
-        // The current actor name is a nearby-string heuristic, not a
-        // verified IEntity character identity; never copy it to Discord.
-        // No trustworthy class/character resolver exists yet, so do NOT set
-        // verified_monster here. Hunters have no armor/evolution; offsets
-        // read as plausible monster fields are not proof of monster identity.
+        // Actor::name comes from the independently validated local IEntity,
+        // not a nearby-string search or plausible monster field offsets.
+        if let Some((name, team)) = character_from_entity_name(&actor.name) {
+            info.name = Some(name.to_owned());
+            info.verified_monster = team == Team::Monster;
+        }
         for field in &actor.fields {
             use runtime_actors::Field;
             match field.field {
                 Field::Health => info.health = Some(field.display.clone()),
-                Field::Armor | Field::Stage => {
-                    // Leave monster-only fields unset until the class resolver
-                    // independently confirms a monster.
-                },
+                Field::Armor if info.verified_monster => info.armor = Some(field.display.clone()),
+                Field::Stage if info.verified_monster => info.evolution = Some(field.display.clone()),
                 _ => {}
             }
         }
@@ -342,17 +376,16 @@ mod tests {
         }
     }
     #[test]
-    fn gameplay_hides_unverified_character_name_and_keeps_validated_stats() {
+    fn gameplay_shows_verified_character_name_and_monster_stats() {
         let actor = LocalActor {
             name: Some("Goliath".into()),
-            verified_monster: true, // Only populated after independent class verification.
+            verified_monster: true,
             evolution: Some("Stage 2".into()),
             health: Some("8500".into()),
             armor: Some("1000".into()),
         };
         let act = format_activity(&sample(),Some(100),Some(&actor),100).unwrap();
-        assert_eq!(act["details"],"Playing Evolve");
-        assert!(!act.to_string().contains("Goliath"));
+        assert_eq!(act["details"],"Playing as Goliath");
         assert!(act["state"].as_str().unwrap().contains("HP 8500"));
         assert!(act["state"].as_str().unwrap().contains("Evolution Stage 2"));
         assert!(!act["state"].as_str().unwrap().contains("Map:"));
@@ -386,6 +419,52 @@ mod tests {
         assert!(!state.to_string().contains("Evolution"));
     }
 
+    #[test]
+    fn maps_observed_local_entity_names_to_characters() {
+        assert_eq!(character_from_entity_name("GoliathABot"), Some(("Goliath", Team::Monster)));
+        assert_eq!(character_from_entity_name("TeleporterABot"), Some(("Wraith", Team::Monster)));
+        assert_eq!(character_from_entity_name("AssaultEBot"), Some(("Markov", Team::Hunter)));
+        assert_eq!(character_from_entity_name("AssaultBBot"), Some(("Parnell", Team::Hunter)));
+        assert_eq!(character_from_entity_name("AssaultDBot"), Some(("Hyde", Team::Hunter)));
+    }
+    #[test]
+    fn maps_supplied_monster_aliases_with_trailing_abot() {
+        for (internal, expected) in [
+            ("GrounderABot", "Kraken"),
+            ("RockyABot", "Behemoth"),
+            ("RockybobsicleABot", "Glacial Behemoth"),
+            ("LurkerABot", "Gorgon"),
+            ("KrakenABot", "Elder Kraken"),
+            ("goliathmeteorABot", "Meteor Goliath"),
+        ] {
+            assert_eq!(character_from_entity_name(internal),
+                Some((expected, Team::Monster)));
+        }
+        assert_eq!(character_from_entity_name("GOLIATHMETEORABOT"),
+            Some(("Meteor Goliath", Team::Monster)));
+        assert_eq!(character_from_entity_name("UnknownABot"), None);
+        assert_eq!(character_from_entity_name("AssaultABot"), None);
+    }
+    #[test]
+    fn unrecognized_name_does_not_display_untrusted_character() {
+        let actor = LocalActor {
+            name: None,
+            ..Default::default()
+        };
+        let activity = format_activity(&sample(),Some(123),Some(&actor),100).unwrap();
+        assert_eq!(activity["details"], "Playing Evolve");
+    }
+    #[test]
+    fn character_setting_off_hides_known_name() {
+        let mut cfg = sample();
+        cfg.show_character = false;
+        let actor = LocalActor {
+            name: Some("Markov".into()),
+            ..Default::default()
+        };
+        let activity = format_activity(&cfg,Some(123),Some(&actor),100).unwrap();
+        assert_eq!(activity["details"], "Playing Evolve");
+    }
     #[test]
     fn privacy_mode_hides_character_stats_and_mods() {
         let mut cfg = sample();
