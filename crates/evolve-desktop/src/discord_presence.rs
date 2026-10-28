@@ -711,7 +711,10 @@ mod tests {
             character_from_entity_name("Scrap"),
             Some(("Jack", Team::Hunter))
         );
-        assert_eq!(portrait_for_display_name("Jack").unwrap().asset_key, "scrap");
+        assert_eq!(
+            portrait_for_display_name("Jack").unwrap().asset_key,
+            "scrap"
+        );
         assert_eq!(character_from_entity_name("UnknownABot"), None);
     }
 
