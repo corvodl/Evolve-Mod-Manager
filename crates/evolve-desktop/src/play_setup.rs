@@ -54,13 +54,20 @@ pub fn client_exe(input: &str) -> Result<PathBuf, String> {
 /// checks simply to select the separate testing installation.
 pub fn test_game_root(input: &str) -> Result<PathBuf, String> {
     let path = Path::new(input.trim());
-    let root = if path.file_name().is_some_and(|name| name.eq_ignore_ascii_case("bin64_SteamRetail")) {
-        path.parent().ok_or("Test Game executable folder has no parent")?
+    let root = if path
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("bin64_SteamRetail"))
+    {
+        path.parent()
+            .ok_or("Test Game executable folder has no parent")?
     } else {
         path
     };
     if !regular(&root.join("bin64_SteamRetail/Evolve.exe")) {
-        return Err("Select the separate Test Game directory containing bin64_SteamRetail/Evolve.exe".into());
+        return Err(
+            "Select the separate Test Game directory containing bin64_SteamRetail/Evolve.exe"
+                .into(),
+        );
     }
     fs::canonicalize(root).map_err(|e| format!("Cannot inspect Test Game: {e}"))
 }
@@ -68,7 +75,11 @@ pub fn test_game_root(input: &str) -> Result<PathBuf, String> {
 /// Unlike production, Test Client may have a different executable name.
 pub fn test_client_exe(input: &str) -> Result<PathBuf, String> {
     let path = Path::new(input.trim());
-    if !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("exe")) || !regular(path) {
+    if !path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+        || !regular(path)
+    {
         return Err("Select the separate Test Client .exe file".into());
     }
     fs::canonicalize(path).map_err(|e| format!("Cannot inspect Test Client: {e}"))
@@ -515,19 +526,32 @@ mod tests {
         fs::write(&client, b"test client").unwrap();
         fs::write(&prod_client, b"production client").unwrap();
         let (found_game, found_client) = validate_test_paths(
-            test.to_str().unwrap(), client.to_str().unwrap(),
-            live.to_str().unwrap(), prod_client.to_str().unwrap()
-        ).unwrap();
+            test.to_str().unwrap(),
+            client.to_str().unwrap(),
+            live.to_str().unwrap(),
+            prod_client.to_str().unwrap(),
+        )
+        .unwrap();
         assert_eq!(found_game, fs::canonicalize(&test).unwrap());
         assert_eq!(found_client, fs::canonicalize(&client).unwrap());
-        assert!(validate_test_paths(
-            live.to_str().unwrap(), client.to_str().unwrap(),
-            live.to_str().unwrap(), prod_client.to_str().unwrap()
-        ).is_err());
-        assert!(validate_test_paths(
-            test.to_str().unwrap(), prod_client.to_str().unwrap(),
-            live.to_str().unwrap(), prod_client.to_str().unwrap()
-        ).is_err());
+        assert!(
+            validate_test_paths(
+                live.to_str().unwrap(),
+                client.to_str().unwrap(),
+                live.to_str().unwrap(),
+                prod_client.to_str().unwrap()
+            )
+            .is_err()
+        );
+        assert!(
+            validate_test_paths(
+                test.to_str().unwrap(),
+                prod_client.to_str().unwrap(),
+                live.to_str().unwrap(),
+                prod_client.to_str().unwrap()
+            )
+            .is_err()
+        );
     }
 
     #[test]
