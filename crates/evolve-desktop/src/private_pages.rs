@@ -1434,14 +1434,23 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
                     .on_press_maybe((enabled && state.teleport_saved.is_some())
                         .then_some(Message::TeleportReturnSaved)),
             ].spacing(8),
+            text("Relative move · 20 units per click (world axes)")
+                .size(12).style(design::muted),
             row![
-                design::button("X -20").on_press_maybe(enabled.then_some(Message::TeleportRelative(-20.0, 0.0, 0.0))),
-                design::button("X +20").on_press_maybe(enabled.then_some(Message::TeleportRelative(20.0, 0.0, 0.0))),
-                design::button("Y -20").on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, -20.0, 0.0))),
-                design::button("Y +20").on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, 20.0, 0.0))),
-                design::button("Z -20").on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, 0.0, -20.0))),
-                design::button("Z +20").on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, 0.0, 20.0))),
-            ].spacing(8),
+                text("X").width(Length::Fixed(24.0)),
+                design::button("−20 X").on_press_maybe(enabled.then_some(Message::TeleportRelative(-20.0, 0.0, 0.0))),
+                design::button("+20 X").on_press_maybe(enabled.then_some(Message::TeleportRelative(20.0, 0.0, 0.0))),
+            ].align_y(iced::Alignment::Center).spacing(8),
+            row![
+                text("Y").width(Length::Fixed(24.0)),
+                design::button("−20 Y").on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, -20.0, 0.0))),
+                design::button("+20 Y").on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, 20.0, 0.0))),
+            ].align_y(iced::Alignment::Center).spacing(8),
+            row![
+                text("Z").width(Length::Fixed(24.0)),
+                design::button("−20 Z").on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, 0.0, -20.0))),
+                design::button("+20 Z").on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, 0.0, 20.0))),
+            ].align_y(iced::Alignment::Center).spacing(8),
             text(if state.teleport_busy { "Teleport operation running..." }
                  else { state.teleport_status.as_str() })
                 .size(12).style(design::muted),
