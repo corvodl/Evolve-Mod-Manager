@@ -435,6 +435,56 @@ mod tests {
     use super::*;
 
     #[test]
+    fn existing_signed_profiles_are_opt_in_and_selection_is_persistent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stage = tmp.path().join("stage");
+        evolve_core::initialize_stage(&stage).unwrap();
+        let source = tmp.path().join("existing-signed.pak");
+        std::fs::write(&source, b"existing signed bytes left untouched").unwrap();
+        let catalog = serde_json::json!({
+            "schema": 1,
+            "profiles": [{
+                "id": "1".repeat(32), "name": "My legacy menu",
+                "mods": [{
+                    "id": "2".repeat(32), "target": "Game/UI_Assets.pak",
+                    "source": source.to_str().unwrap(),
+                    "sha256": "a".repeat(64), "enabled": true
+                }]
+            }, {
+                "id": "3".repeat(32), "name": "Second profile",
+                "mods": [{
+                    "id": "4".repeat(32), "target": "Game/UI_Assets.pak",
+                    "source": source.to_str().unwrap(),
+                    "sha256": "b".repeat(64), "enabled": true
+                }]
+            }]
+        });
+        std::fs::write(stage.join("profiles.json"), serde_json::to_vec(&catalog).unwrap()).unwrap();
+        let a = SignedChoice { profile_id: "1".repeat(32), mod_id: "2".repeat(32) };
+        let b = SignedChoice { profile_id: "3".repeat(32), mod_id: "4".repeat(32) };
+        assert!(signed_ui(&stage).unwrap().selected.is_empty(),
+            "Legacy enabled flags must not silently activate a signed PAK");
+        assert!(select_signed(&stage, a.clone(), true).unwrap().selected.contains(&a));
+        assert_eq!(selected_signed_mods(&stage).unwrap().len(), 1);
+        assert!(select_signed(&stage, b, true).unwrap_err().contains("already targets"));
+        assert_eq!(selected_signed_mods(&stage).unwrap().len(), 1);
+        assert!(select_signed(&stage, a, false).unwrap().selected.is_empty());
+        assert_eq!(std::fs::read(&source).unwrap(), b"existing signed bytes left untouched");
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(
+            &std::fs::read(stage.join("profiles.json")).unwrap()).unwrap(), catalog);
+    }
+
+    #[test]
+    fn old_automatic_launch_profile_is_not_reimported_as_a_signed_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stage = tmp.path().join("stage");
+        evolve_core::initialize_stage(&stage).unwrap();
+        let auto = evolve_core::create_mod_profile(&stage, "Enabled Mods original").unwrap();
+        save_owned_profile_id(&stage, &auto.id).unwrap();
+        assert!(signed_ui(&stage).unwrap().catalog.profiles.is_empty());
+    }
+
+    #[test]
     fn manual_test_profile_is_restored_before_enabled_play_without_deleting_profile() {
         use sha2::{Digest, Sha256};
 
