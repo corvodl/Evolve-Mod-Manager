@@ -217,7 +217,7 @@ pub(super) fn discover(
     cancel: &AtomicBool,
 ) -> Result<Scan, String> {
     let pid = verify_process(snapshot, game_root)?;
-    
+
     let regions = regions(pid)?;
     let handle: read_process_memory::ProcessHandle = pid
         .try_into()
@@ -284,7 +284,7 @@ pub(super) fn refine(
     if pid != previous.pid {
         return Err("Different Evolve instance; begin another full armor scan".into());
     }
-    
+
     if step == Step::Feed && previous.damage_steps == 0 {
         return Err("Take armor damage and filter Damage before feeding".into());
     }
@@ -345,7 +345,7 @@ pub(super) fn monitor(
     if pid != scan.pid {
         return Err("Game restarted; armor address is stale".into());
     }
-    
+
     let handle: read_process_memory::ProcessHandle = pid
         .try_into()
         .map_err(|e| format!("Cannot open game read-only: {e}"))?;
