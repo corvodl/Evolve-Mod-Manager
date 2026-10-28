@@ -3287,7 +3287,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return load_signed_paks(PathBuf::from(&state.preferences.stage));
         }
         Message::SignedProfilesLoaded(stage, result) => {
-            if stage.as_path() != std::path::Path::new(&state.preferences.stage) || state.signed_busy {
+            if stage.as_path() != std::path::Path::new(&state.preferences.stage)
+                || state.signed_busy
+            {
                 return Task::none();
             }
             match result {
