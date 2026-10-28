@@ -3606,14 +3606,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             };
             if state.busy || state.viewer_from_library {
-                state.status = "Import is available only for an idle editable Modding project.".into();
+                state.status =
+                    "Import is available only for an idle editable Modding project.".into();
                 return Task::none();
             }
-            let valid_project = state.modding_selected
+            let valid_project = state
+                .modding_selected
                 .and_then(|i| state.modding_projects.as_ref()?.get(i))
                 .and_then(|p| std::fs::canonicalize(p.workspace.join("files")).ok())
-                .zip(state.inventory.as_ref()
-                    .and_then(|i| std::fs::canonicalize(&i.root).ok()))
+                .zip(
+                    state
+                        .inventory
+                        .as_ref()
+                        .and_then(|i| std::fs::canonicalize(&i.root).ok()),
+                )
                 .is_some_and(|(project, current)| project == current);
             if !valid_project || state.selected != Some(index) {
                 state.status = "Open this asset inside its editable Modding project first.".into();
@@ -3639,8 +3645,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if state.editor_replace_dialog.is_some()
                 && let Some(path) = selected
             {
-                let ok = std::fs::symlink_metadata(&path)
-                    .is_ok_and(|m| m.file_type().is_file());
+                let ok = std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file());
                 if ok {
                     state.editor_replace_source = path.to_string_lossy().into_owned();
                     state.status = format!("Source selected: {}", path.display());
@@ -5764,7 +5769,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.editor_replace_source = path.to_string_lossy().into_owned();
                     state.status = format!("Dropped replacement source: {}", path.display());
                 } else {
-                    state.status = "Drop one regular source file (PNG, DDS, or another matching asset).".into();
+                    state.status =
+                        "Drop one regular source file (PNG, DDS, or another matching asset)."
+                            .into();
                 }
                 return Task::none();
             }
