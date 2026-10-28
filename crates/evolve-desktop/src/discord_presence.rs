@@ -859,6 +859,27 @@ mod tests {
     }
 
     #[test]
+    fn local_coop_variants_use_the_corresponding_playable_portrait() {
+        for (internal, expected) in [
+            ("GoliathCoopBot", "Goliath"),
+            ("GoliathBGHCoopBot", "Goliath"),
+            ("GoliathMeteorCoopBot", "Meteor Goliath"),
+            ("GoliathMeteorBGHCoopBot", "Meteor Goliath"),
+            ("GrounderCoopBot", "Kraken"),
+            ("KrakenElderCoopBot", "Elder Kraken"),
+            ("TeleporterCoopBot", "Wraith"),
+            ("RockyCoopBot", "Behemoth"),
+            ("LurkerCoopBot", "Gorgon"),
+            ("LurkerDDBot", "Gorgon"),
+        ] {
+            assert_eq!(
+                character_from_entity_name(internal),
+                Some((expected, Team::Monster))
+            );
+        }
+    }
+
+    #[test]
     fn missing_portraits_still_resolve_names_and_npcs_never_become_players() {
         for internal in ["TrackingGBot", "SupportGBot"] {
             assert_eq!(character_from_entity_name(internal), Some(("Jack", Team::Hunter)));
