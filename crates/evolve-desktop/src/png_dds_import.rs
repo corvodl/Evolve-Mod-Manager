@@ -322,6 +322,45 @@ mod tests {
         assert_eq!(alpha_block(&alpha).len(), 8);
     }
     #[test]
+    fn converts_png_with_original_block_format_and_all_mips() {
+        for (fourcc, format, block_size) in [
+            (b"DXT1", DdsFormat::Bc1, 8usize),
+            (b"DXT5", DdsFormat::Bc3, 16usize),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let original = dir.path().join("target.dds");
+            let source = dir.path().join("art.png");
+            let output = dir.path().join("converted.dds");
+            // 4x4, 2x2 and 1x1 each occupy a complete block.
+            let mut header = vec![0u8; 128 + 3 * block_size];
+            header[..4].copy_from_slice(b"DDS ");
+            header[4..8].copy_from_slice(&124u32.to_le_bytes());
+            header[8..12].copy_from_slice(&0x21007u32.to_le_bytes());
+            header[12..16].copy_from_slice(&4u32.to_le_bytes());
+            header[16..20].copy_from_slice(&4u32.to_le_bytes());
+            header[28..32].copy_from_slice(&3u32.to_le_bytes());
+            header[76..80].copy_from_slice(&32u32.to_le_bytes());
+            header[80..84].copy_from_slice(&4u32.to_le_bytes());
+            header[84..88].copy_from_slice(fourcc);
+            fs::write(&original, &header).unwrap();
+            let rgba = image::RgbaImage::from_pixel(4, 4, image::Rgba([235, 27, 42, 210]));
+            rgba.save(&source).unwrap();
+            convert(&source, &original, &output).unwrap();
+            let info = inspect_dds(&output).unwrap();
+            assert_eq!(info.format, format);
+            assert_eq!(info.mipmaps, 3);
+            assert_eq!(info.width, 4);
+            assert_eq!(info.height, 4);
+            assert_eq!(fs::metadata(&output).unwrap().len(), header.len() as u64);
+            assert_eq!(&fs::read(&output).unwrap()[..128], &header[..128]);
+            assert_eq!(fs::read(&original).unwrap(), header);
+            let (_, decoded) = evolve_core::decode_dds_rgba(&output).unwrap();
+            let red = decoded.get_pixel(0, 0)[0];
+            assert!(red >= 170, "Red channel should survive lossy BC encoding");
+        }
+    }
+
+    #[test]
     fn rejects_png_dimension_mismatch_and_preserves_original() {
         let dir = tempfile::tempdir().unwrap();
         let dds = dir.path().join("source.dds");
