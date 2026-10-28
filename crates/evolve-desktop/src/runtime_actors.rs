@@ -171,60 +171,46 @@ mod windows {
     fn actor_identity(h: &ProcessHandle, addr: usize, entity: usize) -> bool {
         q(h, addr.saturating_add(0x38)) == Some(entity)
     }
-    fn name_from_entity(h: &ProcessHandle, entity: usize) -> Option<String> {
-        // Entity-name offset has NOT been reverse engineered. Only display a
-        // recognized actor name if it is actually found in a readable string.
-        const NAMES: &[&str] = &[
-            "goliath",
-            "meteor",
-            "kraken",
-            "elderkraken",
-            "wraith",
-            "behemoth",
-            "gorgon",
-            "markov",
-            "maggie",
-            "val",
-            "hank",
-            "griffin",
-            "hyde",
-            "lazarus",
-            "parnell",
-            "caira",
-            "sunny",
-            "cab ot",
-            "cabot",
-            "abe",
-            "bucket",
-            "crow",
-            "torvald",
-            "slim",
-            "jack",
-            "lennox",
-            "emet",
-            "kala",
-            "blitzmarkov",
-            "rogueval",
-            "wastelandmaggie",
-            "techsergeanthank",
-        ];
-        for (_, ptr) in pointers(h, entity, 0x200) {
-            let Some(bytes) = read_bytes(h, ptr, 64) else {
-                continue;
-            };
-            let len = bytes.iter().position(|&b| b == 0).unwrap_or(64);
-            if !(3..64).contains(&len) || !bytes[..len].iter().all(|b| b.is_ascii_graphic()) {
-                continue;
-            }
-            let text = String::from_utf8_lossy(&bytes[..len]);
-            let lower = text.to_ascii_lowercase();
-            if NAMES.iter().any(|name| lower.contains(name)) {
-                return Some(text.into_owned());
-            }
+    /// Reconstructed read-only IEntity::GetName lookup (vtable +0x78) from
+    /// live Stage 2 runtime traces. Resolve through the current process tables:
+    /// name_id = [entity+0x124], index = name_id - 0xE11;
+    /// encoded = [[resolver+0x08] + index*4];
+    /// entry = [[resolver+0x20] + (encoded ^ 0x47FA)*8];
+    /// returned C string = *entry.
+    ///
+    /// These are build-specific offsets, not universal CryEngine ABI fields.
+    /// Any unreadable/stale pointer fails closed to an unresolved name.
+    fn name_from_entity(h: &ProcessHandle, entity: usize, base: usize) -> Option<String> {
+        const NAME_RESOLVER_RVA: usize = 0x28D59A8;
+        const INDEX_ADJUST: u32 = 0xE11;
+        const INDEX_XOR: u32 = 0x47FA;
+        const MAX_NAME_INDEX: u32 = 0x10000;
+        let name_id = u32_at(h, entity.checked_add(0x124)?)?;
+        let index = name_id.checked_sub(INDEX_ADJUST)?;
+        if index >= MAX_NAME_INDEX { return None; }
+
+        let resolver = q(h, base.checked_add(NAME_RESOLVER_RVA)?)?;
+        let index_table = q(h, resolver.checked_add(0x08)?)?;
+        let entry_table = q(h, resolver.checked_add(0x20)?)?;
+
+        let encoded = u32_at(h, index_table.checked_add((index as usize).checked_mul(4)?)?)?;
+        let decoded = encoded ^ INDEX_XOR;
+        if decoded >= MAX_NAME_INDEX { return None; }
+
+        let entry_addr = entry_table.checked_add((decoded as usize).checked_mul(8)?)?;
+        let entry_object = q(h, entry_addr)?;
+        let c_string = q(h, entry_object)?;
+
+        // No substring searches: the resolved pointer must be a bounded,
+        // NUL-terminated ASCII entity name (e.g. "AssaultEBot").
+        let bytes = read_bytes(h, c_string, 32)?;
+        let len = bytes.iter().position(|&b| b == 0)?;
+        if !(3..32).contains(&len) || !bytes[..len].iter().all(u8::is_ascii_graphic) {
+            return None;
         }
-        None
+        String::from_utf8(bytes[..len].to_vec()).ok()
     }
-    fn read_actor(h: &ProcessHandle, id: u32, at: usize, entity: usize, local: bool) -> Actor {
+    fn read_actor(h: &ProcessHandle, id: u32, at: usize, entity: usize, local: bool, base: usize) -> Actor {
         // Never label arbitrary offsets as health or armor. Require both
         // members of a pair to be readable and mutually plausible first.
         let health = u32_at(h, at.saturating_add(Field::Health.offset()))
@@ -266,7 +252,7 @@ mod windows {
             address: at,
             entity,
             local,
-            name: name_from_entity(h, entity)
+            name: name_from_entity(h, entity, base)
                 .unwrap_or_else(|| format!("Actor entity 0x{id:08X} (name unresolved)")),
             fields,
         }
@@ -316,7 +302,7 @@ mod windows {
         }
         // Show the structurally verified local actor even if no Goliath-based
         // field offsets match. Unsupported fields remain hidden and unwritable.
-        let mut actors = vec![read_actor(&h, local_id, local_actor, local_entity, true)];
+        let mut actors = vec![read_actor(&h, local_id, local_actor, local_entity, true, base)];
         let route = discover_backlink(&h, local_entity, local_actor);
         if let Some(route) = route {
             // Entity IDs are salted 32-bit values with a 16-bit slot index.
@@ -353,7 +339,7 @@ mod windows {
                     if !actor_identity(&h, actor, p) {
                         continue;
                     }
-                    let candidate = read_actor(&h, id, actor, p, false);
+                    let candidate = read_actor(&h, id, actor, p, false, base);
                     // Actor identity is structural; absence of known stats does not
                     // make a valid actor disappear from the viewer.
                     actors.push(candidate);
