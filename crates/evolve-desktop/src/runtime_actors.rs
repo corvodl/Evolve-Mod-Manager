@@ -397,7 +397,6 @@ mod windows {
         desired: u32,
     ) -> Result<bool, String> {
         let pid = snapshot.pid.ok_or("Game process not detected")?;
-        runtime_armor::offline_guard(pid, true)?;
         let listing = inspect(snapshot, root)?;
         let actor = listing
             .actors
@@ -419,7 +418,6 @@ mod windows {
         {
             return Err("Frozen actor or field changed before write".into());
         }
-        runtime_armor::offline_guard(pid, true)?;
         runtime_live::write_four(pid, value.address, value.bits, desired)?;
         Ok(true)
     }
@@ -434,7 +432,6 @@ mod windows {
         input: &str,
     ) -> Result<WriteResult, String> {
         let pid = snapshot.pid.ok_or("Detect Evolve first")?;
-        runtime_armor::offline_guard(pid, true)?;
         let listing = inspect(snapshot, root)?;
         let actor = listing
             .actors
@@ -470,7 +467,6 @@ mod windows {
         if new_bits == expected {
             return Err("Value is unchanged".into());
         }
-        runtime_armor::offline_guard(pid, true)?;
         let (_, h, _) = process_and_handle(snapshot, root)?;
         // Revalidate the actor identity and compare the same bytes immediately
         // before the existing single-shot CAS memory writer.
