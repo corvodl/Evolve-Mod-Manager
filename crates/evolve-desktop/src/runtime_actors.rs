@@ -100,8 +100,7 @@ fn plausible_pair(current_bits: u32, max_bits: u32) -> bool {
         && maximum.is_finite()
         && maximum > 0.0
         && maximum <= 1_000_000.0
-        && current >= 0.0
-        && current <= 100_000.0 // Offline edits can deliberately exceed nominal maximum
+        && (0.0..=100_000.0).contains(&current) // Offline edits may exceed nominal maximum
 }
 
 #[cfg(windows)]
