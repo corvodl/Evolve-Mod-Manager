@@ -1019,6 +1019,9 @@ pub fn build_project_raw(
             .ok_or("Modified member is absent from the verified original manifest")?;
         editable_format(expected)?;
     }
+    // Standalone Build and Play both provision only this edited PAK on
+    // demand. An unedited project never forces a costly staged copy.
+    provision_selected_original(project, stage)?;
     let original = stage.join("paks").join(&project.target);
     let relative = super::modding_keys::staged_target(stage, &original)?;
     if relative != project.target {
