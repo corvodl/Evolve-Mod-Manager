@@ -40,6 +40,14 @@ pub struct Preferences {
     pub game_installation: String,
     /// Normal Modded Evolve launcher EXE selected by the user.
     pub client_executable: String,
+    /// The separately installed test client and test game are not production.
+    pub test_client_executable: String,
+    pub test_game_installation: String,
+    /// Opt in to the separate test pair for both Play actions.
+    pub play_through_test_client: bool,
+    /// Test-only stage and rollback journal, never shared with production.
+    pub test_stage: String,
+    pub test_swap: String,
     /// Client Launch (full relay/profile/overlay) is default; Direct is opt-in testing.
     pub game_launch_mode: String,
     pub stage: String,
@@ -99,11 +107,16 @@ impl Default for Preferences {
             theme_presets: BTreeMap::new(),
             font_family: "Default".into(),
             reduce_motion: false,
-            keep_original_snapshots: true,
+            keep_original_snapshots: false,
             show_activity_on_tasks: true,
             crash_logging_enabled: true,
             game_installation: String::new(),
             client_executable: String::new(),
+            test_client_executable: String::new(),
+            test_game_installation: String::new(),
+            play_through_test_client: false,
+            test_stage: String::new(),
+            test_swap: String::new(),
             game_launch_mode: "Client Launch".into(),
             stage: String::new(),
             swap: String::new(),
@@ -271,6 +284,10 @@ impl Preferences {
         for path in [
             &self.stage,
             &self.swap,
+            &self.test_game_installation,
+            &self.test_client_executable,
+            &self.test_stage,
+            &self.test_swap,
             &self.projects,
             &self.game_storage_root,
             &self.current_workspace,
@@ -399,6 +416,32 @@ mod tests {
         restored.ui_theme = "invalid theme".into();
         restored.validate().unwrap();
         assert_eq!(restored.ui_theme, "Modern");
+    }
+
+    #[test]
+    fn test_environment_paths_and_choice_roundtrip_without_changing_production() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let original = Preferences::default();
+        assert!(!original.play_through_test_client);
+        let mut prefs = original.clone();
+        prefs.test_game_installation = "C:/EvolveTest/Game".into();
+        prefs.test_client_executable = "C:/EvolveTest/TestClient.exe".into();
+        prefs.test_stage = "C:/EvolveTest/Stage".into();
+        prefs.test_swap = "C:/EvolveTest/Swap".into();
+        prefs.play_through_test_client = true;
+        save_to(&path, &prefs).unwrap();
+        let restored = load_from(&path).unwrap();
+        assert!(restored.play_through_test_client);
+        assert_eq!(restored.test_game_installation, "C:/EvolveTest/Game");
+        assert_eq!(
+            restored.test_client_executable,
+            "C:/EvolveTest/TestClient.exe"
+        );
+        assert_eq!(restored.test_stage, "C:/EvolveTest/Stage");
+        assert_eq!(restored.test_swap, "C:/EvolveTest/Swap");
+        assert_eq!(restored.game_installation, original.game_installation);
+        assert_eq!(restored.client_executable, original.client_executable);
     }
 
     #[test]

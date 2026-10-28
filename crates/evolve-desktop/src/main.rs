@@ -670,10 +670,13 @@ enum Operation {
         Arc<AtomicUsize>,
         bool,
         bool,
+        bool,
     ),
     LaunchCleanClient(PathBuf, PathBuf, Option<PathBuf>),
+    LaunchCleanTestClient(PathBuf, PathBuf, Option<PathBuf>),
     LaunchDirectGame(PathBuf, PathBuf, Option<PathBuf>),
     CreateInitialSetup(PathBuf, PathBuf, PathBuf, bool),
+    CreateTestSetup(PathBuf, PathBuf, bool),
     RestoreExistingOfflineLauncher(PathBuf, PathBuf),
     RebuildSignedPak(
         PathBuf,
@@ -777,6 +780,7 @@ enum Completed {
     CleanClientStarted(u32, Vec<String>),
     DirectGameStarted(u32, Vec<String>),
     InitialSetupCreated(initial_setup::InitialSetup),
+    TestSetupCreated(initial_setup::InitialSetup),
     GamePakBaselineRefreshed(initial_setup::InitialSetup),
     OfflineLauncherRestored(usize, bool),
     OfflineLauncherRecoveryWarning(String),
@@ -1515,6 +1519,7 @@ impl Operation {
                 progress,
                 online_requested,
                 direct_launch,
+                test_client,
             ) => {
                 let mods = discover_projects(&projects, &stage)?
                     .into_iter()
@@ -1530,6 +1535,7 @@ impl Operation {
                     progress,
                     online_requested,
                     direct_launch,
+                    test_client,
                 )
                 .map(|(count, id, warnings, recovery)| {
                     Completed::EnabledModsLaunched(count, id, warnings, recovery, online_requested)
@@ -1567,9 +1573,20 @@ impl Operation {
                 let (id, warnings) = play_setup::launch_clean(&game, &client, swap.as_deref())?;
                 Ok(Completed::CleanClientStarted(id, warnings))
             }
+            Self::LaunchCleanTestClient(game, client, swap) => {
+                let (id, warnings) =
+                    play_setup::launch_clean_test(&game, &client, swap.as_deref())?;
+                Ok(Completed::CleanClientStarted(id, warnings))
+            }
             Self::CreateInitialSetup(game, client, storage, snapshots) => {
                 initial_setup::create(&game, &client, &storage, snapshots)
                     .map(Completed::InitialSetupCreated)
+            }
+            Self::CreateTestSetup(game, storage, snapshots) => {
+                // The test launcher is a separate build and may not share the
+                // production client's executable filename.
+                initial_setup::create(&game, &PathBuf::new(), &storage, snapshots)
+                    .map(Completed::TestSetupCreated)
             }
             Self::RestoreExistingOfflineLauncher(stage, swap) => {
                 match restore_existing_offline_client(&stage, &swap) {
@@ -1928,7 +1945,18 @@ enum Message {
     PlayWithoutMods,
     DismissPlayNotice,
     SaveGameSetup,
+    SaveTestSetup,
     StartAutomaticSetup,
+    StartTestAutomaticSetup,
+    PreferenceUseTestClient(bool),
+    PreferenceTestGameInstall(String),
+    PreferenceTestClientExecutable(String),
+    PreferenceTestStage(String),
+    PreferenceTestSwap(String),
+    PickTestGame,
+    PickTestClient,
+    PickedTestGame(Option<PathBuf>),
+    PickedTestClient(Option<PathBuf>),
     PreferenceGameLaunchMode(&'static str),
     PreferenceGameInstall(String),
     PreferenceClientExecutable(String),
@@ -2402,8 +2430,10 @@ fn operation_label(operation: &Operation) -> &'static str {
         Operation::StartExistingOfflineLauncher(..) => "Preparing original offline launcher",
         Operation::PlayEnabledMods(..) => "Building and launching enabled mods",
         Operation::LaunchCleanClient(..) => "Opening regular game client",
+        Operation::LaunchCleanTestClient(..) => "Opening separate Test Client",
         Operation::LaunchDirectGame(..) => "Starting Evolve directly (experimental)",
         Operation::CreateInitialSetup(..) => "Creating isolated offline setup",
+        Operation::CreateTestSetup(..) => "Creating isolated Test Game mod setup",
         Operation::RestoreExistingOfflineLauncher(..) => "Restoring original game files",
         Operation::ExportLevelGlb(..) | Operation::ExportLevelFbx(..) => "Exporting level scene",
         Operation::StageInit(..) => "Initializing protected signing stage",
@@ -2436,8 +2466,10 @@ fn launch(state: &mut State, operation: Operation) -> Task<Message> {
         Operation::StartExistingOfflineLauncher(..) => {
             "Preparing offline play...".into()
         }
-        Operation::PlayEnabledMods(.., online_requested, direct_launch) => {
-            if *direct_launch {
+        Operation::PlayEnabledMods(.., online_requested, direct_launch, test_client) => {
+            if *test_client {
+                "Building enabled mods for the separate Test Game and opening Test Client…".into()
+            } else if *direct_launch {
                 "Building mods, preparing verified backups, and launching Evolve.exe directly…".into()
             } else if *online_requested {
                 "Building enabled mods and launching the normal client for Developer testing…".into()
@@ -2449,12 +2481,18 @@ fn launch(state: &mut State, operation: Operation) -> Task<Message> {
             "Building the isolated offline setup: generating local signing keys, validating/resigning original game PAKs, preparing a verified hook copy and independent recovery scripts. Original game files will not be altered."
                 .into()
         }
+        Operation::CreateTestSetup(..) => {
+            "Creating a separate Test Game signing stage and recovery folder without touching the production game. Unsupported test PAK layouts will be reported.".into()
+        }
         Operation::LaunchDirectGame(..) => {
             "Checking originals before experimental direct offline game launch...".into()
         }
         Operation::LaunchCleanClient(..) => {
             "Checking that original PAKs and the recovery journal are clean before opening the normal client..."
                 .into()
+        }
+        Operation::LaunchCleanTestClient(..) => {
+            "Opening Test Client with the separate Test Game installation and without touching production PAKs…".into()
         }
         Operation::CreateProjectFromLibrary(..) => {
             "Checking imported files and making a private editing copy...".into()
@@ -7624,6 +7662,45 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::PreferenceGameInstall(value) => state.preferences.game_installation = value,
+        Message::PreferenceUseTestClient(enabled) => {
+            state.preferences.play_through_test_client = enabled;
+            persist_preferences(state);
+        }
+        Message::PreferenceTestGameInstall(value) => {
+            state.preferences.test_game_installation = value
+        }
+        Message::PreferenceTestClientExecutable(value) => {
+            state.preferences.test_client_executable = value
+        }
+        Message::PreferenceTestStage(value) => state.preferences.test_stage = value,
+        Message::PreferenceTestSwap(value) => state.preferences.test_swap = value,
+        Message::PickTestGame | Message::PickTestClient => {
+            let game = matches!(message, Message::PickTestGame);
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        native_export_picker(if game { "folder" } else { "file" })
+                    })
+                    .await
+                    .unwrap_or(None)
+                },
+                move |selection| {
+                    if game {
+                        Message::PickedTestGame(selection)
+                    } else {
+                        Message::PickedTestClient(selection)
+                    }
+                },
+            );
+        }
+        Message::PickedTestGame(Some(path)) => {
+            state.preferences.test_game_installation = path.to_string_lossy().into_owned();
+        }
+        Message::PickedTestClient(Some(path)) => {
+            state.preferences.test_client_executable = path.to_string_lossy().into_owned();
+        }
+        Message::PickedTestGame(None) | Message::PickedTestClient(None) => {}
+
         Message::PreferenceClientExecutable(value) => {
             state.preferences.client_executable = value;
             state.client_version = None;
@@ -7706,7 +7783,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.preferences.game_storage_root = storage.to_string_lossy().into_owned();
             persist_preferences(state);
             state.status = format!(
-                "Creating this manager's own setup under {}. Generating keys, verifying original PAKs and preparing local recovery helpers. Installed originals remain untouched.",
+                "Creating sparse setup under {}. Verifying original PAK signatures and creating an inventory; staged copies will be built only for enabled mods. Installed originals remain untouched.",
                 storage.display()
             );
             return launch(
@@ -7718,6 +7795,66 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.preferences.keep_original_snapshots,
                 ),
             );
+        }
+        Message::StartTestAutomaticSetup => {
+            if state.busy {
+                return Task::none();
+            }
+            let (game, _) = match play_setup::validate_test_paths(
+                &state.preferences.test_game_installation,
+                &state.preferences.test_client_executable,
+                &state.preferences.game_installation,
+                &state.preferences.client_executable,
+            ) {
+                Ok(paths) => paths,
+                Err(error) => {
+                    state.status =
+                        format!("Select separate Test Client and Test Game builds first: {error}");
+                    return Task::none();
+                }
+            };
+            if !state.preferences.test_stage.is_empty() || !state.preferences.test_swap.is_empty() {
+                state.status = "Test stage/swap paths already configured. Preserve them; clear both Test paths only to create a new independent setup. Nothing was deleted.".into();
+                return Task::none();
+            }
+            let storage = match settings_path().and_then(|file| {
+                settings::setup_storage_directory(&file, &state.preferences.game_storage_root)
+            }) {
+                Ok(path) => path.join("TestEnvironment"),
+                Err(error) => {
+                    state.status = format!("Cannot select Test Environment storage: {error}");
+                    return Task::none();
+                }
+            };
+            return launch(
+                state,
+                Operation::CreateTestSetup(
+                    game,
+                    storage,
+                    state.preferences.keep_original_snapshots,
+                ),
+            );
+        }
+        Message::SaveTestSetup => {
+            match play_setup::validate_test_paths(
+                &state.preferences.test_game_installation,
+                &state.preferences.test_client_executable,
+                &state.preferences.game_installation,
+                &state.preferences.client_executable,
+            ) {
+                Ok((game, client)) => {
+                    state.preferences.test_game_installation = game.to_string_lossy().into_owned();
+                    state.preferences.test_client_executable =
+                        client.to_string_lossy().into_owned();
+                    persist_preferences(state);
+                    state.settings_status = "Separate Test Client/Game paths saved; the Play toggle controls which environment is used.".into();
+                    state.status = state.settings_status.clone();
+                }
+                Err(error) => {
+                    state.settings_status = format!("Test Environment setup incomplete: {error}");
+                    state.status = state.settings_status.clone();
+                }
+            }
         }
         Message::SaveGameSetup => {
             match play_setup::validate_paths(
@@ -7768,11 +7905,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             state.active_play = Some(kind);
             state.play_notice = Some(play_dialog::Notice::preparing(kind));
-            let direct_launch = state.preferences.game_launch_mode == "Direct Launch";
-            let paths = play_setup::validate_paths(
-                &state.preferences.game_installation,
-                &state.preferences.client_executable,
-            );
+            let test_mode = state.preferences.play_through_test_client;
+            // The separate Test Client owns its game's startup. Never use the
+            // production Direct Launch smoke host for this other game build.
+            let direct_launch = !test_mode && state.preferences.game_launch_mode == "Direct Launch";
+            let paths = if test_mode {
+                play_setup::validate_test_paths(
+                    &state.preferences.test_game_installation,
+                    &state.preferences.test_client_executable,
+                    &state.preferences.game_installation,
+                    &state.preferences.client_executable,
+                )
+            } else {
+                play_setup::validate_paths(
+                    &state.preferences.game_installation,
+                    &state.preferences.client_executable,
+                )
+            };
             let (game, client) = match paths {
                 Ok(paths) => paths,
                 Err(error) => {
@@ -7780,7 +7929,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.settings_tab = settings_page::Tab::Storage;
                     state.settings_advanced_paths = true;
                     state.status = format!(
-                        "Set Up Manager: {error}. Choose your installed game folder (and the client for Client Launch), then Save Setup."
+                        "Set Up Manager: {error}. Check the selected production or Test Environment paths, then Save Setup."
                     );
                     state.play_notice = Some(play_dialog::Notice::finished(
                         kind,
@@ -7792,7 +7941,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
             };
             if is_modded {
-                let online_requested = state.developer_unlocked && state.developer_online_mods;
+                // The real Test Client should retain its relay/profile access.
+                // Do not apply the production offline-only firewall policy to it.
+                let online_requested =
+                    test_mode || (state.developer_unlocked && state.developer_online_mods);
                 if online_requested
                     && (state.armor_offline_confirmed
                         || state.live_edit_enabled
@@ -7808,13 +7960,25 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.active_play = None;
                     return Task::none();
                 }
-                if state.preferences.stage.trim().is_empty()
-                    || state.preferences.swap.trim().is_empty()
-                {
+                let selected_stage = if test_mode {
+                    &state.preferences.test_stage
+                } else {
+                    &state.preferences.stage
+                };
+                let selected_swap = if test_mode {
+                    &state.preferences.test_swap
+                } else {
+                    &state.preferences.swap
+                };
+                if selected_stage.trim().is_empty() || selected_swap.trim().is_empty() {
                     state.page = Some(Page::Settings);
                     state.settings_tab = settings_page::Tab::Storage;
                     state.settings_advanced_paths = true;
-                    state.status = "Modded play needs a verified signing stage. Use Create Offline Setup in Settings to build the keys, re-signed PAKs and recovery helpers automatically from your game installation. Existing stage/swap folders can also be selected under Advanced paths. No game files were changed.".into();
+                    state.status = if test_mode {
+                        "Test modded play needs its own Test signing stage and Test recovery folder. Use Create Test Mod Setup or select existing test-specific paths in Settings. Production stage/swap files are never reused.".into()
+                    } else {
+                        "Modded play needs a verified signing stage. Use Create Offline Setup in Settings to build the keys, re-signed PAKs and recovery helpers automatically from your game installation. Existing stage/swap folders can also be selected under Advanced paths. No game files were changed.".into()
+                    };
                     state.play_notice = Some(play_dialog::Notice::finished(
                         kind,
                         play_dialog::Phase::Error,
@@ -7837,29 +8001,62 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.active_play = None;
                     return Task::none();
                 }
+                if test_mode {
+                    // Never retarget an existing production recovery journal.
+                    let prod_stage = std::fs::canonicalize(&state.preferences.stage).ok();
+                    let prod_swap = std::fs::canonicalize(&state.preferences.swap).ok();
+                    let selected_test_stage = std::fs::canonicalize(selected_stage).ok();
+                    let selected_test_swap = std::fs::canonicalize(selected_swap).ok();
+                    if selected_test_stage.is_some() && selected_test_stage == prod_stage
+                        || selected_test_swap.is_some() && selected_test_swap == prod_swap
+                        || selected_stage == &state.preferences.stage
+                        || selected_swap == &state.preferences.swap
+                    {
+                        state.status = "Test Environment cannot reuse the production signing stage or recovery journal. Configure separate Test stage/swap paths.".into();
+                        state.play_notice = Some(play_dialog::Notice::finished(
+                            kind,
+                            play_dialog::Phase::Error,
+                            state.status.clone(),
+                        ));
+                        state.active_play = None;
+                        return Task::none();
+                    }
+                }
                 let progress = Arc::new(AtomicUsize::new(0));
                 state.mod_launch_progress = Some(progress.clone());
                 return launch(
                     state,
                     Operation::PlayEnabledMods(
                         PathBuf::from(&state.preferences.projects),
-                        PathBuf::from(&state.preferences.stage),
-                        PathBuf::from(&state.preferences.swap),
+                        PathBuf::from(selected_stage),
+                        PathBuf::from(selected_swap),
                         game,
                         client,
                         progress,
                         online_requested,
                         direct_launch,
+                        test_mode,
                     ),
                 );
             }
-            let swap = (!state.preferences.swap.trim().is_empty())
-                .then(|| PathBuf::from(&state.preferences.swap));
+            let selected_swap = if test_mode {
+                &state.preferences.test_swap
+            } else {
+                &state.preferences.swap
+            };
+            let swap = (!selected_swap.trim().is_empty()).then(|| PathBuf::from(selected_swap));
             if direct_launch {
                 state.status = "Launching unmodded Evolve.exe directly with original PAKs…".into();
                 return launch(state, Operation::LaunchDirectGame(game, client, swap));
             }
-            state.status = "Opening the normal client with original PAKs…".into();
+            state.status = if test_mode {
+                "Opening the separate Test Client with the Test Game installation…".into()
+            } else {
+                "Opening the normal client with original PAKs…".into()
+            };
+            if test_mode {
+                return launch(state, Operation::LaunchCleanTestClient(game, client, swap));
+            }
             return launch(state, Operation::LaunchCleanClient(game, client, swap));
         }
         Message::PreferenceStage(value) => {
@@ -10037,12 +10234,24 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::Settings);
                     state.settings_tab = settings_page::Tab::Storage;
                 }
+                Ok(Completed::TestSetupCreated(report)) => {
+                    state.preferences.test_stage = report.stage.to_string_lossy().into_owned();
+                    state.preferences.test_swap = report.swap.to_string_lossy().into_owned();
+                    persist_preferences(state);
+                    state.status = format!(
+                        "Separate Test Mod Setup prepared: {} signed PAKs. Test stage: {}. Production stage and recovery files were unchanged.",
+                        report.signed_count,
+                        report.stage.display()
+                    );
+                    state.page = Some(Page::Settings);
+                    state.settings_tab = settings_page::Tab::Storage;
+                }
                 Ok(Completed::InitialSetupCreated(report)) => {
                     state.preferences.stage = report.stage.to_string_lossy().into_owned();
                     state.preferences.swap = report.swap.to_string_lossy().into_owned();
                     persist_preferences(state);
                     state.status = format!(
-                        "Offline setup verified: {} signed original PAKs, {} plain archives, local signing key and recovery helpers. Original snapshots: {}. Game PAKs unchanged. Stage: {}. You can now build/stage your modded PAKs and use Play with Mods.",
+                        "Sparse setup verified: {} signed stock PAKs inventoried, {} plain archives. Only PAKs targeted by enabled mods are staged when needed. Permanent original snapshots: {}. Game PAKs unchanged. Stage: {}.",
                         report.signed_count,
                         report.plain_count,
                         if report.snapshots {

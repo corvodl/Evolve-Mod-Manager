@@ -49,6 +49,64 @@ pub fn client_exe(input: &str) -> Result<PathBuf, String> {
     fs::canonicalize(path).map_err(|e| format!("Cannot inspect client executable: {e}"))
 }
 
+/// The test game may contain a different set of PAKs and runtime DLLs.
+/// Only require its game executable here; do NOT run production signing-file
+/// checks simply to select the separate testing installation.
+pub fn test_game_root(input: &str) -> Result<PathBuf, String> {
+    let path = Path::new(input.trim());
+    let root = if path
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("bin64_SteamRetail"))
+    {
+        path.parent()
+            .ok_or("Test Game executable folder has no parent")?
+    } else {
+        path
+    };
+    if !regular(&root.join("bin64_SteamRetail/Evolve.exe")) {
+        return Err(
+            "Select the separate Test Game directory containing bin64_SteamRetail/Evolve.exe"
+                .into(),
+        );
+    }
+    fs::canonicalize(root).map_err(|e| format!("Cannot inspect Test Game: {e}"))
+}
+
+/// Unlike production, Test Client may have a different executable name.
+pub fn test_client_exe(input: &str) -> Result<PathBuf, String> {
+    let path = Path::new(input.trim());
+    if !path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+        || !regular(path)
+    {
+        return Err("Select the separate Test Client .exe file".into());
+    }
+    fs::canonicalize(path).map_err(|e| format!("Cannot inspect Test Client: {e}"))
+}
+
+/// Test and production must never share their game/client installations.
+pub fn validate_test_paths(
+    test_game: &str,
+    test_client: &str,
+    production_game: &str,
+    production_client: &str,
+) -> Result<(PathBuf, PathBuf), String> {
+    let game = test_game_root(test_game)?;
+    let client = test_client_exe(test_client)?;
+    if let Ok(production) = game_root(production_game)
+        && game == production
+    {
+        return Err("Test Game cannot be the production game installation".into());
+    }
+    if let Ok(production) = client_exe(production_client)
+        && client == production
+    {
+        return Err("Test Client cannot be the production client executable".into());
+    }
+    Ok((game, client))
+}
+
 /// Hints are tried only when there is no explicit saved user selection.
 pub fn detect_game() -> Option<String> {
     game_root(GAME_HINT)
@@ -109,6 +167,16 @@ const NIGHTLY_69_AUTO_LAUNCH_SHA256: &str =
 // Exact helper shipped in Nightly .70 before the completion-marker fix.
 const NIGHTLY_70_AUTO_LAUNCH_SHA256: &str =
     "4c153b3368bc99766016b56dccf24c5fd1de532a5194cd4ce43fb71767629547";
+// Exact auto-launch helper published at commit 60d6234b (after the
+// game-release success marker fix). Existing installations can contain this
+// LF source or its CRLF-only Windows-distributed form.
+const POST_TOKEN_AUTO_LAUNCH_SHA256: &str =
+    "4d478ff3ef66e92da637d1cb64ece129157c56f5d4101dbd7fb6d09f515f4785";
+// The next published source (commit a012351a) can also differ from the
+// executable's embedded CRLF bytes when checked out with LF line endings.
+// Accept only this exact LF-normalized source, never an arbitrary edit.
+const FULL_CLIENT_AUTO_LAUNCH_SHA256: &str =
+    "e3a66b8d769849e8989e500a1f9ada2e278be2e27e1d391a31c15e9b2bb602af";
 const PREVIOUS_CONTROLLED_SWAP_SHA256: &str =
     "5229e00859664c13c846de65e346031d4ff05c77f52170212dcd631a111a614d";
 // Exact bundled controlled_swap.py shipped through Nightly 60 (PR #79/#80).
@@ -139,6 +207,19 @@ const KNOWN_CONTROLLED_SWAP_SHA256: &[&str] = &[
 // as well, so existing Client Launch setups can upgrade both scripts.
 const PRE_TOKEN_AUTO_LAUNCH_SHA256: &str =
     "37ba0586dfbd50ceb791a3156ce2bacb3d01f541b7cebccd21f8d10dc5b99aba";
+// Exact helper predating Test Client routing; authenticated production migrations remain supported.
+const PRE_TEST_CLIENT_AUTO_LAUNCH_SHA256: &str =
+    "e3a66b8d769849e8989e500a1f9ada2e278be2e27e1d391a31c15e9b2bb602af";
+const KNOWN_AUTO_LAUNCH_SHA256: &[&str] = &[
+    PRE_TEST_CLIENT_AUTO_LAUNCH_SHA256,
+    PREVIOUS_AUTO_LAUNCH_SHA256,
+    NIGHTLY_56_AUTO_LAUNCH_SHA256,
+    NIGHTLY_69_AUTO_LAUNCH_SHA256,
+    NIGHTLY_70_AUTO_LAUNCH_SHA256,
+    PRE_TOKEN_AUTO_LAUNCH_SHA256,
+    POST_TOKEN_AUTO_LAUNCH_SHA256,
+    FULL_CLIENT_AUTO_LAUNCH_SHA256,
+];
 const CURRENT_AUTO_LAUNCH: &str = include_str!("../launcher_support/auto_launch_frida.py");
 const CURRENT_CONTROLLED_SWAP: &str = include_str!("../launcher_support/controlled_swap.py");
 
@@ -193,6 +274,7 @@ fn configure_helper(
     client: Option<&Path>,
     stage: &Path,
     swap: &Path,
+    test_client: bool,
 ) -> Result<(), String> {
     crate::launcher_bridge::games_closed()?;
     let stage = fs::canonicalize(stage).map_err(|e| format!("Signing stage: {e}"))?;
@@ -261,13 +343,7 @@ fn configure_helper(
             &swap,
             "auto_launch_frida.py",
             CURRENT_AUTO_LAUNCH,
-            &[
-                PREVIOUS_AUTO_LAUNCH_SHA256,
-                NIGHTLY_56_AUTO_LAUNCH_SHA256,
-                NIGHTLY_69_AUTO_LAUNCH_SHA256,
-                NIGHTLY_70_AUTO_LAUNCH_SHA256,
-                PRE_TOKEN_AUTO_LAUNCH_SHA256,
-            ],
+            KNOWN_AUTO_LAUNCH_SHA256,
         )?;
         crate::standard_user_launch::install_into_swap(&swap)?;
         let config = swap.join("launcher_config.json");
@@ -285,12 +361,15 @@ fn configure_helper(
                 .clone();
         }
         let new_path = ordinary_game_path(client).to_string_lossy().into_owned();
-        if previous.get("launcher").and_then(Value::as_str) == Some(new_path.as_str()) {
+        if previous.get("launcher").and_then(Value::as_str) == Some(new_path.as_str())
+            && previous.get("test_client").and_then(Value::as_bool) == Some(test_client)
+        {
             return Ok(());
         }
-        // Only this one owned field changes. Tempfile.persist performs a rename;
+        // Only the manager-owned launch selection fields change. Tempfile.persist performs a rename;
         // a failed write leaves the old configuration intact.
         previous.insert("launcher".into(), Value::String(new_path));
+        previous.insert("test_client".into(), Value::Bool(test_client));
         let mut staging = tempfile::NamedTempFile::new_in(&swap)
             .map_err(|e| format!("Cannot stage launcher configuration: {e}"))?;
         serde_json::to_writer_pretty(&mut staging, &previous)
@@ -312,13 +391,24 @@ pub fn configure_existing_helper(
     stage: &Path,
     swap: &Path,
 ) -> Result<(), String> {
-    configure_helper(game, Some(client), stage, swap)
+    configure_helper(game, Some(client), stage, swap, false)
+}
+
+/// Separate Test Client and Test Game have their own signing stage and
+/// swap journal; never rewrite the production launcher's selection.
+pub fn configure_test_helper(
+    game: &Path,
+    client: &Path,
+    stage: &Path,
+    swap: &Path,
+) -> Result<(), String> {
+    configure_helper(game, Some(client), stage, swap, true)
 }
 
 /// Direct mode checks the same signed stage and recovery journal, without
 /// requiring or overwriting the legacy ModdedEvolveLauncher installation.
 pub fn configure_direct_helper(game: &Path, stage: &Path, swap: &Path) -> Result<(), String> {
-    configure_helper(game, None, stage, swap)
+    configure_helper(game, None, stage, swap, false)
 }
 
 pub(super) fn audit_backup_files(game: &Path) -> Result<(), String> {
@@ -389,6 +479,24 @@ pub(super) fn recovery_warnings(game: &Path, swap: Option<&Path>) -> Vec<String>
 
 /// Launch only the regular client. Recovery warnings must never block access
 /// to its built-in repair option. No PAK/DLL swapping occurs in this path.
+/// Clean Test Client launch uses its own game and recovery directory, but
+/// never modifies production paths or PAKs.
+pub fn launch_clean_test(
+    game: &Path,
+    client: &Path,
+    swap: Option<&Path>,
+) -> Result<(u32, Vec<String>), String> {
+    crate::launcher_bridge::games_closed()?;
+    let mut warnings = recovery_warnings(game, swap);
+    if let Err(error) = crate::online_guard::apply(game, true) {
+        warnings.push(format!(
+            "Could not remove test client offline firewall rule: {error}"
+        ));
+    }
+    let pid = crate::standard_user_launch::launch_test(client)?;
+    Ok((pid, warnings))
+}
+
 pub fn launch_clean(
     game: &Path,
     client: &Path,
@@ -414,6 +522,49 @@ pub fn launch_clean(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn separate_test_game_uses_executable_not_production_file_inventory() {
+        let root = tempfile::tempdir().unwrap();
+        let live = root.path().join("production");
+        let test = root.path().join("test");
+        let client = root.path().join("TestClient.exe");
+        let prod_client = root.path().join("ModdedEvolveLauncher.exe");
+        for dir in [&live, &test] {
+            fs::create_dir_all(dir.join("bin64_SteamRetail")).unwrap();
+            fs::write(dir.join("bin64_SteamRetail/Evolve.exe"), b"game").unwrap();
+        }
+        fs::write(live.join("bin64_SteamRetail/inject.dll"), b"shim").unwrap();
+        fs::write(&client, b"test client").unwrap();
+        fs::write(&prod_client, b"production client").unwrap();
+        let (found_game, found_client) = validate_test_paths(
+            test.to_str().unwrap(),
+            client.to_str().unwrap(),
+            live.to_str().unwrap(),
+            prod_client.to_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(found_game, fs::canonicalize(&test).unwrap());
+        assert_eq!(found_client, fs::canonicalize(&client).unwrap());
+        assert!(
+            validate_test_paths(
+                live.to_str().unwrap(),
+                client.to_str().unwrap(),
+                live.to_str().unwrap(),
+                prod_client.to_str().unwrap()
+            )
+            .is_err()
+        );
+        assert!(
+            validate_test_paths(
+                test.to_str().unwrap(),
+                prod_client.to_str().unwrap(),
+                live.to_str().unwrap(),
+                prod_client.to_str().unwrap()
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn bin_folder_normalizes_to_game_root() {
@@ -552,6 +703,20 @@ mod tests {
         assert!(
             KNOWN_CONTROLLED_SWAP_SHA256
                 .contains(&"fdabe24e1b5659c04a93c4240e50b4c6fcd482a0da1dff08ac86816cd3227341")
+        );
+    }
+
+    #[test]
+    fn published_post_token_auto_launch_hash_is_recognized() {
+        // Verified against the exact repository helper from commit 60d6234b.
+        // Custom or unknown helper bytes still fail closed.
+        assert!(
+            KNOWN_AUTO_LAUNCH_SHA256
+                .contains(&"4d478ff3ef66e92da637d1cb64ece129157c56f5d4101dbd7fb6d09f515f4785")
+        );
+        assert!(
+            KNOWN_AUTO_LAUNCH_SHA256
+                .contains(&"e3a66b8d769849e8989e500a1f9ada2e278be2e27e1d391a31c15e9b2bb602af")
         );
     }
 

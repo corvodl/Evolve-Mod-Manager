@@ -25,6 +25,27 @@ class LaunchBrokerTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "Only a configured"):
                     broker.launch_standard_user(executable)
 
+    def test_test_client_can_have_different_executable_basename(self):
+        with tempfile.TemporaryDirectory() as folder:
+            executable = Path(folder, "EvolveTestClient.exe")
+            executable.write_bytes(b"test")
+            with mock.patch.object(broker, "_win", side_effect=RuntimeError("no interactive shell")):
+                with self.assertRaisesRegex(RuntimeError, "no interactive shell"):
+                    broker.launch_standard_user(executable, test_client=True)
+                with self.assertRaisesRegex(ValueError, "Only a configured"):
+                    broker.launch_standard_user(executable)
+
+    def test_test_client_cli_remains_explicit(self):
+        class FakeProcess:
+            pid = 1234
+            def close(self): pass
+        with (
+            mock.patch.object(broker, "launch_standard_user", return_value=FakeProcess()) as start,
+            mock.patch.object(broker, "get_elevation", return_value={"session": 1}),
+        ):
+            self.assertEqual(broker.main(["--launch-test", "EvolveTestClient.exe"]), 0)
+        start.assert_called_once_with("EvolveTestClient.exe", game=False, test_client=True)
+
     def test_shell_lookup_failure_does_not_fallback_to_admin(self):
         with tempfile.TemporaryDirectory() as folder:
             executable = Path(folder, "ModdedEvolveLauncher.exe")
