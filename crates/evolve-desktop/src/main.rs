@@ -4029,7 +4029,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if !state.developer_unlocked || state.teleport_busy {
                 return Task::none();
             }
-            let distance = state.teleport_aim_distance.trim().parse::<f32>().ok()
+            let raw = state.teleport_aim_distance.trim();
+            let raw = if raw.is_empty() { "30" } else { raw };
+            let distance = raw.parse::<f32>().ok()
                 .filter(|v| v.is_finite() && (5.0..=100.0).contains(v));
             let Some(distance) = distance else {
                 state.teleport_status = "Aim distance must be 5 to 100 units".into();
@@ -4049,7 +4051,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.teleport_status = "Detect Evolve.exe first".into();
                 return Task::none();
             };
-            let distance = state.teleport_aim_distance.trim().parse::<f32>().ok()
+            let raw = state.teleport_aim_distance.trim();
+            let raw = if raw.is_empty() { "30" } else { raw };
+            let distance = raw.parse::<f32>().ok()
                 .filter(|v| v.is_finite() && (5.0..=100.0).contains(v));
             let Some(distance) = distance else {
                 state.teleport_status = "Aim distance must be 5 to 100 units".into();
