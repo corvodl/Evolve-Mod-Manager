@@ -209,6 +209,62 @@ class FBXSafetyTests(unittest.TestCase):
                     optimize_binary_fbx(path, require_tangent_space=True)
                 self.assertEqual(path.read_bytes(), original)
 
+    def test_indexed_corner_tangent_with_control_point_normals(self):
+        # Blender can share three normal records across many polygon corners,
+        # while keeping tangent/binormal arrays ByPolygonVertex/IndexToDirect.
+        for compressed in (False, True):
+            with self.subTest(compressed=compressed), tempfile.TemporaryDirectory() as folder:
+                path = pathlib.Path(folder) / "emet_3p.fbx"
+                version, roots, footer = _read_nodes(shaded_sample(compressed=compressed))
+                geom = roots[0].children_named(b"Geometry")[0]
+                geom.children.append(node("PolygonVertexIndex", array(
+                    "i", [0, 1, -3, 0, 1, -3]), 1))
+                normal_layer = geom.children_named(b"LayerElementNormal")[0]
+                normal_layer.children.append(node(
+                    "MappingInformationType", string("ByVertice"), 1))
+                tangent_layer = geom.children_named(b"LayerElementTangent")[0]
+                binormal_layer = geom.children_named(b"LayerElementBinormal")[0]
+                for layer, name in ((tangent_layer, "TangentsIndex"),
+                                    (binormal_layer, "BinormalsIndex")):
+                    layer.children.append(node(
+                        "MappingInformationType", string("ByPolygonVertex"), 1))
+                    layer.children.append(node(
+                        "ReferenceInformationType", string("IndexToDirect"), 1))
+                    layer.children.append(node(name, array("i", [0, 1, 2, 0, 1, 2]), 1))
+                tangent_node = tangent_layer.get(b"Tangents")
+                tangent_node.props = array("d", [0., 0., 0., 1., 0., 0., 1., 0., 0.])
+                original = _write_nodes(version, roots, footer)
+                path.write_bytes(original)
+                result = optimize_binary_fbx(path, require_tangent_space=True)
+                self.assertEqual(result["repaired_tangent_vectors"], 1)
+                fixed = _read_nodes(path.read_bytes())[1][0].children_named(b"Geometry")[0]
+                self.assertEqual(fixed.children_named(b"LayerElementNormal")[0].props,
+                                 normal_layer.props)
+                self.assertEqual(fixed.get(b"Vertices").props, geom.get(b"Vertices").props)
+                _validate_geometry(_read_nodes(path.read_bytes())[1][0],
+                                   require_tangent_space=True)
+
+    def test_incompatible_shared_tangent_is_not_guessed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = pathlib.Path(folder) / "ambiguous.fbx"
+            version, roots, footer = _read_nodes(shaded_sample(
+                normals=[0., 0., 1., 0., 1., 0., 0., 0., 1.],
+                tangents=[0., 0., 0.] * 3,
+                binormals=[0., 1., 0., 0., 0., 1., 0., 1., 0.],
+            ))
+            geom = roots[0].children_named(b"Geometry")[0]
+            geom.children.append(node("PolygonVertexIndex",
+                                      array("i", [0, 1, -3]), 1))
+            tangent_layer = geom.children_named(b"LayerElementTangent")[0]
+            tangent_layer.children.append(node(
+                "MappingInformationType", string("AllSame"), 1))
+            tangent_layer.get(b"Tangents").props = array("d", [0., 0., 0.])
+            path.write_bytes(_write_nodes(version, roots, footer))
+            original = path.read_bytes()
+            with self.assertRaisesRegex(FBXValidationError, "degenerate normal/tangent"):
+                optimize_binary_fbx(path, require_tangent_space=True)
+            self.assertEqual(path.read_bytes(), original)
+
     def test_rocky_omitted_zero_influence_cluster_arrays(self):
         # Blender can omit Indexes and Weights entirely for unused joints.
         # Those deformers must be removed without stripping weighted ones.
