@@ -258,87 +258,164 @@ def _store_fbx_vectors(node, vectors):
 
 
 def _repair_zero_tangent_vectors(objects):
-    """Repair undefined Blender FBX tangent/binormal vectors, not source normals.
+    """Repair only undefined Blender tangents/binormals using FBX layer mappings.
 
-    Blender may emit zero or very small nonzero TBN vectors on collapsed UV
-    triangles (float residuals make an exact-zero check insufficient). Only
-    vectors with squared magnitude <= 1e-6 are considered undefined; valid
-    vectors, imported CryEngine normals, UV0, geometry and skinning stay intact.
-    A valid perpendicular partner anchors the replacement when available.
+    Normal, tangent and binormal layers need not have equal direct-array sizes.
+    Blender may export per-control-point normals and per-polygon-corner
+    tangents, and any layer may be indexed. Resolve each polygon corner back
+    to its direct array entry before deriving a missing perpendicular vector.
+    A shared direct entry is repaired only when all its corners agree; invalid
+    authored normals, unresolved mappings and ambiguous directions still fail
+    strict validation. No source normals, UVs, vertices or indices are rewritten.
     """
     repaired = 0
     for mesh in objects.children_named(b"Geometry"):
         props = _properties(mesh)
         if len(props) < 3 or props[2] != b"Mesh":
             continue
-        layer_names = ((b"LayerElementNormal", b"Normals"),
-                       (b"LayerElementTangent", b"Tangents"),
-                       (b"LayerElementBinormal", b"Binormals"))
-        layers = [mesh.children_named(name) for name, _ in layer_names]
-        # Normal validation will diagnose missing layers. Multiple layer
-        # mappings require exact polygon-corner correspondence, not guesses.
-        if any(len(items) != 1 for items in layers):
-            continue
-        nodes = [items[0].get(name) for items, (_, name) in zip(layers, layer_names)]
-        if any(node is None for node in nodes):
-            continue
-        normals, tangents, binormals = [
-            _numeric_array(node, {b"d", b"f"}) for node in nodes
-        ]
-        if (len(normals) != len(tangents) or len(normals) != len(binormals)
-                or not normals or len(normals) % 3):
-            continue  # Existing strict validation will reject malformed layers.
-        new_tangents = list(tangents)
-        new_binormals = list(binormals)
-        changes_t = changes_b = 0
-        for index in range(0, len(normals), 3):
-            n = normals[index:index+3]
-            t = tangents[index:index+3]
-            b = binormals[index:index+3]
-            # Preserve exact imported CryEngine normals. An invalid normal
-            # cannot supply a defensible tangent basis; fail closed below.
-            if not all(math.isfinite(x) for x in n+t+b):
+
+        specifications = (
+            (b"LayerElementNormal", b"Normals", b"NormalsIndex"),
+            (b"LayerElementTangent", b"Tangents", b"TangentsIndex"),
+            (b"LayerElementBinormal", b"Binormals", b"BinormalsIndex"),
+        )
+        layers = []
+        for element, payload, index_name in specifications:
+            available = mesh.children_named(element)
+            if len(available) != 1:
+                break
+            layer = available[0]
+            direct_node = layer.get(payload)
+            if direct_node is None:
+                break
+            values = _numeric_array(direct_node, {b"d", b"f"})
+            if not values or len(values) % 3:
+                break
+            mapping_node = layer.get(b"MappingInformationType")
+            reference_node = layer.get(b"ReferenceInformationType")
+            mapping = (_text(mapping_node) if mapping_node is not None
+                       else b"ByPolygonVertex")
+            reference = (_text(reference_node) if reference_node is not None
+                         else b"Direct")
+            indices = ()
+            if reference == b"IndexToDirect":
+                index_node = layer.get(index_name)
+                if index_node is None:
+                    break
+                indices = _numeric_array(index_node, {b"i", b"l"})
+            elif reference != b"Direct":
+                break
+            layers.append((direct_node, values, mapping, reference, indices))
+        if len(layers) != 3:
+            continue  # Leave malformed or unrecognized FBX to strict validation.
+
+        polygon_node = mesh.get(b"PolygonVertexIndex")
+        if polygon_node is None:
+            # Legacy tiny test fixtures omit face connectivity. Only direct,
+            # exactly aligned per-corner arrays can be safely reconstructed.
+            sizes = [len(layer[1]) for layer in layers]
+            if len(set(sizes)) != 1 or any(
+                    layer[3] != b"Direct" or layer[2] != b"ByPolygonVertex"
+                    for layer in layers):
                 continue
-            if not (0.1 < _vector_length_squared(n) < 2.1):
+            corners = [(i, i, 0) for i in range(sizes[0] // 3)]
+        else:
+            polygon_vertices = _numeric_array(polygon_node, {b"i", b"l"})
+            corners = []
+            polygon = 0
+            for corner, raw_index in enumerate(polygon_vertices):
+                control_point = -raw_index - 1 if raw_index < 0 else raw_index
+                corners.append((corner, control_point, polygon))
+                if raw_index < 0:
+                    polygon += 1
+
+        def direct_index(layer, corner, control_point, polygon):
+            _, values, mapping, reference, indices = layer
+            if mapping == b"ByPolygonVertex":
+                mapped = corner
+            elif mapping in (b"ByVertice", b"ByVertex", b"ByControlPoint"):
+                mapped = control_point
+            elif mapping == b"ByPolygon":
+                mapped = polygon
+            elif mapping == b"AllSame":
+                mapped = 0
+            else:
+                return None
+            if reference == b"IndexToDirect":
+                if mapped < 0 or mapped >= len(indices):
+                    return None
+                mapped = indices[mapped]
+            if mapped < 0 or mapped >= len(values) // 3:
+                return None
+            return mapped
+
+        normals, tangents, binormals = [layer[1] for layer in layers]
+        new_tangents, new_binormals = list(tangents), list(binormals)
+        proposals_t, proposals_b = {}, {}
+        conflicts_t, conflicts_b = set(), set()
+
+        def propose(proposals, conflicts, index, value):
+            prior = proposals.get(index)
+            if prior is not None and sum(a * b for a, b in zip(prior, value)) < 0.999:
+                conflicts.add(index)
+            else:
+                proposals[index] = value
+
+        for corner, control_point, polygon in corners:
+            ids = [direct_index(layer, corner, control_point, polygon)
+                   for layer in layers]
+            if any(index is None for index in ids):
                 continue
-            # Rounded float residuals at singular UV corners can be nonzero
-            # while remaining far below the unit-length validation threshold.
-            t_zero = _vector_length_squared(t) <= 1e-6
-            b_zero = _vector_length_squared(b) <= 1e-6
-            if not (t_zero or b_zero):
+            ni, ti, bi = ids
+            n = normals[3*ni:3*ni+3]
+            t = tangents[3*ti:3*ti+3]
+            b = binormals[3*bi:3*bi+3]
+            if not all(math.isfinite(x) for x in n + t + b):
+                continue
+            if not 0.1 < _vector_length_squared(n) < 2.1:
+                continue
+            t_missing = _vector_length_squared(t) <= 1e-6
+            b_missing = _vector_length_squared(b) <= 1e-6
+            if not (t_missing or b_missing):
                 continue
             n = _unit(n)
-            if t_zero and b_zero:
-                replacement_t = _fallback_tangent(n)
-                replacement_b = _unit(_cross(n, replacement_t))
-            elif t_zero:
-                # Keep the valid authored binormal and derive only its
-                # missing partner. Reject parallel/inconsistent inputs.
+            if t_missing and b_missing:
+                candidate_t = _fallback_tangent(n)
+                candidate_b = _unit(_cross(n, candidate_t))
+            elif t_missing:
                 if not 0.1 < _vector_length_squared(b) < 2.1:
                     continue
-                candidate = _cross(_unit(b), n)
-                if _vector_length_squared(candidate) <= 1e-6:
-                    continue  # Partner cannot define a perpendicular axis.
-                replacement_t = _unit(candidate)
-                replacement_b = None
+                cross = _cross(_unit(b), n)
+                if _vector_length_squared(cross) <= 1e-6:
+                    continue
+                candidate_t = _unit(cross)
+                candidate_b = None
             else:
                 if not 0.1 < _vector_length_squared(t) < 2.1:
                     continue
-                candidate = _cross(n, _unit(t))
-                if _vector_length_squared(candidate) <= 1e-6:
+                cross = _cross(n, _unit(t))
+                if _vector_length_squared(cross) <= 1e-6:
                     continue
-                replacement_t = None
-                replacement_b = _unit(candidate)
-            if replacement_t is not None:
-                new_tangents[index:index+3] = replacement_t
+                candidate_t = None
+                candidate_b = _unit(cross)
+            if candidate_t is not None:
+                propose(proposals_t, conflicts_t, ti, candidate_t)
+            if candidate_b is not None:
+                propose(proposals_b, conflicts_b, bi, candidate_b)
+
+        changes_t = changes_b = 0
+        for index, vector in proposals_t.items():
+            if index not in conflicts_t:
+                new_tangents[3*index:3*index+3] = vector
                 changes_t += 1
-            if replacement_b is not None:
-                new_binormals[index:index+3] = replacement_b
+        for index, vector in proposals_b.items():
+            if index not in conflicts_b:
+                new_binormals[3*index:3*index+3] = vector
                 changes_b += 1
         if changes_t:
-            _store_fbx_vectors(nodes[1], new_tangents)
+            _store_fbx_vectors(layers[1][0], new_tangents)
         if changes_b:
-            _store_fbx_vectors(nodes[2], new_binormals)
+            _store_fbx_vectors(layers[2][0], new_binormals)
         repaired += changes_t + changes_b
     return repaired
 
