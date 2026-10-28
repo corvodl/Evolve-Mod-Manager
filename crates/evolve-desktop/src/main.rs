@@ -4106,6 +4106,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.teleport_busy = false;
             if !state.developer_unlocked || state.developer_online_mods
                 || !state.armor_offline_confirmed || !state.live_edit_enabled {
+                state.teleport_aim_pending = None;
                 return Task::none();
             }
             match result {
@@ -4117,11 +4118,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     if save {
                         state.teleport_saved = Some(reading);
                         state.teleport_status = format!("Saved position: {}", reading.position.label());
+                        if let Some(distance) = state.teleport_aim_pending.take() {
+                            return Task::done(Message::TeleportDo(
+                                runtime_teleport::Destination::ActorAim(distance), None,
+                            ));
+                        }
                     } else {
                         state.teleport_status = format!("Local player: {}", reading.position.label());
                     }
                 }
-                Err(error) => state.teleport_status = format!("Teleport unavailable: {error}"),
+                Err(error) => {
+                    state.teleport_aim_pending = None;
+                    state.teleport_status = format!("Teleport unavailable: {error}");
+                }
             }
         }
         Message::TeleportXYZChanged(axis, value) => {
@@ -4849,6 +4858,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.actor_edit = None;
             state.teleport_reading = None;
             state.teleport_saved = None;
+            state.teleport_aim_pending = None;
+            if let Some(mut child) = state.teleport_overlay.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
             state.teleport_status.clear();
             state.runtime_checking = false;
             if state.developer_unlocked {
@@ -5052,6 +5066,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.actor_status.clear();
             state.teleport_reading = None;
             state.teleport_saved = None;
+            state.teleport_aim_pending = None;
+            if let Some(mut child) = state.teleport_overlay.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
             state.teleport_status.clear();
             state.developer_network_generation = state.developer_network_generation.wrapping_add(1);
             state.developer_network_busy = false;
@@ -5184,6 +5203,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.live_edit_enabled = false;
                     state.teleport_reading = None;
                     state.teleport_saved = None;
+                    state.teleport_aim_pending = None;
+                    if let Some(mut child) = state.teleport_overlay.take() {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
                     state.teleport_status.clear();
                     state.live_edit_probe = None;
                     state.live_edit_generation = state.live_edit_generation.wrapping_add(1);
