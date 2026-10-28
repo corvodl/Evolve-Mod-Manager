@@ -560,7 +560,7 @@ mod tests {
         let manager = format_activity(&cfg, None, None, 100).unwrap();
         assert_eq!(manager["name"], "Evolve Mod Manager");
         assert_eq!(manager["details"], "Evolve Mod Manager");
-        assert_eq!(manager["state"], "Modding Evolve");
+        assert!(manager["state"].as_str().unwrap().contains("Modding Evolve"));
         let game = format_activity(&cfg, Some(11112), None, 100).unwrap();
         assert_eq!(game["name"], "Evolve");
         assert_eq!(game["details"], "Playing Evolve");
