@@ -13,6 +13,7 @@ mod blender_install;
 mod client_version;
 mod crash_diagnostics;
 mod design;
+mod discord_presence;
 mod developer_auth;
 mod developer_hotkeys;
 mod direct_runtime;
@@ -1685,6 +1686,9 @@ enum Message {
     LibraryImportStart,
     LibraryImportCancel,
     SettingsTab(settings_page::Tab),
+    PreferenceDiscordToggle(&'static str),
+    PreferenceDiscordAppId(String),
+    DiscordPresenceTick,
     LibrarySearchChanged(String),
     LibraryMenu(&'static str),
     ModdingMenu(&'static str),
@@ -3732,6 +3736,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::SettingsTab(tab) => state.settings_tab = tab,
+        Message::PreferenceDiscordAppId(value) => {
+            if value.len() <= 25 && value.bytes().all(|c| c.is_ascii_digit()) {
+                state.preferences.discord_application_id = value;
+                persist_preferences(state);
+            }
+        }
+        Message::PreferenceDiscordToggle(which) => {
+            let p = &mut state.preferences;
+            match which {
+                "enabled" => p.discord_presence_enabled = !p.discord_presence_enabled,
+                "game" => p.discord_show_game = !p.discord_show_game,
+                "manager" => p.discord_show_manager = !p.discord_show_manager,
+                "character" => p.discord_show_character = !p.discord_show_character,
+                "stats" => p.discord_show_stats = !p.discord_show_stats,
+                "profile" => p.discord_show_profile = !p.discord_show_profile,
+                "minimal" => p.discord_minimal = !p.discord_minimal,
+                _ => {}
+            }
+            persist_preferences(state);
+        }
+        Message::DiscordPresenceTick => {}
         Message::LibrarySearchChanged(value) => {
             state.library_search = value;
             state.library_page = 0;
@@ -11808,6 +11833,7 @@ struct Desktop {
     activity_id: Option<window::Id>,
     play_notice_id: Option<window::Id>,
     export_id: Option<window::Id>,
+    discord_presence: discord_presence::Service,
 }
 
 /// Use the shipped application artwork for titlebars and taskbar icons on
@@ -11840,6 +11866,7 @@ impl Desktop {
             Task::none()
         };
         let client_version_task = inspect_client_version_task(&state.preferences.client_executable);
+        let discord_presence = discord_presence::Service::start(discord_presence::Config::from_state(&state));
         (
             Self {
                 state,
@@ -11850,6 +11877,7 @@ impl Desktop {
                 activity_id: None,
                 play_notice_id: None,
                 export_id: None,
+                discord_presence,
             },
             Task::batch([
                 opened.map(|_| Message::ViewerOpened),
@@ -11944,6 +11972,11 @@ impl Desktop {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        if matches!(message, Message::DiscordPresenceTick | Message::PreferenceDiscordToggle(_) | Message::PreferenceDiscordAppId(_)) {
+            let task = update(&mut self.state, message);
+            self.discord_presence.publish(discord_presence::Config::from_state(&self.state));
+            return task;
+        }
         match message {
             Message::MenuCommand(inner) => {
                 self.state.viewer_menu = None;
@@ -12220,6 +12253,7 @@ impl Desktop {
             Subscription::none()
         };
         Subscription::batch([
+            iced::time::every(Duration::from_secs(8)).map(|_| Message::DiscordPresenceTick),
             dev_overlay_input,
             actor_freeze,
             news_poll,
