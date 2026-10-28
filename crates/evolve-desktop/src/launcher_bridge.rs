@@ -410,12 +410,14 @@ fn inspect_existing_launcher_mode(
             .as_str()
             .ok_or("Missing launcher executable path in private launcher_config.json")?;
         let launcher = plain(Path::new(launcher_path), 1024 * 1024 * 1024)?;
+        // The Test Client is a separate build and need not have the
+        // production launcher's executable basename. Its exact path was
+        // selected/validated by the manager before writing this config.
         if launcher
-            .file_name()
-            .and_then(|s| s.to_str())
-            .is_none_or(|name| !name.eq_ignore_ascii_case("ModdedEvolveLauncher.exe"))
+            .extension()
+            .is_none_or(|ext| !ext.eq_ignore_ascii_case("exe"))
         {
-            return Err("Configured executable is not ModdedEvolveLauncher.exe".into());
+            return Err("Configured client is not a Windows .exe".into());
         }
     }
     let scripts: &[&str] = if require_client {

@@ -188,6 +188,67 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
     .into()
 }
 
+fn test_environment_setup(state: &State) -> Element<'_, Message> {
+    let enabled = state.preferences.play_through_test_client;
+    let valid = crate::play_setup::validate_test_paths(
+        &state.preferences.test_game_installation,
+        &state.preferences.test_client_executable,
+        &state.preferences.game_installation,
+        &state.preferences.client_executable,
+    ).is_ok();
+    panel(
+        column![
+            heading(
+                "EVOLVE TEST ENVIRONMENT",
+                "A separate Test Client and Test Game build for mod testing. Production files and recovery settings are kept separate."
+            ),
+            row![
+                design::button(if enabled { "Test Client: ON" } else { "Test Client: OFF" })
+                    .on_press(Message::PreferenceUseTestClient(!enabled))
+                    .style(if enabled { design::primary } else { design::secondary }),
+                text(if enabled {
+                    "Both Play buttons use the Test Client and Test Game."
+                } else {
+                    "Both Play buttons use the normal client and game."
+                })
+                .size(12).style(design::muted),
+            ].spacing(10).align_y(iced::Center),
+            text("Test Client executable (separate .exe build)").size(12),
+            row![
+                design::text_input("Select Test Client .exe", &state.preferences.test_client_executable)
+                    .on_input(Message::PreferenceTestClientExecutable),
+                design::button("Browse…").on_press(Message::PickTestClient).style(design::secondary),
+            ].spacing(8),
+            text("Test Game directory (separate EvolveGame build)").size(12),
+            row![
+                design::text_input("Select Test Game folder", &state.preferences.test_game_installation)
+                    .on_input(Message::PreferenceTestGameInstall),
+                design::button("Browse…").on_press(Message::PickTestGame).style(design::secondary),
+            ].spacing(8),
+            text(if valid {
+                "Separate Test Client and Test Game verified. The test client must be configured to launch this Test Game."
+            } else {
+                "Choose both test builds. The Test Game only needs its executable here; production PAK inventory checks are not used."
+            }).size(11).style(design::muted),
+            row![
+                design::button("Save Test Environment")
+                    .on_press(Message::SaveTestSetup)
+                    .style(design::secondary),
+                design::button(if state.busy { "Creating Test Setup…" } else { "Create Test Mod Setup" })
+                    .on_press_maybe((!state.busy && valid).then_some(Message::StartTestAutomaticSetup))
+                    .style(design::secondary),
+            ].spacing(8),
+            text("Modded test launches use an independent Test signing stage and swap journal. Creating a Test Mod Setup uses the existing signed-PAK setup workflow; unsupported test archive formats will be reported, not silently replaced.").size(11).style(design::muted),
+            text("Test signing stage (separate from production)").size(12),
+            design::text_input("Test stage folder", &state.preferences.test_stage)
+                .on_input(Message::PreferenceTestStage),
+            text("Test recovery / swap folder").size(12),
+            design::text_input("Test swap folder", &state.preferences.test_swap)
+                .on_input(Message::PreferenceTestSwap),
+        ].spacing(9),
+    ).into()
+}
+
 fn storage(state: &State) -> Element<'_, Message> {
     let root = state.preferences.game_storage_root.as_str();
     let buckets = state
@@ -689,6 +750,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         ].spacing(12).into(),
         Tab::Storage => column![
         game_client_setup(state),
+        test_environment_setup(state),
         heading("GAME STORAGE", "Review disk usage and configure future setups without changing active recovery files."),
         storage(state),
         heading("ASSET LIBRARY", "Keep extracted reference PAKs available across Modding, models and levels."),

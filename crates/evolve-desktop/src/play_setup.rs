@@ -139,6 +139,10 @@ const KNOWN_CONTROLLED_SWAP_SHA256: &[&str] = &[
 // as well, so existing Client Launch setups can upgrade both scripts.
 const PRE_TOKEN_AUTO_LAUNCH_SHA256: &str =
     "37ba0586dfbd50ceb791a3156ce2bacb3d01f541b7cebccd21f8d10dc5b99aba";
+// Exact helper embedded before the separate Test Client selection was added.
+// Preserve seamless upgrades for existing production signed setups.
+const PRE_TEST_CLIENT_AUTO_LAUNCH_SHA256: &str =
+    "e3a66b8d769849e8989e500a1f9ada2e278be2e27e1d391a31c15e9b2bb602af";
 const CURRENT_AUTO_LAUNCH: &str = include_str!("../launcher_support/auto_launch_frida.py");
 const CURRENT_CONTROLLED_SWAP: &str = include_str!("../launcher_support/controlled_swap.py");
 
@@ -193,6 +197,7 @@ fn configure_helper(
     client: Option<&Path>,
     stage: &Path,
     swap: &Path,
+    test_client: bool,
 ) -> Result<(), String> {
     crate::launcher_bridge::games_closed()?;
     let stage = fs::canonicalize(stage).map_err(|e| format!("Signing stage: {e}"))?;
@@ -262,6 +267,7 @@ fn configure_helper(
             "auto_launch_frida.py",
             CURRENT_AUTO_LAUNCH,
             &[
+                PRE_TEST_CLIENT_AUTO_LAUNCH_SHA256,
                 PREVIOUS_AUTO_LAUNCH_SHA256,
                 NIGHTLY_56_AUTO_LAUNCH_SHA256,
                 NIGHTLY_69_AUTO_LAUNCH_SHA256,
@@ -285,12 +291,15 @@ fn configure_helper(
                 .clone();
         }
         let new_path = ordinary_game_path(client).to_string_lossy().into_owned();
-        if previous.get("launcher").and_then(Value::as_str) == Some(new_path.as_str()) {
+        if previous.get("launcher").and_then(Value::as_str) == Some(new_path.as_str())
+            && previous.get("test_client").and_then(Value::as_bool) == Some(test_client)
+        {
             return Ok(());
         }
-        // Only this one owned field changes. Tempfile.persist performs a rename;
+        // Only the manager-owned launch selection fields change. Tempfile.persist performs a rename;
         // a failed write leaves the old configuration intact.
         previous.insert("launcher".into(), Value::String(new_path));
+        previous.insert("test_client".into(), Value::Bool(test_client));
         let mut staging = tempfile::NamedTempFile::new_in(&swap)
             .map_err(|e| format!("Cannot stage launcher configuration: {e}"))?;
         serde_json::to_writer_pretty(&mut staging, &previous)
@@ -312,13 +321,24 @@ pub fn configure_existing_helper(
     stage: &Path,
     swap: &Path,
 ) -> Result<(), String> {
-    configure_helper(game, Some(client), stage, swap)
+    configure_helper(game, Some(client), stage, swap, false)
+}
+
+/// Separate Test Client and Test Game have their own signing stage and
+/// swap journal; never rewrite the production launcher's selection.
+pub fn configure_test_helper(
+    game: &Path,
+    client: &Path,
+    stage: &Path,
+    swap: &Path,
+) -> Result<(), String> {
+    configure_helper(game, Some(client), stage, swap, true)
 }
 
 /// Direct mode checks the same signed stage and recovery journal, without
 /// requiring or overwriting the legacy ModdedEvolveLauncher installation.
 pub fn configure_direct_helper(game: &Path, stage: &Path, swap: &Path) -> Result<(), String> {
-    configure_helper(game, None, stage, swap)
+    configure_helper(game, None, stage, swap, false)
 }
 
 pub(super) fn audit_backup_files(game: &Path) -> Result<(), String> {
@@ -389,6 +409,22 @@ pub(super) fn recovery_warnings(game: &Path, swap: Option<&Path>) -> Vec<String>
 
 /// Launch only the regular client. Recovery warnings must never block access
 /// to its built-in repair option. No PAK/DLL swapping occurs in this path.
+/// Clean Test Client launch uses its own game and recovery directory, but
+/// never modifies production paths or PAKs.
+pub fn launch_clean_test(
+    game: &Path,
+    client: &Path,
+    swap: Option<&Path>,
+) -> Result<(u32, Vec<String>), String> {
+    crate::launcher_bridge::games_closed()?;
+    let mut warnings = recovery_warnings(game, swap);
+    if let Err(error) = crate::online_guard::apply(game, true) {
+        warnings.push(format!("Could not remove test client offline firewall rule: {error}"));
+    }
+    let pid = crate::standard_user_launch::launch_test(client)?;
+    Ok((pid, warnings))
+}
+
 pub fn launch_clean(
     game: &Path,
     client: &Path,
