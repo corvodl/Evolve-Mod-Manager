@@ -11,10 +11,10 @@ fn main() {}
 mod windows {
     use std::ffi::c_void;
     use std::io::{BufRead, Write};
-    use std::sync::Mutex;
-    use std::time::{Duration, Instant};
     use std::ptr::{null, null_mut};
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::{Duration, Instant};
 
     type Handle = *mut c_void;
     type Hwnd = Handle;
@@ -185,7 +185,9 @@ mod windows {
         match msg {
             WM_APP_BIND => {
                 let id = wp as i32 + 1;
-                if !(1..=9).contains(&id) { return 0; }
+                if !(1..=9).contains(&id) {
+                    return 0;
+                }
                 unsafe { UnregisterHotKey(hwnd, id) };
                 let encoded = lp as u32;
                 let vk = encoded & 0xFFFF;
@@ -212,7 +214,10 @@ mod windows {
             }
             WM_TIMER => {
                 if let Ok(mut toast) = TOAST.lock() {
-                    if toast.as_ref().is_some_and(|(_, until)| Instant::now() >= *until) {
+                    if toast
+                        .as_ref()
+                        .is_some_and(|(_, until)| Instant::now() >= *until)
+                    {
                         *toast = None;
                         unsafe { InvalidateRect(hwnd, null(), 0) };
                     }
@@ -288,17 +293,31 @@ mod windows {
                         TextOutW(hdc, 54, 49, label.as_ptr(), label.len() as i32);
                     }
                     let active = TOAST.lock().ok().and_then(|toast| {
-                        toast.as_ref()
+                        toast
+                            .as_ref()
                             .filter(|(_, until)| Instant::now() < *until)
                             .map(|(s, _)| s.clone())
                     });
                     if let Some(message) = active {
-                        let rect = Rect { left: 4, top: 87, right: WIDTH - 4, bottom: 149 };
+                        let rect = Rect {
+                            left: 4,
+                            top: 87,
+                            right: WIDTH - 4,
+                            bottom: 149,
+                        };
                         let brush = unsafe { CreateSolidBrush(0x00282723) };
                         if !brush.is_null() {
-                            unsafe { FillRect(hdc, &rect, brush); DeleteObject(brush); }
+                            unsafe {
+                                FillRect(hdc, &rect, brush);
+                                DeleteObject(brush);
+                            }
                         }
-                        let text: Vec<u16> = message.chars().take(37).collect::<String>().encode_utf16().collect();
+                        let text: Vec<u16> = message
+                            .chars()
+                            .take(37)
+                            .collect::<String>()
+                            .encode_utf16()
+                            .collect();
                         unsafe {
                             SetBkMode(hdc, 1);
                             SetTextColor(hdc, 0x00FFFFFF);
@@ -311,7 +330,9 @@ mod windows {
             }
             WM_DESTROY => {
                 for i in 1..=9 {
-                    unsafe { UnregisterHotKey(hwnd, i); }
+                    unsafe {
+                        UnregisterHotKey(hwnd, i);
+                    }
                 }
                 unsafe { PostQuitMessage(0) };
                 0
@@ -384,20 +405,33 @@ mod windows {
                 for line in lines {
                     let Ok(line) = line else { break };
                     if let Some(rest) = line.strip_prefix("NOTIFY ") {
-                        let message: String = rest.chars()
-                            .filter(|c| !c.is_control()).take(96).collect();
+                        let message: String =
+                            rest.chars().filter(|c| !c.is_control()).take(96).collect();
                         if let Ok(mut toast) = TOAST.lock() {
                             *toast = Some((message, Instant::now() + Duration::from_millis(2600)));
                         }
-                        unsafe { PostMessageW(hwnd_address as Hwnd, WM_APP_NOTIFY, 0, 0); }
+                        unsafe {
+                            PostMessageW(hwnd_address as Hwnd, WM_APP_NOTIFY, 0, 0);
+                        }
                     } else if let Some(rest) = line.strip_prefix("BIND ") {
-                        let parts: Vec<u32> = rest.split_whitespace()
-                            .filter_map(|s| s.parse::<u32>().ok()).collect();
-                        if parts.len() == 3 && parts[0] < 9 &&
-                            parts[1] <= 7 && (parts[2] == 0 || (0x75..=0x7B).contains(&parts[2]))
+                        let parts: Vec<u32> = rest
+                            .split_whitespace()
+                            .filter_map(|s| s.parse::<u32>().ok())
+                            .collect();
+                        if parts.len() == 3
+                            && parts[0] < 9
+                            && parts[1] <= 7
+                            && (parts[2] == 0 || (0x75..=0x7B).contains(&parts[2]))
                         {
                             let encoded = ((parts[1] << 16) | parts[2]) as isize;
-                            unsafe { PostMessageW(hwnd_address as Hwnd, WM_APP_BIND, parts[0] as usize, encoded); }
+                            unsafe {
+                                PostMessageW(
+                                    hwnd_address as Hwnd,
+                                    WM_APP_BIND,
+                                    parts[0] as usize,
+                                    encoded,
+                                );
+                            }
                         }
                     }
                 }

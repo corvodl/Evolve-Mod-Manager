@@ -2984,10 +2984,18 @@ fn home_recent_workspace(state: &State) -> Option<PathBuf> {
 // memory changes always run through the manager's existing offline guards.
 fn notify_dev_overlay(state: &mut State, message: &str) {
     use std::io::Write;
-    let Some(stdin) = state.teleport_overlay.as_mut().and_then(|c| c.stdin.as_mut()) else {
+    let Some(stdin) = state
+        .teleport_overlay
+        .as_mut()
+        .and_then(|c| c.stdin.as_mut())
+    else {
         return;
     };
-    let clean: String = message.chars().filter(|c| !c.is_control()).take(96).collect();
+    let clean: String = message
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(96)
+        .collect();
     let _ = writeln!(stdin, "NOTIFY {clean}");
     let _ = stdin.flush();
 }
@@ -2996,7 +3004,11 @@ fn send_dev_bind(state: &mut State, action: developer_hotkeys::Action) {
     use std::io::Write;
     let key = developer_hotkeys::Keybind(state.preferences.developer_hotkeys[action.index()]);
     let (mods, vk) = key.win32().unwrap_or((0, 0));
-    if let Some(stdin) = state.teleport_overlay.as_mut().and_then(|c| c.stdin.as_mut()) {
+    if let Some(stdin) = state
+        .teleport_overlay
+        .as_mut()
+        .and_then(|c| c.stdin.as_mut())
+    {
         let _ = writeln!(stdin, "BIND {} {mods} {vk}", action.index());
         let _ = stdin.flush();
     }
@@ -4004,10 +4016,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if !state.developer_unlocked {
                 return Task::none();
             }
-            if key.0 > 28 || (key.0 != 0 && state.preferences.developer_hotkeys.iter()
-                .enumerate().any(|(i, existing)| i != action.index() && *existing == key.0))
+            if key.0 > 28
+                || (key.0 != 0
+                    && state
+                        .preferences
+                        .developer_hotkeys
+                        .iter()
+                        .enumerate()
+                        .any(|(i, existing)| i != action.index() && *existing == key.0))
             {
-                state.developer_hotkey_status = "Shortcut already assigned; choose a different key".into();
+                state.developer_hotkey_status =
+                    "Shortcut already assigned; choose a different key".into();
                 return Task::none();
             }
             state.preferences.developer_hotkeys[action.index()] = key.0;
@@ -4016,36 +4035,51 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if let Ok(path) = settings_path()
                 && let Err(error) = save_to(&path, &state.preferences)
             {
-                state.developer_hotkey_status = format!("Shortcut set for session, but save failed: {error}");
+                state.developer_hotkey_status =
+                    format!("Shortcut set for session, but save failed: {error}");
             }
         }
         Message::TeleportOverlayPoll => {
-            let ended = state.teleport_overlay.as_mut().is_some_and(|child|
-                child.try_wait().ok().flatten().is_some());
+            let ended = state
+                .teleport_overlay
+                .as_mut()
+                .is_some_and(|child| child.try_wait().ok().flatten().is_some());
             if ended {
                 state.teleport_overlay = None;
                 state.teleport_hotkey_rx = None;
                 state.developer_hotkey_status = "Overlay exited; shortcuts inactive".into();
                 return Task::none();
             }
-            if !state.developer_unlocked || state.developer_online_mods
-                || !state.live_edit_enabled || !state.armor_offline_confirmed {
+            if !state.developer_unlocked
+                || state.developer_online_mods
+                || !state.live_edit_enabled
+                || !state.armor_offline_confirmed
+            {
                 return Task::none();
             }
-            let Some(output) = state.teleport_hotkey_rx.as_ref()
-                .and_then(|rx| rx.try_recv().ok()) else {
+            let Some(output) = state
+                .teleport_hotkey_rx
+                .as_ref()
+                .and_then(|rx| rx.try_recv().ok())
+            else {
                 return Task::none();
             };
             if let Some(raw) = output.strip_prefix("BINDFAIL ") {
-                state.developer_hotkey_status =
-                    format!("Could not register hotkey {} (already in use by Windows or another app)", raw.trim());
+                state.developer_hotkey_status = format!(
+                    "Could not register hotkey {} (already in use by Windows or another app)",
+                    raw.trim()
+                );
                 return Task::none();
             }
             let Some(raw) = output.strip_prefix("HOTKEY ") else {
                 return Task::none();
             };
-            let Some(action) = raw.trim().parse::<usize>().ok()
-                .and_then(developer_hotkeys::Action::from_index) else {
+            let Some(action) = raw
+                .trim()
+                .parse::<usize>()
+                .ok()
+                .and_then(developer_hotkeys::Action::from_index)
+            else {
                 return Task::none();
             };
             if state.preferences.developer_hotkeys[action.index()] == 0 {
@@ -4055,12 +4089,24 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 developer_hotkeys::Action::Aim => Task::done(Message::TeleportAim),
                 developer_hotkeys::Action::Save => Task::done(Message::TeleportCapture(true)),
                 developer_hotkeys::Action::Return => Task::done(Message::TeleportReturnSaved),
-                developer_hotkeys::Action::XMinus => Task::done(Message::TeleportRelative(-20.0, 0.0, 0.0)),
-                developer_hotkeys::Action::XPlus => Task::done(Message::TeleportRelative(20.0, 0.0, 0.0)),
-                developer_hotkeys::Action::YMinus => Task::done(Message::TeleportRelative(0.0, -20.0, 0.0)),
-                developer_hotkeys::Action::YPlus => Task::done(Message::TeleportRelative(0.0, 20.0, 0.0)),
-                developer_hotkeys::Action::ZMinus => Task::done(Message::TeleportRelative(0.0, 0.0, -20.0)),
-                developer_hotkeys::Action::ZPlus => Task::done(Message::TeleportRelative(0.0, 0.0, 20.0)),
+                developer_hotkeys::Action::XMinus => {
+                    Task::done(Message::TeleportRelative(-20.0, 0.0, 0.0))
+                }
+                developer_hotkeys::Action::XPlus => {
+                    Task::done(Message::TeleportRelative(20.0, 0.0, 0.0))
+                }
+                developer_hotkeys::Action::YMinus => {
+                    Task::done(Message::TeleportRelative(0.0, -20.0, 0.0))
+                }
+                developer_hotkeys::Action::YPlus => {
+                    Task::done(Message::TeleportRelative(0.0, 20.0, 0.0))
+                }
+                developer_hotkeys::Action::ZMinus => {
+                    Task::done(Message::TeleportRelative(0.0, 0.0, -20.0))
+                }
+                developer_hotkeys::Action::ZPlus => {
+                    Task::done(Message::TeleportRelative(0.0, 0.0, 20.0))
+                }
             };
         }
         Message::TeleportAimDistanceChanged(value) => {
@@ -4120,7 +4166,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                                 use std::io::BufRead;
                                 for line in std::io::BufReader::new(stdout).lines() {
                                     let Ok(line) = line else { break };
-                                    if tx.send(line).is_err() { break; }
+                                    if tx.send(line).is_err() {
+                                        break;
+                                    }
                                 }
                             });
                             state.teleport_hotkey_rx = Some(rx);
@@ -4129,7 +4177,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         for action in developer_hotkeys::Action::ALL {
                             send_dev_bind(state, action);
                         }
-                        state.teleport_status = "Approximate crosshair overlay and hotkeys enabled".into();
+                        state.teleport_status =
+                            "Approximate crosshair overlay and hotkeys enabled".into();
                     }
                     Err(error) => state.teleport_status = error,
                 }
@@ -4767,7 +4816,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
             let notice = if state.live_edit_report.starts_with("One-shot") {
                 "Float32 edit applied"
-            } else { "Float32 edit not confirmed" };
+            } else {
+                "Float32 edit not confirmed"
+            };
             notify_dev_overlay(state, notice);
         }
         Message::ArmorOfflineChanged(confirmed) => {
