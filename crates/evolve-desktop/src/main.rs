@@ -4502,6 +4502,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.live_edit_busy = false;
             state.live_edit_enabled = armed && state.armor_offline_confirmed;
             if !state.live_edit_enabled {
+                if let Some(mut child) = state.teleport_overlay.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                state.teleport_aim_pending = None;
                 state.actor_frozen.clear();
                 state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
             }
@@ -4644,6 +4649,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ArmorOfflineChanged(confirmed) => {
             if !confirmed {
+                if let Some(mut child) = state.teleport_overlay.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                state.teleport_aim_pending = None;
                 state.actor_frozen.clear();
                 state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
                 state.actor_edit = None;
