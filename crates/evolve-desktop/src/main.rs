@@ -9789,13 +9789,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.play_notice = Some(notice);
             } else if let Err(error) = &result {
                 let export_failed = state.busy_operation.as_deref().is_some_and(|label| {
-                    label.contains("Exporting") && (label.contains("character")
-                        || label.contains("asset bundle") || label.contains("level scene"))
-                }) && (error.contains("Blender") || error.contains("FBX")
+                    label.contains("Exporting")
+                        && (label.contains("character")
+                            || label.contains("asset bundle")
+                            || label.contains("level scene"))
+                }) && (error.contains("Blender")
+                    || error.contains("FBX")
                     || error.contains("fbx"));
                 state.play_notice = Some(play_dialog::Notice::finished(
-                    if export_failed { play_dialog::Kind::FbxExport }
-                    else { play_dialog::Kind::Manager },
+                    if export_failed {
+                        play_dialog::Kind::FbxExport
+                    } else {
+                        play_dialog::Kind::Manager
+                    },
                     play_dialog::Phase::Error,
                     error.clone(),
                 ));
