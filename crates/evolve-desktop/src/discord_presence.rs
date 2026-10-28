@@ -27,9 +27,8 @@ impl Config {
     pub fn from_state(state: &State) -> Self {
         let p = &state.preferences;
         let model_name = if state.page == Some(Page::Models) {
-            state.render_source.as_ref().or_else(|| {
-                (!state.input.is_empty()).then_some(&std::path::PathBuf::from(&state.input))
-            }).and_then(|file| file.file_stem())
+            state.render_source.as_ref().and_then(|file| file.file_stem())
+                .or_else(|| std::path::Path::new(&state.input).file_stem())
                 .map(|name| name.to_string_lossy().into_owned())
         } else { None };
         let manager_action = match state.page {
