@@ -567,7 +567,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                             .on_press(Message::PreferenceDiscordToggle("manager")).style(design::secondary),
                     ].spacing(8),
                     row![
-                        design::button(if state.preferences.discord_show_character { "Character / Stage: On" } else { "Character / Stage: Off" })
+                        design::button(if state.preferences.discord_show_character { "Evolution Stage: On" } else { "Evolution Stage: Off" })
                             .on_press(Message::PreferenceDiscordToggle("character")).style(design::secondary),
                         design::button(if state.preferences.discord_show_stats { "Health / Armor: On" } else { "Health / Armor: Off" })
                             .on_press(Message::PreferenceDiscordToggle("stats")).style(design::secondary),
@@ -578,7 +578,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                         design::button(if state.preferences.discord_minimal { "Privacy: Minimal" } else { "Privacy: Detailed" })
                             .on_press(Message::PreferenceDiscordToggle("minimal")).style(design::secondary),
                     ].spacing(8),
-                    text("Map/mode are displayed only when a verified runtime source becomes available. Character, health and armor use validated read-only Actor System fields; unavailable values stay hidden.")
+                    text("Character names and portraits are hidden until verified. Evolution stage, health and armor use validated read-only local Actor System fields; map and game mode remain hidden until verified.")
                         .size(11).style(design::muted),
                 ].spacing(8)),
                 panel(column![
