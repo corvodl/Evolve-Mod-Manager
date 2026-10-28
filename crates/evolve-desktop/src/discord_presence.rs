@@ -80,6 +80,10 @@ impl Config {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct LocalActor {
     pub name: Option<String>,
+    // Only a verified local character class/definition may enable
+    // monster-specific information. The current nearby-string heuristic and
+    // apparently plausible offsets cannot distinguish hunters from monsters.
+    pub verified_monster: bool,
     pub evolution: Option<String>,
     pub health: Option<String>,
     pub armor: Option<String>,
@@ -101,7 +105,8 @@ fn format_activity(cfg: &Config, game_pid: Option<u32>, actor: Option<&LocalActo
             let details = "Playing Evolve".to_owned();
             let mut values = vec![cfg.game_version.clone()];
             if cfg.show_character {
-                if let Some(stage) = actor.and_then(|a| a.evolution.as_ref()) {
+                if let Some(stage) = actor.filter(|a| a.verified_monster)
+                    .and_then(|a| a.evolution.as_ref()) {
                     values.push(format!("Evolution {stage}"));
                 }
             }
@@ -109,7 +114,10 @@ fn format_activity(cfg: &Config, game_pid: Option<u32>, actor: Option<&LocalActo
             if let Some(map) = cfg.map.as_ref() { values.push(map.clone()); }
             if cfg.show_stats {
                 if let Some(h) = actor.and_then(|a| a.health.as_ref()) { values.push(format!("HP {h}")); }
-                if let Some(a) = actor.and_then(|a| a.armor.as_ref()) { values.push(format!("Armor {a}")); }
+                if let Some(a) = actor.filter(|a| a.verified_monster)
+                    .and_then(|a| a.armor.as_ref()) {
+                    values.push(format!("Armor {a}"));
+                }
             }
             if cfg.show_profile {
                 if let Some(profile) = cfg.mod_profile.as_ref() { values.push(profile.clone()); }
@@ -201,12 +209,17 @@ mod windows {
         let mut info = LocalActor::default();
         // The current actor name is a nearby-string heuristic, not a
         // verified IEntity character identity; never copy it to Discord.
+        // No trustworthy class/character resolver exists yet, so do NOT set
+        // verified_monster here. Hunters have no armor/evolution; offsets
+        // read as plausible monster fields are not proof of monster identity.
         for field in &actor.fields {
             use runtime_actors::Field;
             match field.field {
                 Field::Health => info.health = Some(field.display.clone()),
-                Field::Armor => info.armor = Some(field.display.clone()),
-                Field::Stage => info.evolution = Some(format!("Stage {}",field.display)),
+                Field::Armor | Field::Stage => {
+                    // Leave monster-only fields unset until the class resolver
+                    // independently confirms a monster.
+                },
                 _ => {}
             }
         }
@@ -330,8 +343,13 @@ mod tests {
     }
     #[test]
     fn gameplay_hides_unverified_character_name_and_keeps_validated_stats() {
-        let actor = LocalActor{name:Some("Goliath".into()),evolution:Some("Stage 2".into()),
-            health:Some("8500".into()),armor:Some("1000".into())};
+        let actor = LocalActor {
+            name: Some("Goliath".into()),
+            verified_monster: true, // Only populated after independent class verification.
+            evolution: Some("Stage 2".into()),
+            health: Some("8500".into()),
+            armor: Some("1000".into()),
+        };
         let act = format_activity(&sample(),Some(100),Some(&actor),100).unwrap();
         assert_eq!(act["details"],"Playing Evolve");
         assert!(!act.to_string().contains("Goliath"));
@@ -340,6 +358,34 @@ mod tests {
         assert!(!act["state"].as_str().unwrap().contains("Map:"));
         assert!(act["assets"].get("small_image").is_none());
     }
+    #[test]
+    fn hunter_never_shows_armor_or_evolution_even_with_plausible_raw_offsets() {
+        let hunter = LocalActor {
+            verified_monster: false,
+            health: Some("1600".into()),
+            // These deliberately mimic false-positive monster offsets.
+            armor: Some("1000".into()),
+            evolution: Some("Stage 2".into()),
+            ..LocalActor::default()
+        };
+        let activity = format_activity(&sample(), Some(123), Some(&hunter), 100).unwrap();
+        let state = activity["state"].as_str().unwrap();
+        assert_eq!(activity["details"], "Playing Evolve");
+        assert!(state.contains("HP 1600"));
+        assert!(!state.contains("Armor"));
+        assert!(!state.contains("Evolution"));
+    }
+
+    #[test]
+    fn unknown_actor_does_not_infer_monster_from_stage_or_armor() {
+        let mut unknown = LocalActor::default();
+        unknown.armor = Some("999".into());
+        unknown.evolution = Some("Stage 1".into());
+        let state = format_activity(&sample(), Some(123), Some(&unknown), 100).unwrap();
+        assert!(!state.to_string().contains("Armor"));
+        assert!(!state.to_string().contains("Evolution"));
+    }
+
     #[test]
     fn privacy_mode_hides_character_stats_and_mods() {
         let mut cfg = sample();
