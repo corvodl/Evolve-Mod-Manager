@@ -214,14 +214,13 @@ mod windows {
                 0
             }
             WM_TIMER => {
-                if let Ok(mut toast) = TOAST.lock() {
-                    if toast
+                if let Ok(mut toast) = TOAST.lock()
+                    && toast
                         .as_ref()
                         .is_some_and(|(_, until)| Instant::now() >= *until)
-                    {
-                        *toast = None;
-                        unsafe { InvalidateRect(hwnd, null(), 0) };
-                    }
+                {
+                    *toast = None;
+                    unsafe { InvalidateRect(hwnd, null(), 0) };
                 }
                 if !process_alive(GAME_PID.load(Ordering::Relaxed))
                     || !process_alive(MANAGER_PID.load(Ordering::Relaxed))
@@ -425,9 +424,7 @@ mod windows {
                         if let Ok(mut toast) = TOAST.lock() {
                             *toast = Some((message, Instant::now() + Duration::from_millis(2600)));
                         }
-                        unsafe {
-                            PostMessageW(hwnd_address as Hwnd, WM_APP_NOTIFY, 0, 0);
-                        }
+                        PostMessageW(hwnd_address as Hwnd, WM_APP_NOTIFY, 0, 0);
                     } else if let Some(rest) = line.strip_prefix("BIND ") {
                         let parts: Vec<u32> = rest
                             .split_whitespace()
@@ -439,14 +436,12 @@ mod windows {
                             && (parts[2] == 0 || (0x75..=0x7B).contains(&parts[2]))
                         {
                             let encoded = ((parts[1] << 16) | parts[2]) as isize;
-                            unsafe {
-                                PostMessageW(
-                                    hwnd_address as Hwnd,
-                                    WM_APP_BIND,
-                                    parts[0] as usize,
-                                    encoded,
-                                );
-                            }
+                            PostMessageW(
+                                hwnd_address as Hwnd,
+                                WM_APP_BIND,
+                                parts[0] as usize,
+                                encoded,
+                            );
                         }
                     }
                 }
