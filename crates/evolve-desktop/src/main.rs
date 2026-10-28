@@ -10061,7 +10061,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::ProfileApplied(tx)) => {
                     state.profile_feedback = format!(
-                        "Applied {} signed mod PAKs to ISOLATED offline stage only. Transaction {} requires recovery before another profile.",
+                        "Applied {} signed mod PAKs to ISOLATED offline stage only and selected exactly those PAKs for client swap. Transaction {} requires recovery before another profile. Verify the offline launcher before playing.",
                         tx.entries.len(),
                         tx.id
                     );
@@ -10070,7 +10070,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::ProfileRecovered(tx)) => {
                     state.profile_feedback = format!(
-                        "Restored {} original PAKs from verified offline batch backups.",
+                        "Restored {} original PAKs from verified offline batch backups and cleared the active client PAK selection.",
                         tx.entries.len()
                     );
                     state.status = state.profile_feedback.clone();

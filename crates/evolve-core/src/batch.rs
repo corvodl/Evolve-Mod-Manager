@@ -8,11 +8,13 @@ use crate::staging::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 const JOURNAL: &str = "bundle-active.json";
 const HISTORY: &str = ".evolve-batches";
+const ACTIVE_SELECTION: &str = "active_mod_paks.json";
+const MAX_SELECTION_BYTES: usize = 60 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BatchError {
@@ -113,6 +115,67 @@ fn save_journal(root: &Path, tx: &BatchJournal) -> Result<(), BatchError> {
         .map_err(|e| BatchError::Io(e.error))?;
     Ok(())
 }
+fn selection_bytes(profile_id: &str, targets: &[String]) -> Result<Vec<u8>, BatchError> {
+    if profile_id.len() != 32
+        || !profile_id.bytes().all(|b| b.is_ascii_hexdigit())
+        || targets.is_empty()
+        || targets.len() > 500
+    {
+        return Err(BatchError::Invalid(
+            "Invalid active PAK selection header".into(),
+        ));
+    }
+    let mut seen = HashSet::new();
+    for target in targets {
+        if target.len() > 600
+            || target_name(target)? != *target
+            || !seen.insert(target.to_ascii_lowercase())
+        {
+            return Err(BatchError::Invalid(
+                "Unsafe or duplicate active PAK target".into(),
+            ));
+        }
+    }
+    let bytes = serde_json::to_vec_pretty(&serde_json::json!({
+        "schema": 1,
+        "profile_id": profile_id,
+        "targets": targets,
+    }))?;
+    if bytes.len() > MAX_SELECTION_BYTES {
+        return Err(BatchError::Invalid(
+            "Active PAK selection exceeds launcher limit".into(),
+        ));
+    }
+    Ok(bytes)
+}
+fn publish_selection(root: &Path, bytes: &[u8]) -> Result<(), BatchError> {
+    let path = root.join(ACTIVE_SELECTION);
+    match fs::symlink_metadata(&path) {
+        Ok(meta) if !meta.file_type().is_file() => {
+            return Err(BatchError::Invalid(
+                "Active PAK selection is not a regular file".into(),
+            ));
+        }
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e.into()),
+        _ => (),
+    }
+    let mut file = tempfile::NamedTempFile::new_in(root)?;
+    file.write_all(bytes)?;
+    file.as_file().sync_all()?;
+    file.persist(path).map_err(|e| BatchError::Io(e.error))?;
+    Ok(())
+}
+fn clear_selection(root: &Path) -> Result<(), BatchError> {
+    let path = root.join(ACTIVE_SELECTION);
+    match fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Ok(meta) if meta.file_type().is_file() => Ok(fs::remove_file(path)?),
+        Ok(_) => Err(BatchError::Invalid(
+            "Active PAK selection is not a regular file".into(),
+        )),
+        Err(e) => Err(e.into()),
+    }
+}
 pub fn batch_stage_status(stage: &Path) -> Result<Option<BatchJournal>, BatchError> {
     read_journal(&workspace(stage)?)
 }
@@ -133,6 +196,25 @@ pub fn apply_profile_stage(
     let plan = plan_mod_profile(&root, profile_id, original_key, mod_key)?;
     if plan.mods.is_empty() {
         return Err(BatchError::Invalid("Profile has no enabled PAKs".into()));
+    }
+    // Reject a selection the client cannot read before creating recovery intent.
+    let selection = selection_bytes(
+        profile_id,
+        &plan
+            .mods
+            .iter()
+            .map(|m| m.target.clone())
+            .collect::<Vec<_>>(),
+    )?;
+    // A blocked destination must fail before swapping any staged PAKs.
+    match fs::symlink_metadata(root.join(ACTIVE_SELECTION)) {
+        Ok(meta) if !meta.file_type().is_file() => {
+            return Err(BatchError::Invalid(
+                "Active PAK selection is not a regular file".into(),
+            ));
+        }
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e.into()),
+        _ => (),
     }
     let tx = BatchJournal {
         schema: 1,
@@ -191,6 +273,13 @@ pub fn apply_profile_stage(
             ));
         }
     }
+    // Keep the recovery journal on publication failure: a stale selection must
+    // never be mistaken for a successfully applied manual profile.
+    publish_selection(&root, &selection).map_err(|error| {
+        BatchError::Invalid(format!(
+            "PAKs were applied but the client selection could not be published: {error}. Restore the staged profile before trying again"
+        ))
+    })?;
     Ok(tx)
 }
 
@@ -258,6 +347,7 @@ pub fn restore_profile_stage(stage: &Path) -> Result<BatchJournal, BatchError> {
             ));
         }
     }
+    clear_selection(&root)?;
     fs::remove_file(root.join(JOURNAL))?;
     Ok(tx)
 }
@@ -266,6 +356,42 @@ pub fn restore_profile_stage(stage: &Path) -> Result<BatchJournal, BatchError> {
 mod tests {
     use super::*;
     use crate::staging::initialize_stage;
+    #[test]
+    fn active_selection_is_bounded_atomic_and_exact() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stage = tmp.path().join("isolated");
+        initialize_stage(&stage).unwrap();
+        let root = workspace(&stage).unwrap();
+        let id = "a".repeat(32);
+        let first = vec!["Game/UI_Data.pak".to_string()];
+        publish_selection(&root, &selection_bytes(&id, &first).unwrap()).unwrap();
+        let path = root.join(ACTIVE_SELECTION);
+        let original = fs::read(&path).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        assert_eq!(json["schema"], 1);
+        assert_eq!(json["profile_id"], id);
+        assert_eq!(json["targets"], serde_json::json!(first));
+        for invalid in [
+            vec![],
+            vec!["Game/UI_Data.pak".into(), "game/ui_data.PAK".into()],
+            vec!["Game/../other.pak".into()],
+            vec!["Game\\other.pak".into()],
+            vec!["Game/other.txt".into()],
+            vec![format!("Game/{}.pak", "a".repeat(600))],
+        ] {
+            assert!(selection_bytes(&id, &invalid).is_err());
+            assert_eq!(fs::read(&path).unwrap(), original);
+        }
+        let oversized = (0..500)
+            .map(|i| format!("Game/{}{i:03}.pak", "a".repeat(125)))
+            .collect::<Vec<_>>();
+        assert!(selection_bytes(&id, &oversized).is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        let next = vec!["Game/UI_Assets.pak".into(), "Game/UI_Data.pak".into()];
+        publish_selection(&root, &selection_bytes(&id, &next).unwrap()).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(json["targets"], serde_json::json!(next));
+    }
     #[test]
     fn partial_batch_recovery_keeps_original_bytes() {
         let tmp = tempfile::tempdir().unwrap();
@@ -308,10 +434,16 @@ mod tests {
         fs::write(&first, b"modified").unwrap();
         tx.entries[0].replacement_sha256 = digest(&first).unwrap();
         save_journal(&root, &tx).unwrap();
+        publish_selection(
+            &root,
+            &selection_bytes(&tx.profile_id, &["first.pak".into()]).unwrap(),
+        )
+        .unwrap();
         assert!(stage_status(&root).is_err());
         restore_profile_stage(&root).unwrap();
         assert_eq!(fs::read(root.join("paks/first.pak")).unwrap(), b"first");
         assert_eq!(fs::read(root.join("paks/second.pak")).unwrap(), b"second");
         assert!(batch_stage_status(&root).unwrap().is_none());
+        assert!(!root.join(ACTIVE_SELECTION).exists());
     }
 }
