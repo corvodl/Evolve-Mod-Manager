@@ -13,7 +13,9 @@ mod blender_install;
 mod client_version;
 mod crash_diagnostics;
 mod design;
+mod discord_presence;
 mod developer_auth;
+mod developer_hotkeys;
 mod direct_runtime;
 mod explorer_tree;
 mod gfx_bundled_tools;
@@ -55,6 +57,7 @@ mod runtime_health;
 mod runtime_live;
 mod runtime_memory;
 mod runtime_signatures;
+mod runtime_teleport;
 mod selection;
 mod settings;
 mod settings_page;
@@ -374,6 +377,19 @@ struct State {
     developer_attempts: u8,
     developer_checking: bool,
     actor_listing: Option<runtime_actors::Listing>,
+    teleport_reading: Option<runtime_teleport::Reading>,
+    teleport_saved: Option<runtime_teleport::Reading>,
+    teleport_busy: bool,
+    teleport_status: String,
+    teleport_x: String,
+    teleport_y: String,
+    teleport_z: String,
+    teleport_aim_distance: String,
+    teleport_aim_pending: Option<f32>,
+    teleport_aim_preview_busy: bool,
+    teleport_overlay: Option<std::process::Child>,
+    teleport_hotkey_rx: Option<std::sync::mpsc::Receiver<String>>,
+    developer_hotkey_status: String,
     actor_busy: bool,
     actor_status: String,
     actor_edit: Option<(u32, usize, runtime_actors::Field, u32)>,
@@ -1670,6 +1686,9 @@ enum Message {
     LibraryImportStart,
     LibraryImportCancel,
     SettingsTab(settings_page::Tab),
+    PreferenceDiscordToggle(&'static str),
+    PreferenceDiscordAppId(String),
+    DiscordPresenceTick,
     LibrarySearchChanged(String),
     LibraryMenu(&'static str),
     ModdingMenu(&'static str),
@@ -1889,6 +1908,21 @@ enum Message {
     DeveloperProcessPrivilegesFinished(Result<String, String>),
     ActorRefresh,
     ActorRefreshed(Result<runtime_actors::Listing, String>),
+    TeleportCapture(bool),
+    TeleportCaptured(bool, Result<runtime_teleport::Reading, String>),
+    TeleportXYZChanged(usize, String),
+    TeleportAbsolute,
+    TeleportRelative(f32, f32, f32),
+    TeleportReturnSaved,
+    TeleportAimDistanceChanged(String),
+    TeleportAim,
+    TeleportPreviewAim,
+    TeleportPreviewed(Result<runtime_teleport::Position, String>),
+    TeleportOverlayChanged(bool),
+    TeleportOverlayPoll,
+    DeveloperKeybindChanged(developer_hotkeys::Action, developer_hotkeys::Keybind),
+    TeleportDo(runtime_teleport::Destination, Option<(u32, u32)>),
+    TeleportMoved(Result<runtime_teleport::Reading, String>),
     ActorEdit(u32, usize, runtime_actors::Field, u32),
     ActorEditValue(String),
     ActorWrite,
@@ -2950,6 +2984,40 @@ fn home_recent_workspace(state: &State) -> Option<PathBuf> {
     Some(path)
 }
 
+// The companion only draws notifications and reports Win32 hotkeys. Game
+// memory changes always run through the manager's existing offline guards.
+fn notify_dev_overlay(state: &mut State, message: &str) {
+    use std::io::Write;
+    let Some(stdin) = state
+        .teleport_overlay
+        .as_mut()
+        .and_then(|c| c.stdin.as_mut())
+    else {
+        return;
+    };
+    let clean: String = message
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(96)
+        .collect();
+    let _ = writeln!(stdin, "NOTIFY {clean}");
+    let _ = stdin.flush();
+}
+
+fn send_dev_bind(state: &mut State, action: developer_hotkeys::Action) {
+    use std::io::Write;
+    let key = developer_hotkeys::Keybind(state.preferences.developer_hotkeys[action.index()]);
+    let (mods, vk) = key.win32().unwrap_or((0, 0));
+    if let Some(stdin) = state
+        .teleport_overlay
+        .as_mut()
+        .and_then(|c| c.stdin.as_mut())
+    {
+        let _ = writeln!(stdin, "BIND {} {mods} {vk}", action.index());
+        let _ = stdin.flush();
+    }
+}
+
 fn update(state: &mut State, message: Message) -> Task<Message> {
     match message {
         Message::HomeContinueEditing | Message::HomeOpenProject => {
@@ -3668,6 +3736,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::SettingsTab(tab) => state.settings_tab = tab,
+        Message::PreferenceDiscordAppId(value) => {
+            if value.len() <= 25 && value.bytes().all(|c| c.is_ascii_digit()) {
+                state.preferences.discord_application_id = value;
+                persist_preferences(state);
+            }
+        }
+        Message::PreferenceDiscordToggle(which) => {
+            let p = &mut state.preferences;
+            match which {
+                "enabled" => p.discord_presence_enabled = !p.discord_presence_enabled,
+                "game" => p.discord_show_game = !p.discord_show_game,
+                "manager" => p.discord_show_manager = !p.discord_show_manager,
+                "character" => p.discord_show_character = !p.discord_show_character,
+                "stats" => p.discord_show_stats = !p.discord_show_stats,
+                "profile" => p.discord_show_profile = !p.discord_show_profile,
+                "minimal" => p.discord_minimal = !p.discord_minimal,
+                _ => {}
+            }
+            persist_preferences(state);
+        }
+        Message::DiscordPresenceTick => {}
         Message::LibrarySearchChanged(value) => {
             state.library_search = value;
             state.library_page = 0;
@@ -3948,6 +4037,409 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.developer_password = value;
             }
         }
+        Message::DeveloperKeybindChanged(action, key) => {
+            if !state.developer_unlocked {
+                return Task::none();
+            }
+            if key.0 > 28
+                || (key.0 != 0
+                    && state
+                        .preferences
+                        .developer_hotkeys
+                        .iter()
+                        .enumerate()
+                        .any(|(i, existing)| i != action.index() && *existing == key.0))
+            {
+                state.developer_hotkey_status =
+                    "Shortcut already assigned; choose a different key".into();
+                return Task::none();
+            }
+            state.preferences.developer_hotkeys[action.index()] = key.0;
+            send_dev_bind(state, action);
+            state.developer_hotkey_status = format!("{}: {key}", action.label());
+            if let Ok(path) = settings_path()
+                && let Err(error) = save_to(&path, &state.preferences)
+            {
+                state.developer_hotkey_status =
+                    format!("Shortcut set for session, but save failed: {error}");
+            }
+        }
+        Message::TeleportOverlayPoll => {
+            let ended = state
+                .teleport_overlay
+                .as_mut()
+                .is_some_and(|child| child.try_wait().ok().flatten().is_some());
+            if ended {
+                state.teleport_overlay = None;
+                state.teleport_hotkey_rx = None;
+                state.developer_hotkey_status = "Overlay exited; shortcuts inactive".into();
+                return Task::none();
+            }
+            if !state.developer_unlocked
+                || state.developer_online_mods
+                || !state.live_edit_enabled
+                || !state.armor_offline_confirmed
+            {
+                return Task::none();
+            }
+            let Some(output) = state
+                .teleport_hotkey_rx
+                .as_ref()
+                .and_then(|rx| rx.try_recv().ok())
+            else {
+                return Task::none();
+            };
+            if let Some(raw) = output.strip_prefix("BINDFAIL ") {
+                state.developer_hotkey_status = format!(
+                    "Could not register hotkey {} (already in use by Windows or another app)",
+                    raw.trim()
+                );
+                return Task::none();
+            }
+            let Some(raw) = output.strip_prefix("HOTKEY ") else {
+                return Task::none();
+            };
+            let Some(action) = raw
+                .trim()
+                .parse::<usize>()
+                .ok()
+                .and_then(developer_hotkeys::Action::from_index)
+            else {
+                return Task::none();
+            };
+            if state.preferences.developer_hotkeys[action.index()] == 0 {
+                return Task::none();
+            }
+            return match action {
+                developer_hotkeys::Action::Aim => Task::done(Message::TeleportAim),
+                developer_hotkeys::Action::Save => Task::done(Message::TeleportCapture(true)),
+                developer_hotkeys::Action::Return => Task::done(Message::TeleportReturnSaved),
+                developer_hotkeys::Action::XMinus => {
+                    Task::done(Message::TeleportRelative(-20.0, 0.0, 0.0))
+                }
+                developer_hotkeys::Action::XPlus => {
+                    Task::done(Message::TeleportRelative(20.0, 0.0, 0.0))
+                }
+                developer_hotkeys::Action::YMinus => {
+                    Task::done(Message::TeleportRelative(0.0, -20.0, 0.0))
+                }
+                developer_hotkeys::Action::YPlus => {
+                    Task::done(Message::TeleportRelative(0.0, 20.0, 0.0))
+                }
+                developer_hotkeys::Action::ZMinus => {
+                    Task::done(Message::TeleportRelative(0.0, 0.0, -20.0))
+                }
+                developer_hotkeys::Action::ZPlus => {
+                    Task::done(Message::TeleportRelative(0.0, 0.0, 20.0))
+                }
+            };
+        }
+        Message::TeleportAimDistanceChanged(value) => {
+            if state.developer_unlocked && value.len() <= 12 {
+                state.teleport_aim_distance = value;
+            }
+        }
+        Message::TeleportOverlayChanged(visible) => {
+            if let Some(mut child) = state.teleport_overlay.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            state.teleport_hotkey_rx = None;
+            if !visible {
+                state.teleport_status = "Crosshair overlay closed".into();
+                return Task::none();
+            }
+            if !state.developer_unlocked
+                || state.developer_online_mods
+                || !state.armor_offline_confirmed
+                || !state.live_edit_enabled
+            {
+                state.teleport_status = "Overlay requires an isolated offline match".into();
+                return Task::none();
+            }
+            let Some(pid) = state.runtime_snapshot.as_ref().and_then(|s| s.pid) else {
+                state.teleport_status = "Detect Evolve.exe first".into();
+                return Task::none();
+            };
+            if let Err(error) = runtime_armor::offline_guard(pid, true) {
+                state.teleport_status = error;
+                return Task::none();
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                let path = std::env::current_exe()
+                    .ok()
+                    .map(|p| p.with_file_name("evolve-teleport-overlay.exe"));
+                let result = path
+                    .ok_or_else(|| "Cannot locate manager installation".to_owned())
+                    .and_then(|path| {
+                        std::process::Command::new(path)
+                            .arg(pid.to_string())
+                            .arg(std::process::id().to_string())
+                            .stdin(std::process::Stdio::piped())
+                            .stdout(std::process::Stdio::piped())
+                            .creation_flags(0x0800_0000)
+                            .spawn()
+                            .map_err(|e| format!("Cannot launch overlay companion: {e}"))
+                    });
+                match result {
+                    Ok(mut child) => {
+                        if let Some(stdout) = child.stdout.take() {
+                            let (tx, rx) = std::sync::mpsc::channel::<String>();
+                            std::thread::spawn(move || {
+                                use std::io::BufRead;
+                                for line in std::io::BufReader::new(stdout).lines() {
+                                    let Ok(line) = line else { break };
+                                    if tx.send(line).is_err() {
+                                        break;
+                                    }
+                                }
+                            });
+                            state.teleport_hotkey_rx = Some(rx);
+                        }
+                        state.teleport_overlay = Some(child);
+                        for action in developer_hotkeys::Action::ALL {
+                            send_dev_bind(state, action);
+                        }
+                        state.teleport_status =
+                            "Approximate crosshair overlay and hotkeys enabled".into();
+                    }
+                    Err(error) => state.teleport_status = error,
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                state.teleport_status = "External overlay requires Windows".into();
+            }
+        }
+        Message::TeleportAim => {
+            if !state.developer_unlocked || state.teleport_busy {
+                return Task::none();
+            }
+            let raw = state.teleport_aim_distance.trim();
+            let raw = if raw.is_empty() { "30" } else { raw };
+            let distance = raw
+                .parse::<f32>()
+                .ok()
+                .filter(|v| v.is_finite() && (5.0..=100.0).contains(v));
+            let Some(distance) = distance else {
+                state.teleport_status = "Aim distance must be 5 to 100 units".into();
+                return Task::none();
+            };
+            state.teleport_aim_pending = Some(distance);
+            return Task::done(Message::TeleportCapture(true));
+        }
+        Message::TeleportPreviewAim => {
+            if !state.developer_unlocked
+                || state.developer_online_mods
+                || !state.armor_offline_confirmed
+                || !state.live_edit_enabled
+                || state.teleport_aim_preview_busy
+                || state.teleport_busy
+            {
+                return Task::none();
+            }
+            let Some(snapshot) = state.runtime_snapshot.clone() else {
+                state.teleport_status = "Detect Evolve.exe first".into();
+                return Task::none();
+            };
+            let raw = state.teleport_aim_distance.trim();
+            let raw = if raw.is_empty() { "30" } else { raw };
+            let distance = raw
+                .parse::<f32>()
+                .ok()
+                .filter(|v| v.is_finite() && (5.0..=100.0).contains(v));
+            let Some(distance) = distance else {
+                state.teleport_status = "Aim distance must be 5 to 100 units".into();
+                return Task::none();
+            };
+            state.teleport_aim_preview_busy = true;
+            let root = state.preferences.game_storage_root.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        runtime_teleport::preview_aim(&snapshot, &root, true, distance)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Aim preview failed: {e}")))
+                },
+                Message::TeleportPreviewed,
+            );
+        }
+        Message::TeleportPreviewed(result) => {
+            state.teleport_aim_preview_busy = false;
+            if !state.developer_unlocked || state.developer_online_mods {
+                return Task::none();
+            }
+            match result {
+                Ok(pos) => {
+                    state.teleport_status =
+                        format!("Approximate actor-facing destination: {}", pos.label())
+                }
+                Err(error) => state.teleport_status = format!("Aim unavailable: {error}"),
+            }
+        }
+        Message::TeleportCapture(save) => {
+            if !state.developer_unlocked
+                || state.developer_online_mods
+                || !state.armor_offline_confirmed
+                || !state.live_edit_enabled
+                || state.teleport_busy
+            {
+                state.teleport_status = "Enable offline editing in an isolated match".into();
+                return Task::none();
+            }
+            let Some(snapshot) = state.runtime_snapshot.clone() else {
+                state.teleport_status = "Detect Evolve.exe first".into();
+                return Task::none();
+            };
+            state.teleport_busy = true;
+            state.teleport_status = "Reading local physics coordinates...".into();
+            let root = state.preferences.game_storage_root.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        runtime_teleport::inspect(&snapshot, &root, true)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Teleport read failed: {e}")))
+                },
+                move |result| Message::TeleportCaptured(save, result),
+            );
+        }
+        Message::TeleportCaptured(save, result) => {
+            state.teleport_busy = false;
+            if !state.developer_unlocked
+                || state.developer_online_mods
+                || !state.armor_offline_confirmed
+                || !state.live_edit_enabled
+            {
+                state.teleport_aim_pending = None;
+                return Task::none();
+            }
+            match result {
+                Ok(reading) => {
+                    state.teleport_reading = Some(reading);
+                    state.teleport_x = format!("{:.3}", reading.position.x);
+                    state.teleport_y = format!("{:.3}", reading.position.y);
+                    state.teleport_z = format!("{:.3}", reading.position.z);
+                    if save {
+                        state.teleport_saved = Some(reading);
+                        state.teleport_status =
+                            format!("Saved position: {}", reading.position.label());
+                        notify_dev_overlay(state, "Position saved");
+                        if let Some(distance) = state.teleport_aim_pending.take() {
+                            return Task::done(Message::TeleportDo(
+                                runtime_teleport::Destination::ActorAim(distance),
+                                None,
+                            ));
+                        }
+                    } else {
+                        state.teleport_status =
+                            format!("Local player: {}", reading.position.label());
+                    }
+                }
+                Err(error) => {
+                    state.teleport_aim_pending = None;
+                    state.teleport_status = format!("Teleport unavailable: {error}");
+                }
+            }
+        }
+        Message::TeleportXYZChanged(axis, value) => {
+            if state.developer_unlocked && !state.teleport_busy && value.len() <= 24 {
+                match axis {
+                    0 => state.teleport_x = value,
+                    1 => state.teleport_y = value,
+                    2 => state.teleport_z = value,
+                    _ => {}
+                }
+            }
+        }
+        Message::TeleportAbsolute => {
+            if let Ok(pos) = runtime_teleport::parse_position(
+                &state.teleport_x,
+                &state.teleport_y,
+                &state.teleport_z,
+            ) {
+                return Task::done(Message::TeleportDo(
+                    runtime_teleport::Destination::Absolute(pos),
+                    None,
+                ));
+            }
+            state.teleport_status = "Enter valid X, Y, Z coordinates".into();
+        }
+        Message::TeleportRelative(x, y, z) => {
+            return Task::done(Message::TeleportDo(
+                runtime_teleport::Destination::Relative(runtime_teleport::Position { x, y, z }),
+                None,
+            ));
+        }
+        Message::TeleportReturnSaved => {
+            let Some(saved) = state.teleport_saved else {
+                state.teleport_status = "Save a position first".into();
+                return Task::none();
+            };
+            return Task::done(Message::TeleportDo(
+                runtime_teleport::Destination::Absolute(saved.position),
+                Some((saved.pid, saved.actor_id)),
+            ));
+        }
+        Message::TeleportDo(destination, identity) => {
+            if !state.developer_unlocked
+                || state.developer_online_mods
+                || !state.armor_offline_confirmed
+                || !state.live_edit_enabled
+                || state.teleport_busy
+            {
+                state.teleport_status = "Teleport requires unlocked offline writes".into();
+                return Task::none();
+            }
+            let Some(snapshot) = state.runtime_snapshot.clone() else {
+                state.teleport_status = "Detect Evolve.exe first".into();
+                return Task::none();
+            };
+            state.teleport_busy = true;
+            state.teleport_status = "Applying one-shot physics teleport...".into();
+            let root = state.preferences.game_storage_root.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        runtime_teleport::teleport(&snapshot, &root, true, destination, identity)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Teleport failed: {e}")))
+                },
+                Message::TeleportMoved,
+            );
+        }
+        Message::TeleportMoved(result) => {
+            state.teleport_busy = false;
+            if !state.developer_unlocked
+                || state.developer_online_mods
+                || !state.armor_offline_confirmed
+                || !state.live_edit_enabled
+            {
+                return Task::none();
+            }
+            match result {
+                Ok(reading) => {
+                    state.teleport_reading = Some(reading);
+                    state.teleport_x = format!("{:.3}", reading.position.x);
+                    state.teleport_y = format!("{:.3}", reading.position.y);
+                    state.teleport_z = format!("{:.3}", reading.position.z);
+                    state.teleport_status = format!(
+                        "Teleported to {}. Movement input may resume falling.",
+                        reading.position.label()
+                    );
+                    notify_dev_overlay(state, &format!("Teleported: {}", reading.position.label()));
+                }
+                Err(error) => {
+                    notify_dev_overlay(state, &format!("Teleport refused: {error}"));
+                    state.teleport_status = format!("Teleport refused: {error}");
+                }
+            }
+        }
         Message::ActorRefresh => {
             if !state.developer_unlocked || state.actor_busy {
                 return Task::none();
@@ -4034,6 +4526,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ActorWritten(result) => {
             state.actor_busy = false;
             if state.developer_unlocked {
+                let notice = match &result {
+                    Ok(outcome) => format!("{} set to {}", outcome.field.title(), outcome.after),
+                    Err(error) => format!("Actor write failed: {error}"),
+                };
+                notify_dev_overlay(state, &notice);
                 state.actor_status = match &result {
                     Ok(outcome) => format!(
                         "{} {}: {} -> {}. Refresh to read current values.",
@@ -4083,6 +4580,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if !checked {
                 state.actor_frozen.remove(&key);
                 state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
+                notify_dev_overlay(state, &format!("Unfrozen {}", field.title()));
                 return Task::none();
             }
             if !state.developer_unlocked || !state.live_edit_enabled {
@@ -4098,6 +4596,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if let Some(bits) = bits {
                 state.actor_frozen.insert(key, bits);
                 state.actor_status = format!("Holding {} at its current value", field.title());
+                notify_dev_overlay(state, &format!("Holding {}", field.title()));
             }
         }
         Message::ActorFreezeTick => {
@@ -4186,6 +4685,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.live_edit_busy = false;
             state.live_edit_enabled = armed;
             if !state.live_edit_enabled {
+                if let Some(mut child) = state.teleport_overlay.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                state.teleport_aim_pending = None;
                 state.actor_frozen.clear();
                 state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
             }
@@ -4323,6 +4827,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     "Float32 write not confirmed: {e}. Read the address again before retrying."
                 ),
             };
+            let notice = if state.live_edit_report.starts_with("One-shot") {
+                "Float32 edit applied"
+            } else {
+                "Float32 edit not confirmed"
+            };
+            notify_dev_overlay(state, notice);
         }
         Message::ArmorOfflineChanged(confirmed) => {
             // Guided armor scanning is a separate opt-in from actor field edits.
@@ -4558,6 +5068,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
             state.actor_listing = None;
             state.actor_edit = None;
+            state.teleport_reading = None;
+            state.teleport_saved = None;
+            state.teleport_aim_pending = None;
+            if let Some(mut child) = state.teleport_overlay.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            state.teleport_status.clear();
             state.runtime_checking = false;
             if state.developer_unlocked {
                 state.armor_pid_seen = snapshot.pid;
@@ -4758,6 +5276,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.actor_listing = None;
             state.actor_edit = None;
             state.actor_status.clear();
+            state.teleport_reading = None;
+            state.teleport_saved = None;
+            state.teleport_aim_pending = None;
+            if let Some(mut child) = state.teleport_overlay.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            state.teleport_status.clear();
             state.developer_network_generation = state.developer_network_generation.wrapping_add(1);
             state.developer_network_busy = false;
             state.developer_online_mods = false;
@@ -11251,6 +11777,7 @@ struct Desktop {
     activity_id: Option<window::Id>,
     play_notice_id: Option<window::Id>,
     export_id: Option<window::Id>,
+    discord_presence: discord_presence::Service,
 }
 
 /// Use the shipped application artwork for titlebars and taskbar icons on
@@ -11283,6 +11810,7 @@ impl Desktop {
             Task::none()
         };
         let client_version_task = inspect_client_version_task(&state.preferences.client_executable);
+        let discord_presence = discord_presence::Service::start(discord_presence::Config::from_state(&state));
         (
             Self {
                 state,
@@ -11293,6 +11821,7 @@ impl Desktop {
                 activity_id: None,
                 play_notice_id: None,
                 export_id: None,
+                discord_presence,
             },
             Task::batch([
                 opened.map(|_| Message::ViewerOpened),
@@ -11387,6 +11916,11 @@ impl Desktop {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        if matches!(message, Message::DiscordPresenceTick | Message::PreferenceDiscordToggle(_) | Message::PreferenceDiscordAppId(_)) {
+            let task = update(&mut self.state, message);
+            self.discord_presence.publish(discord_presence::Config::from_state(&self.state));
+            return task;
+        }
         match message {
             Message::MenuCommand(inner) => {
                 self.state.viewer_menu = None;
@@ -11642,6 +12176,11 @@ impl Desktop {
         } else {
             Subscription::none()
         };
+        let dev_overlay_input = if self.state.teleport_overlay.is_some() {
+            iced::time::every(Duration::from_millis(125)).map(|_| Message::TeleportOverlayPoll)
+        } else {
+            Subscription::none()
+        };
         let actor_freeze = if !self.state.actor_frozen.is_empty()
             && self.state.developer_unlocked
             && self.state.live_edit_enabled
@@ -11656,6 +12195,8 @@ impl Desktop {
             Subscription::none()
         };
         Subscription::batch([
+            iced::time::every(Duration::from_secs(8)).map(|_| Message::DiscordPresenceTick),
+            dev_overlay_input,
             actor_freeze,
             news_poll,
             armor_recovery,

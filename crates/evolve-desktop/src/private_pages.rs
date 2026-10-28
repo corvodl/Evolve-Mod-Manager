@@ -1,7 +1,7 @@
 //! Private-manager-aligned landing, documentation and informational pages.
 //! Home deliberately does not enumerate PAKs or scan the user's installation.
 use super::{Message, Page, State};
-use crate::design;
+use crate::{design, developer_hotkeys};
 use iced::widget::{button, column, container, image, row, scrollable, stack, svg, text, tooltip};
 use iced::{Background, Border, Element, Fill, Length};
 
@@ -1401,6 +1401,148 @@ fn actor_rows(state: &State) -> Element<'_, Message> {
     list.into()
 }
 
+fn developer_keybind_controls(state: &State) -> Element<'_, Message> {
+    let mut rows = column![
+        text("Developer shortcuts").size(17),
+        text("Active while the overlay is on and Evolve has focus. No keyboard hooks.")
+            .size(12)
+            .style(design::muted),
+    ]
+    .spacing(7);
+    for action in developer_hotkeys::Action::ALL {
+        let current =
+            developer_hotkeys::Keybind(state.preferences.developer_hotkeys[action.index()]);
+        rows = rows.push(
+            row![
+                text(action.label()).width(Length::Fixed(185.0)),
+                iced::widget::pick_list(
+                    developer_hotkeys::Keybind::OPTIONS,
+                    Some(current),
+                    move |key| Message::DeveloperKeybindChanged(action, key),
+                )
+                .width(Length::Fixed(145.0)),
+            ]
+            .align_y(iced::Alignment::Center)
+            .spacing(8),
+        );
+    }
+    rows = rows.push(
+        text(state.developer_hotkey_status.as_str())
+            .size(12)
+            .style(design::muted),
+    );
+    rows.into()
+}
+
+fn teleport_controls(state: &State) -> Element<'_, Message> {
+    let enabled = state.developer_unlocked
+        && state.armor_offline_confirmed
+        && state.live_edit_enabled
+        && !state.developer_online_mods
+        && !state.teleport_busy
+        && state
+            .runtime_snapshot
+            .as_ref()
+            .and_then(|s| s.pid)
+            .is_some();
+
+    surface(
+        column![
+            text("Teleport").size(19),
+            text("Offline only · One-shot physics XYZ · No hooks or freezing")
+                .size(12)
+                .style(design::muted),
+            row![
+                design::text_input("X", &state.teleport_x)
+                    .on_input(|v| Message::TeleportXYZChanged(0, v)),
+                design::text_input("Y", &state.teleport_y)
+                    .on_input(|v| Message::TeleportXYZChanged(1, v)),
+                design::text_input("Z", &state.teleport_z)
+                    .on_input(|v| Message::TeleportXYZChanged(2, v)),
+            ]
+            .spacing(8),
+            row![
+                design::button("Read position")
+                    .on_press_maybe(enabled.then_some(Message::TeleportCapture(false))),
+                design::button("Save position")
+                    .on_press_maybe(enabled.then_some(Message::TeleportCapture(true))),
+                design::button("Teleport XYZ")
+                    .on_press_maybe(enabled.then_some(Message::TeleportAbsolute)),
+                design::button("Return to saved").on_press_maybe(
+                    (enabled && state.teleport_saved.is_some())
+                        .then_some(Message::TeleportReturnSaved)
+                ),
+            ]
+            .spacing(8),
+            text("Relative move · 20 units per click (world axes)")
+                .size(12)
+                .style(design::muted),
+            row![
+                text("X").width(Length::Fixed(24.0)),
+                design::button("−20 X")
+                    .on_press_maybe(enabled.then_some(Message::TeleportRelative(-20.0, 0.0, 0.0))),
+                design::button("+20 X")
+                    .on_press_maybe(enabled.then_some(Message::TeleportRelative(20.0, 0.0, 0.0))),
+            ]
+            .align_y(iced::Alignment::Center)
+            .spacing(8),
+            row![
+                text("Y").width(Length::Fixed(24.0)),
+                design::button("−20 Y")
+                    .on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, -20.0, 0.0))),
+                design::button("+20 Y")
+                    .on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, 20.0, 0.0))),
+            ]
+            .align_y(iced::Alignment::Center)
+            .spacing(8),
+            row![
+                text("Z").width(Length::Fixed(24.0)),
+                design::button("−20 Z")
+                    .on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, 0.0, -20.0))),
+                design::button("+20 Z")
+                    .on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, 0.0, 20.0))),
+            ]
+            .align_y(iced::Alignment::Center)
+            .spacing(8),
+            text("Approximate crosshair teleport").size(17),
+            text("Uses actor facing (+Y), not the camera ray. No geometry collision test.")
+                .size(12)
+                .style(design::muted),
+            row![
+                text("Distance").width(Length::Fixed(65.0)),
+                design::text_input("30", &state.teleport_aim_distance)
+                    .on_input(Message::TeleportAimDistanceChanged)
+                    .width(Length::Fixed(90.0)),
+                design::button("Preview coordinates").on_press_maybe(
+                    (enabled && !state.teleport_aim_preview_busy)
+                        .then_some(Message::TeleportPreviewAim)
+                ),
+                design::button("Teleport to Crosshair")
+                    .on_press_maybe(enabled.then_some(Message::TeleportAim)),
+            ]
+            .align_y(iced::Alignment::Center)
+            .spacing(8),
+            iced::widget::checkbox(state.teleport_overlay.is_some())
+                .label("Show external overlay and enable shortcuts (windowed fullscreen)")
+                .on_toggle(Message::TeleportOverlayChanged),
+            developer_keybind_controls(state),
+            text("The overlay marks the screen center only; it is not a raycast hit location.")
+                .size(12)
+                .style(design::muted),
+            text(if state.teleport_busy {
+                "Teleport operation running..."
+            } else {
+                state.teleport_status.as_str()
+            })
+            .size(12)
+            .style(design::muted),
+        ]
+        .spacing(9)
+        .padding(10),
+    )
+    .into()
+}
+
 pub(super) fn developer(state: &State) -> Element<'_, Message> {
     if state.developer_unlocked {
         scrollable(
@@ -1497,6 +1639,7 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
                             .size(12)
                             .style(design::muted),
                         actor_rows(state),
+                        teleport_controls(state),
                         text("Click a value to edit it · Enter to write · Freeze holds the current value")
                             .size(12).style(design::muted),
                         design::button("Lock developer area").on_press(Message::LockDeveloper),
