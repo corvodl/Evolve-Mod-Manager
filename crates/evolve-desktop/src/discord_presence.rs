@@ -642,10 +642,9 @@ mod tests {
             armor: Some("1000".into()),
         };
         let act = format_activity(&sample(), Some(100), Some(&actor), 100).unwrap();
-        assert_eq!(act["details"], "Playing as Goliath");
-        assert!(act["state"].as_str().unwrap().contains("HP 8500"));
-        assert!(act["state"].as_str().unwrap().contains("Evolution Stage 2"));
-        assert!(!act["state"].as_str().unwrap().contains("Map:"));
+        assert_eq!(act["details"], "Playing as Goliath · Stage 2");
+        assert_eq!(act["state"], "Health 8,500 · Armor 1,000");
+        assert!(!act["state"].as_str().unwrap().contains("Stage 2"));
         assert!(act["assets"].get("small_image").is_none());
     }
     #[test]
@@ -661,7 +660,7 @@ mod tests {
         let activity = format_activity(&sample(), Some(123), Some(&hunter), 100).unwrap();
         let state = activity["state"].as_str().unwrap();
         assert_eq!(activity["details"], "Playing Evolve");
-        assert!(state.contains("HP 1600"));
+        assert_eq!(state, "Health 1,600");
         assert!(!state.contains("Armor"));
         assert!(!state.contains("Evolution"));
     }
@@ -687,7 +686,7 @@ mod tests {
                 .iter()
                 .filter(|p| !p.internal_names.is_empty())
                 .count(),
-            14
+            37
         );
         let mut seen = std::collections::HashSet::new();
         for portrait in portraits {
@@ -717,6 +716,7 @@ mod tests {
             portrait_for_display_name("Tech").unwrap().team,
             Team::Unknown
         );
+        assert_eq!(portrait_registry().unillustrated_characters.len(), 2);
         assert_eq!(character_from_entity_name("UnknownABot"), None);
     }
 
@@ -791,14 +791,16 @@ mod tests {
         );
     }
     #[test]
-    fn maps_supplied_monster_aliases_with_trailing_abot() {
+    fn maps_all_verified_monsters_and_glacial_behemoth_spelling() {
         for (internal, expected) in [
+            ("GoliathABot", "Goliath"),
+            ("GoliathMeteorBot", "Meteor Goliath"),
             ("GrounderABot", "Kraken"),
+            ("KrakenElderBot", "Elder Kraken"),
+            ("TeleporterABot", "Wraith"),
             ("RockyABot", "Behemoth"),
-            ("RockybobsicleABot", "Glacial Behemoth"),
+            ("RockyBobcicleBot", "Glacial Behemoth"),
             ("LurkerABot", "Gorgon"),
-            ("KrakenABot", "Elder Kraken"),
-            ("goliathmeteorABot", "Meteor Goliath"),
         ] {
             assert_eq!(
                 character_from_entity_name(internal),
@@ -806,11 +808,98 @@ mod tests {
             );
         }
         assert_eq!(
-            character_from_entity_name("GOLIATHMETEORABOT"),
-            Some(("Meteor Goliath", Team::Monster))
+            character_from_entity_name("ROCKYBOBCICLEBOT"),
+            Some(("Glacial Behemoth", Team::Monster))
         );
+        assert_eq!(character_from_entity_name("RockybobsicleABot"), None);
+        assert_eq!(character_from_entity_name("KrakenABot"), None);
         assert_eq!(character_from_entity_name("UnknownABot"), None);
         assert_eq!(character_from_entity_name("AssaultABot"), None);
+    }
+
+    #[test]
+    fn all_supplied_playable_hunter_names_have_exact_display_and_portraits() {
+        for (internal, display) in [
+            ("AssaultEBot", "Markov"),
+            ("AssaultE_BlitzBot", "Blitz Markov"),
+            ("AssaultDBot", "Hyde"),
+            ("AssaultD_HellfireBot", "Hellfire Hyde"),
+            ("AssaultBBot", "Parnell"),
+            ("MedicParnellTankBot", "Tank Parnell"),
+            ("AssaultFBot", "Torvald"),
+            ("AssaultGBot", "Lennox"),
+            ("AssaultAbeRenegadeBot", "Renegade Abe"),
+            ("TrackingABot", "Griffin"),
+            ("TrackingA_ElectroBot", "Electro Griffin"),
+            ("TrackingCBot", "Abe"),
+            ("TrackingEBot", "Maggie"),
+            ("TrackingE_SavageBot", "Savage Maggie"),
+            ("TrackingFBot", "Crow"),
+            ("MedicBBot", "Lazarus"),
+            ("MedicCBot", "Caira"),
+            ("MedicC_LowgravBot", "Caira (Lowgrav)"),
+            ("MedicEBot", "Val"),
+            ("MedicE_RogueBot", "Rogue Val"),
+            ("MedicFBot", "Slim"),
+            ("MedicGBot", "Emet"),
+            ("SupportABot", "Bucket"),
+            ("SupportA_CaptainBot", "Captain Bucket"),
+            ("SupportCBot", "Hank"),
+            ("SupportC_SgtBot", "Sgt. Hank"),
+            ("SupportEBot", "Cabot"),
+            ("SupportE_BattleBot", "Battle Cabot"),
+            ("SupportFBot", "Sunny"),
+        ] {
+            assert_eq!(
+                character_from_entity_name(internal),
+                Some((display, Team::Hunter))
+            );
+            assert!(portrait_for_display_name(display).is_some());
+        }
+    }
+
+    #[test]
+    fn missing_portraits_still_resolve_names_and_npcs_never_become_players() {
+        for internal in ["TrackingGBot", "SupportGBot"] {
+            assert_eq!(character_from_entity_name(internal), Some(("Jack", Team::Hunter)));
+        }
+        assert_eq!(
+            character_from_entity_name("MedicB_NecroBot"),
+            Some(("Necro Lazarus", Team::Hunter))
+        );
+        assert!(portrait_for_display_name("Jack").is_none());
+        assert!(portrait_for_display_name("Necro Lazarus").is_none());
+        for npc in &portrait_registry().non_player_entities {
+            assert!(character_from_entity_name(npc).is_none(), "Non-player name: {npc}");
+        }
+    }
+
+    #[test]
+    fn game_activity_is_two_lines_with_compact_readable_numeric_values() {
+        let actor = LocalActor {
+            name: Some("Goliath".into()),
+            verified_monster: true,
+            evolution: Some("1".into()),
+            health: Some("10400.000".into()),
+            armor: Some("2343.978".into()),
+        };
+        let activity = format_activity(&sample(), Some(123), Some(&actor), 100).unwrap();
+        assert_eq!(activity["details"], "Playing as Goliath · Stage 1");
+        assert_eq!(activity["state"], "Health 10,400 · Armor 2,344");
+        assert!(!activity.to_string().contains("Stage 2"));
+        assert!(!activity.to_string().contains("My Mod"));
+        let mut private = sample();
+        private.show_stats = false;
+        assert_eq!(
+            format_activity(&private, Some(123), Some(&actor), 100).unwrap()["state"],
+            "In match"
+        );
+        private.show_stats = true;
+        private.show_character = false;
+        let hidden = format_activity(&private, Some(123), Some(&actor), 100).unwrap();
+        assert_eq!(hidden["details"], "Playing Evolve");
+        assert_eq!(hidden["state"], "Health 10,400 · Armor 2,344");
+        assert!(hidden["assets"].get("large_image").is_none());
     }
     #[test]
     fn unrecognized_name_does_not_display_untrusted_character() {
