@@ -32,9 +32,17 @@ Until uploaded, text Rich Presence still works; missing images may not render.
 
 ## Adding internal names as they are discovered
 
-The manifest lists **every** portrait. `internal_names: []` means artwork is
-ready but the game identity is not verified — it does not mean the portrait is
-unavailable.
+The manifest lists **every** one of the 39 portraits. **37 have mapped
+playable names**; the two `internal_names: []` entries (`Scrap` and `Tech`)
+still have portrait artwork but no verified player identity. The
+`unillustrated_characters` entries resolve **Jack** (both supplied internal
+aliases) and **Necro Lazarus**, but deliberately do not request nonexistent
+Discord images for them. Uploading those two portraits later requires adding
+the corresponding art keys and image files.
+
+The `non_player_entities` list tracks known NPC copies, decoys, co-op
+actors, and minion names that must not be treated as the local player's
+character. Internal-name matching is always exact and case-insensitive.
 
 When an entity name is confirmed through the validated local IEntity resolver,
 edit only that character's `internal_names` list. For example, to support a
@@ -55,9 +63,10 @@ be guessed or misclassified. `Scrap` and `Tech` remain unclassified until
 their game identities and team roles are verified.
 
 The original naming distinction is important: the supplied **art** filename
-is `rockybobcicle.dds` (Discord key `rockybobcicle`), while the current
-provisional **entity** alias is `RockybobsicleABot`. Both are mapped through
-the same manifest record; neither spelling needs to be changed.
+is `rockybobcicle.dds` (Discord key `rockybobcicle`), while the corrected
+**entity** name is `RockyBobcicleBot`. This displays **Glacial Behemoth**,
+not "Bobcicle Behemoth". The roster's `KrakenElderBot` and
+`GoliathMeteorBot` also replace older provisional suffix guesses.
 
 The manager displays each portrait as Discord `assets.large_image` only
 when the game is running and the user has enabled character visibility.
@@ -71,3 +80,18 @@ Windows, then validate an actual Discord session after importing art assets.
 Verify Markov, Hyde, Goliath, Wraith, and each monster variant; switch
 characters and confirm `large_image` follows the local actor. If another
 in-game RPC publisher runs, activity precedence is still best-effort.
+
+## Compact in-game Rich Presence text
+
+The game activity intentionally uses Discord's **two native text fields**,
+rather than embedding newline characters that Discord may not render:
+
+- **Details:** `Playing as Goliath · Stage 1` (stage only when the
+  detected local character is a monster and stage 1–3 is validated).
+- **State:** `Health 10,400 · Armor 2,344` (armor only for monsters).
+
+Hunters display `Playing as Markov` and `Health 1,600`.
+The redundant general game-version label `Stage 2`, game-mode/level guesses
+and mod-profile details are omitted **while playing**. Manager presence still
+shows manager status; the minimal/privacy toggle continues to hide character
+and stats. Numeric Float32 telemetry is rounded to readable whole values.
