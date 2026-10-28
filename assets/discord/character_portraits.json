@@ -79,7 +79,7 @@
       "source": "cairaLowgrav.dds",
       "asset_key": "cairalowgrav",
       "filename": "cairalowgrav.png",
-      "display_name": "Caira (Lowgrav)",
+      "display_name": "Lowgrav Caira",
       "team": "hunter",
       "internal_names": [
         "MedicC_LowgravBot"
@@ -112,9 +112,7 @@
       "display_name": "Goliath",
       "team": "monster",
       "internal_names": [
-        "GoliathABot",
-        "GoliathCoopBot",
-        "GoliathBGHCoopBot"
+        "GoliathABot"
       ]
     },
     {
@@ -124,9 +122,7 @@
       "display_name": "Meteor Goliath",
       "team": "monster",
       "internal_names": [
-        "GoliathMeteorBot",
-        "GoliathMeteorCoopBot",
-        "GoliathMeteorBGHCoopBot"
+        "GoliathMeteorBot"
       ]
     },
     {
@@ -156,8 +152,7 @@
       "display_name": "Kraken",
       "team": "monster",
       "internal_names": [
-        "GrounderABot",
-        "GrounderCoopBot"
+        "GrounderABot"
       ]
     },
     {
@@ -207,8 +202,7 @@
       "display_name": "Elder Kraken",
       "team": "monster",
       "internal_names": [
-        "KrakenElderBot",
-        "KrakenElderCoopBot"
+        "KrakenElderBot"
       ]
     },
     {
@@ -238,9 +232,7 @@
       "display_name": "Gorgon",
       "team": "monster",
       "internal_names": [
-        "LurkerABot",
-        "LurkerCoopBot",
-        "LurkerDDBot"
+        "LurkerABot"
       ]
     },
     {
@@ -297,7 +289,7 @@
       "source": "parnellTank.dds",
       "asset_key": "parnelltank",
       "filename": "parnelltank.png",
-      "display_name": "Tank Parnell",
+      "display_name": "Parnell (Tank)",
       "team": "hunter",
       "internal_names": [
         "MedicParnellTankBot"
@@ -310,8 +302,7 @@
       "display_name": "Behemoth",
       "team": "monster",
       "internal_names": [
-        "RockyABot",
-        "RockyCoopBot"
+        "RockyABot"
       ]
     },
     {
@@ -331,9 +322,7 @@
       "display_name": "Jack",
       "team": "hunter",
       "internal_names": [
-        "Scrap",
-        "TrackingGBot",
-        "SupportGBot"
+        "Scrap"
       ]
     },
     {
@@ -371,8 +360,7 @@
       "display_name": "Wraith",
       "team": "monster",
       "internal_names": [
-        "TeleporterABot",
-        "TeleporterCoopBot"
+        "TeleporterABot"
       ]
     },
     {
@@ -416,10 +404,24 @@
     "MedicE_NPHBot",
     "MedicE_NPMBot",
     "TeleporterDecoyBot",
+    "GoliathCoopBot",
+    "GoliathBGHCoopBot",
+    "GoliathMeteorCoopBot",
+    "GoliathMeteorBGHCoopBot",
     "GoliathMinionBot",
     "GoliathMinionDDBot",
     "GoliathNPEBot",
+    "GrounderCoopBot",
+    "KrakenElderCoopBot",
+    "TeleporterCoopBot",
+    "RockyCoopBot",
+    "LurkerCoopBot",
+    "LurkerDDBot",
     "LurkerMimicBot",
+    "LurkerMinionDDBot",
+    "LurkerMinionDDMimicBot",
+    "LurkerMinionDDPrimeBot",
+    "LurkerMinionDDWebBot",
     "WraithPhantom1Bot",
     "WraithPhantom2Bot",
     "WraithPhantom3Bot"
