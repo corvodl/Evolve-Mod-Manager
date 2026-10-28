@@ -250,7 +250,7 @@ class FBXSafetyTests(unittest.TestCase):
             version, roots, footer = _read_nodes(shaded_sample(
                 normals=[0., 0., 1., 0., 1., 0., 0., 0., 1.],
                 tangents=[0., 0., 0.] * 3,
-                binormals=[0., 1., 0., 0., 0., 1., 0., 1., 0.],
+                binormals=[0., 1., 0., 1., 0., 0., 0., 1., 0.],
             ))
             geom = roots[0].children_named(b"Geometry")[0]
             geom.children.append(node("PolygonVertexIndex",
