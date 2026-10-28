@@ -2,9 +2,9 @@
 //! Evolve Stage 2 offsets observed in offline Goliath sessions. The engine actor
 //! registry/name layout is not known, so non-local actors are ONLY included if
 //! a backlink to the independently verified local actor can be established.
-//! All reads are external. Writes are single-shot, compare-before-write and
-//! guarded by the existing offline-session policy.
-use crate::{runtime_armor, runtime_live, runtime_memory};
+//! All reads are external. Writes are compare-before-write and process-validated;
+//! the explicit Developer write arm controls access (not TCP connection state).
+use crate::{runtime_live, runtime_memory};
 use runtime_memory::Snapshot;
 
 const ENTITY_SYSTEM_RVA: usize = 0x28D58E8;
