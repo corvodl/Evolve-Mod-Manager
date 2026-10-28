@@ -147,23 +147,6 @@ pub fn launch_enabled(
     }
     progress.store(5, Ordering::Relaxed);
 
-    let mut destinations = HashSet::new();
-    let mut targets = Vec::with_capacity(mods.len());
-    for project in &mods {
-        let target = modding_projects::offline_test_target(project, &stage)
-            .map_err(|e| format!("{}: {e}", project.label))?;
-        if !destinations.insert(target.to_ascii_lowercase()) {
-            return Err(format!(
-                "Two enabled mods edit the same PAK ({target}). Disable one or combine their changes into one project."
-            ));
-        }
-        targets.push(target);
-    }
-    // Profile staging needs verification keys, not a locally generated private key.
-    // Official stages deliberately have no private PEM on disk.
-    let original_public = modding_keys::original_public_key(&stage)?;
-    let public = modding_keys::public_key(&stage)?;
-
     // A manual "Build & Prepare Offline Test" profile may remain staged
     // from before the enabled-mod workflow existed. Its ID legitimately
     // differs from the current automatic profile marker. The journal
@@ -179,6 +162,26 @@ pub fn launch_enabled(
             &format!("Previous mod setup could not be restored: {issue}"),
         );
     }
+
+    // Stage ONLY selected modified archives after restoring an older staged
+    // profile. A sparse stage has no copy of unrelated original game PAKs.
+    let mut destinations = HashSet::new();
+    let mut targets = Vec::with_capacity(mods.len());
+    for project in &mods {
+        modding_projects::provision_selected_original(project, &stage)
+            .map_err(|e| format!("{}: cannot prepare selected original: {e}", project.label))?;
+        let target = modding_projects::offline_test_target(project, &stage)
+            .map_err(|e| format!("{}: {e}", project.label))?;
+        if !destinations.insert(target.to_ascii_lowercase()) {
+            return Err(format!(
+                "Two enabled mods edit the same PAK ({target}). Disable one or combine their changes into one project."
+            ));
+        }
+        targets.push(target);
+    }
+    // Profile staging requires only verification keys here.
+    let original_public = modding_keys::original_public_key(&stage)?;
+    let public = modding_keys::public_key(&stage)?;
 
     let mut built = Vec::with_capacity(mods.len());
     for (index, (project, target)) in mods.iter().zip(targets).enumerate() {

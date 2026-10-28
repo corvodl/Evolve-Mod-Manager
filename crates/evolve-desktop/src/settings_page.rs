@@ -166,7 +166,7 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
                     .style(design::secondary),
             ]
             .spacing(8),
-            text("The manager can generate a fresh isolated signing stage, locally created RSA keys, signed PAK copies and private-compatible recovery helpers without modifying the installed game.")
+            text("Creates a lightweight signing inventory. Only PAKs edited by enabled mods are copied/signed into the stage. Original game PAKs remain in place.")
                 .size(11)
                 .style(design::muted),
             row![
@@ -177,7 +177,7 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
                 })
                 .on_press_maybe((!state.busy).then_some(Message::StartAutomaticSetup))
                 .style(design::primary),
-                text("Requires available Game Storage space; optional original snapshots follow Settings > Keep original snapshots.")
+                text("Sparse setup saves disk space. Permanent full-game snapshots are optional and disabled by default.")
                     .size(11)
                     .style(design::muted),
             ]
@@ -731,9 +731,9 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         .spacing(12)
         .into(),
         Tab::Advanced => column![
-        heading("BACKUPS & RECOVERY", "Preserve source archives and restoration history."),
+        heading("BACKUPS & RECOVERY", "Recovery copies are needed only for modified PAKs being swapped."),
         panel(column![
-            design::button(text(format!("Keep permanent original snapshots: {}", if state.preferences.keep_original_snapshots { "On" } else { "Off" }))).on_press(Message::PreferenceSnapshots).style(design::secondary),
+            design::button(text(format!("Keep full-game snapshots (extra disk use): {}", if state.preferences.keep_original_snapshots { "On" } else { "Off" }))).on_press(Message::PreferenceSnapshots).style(design::secondary),
             design::button(text(format!("Show activity during tasks: {}", if state.preferences.show_activity_on_tasks { "On" } else { "Off" }))).on_press(Message::PreferenceActivity).style(design::secondary),
             text("Crash reports").size(15),
             text("Local diagnostics for model loading, GPU uploads, and Rust crashes. Enabled by default; logs may include local asset names and file paths.")

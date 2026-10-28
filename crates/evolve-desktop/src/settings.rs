@@ -107,7 +107,7 @@ impl Default for Preferences {
             theme_presets: BTreeMap::new(),
             font_family: "Default".into(),
             reduce_motion: false,
-            keep_original_snapshots: true,
+            keep_original_snapshots: false,
             show_activity_on_tasks: true,
             crash_logging_enabled: true,
             game_installation: String::new(),
