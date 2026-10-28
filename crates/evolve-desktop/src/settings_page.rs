@@ -549,7 +549,38 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             let ruffle = crate::gfx_bundled_tools::valid_ruffle(&state.preferences.ruffle_executable);
             let ruffle_web = crate::gfx_bundled_tools::valid_ruffle_web(&state.preferences.ruffle_web_runtime);
             column![
-                heading("INTEGRATIONS", "Configure external tools for exporting models and editing game GFX."),
+                heading("INTEGRATIONS", "Configure Discord activity and external editing tools."),
+                panel(column![
+                    text("DISCORD RICH PRESENCE · LOCAL ONLY").size(15),
+                    text("No account linking, OAuth, bot, or token. Uses the desktop Discord app through local IPC. Discord's own Activity Privacy settings also control visibility.")
+                        .size(12).style(design::muted),
+                    design::button(if state.preferences.discord_presence_enabled { "Rich Presence: On" } else { "Rich Presence: Off" })
+                        .on_press(Message::PreferenceDiscordToggle("enabled")).style(design::secondary),
+                    text("The official Modded Evolve Discord application ID is embedded in release builds; developers may override it here. Leave blank for the bundled ID.")
+                        .size(11).style(design::muted),
+                    design::text_input("Discord application ID (optional override)", &state.preferences.discord_application_id)
+                        .on_input(Message::PreferenceDiscordAppId),
+                    row![
+                        design::button(if state.preferences.discord_show_game { "Gameplay: On" } else { "Gameplay: Off" })
+                            .on_press(Message::PreferenceDiscordToggle("game")).style(design::secondary),
+                        design::button(if state.preferences.discord_show_manager { "Manager: On" } else { "Manager: Off" })
+                            .on_press(Message::PreferenceDiscordToggle("manager")).style(design::secondary),
+                    ].spacing(8),
+                    row![
+                        design::button(if state.preferences.discord_show_character { "Character / Stage: On" } else { "Character / Stage: Off" })
+                            .on_press(Message::PreferenceDiscordToggle("character")).style(design::secondary),
+                        design::button(if state.preferences.discord_show_stats { "Health / Armor: On" } else { "Health / Armor: Off" })
+                            .on_press(Message::PreferenceDiscordToggle("stats")).style(design::secondary),
+                    ].spacing(8),
+                    row![
+                        design::button(if state.preferences.discord_show_profile { "Mod Profile: On" } else { "Mod Profile: Off" })
+                            .on_press(Message::PreferenceDiscordToggle("profile")).style(design::secondary),
+                        design::button(if state.preferences.discord_minimal { "Privacy: Minimal" } else { "Privacy: Detailed" })
+                            .on_press(Message::PreferenceDiscordToggle("minimal")).style(design::secondary),
+                    ].spacing(8),
+                    text("Map/mode are displayed only when a verified runtime source becomes available. Character, health and armor use validated read-only Actor System fields; unavailable values stay hidden.")
+                        .size(11).style(design::muted),
+                ].spacing(8)),
                 panel(column![
                     text("BLENDER · FBX EXPORT").size(15),
                     if crate::blender_install::valid_blender(&state.blender_path).is_some() {
