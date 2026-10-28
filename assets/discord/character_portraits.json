@@ -349,9 +349,11 @@
       "source": "tech.dds",
       "asset_key": "tech",
       "filename": "tech.png",
-      "display_name": "Tech",
-      "team": "unknown",
-      "internal_names": []
+      "display_name": "Kala",
+      "team": "hunter",
+      "internal_names": [
+        "Tech"
+      ]
     },
     {
       "source": "teleporter.dds",
