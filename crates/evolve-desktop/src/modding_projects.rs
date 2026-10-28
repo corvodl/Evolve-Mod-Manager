@@ -170,12 +170,42 @@ fn inspect_project(
                 .and_then(Value::as_str)
                 .ok_or("Missing project source archive")?;
             let source = Path::new(source);
-            if !regular(source, 16 * 1024 * 1024 * 1024) {
-                return Err("Original staged archive is unavailable".into());
-            }
-            let original = fs::canonicalize(source).map_err(|e| e.to_string())?;
             let base = fs::canonicalize(stage.join("paks"))
                 .map_err(|_| "Configured signing stage is unavailable")?;
+            let original = if regular(source, 16 * 1024 * 1024 * 1024) {
+                fs::canonicalize(source).map_err(|e| e.to_string())?
+            } else {
+                // A sparse setup deliberately doesn't contain every original
+                // PAK yet. A project can remain editable and selectable if its
+                // recorded source is exactly in THIS stage's paks directory.
+                // The signed file is checked and materialized at Play time.
+                let status = read_json(&stage.join("stage_status.json"), 128 * 1024)?;
+                if status["status"].as_str() != Some("fully-staged-offline")
+                    || source
+                        .components()
+                        .any(|x| matches!(x, std::path::Component::ParentDir))
+                    || !source.starts_with(&base)
+                {
+                    return Err("Original staged archive is unavailable".into());
+                }
+                let relative = source
+                    .strip_prefix(&base)
+                    .map_err(|_| "Project source is outside its stage")?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let plan = read_json(&stage.join("rekey_plan.json"), 32 * 1024 * 1024)?;
+                if !plan["entries"].as_array().is_some_and(|rows| {
+                    rows.iter().any(|entry| {
+                        entry["path"].as_str() == Some(relative.as_str())
+                            && entry["kind"].as_str() == Some("signed-encrypted")
+                    })
+                }) {
+                    return Err(
+                        "Project source is missing from authenticated signing inventory".into(),
+                    );
+                }
+                source.to_path_buf()
+            };
             let relative = original
                 .strip_prefix(&base)
                 .map_err(|_| "Project is not backed by the configured signed stage")?
@@ -989,6 +1019,9 @@ pub fn build_project_raw(
             .ok_or("Modified member is absent from the verified original manifest")?;
         editable_format(expected)?;
     }
+    // Standalone Build and Play both provision only this edited PAK on
+    // demand. An unedited project never forces a costly staged copy.
+    provision_selected_original(project, stage)?;
     let original = stage.join("paks").join(&project.target);
     let relative = super::modding_keys::staged_target(stage, &original)?;
     if relative != project.target {
@@ -1161,6 +1194,56 @@ pub fn build_project_raw(
             Err(error)
         }
     }
+}
+
+/// Provision only the installed PAK targeted by this enabled Mod Project.
+/// The verified setup inventory supplies the exact path and source digest;
+/// no basename-only lookup across the game is allowed.
+pub fn provision_selected_original(project: &ProjectRow, stage: &Path) -> Result<(), String> {
+    let manifest = read_json(
+        &project.workspace.join(".evolve-pak-workspace.json"),
+        8 * 1024 * 1024,
+    )?;
+    let paks =
+        fs::canonicalize(stage.join("paks")).map_err(|_| "Signing stage has no paks directory")?;
+    let relative = if manifest["extraction_mode"].as_str() == Some("imported-snapshot") {
+        let plan = read_json(&stage.join("rekey_plan.json"), 8 * 1024 * 1024)?;
+        let root = fs::canonicalize(
+            plan["source_root"]
+                .as_str()
+                .ok_or("Signing inventory has no game root")?,
+        )
+        .map_err(|e| e.to_string())?;
+        let source = fs::canonicalize(
+            manifest["imported_source"]
+                .as_str()
+                .ok_or("Imported project is missing its original PAK location")?,
+        )
+        .map_err(|e| e.to_string())?;
+        source
+            .strip_prefix(&root)
+            .map_err(|_| "Imported project belongs to a different game installation")?
+            .to_string_lossy()
+            .replace('\\', "/")
+    } else {
+        let source = Path::new(
+            manifest["source_pak"]
+                .as_str()
+                .ok_or("Editable project has no staged original path")?,
+        );
+        if source
+            .components()
+            .any(|p| matches!(p, std::path::Component::ParentDir))
+        {
+            return Err("Editable source contains unsafe parent traversal".into());
+        }
+        source
+            .strip_prefix(&paks)
+            .map_err(|_| "This project belongs to a different signing stage")?
+            .to_string_lossy()
+            .replace('\\', "/")
+    };
+    super::modding_keys::ensure_selected_stage_pak(stage, &relative)
 }
 
 /// Resolve an exact installed-game target for an offline test. This does

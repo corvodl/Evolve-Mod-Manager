@@ -7571,7 +7571,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.preferences.game_storage_root = storage.to_string_lossy().into_owned();
             persist_preferences(state);
             state.status = format!(
-                "Creating this manager's own setup under {}. Generating keys, verifying original PAKs and preparing local recovery helpers. Installed originals remain untouched.",
+                "Creating sparse setup under {}. Verifying original PAK signatures and creating an inventory; staged copies will be built only for enabled mods. Installed originals remain untouched.",
                 storage.display()
             );
             return launch(
@@ -9907,7 +9907,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.preferences.swap = report.swap.to_string_lossy().into_owned();
                     persist_preferences(state);
                     state.status = format!(
-                        "Offline setup verified: {} signed original PAKs, {} plain archives, local signing key and recovery helpers. Original snapshots: {}. Game PAKs unchanged. Stage: {}. You can now build/stage your modded PAKs and use Play with Mods.",
+                        "Sparse setup verified: {} signed stock PAKs inventoried, {} plain archives. Only PAKs targeted by enabled mods are staged when needed. Permanent original snapshots: {}. Game PAKs unchanged. Stage: {}.",
                         report.signed_count,
                         report.plain_count,
                         if report.snapshots {
