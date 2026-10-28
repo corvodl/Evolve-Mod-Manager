@@ -124,14 +124,67 @@ mod windows {
         }
         Ok(())
     }
-    fn session(snapshot: &Snapshot, root: &str) -> Result<(u32, ProcessHandle, usize), String> {
+    // Check the running executable and ASLR base directly instead of launching
+    // tasklist + PowerShell for every teleport (formerly multiple times per action).
+    // The main module is first in the process module list. Fail closed if the
+    // process is gone, inaccessible, or no longer the expected Evolve.exe.
+    #[allow(unsafe_code)]
+    fn running_evolve_base(pid: u32) -> Result<usize, String> {
+        use std::io;
+        unsafe extern "system" {
+            fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+            fn CloseHandle(handle: *mut c_void) -> i32;
+            fn K32EnumProcessModules(
+                handle: *mut c_void,
+                modules: *mut *mut c_void,
+                size: u32,
+                needed: *mut u32,
+            ) -> i32;
+            fn K32GetModuleBaseNameW(
+                handle: *mut c_void,
+                module: *mut c_void,
+                name: *mut u16,
+                size: u32,
+            ) -> u32;
+        }
+        const PROCESS_QUERY_INFORMATION: u32 = 0x0400;
+        const PROCESS_VM_READ: u32 = 0x0010;
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid) };
+        if handle.is_null() {
+            return Err(format!("Cannot verify Evolve process: {}", io::Error::last_os_error()));
+        }
+        let result = (|| {
+            let mut main_module: *mut c_void = std::ptr::null_mut();
+            let mut needed = 0u32;
+            let ok = unsafe {
+                K32EnumProcessModules(
+                    handle,
+                    &mut main_module,
+                    std::mem::size_of::<*mut c_void>() as u32,
+                    &mut needed,
+                )
+            };
+            if ok == 0 || main_module.is_null() || needed < std::mem::size_of::<*mut c_void>() as u32 {
+                return Err("Cannot verify running Evolve module".into());
+            }
+            let mut name = [0u16; 260];
+            let count = unsafe {
+                K32GetModuleBaseNameW(handle, main_module, name.as_mut_ptr(), name.len() as u32)
+            } as usize;
+            if count == 0 || !String::from_utf16_lossy(&name[..count]).eq_ignore_ascii_case("Evolve.exe") {
+                return Err("Game PID no longer points to Evolve.exe; detect game again".into());
+            }
+            Ok(main_module as usize)
+        })();
+        unsafe { CloseHandle(handle) };
+        result
+    }
+
+    fn session(snapshot: &Snapshot, _root: &str) -> Result<(u32, ProcessHandle, usize), String> {
         let pid = snapshot.pid.ok_or("Detect Evolve.exe first")?;
-        let now = runtime_memory::inspect(root);
-        let base = snapshot
-            .module_base
-            .ok_or("Evolve module base unavailable")?;
-        if now.pid != Some(pid) || now.module_base != Some(base) {
-            return Err("Game PID or executable changed; detect Evolve again".into());
+        let base = snapshot.module_base.ok_or("Evolve module base unavailable")?;
+        if running_evolve_base(pid)? != base {
+            return Err("Game executable or module base changed; detect Evolve again".into());
         }
         let h: ProcessHandle = pid
             .try_into()
