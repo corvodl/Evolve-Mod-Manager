@@ -1,10 +1,22 @@
 //! Optional, local-only Discord Rich Presence. No OAuth, tokens, network API,
 //! injection, game hooks, or dependency on launching Evolve.
-//! Shared Modded Evolve application ID; users do not register or link accounts.
-//! A local developer override remains available in Integrations.
+//! Separate registered application IDs for Evolve Mod Manager and Evolve.
+//! No account linking; the manager's development override is in Integrations.
+//! A separate game RPC publisher may still compete with this activity.
 use crate::{Page, State};
 
 const MODDED_EVOLVE_DISCORD_APPLICATION_ID: &str = "1563784115785048114";
+const EVOLVE_GAME_DISCORD_APPLICATION_ID: &str = "1565093139616763987";
+
+/// The active IPC connection must use the app matching the visible activity.
+/// User-supplied developer override applies only to the manager application.
+fn active_application_id<'a>(cfg: &'a Config, game_pid: Option<u32>) -> &'a str {
+    if game_pid.is_some() && cfg.show_game {
+        EVOLVE_GAME_DISCORD_APPLICATION_ID
+    } else {
+        &cfg.app_id
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Config {
@@ -160,18 +172,28 @@ fn format_activity(cfg: &Config, game_pid: Option<u32>, actor: Option<&LocalActo
             (details, values.join(" • "))
         }
     } else {
-        let details = if cfg.minimal { "Using Evolve Mod Manager".to_owned() }
-            else { cfg.manager_action.clone() };
-        let state = if cfg.minimal { "Modding Evolve".to_owned() }
-            else if let Some(name) = cfg.model_name.as_ref() {
-                format!("Viewing {name}")
-            } else if cfg.show_profile {
-                cfg.mod_profile.clone().unwrap_or_else(|| "Modded Evolve".into())
-            } else { "Modded Evolve".to_owned() };
+        let details = "Evolve Mod Manager".to_owned();
+        let state = if cfg.minimal {
+            "In manager".to_owned()
+        } else if let Some(name) = cfg.model_name.as_ref() {
+            format!("Viewing {name}")
+        } else if cfg.show_profile {
+            cfg.mod_profile.as_ref().map(|profile| {
+                format!("{} • {profile}", cfg.manager_action)
+            }).unwrap_or_else(|| cfg.manager_action.clone())
+        } else {
+            cfg.manager_action.clone()
+        };
         (details, state)
     };
-    let assets = json!({"large_image":"evolve", "large_text":"Modded Evolve"});
+    // Asset keys are scoped to each Discord application. Avoid attaching the
+    // manager's image key to the Evolve ID until it is uploaded there.
+    let assets = if game { json!({}) }
+        else { json!({"large_image":"evolve", "large_text":"Evolve Mod Manager"}) };
     Some(json!({
+        // Discord may ignore the name override and use the registered app
+        // title. The details line always describes the correct application.
+        "name": if game { "Evolve" } else { "Evolve Mod Manager" },
         "details": label(&details),
         "state": label(&state),
         "timestamps": {"start":start},
@@ -269,10 +291,10 @@ mod windows {
         let mut local_actor:Option<LocalActor> = None;
         let mut last_actor_check = Instant::now() - Duration::from_secs(60);
         let mut nonce = 1u64;
+        let mut last_presence_update = Instant::now() - Duration::from_secs(60);
         while running.load(Ordering::Relaxed) {
             let cfg = shared.lock().map(|s| s.clone()).unwrap_or_else(|e| e.into_inner().clone());
-            if !cfg.enabled || !cfg.app_id.bytes().all(|b| b.is_ascii_digit())
-                || cfg.app_id.len() < 15 || cfg.app_id.len() > 25 {
+            if !cfg.enabled {
                 if let Some(mut connected) = pipe.take() {
                     let _ = activity(&mut connected,None,nonce);
                     nonce += 1;
@@ -301,17 +323,47 @@ mod windows {
                 local_actor = None;
                 None
             };
-            if pipe.is_none() || app_id != cfg.app_id {
-                pipe = connect(&cfg.app_id).ok();
-                app_id = cfg.app_id.clone();
+            let selected_app_id = active_application_id(&cfg, running_game);
+            let valid_app_id = selected_app_id.bytes().all(|b| b.is_ascii_digit())
+                && (15..=25).contains(&selected_app_id.len());
+            if !valid_app_id {
+                if let Some(mut connected) = pipe.take() {
+                    let _ = activity(&mut connected, None, nonce);
+                    nonce += 1;
+                }
+                last_activity = None;
+                app_id.clear();
+                thread::sleep(Duration::from_secs(3));
+                continue;
+            }
+            if app_id != selected_app_id {
+                // Clear our activity under the previous application before
+                // changing the handshake ID. Never clear a game's own RPC
+                // activity or send a false PID to impersonate Evolve.exe.
+                if let Some(mut connected) = pipe.take() {
+                    let _ = activity(&mut connected, None, nonce);
+                    nonce += 1;
+                }
+                app_id = selected_app_id.to_owned();
+                last_activity = None;
+            }
+            if pipe.is_none() {
+                pipe = connect(&app_id).ok();
                 last_activity = None;
             }
             let visible_actor = if cfg.show_character || cfg.show_stats { local_actor.as_ref() } else { None };
             let next = format_activity(&cfg,running_game,visible_actor,if running_game.is_some() {session_start} else {manager_start});
-            if next != last_activity {
+            // Periodically refresh only while Evolve is running: a native
+            // presence publisher may update the same application independently.
+            // This is best-effort and cannot guarantee Discord display priority.
+            let refresh_due = running_game.is_some() && last_presence_update.elapsed() >= Duration::from_secs(30);
+            if next != last_activity || (next.is_some() && refresh_due) {
                 if let Some(ref mut connected) = pipe {
                     match activity(connected,next.clone(),nonce) {
-                        Ok(()) => last_activity = next,
+                        Ok(()) => {
+                            last_activity = next;
+                            last_presence_update = Instant::now();
+                        },
                         Err(_) => {pipe = None; last_activity = None;}
                     }
                     nonce += 1;
@@ -486,9 +538,33 @@ mod tests {
         assert!(format_activity(&cfg,None,None,1).is_none());
     }
     #[test]
-    fn uses_shared_discord_application_without_account_linking() {
+    fn switches_application_id_between_manager_and_game() {
+        let cfg = sample();
+        assert_eq!(active_application_id(&cfg, None), "123456789012345678");
+        assert_eq!(active_application_id(&cfg, Some(52288)), EVOLVE_GAME_DISCORD_APPLICATION_ID);
+        let mut no_game = cfg.clone();
+        no_game.show_game = false;
+        assert_eq!(active_application_id(&no_game, Some(52288)), "123456789012345678");
+    }
+    #[test]
+    fn uses_supplied_application_ids_without_account_linking() {
         let state = State::default();
-        assert_eq!(Config::from_state(&state).app_id, MODDED_EVOLVE_DISCORD_APPLICATION_ID);
+        let cfg = Config::from_state(&state);
+        assert_eq!(cfg.app_id, MODDED_EVOLVE_DISCORD_APPLICATION_ID);
+        assert_eq!(active_application_id(&cfg, None), "1563784115785048114");
+        assert_eq!(active_application_id(&cfg, Some(11112)), "1565093139616763987");
+    }
+    #[test]
+    fn manager_and_game_have_distinct_presence_content() {
+        let cfg = sample();
+        let manager = format_activity(&cfg, None, None, 100).unwrap();
+        assert_eq!(manager["name"], "Evolve Mod Manager");
+        assert_eq!(manager["details"], "Evolve Mod Manager");
+        assert_eq!(manager["state"], "Modding Evolve");
+        let game = format_activity(&cfg, Some(11112), None, 100).unwrap();
+        assert_eq!(game["name"], "Evolve");
+        assert_eq!(game["details"], "Playing Evolve");
+        assert!(game["assets"].get("large_image").is_none());
     }
     #[test]
     fn labels_are_capped_to_discord_limits() {
