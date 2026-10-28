@@ -1451,10 +1451,27 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
                 design::button("−20 Z").on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, 0.0, -20.0))),
                 design::button("+20 Z").on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, 0.0, 20.0))),
             ].align_y(iced::Alignment::Center).spacing(8),
+            text("Approximate crosshair teleport").size(17),
+            text("Uses actor facing (+Y), not the camera ray. No geometry collision test.")
+                .size(12).style(design::muted),
+            row![
+                text("Distance").width(Length::Fixed(65.0)),
+                design::text_input("30", &state.teleport_aim_distance)
+                    .on_input(Message::TeleportAimDistanceChanged)
+                    .width(Length::Fixed(90.0)),
+                design::button("Preview coordinates")
+                    .on_press_maybe((enabled && !state.teleport_aim_preview_busy)
+                        .then_some(Message::TeleportPreviewAim)),
+                design::button("Teleport to Crosshair")
+                    .on_press_maybe(enabled.then_some(Message::TeleportAim)),
+            ].align_y(iced::Alignment::Center).spacing(8),
+            iced::widget::checkbox(state.teleport_overlay.is_some())
+                .label("Show external aim marker (windowed fullscreen)")
+                .on_toggle(Message::TeleportOverlayChanged),
+            text("The overlay marks the screen center only; it is not a raycast hit location.")
+                .size(12).style(design::muted),
             text(if state.teleport_busy { "Teleport operation running..." }
                  else { state.teleport_status.as_str() })
-                .size(12).style(design::muted),
-            text("Crosshair target: requires verified camera aim and collision raycast; no runtime hook planned.")
                 .size(12).style(design::muted),
         ].spacing(9).padding(10)
     ).into()
