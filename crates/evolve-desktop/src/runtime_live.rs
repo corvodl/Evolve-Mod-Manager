@@ -83,7 +83,7 @@ fn validate_baseline(expected: u32, current: u32) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn verify_session(snapshot: &Snapshot, game_root: &str, confirmed: bool) -> Result<u32, String> {
+fn verify_session(snapshot: &Snapshot, game_root: &str, _confirmed: bool) -> Result<u32, String> {
     let pid = snapshot
         .pid
         .ok_or("Detect one running Evolve.exe process")?;
@@ -96,9 +96,6 @@ fn verify_session(snapshot: &Snapshot, game_root: &str, confirmed: bool) -> Resu
     {
         return Err("Evolve image changed; redetect the process before editing".into());
     }
-    // Fails closed when the Windows TCP query fails. This is only a best-effort
-    // online detection, not proof of the game session's actual offline status.
-    runtime_armor::offline_guard(pid, confirmed)?;
     Ok(pid)
 }
 
