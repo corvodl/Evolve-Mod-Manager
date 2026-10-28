@@ -72,7 +72,7 @@ fn manual_catalog(stage: &Path) -> Result<ProfileCatalog, String> {
     let mut catalog = evolve_core::list_mod_profiles(stage).map_err(|e| e.to_string())?;
     let owned = owned_profile_id(stage)?;
     // The automatic launch profile is generated output, never a source mod.
-    catalog.profiles.retain(|profile| owned.as_deref() != Some(&profile.id));
+    catalog.profiles.retain(|profile| owned.as_deref() != Some(profile.id.as_str()));
     Ok(catalog)
 }
 
@@ -104,7 +104,7 @@ pub fn select_signed(
                 .find(|p| p.id == other.profile_id)
                 .and_then(|p| p.mods.iter().find(|m| m.id == other.mod_id))
                 .is_some_and(|m| m.target.eq_ignore_ascii_case(&target));
-            if conflict && *other != choice {
+            if conflict && other != &choice {
                 return Err(format!("Another enabled signed PAK already targets {target}"));
             }
         }
