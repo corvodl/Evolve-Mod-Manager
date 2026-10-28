@@ -187,15 +187,22 @@ mod windows {
         const MAX_NAME_INDEX: u32 = 0x10000;
         let name_id = u32_at(h, entity.checked_add(0x124)?)?;
         let index = name_id.checked_sub(INDEX_ADJUST)?;
-        if index >= MAX_NAME_INDEX { return None; }
+        if index >= MAX_NAME_INDEX {
+            return None;
+        }
 
         let resolver = q(h, base.checked_add(NAME_RESOLVER_RVA)?)?;
         let index_table = q(h, resolver.checked_add(0x08)?)?;
         let entry_table = q(h, resolver.checked_add(0x20)?)?;
 
-        let encoded = u32_at(h, index_table.checked_add((index as usize).checked_mul(4)?)?)?;
+        let encoded = u32_at(
+            h,
+            index_table.checked_add((index as usize).checked_mul(4)?)?,
+        )?;
         let decoded = encoded ^ INDEX_XOR;
-        if decoded >= MAX_NAME_INDEX { return None; }
+        if decoded >= MAX_NAME_INDEX {
+            return None;
+        }
 
         let entry_addr = entry_table.checked_add((decoded as usize).checked_mul(8)?)?;
         let entry_object = q(h, entry_addr)?;
@@ -210,7 +217,14 @@ mod windows {
         }
         String::from_utf8(bytes[..len].to_vec()).ok()
     }
-    fn read_actor(h: &ProcessHandle, id: u32, at: usize, entity: usize, local: bool, base: usize) -> Actor {
+    fn read_actor(
+        h: &ProcessHandle,
+        id: u32,
+        at: usize,
+        entity: usize,
+        local: bool,
+        base: usize,
+    ) -> Actor {
         // Never label arbitrary offsets as health or armor. Require both
         // members of a pair to be readable and mutually plausible first.
         let health = u32_at(h, at.saturating_add(Field::Health.offset()))
@@ -302,7 +316,14 @@ mod windows {
         }
         // Show the structurally verified local actor even if no Goliath-based
         // field offsets match. Unsupported fields remain hidden and unwritable.
-        let mut actors = vec![read_actor(&h, local_id, local_actor, local_entity, true, base)];
+        let mut actors = vec![read_actor(
+            &h,
+            local_id,
+            local_actor,
+            local_entity,
+            true,
+            base,
+        )];
         let route = discover_backlink(&h, local_entity, local_actor);
         if let Some(route) = route {
             // Entity IDs are salted 32-bit values with a 16-bit slot index.
