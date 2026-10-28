@@ -378,6 +378,7 @@ mod windows {
             SetTimer(hwnd, 1, 120, null());
             // Reader never touches game memory. UI-thread-only Win32 hotkey
             // registration is requested via WM_APP_BIND; toast state is shared.
+            let hwnd_address = hwnd as usize;
             std::thread::spawn(move || {
                 let lines = std::io::BufReader::new(std::io::stdin().lock()).lines();
                 for line in lines {
@@ -388,7 +389,7 @@ mod windows {
                         if let Ok(mut toast) = TOAST.lock() {
                             *toast = Some((message, Instant::now() + Duration::from_millis(2600)));
                         }
-                        unsafe { PostMessageW(hwnd as usize as Hwnd, WM_APP_NOTIFY, 0, 0); }
+                        unsafe { PostMessageW(hwnd_address as Hwnd, WM_APP_NOTIFY, 0, 0); }
                     } else if let Some(rest) = line.strip_prefix("BIND ") {
                         let parts: Vec<u32> = rest.split_whitespace()
                             .filter_map(|s| s.parse::<u32>().ok()).collect();
@@ -396,7 +397,7 @@ mod windows {
                             parts[1] <= 7 && (parts[2] == 0 || (0x75..=0x7B).contains(&parts[2]))
                         {
                             let encoded = ((parts[1] << 16) | parts[2]) as isize;
-                            unsafe { PostMessageW(hwnd as usize as Hwnd, WM_APP_BIND, parts[0] as usize, encoded); }
+                            unsafe { PostMessageW(hwnd_address as Hwnd, WM_APP_BIND, parts[0] as usize, encoded); }
                         }
                     }
                 }
