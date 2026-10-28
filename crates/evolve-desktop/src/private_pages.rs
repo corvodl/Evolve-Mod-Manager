@@ -1401,6 +1401,56 @@ fn actor_rows(state: &State) -> Element<'_, Message> {
     list.into()
 }
 
+
+fn teleport_controls(state: &State) -> Element<'_, Message> {
+    let enabled = state.developer_unlocked
+        && state.armor_offline_confirmed
+        && state.live_edit_enabled
+        && !state.developer_online_mods
+        && !state.teleport_busy
+        && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some();
+
+    surface(
+        column![
+            text("Teleport").size(19),
+            text("Offline only · One-shot physics XYZ · No hooks or freezing")
+                .size(12).style(design::muted),
+            row![
+                design::text_input("X", &state.teleport_x)
+                    .on_input(|v| Message::TeleportXYZChanged(0, v)),
+                design::text_input("Y", &state.teleport_y)
+                    .on_input(|v| Message::TeleportXYZChanged(1, v)),
+                design::text_input("Z", &state.teleport_z)
+                    .on_input(|v| Message::TeleportXYZChanged(2, v)),
+            ].spacing(8),
+            row![
+                design::button("Read position")
+                    .on_press_maybe(enabled.then_some(Message::TeleportCapture(false))),
+                design::button("Save position")
+                    .on_press_maybe(enabled.then_some(Message::TeleportCapture(true))),
+                design::button("Teleport XYZ")
+                    .on_press_maybe(enabled.then_some(Message::TeleportAbsolute)),
+                design::button("Return to saved")
+                    .on_press_maybe((enabled && state.teleport_saved.is_some())
+                        .then_some(Message::TeleportReturnSaved)),
+            ].spacing(8),
+            row![
+                design::button("X -20").on_press_maybe(enabled.then_some(Message::TeleportRelative(-20.0, 0.0, 0.0))),
+                design::button("X +20").on_press_maybe(enabled.then_some(Message::TeleportRelative(20.0, 0.0, 0.0))),
+                design::button("Y -20").on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, -20.0, 0.0))),
+                design::button("Y +20").on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, 20.0, 0.0))),
+                design::button("Z -20").on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, 0.0, -20.0))),
+                design::button("Z +20").on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, 0.0, 20.0))),
+            ].spacing(8),
+            text(if state.teleport_busy { "Teleport operation running..." }
+                 else { state.teleport_status.as_str() })
+                .size(12).style(design::muted),
+            text("Crosshair target: requires verified camera aim and collision raycast; no runtime hook planned.")
+                .size(12).style(design::muted),
+        ].spacing(9).padding(10)
+    ).into()
+}
+
 pub(super) fn developer(state: &State) -> Element<'_, Message> {
     if state.developer_unlocked {
         scrollable(
@@ -1497,6 +1547,7 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
                             .size(12)
                             .style(design::muted),
                         actor_rows(state),
+                        teleport_controls(state),
                         text("Click a value to edit it · Enter to write · Freeze holds the current value")
                             .size(12).style(design::muted),
                         design::button("Lock developer area").on_press(Message::LockDeveloper),
