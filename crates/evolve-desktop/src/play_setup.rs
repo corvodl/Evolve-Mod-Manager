@@ -109,6 +109,11 @@ const NIGHTLY_69_AUTO_LAUNCH_SHA256: &str =
 // Exact helper shipped in Nightly .70 before the completion-marker fix.
 const NIGHTLY_70_AUTO_LAUNCH_SHA256: &str =
     "4c153b3368bc99766016b56dccf24c5fd1de532a5194cd4ce43fb71767629547";
+// Exact auto-launch helper published at commit 60d6234b (after the
+// game-release success marker fix). Existing installations can contain this
+// LF source or its CRLF-only Windows-distributed form.
+const POST_TOKEN_AUTO_LAUNCH_SHA256: &str =
+    "4d478ff3ef66e92da637d1cb64ece129157c56f5d4101dbd7fb6d09f515f4785";
 const PREVIOUS_CONTROLLED_SWAP_SHA256: &str =
     "5229e00859664c13c846de65e346031d4ff05c77f52170212dcd631a111a614d";
 // Exact bundled controlled_swap.py shipped through Nightly 60 (PR #79/#80).
@@ -134,6 +139,14 @@ const KNOWN_CONTROLLED_SWAP_SHA256: &[&str] = &[
 // as well, so existing Client Launch setups can upgrade both scripts.
 const PRE_TOKEN_AUTO_LAUNCH_SHA256: &str =
     "37ba0586dfbd50ceb791a3156ce2bacb3d01f541b7cebccd21f8d10dc5b99aba";
+const KNOWN_AUTO_LAUNCH_SHA256: &[&str] = &[
+    PREVIOUS_AUTO_LAUNCH_SHA256,
+    NIGHTLY_56_AUTO_LAUNCH_SHA256,
+    NIGHTLY_69_AUTO_LAUNCH_SHA256,
+    NIGHTLY_70_AUTO_LAUNCH_SHA256,
+    PRE_TOKEN_AUTO_LAUNCH_SHA256,
+    POST_TOKEN_AUTO_LAUNCH_SHA256,
+];
 const CURRENT_AUTO_LAUNCH: &str = include_str!("../launcher_support/auto_launch_frida.py");
 const CURRENT_CONTROLLED_SWAP: &str = include_str!("../launcher_support/controlled_swap.py");
 
@@ -256,13 +269,7 @@ fn configure_helper(
             &swap,
             "auto_launch_frida.py",
             CURRENT_AUTO_LAUNCH,
-            &[
-                PREVIOUS_AUTO_LAUNCH_SHA256,
-                NIGHTLY_56_AUTO_LAUNCH_SHA256,
-                NIGHTLY_69_AUTO_LAUNCH_SHA256,
-                NIGHTLY_70_AUTO_LAUNCH_SHA256,
-                PRE_TOKEN_AUTO_LAUNCH_SHA256,
-            ],
+            KNOWN_AUTO_LAUNCH_SHA256,
         )?;
         crate::standard_user_launch::install_into_swap(&swap)?;
         let config = swap.join("launcher_config.json");
@@ -547,6 +554,16 @@ mod tests {
         assert!(
             KNOWN_CONTROLLED_SWAP_SHA256
                 .contains(&"fdabe24e1b5659c04a93c4240e50b4c6fcd482a0da1dff08ac86816cd3227341")
+        );
+    }
+
+    #[test]
+    fn published_post_token_auto_launch_hash_is_recognized() {
+        // Verified against the exact repository helper from commit 60d6234b.
+        // Custom or unknown helper bytes still fail closed.
+        assert!(
+            KNOWN_AUTO_LAUNCH_SHA256
+                .contains(&"4d478ff3ef66e92da637d1cb64ece129157c56f5d4101dbd7fb6d09f515f4785")
         );
     }
 
