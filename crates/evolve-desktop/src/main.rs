@@ -196,6 +196,9 @@ struct State {
     profile_source: String,
     profile_id: String,
     profile_catalog: Option<ProfileCatalog>,
+    signed_ui: Option<mod_play::SignedUi>,
+    signed_busy: bool,
+    signed_status: String,
     profile_feedback: String,
     live_pak_audit: Option<launcher_bridge::LivePakAudit>,
     diffuse_input: String,
@@ -1517,10 +1520,14 @@ impl Operation {
                 online_requested,
                 direct_launch,
             ) => {
-                let mods = discover_projects(&projects, &stage)?
-                    .into_iter()
-                    .filter(|project| project.enabled)
-                    .collect();
+                let mods = if projects.is_dir() {
+                    discover_projects(&projects, &stage)?
+                        .into_iter()
+                        .filter(|project| project.enabled)
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 mod_play::launch_enabled(
                     mods,
                     projects,
@@ -1664,6 +1671,10 @@ enum Message {
     ModdingChangesPage(bool),
     ModdingSelectProject(usize),
     ModdingToggleEnabled(usize),
+    SignedProfilesReload,
+    SignedProfilesLoaded(PathBuf, Result<mod_play::SignedUi, String>),
+    SignedPakToggle(String, String, bool),
+    SignedPakToggled(PathBuf, Result<mod_play::SignedUi, String>),
     ModdingNameChanged(String),
     ModdingAddedMemberChanged(String),
     ModdingRegisterAddedMember,
@@ -2718,6 +2729,22 @@ fn persist_preferences(state: &mut State) {
 
 /// Load existing imported PAK manifests independently of the Modding worker,
 /// so navigating between Asset Library and Modding never requires reimporting.
+/// Load the existing signed-PAK profile catalog and explicit enabled state
+/// without scanning or copying any archive data on the UI thread.
+fn load_signed_paks(stage: PathBuf) -> Task<Message> {
+    Task::perform(
+        async move {
+            let expected = stage.clone();
+            let result = tokio::task::spawn_blocking(move || mod_play::signed_ui(&stage))
+                .await
+                .map_err(|e| format!("Signed PAK profile worker failed: {e}"))
+                .and_then(|value| value);
+            (expected, result)
+        },
+        |(expected, result)| Message::SignedProfilesLoaded(expected, result),
+    )
+}
+
 fn load_saved_library(root: PathBuf) -> Task<Message> {
     Task::perform(
         async move {
@@ -2980,6 +3007,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.news.loading = true;
                 tasks.push(refresh_news_task());
             }
+            if page == Page::Files && !state.preferences.stage.trim().is_empty() {
+                tasks.push(load_signed_paks(PathBuf::from(&state.preferences.stage)));
+            }
             if page == Page::Files
                 && state.modding_projects.is_none()
                 && !state.preferences.projects.trim().is_empty()
@@ -3132,6 +3162,88 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 Err(error) => state.status = format!("Could not rename mod: {error}"),
             }
         }
+        Message::SignedProfilesReload => {
+            if state.preferences.stage.trim().is_empty() {
+                state.signed_ui = None;
+                state.signed_status = "Configure a signing stage in Settings first".into();
+                return Task::none();
+            }
+            return load_signed_paks(PathBuf::from(&state.preferences.stage));
+        }
+        Message::SignedProfilesLoaded(stage, result) => {
+            if stage != PathBuf::from(&state.preferences.stage) || state.signed_busy {
+                return Task::none();
+            }
+            match result {
+                Ok(info) => {
+                    let available: usize = info.catalog.profiles.iter().map(|p| p.mods.len()).sum();
+                    state.signed_status = format!(
+                        "{} registered signed PAK(s); {} selected for Play with Mods.",
+                        available, info.selected.len()
+                    );
+                    state.profile_catalog = Some(info.catalog.clone());
+                    state.signed_ui = Some(info);
+                }
+                Err(error) => {
+                    state.signed_ui = None;
+                    state.signed_status = format!("Could not read signed PAK profiles: {error}");
+                }
+            }
+        }
+        Message::SignedPakToggle(profile_id, mod_id, enabled) => {
+            if state.busy || state.signed_busy { return Task::none(); }
+            if enabled {
+                let collision = state.modding_projects.as_ref().and_then(|projects| {
+                    let target = state.signed_ui.as_ref()
+                        .and_then(|ui| ui.catalog.profiles.iter().find(|p| p.id == profile_id))
+                        .and_then(|p| p.mods.iter().find(|m| m.id == mod_id))
+                        .map(|m| m.target.as_str())?;
+                    projects.iter().find(|p| p.enabled && p.target.eq_ignore_ascii_case(target))
+                });
+                if let Some(project) = collision {
+                    state.signed_status = format!(
+                        "Disable enabled project {} first: both target {}.",
+                        project.label, project.target
+                    );
+                    return Task::none();
+                }
+            }
+            if state.preferences.stage.trim().is_empty() {
+                state.signed_status = "Configure a signing stage first".into();
+                return Task::none();
+            }
+            state.signed_busy = true;
+            let stage = PathBuf::from(&state.preferences.stage);
+            return Task::perform(async move {
+                let expected = stage.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    mod_play::select_signed(
+                        &stage, mod_play::SignedChoice { profile_id, mod_id }, enabled
+                    )
+                }).await.map_err(|e| format!("Could not update signed PAK toggle: {e}"))
+                    .and_then(|value| value);
+                (expected, result)
+            }, |(stage, result)| Message::SignedPakToggled(stage, result));
+        }
+        Message::SignedPakToggled(stage, result) => {
+            state.signed_busy = false;
+            if stage != PathBuf::from(&state.preferences.stage) {
+                return Task::none();
+            }
+            match result {
+                Ok(info) => {
+                    state.signed_status = format!(
+                        "{} registered signed PAK(s) enabled.",
+                        info.selected.len()
+                    );
+                    state.profile_catalog = Some(info.catalog.clone());
+                    state.signed_ui = Some(info);
+                }
+                Err(error) => {
+                    state.signed_status = format!("Signed PAK selection not changed: {error}");
+                }
+            }
+        }
         Message::ModdingToggleEnabled(index) => {
             if state.busy {
                 return Task::none();
@@ -3241,17 +3353,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::ModdingRefresh => {
+            let signed = if state.preferences.stage.trim().is_empty() {
+                Task::none()
+            } else {
+                load_signed_paks(PathBuf::from(&state.preferences.stage))
+            };
             if state.preferences.projects.trim().is_empty() {
-                state.status = "Configure your Projects folder in Settings first.".into();
-                return Task::none();
+                state.status = "No editable Projects folder configured; registered signed PAKs can still be enabled.".into();
+                return signed;
             }
-            return launch(
+            let projects = launch(
                 state,
                 Operation::IndexProjects(
                     PathBuf::from(&state.preferences.projects),
                     PathBuf::from(&state.preferences.stage),
                 ),
             );
+            Task::batch([projects, signed])
         }
         Message::ModdingToggleAdvanced => state.modding_advanced = !state.modding_advanced,
         Message::ModdingToggleProfiles => {
@@ -7789,6 +7907,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::PreferenceStage(value) => {
             state.preferences.stage = value;
             state.modding_projects = None;
+            state.signed_ui = None;
+            state.profile_catalog = None;
+            state.signed_status.clear();
         }
         Message::PreferenceSwap(value) => state.preferences.swap = value,
         Message::PreferenceProjects(value) => {
