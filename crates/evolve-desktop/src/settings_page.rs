@@ -578,7 +578,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                         design::button(if state.preferences.discord_minimal { "Privacy: Minimal" } else { "Privacy: Detailed" })
                             .on_press(Message::PreferenceDiscordToggle("minimal")).style(design::secondary),
                     ].spacing(8),
-                    text("Character names and portraits are hidden until verified. Evolution stage, health and armor use validated read-only local Actor System fields; map and game mode remain hidden until verified.")
+                    text("Health is available for hunters and monsters when validated. Armor and evolution stage are monster-only and remain hidden until a verified local character class confirms a monster. Character names, portraits, map and mode also await verified sources.")
                         .size(11).style(design::muted),
                 ].spacing(8)),
                 panel(column![
