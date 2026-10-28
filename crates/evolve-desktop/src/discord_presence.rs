@@ -146,15 +146,7 @@ struct CharacterPortrait {
 #[derive(Debug, serde::Deserialize)]
 struct CharacterPortraitRegistry {
     characters: Vec<CharacterPortrait>,
-    unillustrated_characters: Vec<UnillustratedCharacter>,
     non_player_entities: Vec<String>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct UnillustratedCharacter {
-    display_name: String,
-    team: Team,
-    internal_names: Vec<String>,
 }
 
 fn portrait_registry() -> &'static CharacterPortraitRegistry {
@@ -192,18 +184,6 @@ fn character_from_entity_name(raw: &str) -> Option<(&'static str, Team)> {
                 .any(|known| known.eq_ignore_ascii_case(name))
         })
         .map(|portrait| (portrait.display_name.as_str(), portrait.team))
-        .or_else(|| {
-            registry
-                .unillustrated_characters
-                .iter()
-                .find(|character| {
-                    character
-                        .internal_names
-                        .iter()
-                        .any(|known| known.eq_ignore_ascii_case(name))
-                })
-                .map(|character| (character.display_name.as_str(), character.team))
-        })
 }
 
 fn portrait_for_display_name(name: &str) -> Option<&'static CharacterPortrait> {
@@ -686,7 +666,7 @@ mod tests {
                 .iter()
                 .filter(|p| !p.internal_names.is_empty())
                 .count(),
-            37
+            38
         );
         let mut seen = std::collections::HashSet::new();
         for portrait in portraits {
@@ -716,7 +696,11 @@ mod tests {
             portrait_for_display_name("Tech").unwrap().team,
             Team::Unknown
         );
-        assert_eq!(portrait_registry().unillustrated_characters.len(), 2);
+        assert_eq!(
+            character_from_entity_name("Scrap"),
+            Some(("Jack", Team::Hunter))
+        );
+        assert_eq!(portrait_for_display_name("Jack").unwrap().asset_key, "scrap");
         assert_eq!(character_from_entity_name("UnknownABot"), None);
     }
 
@@ -880,18 +864,33 @@ mod tests {
     }
 
     #[test]
-    fn missing_portraits_still_resolve_names_and_npcs_never_become_players() {
-        for internal in ["TrackingGBot", "SupportGBot"] {
-            assert_eq!(character_from_entity_name(internal), Some(("Jack", Team::Hunter)));
+    fn jack_uses_scrap_internal_name_and_existing_transparent_portrait() {
+        for internal in ["Scrap", "TrackingGBot", "SupportGBot"] {
+            assert_eq!(
+                character_from_entity_name(internal),
+                Some(("Jack", Team::Hunter))
+            );
         }
-        assert_eq!(
-            character_from_entity_name("MedicB_NecroBot"),
-            Some(("Necro Lazarus", Team::Hunter))
-        );
-        assert!(portrait_for_display_name("Jack").is_none());
-        assert!(portrait_for_display_name("Necro Lazarus").is_none());
+        let jack = portrait_for_display_name("Jack").unwrap();
+        assert_eq!(jack.asset_key, "scrap");
+        assert_eq!(jack.team, Team::Hunter);
+        assert_eq!(portrait_for_display_name("Necro Lazarus"), None);
+        assert_eq!(character_from_entity_name("MedicB_NecroBot"), None);
+        let actor = LocalActor {
+            name: Some("Jack".into()),
+            health: Some("2000.000".into()),
+            ..LocalActor::default()
+        };
+        let activity = format_activity(&sample(), Some(123), Some(&actor), 100).unwrap();
+        assert_eq!(activity["details"], "Playing as Jack");
+        assert_eq!(activity["state"], "Health 2,000");
+        assert_eq!(activity["assets"]["large_image"], "scrap");
+        assert_eq!(activity["assets"]["large_text"], "Jack");
         for npc in &portrait_registry().non_player_entities {
-            assert!(character_from_entity_name(npc).is_none(), "Non-player name: {npc}");
+            assert!(
+                character_from_entity_name(npc).is_none(),
+                "Non-player name: {npc}"
+            );
         }
     }
 
