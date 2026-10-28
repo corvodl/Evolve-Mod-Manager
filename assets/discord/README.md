@@ -40,9 +40,12 @@ aliases) and **Necro Lazarus**, but deliberately do not request nonexistent
 Discord images for them. Uploading those two portraits later requires adding
 the corresponding art keys and image files.
 
-The `non_player_entities` list tracks known NPC copies, decoys, co-op
-actors, and minion names that must not be treated as the local player's
-character. Internal-name matching is always exact and case-insensitive.
+The known co-op monster variants (for example `GoliathCoopBot` and
+`GrounderCoopBot`) map to their base or variant portrait **only when
+resolved on the validated local player actor**. The `non_player_entities`
+list instead contains decoys, NPC copies, and minion names that must not be
+treated as the player's character. Internal-name matching is always exact
+and case-insensitive.
 
 When an entity name is confirmed through the validated local IEntity resolver,
 edit only that character's `internal_names` list. For example, to support a
