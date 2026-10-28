@@ -94,15 +94,15 @@ pub fn validate_test_paths(
 ) -> Result<(PathBuf, PathBuf), String> {
     let game = test_game_root(test_game)?;
     let client = test_client_exe(test_client)?;
-    if let Ok(production) = game_root(production_game) {
-        if game == production {
-            return Err("Test Game cannot be the production game installation".into());
-        }
+    if let Ok(production) = game_root(production_game)
+        && game == production
+    {
+        return Err("Test Game cannot be the production game installation".into());
     }
-    if let Ok(production) = client_exe(production_client) {
-        if client == production {
-            return Err("Test Client cannot be the production client executable".into());
-        }
+    if let Ok(production) = client_exe(production_client)
+        && client == production
+    {
+        return Err("Test Client cannot be the production client executable".into());
     }
     Ok((game, client))
 }
