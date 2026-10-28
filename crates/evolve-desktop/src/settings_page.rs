@@ -195,7 +195,8 @@ fn test_environment_setup(state: &State) -> Element<'_, Message> {
         &state.preferences.test_client_executable,
         &state.preferences.game_installation,
         &state.preferences.client_executable,
-    ).is_ok();
+    )
+    .is_ok();
     panel(
         column![
             heading(

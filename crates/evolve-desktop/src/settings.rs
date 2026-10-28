@@ -434,7 +434,10 @@ mod tests {
         let restored = load_from(&path).unwrap();
         assert!(restored.play_through_test_client);
         assert_eq!(restored.test_game_installation, "C:/EvolveTest/Game");
-        assert_eq!(restored.test_client_executable, "C:/EvolveTest/TestClient.exe");
+        assert_eq!(
+            restored.test_client_executable,
+            "C:/EvolveTest/TestClient.exe"
+        );
         assert_eq!(restored.test_stage, "C:/EvolveTest/Stage");
         assert_eq!(restored.test_swap, "C:/EvolveTest/Swap");
         assert_eq!(restored.game_installation, original.game_installation);

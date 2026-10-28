@@ -419,7 +419,9 @@ pub fn launch_clean_test(
     crate::launcher_bridge::games_closed()?;
     let mut warnings = recovery_warnings(game, swap);
     if let Err(error) = crate::online_guard::apply(game, true) {
-        warnings.push(format!("Could not remove test client offline firewall rule: {error}"));
+        warnings.push(format!(
+            "Could not remove test client offline firewall rule: {error}"
+        ));
     }
     let pid = crate::standard_user_launch::launch_test(client)?;
     Ok((pid, warnings))

@@ -1569,7 +1569,8 @@ impl Operation {
                 Ok(Completed::CleanClientStarted(id, warnings))
             }
             Self::LaunchCleanTestClient(game, client, swap) => {
-                let (id, warnings) = play_setup::launch_clean_test(&game, &client, swap.as_deref())?;
+                let (id, warnings) =
+                    play_setup::launch_clean_test(&game, &client, swap.as_deref())?;
                 Ok(Completed::CleanClientStarted(id, warnings))
             }
             Self::CreateInitialSetup(game, client, storage, snapshots) => {
@@ -7530,8 +7531,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.preferences.play_through_test_client = enabled;
             persist_preferences(state);
         }
-        Message::PreferenceTestGameInstall(value) => state.preferences.test_game_installation = value,
-        Message::PreferenceTestClientExecutable(value) => state.preferences.test_client_executable = value,
+        Message::PreferenceTestGameInstall(value) => {
+            state.preferences.test_game_installation = value
+        }
+        Message::PreferenceTestClientExecutable(value) => {
+            state.preferences.test_client_executable = value
+        }
         Message::PreferenceTestStage(value) => state.preferences.test_stage = value,
         Message::PreferenceTestSwap(value) => state.preferences.test_swap = value,
         Message::PickTestGame | Message::PickTestClient => {
@@ -7545,8 +7550,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .unwrap_or(None)
                 },
                 move |selection| {
-                    if game { Message::PickedTestGame(selection) }
-                    else { Message::PickedTestClient(selection) }
+                    if game {
+                        Message::PickedTestGame(selection)
+                    } else {
+                        Message::PickedTestClient(selection)
+                    }
                 },
             );
         }
@@ -7665,7 +7673,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             ) {
                 Ok(paths) => paths,
                 Err(error) => {
-                    state.status = format!("Select separate Test Client and Test Game builds first: {error}");
+                    state.status =
+                        format!("Select separate Test Client and Test Game builds first: {error}");
                     return Task::none();
                 }
             };
@@ -7700,7 +7709,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             ) {
                 Ok((game, client)) => {
                     state.preferences.test_game_installation = game.to_string_lossy().into_owned();
-                    state.preferences.test_client_executable = client.to_string_lossy().into_owned();
+                    state.preferences.test_client_executable =
+                        client.to_string_lossy().into_owned();
                     persist_preferences(state);
                     state.settings_status = "Separate Test Client/Game paths saved; the Play toggle controls which environment is used.".into();
                     state.status = state.settings_status.clone();
@@ -7815,8 +7825,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.active_play = None;
                     return Task::none();
                 }
-                let selected_stage = if test_mode { &state.preferences.test_stage } else { &state.preferences.stage };
-                let selected_swap = if test_mode { &state.preferences.test_swap } else { &state.preferences.swap };
+                let selected_stage = if test_mode {
+                    &state.preferences.test_stage
+                } else {
+                    &state.preferences.stage
+                };
+                let selected_swap = if test_mode {
+                    &state.preferences.test_swap
+                } else {
+                    &state.preferences.swap
+                };
                 if selected_stage.trim().is_empty() || selected_swap.trim().is_empty() {
                     state.page = Some(Page::Settings);
                     state.settings_tab = settings_page::Tab::Storage;
@@ -7861,7 +7879,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     {
                         state.status = "Test Environment cannot reuse the production signing stage or recovery journal. Configure separate Test stage/swap paths.".into();
                         state.play_notice = Some(play_dialog::Notice::finished(
-                            kind, play_dialog::Phase::Error, state.status.clone()
+                            kind,
+                            play_dialog::Phase::Error,
+                            state.status.clone(),
                         ));
                         state.active_play = None;
                         return Task::none();
@@ -10085,7 +10105,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     persist_preferences(state);
                     state.status = format!(
                         "Separate Test Mod Setup prepared: {} signed PAKs. Test stage: {}. Production stage and recovery files were unchanged.",
-                        report.signed_count, report.stage.display()
+                        report.signed_count,
+                        report.stage.display()
                     );
                     state.page = Some(Page::Settings);
                     state.settings_tab = settings_page::Tab::Storage;
