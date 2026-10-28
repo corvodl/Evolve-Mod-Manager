@@ -4500,12 +4500,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::ActorWrite => {
-            if !state.developer_unlocked
-                || !state.armor_offline_confirmed
-                || !state.live_edit_enabled
-                || state.developer_online_mods
-                || state.actor_busy
-            {
+            if !state.developer_unlocked || !state.live_edit_enabled || state.actor_busy {
+                state.actor_status = "Enable actor memory writes before applying a value.".into();
                 return Task::none();
             }
             let (Some(snapshot), Some((id, address, field, bits))) =
@@ -4587,12 +4583,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 notify_dev_overlay(state, &format!("Unfrozen {}", field.title()));
                 return Task::none();
             }
-            if !state.developer_unlocked
-                || !state.live_edit_enabled
-                || !state.armor_offline_confirmed
-                || state.developer_online_mods
-            {
-                state.actor_status = "Enable offline editing before freezing fields".into();
+            if !state.developer_unlocked || !state.live_edit_enabled {
+                state.actor_status = "Enable actor memory writes before freezing fields".into();
                 return Task::none();
             }
             let bits = state
@@ -4612,8 +4604,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 || state.actor_frozen.is_empty()
                 || !state.developer_unlocked
                 || !state.live_edit_enabled
-                || !state.armor_offline_confirmed
-                || state.developer_online_mods
             {
                 return Task::none();
             }
@@ -4693,7 +4683,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             state.live_edit_cancel = None;
             state.live_edit_busy = false;
-            state.live_edit_enabled = armed && state.armor_offline_confirmed;
+            state.live_edit_enabled = armed;
             if !state.live_edit_enabled {
                 if let Some(mut child) = state.teleport_overlay.take() {
                     let _ = child.kill();
@@ -4706,7 +4696,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.live_edit_probe = None;
             state.live_edit_generation = state.live_edit_generation.wrapping_add(1);
             state.live_edit_report = if state.live_edit_enabled {
-                "Single-shot edits armed for this OFFLINE session. First read a Float32 candidate; only a fresh read enables a write.".into()
+                "Memory writes armed for the current Evolve process. Only verified actor fields or freshly read Float32 values can be changed.".into()
             } else {
                 "Live editing disarmed. No automatic writes or freezing.".into()
             };
@@ -4719,7 +4709,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::LiveEditProbe(source) => {
             if !state.developer_unlocked
                 || !state.live_edit_enabled
-                || !state.armor_offline_confirmed
                 || state.live_edit_busy
                 || state.runtime_checking
             {
@@ -4787,7 +4776,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::LiveEditApply => {
             if !state.developer_unlocked
                 || !state.live_edit_enabled
-                || !state.armor_offline_confirmed
                 || state.live_edit_busy
                 || state.runtime_checking
             {
@@ -4802,7 +4790,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let desired = state.live_edit_value.clone();
             state.live_edit_busy = true;
             state.live_edit_report =
-                "Checking current baseline, offline status, then writing one Float32...".into();
+                "Checking the current value and process identity, then writing one Float32...".into();
             let generation = state.live_edit_generation;
             let cancel = Arc::new(AtomicBool::new(false));
             state.live_edit_cancel = Some(cancel.clone());
@@ -4847,38 +4835,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             notify_dev_overlay(state, notice);
         }
         Message::ArmorOfflineChanged(confirmed) => {
-            if !confirmed {
-                if let Some(mut child) = state.teleport_overlay.take() {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                }
-                state.teleport_aim_pending = None;
-                state.actor_frozen.clear();
-                state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
-                state.actor_edit = None;
-            }
-
-            if confirmed && state.developer_online_mods {
-                state.status =
-                    "Disable experimental modded-online mode before arming offline memory tools."
-                        .into();
-                return Task::none();
-            }
+            // Guided armor scanning is a separate opt-in from actor field edits.
+            // Changing this checkbox does not disarm the memory writer.
             state.armor_offline_confirmed = confirmed;
             if confirmed {
                 state.armor_pid_seen = state.runtime_snapshot.as_ref().and_then(|s| s.pid);
-            }
-            if !confirmed {
-                state.live_edit_enabled = false;
-                if let Some(cancel) = &state.live_edit_cancel {
-                    cancel.store(true, Ordering::Relaxed);
-                }
-                state.live_edit_cancel = None;
-                state.live_edit_probe = None;
-                state.live_edit_generation = state.live_edit_generation.wrapping_add(1);
-                state.live_edit_busy = false;
-                state.live_edit_report =
-                    "Offline session confirmation withdrawn; live editing disabled.".into();
+            } else {
                 if let Some(cancel) = &state.armor_cancel {
                     cancel.store(true, Ordering::Relaxed);
                 }
@@ -4886,8 +4848,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.armor_scan = None;
                 state.armor_live = None;
                 state.armor_generation = state.armor_generation.wrapping_add(1);
-                state.armor_report =
-                    "Offline authorization withdrawn; armor monitoring stopped.".into();
+                state.armor_report = "Guided armor scanning disabled.".into();
             }
         }
         Message::ArmorBegin => {
@@ -5446,26 +5407,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             match result {
                 Ok(status) => {
                     state.developer_online_mods = true;
-                    state.actor_frozen.clear();
-                    state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
-                    // Online mode must not reuse the separate offline-only
-                    // memory edit permissions or stale memory probes.
+                    // Network mode does not determine memory-edit permissions.
+                    // Address/PID validation and the explicit write arm remain active.
                     state.armor_offline_confirmed = false;
-                    state.live_edit_enabled = false;
-                    state.teleport_reading = None;
-                    state.teleport_saved = None;
-                    state.teleport_aim_pending = None;
-                    if let Some(mut child) = state.teleport_overlay.take() {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                    }
-                    state.teleport_status.clear();
-                    state.live_edit_probe = None;
-                    state.live_edit_generation = state.live_edit_generation.wrapping_add(1);
-                    if let Some(cancel) = &state.live_edit_cancel {
-                        cancel.store(true, Ordering::Relaxed);
-                    }
-                    state.live_edit_cancel = None;
                     state.runtime_health_scan = None;
                     state.armor_scan = None;
                     state.armor_live = None;
@@ -12240,8 +12184,6 @@ impl Desktop {
         let actor_freeze = if !self.state.actor_frozen.is_empty()
             && self.state.developer_unlocked
             && self.state.live_edit_enabled
-            && self.state.armor_offline_confirmed
-            && !self.state.developer_online_mods
         {
             iced::time::every(Duration::from_secs(2)).map(|_| Message::ActorFreezeTick)
         } else {

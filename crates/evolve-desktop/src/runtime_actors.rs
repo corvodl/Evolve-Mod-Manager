@@ -2,9 +2,9 @@
 //! Evolve Stage 2 offsets observed in offline Goliath sessions. The engine actor
 //! registry/name layout is not known, so non-local actors are ONLY included if
 //! a backlink to the independently verified local actor can be established.
-//! All reads are external. Writes are single-shot, compare-before-write and
-//! guarded by the existing offline-session policy.
-use crate::{runtime_armor, runtime_live, runtime_memory};
+//! All reads are external. Writes are compare-before-write and process-validated;
+//! the explicit Developer write arm controls access (not TCP connection state).
+use crate::{runtime_live, runtime_memory};
 use runtime_memory::Snapshot;
 
 const ENTITY_SYSTEM_RVA: usize = 0x28D58E8;
@@ -383,7 +383,6 @@ mod windows {
         desired: u32,
     ) -> Result<bool, String> {
         let pid = snapshot.pid.ok_or("Game process not detected")?;
-        runtime_armor::offline_guard(pid, true)?;
         let listing = inspect(snapshot, root)?;
         let actor = listing
             .actors
@@ -405,7 +404,6 @@ mod windows {
         {
             return Err("Frozen actor or field changed before write".into());
         }
-        runtime_armor::offline_guard(pid, true)?;
         runtime_live::write_four(pid, value.address, value.bits, desired)?;
         Ok(true)
     }
@@ -420,7 +418,6 @@ mod windows {
         input: &str,
     ) -> Result<WriteResult, String> {
         let pid = snapshot.pid.ok_or("Detect Evolve first")?;
-        runtime_armor::offline_guard(pid, true)?;
         let listing = inspect(snapshot, root)?;
         let actor = listing
             .actors
@@ -456,7 +453,6 @@ mod windows {
         if new_bits == expected {
             return Err("Value is unchanged".into());
         }
-        runtime_armor::offline_guard(pid, true)?;
         let (_, h, _) = process_and_handle(snapshot, root)?;
         // Revalidate the actor identity and compare the same bytes immediately
         // before the existing single-shot CAS memory writer.
