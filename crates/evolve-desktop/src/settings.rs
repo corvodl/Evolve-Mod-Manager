@@ -80,6 +80,14 @@ pub struct Preferences {
     pub automatic_update_checks: bool,
     /// Non-sensitive user-selected Developer overlay hotkey presets (0=disabled).
     pub developer_hotkeys: [u8; 9],
+    pub discord_presence_enabled: bool,
+    pub discord_application_id: String,
+    pub discord_show_game: bool,
+    pub discord_show_manager: bool,
+    pub discord_show_character: bool,
+    pub discord_show_stats: bool,
+    pub discord_show_profile: bool,
+    pub discord_minimal: bool,
     pub create_desktop_shortcut: bool,
     /// Retain older application settings that the Rust interface does not
     /// interpret yet. Existing user choices survive a Save Settings action.
@@ -141,6 +149,14 @@ impl Default for Preferences {
             nightly_updates: env!("CARGO_PKG_VERSION").contains("-nightly."),
             automatic_update_checks: true,
             developer_hotkeys: [0; 9],
+            discord_presence_enabled: false,
+            discord_application_id: String::new(),
+            discord_show_game: true,
+            discord_show_manager: true,
+            discord_show_character: true,
+            discord_show_stats: false,
+            discord_show_profile: false,
+            discord_minimal: false,
             create_desktop_shortcut: false,
             previous_options: BTreeMap::new(),
         }
@@ -280,6 +296,13 @@ impl Preferences {
         }
         if !["Dark", "Light"].contains(&self.appearance_mode.as_str()) {
             self.appearance_mode = "Dark".into();
+        }
+        if !self.discord_application_id.is_empty()
+            && (self.discord_application_id.len() < 15
+                || self.discord_application_id.len() > 25
+                || !self.discord_application_id.bytes().all(|byte| byte.is_ascii_digit()))
+        {
+            return Err(SettingsError::InvalidValue);
         }
         if self.font_family.len() > 120 || self.archive_label.len() > 200 {
             return Err(SettingsError::InvalidValue);
