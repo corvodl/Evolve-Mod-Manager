@@ -239,7 +239,9 @@ mod windows {
                     unsafe { ShowWindow(hwnd, SW_HIDE) };
                     return 0;
                 }
-                GAME_FOCUSED.store(game_focused, Ordering::Relaxed);
+                if GAME_FOCUSED.swap(game_focused, Ordering::Relaxed) != game_focused {
+                    unsafe { InvalidateRect(hwnd, null(), 0) };
+                }
                 let mut rect = Rect::default();
                 let mut point = Point::default();
                 if unsafe { GetClientRect(active, &mut rect) } == 0
