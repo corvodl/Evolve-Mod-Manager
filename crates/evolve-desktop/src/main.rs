@@ -3987,8 +3987,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.teleport_status = "Crosshair overlay closed".into();
                 return Task::none();
             }
-            if !state.developer_unlocked || state.developer_online_mods
-                || !state.armor_offline_confirmed || !state.live_edit_enabled
+            if !state.developer_unlocked
+                || state.developer_online_mods
+                || !state.armor_offline_confirmed
+                || !state.live_edit_enabled
             {
                 state.teleport_status = "Overlay requires an isolated offline match".into();
                 return Task::none();
@@ -4004,14 +4006,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             #[cfg(windows)]
             {
                 use std::os::windows::process::CommandExt;
-                let path = std::env::current_exe().ok()
+                let path = std::env::current_exe()
+                    .ok()
                     .map(|p| p.with_file_name("evolve-teleport-overlay.exe"));
-                let result = path.ok_or_else(|| "Cannot locate manager installation".to_owned())
-                    .and_then(|path| std::process::Command::new(path)
-                        .arg(pid.to_string())
-                        .arg(std::process::id().to_string())
-                        .creation_flags(0x0800_0000)
-                        .spawn().map_err(|e| format!("Cannot launch overlay companion: {e}")));
+                let result = path
+                    .ok_or_else(|| "Cannot locate manager installation".to_owned())
+                    .and_then(|path| {
+                        std::process::Command::new(path)
+                            .arg(pid.to_string())
+                            .arg(std::process::id().to_string())
+                            .creation_flags(0x0800_0000)
+                            .spawn()
+                            .map_err(|e| format!("Cannot launch overlay companion: {e}"))
+                    });
                 match result {
                     Ok(child) => {
                         state.teleport_overlay = Some(child);
@@ -4031,7 +4038,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             let raw = state.teleport_aim_distance.trim();
             let raw = if raw.is_empty() { "30" } else { raw };
-            let distance = raw.parse::<f32>().ok()
+            let distance = raw
+                .parse::<f32>()
+                .ok()
                 .filter(|v| v.is_finite() && (5.0..=100.0).contains(v));
             let Some(distance) = distance else {
                 state.teleport_status = "Aim distance must be 5 to 100 units".into();
@@ -4041,9 +4050,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return Task::done(Message::TeleportCapture(true));
         }
         Message::TeleportPreviewAim => {
-            if !state.developer_unlocked || state.developer_online_mods
-                || !state.armor_offline_confirmed || !state.live_edit_enabled
-                || state.teleport_aim_preview_busy || state.teleport_busy
+            if !state.developer_unlocked
+                || state.developer_online_mods
+                || !state.armor_offline_confirmed
+                || !state.live_edit_enabled
+                || state.teleport_aim_preview_busy
+                || state.teleport_busy
             {
                 return Task::none();
             }
@@ -4053,7 +4065,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
             let raw = state.teleport_aim_distance.trim();
             let raw = if raw.is_empty() { "30" } else { raw };
-            let distance = raw.parse::<f32>().ok()
+            let distance = raw
+                .parse::<f32>()
+                .ok()
                 .filter(|v| v.is_finite() && (5.0..=100.0).contains(v));
             let Some(distance) = distance else {
                 state.teleport_status = "Aim distance must be 5 to 100 units".into();
@@ -4078,14 +4092,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             }
             match result {
-                Ok(pos) => state.teleport_status =
-                    format!("Approximate actor-facing destination: {}", pos.label()),
+                Ok(pos) => {
+                    state.teleport_status =
+                        format!("Approximate actor-facing destination: {}", pos.label())
+                }
                 Err(error) => state.teleport_status = format!("Aim unavailable: {error}"),
             }
         }
         Message::TeleportCapture(save) => {
-            if !state.developer_unlocked || state.developer_online_mods
-                || !state.armor_offline_confirmed || !state.live_edit_enabled || state.teleport_busy
+            if !state.developer_unlocked
+                || state.developer_online_mods
+                || !state.armor_offline_confirmed
+                || !state.live_edit_enabled
+                || state.teleport_busy
             {
                 state.teleport_status = "Enable offline editing in an isolated match".into();
                 return Task::none();
@@ -4099,17 +4118,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let root = state.preferences.game_storage_root.clone();
             return Task::perform(
                 async move {
-                    tokio::task::spawn_blocking(move || runtime_teleport::inspect(&snapshot, &root, true))
-                        .await
-                        .unwrap_or_else(|e| Err(format!("Teleport read failed: {e}")))
+                    tokio::task::spawn_blocking(move || {
+                        runtime_teleport::inspect(&snapshot, &root, true)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Teleport read failed: {e}")))
                 },
                 move |result| Message::TeleportCaptured(save, result),
             );
         }
         Message::TeleportCaptured(save, result) => {
             state.teleport_busy = false;
-            if !state.developer_unlocked || state.developer_online_mods
-                || !state.armor_offline_confirmed || !state.live_edit_enabled {
+            if !state.developer_unlocked
+                || state.developer_online_mods
+                || !state.armor_offline_confirmed
+                || !state.live_edit_enabled
+            {
                 state.teleport_aim_pending = None;
                 return Task::none();
             }
@@ -4121,14 +4145,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.teleport_z = format!("{:.3}", reading.position.z);
                     if save {
                         state.teleport_saved = Some(reading);
-                        state.teleport_status = format!("Saved position: {}", reading.position.label());
+                        state.teleport_status =
+                            format!("Saved position: {}", reading.position.label());
                         if let Some(distance) = state.teleport_aim_pending.take() {
                             return Task::done(Message::TeleportDo(
-                                runtime_teleport::Destination::ActorAim(distance), None,
+                                runtime_teleport::Destination::ActorAim(distance),
+                                None,
                             ));
                         }
                     } else {
-                        state.teleport_status = format!("Local player: {}", reading.position.label());
+                        state.teleport_status =
+                            format!("Local player: {}", reading.position.label());
                     }
                 }
                 Err(error) => {
@@ -4149,17 +4176,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::TeleportAbsolute => {
             if let Ok(pos) = runtime_teleport::parse_position(
-                &state.teleport_x, &state.teleport_y, &state.teleport_z,
+                &state.teleport_x,
+                &state.teleport_y,
+                &state.teleport_z,
             ) {
                 return Task::done(Message::TeleportDo(
-                    runtime_teleport::Destination::Absolute(pos), None
+                    runtime_teleport::Destination::Absolute(pos),
+                    None,
                 ));
             }
             state.teleport_status = "Enter valid X, Y, Z coordinates".into();
         }
         Message::TeleportRelative(x, y, z) => {
             return Task::done(Message::TeleportDo(
-                runtime_teleport::Destination::Relative(runtime_teleport::Position {x, y, z}), None,
+                runtime_teleport::Destination::Relative(runtime_teleport::Position { x, y, z }),
+                None,
             ));
         }
         Message::TeleportReturnSaved => {
@@ -4173,8 +4204,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             ));
         }
         Message::TeleportDo(destination, identity) => {
-            if !state.developer_unlocked || state.developer_online_mods
-                || !state.armor_offline_confirmed || !state.live_edit_enabled || state.teleport_busy
+            if !state.developer_unlocked
+                || state.developer_online_mods
+                || !state.armor_offline_confirmed
+                || !state.live_edit_enabled
+                || state.teleport_busy
             {
                 state.teleport_status = "Teleport requires unlocked offline writes".into();
                 return Task::none();
@@ -4188,18 +4222,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let root = state.preferences.game_storage_root.clone();
             return Task::perform(
                 async move {
-                    tokio::task::spawn_blocking(move ||
-                        runtime_teleport::teleport(&snapshot, &root, true, destination, identity))
-                        .await
-                        .unwrap_or_else(|e| Err(format!("Teleport failed: {e}")))
+                    tokio::task::spawn_blocking(move || {
+                        runtime_teleport::teleport(&snapshot, &root, true, destination, identity)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Teleport failed: {e}")))
                 },
                 Message::TeleportMoved,
             );
         }
         Message::TeleportMoved(result) => {
             state.teleport_busy = false;
-            if !state.developer_unlocked || state.developer_online_mods
-                || !state.armor_offline_confirmed || !state.live_edit_enabled {
+            if !state.developer_unlocked
+                || state.developer_online_mods
+                || !state.armor_offline_confirmed
+                || !state.live_edit_enabled
+            {
                 return Task::none();
             }
             match result {

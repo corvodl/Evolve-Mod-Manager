@@ -1401,20 +1401,24 @@ fn actor_rows(state: &State) -> Element<'_, Message> {
     list.into()
 }
 
-
 fn teleport_controls(state: &State) -> Element<'_, Message> {
     let enabled = state.developer_unlocked
         && state.armor_offline_confirmed
         && state.live_edit_enabled
         && !state.developer_online_mods
         && !state.teleport_busy
-        && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some();
+        && state
+            .runtime_snapshot
+            .as_ref()
+            .and_then(|s| s.pid)
+            .is_some();
 
     surface(
         column![
             text("Teleport").size(19),
             text("Offline only · One-shot physics XYZ · No hooks or freezing")
-                .size(12).style(design::muted),
+                .size(12)
+                .style(design::muted),
             row![
                 design::text_input("X", &state.teleport_x)
                     .on_input(|v| Message::TeleportXYZChanged(0, v)),
@@ -1422,7 +1426,8 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
                     .on_input(|v| Message::TeleportXYZChanged(1, v)),
                 design::text_input("Z", &state.teleport_z)
                     .on_input(|v| Message::TeleportXYZChanged(2, v)),
-            ].spacing(8),
+            ]
+            .spacing(8),
             row![
                 design::button("Read position")
                     .on_press_maybe(enabled.then_some(Message::TeleportCapture(false))),
@@ -1430,51 +1435,78 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
                     .on_press_maybe(enabled.then_some(Message::TeleportCapture(true))),
                 design::button("Teleport XYZ")
                     .on_press_maybe(enabled.then_some(Message::TeleportAbsolute)),
-                design::button("Return to saved")
-                    .on_press_maybe((enabled && state.teleport_saved.is_some())
-                        .then_some(Message::TeleportReturnSaved)),
-            ].spacing(8),
+                design::button("Return to saved").on_press_maybe(
+                    (enabled && state.teleport_saved.is_some())
+                        .then_some(Message::TeleportReturnSaved)
+                ),
+            ]
+            .spacing(8),
             text("Relative move · 20 units per click (world axes)")
-                .size(12).style(design::muted),
+                .size(12)
+                .style(design::muted),
             row![
                 text("X").width(Length::Fixed(24.0)),
-                design::button("−20 X").on_press_maybe(enabled.then_some(Message::TeleportRelative(-20.0, 0.0, 0.0))),
-                design::button("+20 X").on_press_maybe(enabled.then_some(Message::TeleportRelative(20.0, 0.0, 0.0))),
-            ].align_y(iced::Alignment::Center).spacing(8),
+                design::button("−20 X")
+                    .on_press_maybe(enabled.then_some(Message::TeleportRelative(-20.0, 0.0, 0.0))),
+                design::button("+20 X")
+                    .on_press_maybe(enabled.then_some(Message::TeleportRelative(20.0, 0.0, 0.0))),
+            ]
+            .align_y(iced::Alignment::Center)
+            .spacing(8),
             row![
                 text("Y").width(Length::Fixed(24.0)),
-                design::button("−20 Y").on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, -20.0, 0.0))),
-                design::button("+20 Y").on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, 20.0, 0.0))),
-            ].align_y(iced::Alignment::Center).spacing(8),
+                design::button("−20 Y")
+                    .on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, -20.0, 0.0))),
+                design::button("+20 Y")
+                    .on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, 20.0, 0.0))),
+            ]
+            .align_y(iced::Alignment::Center)
+            .spacing(8),
             row![
                 text("Z").width(Length::Fixed(24.0)),
-                design::button("−20 Z").on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, 0.0, -20.0))),
-                design::button("+20 Z").on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, 0.0, 20.0))),
-            ].align_y(iced::Alignment::Center).spacing(8),
+                design::button("−20 Z")
+                    .on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, 0.0, -20.0))),
+                design::button("+20 Z")
+                    .on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, 0.0, 20.0))),
+            ]
+            .align_y(iced::Alignment::Center)
+            .spacing(8),
             text("Approximate crosshair teleport").size(17),
             text("Uses actor facing (+Y), not the camera ray. No geometry collision test.")
-                .size(12).style(design::muted),
+                .size(12)
+                .style(design::muted),
             row![
                 text("Distance").width(Length::Fixed(65.0)),
                 design::text_input("30", &state.teleport_aim_distance)
                     .on_input(Message::TeleportAimDistanceChanged)
                     .width(Length::Fixed(90.0)),
-                design::button("Preview coordinates")
-                    .on_press_maybe((enabled && !state.teleport_aim_preview_busy)
-                        .then_some(Message::TeleportPreviewAim)),
+                design::button("Preview coordinates").on_press_maybe(
+                    (enabled && !state.teleport_aim_preview_busy)
+                        .then_some(Message::TeleportPreviewAim)
+                ),
                 design::button("Teleport to Crosshair")
                     .on_press_maybe(enabled.then_some(Message::TeleportAim)),
-            ].align_y(iced::Alignment::Center).spacing(8),
+            ]
+            .align_y(iced::Alignment::Center)
+            .spacing(8),
             iced::widget::checkbox(state.teleport_overlay.is_some())
                 .label("Show external aim marker (windowed fullscreen)")
                 .on_toggle(Message::TeleportOverlayChanged),
             text("The overlay marks the screen center only; it is not a raycast hit location.")
-                .size(12).style(design::muted),
-            text(if state.teleport_busy { "Teleport operation running..." }
-                 else { state.teleport_status.as_str() })
-                .size(12).style(design::muted),
-        ].spacing(9).padding(10)
-    ).into()
+                .size(12)
+                .style(design::muted),
+            text(if state.teleport_busy {
+                "Teleport operation running..."
+            } else {
+                state.teleport_status.as_str()
+            })
+            .size(12)
+            .style(design::muted),
+        ]
+        .spacing(9)
+        .padding(10),
+    )
+    .into()
 }
 
 pub(super) fn developer(state: &State) -> Element<'_, Message> {
