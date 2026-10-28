@@ -1,8 +1,10 @@
 //! Optional, local-only Discord Rich Presence. No OAuth, tokens, network API,
 //! injection, game hooks, or dependency on launching Evolve.
-//! Registered Discord developer application ID is supplied by the release build
-//! (EVOLVE_DISCORD_APP_ID) or a local developer override in Integrations.
+//! Shared Modded Evolve application ID; users do not register or link accounts.
+//! A local developer override remains available in Integrations.
 use crate::{Page, State};
+
+const MODDED_EVOLVE_DISCORD_APPLICATION_ID: &str = "1563784115785048114";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Config {
@@ -56,7 +58,7 @@ impl Config {
         Self {
             enabled: p.discord_presence_enabled,
             app_id: if p.discord_application_id.is_empty() {
-                option_env!("EVOLVE_DISCORD_APP_ID").unwrap_or("").to_owned()
+                MODDED_EVOLVE_DISCORD_APPLICATION_ID.to_owned()
             } else { p.discord_application_id.clone() },
             show_game: p.discord_show_game,
             show_manager: p.discord_show_manager,
@@ -154,7 +156,7 @@ fn format_activity(cfg: &Config, game_pid: Option<u32>, actor: Option<&LocalActo
             } else { "Modded Evolve".to_owned() };
         (details, state, None)
     };
-    let mut assets = json!({"large_image":"evolve", "large_text":"Evolve Mod Manager"});
+    let mut assets = json!({"large_image":"evolve", "large_text":"Modded Evolve"});
     if let Some(asset) = small_image {
         assets["small_image"] = json!(asset);
         assets["small_text"] = json!(actor.and_then(|a| a.name.as_deref()).unwrap_or(""));
@@ -389,6 +391,11 @@ mod tests {
         cfg.enabled=true;
         cfg.show_manager=false;
         assert!(format_activity(&cfg,None,None,1).is_none());
+    }
+    #[test]
+    fn uses_shared_discord_application_without_account_linking() {
+        let state = State::default();
+        assert_eq!(Config::from_state(&state).app_id, MODDED_EVOLVE_DISCORD_APPLICATION_ID);
     }
     #[test]
     fn labels_are_capped_to_discord_limits() {
