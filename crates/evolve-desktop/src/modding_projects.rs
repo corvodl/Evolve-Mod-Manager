@@ -1,6 +1,9 @@
 //! Read-only project dashboard compatible with the private Qt manager's
 //! mod-projects.json registry and .evolve-pak-workspace.json manifests.
 //! This is a navigation/index, not a bypass for verified build preflight.
+#[path = "png_dds_import.rs"]
+mod png_dds_import;
+
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -1576,7 +1579,26 @@ pub fn import_raw_member(
     member: &str,
     replacement_source: &Path,
 ) -> Result<bool, String> {
-    import_raw_member_checked(project, projects_root, member, replacement_source, None)
+    let lower = member.to_ascii_lowercase();
+    let png = replacement_source
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("png"));
+    if png && (lower.ends_with(".dds") || lower.ends_with(".dds.0")) {
+        // Conversion never touches the managed source directly. A separate
+        // temporary DDS enters the same authenticated backup/import transaction.
+        // Broken, incompatible or streaming texture sets fail before editing.
+        let original = project.workspace.join("files").join(member);
+        let temporary = tempfile::Builder::new()
+            .suffix(".dds")
+            .tempfile()
+            .map_err(|e| e.to_string())?;
+        png_dds_import::convert(replacement_source, &original, temporary.path())?;
+        import_raw_member_checked(project, projects_root, member, temporary.path(), None)
+    } else if png && lower.contains(".dds.") {
+        Err("Split DDS streaming fragments require a complete native texture set; single PNG conversion is unsupported.".into())
+    } else {
+        import_raw_member_checked(project, projects_root, member, replacement_source, None)
+    }
 }
 fn import_raw_member_checked(
     project: &ProjectRow,
