@@ -1,3 +1,29 @@
+
+## Separate Evolve Test Environment
+
+Settings → Game Storage includes independent **Test Client executable** and
+**Test Game root** selectors and a **Play through Test Client** toggle. This
+explicit option affects both Play actions. The test launcher is always run via
+Client Launch, never the experimental Direct Launch smoke host.
+
+- Test Client can have an executable name other than
+  `ModdedEvolveLauncher.exe`; the selected file must be a real .exe.
+- Test Game needs its own `bin64_SteamRetail/Evolve.exe`. This selection
+  intentionally does **not** require the production injector file inventory;
+  the test build and production build are distinct.
+- For **modded** Test Client play, configure or create a separate Test Game
+  signing stage and restore/swap folder. A stage created for production cannot
+  be reused against the Test Game. The current mod builder still requires the
+  source Test Game PAKs to be in a supported signed/ZIP layout for its
+  reversible, verified preparation pipeline; the test client not checking
+  expected files does not eliminate that build-time requirement.
+- For **clean** Test Client play, signing stage setup is not needed. The chosen
+  Test Client must itself be configured to start the selected Test Game; the
+  manager does not rewrite proprietary client configuration, credentials or
+  relay settings.
+- Switching the toggle off selects unchanged production game/client and stage
+  paths; neither installation's originals or recovery journals are deleted.
+
 # Experimental Direct Launch enabled for live testing (October 27, 2026)
 
 **Direct Launch is enabled for real Windows gameplay testing.** The former unconditional `require_ready()` error was removed; the Rust preflight checks only the installed game and client runtime files. The worker then attempts the actual Stage 2 service startup, verifies the installed game-side SteamCompat/Stage2Trace DLLs and catalog, and launches Evolve. Missing dependencies or failed service startup produce diagnostic errors, not an arbitrary feature lock. Client Launch remains selectable as a fallback.

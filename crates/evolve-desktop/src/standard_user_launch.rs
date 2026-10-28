@@ -83,6 +83,27 @@ pub fn launch(executable: &Path) -> Result<u32, String> {
     parse_launch_report(&report)
 }
 
+/// Explicit Test Client executable; the separate client build may have a
+/// different filename. Still launch through the verified medium-user broker.
+#[cfg(windows)]
+pub fn launch_test(executable: &Path) -> Result<u32, String> {
+    let file = std::fs::canonicalize(executable)
+        .map_err(|e| format!("Configured Test Client executable is missing: {e}"))?;
+    if !file
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+    {
+        return Err("Test Client must be a Windows .exe".into());
+    }
+    let report = call_broker(&[std::ffi::OsStr::new("--launch-test"), file.as_os_str()])?;
+    parse_launch_report(&report)
+}
+
+#[cfg(not(windows))]
+pub fn launch_test(_executable: &Path) -> Result<u32, String> {
+    Err("Test Client launch requires Windows".into())
+}
+
 #[cfg(not(windows))]
 pub fn launch(_executable: &Path) -> Result<u32, String> {
     Err("Standard-user Evolve launch requires Windows".into())

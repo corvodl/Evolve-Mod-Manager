@@ -110,6 +110,7 @@ pub fn launch_enabled(
     // still determine actual network access.
     developer_online: bool,
     direct_launch: bool,
+    test_client: bool,
 ) -> Result<(usize, u32, usize, Option<String>), String> {
     if mods.is_empty() {
         return Err("Enable at least one mod before pressing Play with Mods.".into());
@@ -130,6 +131,8 @@ pub fn launch_enabled(
     }
     let setup = if direct_launch {
         play_setup::configure_direct_helper(&game, &stage, &swap)
+    } else if test_client {
+        play_setup::configure_test_helper(&game, &client, &stage, &swap)
     } else {
         play_setup::configure_existing_helper(&game, &client, &stage, &swap)
     };
