@@ -132,6 +132,8 @@ fn dropdown(state: &State) -> Option<Element<'_, Message>> {
             design::button("Verify offline launcher + signed PAKs").on_press(Message::MenuCommand(
                 Box::new(Message::StartOfflineLauncherCheck)
             )),
+            design::button("Audit installed original PAKs (read-only)")
+                .on_press(Message::MenuCommand(Box::new(Message::StartLivePakAudit))),
             design::button("Play with mods (existing private helper)").on_press(
                 Message::MenuCommand(Box::new(Message::StartOfflineLauncherLaunch))
             ),
@@ -354,6 +356,25 @@ fn modifications(state: &State) -> Element<'_, Message> {
     ]
     .spacing(5);
     if let Some(record) = record {
+        rows = rows.push(
+            row![
+                design::text_input(
+                    "New relative path under project files/…",
+                    &state.modding_added_member
+                )
+                .on_input(Message::ModdingAddedMemberChanged)
+                .width(Fill),
+                design::button("Register PAK addition")
+                    .style(design::secondary)
+                    .on_press(Message::ModdingRegisterAddedMember),
+                design::button("Unregister")
+                    .style(design::secondary)
+                    .on_press(Message::ModdingUnregisterAddedMember),
+            ]
+            .spacing(8),
+        );
+        rows = rows.push(text("Opt-in: place the file under this project's files/ directory, then register its exact archive path. Unregister leaves your file untouched. Existing members remain strict replacements; unregistered files are ignored. Build Mod signs up to 64 combined changes.")
+            .size(11).style(design::muted));
         let range = page_range(record.modified.len(), state.modding_changes_page);
         for changed in &record.modified[range.clone()] {
             rows = rows.push(
@@ -564,6 +585,56 @@ fn imported_paks(state: &State) -> Element<'_, Message> {
     .into()
 }
 
+/// Registered signed PAKs are not editable Mod Projects. This list lets the
+/// user opt them into the *same* Play with Mods pipeline without rebuilding.
+fn signed_paks(state: &State) -> Element<'_, Message> {
+    let mut entries = column![].spacing(6);
+    if let Some(ui) = &state.signed_ui {
+        for profile in &ui.catalog.profiles {
+            if profile.mods.is_empty() { continue; }
+            entries = entries.push(
+                text(profile.name.as_str()).size(13)
+            );
+            for item in &profile.mods {
+                let choice = crate::mod_play::SignedChoice {
+                    profile_id: profile.id.clone(), mod_id: item.id.clone()
+                };
+                let enabled = ui.selected.contains(&choice);
+                let target = item.target.clone();
+                entries = entries.push(
+                    row![
+                        design::button(if enabled { "On" } else { "Off" })
+                            .style(if enabled { design::primary } else { design::secondary })
+                            .on_press_maybe((!state.signed_busy && !state.busy).then_some(
+                                Message::SignedPakToggle(profile.id.clone(), item.id.clone(), !enabled)
+                            )),
+                        text(target).size(12).width(Fill),
+                        text(if enabled { "Selected" } else { "Not selected" })
+                            .size(11).style(design::muted),
+                    ].spacing(8).align_y(iced::Center)
+                );
+            }
+        }
+    } else {
+        entries = entries.push(text("Refresh Mods to load registered signed PAKs.")
+            .size(12).style(design::muted));
+    }
+    panel(
+        column![
+            row![
+                text("REGISTERED SIGNED PAKS").size(13),
+                space().width(Fill),
+                design::button("Refresh").style(design::secondary)
+                    .on_press(Message::SignedProfilesReload),
+            ].spacing(8).align_y(iced::Center),
+            text("Enable existing signed archives directly. They are verified and staged on Play with Mods without reimporting or rebuilding. Only selected archives are used.")
+                .size(11).style(design::muted),
+            scrollable(entries).height(Length::Fixed(165.0)),
+            text(state.signed_status.as_str()).size(11).style(design::muted),
+        ].spacing(7)
+    ).into()
+}
+
 fn profiles(state: &State) -> Element<'_, Message> {
     let mut catalog = column![].spacing(3);
     if let Some(data) = &state.profile_catalog {
@@ -711,6 +782,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             design::button("Models…").on_press(Message::GuidedEdit(crate::guided_modding::Action::Open(true))),
         ].spacing(6),
         imported_paks(state),
+        signed_paks(state),
         projects(state),
         row![
             text("Mod name").size(12),
@@ -751,6 +823,16 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     }
     if state.modding_profiles {
         main = main.push(profiles(state));
+    }
+    if let Some(report) = &state.live_pak_audit {
+        let mut lines = column![text(format!(
+            "INSTALLED ORIGINAL PAK AUDIT — {} verified, {} failed, {} verified but different from baseline (no files changed)",
+            report.verified, report.failed, report.baseline_differences
+        )).size(12)];
+        for issue in &report.issues {
+            lines = lines.push(text(issue.as_str()).size(11));
+        }
+        main = main.push(scrollable(lines.spacing(4)).height(Length::Fixed(145.0)));
     }
     crate::menu_popup::overlay(
         main,

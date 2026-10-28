@@ -5,6 +5,9 @@
 use super::{launcher_bridge, modding_keys, modding_projects, play_setup};
 use modding_projects::ProjectRow;
 use std::collections::HashSet;
+use std::io::Write;
+use std::path::Path;
+use evolve_core::{ProfileCatalog, ProfileMod};
 use std::path::PathBuf;
 use std::sync::{
     Arc,
@@ -13,6 +16,136 @@ use std::sync::{
 
 const AUTO_PROFILE: &str = "Enabled Mods";
 const AUTO_ID_FILE: &str = "enabled-mod-profile.json";
+const SIGNED_SELECTIONS_FILE: &str = "enabled-signed-paks.json";
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignedChoice {
+    pub profile_id: String,
+    pub mod_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SignedSelections {
+    schema: u32,
+    selected: Vec<SignedChoice>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SignedUi {
+    pub catalog: ProfileCatalog,
+    pub selected: HashSet<SignedChoice>,
+}
+
+fn is_valid_id(id: &str) -> bool {
+    id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn load_selection_file(stage: &Path) -> Result<HashSet<SignedChoice>, String> {
+    let path = stage.join(SIGNED_SELECTIONS_FILE);
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(info) => info,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashSet::new()),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !metadata.file_type().is_file() || metadata.len() > 256 * 1024 {
+        return Err("Signed PAK selections must be a regular bounded file".into());
+    }
+    let settings: SignedSelections = serde_json::from_slice(
+        &std::fs::read(&path).map_err(|e| e.to_string())?
+    ).map_err(|e| format!("Invalid signed PAK selections: {e}"))?;
+    if settings.schema != 1 || settings.selected.len() > 4096 {
+        return Err("Signed PAK selection format or count is invalid".into());
+    }
+    let mut choices = HashSet::new();
+    for item in settings.selected {
+        if !is_valid_id(&item.profile_id) || !is_valid_id(&item.mod_id)
+            || !choices.insert(item) {
+            return Err("Duplicate or malformed signed PAK selection".into());
+        }
+    }
+    Ok(choices)
+}
+
+fn manual_catalog(stage: &Path) -> Result<ProfileCatalog, String> {
+    let mut catalog = evolve_core::list_mod_profiles(stage).map_err(|e| e.to_string())?;
+    let owned = owned_profile_id(stage)?;
+    // The automatic launch profile is generated output, never a source mod.
+    catalog.profiles.retain(|profile| owned.as_deref() != Some(profile.id.as_str()));
+    Ok(catalog)
+}
+
+pub fn signed_ui(stage: &Path) -> Result<SignedUi, String> {
+    let catalog = manual_catalog(stage)?;
+    let valid: HashSet<_> = catalog.profiles.iter()
+        .flat_map(|p| p.mods.iter().map(move |m| SignedChoice {
+            profile_id: p.id.clone(), mod_id: m.id.clone(),
+        })).collect();
+    let selected = load_selection_file(stage)?.intersection(&valid).cloned().collect();
+    Ok(SignedUi { catalog, selected })
+}
+
+/// Persistent, opt-in selection of existing signed PAKs, independent of the
+/// legacy profile.enabled flags (which default to true on registration).
+/// This never updates original profiles or an active stage transaction.
+pub fn select_signed(
+    stage: &Path, choice: SignedChoice, enabled: bool
+) -> Result<SignedUi, String> {
+    let info = signed_ui(stage)?;
+    let target = info.catalog.profiles.iter()
+        .find(|p| p.id == choice.profile_id)
+        .and_then(|p| p.mods.iter().find(|m| m.id == choice.mod_id))
+        .ok_or("Selected signed PAK no longer exists")?.target.clone();
+    let mut selected = info.selected;
+    if enabled {
+        for other in &selected {
+            let conflict = info.catalog.profiles.iter()
+                .find(|p| p.id == other.profile_id)
+                .and_then(|p| p.mods.iter().find(|m| m.id == other.mod_id))
+                .is_some_and(|m| m.target.eq_ignore_ascii_case(&target));
+            if conflict && other != &choice {
+                return Err(format!("Another enabled signed PAK already targets {target}"));
+            }
+        }
+        selected.insert(choice);
+    } else {
+        selected.remove(&choice);
+    }
+    let mut items: Vec<_> = selected.iter().cloned().collect();
+    items.sort_by(|a, b| (&a.profile_id, &a.mod_id).cmp(&(&b.profile_id, &b.mod_id)));
+    let dir = std::fs::canonicalize(stage).map_err(|e| e.to_string())?;
+    let mut tempfile = tempfile::NamedTempFile::new_in(&dir).map_err(|e| e.to_string())?;
+    serde_json::to_writer_pretty(
+        &mut tempfile, &SignedSelections { schema: 1, selected: items }
+    ).map_err(|e| e.to_string())?;
+    tempfile.flush().map_err(|e| e.to_string())?;
+    tempfile.as_file().sync_all().map_err(|e| e.to_string())?;
+    let destination = dir.join(SIGNED_SELECTIONS_FILE);
+    if std::fs::symlink_metadata(&destination).is_ok_and(|m| !m.file_type().is_file()) {
+        return Err("Unsafe signed PAK selection destination".into());
+    }
+    tempfile.persist(destination).map_err(|e| e.error.to_string())?;
+    signed_ui(stage)
+}
+
+fn selected_signed_mods(stage: &Path) -> Result<Vec<ProfileMod>, String> {
+    let info = signed_ui(stage)?;
+    let selected = info.selected;
+    let mut mods = Vec::new();
+    for profile in info.catalog.profiles {
+        for item in profile.mods {
+            if selected.contains(&SignedChoice { profile_id: profile.id.clone(), mod_id: item.id.clone() }) {
+                mods.push(item);
+            }
+        }
+    }
+    if mods.len() != selected.len() {
+        return Err("Signed selection changed; refresh the available profiles".into());
+    }
+    Ok(mods)
+}
+
 
 fn owned_profile_id(stage: &std::path::Path) -> Result<Option<String>, String> {
     let path = stage.join(AUTO_ID_FILE);
@@ -112,8 +245,9 @@ pub fn launch_enabled(
     direct_launch: bool,
     test_client: bool,
 ) -> Result<(usize, u32, usize, Option<String>), String> {
-    if mods.is_empty() {
-        return Err("Enable at least one mod before pressing Play with Mods.".into());
+    let signed = selected_signed_mods(&stage)?;
+    if mods.is_empty() && signed.is_empty() {
+        return Err("Enable a Mod Project or registered signed PAK before pressing Play with Mods.".into());
     }
     if direct_launch {
         super::direct_runtime::require_ready(&game, &client)?;
@@ -179,6 +313,14 @@ pub fn launch_enabled(
         }
         targets.push(target);
     }
+    for item in &signed {
+        if !destinations.insert(item.target.to_ascii_lowercase()) {
+            return Err(format!(
+                "Two enabled mods target {}. Disable the duplicate project or signed PAK.",
+                item.target
+            ));
+        }
+    }
     // Profile staging requires only verification keys here.
     let original_public = modding_keys::original_public_key(&stage)?;
     let public = modding_keys::public_key(&stage)?;
@@ -227,6 +369,15 @@ pub fn launch_enabled(
                 &basename,
             )
             .map_err(|e| format!("Could not add {target}: {e}"))?;
+        }
+        // Reuse the registered signed source bytes directly. Do not unpack,
+        // rebuild, or copy the user's original signed-PAK registration.
+        for item in &signed {
+            let basename = item.target.rsplit('/').next().unwrap_or_default();
+            evolve_core::add_mod_to_profile(
+                &stage, &profile.id, Path::new(&item.source), &item.target,
+                &keys.original_public, &keys.public, basename,
+            ).map_err(|e| format!("Could not enable registered PAK {}: {e}", item.target))?;
         }
         progress.store(78, Ordering::Relaxed);
         evolve_core::apply_profile_stage(&stage, &profile.id, &original_public, &public)
@@ -287,12 +438,62 @@ pub fn launch_enabled(
         );
     }
     progress.store(100, Ordering::Relaxed);
-    Ok((mods.len(), id, ready.compatibility_warnings, None))
+    Ok((mods.len() + signed.len(), id, ready.compatibility_warnings, None))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn existing_signed_profiles_are_opt_in_and_selection_is_persistent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stage = tmp.path().join("stage");
+        evolve_core::initialize_stage(&stage).unwrap();
+        let source = tmp.path().join("existing-signed.pak");
+        std::fs::write(&source, b"existing signed bytes left untouched").unwrap();
+        let catalog = serde_json::json!({
+            "schema": 1,
+            "profiles": [{
+                "id": "1".repeat(32), "name": "My legacy menu",
+                "mods": [{
+                    "id": "2".repeat(32), "target": "Game/UI_Assets.pak",
+                    "source": source.to_str().unwrap(),
+                    "sha256": "a".repeat(64), "enabled": true
+                }]
+            }, {
+                "id": "3".repeat(32), "name": "Second profile",
+                "mods": [{
+                    "id": "4".repeat(32), "target": "Game/UI_Assets.pak",
+                    "source": source.to_str().unwrap(),
+                    "sha256": "b".repeat(64), "enabled": true
+                }]
+            }]
+        });
+        std::fs::write(stage.join("profiles.json"), serde_json::to_vec(&catalog).unwrap()).unwrap();
+        let a = SignedChoice { profile_id: "1".repeat(32), mod_id: "2".repeat(32) };
+        let b = SignedChoice { profile_id: "3".repeat(32), mod_id: "4".repeat(32) };
+        assert!(signed_ui(&stage).unwrap().selected.is_empty(),
+            "Legacy enabled flags must not silently activate a signed PAK");
+        assert!(select_signed(&stage, a.clone(), true).unwrap().selected.contains(&a));
+        assert_eq!(selected_signed_mods(&stage).unwrap().len(), 1);
+        assert!(select_signed(&stage, b, true).unwrap_err().contains("already targets"));
+        assert_eq!(selected_signed_mods(&stage).unwrap().len(), 1);
+        assert!(select_signed(&stage, a, false).unwrap().selected.is_empty());
+        assert_eq!(std::fs::read(&source).unwrap(), b"existing signed bytes left untouched");
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(
+            &std::fs::read(stage.join("profiles.json")).unwrap()).unwrap(), catalog);
+    }
+
+    #[test]
+    fn old_automatic_launch_profile_is_not_reimported_as_a_signed_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stage = tmp.path().join("stage");
+        evolve_core::initialize_stage(&stage).unwrap();
+        let auto = evolve_core::create_mod_profile(&stage, "Enabled Mods original").unwrap();
+        save_owned_profile_id(&stage, &auto.id).unwrap();
+        assert!(signed_ui(&stage).unwrap().catalog.profiles.is_empty());
+    }
 
     #[test]
     fn manual_test_profile_is_restored_before_enabled_play_without_deleting_profile() {
