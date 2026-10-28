@@ -123,38 +123,73 @@ pub(super) struct LocalActor {
     pub armor: Option<String>,
 }
 
-// Explicit internal IEntity names. The first five were observed through the
-// live name resolver; monster aliases below were supplied by the user and still
-// need runtime verification. Match the complete base name, never a substring.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The portrait registry is the sole mapping from the original entity
+/// identifier to display name, team, and Discord image key. Every portrait is
+/// present even when its game identifier is not yet known; adding a newly
+/// discovered name only requires editing the manifest's internal_names list.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 enum Team {
     Monster,
     Hunter,
+    Unknown,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CharacterPortrait {
+    asset_key: String,
+    display_name: String,
+    team: Team,
+    internal_names: Vec<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CharacterPortraitRegistry {
+    characters: Vec<CharacterPortrait>,
+    non_player_entities: Vec<String>,
+}
+
+fn portrait_registry() -> &'static CharacterPortraitRegistry {
+    static REGISTRY: std::sync::OnceLock<CharacterPortraitRegistry> = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        serde_json::from_str(include_str!(
+            "../../../assets/discord/character_portraits.json"
+        ))
+        .expect("checked-in Discord portrait manifest must be valid JSON")
+    })
+}
+
+fn character_portraits() -> &'static [CharacterPortrait] {
+    &portrait_registry().characters
 }
 
 fn character_from_entity_name(raw: &str) -> Option<(&'static str, Team)> {
-    let lower = raw.trim().to_ascii_lowercase();
-    // Evolve samples end with "ABot", "BBot", "DBot" or "EBot".
-    // Strip only the two common trailing characters after the variant letter.
-    // Keep the character/variant letter in names like "AssaultEBot".
-    let name = lower.strip_suffix("bot").unwrap_or(&lower);
-    let result = match name {
-        "goliatha" => ("Goliath", Team::Monster),
-        "teleportera" => ("Wraith", Team::Monster),
-        "assaulte" => ("Markov", Team::Hunter),
-        "assaultb" => ("Parnell", Team::Hunter),
-        "assaultd" => ("Hyde", Team::Hunter),
-        // The next six internal aliases have not yet been confirmed by a
-        // running-game probe; support their likely *ABot suffix forms.
-        "groundera" | "grounder" => ("Kraken", Team::Monster),
-        "rockya" | "rocky" => ("Behemoth", Team::Monster),
-        "rockybobsiclea" | "rockybobsicle" => ("Glacial Behemoth", Team::Monster),
-        "lurkera" | "lurker" => ("Gorgon", Team::Monster),
-        "krakena" | "kraken" => ("Elder Kraken", Team::Monster),
-        "goliathmeteora" | "goliathmeteor" => ("Meteor Goliath", Team::Monster),
-        _ => return None,
-    };
-    Some(result)
+    let name = raw.trim();
+    let registry = portrait_registry();
+    // NPC copies, summons, decoys and co-op actors are not evidence of the
+    // currently controlled player character. Never assign their portraits.
+    if registry
+        .non_player_entities
+        .iter()
+        .any(|excluded| excluded.eq_ignore_ascii_case(name))
+    {
+        return None;
+    }
+    character_portraits()
+        .iter()
+        .find(|portrait| {
+            portrait
+                .internal_names
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(name))
+        })
+        .map(|portrait| (portrait.display_name.as_str(), portrait.team))
+}
+
+fn portrait_for_display_name(name: &str) -> Option<&'static CharacterPortrait> {
+    character_portraits()
+        .iter()
+        .find(|portrait| portrait.display_name.eq_ignore_ascii_case(name))
 }
 
 fn label(input: &str) -> String {
@@ -164,6 +199,33 @@ fn label(input: &str) -> String {
         .take(128)
         .collect()
 }
+/// The runtime reports stage as a decimal 1, 2 or 3. Accept the older
+/// "Stage N" form in tests and previously cached state without duplicating
+/// the word Stage in Discord.
+fn presence_stage(value: &str) -> Option<u8> {
+    let value = value.trim().strip_prefix("Stage ").unwrap_or(value.trim());
+    let stage = value.parse::<u8>().ok()?;
+    (1..=3).contains(&stage).then_some(stage)
+}
+
+/// External Float32 values arrive with three decimal places. Discord's
+/// compact activity lines use rounded integers with thousands separators.
+fn presence_number(value: &str) -> Option<String> {
+    let numeric = value.trim().parse::<f64>().ok()?;
+    if !numeric.is_finite() || !(0.0..=1_000_000_000.0).contains(&numeric) {
+        return None;
+    }
+    let digits = (numeric.round() as u64).to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    Some(grouped)
+}
+
 fn format_activity(
     cfg: &Config,
     game_pid: Option<u32>,
@@ -179,45 +241,40 @@ fn format_activity(
         if cfg.minimal {
             ("Playing Evolve".to_owned(), "In game".to_owned())
         } else {
-            let details = if cfg.show_character {
-                actor
-                    .and_then(|a| a.name.as_deref())
-                    .map(|name| format!("Playing as {name}"))
-                    .unwrap_or_else(|| "Playing Evolve".to_owned())
-            } else {
-                "Playing Evolve".to_owned()
-            };
-            let mut values = vec![cfg.game_version.clone()];
-            if cfg.show_character
-                && let Some(stage) = actor
-                    .filter(|a| a.verified_monster)
-                    .and_then(|a| a.evolution.as_ref())
+            let visible = cfg.show_character.then_some(actor).flatten();
+            let mut details = visible
+                .and_then(|a| a.name.as_deref())
+                .map(|name| format!("Playing as {name}"))
+                .unwrap_or_else(|| "Playing Evolve".to_owned());
+            if let Some(stage) = visible
+                .filter(|a| a.verified_monster)
+                .and_then(|a| a.evolution.as_deref())
+                .and_then(presence_stage)
             {
-                values.push(format!("Evolution {stage}"));
+                details.push_str(&format!(" · Stage {stage}"));
             }
-            if let Some(mode) = cfg.game_mode.as_ref() {
-                values.push(mode.clone());
-            }
-            if let Some(map) = cfg.map.as_ref() {
-                values.push(map.clone());
-            }
+            let mut stats = Vec::new();
             if cfg.show_stats {
-                if let Some(h) = actor.and_then(|a| a.health.as_ref()) {
-                    values.push(format!("HP {h}"));
-                }
-                if let Some(a) = actor
-                    .filter(|a| a.verified_monster)
-                    .and_then(|a| a.armor.as_ref())
+                if let Some(health) = actor
+                    .and_then(|a| a.health.as_deref())
+                    .and_then(presence_number)
                 {
-                    values.push(format!("Armor {a}"));
+                    stats.push(format!("Health {health}"));
+                }
+                if let Some(armor) = actor
+                    .filter(|a| a.verified_monster)
+                    .and_then(|a| a.armor.as_deref())
+                    .and_then(presence_number)
+                {
+                    stats.push(format!("Armor {armor}"));
                 }
             }
-            if cfg.show_profile
-                && let Some(profile) = cfg.mod_profile.as_ref()
-            {
-                values.push(profile.clone());
-            }
-            (details, values.join(" • "))
+            let state = if stats.is_empty() {
+                "In match".to_owned()
+            } else {
+                stats.join(" · ")
+            };
+            (details, state)
         }
     } else {
         let details = "Evolve Mod Manager".to_owned();
@@ -235,10 +292,22 @@ fn format_activity(
         };
         (details, state)
     };
-    // Asset keys are scoped to each Discord application. Avoid attaching the
-    // manager's image key to the Evolve ID until it is uploaded there.
+    // Character art belongs to the separate Evolve Discord application.
+    // Asset keys match the 39 PNGs in the import-ready portrait bundle.
+    // Unrecognized characters have no guessed picture; the manager keeps its
+    // own logo, and privacy/minimal modes never reveal character imagery.
     let assets = if game {
-        json!({})
+        if cfg.show_character && !cfg.minimal {
+            actor
+                .and_then(|a| a.name.as_deref())
+                .and_then(portrait_for_display_name)
+                .map(|portrait| {
+                    json!({"large_image": portrait.asset_key, "large_text": portrait.display_name})
+                })
+                .unwrap_or_else(|| json!({}))
+        } else {
+            json!({})
+        }
     } else {
         json!({"large_image":"evolve", "large_text":"Evolve Mod Manager"})
     };
@@ -553,10 +622,9 @@ mod tests {
             armor: Some("1000".into()),
         };
         let act = format_activity(&sample(), Some(100), Some(&actor), 100).unwrap();
-        assert_eq!(act["details"], "Playing as Goliath");
-        assert!(act["state"].as_str().unwrap().contains("HP 8500"));
-        assert!(act["state"].as_str().unwrap().contains("Evolution Stage 2"));
-        assert!(!act["state"].as_str().unwrap().contains("Map:"));
+        assert_eq!(act["details"], "Playing as Goliath · Stage 2");
+        assert_eq!(act["state"], "Health 8,500 · Armor 1,000");
+        assert!(!act["state"].as_str().unwrap().contains("Stage 2"));
         assert!(act["assets"].get("small_image").is_none());
     }
     #[test]
@@ -572,7 +640,7 @@ mod tests {
         let activity = format_activity(&sample(), Some(123), Some(&hunter), 100).unwrap();
         let state = activity["state"].as_str().unwrap();
         assert_eq!(activity["details"], "Playing Evolve");
-        assert!(state.contains("HP 1600"));
+        assert_eq!(state, "Health 1,600");
         assert!(!state.contains("Armor"));
         assert!(!state.contains("Evolution"));
     }
@@ -589,6 +657,119 @@ mod tests {
         assert!(!state.to_string().contains("Evolution"));
     }
 
+    #[test]
+    fn registry_covers_all_39_playable_characters() {
+        let portraits = character_portraits();
+        assert_eq!(portraits.len(), 39);
+        assert_eq!(
+            portraits
+                .iter()
+                .filter(|p| !p.internal_names.is_empty())
+                .count(),
+            39
+        );
+        let mut seen = std::collections::HashSet::new();
+        let mut unique_actor_names = std::collections::HashSet::new();
+        for portrait in portraits {
+            assert!(
+                seen.insert(portrait.asset_key.as_str()),
+                "Duplicate Discord asset key"
+            );
+            assert!(
+                portrait.internal_names.len() <= 1,
+                "Each playable character has exactly one canonical entity name"
+            );
+            for name in &portrait.internal_names {
+                assert!(
+                    unique_actor_names.insert(name.to_ascii_lowercase()),
+                    "Playable entity name must not belong to multiple portraits"
+                );
+            }
+            assert!(
+                portrait
+                    .asset_key
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+            );
+            assert!(!portrait.display_name.is_empty());
+        }
+        assert_eq!(
+            portrait_for_display_name("Renegade Abe").unwrap().asset_key,
+            "aberenegade"
+        );
+        assert_eq!(
+            portrait_for_display_name("Glacial Behemoth")
+                .unwrap()
+                .asset_key,
+            "rockybobcicle"
+        );
+        assert_eq!(
+            portrait_for_display_name("Kala").unwrap().team,
+            Team::Hunter
+        );
+        assert_eq!(portrait_for_display_name("Kala").unwrap().asset_key, "tech");
+        assert_eq!(
+            character_from_entity_name("Tech"),
+            Some(("Kala", Team::Hunter))
+        );
+        assert_eq!(
+            character_from_entity_name("Scrap"),
+            Some(("Jack", Team::Hunter))
+        );
+        assert_eq!(
+            portrait_for_display_name("Jack").unwrap().asset_key,
+            "scrap"
+        );
+        assert_eq!(character_from_entity_name("UnknownABot"), None);
+    }
+
+    #[test]
+    fn game_portrait_uses_exact_character_art_key() {
+        let actor = LocalActor {
+            name: Some("Elder Kraken".into()),
+            verified_monster: true,
+            ..LocalActor::default()
+        };
+        let activity = format_activity(&sample(), Some(123), Some(&actor), 100).unwrap();
+        assert_eq!(activity["assets"]["large_image"], "krakenelder");
+        assert_eq!(activity["assets"]["large_text"], "Elder Kraken");
+        let mut hidden = sample();
+        hidden.show_character = false;
+        let activity = format_activity(&hidden, Some(123), Some(&actor), 100).unwrap();
+        assert!(activity["assets"].get("large_image").is_none());
+        hidden.show_character = true;
+        hidden.minimal = true;
+        let activity = format_activity(&hidden, Some(123), Some(&actor), 100).unwrap();
+        assert!(activity["assets"].get("large_image").is_none());
+    }
+
+    #[test]
+    fn maps_new_assault_internal_names_to_existing_portrait_assets() {
+        for (internal, display, key) in [
+            ("AssaultFBot", "Torvald", "torvald"),
+            ("AssaultGBot", "Lennox", "lennox"),
+            ("AssaultE_BlitzBot", "Blitz Markov", "markovblitz"),
+        ] {
+            assert_eq!(
+                character_from_entity_name(internal),
+                Some((display, Team::Hunter))
+            );
+            let portrait = portrait_for_display_name(display).unwrap();
+            assert_eq!(portrait.asset_key, key);
+            assert_eq!(portrait.team, Team::Hunter);
+            let actor = LocalActor {
+                name: Some(display.into()),
+                ..LocalActor::default()
+            };
+            let activity = format_activity(&sample(), Some(123), Some(&actor), 100).unwrap();
+            assert_eq!(activity["assets"]["large_image"], key);
+            assert_eq!(activity["assets"]["large_text"], display);
+        }
+        assert_eq!(
+            character_from_entity_name("assaulte_blitzbot"),
+            Some(("Blitz Markov", Team::Hunter))
+        );
+    }
     #[test]
     fn maps_observed_local_entity_names_to_characters() {
         assert_eq!(
@@ -613,14 +794,16 @@ mod tests {
         );
     }
     #[test]
-    fn maps_supplied_monster_aliases_with_trailing_abot() {
+    fn maps_all_verified_monsters_and_glacial_behemoth_spelling() {
         for (internal, expected) in [
+            ("GoliathABot", "Goliath"),
+            ("GoliathMeteorBot", "Meteor Goliath"),
             ("GrounderABot", "Kraken"),
+            ("KrakenElderBot", "Elder Kraken"),
+            ("TeleporterABot", "Wraith"),
             ("RockyABot", "Behemoth"),
-            ("RockybobsicleABot", "Glacial Behemoth"),
+            ("RockyBobcicleBot", "Glacial Behemoth"),
             ("LurkerABot", "Gorgon"),
-            ("KrakenABot", "Elder Kraken"),
-            ("goliathmeteorABot", "Meteor Goliath"),
         ] {
             assert_eq!(
                 character_from_entity_name(internal),
@@ -628,11 +811,125 @@ mod tests {
             );
         }
         assert_eq!(
-            character_from_entity_name("GOLIATHMETEORABOT"),
-            Some(("Meteor Goliath", Team::Monster))
+            character_from_entity_name("ROCKYBOBCICLEBOT"),
+            Some(("Glacial Behemoth", Team::Monster))
         );
+        assert_eq!(character_from_entity_name("RockybobsicleABot"), None);
+        assert_eq!(character_from_entity_name("KrakenABot"), None);
         assert_eq!(character_from_entity_name("UnknownABot"), None);
         assert_eq!(character_from_entity_name("AssaultABot"), None);
+    }
+
+    #[test]
+    fn all_supplied_playable_hunter_names_have_exact_display_and_portraits() {
+        for (internal, display) in [
+            ("AssaultEBot", "Markov"),
+            ("AssaultE_BlitzBot", "Blitz Markov"),
+            ("AssaultDBot", "Hyde"),
+            ("AssaultD_HellfireBot", "Hellfire Hyde"),
+            ("AssaultBBot", "Parnell"),
+            ("MedicParnellTankBot", "Parnell (Tank)"),
+            ("AssaultFBot", "Torvald"),
+            ("AssaultGBot", "Lennox"),
+            ("AssaultAbeRenegadeBot", "Renegade Abe"),
+            ("TrackingABot", "Griffin"),
+            ("TrackingA_ElectroBot", "Electro Griffin"),
+            ("TrackingCBot", "Abe"),
+            ("TrackingEBot", "Maggie"),
+            ("TrackingE_SavageBot", "Savage Maggie"),
+            ("TrackingFBot", "Crow"),
+            ("MedicBBot", "Lazarus"),
+            ("MedicCBot", "Caira"),
+            ("MedicC_LowgravBot", "Lowgrav Caira"),
+            ("MedicEBot", "Val"),
+            ("MedicE_RogueBot", "Rogue Val"),
+            ("MedicFBot", "Slim"),
+            ("MedicGBot", "Emet"),
+            ("SupportABot", "Bucket"),
+            ("SupportA_CaptainBot", "Captain Bucket"),
+            ("SupportCBot", "Hank"),
+            ("SupportC_SgtBot", "Sgt. Hank"),
+            ("SupportEBot", "Cabot"),
+            ("SupportE_BattleBot", "Battle Cabot"),
+            ("SupportFBot", "Sunny"),
+        ] {
+            assert_eq!(
+                character_from_entity_name(internal),
+                Some((display, Team::Hunter))
+            );
+            assert!(portrait_for_display_name(display).is_some());
+        }
+    }
+
+    #[test]
+    fn coop_npc_and_minion_entities_do_not_resolve_as_playable_characters() {
+        for excluded in &portrait_registry().non_player_entities {
+            assert!(
+                character_from_entity_name(excluded).is_none(),
+                "NPC/minion/coop variant must not be treated as playable: {excluded}"
+            );
+        }
+        // The confirmed player names are intentionally single-source.
+        for identifier in ["TrackingGBot", "SupportGBot"] {
+            assert_eq!(character_from_entity_name(identifier), None);
+        }
+    }
+
+    #[test]
+    fn jack_uses_scrap_internal_name_and_existing_transparent_portrait() {
+        assert_eq!(
+            character_from_entity_name("Scrap"),
+            Some(("Jack", Team::Hunter))
+        );
+        let jack = portrait_for_display_name("Jack").unwrap();
+        assert_eq!(jack.asset_key, "scrap");
+        assert_eq!(jack.team, Team::Hunter);
+        assert!(portrait_for_display_name("Necro Lazarus").is_none());
+        assert_eq!(character_from_entity_name("MedicB_NecroBot"), None);
+        let actor = LocalActor {
+            name: Some("Jack".into()),
+            health: Some("2000.000".into()),
+            ..LocalActor::default()
+        };
+        let activity = format_activity(&sample(), Some(123), Some(&actor), 100).unwrap();
+        assert_eq!(activity["details"], "Playing as Jack");
+        assert_eq!(activity["state"], "Health 2,000");
+        assert_eq!(activity["assets"]["large_image"], "scrap");
+        assert_eq!(activity["assets"]["large_text"], "Jack");
+        for npc in &portrait_registry().non_player_entities {
+            assert!(
+                character_from_entity_name(npc).is_none(),
+                "Non-player name: {npc}"
+            );
+        }
+    }
+
+    #[test]
+    fn game_activity_is_two_lines_with_compact_readable_numeric_values() {
+        let actor = LocalActor {
+            name: Some("Goliath".into()),
+            verified_monster: true,
+            evolution: Some("1".into()),
+            health: Some("10400.000".into()),
+            armor: Some("2343.978".into()),
+        };
+        let activity = format_activity(&sample(), Some(123), Some(&actor), 100).unwrap();
+        assert_eq!(activity["details"], "Playing as Goliath · Stage 1");
+        assert_eq!(activity["state"], "Health 10,400 · Armor 2,344");
+        assert!(!activity.to_string().contains("Stage 2"));
+        assert!(!activity.to_string().contains("My Mod"));
+        let mut private = sample();
+        private.show_stats = false;
+        assert_eq!(
+            format_activity(&private, Some(123), Some(&actor), 100).unwrap()["state"],
+            "In match"
+        );
+        private.show_stats = true;
+        private.show_character = false;
+        let hidden = format_activity(&private, Some(123), Some(&actor), 100).unwrap();
+        assert_eq!(hidden["details"], "Playing Evolve");
+        assert_eq!(hidden["state"], "Health 10,400 · Armor 2,344");
+        assert!(hidden["assets"].get("large_image").is_none());
     }
     #[test]
     fn unrecognized_name_does_not_display_untrusted_character() {
