@@ -4014,10 +4014,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     let edited = state.actor_edit.take();
                     if let Some(list) = &mut state.actor_listing {
                         for actor in &mut list.actors {
-                            if !edited.is_some_and(|(id, addr, _, _)| actor.id == id && actor.address == addr) {
+                            if !edited.is_some_and(|(id, addr, _, _)| {
+                                actor.id == id && actor.address == addr
+                            }) {
                                 continue;
                             }
-                            let Some(value) = actor.fields.iter_mut().find(|v| v.field == outcome.field) else {
+                            let Some(value) =
+                                actor.fields.iter_mut().find(|v| v.field == outcome.field)
+                            else {
                                 continue;
                             };
                             let bits = if outcome.field == runtime_actors::Field::Stage {
