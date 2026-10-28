@@ -45,6 +45,8 @@ jobs:
         run: python3 -m unittest discover -s crates/evolve-desktop/launcher_support -p 'test_stage2_runtime_contract.py'
       - name: Verify profile-only PAK swap selection and fail-closed manifests
         run: python3 -m unittest discover -s crates/evolve-desktop/launcher_support -p 'test_sparse_swap.py'
+      - name: Verify stale prepared profile PAKs are safely recycled
+        run: python3 -m unittest discover -s crates/evolve-desktop/launcher_support -p 'test_prepared_profile_cache.py'
       - name: Verify guarded original game backup restoration
         run: python3 -m unittest discover -s crates/evolve-desktop/launcher_support -p 'test_reusable_restore.py'
       - name: Verify journal-independent private manager backup recovery

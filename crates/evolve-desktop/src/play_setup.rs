@@ -124,7 +124,12 @@ const PRE_OFFICIAL_CONTROLLED_SWAP_SHA256: &str =
 // Only auto-migrate this exact published source; never replace user edits.
 const PRE_SPARSE_CONTROLLED_SWAP_SHA256: &str =
     "1b40d8a9e17cef3df82ca9a776f134319223219e59e33b117672d91e9219e0a2";
+// Helper shipped by PR #107/#108 before orphaned READY cache recovery.
+// Migrate only this exact verified source; custom edits still fail closed.
+const PRE_STALE_CACHE_CONTROLLED_SWAP_SHA256: &str =
+    "2ba534cf790bd66ebe52b60cdbe8003e562f25440942d464cec3f3076ece0053";
 const KNOWN_CONTROLLED_SWAP_SHA256: &[&str] = &[
+    PRE_STALE_CACHE_CONTROLLED_SWAP_SHA256,
     PRE_SPARSE_CONTROLLED_SWAP_SHA256,
     PREVIOUS_CONTROLLED_SWAP_SHA256,
     NIGHTLY_60_CONTROLLED_SWAP_SHA256,
