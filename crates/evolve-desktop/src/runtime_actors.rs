@@ -11,7 +11,7 @@ const ENTITY_SYSTEM_RVA: usize = 0x28D58E8;
 const MAX_ENTITY_INDEX: usize = 65536;
 const MAX_DISCOVERED_ACTORS: usize = 2048;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub(super) enum Field {
     Health,
     MaxHealth,
