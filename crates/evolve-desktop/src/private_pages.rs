@@ -1349,23 +1349,35 @@ fn actor_rows(state: &State) -> Element<'_, Message> {
         .spacing(5);
         for entry in &actor.fields {
             let field = entry.field;
+            let selected = state.actor_edit.is_some_and(|(id, addr, f, _)| {
+                id == actor.id && addr == actor.address && f == field
+            });
+            let key = (actor.id, actor.address, field);
+            let frozen = state.actor_frozen.get(&key);
+            let editable = state.developer_unlocked && !state.actor_busy;
+            let value_cell: Element<'_, Message> = if selected {
+                design::text_input("Value", &state.actor_edit_value)
+                    .on_input(Message::ActorEditValue)
+                    .on_submit(Message::ActorWrite)
+                    .width(90)
+                    .into()
+            } else {
+                design::button(entry.display.as_str())
+                    .on_press_maybe(editable.then_some(
+                        Message::ActorEdit(actor.id, actor.address, field, entry.bits)
+                    ))
+                    .width(90)
+                    .into()
+            };
             rows = rows.push(
                 row![
-                    text(format!(
-                        "{}  +0x{:X}  ({})",
-                        field.title(),
-                        field.offset(),
-                        field.kind()
-                    ))
-                    .size(12)
-                    .width(Fill),
-                    text(entry.display.clone()).size(13).width(90),
-                    design::button("Edit").on_press_maybe((!state.actor_busy).then_some(
-                        Message::ActorEdit(actor.id, actor.address, field, entry.bits)
-                    )),
-                ]
-                .align_y(iced::Alignment::Center)
-                .spacing(8),
+                    text(format!("{}  +0x{:X}  ({})", field.title(), field.offset(), field.kind()))
+                        .size(12).width(Fill),
+                    value_cell,
+                    iced::widget::checkbox(frozen.is_some())
+                        .label("Freeze")
+                        .on_toggle(move |checked| Message::ActorFreeze(actor.id, actor.address, field, checked)),
+                ].align_y(iced::Alignment::Center).spacing(8)
             );
         }
         list = list.push(surface(rows.padding(10)));
@@ -1469,30 +1481,8 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
                             .size(12)
                             .style(design::muted),
                         actor_rows(state),
-                        text("Field editor").size(19),
-                        text(
-                            state
-                                .actor_edit
-                                .as_ref()
-                                .map(|(_, _, field, _)| field.title())
-                                .unwrap_or("Click Edit on an actor field above")
-                        )
-                        .size(12)
-                        .style(design::muted),
-                        design::text_input("New field value", &state.actor_edit_value)
-                            .on_input(Message::ActorEditValue),
-                        design::button("Write selected field once").on_press_maybe(
-                            (state.actor_edit.is_some()
-                                && !state.actor_busy
-                                && state.live_edit_enabled
-                                && state.armor_offline_confirmed
-                                && !state.developer_online_mods
-                                && !state.actor_edit_value.trim().is_empty())
-                            .then_some(Message::ActorWrite)
-                        ),
-                        text("One-shot writes · Offline only · Value checked before write")
-                            .size(12)
-                            .style(design::muted),
+                        text("Click a value to edit it · Enter to write · Freeze holds the current value")
+                            .size(12).style(design::muted),
                         design::button("Lock developer area").on_press(Message::LockDeveloper),
                     ]
                     .spacing(12)
