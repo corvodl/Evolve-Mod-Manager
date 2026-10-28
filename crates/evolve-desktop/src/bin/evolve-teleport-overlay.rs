@@ -264,7 +264,10 @@ mod windows {
                     SetWindowPos(
                         hwnd,
                         (-1isize) as Hwnd,
-                        x, y, WIDTH, HEIGHT,
+                        x,
+                        y,
+                        WIDTH,
+                        HEIGHT,
                         SWP_NOACTIVATE | SWP_SHOWWINDOW,
                     )
                 };
@@ -282,27 +285,27 @@ mod windows {
                     };
                     unsafe { FillRect(hdc, &rect, GetStockObject(4)) };
                     if GAME_FOCUSED.load(Ordering::Relaxed) {
-                    let pen = unsafe { CreatePen(0, 2, 0x0050_50FF) };
-                    if !pen.is_null() {
-                        let old_pen = unsafe { SelectObject(hdc, pen) };
-                        let old_brush = unsafe { SelectObject(hdc, GetStockObject(5)) };
-                        unsafe {
-                            Ellipse(hdc, WIDTH / 2 - 12, 14, WIDTH / 2 + 12, 38);
-                            MoveToEx(hdc, WIDTH / 2 - 20, 26, null_mut());
-                            LineTo(hdc, WIDTH / 2 - 15, 26);
-                            MoveToEx(hdc, WIDTH / 2 + 15, 26, null_mut());
-                            LineTo(hdc, WIDTH / 2 + 20, 26);
-                            SelectObject(hdc, old_brush);
-                            SelectObject(hdc, old_pen);
-                            DeleteObject(pen);
+                        let pen = unsafe { CreatePen(0, 2, 0x0050_50FF) };
+                        if !pen.is_null() {
+                            let old_pen = unsafe { SelectObject(hdc, pen) };
+                            let old_brush = unsafe { SelectObject(hdc, GetStockObject(5)) };
+                            unsafe {
+                                Ellipse(hdc, WIDTH / 2 - 12, 14, WIDTH / 2 + 12, 38);
+                                MoveToEx(hdc, WIDTH / 2 - 20, 26, null_mut());
+                                LineTo(hdc, WIDTH / 2 - 15, 26);
+                                MoveToEx(hdc, WIDTH / 2 + 15, 26, null_mut());
+                                LineTo(hdc, WIDTH / 2 + 20, 26);
+                                SelectObject(hdc, old_brush);
+                                SelectObject(hdc, old_pen);
+                                DeleteObject(pen);
+                            }
                         }
-                    }
-                    let label: Vec<u16> = "ACTOR AIM · APPROX".encode_utf16().collect();
-                    unsafe {
-                        SetBkMode(hdc, 1);
-                        SetTextColor(hdc, 0x00FF_FFFF);
-                        TextOutW(hdc, 54, 49, label.as_ptr(), label.len() as i32);
-                    }
+                        let label: Vec<u16> = "ACTOR AIM · APPROX".encode_utf16().collect();
+                        unsafe {
+                            SetBkMode(hdc, 1);
+                            SetTextColor(hdc, 0x00FF_FFFF);
+                            TextOutW(hdc, 54, 49, label.as_ptr(), label.len() as i32);
+                        }
                     }
                     let active = TOAST.lock().ok().and_then(|toast| {
                         toast
