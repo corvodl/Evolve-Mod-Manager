@@ -1618,37 +1618,52 @@ fn file_context_actions(state: &State) -> Element<'_, Message> {
                     ]
                     .spacing(7),
                     column![
-                        design::button("Preview").width(Fill)
+                        design::button("Preview")
+                            .width(Fill)
                             .style(design::text_button)
                             .on_press(Message::ViewerPreviewSelected),
-                        design::button("Import over…").width(Fill)
+                        design::button("Import over…")
+                            .width(Fill)
                             .style(design::text_button)
-                            .on_press_maybe((!state.viewer_from_library && !state.busy)
-                                .then_some(Message::EditorOpenReplacement)),
-                        design::button("Restore original").width(Fill)
+                            .on_press_maybe(
+                                (!state.viewer_from_library && !state.busy)
+                                    .then_some(Message::EditorOpenReplacement)
+                            ),
+                        design::button("Restore original")
+                            .width(Fill)
                             .style(design::text_button)
-                            .on_press_maybe((!state.viewer_from_library && !state.busy)
-                                .then_some(Message::EditorRestoreRawMember)),
-                        design::button("Copy path").width(Fill)
+                            .on_press_maybe(
+                                (!state.viewer_from_library && !state.busy)
+                                    .then_some(Message::EditorRestoreRawMember)
+                            ),
+                        design::button("Copy path")
+                            .width(Fill)
                             .style(design::text_button)
                             .on_press(Message::ViewerCopySelectedPath),
-                        design::button("Show in Explorer").width(Fill)
+                        design::button("Show in Explorer")
+                            .width(Fill)
                             .style(design::text_button)
                             .on_press(Message::ViewerRevealSelectedFile),
-                        design::button("Dependencies").width(Fill)
+                        design::button("Dependencies")
+                            .width(Fill)
                             .style(design::text_button)
                             .on_press(Message::StartDependencyInspection),
-                        design::button("Preview full CDF").width(Fill)
+                        design::button("Preview full CDF")
+                            .width(Fill)
                             .style(design::text_button)
                             .on_press_maybe(is_cdf.then_some(Message::ViewerPreviewStaticCdf)),
-                        design::button("Export DDS → PNG").width(Fill)
+                        design::button("Export DDS → PNG")
+                            .width(Fill)
                             .style(design::text_button)
                             .on_press_maybe(is_dds.then_some(Message::ExportOpen)),
-                        design::button("Rigged FBX").width(Fill)
+                        design::button("Rigged FBX")
+                            .width(Fill)
                             .style(design::text_button)
-                            .on_press_maybe((is_model && !state.busy)
-                                .then_some(Message::ExportOpen)),
-                    ].spacing(2),
+                            .on_press_maybe(
+                                (is_model && !state.busy).then_some(Message::ExportOpen)
+                            ),
+                    ]
+                    .spacing(2),
                     if filename.to_ascii_lowercase().ends_with(".fsb")
                         || filename.to_ascii_lowercase().ends_with(".fdp")
                         || filename.to_ascii_lowercase().ends_with(".fev")
