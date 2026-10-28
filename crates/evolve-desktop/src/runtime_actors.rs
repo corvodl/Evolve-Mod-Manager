@@ -374,7 +374,9 @@ mod windows {
         let status = if local_fields == 0 {
             format!("{coverage} Field offsets unverified for this actor/build; writes unavailable.")
         } else if route.is_none() {
-            format!("{coverage} Entity-to-actor backlink unavailable for this build; nonlocal actor discovery requires validated mapping.")
+            format!(
+                "{coverage} Entity-to-actor backlink unavailable for this build; nonlocal actor discovery requires validated mapping."
+            )
         } else {
             coverage
         };
@@ -388,22 +390,34 @@ mod windows {
     /// One bounded freeze iteration. Read and validate the live actor before any
     /// write; refuse to freeze a stale or replaced actor.
     pub(crate) fn freeze_once(
-        snapshot: &Snapshot, root: &str, id: u32, actor_addr: usize,
-        field: Field, desired: u32,
+        snapshot: &Snapshot,
+        root: &str,
+        id: u32,
+        actor_addr: usize,
+        field: Field,
+        desired: u32,
     ) -> Result<bool, String> {
         let pid = snapshot.pid.ok_or("Game process not detected")?;
         runtime_armor::offline_guard(pid, true)?;
         let listing = inspect(snapshot, root)?;
-        let actor = listing.actors.iter()
+        let actor = listing
+            .actors
+            .iter()
             .find(|a| a.id == id && a.address == actor_addr)
             .ok_or("Frozen actor despawned or its identity changed")?;
-        let value = actor.fields.iter().find(|v| v.field == field)
+        let value = actor
+            .fields
+            .iter()
+            .find(|v| v.field == field)
             .ok_or("Frozen field is no longer validated")?;
-        if value.bits == desired { return Ok(false); }
+        if value.bits == desired {
+            return Ok(false);
+        }
         let (_, h, _) = process_and_handle(snapshot, root)?;
         if q(&h, actor_addr + 0x38) != Some(actor.entity)
             || u32_at(&h, actor.entity + 0x18) != Some(id)
-            || u32_at(&h, value.address) != Some(value.bits) {
+            || u32_at(&h, value.address) != Some(value.bits)
+        {
             return Err("Frozen actor or field changed before write".into());
         }
         runtime_armor::offline_guard(pid, true)?;
@@ -492,7 +506,12 @@ pub(super) fn inspect(_: &Snapshot, _: &str) -> Result<Listing, String> {
 }
 #[cfg(not(windows))]
 pub(super) fn freeze_once(
-    _: &Snapshot, _: &str, _: u32, _: usize, _: Field, _: u32,
+    _: &Snapshot,
+    _: &str,
+    _: u32,
+    _: usize,
+    _: Field,
+    _: u32,
 ) -> Result<bool, String> {
     Err("Runtime freezing requires Windows".into())
 }
