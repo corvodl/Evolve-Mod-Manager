@@ -78,6 +78,8 @@ pub struct Preferences {
     /// Separate opt-in for prerelease Nightly builds.
     pub nightly_updates: bool,
     pub automatic_update_checks: bool,
+    /// Non-sensitive user-selected Developer overlay hotkey presets (0=disabled).
+    pub developer_hotkeys: [u8; 9],
     pub create_desktop_shortcut: bool,
     /// Retain older application settings that the Rust interface does not
     /// interpret yet. Existing user choices survive a Save Settings action.
@@ -138,6 +140,7 @@ impl Default for Preferences {
             experimental_updates: false,
             nightly_updates: env!("CARGO_PKG_VERSION").contains("-nightly."),
             automatic_update_checks: true,
+            developer_hotkeys: [0; 9],
             create_desktop_shortcut: false,
             previous_options: BTreeMap::new(),
         }
