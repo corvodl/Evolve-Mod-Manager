@@ -44,6 +44,7 @@ Name: "audiotools"; Description: "Include vgmstream decoder and Vorbis FSB5 soun
 [Files]
 Source: "..\target\release\evolve-mod-manager.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\target\release\evolve-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\target\release\evolve-teleport-overlay.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\assets\hunt.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\assets\default_loading.dds"; DestDir: "{app}\assets"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
