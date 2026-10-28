@@ -658,7 +658,7 @@ mod tests {
     }
 
     #[test]
-    fn registry_keeps_all_portraits_even_without_internal_names() {
+    fn registry_covers_all_39_playable_characters() {
         let portraits = character_portraits();
         assert_eq!(portraits.len(), 39);
         assert_eq!(
@@ -666,7 +666,7 @@ mod tests {
                 .iter()
                 .filter(|p| !p.internal_names.is_empty())
                 .count(),
-            38
+            39
         );
         let mut seen = std::collections::HashSet::new();
         let mut unique_actor_names = std::collections::HashSet::new();
@@ -704,8 +704,13 @@ mod tests {
             "rockybobcicle"
         );
         assert_eq!(
-            portrait_for_display_name("Tech").unwrap().team,
-            Team::Unknown
+            portrait_for_display_name("Kala").unwrap().team,
+            Team::Hunter
+        );
+        assert_eq!(portrait_for_display_name("Kala").unwrap().asset_key, "tech");
+        assert_eq!(
+            character_from_entity_name("Tech"),
+            Some(("Kala", Team::Hunter))
         );
         assert_eq!(
             character_from_entity_name("Scrap"),
