@@ -3998,7 +3998,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ActorWritten(result) => {
             state.actor_busy = false;
             if state.developer_unlocked {
-                state.actor_status = match result {
+                state.actor_status = match &result {
                     Ok(outcome) => format!(
                         "{} {}: {} -> {}. Refresh to read current values.",
                         outcome.actor,
@@ -4016,10 +4016,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         for actor in &mut list.actors {
                             if actor.name == outcome.actor {
                                 if let Some(value) = actor.fields.iter_mut().find(|v| v.field == outcome.field) {
-                                    if let Ok(bits) = if outcome.field == runtime_actors::Field::Stage {
-                                        outcome.after.parse::<u32>().map(|v| v | (v << 8))
+                                    if let Some(bits) = if outcome.field == runtime_actors::Field::Stage {
+                                        outcome.after.parse::<u32>().ok().map(|v| v | (v << 8))
                                     } else {
-                                        outcome.after.parse::<f32>().map(f32::to_bits)
+                                        outcome.after.parse::<f32>().ok().map(f32::to_bits)
                                     } {
                                         value.bits = bits;
                                         value.display = outcome.after.clone();
