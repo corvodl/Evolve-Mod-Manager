@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "discord_application_id": "1565093139616763987",
   "portrait_count": 39,
   "upload_status": "not_uploaded",
@@ -11,7 +11,9 @@
       "filename": "abe.png",
       "display_name": "Abe",
       "team": "hunter",
-      "internal_names": []
+      "internal_names": [
+        "TrackingCBot"
+      ]
     },
     {
       "source": "abeRenegade.dds",
@@ -19,7 +21,9 @@
       "filename": "aberenegade.png",
       "display_name": "Renegade Abe",
       "team": "hunter",
-      "internal_names": []
+      "internal_names": [
+        "AssaultAbeRenegadeBot"
+      ]
     },
     {
       "source": "bucket.dds",
@@ -27,7 +31,9 @@
       "filename": "bucket.png",
       "display_name": "Bucket",
       "team": "hunter",
-      "internal_names": []
+      "internal_names": [
+        "SupportABot"
+      ]
     },
     {
       "source": "bucketCaptain.dds",
@@ -35,7 +41,9 @@
       "filename": "bucketcaptain.png",
       "display_name": "Captain Bucket",
       "team": "hunter",
-      "internal_names": []
+      "internal_names": [
+        "SupportA_CaptainBot"
+      ]
     },
     {
       "source": "cabot.dds",
@@ -43,7 +51,9 @@
       "filename": "cabot.png",
       "display_name": "Cabot",
       "team": "hunter",
-      "internal_names": []
+      "internal_names": [
+        "SupportEBot"
+      ]
     },
     {
       "source": "cabotBattle.dds",
@@ -51,7 +61,9 @@
       "filename": "cabotbattle.png",
       "display_name": "Battle Cabot",
       "team": "hunter",
-      "internal_names": []
+      "internal_names": [
+        "SupportE_BattleBot"
+      ]
     },
     {
       "source": "caira.dds",
@@ -59,7 +71,9 @@
       "filename": "caira.png",
       "display_name": "Caira",
       "team": "hunter",
-      "internal_names": []
+      "internal_names": [
+        "MedicCBot"
+      ]
     },
     {
       "source": "cairaLowgrav.dds",
@@ -67,7 +81,9 @@
       "filename": "cairalowgrav.png",
       "display_name": "Caira (Lowgrav)",
       "team": "hunter",
-      "internal_names": []
+      "internal_names": [
+        "MedicC_LowgravBot"
+      ]
     },
     {
       "source": "crow.dds",
@@ -75,7 +91,9 @@
       "filename": "crow.png",
       "display_name": "Crow",
       "team": "hunter",
-      "internal_names": []
+      "internal_names": [
+        "TrackingFBot"
+      ]
     },
     {
       "source": "emet.dds",
@@ -83,7 +101,9 @@
       "filename": "emet.png",
       "display_name": "Emet",
       "team": "hunter",
-      "internal_names": []
+      "internal_names": [
+        "MedicGBot"
+      ]
     },
     {
       "source": "goliath.dds",
@@ -102,8 +122,7 @@
       "display_name": "Meteor Goliath",
       "team": "monster",
       "internal_names": [
-        "goliathmeteorABot",
-        "goliathmeteorBot"
+        "GoliathMeteorBot"
       ]
     },
     {
@@ -112,7 +131,9 @@
       "filename": "griffin.png",
       "display_name": "Griffin",
       "team": "hunter",
-      "internal_names": []
+      "internal_names": [
+        "TrackingABot"
+      ]
     },
     {
       "source": "griffinElectro.dds",
@@ -120,7 +141,9 @@
       "filename": "griffinelectro.png",
       "display_name": "Electro Griffin",
       "team": "hunter",
-      "internal_names": []
+      "internal_names": [
+        "TrackingA_ElectroBot"
+      ]
     },
     {
       "source": "grounder.dds",
@@ -129,8 +152,7 @@
       "display_name": "Kraken",
       "team": "monster",
       "internal_names": [
-        "GrounderABot",
-        "Grounder"
+        "GrounderABot"
       ]
     },
     {
@@ -139,7 +161,9 @@
       "filename": "hank.png",
       "display_name": "Hank",
       "team": "hunter",
-      "internal_names": []
+      "internal_names": [
+        "SupportCBot"
+      ]
     },
     {
       "source": "hankSgt.dds",
@@ -147,7 +171,9 @@
       "filename": "hanksgt.png",
       "display_name": "Sgt. Hank",
       "team": "hunter",
-      "internal_names": []
+      "internal_names": [
+        "SupportC_SgtBot"
+      ]
     },
     {
       "source": "hyde.dds",
@@ -165,7 +191,9 @@
       "filename": "hydehellfire.png",
       "display_name": "Hellfire Hyde",
       "team": "hunter",
-      "internal_names": []
+      "internal_names": [
+        "AssaultD_HellfireBot"
+      ]
     },
     {
       "source": "krakenElder.dds",
@@ -174,8 +202,7 @@
       "display_name": "Elder Kraken",
       "team": "monster",
       "internal_names": [
-        "KrakenABot",
-        "Kraken"
+        "KrakenElderBot"
       ]
     },
     {
@@ -184,7 +211,9 @@
       "filename": "lazarus.png",
       "display_name": "Lazarus",
       "team": "hunter",
-      "internal_names": []
+      "internal_names": [
+        "MedicBBot"
+      ]
     },
     {
       "source": "lennox.dds",
@@ -203,8 +232,7 @@
       "display_name": "Gorgon",
       "team": "monster",
       "internal_names": [
-        "LurkerABot",
-        "Lurker"
+        "LurkerABot"
       ]
     },
     {
@@ -213,7 +241,9 @@
       "filename": "maggie.png",
       "display_name": "Maggie",
       "team": "hunter",
-      "internal_names": []
+      "internal_names": [
+        "TrackingEBot"
+      ]
     },
     {
       "source": "maggieSavage.dds",
@@ -221,7 +251,9 @@
       "filename": "maggiesavage.png",
       "display_name": "Savage Maggie",
       "team": "hunter",
-      "internal_names": []
+      "internal_names": [
+        "TrackingE_SavageBot"
+      ]
     },
     {
       "source": "markov.dds",
@@ -259,7 +291,9 @@
       "filename": "parnelltank.png",
       "display_name": "Tank Parnell",
       "team": "hunter",
-      "internal_names": []
+      "internal_names": [
+        "MedicParnellTankBot"
+      ]
     },
     {
       "source": "rocky.dds",
@@ -268,8 +302,7 @@
       "display_name": "Behemoth",
       "team": "monster",
       "internal_names": [
-        "RockyABot",
-        "Rocky"
+        "RockyABot"
       ]
     },
     {
@@ -279,8 +312,7 @@
       "display_name": "Glacial Behemoth",
       "team": "monster",
       "internal_names": [
-        "RockybobsicleABot",
-        "Rockybobsicle"
+        "RockyBobcicleBot"
       ]
     },
     {
@@ -297,7 +329,9 @@
       "filename": "slim.png",
       "display_name": "Slim",
       "team": "hunter",
-      "internal_names": []
+      "internal_names": [
+        "MedicFBot"
+      ]
     },
     {
       "source": "sunny.dds",
@@ -305,7 +339,9 @@
       "filename": "sunny.png",
       "display_name": "Sunny",
       "team": "hunter",
-      "internal_names": []
+      "internal_names": [
+        "SupportFBot"
+      ]
     },
     {
       "source": "tech.dds",
@@ -341,7 +377,9 @@
       "filename": "val.png",
       "display_name": "Val",
       "team": "hunter",
-      "internal_names": []
+      "internal_names": [
+        "MedicEBot"
+      ]
     },
     {
       "source": "valRogue.dds",
@@ -349,7 +387,54 @@
       "filename": "valrogue.png",
       "display_name": "Rogue Val",
       "team": "hunter",
-      "internal_names": []
+      "internal_names": [
+        "MedicE_RogueBot"
+      ]
     }
+  ],
+  "unillustrated_characters": [
+    {
+      "display_name": "Jack",
+      "team": "hunter",
+      "internal_names": [
+        "TrackingGBot",
+        "SupportGBot"
+      ]
+    },
+    {
+      "display_name": "Necro Lazarus",
+      "team": "hunter",
+      "internal_names": [
+        "MedicB_NecroBot"
+      ]
+    }
+  ],
+  "non_player_entities": [
+    "AssaultE_NPHBot",
+    "AssaultE_NPMBot",
+    "TrackingA_NPHBot",
+    "TrackingA_NPMBot",
+    "SupportC_NPHBot",
+    "SupportC_NPMBot",
+    "MedicE_NPHBot",
+    "MedicE_NPMBot",
+    "TeleporterDecoyBot",
+    "GoliathCoopBot",
+    "GoliathBGHCoopBot",
+    "GoliathMeteorCoopBot",
+    "GoliathMeteorBGHCoopBot",
+    "GoliathMinionBot",
+    "GoliathMinionDDBot",
+    "GoliathNPEBot",
+    "GrounderCoopBot",
+    "KrakenElderCoopBot",
+    "TeleporterCoopBot",
+    "RockyCoopBot",
+    "LurkerCoopBot",
+    "LurkerDDBot",
+    "LurkerMimicBot",
+    "WraithPhantom1Bot",
+    "WraithPhantom2Bot",
+    "WraithPhantom3Bot"
   ]
 }
