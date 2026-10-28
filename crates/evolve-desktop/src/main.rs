@@ -1876,7 +1876,10 @@ enum Message {
     ActorWritten(Result<runtime_actors::WriteResult, String>),
     ActorFreeze(u32, usize, runtime_actors::Field, bool),
     ActorFreezeTick,
-    ActorFreezeDone(u64, Vec<((u32, usize, runtime_actors::Field), Result<bool, String>)>),
+    ActorFreezeDone(
+        u64,
+        Vec<((u32, usize, runtime_actors::Field), Result<bool, String>)>,
+    ),
     RuntimeDetect,
     RuntimeDetected(runtime_memory::Snapshot),
     RuntimeAddressChanged(String),
@@ -4013,18 +4016,25 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     if let Some(list) = &mut state.actor_listing {
                         for actor in &mut list.actors {
                             if actor.name == outcome.actor {
-                                if let Some(value) = actor.fields.iter_mut().find(|v| v.field == outcome.field) {
-                                    if let Some(bits) = if outcome.field == runtime_actors::Field::Stage {
-                                        outcome.after.parse::<u32>().ok().map(|v| v | (v << 8))
-                                    } else {
-                                        outcome.after.parse::<f32>().ok().map(f32::to_bits)
-                                    } {
+                                if let Some(value) =
+                                    actor.fields.iter_mut().find(|v| v.field == outcome.field)
+                                {
+                                    if let Some(bits) =
+                                        if outcome.field == runtime_actors::Field::Stage {
+                                            outcome.after.parse::<u32>().ok().map(|v| v | (v << 8))
+                                        } else {
+                                            outcome.after.parse::<f32>().ok().map(f32::to_bits)
+                                        }
+                                    {
                                         value.bits = bits;
                                         value.display = outcome.after.clone();
                                         if let Some((id, addr, field, _)) = edited {
-                                            if let Some(held) = state.actor_frozen.get_mut(&(id, addr, field)) {
+                                            if let Some(held) =
+                                                state.actor_frozen.get_mut(&(id, addr, field))
+                                            {
                                                 *held = bits;
-                                                state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
+                                                state.actor_freeze_generation =
+                                                    state.actor_freeze_generation.wrapping_add(1);
                                             }
                                         }
                                     }
@@ -4042,12 +4052,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
                 return Task::none();
             }
-            if !state.developer_unlocked || !state.live_edit_enabled
-                || !state.armor_offline_confirmed || state.developer_online_mods {
+            if !state.developer_unlocked
+                || !state.live_edit_enabled
+                || !state.armor_offline_confirmed
+                || state.developer_online_mods
+            {
                 state.actor_status = "Enable offline editing before freezing fields".into();
                 return Task::none();
             }
-            let bits = state.actor_listing.as_ref()
+            let bits = state
+                .actor_listing
+                .as_ref()
                 .and_then(|l| l.actors.iter().find(|a| a.id == id && a.address == addr))
                 .and_then(|a| a.fields.iter().find(|v| v.field == field))
                 .map(|v| v.bits);
@@ -4057,9 +4072,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::ActorFreezeTick => {
-            if state.actor_freeze_busy || state.actor_frozen.is_empty()
-                || !state.developer_unlocked || !state.live_edit_enabled
-                || !state.armor_offline_confirmed || state.developer_online_mods {
+            if state.actor_freeze_busy
+                || state.actor_frozen.is_empty()
+                || !state.developer_unlocked
+                || !state.live_edit_enabled
+                || !state.armor_offline_confirmed
+                || state.developer_online_mods
+            {
                 return Task::none();
             }
             let Some(snapshot) = state.runtime_snapshot.clone() else {
@@ -4070,19 +4089,37 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let root = state.preferences.game_storage_root.clone();
             let fields: Vec<_> = state.actor_frozen.iter().map(|(k, v)| (*k, *v)).collect();
             let generation = state.actor_freeze_generation;
-            return Task::perform(async move {
-                tokio::task::spawn_blocking(move || {
-                    fields.into_iter().map(|((id, addr, field), bits)| {
-                        ((id, addr, field), runtime_actors::freeze_once(&snapshot, &root, id, addr, field, bits))
-                    }).collect::<Vec<_>>()
-                }).await.unwrap_or_else(|error| {
-                    vec![((0, 0, runtime_actors::Field::Health), Err(error.to_string()))]
-                })
-            }, move |result| Message::ActorFreezeDone(generation, result));
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        fields
+                            .into_iter()
+                            .map(|((id, addr, field), bits)| {
+                                (
+                                    (id, addr, field),
+                                    runtime_actors::freeze_once(
+                                        &snapshot, &root, id, addr, field, bits,
+                                    ),
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .await
+                    .unwrap_or_else(|error| {
+                        vec![(
+                            (0, 0, runtime_actors::Field::Health),
+                            Err(error.to_string()),
+                        )]
+                    })
+                },
+                move |result| Message::ActorFreezeDone(generation, result),
+            );
         }
         Message::ActorFreezeDone(generation, results) => {
             state.actor_freeze_busy = false;
-            if generation != state.actor_freeze_generation { return Task::none(); }
+            if generation != state.actor_freeze_generation {
+                return Task::none();
+            }
             for (key, result) in results {
                 if let Err(error) = result {
                     state.actor_frozen.remove(&key);
@@ -11441,10 +11478,15 @@ impl Desktop {
             Subscription::none()
         };
         let actor_freeze = if !self.state.actor_frozen.is_empty()
-            && self.state.developer_unlocked && self.state.live_edit_enabled
-            && self.state.armor_offline_confirmed && !self.state.developer_online_mods {
+            && self.state.developer_unlocked
+            && self.state.live_edit_enabled
+            && self.state.armor_offline_confirmed
+            && !self.state.developer_online_mods
+        {
             iced::time::every(Duration::from_secs(2)).map(|_| Message::ActorFreezeTick)
-        } else { Subscription::none() };
+        } else {
+            Subscription::none()
+        };
         let news_poll = if matches!(self.state.page, Some(Page::Home | Page::WhatsNew)) {
             iced::time::every(Duration::from_secs(600)).map(|_| Message::RefreshNews)
         } else {
