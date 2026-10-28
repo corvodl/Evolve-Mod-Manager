@@ -1843,11 +1843,13 @@ fn explorer(state: &State) -> Element<'_, Message> {
             item.into()
         };
         rows = rows.push(item);
-        if entry.index == state.viewer_context_index {
+        if entry.index.is_some() && entry.index == state.viewer_context_index {
             rows = rows.push(file_context_actions(state));
         }
-        if entry.index == state.editor_replace_dialog {
-            rows = rows.push(replacement_sheet(state, entry.index.unwrap()));
+        if let Some(index) = entry.index
+            && Some(index) == state.editor_replace_dialog
+        {
+            rows = rows.push(replacement_sheet(state, index));
         }
     }
     if total == 0 {
