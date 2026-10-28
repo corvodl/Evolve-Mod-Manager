@@ -32,13 +32,13 @@ Until uploaded, text Rich Presence still works; missing images may not render.
 
 ## Adding internal names as they are discovered
 
-The manifest lists **all 39** portrait files. **38 have exactly one
+The manifest lists **all 39** portrait files. **All 39 have exactly one
 canonical playable name**. The `scrap.png` portrait belongs to **Jack**,
-whose confirmed internal name is **`Scrap`**. The earlier `TrackingGBot`
-and `SupportGBot` entries are not assigned as additional Jack aliases.
-`Tech` is the remaining portrait without a verified playable entity name.
-**Necro Lazarus is unreleased and excluded** from the roster, registry,
-and Rich Presence mappings.
+whose internal name is **`Scrap`**; the `tech.png` portrait belongs to
+**Kala**, whose internal name is **`Tech`**. The earlier `TrackingGBot`
+and `SupportGBot` entries are not assigned as extra Jack aliases.
+**Necro Lazarus is unreleased and excluded** from the playable roster,
+registry, and Rich Presence mappings.
 
 A single exact, case-insensitive local player entity name activates a portrait.
 Known co-op actors (such as `GoliathCoopBot`), summoned minions, decoys and
@@ -61,8 +61,8 @@ verified Val name (illustrative name only, **not** a discovered ID):
 No new image conversion, Discord upload, or Rust code branch is needed.
 Rebuild the manager so its compile-time registry includes the updated alias.
 The lookup is case-insensitive but otherwise exact: unknown names will not
-be guessed or misclassified. The `scrap` art key resolves Jack; `Tech` still
-has no verified playable character name.
+be guessed or misclassified. The `scrap` art key resolves Jack (`Scrap`),
+and the `tech` art key resolves Kala (`Tech`).
 
 The original naming distinction is important: the supplied **art** filename
 is `rockybobcicle.dds` (Discord key `rockybobcicle`), while the corrected
