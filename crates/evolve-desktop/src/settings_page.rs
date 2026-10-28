@@ -556,9 +556,9 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                         .size(12).style(design::muted),
                     design::button(if state.preferences.discord_presence_enabled { "Rich Presence: On" } else { "Rich Presence: Off" })
                         .on_press(Message::PreferenceDiscordToggle("enabled")).style(design::secondary),
-                    text("Modded Evolve uses the shared Discord application automatically. No account linking is needed. Leave this blank unless testing a different developer application.")
+                    text("Manager: 1563784115785048114 (Evolve Mod Manager). Game: 1565093139616763987 (Evolve). Automatically switches when Evolve starts/closes. Override below applies only to the manager.")
                         .size(11).style(design::muted),
-                    design::text_input("Discord application ID (optional override)", &state.preferences.discord_application_id)
+                    design::text_input("Manager application ID (optional developer override)", &state.preferences.discord_application_id)
                         .on_input(Message::PreferenceDiscordAppId),
                     row![
                         design::button(if state.preferences.discord_show_game { "Gameplay: On" } else { "Gameplay: Off" })
@@ -567,7 +567,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                             .on_press(Message::PreferenceDiscordToggle("manager")).style(design::secondary),
                     ].spacing(8),
                     row![
-                        design::button(if state.preferences.discord_show_character { "Evolution Stage: On" } else { "Evolution Stage: Off" })
+                        design::button(if state.preferences.discord_show_character { "Character / Stage: On" } else { "Character / Stage: Off" })
                             .on_press(Message::PreferenceDiscordToggle("character")).style(design::secondary),
                         design::button(if state.preferences.discord_show_stats { "Health / Armor: On" } else { "Health / Armor: Off" })
                             .on_press(Message::PreferenceDiscordToggle("stats")).style(design::secondary),
@@ -578,7 +578,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                         design::button(if state.preferences.discord_minimal { "Privacy: Minimal" } else { "Privacy: Detailed" })
                             .on_press(Message::PreferenceDiscordToggle("minimal")).style(design::secondary),
                     ].spacing(8),
-                    text("Health is available for hunters and monsters when validated. Armor and evolution stage are monster-only and remain hidden until a verified local character class confirms a monster. Character names, portraits, map and mode also await verified sources.")
+                    text("Character names use the read-only local IEntity resolver and known aliases; unknown names are hidden. Health is available when validated. Armor and evolution are monster-only. Maps, modes and game art still need verified sources. Discord may prioritize the game's own presence over the manager's activity.")
                         .size(11).style(design::muted),
                 ].spacing(8)),
                 panel(column![
