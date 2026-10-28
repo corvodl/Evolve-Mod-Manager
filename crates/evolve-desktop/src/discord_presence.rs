@@ -692,7 +692,10 @@ mod tests {
             ("AssaultGBot", "Lennox", "lennox"),
             ("AssaultE_BlitzBot", "Blitz Markov", "markovblitz"),
         ] {
-            assert_eq!(character_from_entity_name(internal), Some((display, Team::Hunter)));
+            assert_eq!(
+                character_from_entity_name(internal),
+                Some((display, Team::Hunter))
+            );
             let portrait = portrait_for_display_name(display).unwrap();
             assert_eq!(portrait.asset_key, key);
             assert_eq!(portrait.team, Team::Hunter);
@@ -704,7 +707,10 @@ mod tests {
             assert_eq!(activity["assets"]["large_image"], key);
             assert_eq!(activity["assets"]["large_text"], display);
         }
-        assert_eq!(character_from_entity_name("assaulte_blitzbot"), Some(("Blitz Markov", Team::Hunter)));
+        assert_eq!(
+            character_from_entity_name("assaulte_blitzbot"),
+            Some(("Blitz Markov", Team::Hunter))
+        );
     }
     #[test]
     fn maps_observed_local_entity_names_to_characters() {
