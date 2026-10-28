@@ -376,6 +376,9 @@ struct State {
     actor_status: String,
     actor_edit: Option<(u32, usize, runtime_actors::Field, u32)>,
     actor_edit_value: String,
+    actor_frozen: HashMap<(u32, usize, runtime_actors::Field), u32>,
+    actor_freeze_busy: bool,
+    actor_freeze_generation: u64,
     runtime_snapshot: Option<runtime_memory::Snapshot>,
     runtime_checking: bool,
     runtime_address: String,
@@ -1871,6 +1874,9 @@ enum Message {
     ActorEditValue(String),
     ActorWrite,
     ActorWritten(Result<runtime_actors::WriteResult, String>),
+    ActorFreeze(u32, usize, runtime_actors::Field, bool),
+    ActorFreezeTick,
+    ActorFreezeDone(u64, Vec<((u32, usize, runtime_actors::Field), Result<bool, String>)>),
     RuntimeDetect,
     RuntimeDetected(runtime_memory::Snapshot),
     RuntimeAddressChanged(String),
@@ -3971,7 +3977,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             }
             let (Some(snapshot), Some((id, address, field, bits))) =
-                (state.runtime_snapshot.clone(), state.actor_edit.take())
+                (state.runtime_snapshot.clone(), state.actor_edit)
             else {
                 return Task::none();
             };
@@ -4002,7 +4008,82 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     ),
                     Err(e) => format!("Write refused or unconfirmed: {e}"),
                 };
-                return Task::done(Message::ActorRefresh);
+                if let Ok(outcome) = &result {
+                    if let Some((_, _, _, _)) = state.actor_edit {
+                        state.actor_edit = None;
+                    }
+                    if let Some(list) = &mut state.actor_listing {
+                        for actor in &mut list.actors {
+                            if actor.name == outcome.actor {
+                                if let Some(value) = actor.fields.iter_mut().find(|v| v.field == outcome.field) {
+                                    if let Ok(bits) = if outcome.field == runtime_actors::Field::Stage {
+                                        outcome.after.parse::<u32>().map(|v| v | (v << 8))
+                                    } else {
+                                        outcome.after.parse::<f32>().map(f32::to_bits)
+                                    } {
+                                        value.bits = bits;
+                                        value.display = outcome.after.clone();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Message::ActorFreeze(id, addr, field, checked) => {
+            let key = (id, addr, field);
+            if !checked {
+                state.actor_frozen.remove(&key);
+                state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
+                return Task::none();
+            }
+            if !state.developer_unlocked || !state.live_edit_enabled
+                || !state.armor_offline_confirmed || state.developer_online_mods {
+                state.actor_status = "Enable offline editing before freezing fields".into();
+                return Task::none();
+            }
+            let bits = state.actor_listing.as_ref()
+                .and_then(|l| l.actors.iter().find(|a| a.id == id && a.address == addr))
+                .and_then(|a| a.fields.iter().find(|v| v.field == field))
+                .map(|v| v.bits);
+            if let Some(bits) = bits {
+                state.actor_frozen.insert(key, bits);
+                state.actor_status = format!("Holding {} at its current value", field.title());
+            }
+        }
+        Message::ActorFreezeTick => {
+            if state.actor_freeze_busy || state.actor_frozen.is_empty()
+                || !state.developer_unlocked || !state.live_edit_enabled
+                || !state.armor_offline_confirmed || state.developer_online_mods {
+                return Task::none();
+            }
+            let Some(snapshot) = state.runtime_snapshot.clone() else {
+                state.actor_frozen.clear();
+                return Task::none();
+            };
+            state.actor_freeze_busy = true;
+            let root = state.preferences.game_storage_root.clone();
+            let fields: Vec<_> = state.actor_frozen.iter().map(|(k, v)| (*k, *v)).collect();
+            let generation = state.actor_freeze_generation;
+            return Task::perform(async move {
+                tokio::task::spawn_blocking(move || {
+                    fields.into_iter().map(|((id, addr, field), bits)| {
+                        ((id, addr, field), runtime_actors::freeze_once(&snapshot, &root, id, addr, field, bits))
+                    }).collect::<Vec<_>>()
+                }).await.unwrap_or_else(|error| {
+                    vec![((0, 0, runtime_actors::Field::Health), Err(error.to_string()))]
+                })
+            }, move |result| Message::ActorFreezeDone(generation, result));
+        }
+        Message::ActorFreezeDone(generation, results) => {
+            state.actor_freeze_busy = false;
+            if generation != state.actor_freeze_generation { return Task::none(); }
+            for (key, result) in results {
+                if let Err(error) = result {
+                    state.actor_frozen.remove(&key);
+                    state.actor_status = format!("Freeze stopped for {}: {error}", key.2.title());
+                }
             }
         }
         Message::RuntimeAddressChanged(value) => {
@@ -4036,6 +4117,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.live_edit_cancel = None;
             state.live_edit_busy = false;
             state.live_edit_enabled = armed && state.armor_offline_confirmed;
+            if !state.live_edit_enabled {
+                state.actor_frozen.clear();
+                state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
+            }
             state.live_edit_probe = None;
             state.live_edit_generation = state.live_edit_generation.wrapping_add(1);
             state.live_edit_report = if state.live_edit_enabled {
@@ -4175,6 +4260,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ArmorOfflineChanged(confirmed) => {
             if !confirmed {
+                state.actor_frozen.clear();
+                state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
                 state.actor_edit = None;
             }
 
@@ -4312,6 +4399,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             }
             state.armor_pid_seen = pid;
+            state.actor_frozen.clear();
+            state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
             state.live_edit_enabled = false;
             if let Some(cancel) = &state.live_edit_cancel {
                 cancel.store(true, Ordering::Relaxed);
@@ -4421,6 +4510,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::RuntimeDetected(snapshot) => {
+            state.actor_frozen.clear();
+            state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
             state.actor_listing = None;
             state.actor_edit = None;
             state.runtime_checking = false;
@@ -4618,6 +4709,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .unwrap_or_else(|error| format!("Phase 3 preview rejected: {error}"));
         }
         Message::LockDeveloper => {
+            state.actor_frozen.clear();
+            state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
             state.actor_listing = None;
             state.actor_edit = None;
             state.actor_status.clear();
@@ -4744,6 +4837,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             match result {
                 Ok(status) => {
                     state.developer_online_mods = true;
+                    state.actor_frozen.clear();
+                    state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
                     // Online mode must not reuse the separate offline-only
                     // memory edit permissions or stale memory probes.
                     state.armor_offline_confirmed = false;
@@ -11341,12 +11436,18 @@ impl Desktop {
         } else {
             Subscription::none()
         };
+        let actor_freeze = if !self.state.actor_frozen.is_empty()
+            && self.state.developer_unlocked && self.state.live_edit_enabled
+            && self.state.armor_offline_confirmed && !self.state.developer_online_mods {
+            iced::time::every(Duration::from_millis(500)).map(|_| Message::ActorFreezeTick)
+        } else { Subscription::none() };
         let news_poll = if matches!(self.state.page, Some(Page::Home | Page::WhatsNew)) {
             iced::time::every(Duration::from_secs(600)).map(|_| Message::RefreshNews)
         } else {
             Subscription::none()
         };
         Subscription::batch([
+            actor_freeze,
             news_poll,
             armor_recovery,
             armor_pulse,
