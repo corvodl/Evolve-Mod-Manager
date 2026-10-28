@@ -32,19 +32,19 @@ Until uploaded, text Rich Presence still works; missing images may not render.
 
 ## Adding internal names as they are discovered
 
-The manifest lists **all 39** portraits. **38 have mapped playable names**.
-The `scrap.png` portrait belongs to **Jack**, whose confirmed internal name is
-`Scrap`. The supplied `TrackingGBot` and `SupportGBot` aliases are also
-mapped to Jack. `Tech` is the remaining portrait without a verified playable
-entity name. **Necro Lazarus is unreleased and excluded** from the roster,
-registry, and Rich Presence mappings.
+The manifest lists **all 39** portrait files. **38 have exactly one
+canonical playable name**. The `scrap.png` portrait belongs to **Jack**,
+whose confirmed internal name is **`Scrap`**. The earlier `TrackingGBot`
+and `SupportGBot` entries are not assigned as additional Jack aliases.
+`Tech` is the remaining portrait without a verified playable entity name.
+**Necro Lazarus is unreleased and excluded** from the roster, registry,
+and Rich Presence mappings.
 
-The known co-op monster variants (for example `GoliathCoopBot` and
-`GrounderCoopBot`) map to their base or variant portrait **only when
-resolved on the validated local player actor**. The `non_player_entities`
-list instead contains decoys, NPC copies, and minion names that must not be
-treated as the player's character. Internal-name matching is always exact
-and case-insensitive.
+A single exact, case-insensitive local player entity name activates a portrait.
+Known co-op actors (such as `GoliathCoopBot`), summoned minions, decoys and
+NPC copies are listed separately under `non_player_entities` and are **not**
+mapped to player portraits. They are not additional alternate names for
+playable characters.
 
 When an entity name is confirmed through the validated local IEntity resolver,
 edit only that character's `internal_names` list. For example, to support a
@@ -82,6 +82,54 @@ Windows, then validate an actual Discord session after importing art assets.
 Verify Markov, Hyde, Goliath, Wraith, and each monster variant; switch
 characters and confirm `large_image` follows the local actor. If another
 in-game RPC publisher runs, activity precedence is still best-effort.
+
+
+## Canonical playable-character names
+
+Each supported playable character has **one** entity name in the manifest.
+
+| Category | Character displayed | Internal entity name | Discord art key |
+|---|---|---|---|
+| Assault | Markov | `AssaultEBot` | `markov` |
+| Assault | Blitz Markov | `AssaultE_BlitzBot` | `markovblitz` |
+| Assault | Hyde | `AssaultDBot` | `hyde` |
+| Assault | Hellfire Hyde | `AssaultD_HellfireBot` | `hydehellfire` |
+| Assault | Parnell | `AssaultBBot` | `parnell` |
+| Assault | Parnell (Tank) | `MedicParnellTankBot` | `parnelltank` |
+| Assault | Torvald | `AssaultFBot` | `torvald` |
+| Assault | Lennox | `AssaultGBot` | `lennox` |
+| Assault | Renegade Abe | `AssaultAbeRenegadeBot` | `aberenegade` |
+| Trapper | Griffin | `TrackingABot` | `griffin` |
+| Trapper | Electro Griffin | `TrackingA_ElectroBot` | `griffinelectro` |
+| Trapper | Abe | `TrackingCBot` | `abe` |
+| Trapper | Maggie | `TrackingEBot` | `maggie` |
+| Trapper | Savage Maggie | `TrackingE_SavageBot` | `maggiesavage` |
+| Trapper | Crow | `TrackingFBot` | `crow` |
+| Trapper | Jack | `Scrap` | `scrap` |
+| Medic | Lazarus | `MedicBBot` | `lazarus` |
+| Medic | Caira | `MedicCBot` | `caira` |
+| Medic | Lowgrav Caira | `MedicC_LowgravBot` | `cairalowgrav` |
+| Medic | Val | `MedicEBot` | `val` |
+| Medic | Rogue Val | `MedicE_RogueBot` | `valrogue` |
+| Medic | Slim | `MedicFBot` | `slim` |
+| Medic | Emet | `MedicGBot` | `emet` |
+| Support | Bucket | `SupportABot` | `bucket` |
+| Support | Captain Bucket | `SupportA_CaptainBot` | `bucketcaptain` |
+| Support | Hank | `SupportCBot` | `hank` |
+| Support | Sgt. Hank | `SupportC_SgtBot` | `hanksgt` |
+| Support | Cabot | `SupportEBot` | `cabot` |
+| Support | Battle Cabot | `SupportE_BattleBot` | `cabotbattle` |
+| Support | Sunny | `SupportFBot` | `sunny` |
+| Monsters | Goliath | `GoliathABot` | `goliath` |
+| Monsters | Meteor Goliath | `GoliathMeteorBot` | `goliathmeteor` |
+| Monsters | Kraken | `GrounderABot` | `grounder` |
+| Monsters | Elder Kraken | `KrakenElderBot` | `krakenelder` |
+| Monsters | Wraith | `TeleporterABot` | `teleporter` |
+| Monsters | Behemoth | `RockyABot` | `rocky` |
+| Monsters | Glacial Behemoth | `RockyBobcicleBot` | `rockybobcicle` |
+| Monsters | Gorgon | `LurkerABot` | `lurker` |
+
+`Tech` is retained as a PNG asset with no confirmed player entity name. The artwork is ready for a later verified mapping. This is not a separate identified playable character.
 
 ## Compact in-game Rich Presence text
 
