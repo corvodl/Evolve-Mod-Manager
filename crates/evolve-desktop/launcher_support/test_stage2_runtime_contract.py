@@ -43,6 +43,27 @@ class TraceContractTests(unittest.TestCase):
             with self.subTest(modes=modes), self.assertRaises(RuntimeError):
                 contract.validate_modes(modes)
 
+    def test_actual_client_service_log_modes_round_trip(self):
+        # Exact delimiter and order from the supplied direct-stage2-services.log.
+        reported = (
+            "Stage2Listener;Stage2OwnableCompat;Stage2OwnableVtableCompat;"
+            "Stage2ProfileCompat;Stage2ProfileOnly;Stage2LobbyTaskMap;"
+            "Stage3GameContextTrace;Stage3RouteObjectTrace;Stage3NativeListen;"
+            "Stage2LobbyTaskDataBridge;Stage2ArbitrationTrace;"
+            "Stage2ArbitrationComplete"
+        )
+        normalized = contract.validate_modes(reported)
+        self.assertEqual(normalized, reported.replace(";", ","))
+        self.assertEqual(contract.validate_modes(normalized), normalized)
+        self.assertEqual(len(normalized.split(",")), 12)
+
+        with self.assertRaisesRegex(RuntimeError, "mixed separators"):
+            contract.validate_modes(normalized.replace(",", ";", 1))
+        with self.assertRaisesRegex(RuntimeError, "malformed"):
+            contract.validate_modes(reported + ";")
+        with self.assertRaisesRegex(RuntimeError, "duplicates"):
+            contract.validate_modes(reported + ";Stage2Listener")
+
     def test_provider_must_be_installed_next_to_game_binary(self):
         with tempfile.TemporaryDirectory() as folder:
             binary=Path(folder)/"bin64_SteamRetail"
@@ -81,6 +102,51 @@ class TraceContractTests(unittest.TestCase):
                 contract.validate_hook_startup(success.replace(line,""),provider,OBSERVED_MODES)
         with self.assertRaises(RuntimeError):
             contract.validate_hook_startup(success,Path("C:/Bad/ModdedEvolveSteamCompat.dll"),OBSERVED_MODES)
+
+    def test_hook_startup_accepts_reordered_modes_not_changed_members(self):
+        provider = Path("C:/Games/EvolveGame/bin64_SteamRetail/ModdedEvolveSteamCompat.dll")
+        # The client reports these 12 modes in a different order than the
+        # alphabetically sorted Stage2Trace log.
+        client_modes = ";".join(reversed(OBSERVED_MODES.split(",")))
+        self.assertNotEqual(contract.validate_modes(client_modes), OBSERVED_MODES)
+        prefix = (
+            "[01:00:00] Stage2Tracer starting; listener_mode=enabled\n"
+            "[01:00:00] STEAM_EMU active provider=" + str(provider) + "\n"
+        )
+        mode_line = "[01:00:00] Modes from MODDED_EVOLVE_STAGE2_MODES: "
+        suffix = "[01:00:00] Hooks enabled status=MH_OK\n"
+        log = prefix + mode_line + OBSERVED_MODES + "\n" + suffix
+        contract.validate_hook_startup(log, provider, client_modes)
+        # The complete startup wait should also return, rather than timing out.
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "hook.log"
+            path.write_text(log, encoding="utf-8")
+            process = mock.Mock()
+            process.poll.return_value = None
+            contract.wait_for_hook_startup(path, provider, client_modes, process, timeout=0.5)
+        observed = OBSERVED_MODES.split(",")
+        invalid_lists = (
+            observed[:-1],                                # missing mode
+            observed + ["Stage2UnexpectedMode"],           # unexpected mode
+            observed + [observed[0]],                      # duplicate mode
+        )
+        for members in invalid_lists:
+            with self.subTest(members=members), self.assertRaises(RuntimeError):
+                contract.validate_hook_startup(
+                    prefix + mode_line + ",".join(members) + "\n" + suffix,
+                    provider, client_modes,
+                )
+        with self.assertRaisesRegex(RuntimeError, "malformed"):
+            contract.validate_hook_startup(
+                prefix + mode_line + OBSERVED_MODES + ",bad name\n" + suffix,
+                provider, client_modes,
+            )
+        # An earlier valid line cannot mask a later contradictory log record.
+        with self.assertRaises(RuntimeError):
+            contract.validate_hook_startup(
+                log + mode_line + ",".join(observed[:-1]) + "\n",
+                provider, client_modes,
+            )
 
     def test_missing_or_empty_runtime_field_is_never_faked(self):
         for data in [

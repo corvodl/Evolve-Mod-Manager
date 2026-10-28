@@ -50,4 +50,4 @@ See [the development parity checklist](docs/PARITY.md) for technical implementat
 
 This project is an independent community tool. Work with copies of game assets when testing experimental modification features. Previewing or exporting assets does not imply they can be safely used in an installed game, and modding may disable online functionality. Preserve backups and follow applicable game and community rules.
 
-The original game data, extracted assets, private signing keys, and personal configuration are **not included** with the downloads.
+The original game archives, extracted asset packs, private signing keys, and personal configuration are **not included** with the downloads. The Home workbench banner (`assets/default_loading.dds`) is bundled as a standalone artwork asset.

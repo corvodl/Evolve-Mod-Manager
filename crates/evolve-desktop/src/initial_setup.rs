@@ -1,12 +1,10 @@
 //! First-run signing and launch-helper setup for an installed Evolve Stage 2
 //! game. New isolated files only: original game PAKs and inject.dll are never
 //! modified by setup. A failed setup stays outside the installed game.
-use crate::{launcher_bridge, play_setup};
+use crate::{launcher_bridge, official_stage2_tools, play_setup};
 use evolve_core::{
     client_hook::prepare_client_hook,
-    signed_pak::{
-        generate_local_signing_keys, inspect_signed_pak, resign_signed_pak_with_original_name,
-    },
+    signed_pak::{generate_local_signing_keys, inspect_signed_pak},
 };
 use fs2::available_space;
 use serde::Serialize;
@@ -245,6 +243,13 @@ pub fn create(
     }
     let storage =
         fs::canonicalize(storage).map_err(|e| format!("Cannot inspect Game Storage: {e}"))?;
+    let official = official_stage2_tools::discover(&storage)?;
+    // The developer-provided injection shim depends on its matching dbghelp.dll.
+    // Only support an already-present original file until recovery is proven
+    // for installing a DLL where no original file existed.
+    if official.is_some() && !game.join("bin64_SteamRetail/dbghelp.dll").is_file() {
+        return Err("Official Stage 2 setup requires an existing original bin64_SteamRetail/dbghelp.dll for reversible swapping. Restore/install the normal game client first.".into());
+    }
     let original_shim = game.join("bin64_SteamRetail").join("inject.dll");
     let shim = fs::read(&original_shim).map_err(|e| e.to_string())?;
     if shim.len() != 4096 {
@@ -270,13 +275,18 @@ pub fn create(
         }
     }
     let installed_shim_sha = sha256(&original_shim)?;
+    // Sparse signing stages keep a cryptographically checked inventory, not
+    // a duplicate/resigned copy of every installed PAK. A working copy is
+    // materialized only for the selected edited PAK at mod-build time.
     let total = rows.iter().try_fold(0u64, |total, (_, _, bytes)| {
         total.checked_add(*bytes).ok_or("Archive size overflow")
     })?;
-    let required = total
-        .checked_mul(if keep_original_snapshots { 2 } else { 1 })
-        .and_then(|size| size.checked_add(MIN_FREE_RESERVE))
-        .ok_or("Estimated signing-stage disk requirement overflow")?;
+    let largest = rows.iter().map(|(_, _, bytes)| *bytes).max().unwrap_or(0);
+    let required = largest
+        .checked_mul(3)
+        .and_then(|v| v.checked_add(if keep_original_snapshots { total } else { 0 }))
+        .and_then(|v| v.checked_add(MIN_FREE_RESERVE))
+        .ok_or("Estimated on-demand signing space overflow")?;
     let free =
         available_space(&storage).map_err(|e| format!("Cannot check free disk space: {e}"))?;
     if free < required {
@@ -309,9 +319,19 @@ pub fn create(
         let original_public = output.join("RSAKeyData.bin");
         write_new(&original_public, original_key)?;
         let keys = stage.join("mykeys");
-        generate_local_signing_keys(&keys).map_err(|e| e.to_string())?;
-        let private = keys.join("private_key.pem");
+        if let Some(tools) = &official {
+            fs::create_dir(&keys).map_err(|e| e.to_string())?;
+            write_new(
+                &keys.join("public_key.bin"),
+                &fs::read(&tools.public_key).map_err(|e| e.to_string())?,
+            )?;
+        } else {
+            generate_local_signing_keys(&keys).map_err(|e| e.to_string())?;
+        }
         let public = keys.join("public_key.bin");
+        if !public.is_file() {
+            return Err("Configured signing public key is missing".into());
+        }
         let mut entries = Vec::with_capacity(rows.len());
         let mut signed = 0usize;
         let mut plain = 0usize;
@@ -352,19 +372,9 @@ pub fn create(
                 None
             };
             let (kind, signed_name) = if let Some(signed_name) = signed_name {
-                let destination = stage.join("paks").join(relative);
-                fs::create_dir_all(destination.parent().ok_or("Staged PAK has no parent")?)
-                    .map_err(|e| e.to_string())?;
-                resign_signed_pak_with_original_name(
-                    &authored,
-                    &original_public,
-                    &private,
-                    &public,
-                    &signed_name,
-                    basename,
-                    &destination,
-                )
-                .map_err(|e| format!("Cannot re-sign {relative}: {e}"))?;
+                // Record the authenticated stock file; do not copy/re-sign it.
+                // ensure_selected_stage_pak() creates a verified staged copy
+                // only if an enabled Mod Project targets this path.
                 signed += 1;
                 ("signed-encrypted", Some(signed_name))
             } else {
@@ -395,8 +405,22 @@ pub fn create(
             return Err("No signed Stage 2 PAKs were found in the installed game".into());
         }
         let shim_dst = stage.join("inject-custom.dll");
-        let shim_report = prepare_client_hook(&original_shim, &original_public, &public, &shim_dst)
-            .map_err(|e| format!("Custom offline injector preparation failed: {e}"))?;
+        let shim_sha = if let Some(tools) = &official {
+            write_new(
+                &shim_dst,
+                &fs::read(&tools.inject).map_err(|e| e.to_string())?,
+            )?;
+            let dbghelp = stage.join("dbghelp-custom.dll");
+            write_new(
+                &dbghelp,
+                &fs::read(&tools.dbghelp).map_err(|e| e.to_string())?,
+            )?;
+            sha256(&shim_dst)?
+        } else {
+            prepare_client_hook(&original_shim, &original_public, &public, &shim_dst)
+                .map_err(|e| format!("Custom offline injector preparation failed: {e}"))?
+                .custom_sha256
+        };
         json_new(
             &stage.join("rekey_plan.json"),
             &serde_json::json!({
@@ -409,8 +433,12 @@ pub fn create(
             &stage.join("stage_status.json"),
             &serde_json::json!({
                 "status": "fully-staged-offline",
+                "sparse_stage": true,
                 "count": signed,
-                "shim_sha256": shim_report.custom_sha256,
+                "shim_sha256": shim_sha,
+                "signer": if official.is_some() { "official-2025" } else { "local-custom" },
+                "dbghelp_sha256": if official.is_some() { Some(sha256(&stage.join("dbghelp-custom.dll"))?) } else { None },
+                "original_dbghelp_sha256": if official.is_some() { Some(sha256(&game.join("bin64_SteamRetail/dbghelp.dll"))?) } else { None },
             }),
         )?;
         for (name, source) in HELPERS {
@@ -444,18 +472,10 @@ pub fn create(
                 return Err(format!("Installed PAK changed during setup: {}", row.path));
             }
         }
-        // End-to-end verification against the launch bridge's schema and
-        // original/custom PAK signatures. Do not trust a created manifest.
-        let verified = if client.is_some() {
-            launcher_bridge::inspect_existing_launcher(&stage, &swap)?
-        } else {
-            launcher_bridge::inspect_existing_direct_game(&stage, &swap)?
-        };
-        if verified.archive_count != signed || verified.game != game {
-            return Err(
-                "Generated setup failed final private-launcher compatibility checks".into(),
-            );
-        }
+        // The first mod profile has not been selected yet. Verifying every
+        // staged archive would incorrectly demand that the full stock game
+        // has been duplicated. Source hashes were independently rechecked
+        // above; bridge verification runs on exact selected PAKs at Play time.
         json_new(
             &output.join("refresh_report.json"),
             &serde_json::json!({

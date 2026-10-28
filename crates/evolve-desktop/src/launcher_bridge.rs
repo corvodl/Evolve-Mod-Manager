@@ -88,6 +88,9 @@ fn normalized_swap_name(raw: &str) -> Result<String, String> {
     if normalized.eq_ignore_ascii_case("bin64_SteamRetail/inject.dll") {
         return Ok("bin64_SteamRetail/inject.dll".into());
     }
+    if normalized.eq_ignore_ascii_case("bin64_SteamRetail/dbghelp.dll") {
+        return Ok("bin64_SteamRetail/dbghelp.dll".into());
+    }
     normalized_pak_name(&normalized)
 }
 
@@ -279,6 +282,57 @@ fn verify_prepared_journal(
     Ok(())
 }
 
+/// Exact enabled-profile PAK selection, independent of the full rekey stage.
+///
+/// An absent file retains the old manual full-stage recovery behavior. When
+/// present, the file must be a nonempty strict subset of authenticated staged
+/// PAK targets; do not fall back to the full archive list on invalid input.
+fn active_swap_filter(
+    stage: &Path,
+    signed: &[&Value],
+) -> Result<Option<std::collections::HashSet<String>>, String> {
+    let path = stage.join("active_mod_paks.json");
+    match fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("Cannot inspect active mod profile PAKs: {e}")),
+        Ok(meta) if !meta.file_type().is_file() || meta.len() > 64 * 1024 => {
+            return Err("Active profile PAK list is unsafe".into());
+        }
+        Ok(_) => (),
+    }
+    let manifest = json(&path)?;
+    let targets = manifest["targets"]
+        .as_array()
+        .ok_or("Enabled profile PAK list is missing")?;
+    if manifest["schema"].as_u64() != Some(1) || targets.is_empty() || targets.len() > MAX_ARCHIVES
+    {
+        return Err("Invalid enabled profile PAK manifest".into());
+    }
+    let available = signed
+        .iter()
+        .map(|row| {
+            normalized_pak_name(row["path"].as_str().ok_or("Missing signed PAK target")?)
+                .map(|name| name.to_ascii_lowercase())
+        })
+        .collect::<Result<std::collections::HashSet<_>, _>>()?;
+    if available.len() != signed.len() {
+        return Err("Duplicate signed PAK target in signing stage".into());
+    }
+    let mut selected = std::collections::HashSet::new();
+    for target in targets {
+        let path = target.as_str().ok_or("Invalid selected PAK target")?;
+        let normalized = normalized_pak_name(path)?;
+        if normalized != path {
+            return Err("Enabled profile PAK target must use the exact game-relative path".into());
+        }
+        let lowered = normalized.to_ascii_lowercase();
+        if !selected.insert(lowered.clone()) || !available.contains(&lowered) {
+            return Err("Duplicate or unknown enabled profile PAK target".into());
+        }
+    }
+    Ok(Some(selected))
+}
+
 /// Read-only provenance audit of every live PAK named in the configured
 /// signing plan. This is diagnostic only: it does not normalize originals,
 /// adjust the offline launcher's verification policy or touch the game.
@@ -418,12 +472,9 @@ fn inspect_existing_launcher_mode(
         140,
     )?;
     let new_key = plain(&stage.join("mykeys/public_key.bin"), 140)?;
-    if old_key == new_key
-        || fs::read(&old_key).map_err(|e| e.to_string())?
-            == fs::read(&new_key).map_err(|e| e.to_string())?
-    {
-        return Err("Original and custom client public keys must be different".into());
-    }
+    // Matching public keys are legitimate when a supplied signing key is
+    // also the stock verifier key. Continue to verify both hook key slots,
+    // the staged DLL digest, and every PAK signature independently.
     let custom = within_file(&stage, "inject-custom.dll")?;
     let original = within_file(&game, "bin64_SteamRetail/inject.dll")?;
     no_orphaned_backup(&original)?;
@@ -452,12 +503,14 @@ fn inspect_existing_launcher_mode(
             .as_str()
             .ok_or("Missing launcher executable path in private launcher_config.json")?;
         let launcher = plain(Path::new(launcher_path), 1024 * 1024 * 1024)?;
+        // The Test Client is a separate build and need not have the
+        // production launcher's executable basename. Its exact path was
+        // selected/validated by the manager before writing this config.
         if launcher
-            .file_name()
-            .and_then(|s| s.to_str())
-            .is_none_or(|name| !name.eq_ignore_ascii_case("ModdedEvolveLauncher.exe"))
+            .extension()
+            .is_none_or(|ext| !ext.eq_ignore_ascii_case("exe"))
         {
-            return Err("Configured executable is not ModdedEvolveLauncher.exe".into());
+            return Err("Configured client is not a Windows .exe".into());
         }
     }
     let scripts: &[&str] = if require_client {
@@ -490,13 +543,20 @@ fn inspect_existing_launcher_mode(
     {
         return Err("Staged signed archive count mismatches signed rekey plan".into());
     }
+    let selected = active_swap_filter(&stage, &signed)?;
     let mut seen = std::collections::HashSet::new();
-    let mut planned = Vec::with_capacity(signed.len() + 1);
+    let mut planned = Vec::with_capacity(signed.len() + 2);
     let mut compatibility_warnings = 0usize;
     for entry in signed {
         let path = normalized_pak_name(entry["path"].as_str().ok_or("Missing PAK path")?)?;
         if !seen.insert(path.to_ascii_lowercase()) {
             return Err("Duplicate signed PAK destination in plan".into());
+        }
+        if selected
+            .as_ref()
+            .is_some_and(|targets| !targets.contains(&path.to_ascii_lowercase()))
+        {
+            continue;
         }
         let original_pak = within_file(&game, &path)?;
         let custom_pak = within_file(&stage.join("paks"), &path)?;
@@ -539,6 +599,23 @@ fn inspect_existing_launcher_mode(
         original.clone(),
         custom.clone(),
     ));
+    if status["signer"].as_str() == Some("official-2025") {
+        let original_dbg = within_file(&game, "bin64_SteamRetail/dbghelp.dll")?;
+        let staged_dbg = within_file(&stage, "dbghelp-custom.dll")?;
+        no_orphaned_backup(&original_dbg)?;
+        if sha(&original_dbg)? != status["original_dbghelp_sha256"].as_str().unwrap_or("")
+            || sha(&staged_dbg)? != status["dbghelp_sha256"].as_str().unwrap_or("")
+        {
+            return Err(
+                "Official dbghelp.dll differs from setup's pinned original/staged digests".into(),
+            );
+        }
+        planned.push((
+            "bin64_SteamRetail/dbghelp.dll".into(),
+            original_dbg,
+            staged_dbg,
+        ));
+    }
     let journal = swap.join("controlled_swap_state.json");
     let mut prepared = false;
     if fs::symlink_metadata(&journal).is_ok() {
@@ -559,7 +636,7 @@ fn inspect_existing_launcher_mode(
                 ))?;
                 if journal_game != game
                     || journal_stage != stage
-                    || prior["count"].as_u64() != Some((seen.len() + 1) as u64)
+                    || prior["count"].as_u64() != Some(planned.len() as u64)
                 {
                     return Err(
                         "Prepared swap belongs to another game/stage; restore or reset it".into(),
@@ -579,7 +656,9 @@ fn inspect_existing_launcher_mode(
         stage,
         swap,
         game,
-        archive_count: seen.len(),
+        archive_count: selected
+            .as_ref()
+            .map_or(seen.len(), |targets| targets.len()),
         compatibility_warnings,
         prepared,
     })
@@ -722,19 +801,26 @@ fn guarded_restore_state(stage: &Path, swap: &Path) -> Result<String, String> {
             "Recovery journal was created for another installed game or signing stage".into(),
         );
     }
-    let mut expected = Vec::new();
-    for entry in plan["entries"]
+    let signed = plan["entries"]
         .as_array()
         .ok_or("Signing stage plan has no entries")?
-    {
-        if entry["kind"].as_str() != Some("signed-encrypted") {
-            continue;
-        }
+        .iter()
+        .filter(|row| row["kind"].as_str() == Some("signed-encrypted"))
+        .collect::<Vec<_>>();
+    let selected = active_swap_filter(&stage, &signed)?;
+    let mut expected = Vec::new();
+    for entry in signed {
         let name = normalized_pak_name(
             entry["path"]
                 .as_str()
                 .ok_or("Missing signed archive path")?,
         )?;
+        if selected
+            .as_ref()
+            .is_some_and(|targets| !targets.contains(&name.to_ascii_lowercase()))
+        {
+            continue;
+        }
         expected.push((
             name.clone(),
             stage.join("paks").join(&name),
@@ -742,13 +828,21 @@ fn guarded_restore_state(stage: &Path, swap: &Path) -> Result<String, String> {
         ));
     }
     if expected.is_empty() || expected.len() > MAX_ARCHIVES {
-        return Err("No valid signed archive recovery targets".into());
+        return Err("No valid enabled-profile signed recovery targets".into());
     }
     expected.push((
         "bin64_SteamRetail/inject.dll".to_owned(),
         stage.join("inject-custom.dll"),
         game.join("bin64_SteamRetail/inject.dll"),
     ));
+    let status = json(&stage.join("stage_status.json"))?;
+    if status["signer"].as_str() == Some("official-2025") {
+        expected.push((
+            "bin64_SteamRetail/dbghelp.dll".to_owned(),
+            stage.join("dbghelp-custom.dll"),
+            game.join("bin64_SteamRetail/dbghelp.dll"),
+        ));
+    }
     let records = journal["files"]
         .as_array()
         .ok_or("Recovery journal missing files")?;
@@ -1201,7 +1295,12 @@ pub fn refresh_prepared_offline_cache(stage: &Path, swap: &Path) -> Result<usize
             })?;
         }
     }
+    // The prior selection's disposable ready files are now retired. Empty
+    // the journal only after confirming there are no live original backups,
+    // so the next active profile can publish a smaller ordered swap list.
     journal["phase"] = Value::String("restored".into());
+    journal["files"] = Value::Array(Vec::new());
+    journal["count"] = Value::from(0u64);
     let mut file = tempfile::NamedTempFile::new_in(&swap).map_err(|e| e.to_string())?;
     serde_json::to_writer_pretty(&mut file, &journal).map_err(|e| e.to_string())?;
     file.as_file().sync_all().map_err(|e| e.to_string())?;
@@ -1429,8 +1528,11 @@ pub fn launch_direct_offline_game(
         .ok_or("Direct launch returned success without a confirmed game PID; check restore watchdog before another launch.")?;
     if !marker.contains(" swap_complete=true")
         || !marker.contains(" services_ready=true trace_loaded=true hooks_ready=true")
+        || !marker.contains(" window_visible=true")
     {
-        return Err("Direct launch did not confirm its completed file swap.".into());
+        return Err(
+            "Direct launch did not confirm a visible game window and completed file swap.".into(),
+        );
     }
     let pid = marker
         .split_whitespace()
@@ -1531,10 +1633,10 @@ pub fn launch_direct_clean_game(
         .find_map(|line| line.strip_prefix("DIRECT_GAME_LAUNCHED pid="))
         .ok_or("Direct clean startup did not confirm a live game process")?;
     if !marker
-        .contains(" swap_complete=false services_ready=true trace_loaded=true hooks_ready=true")
+        .contains(" swap_complete=false services_ready=true trace_loaded=true hooks_ready=true window_visible=true")
     {
         return Err(
-            "Direct clean startup did not verify its Steam/profile services and Stage2Trace module"
+            "Direct clean startup did not verify a visible game window and its Steam/profile services and Stage2Trace module"
                 .into(),
         );
     }
@@ -2022,6 +2124,13 @@ mod tests {
         fs::create_dir(&swap).unwrap();
         fs::write(stage.join("paks/Game/libs.pak"), b"signed staged archive").unwrap();
         fs::write(stage.join("inject-custom.dll"), b"stage hook bytes").unwrap();
+        // Recovery validation also checks signer metadata when deciding
+        // whether the optional official dbghelp.dll belongs in the journal.
+        fs::write(
+            stage.join("stage_status.json"),
+            br#"{"signer":"local-custom"}"#,
+        )
+        .unwrap();
         fs::write(
             stage.join("rekey_plan.json"),
             serde_json::to_vec(&serde_json::json!({

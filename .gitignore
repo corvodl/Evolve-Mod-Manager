@@ -26,3 +26,13 @@
 *.skin
 *.pem
 *.key
+# Developer-provided tools and private signing materials stay local.
+/evolve_tool_stage2/
+/official-stage2-tools/
+/tools-local/
+/secrets/
+*.p12
+*.pfx
+*.p8
+evolve_tool_stage2*.zip
+evolve_tool.exe

@@ -25,6 +25,9 @@ pub struct Preferences {
     pub appearance_mode: String,
     /// Optional native Evolve Legacy styling; existing Modern UI remains default.
     pub ui_theme: String,
+    /// Keep Evolve artwork and translucent Home panels on by default.
+    /// Turning it off restores opaque Home surfaces, independent of theme.
+    pub show_home_background: bool,
     pub appearance_colors: BTreeMap<String, String>,
     pub theme_presets: BTreeMap<String, BTreeMap<String, String>>,
     pub font_family: String,
@@ -37,7 +40,15 @@ pub struct Preferences {
     pub game_installation: String,
     /// Normal Modded Evolve launcher EXE selected by the user.
     pub client_executable: String,
-    /// Direct Launch (default) or Client Launch, used for clean and modded Play.
+    /// The separately installed test client and test game are not production.
+    pub test_client_executable: String,
+    pub test_game_installation: String,
+    /// Opt in to the separate test pair for both Play actions.
+    pub play_through_test_client: bool,
+    /// Test-only stage and rollback journal, never shared with production.
+    pub test_stage: String,
+    pub test_swap: String,
+    /// Client Launch (full relay/profile/overlay) is default; Direct is opt-in testing.
     pub game_launch_mode: String,
     pub stage: String,
     pub swap: String,
@@ -67,6 +78,16 @@ pub struct Preferences {
     /// Separate opt-in for prerelease Nightly builds.
     pub nightly_updates: bool,
     pub automatic_update_checks: bool,
+    /// Non-sensitive user-selected Developer overlay hotkey presets (0=disabled).
+    pub developer_hotkeys: [u8; 9],
+    pub discord_presence_enabled: bool,
+    pub discord_application_id: String,
+    pub discord_show_game: bool,
+    pub discord_show_manager: bool,
+    pub discord_show_character: bool,
+    pub discord_show_stats: bool,
+    pub discord_show_profile: bool,
+    pub discord_minimal: bool,
     pub create_desktop_shortcut: bool,
     /// Retain older application settings that the Rust interface does not
     /// interpret yet. Existing user choices survive a Save Settings action.
@@ -91,16 +112,22 @@ impl Default for Preferences {
             saved_zoom: 1.0,
             appearance_mode: "Dark".into(),
             ui_theme: "Modern".into(),
+            show_home_background: true,
             appearance_colors: BTreeMap::new(),
             theme_presets: BTreeMap::new(),
             font_family: "Default".into(),
             reduce_motion: false,
-            keep_original_snapshots: true,
+            keep_original_snapshots: false,
             show_activity_on_tasks: true,
             crash_logging_enabled: true,
             game_installation: String::new(),
             client_executable: String::new(),
-            game_launch_mode: "Direct Launch".into(),
+            test_client_executable: String::new(),
+            test_game_installation: String::new(),
+            play_through_test_client: false,
+            test_stage: String::new(),
+            test_swap: String::new(),
+            game_launch_mode: "Client Launch".into(),
             stage: String::new(),
             swap: String::new(),
             projects: String::new(),
@@ -121,6 +148,15 @@ impl Default for Preferences {
             experimental_updates: false,
             nightly_updates: env!("CARGO_PKG_VERSION").contains("-nightly."),
             automatic_update_checks: true,
+            developer_hotkeys: [0; 9],
+            discord_presence_enabled: false,
+            discord_application_id: String::new(),
+            discord_show_game: true,
+            discord_show_manager: true,
+            discord_show_character: true,
+            discord_show_stats: false,
+            discord_show_profile: false,
+            discord_minimal: false,
             create_desktop_shortcut: false,
             previous_options: BTreeMap::new(),
         }
@@ -232,7 +268,7 @@ impl Preferences {
             self.ui_density = "Comfortable".into();
         }
         if !["Direct Launch", "Client Launch"].contains(&self.game_launch_mode.as_str()) {
-            self.game_launch_mode = "Direct Launch".into();
+            self.game_launch_mode = "Client Launch".into();
         }
         if !["Right", "Left"].contains(&self.file_explorer_side.as_str()) {
             self.file_explorer_side = "Left".into();
@@ -261,12 +297,23 @@ impl Preferences {
         if !["Dark", "Light"].contains(&self.appearance_mode.as_str()) {
             self.appearance_mode = "Dark".into();
         }
+        if !self.discord_application_id.is_empty()
+            && (self.discord_application_id.len() < 15
+                || self.discord_application_id.len() > 25
+                || !self.discord_application_id.bytes().all(|byte| byte.is_ascii_digit()))
+        {
+            return Err(SettingsError::InvalidValue);
+        }
         if self.font_family.len() > 120 || self.archive_label.len() > 200 {
             return Err(SettingsError::InvalidValue);
         }
         for path in [
             &self.stage,
             &self.swap,
+            &self.test_game_installation,
+            &self.test_client_executable,
+            &self.test_stage,
+            &self.test_swap,
             &self.projects,
             &self.game_storage_root,
             &self.current_workspace,
@@ -398,6 +445,32 @@ mod tests {
     }
 
     #[test]
+    fn test_environment_paths_and_choice_roundtrip_without_changing_production() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let original = Preferences::default();
+        assert!(!original.play_through_test_client);
+        let mut prefs = original.clone();
+        prefs.test_game_installation = "C:/EvolveTest/Game".into();
+        prefs.test_client_executable = "C:/EvolveTest/TestClient.exe".into();
+        prefs.test_stage = "C:/EvolveTest/Stage".into();
+        prefs.test_swap = "C:/EvolveTest/Swap".into();
+        prefs.play_through_test_client = true;
+        save_to(&path, &prefs).unwrap();
+        let restored = load_from(&path).unwrap();
+        assert!(restored.play_through_test_client);
+        assert_eq!(restored.test_game_installation, "C:/EvolveTest/Game");
+        assert_eq!(
+            restored.test_client_executable,
+            "C:/EvolveTest/TestClient.exe"
+        );
+        assert_eq!(restored.test_stage, "C:/EvolveTest/Stage");
+        assert_eq!(restored.test_swap, "C:/EvolveTest/Swap");
+        assert_eq!(restored.game_installation, original.game_installation);
+        assert_eq!(restored.client_executable, original.client_executable);
+    }
+
+    #[test]
     fn accent_presets_change_only_accent_roles_and_are_valid() {
         let mut prefs = Preferences::default();
         prefs
@@ -423,21 +496,21 @@ mod tests {
     }
 
     #[test]
-    fn direct_launch_defaults_for_existing_settings_and_client_choice_persists() {
-        assert_eq!(Preferences::default().game_launch_mode, "Direct Launch");
+    fn full_client_defaults_without_overwriting_explicit_direct_choice() {
+        assert_eq!(Preferences::default().game_launch_mode, "Client Launch");
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("settings.json");
         fs::write(&file, r#"{"ui_density":"Compact"}"#).unwrap();
-        assert_eq!(load_from(&file).unwrap().game_launch_mode, "Direct Launch");
+        assert_eq!(load_from(&file).unwrap().game_launch_mode, "Client Launch");
         let mut p = Preferences {
-            game_launch_mode: "Client Launch".into(),
+            game_launch_mode: "Direct Launch".into(),
             ..Preferences::default()
         };
         save_to(&file, &p).unwrap();
-        assert_eq!(load_from(&file).unwrap().game_launch_mode, "Client Launch");
+        assert_eq!(load_from(&file).unwrap().game_launch_mode, "Direct Launch");
         p.game_launch_mode = "invalid".into();
         p.validate().unwrap();
-        assert_eq!(p.game_launch_mode, "Direct Launch");
+        assert_eq!(p.game_launch_mode, "Client Launch");
     }
 
     #[test]
@@ -582,6 +655,20 @@ mod tests {
         assert!(save_to(&path, &invalid).is_err());
         assert_eq!(fs::read(&path).unwrap(), original);
     }
+    #[test]
+    fn home_background_setting_defaults_on_and_survives_roundtrip() {
+        let old: Preferences = serde_json::from_str(r#"{"ui_theme":"Modern"}"#).unwrap();
+        assert!(old.show_home_background);
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        let mut prefs = old;
+        prefs.show_home_background = false;
+        save_to(&file, &prefs).unwrap();
+        let loaded = load_from(&file).unwrap();
+        assert!(!loaded.show_home_background);
+        assert_eq!(loaded.ui_theme, "Modern");
+    }
+
     #[test]
     fn crash_diagnostics_default_enabled_even_with_old_preferences() {
         let json = r#"{"show_activity_on_tasks":false}"#;

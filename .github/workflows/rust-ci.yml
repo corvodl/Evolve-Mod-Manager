@@ -23,6 +23,8 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Verify original Home banner and release packaging paths
+        run: python3 scripts/test_home_banner_asset.py
       - name: Validate isolated Ruffle Web control and source menu scripts
         run: node --check crates/evolve-desktop/src/gfx_live_player.js
       - name: Verify original GFX hover input routes over background video
@@ -41,6 +43,10 @@ jobs:
         run: python3 -m unittest discover -s crates/evolve-desktop/launcher_support -p 'test_direct_game_launch.py'
       - name: Verify update-tolerant Stage2 runtime interface contract
         run: python3 -m unittest discover -s crates/evolve-desktop/launcher_support -p 'test_stage2_runtime_contract.py'
+      - name: Verify profile-only PAK swap selection and fail-closed manifests
+        run: python3 -m unittest discover -s crates/evolve-desktop/launcher_support -p 'test_sparse_swap.py'
+      - name: Verify stale prepared profile PAKs are safely recycled
+        run: python3 -m unittest discover -s crates/evolve-desktop/launcher_support -p 'test_prepared_profile_cache.py'
       - name: Verify guarded original game backup restoration
         run: python3 -m unittest discover -s crates/evolve-desktop/launcher_support -p 'test_reusable_restore.py'
       - name: Verify journal-independent private manager backup recovery
@@ -109,7 +115,7 @@ jobs:
         run: |
           $output = "dist/EvolveModManager-Rust-Preview"
           New-Item -ItemType Directory -Path $output -Force | Out-Null
-          foreach ($binary in @("evolve-mod-manager.exe", "evolve-cli.exe")) {
+          foreach ($binary in @("evolve-mod-manager.exe", "evolve-cli.exe", "evolve-teleport-overlay.exe")) {
             $source = Join-Path "target/release" $binary
             if (!(Test-Path $source)) { throw "Missing required binary: $binary" }
             Copy-Item $source (Join-Path $output $binary)

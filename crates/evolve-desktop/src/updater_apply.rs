@@ -19,11 +19,18 @@ use std::time::Duration;
 
 const HELPER_FLAG: &str = "--apply-verified-evolve-update";
 const MAX_ZIP_CONTENTS: u64 = 256 * 1024 * 1024;
-const PORTABLE_MEMBERS: [&str; 4] = [
+const PORTABLE_MEMBERS: [&str; 11] = [
     "evolve-mod-manager.exe",
     "evolve-cli.exe",
     "hunt.ico",
     "README.md",
+    "third_party/OfficialStage2/evolve_tool.exe",
+    "third_party/OfficialStage2/crypto.dll",
+    "third_party/OfficialStage2/inject/inject.dll",
+    "third_party/OfficialStage2/inject/dbghelp.dll",
+    "third_party/OfficialStage2/inject/RSAKeyData.bin",
+    "third_party/OfficialStage2/README.txt",
+    "third_party/OfficialStage2/LICENSE-BOUNCYCASTLE.html",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -188,6 +195,24 @@ fn verify_portable_contents<R: Read + io::Seek>(
     Ok(())
 }
 
+// Portable tools live in a nested directory. Reject any linked/non-directory
+// ancestor before starting an update, including a user-created link that
+// points outside the application folder.
+fn check_portable_member_parents(root: &Path, member: &str) -> Result<(), UpdateError> {
+    let mut parent = root.to_path_buf();
+    let components: Vec<_> = Path::new(member).components().collect();
+    for part in components.iter().take(components.len().saturating_sub(1)) {
+        parent.push(part.as_os_str());
+        match fs::symlink_metadata(&parent) {
+            Ok(info) if info.file_type().is_dir() && !info.file_type().is_symlink() => (),
+            Ok(_) => return Err(UpdateError::Invalid("unsafe portable subdirectory".into())),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => (),
+            Err(e) => return Err(UpdateError::Io(e)),
+        }
+    }
+    Ok(())
+}
+
 fn apply_portable_update(plan: &PreparedUpdate) -> Result<(), UpdateError> {
     let folder = plan
         .executable
@@ -202,21 +227,21 @@ fn apply_portable_update(plan: &PreparedUpdate) -> Result<(), UpdateError> {
     let staging = tempfile::Builder::new()
         .prefix(".evolve-portable-update-")
         .tempdir_in(folder)?;
-    for name in PORTABLE_MEMBERS {
+    for (i, name) in PORTABLE_MEMBERS.iter().enumerate() {
         let mut from = archive
             .by_name(name)
             .map_err(|e| UpdateError::Invalid(format!("missing ZIP member: {e}")))?;
-        let mut to = File::create(staging.path().join(format!("new-{name}")))?;
+        let mut to = File::create(staging.path().join(format!("new-{i}")))?;
         let copied = io::copy(&mut (&mut from).take(MAX_ZIP_CONTENTS + 1), &mut to)?;
         if copied != from.size() || copied > MAX_ZIP_CONTENTS {
             return Err(UpdateError::TooLarge);
         }
         to.sync_all()?;
     }
-    // Validate every destination BEFORE modifying even the first one.
-    // A symlink or unexpected directory must not leave a partially updated app.
+    // Validate every destination and ancestor BEFORE modifying a single file.
     let mut destinations = Vec::new();
     for name in PORTABLE_MEMBERS {
+        check_portable_member_parents(folder, name)?;
         let target = folder.join(name);
         let existed = match fs::symlink_metadata(&target) {
             Ok(info) if info.file_type().is_file() => true,
@@ -226,13 +251,30 @@ fn apply_portable_update(plan: &PreparedUpdate) -> Result<(), UpdateError> {
         };
         destinations.push((name, existed));
     }
-    let mut replaced: Vec<(&str, bool)> = Vec::new();
-    for (name, previously_existed) in destinations {
+    // Create only the preflighted, fixed package directories. Recheck
+    // canonical placement after creation in case a linked path was introduced.
+    let canonical_root = fs::canonicalize(folder)?;
+    for (name, _) in &destinations {
+        let parent = folder
+            .join(name)
+            .parent()
+            .ok_or_else(|| UpdateError::Invalid("portable target has no parent".into()))?
+            .to_path_buf();
+        fs::create_dir_all(&parent)?;
+        check_portable_member_parents(folder, name)?;
+        if !fs::canonicalize(parent)?.starts_with(&canonical_root) {
+            return Err(UpdateError::Invalid(
+                "portable target escaped install root".into(),
+            ));
+        }
+    }
+    let mut replaced: Vec<(usize, &str, bool)> = Vec::new();
+    for (i, (name, previously_existed)) in destinations.into_iter().enumerate() {
         let destination = folder.join(name);
-        let backup = staging.path().join(format!("old-{name}"));
-        let replacement = staging.path().join(format!("new-{name}"));
+        let backup = staging.path().join(format!("old-{i}"));
+        let replacement = staging.path().join(format!("new-{i}"));
         // Even failure to MOVE the original into backup must roll back
-        // earlier members. No early return is allowed after the first write.
+        // earlier members. No early return after the first write.
         let replaced_current = (|| -> io::Result<()> {
             if previously_existed {
                 fs::rename(&destination, &backup)?;
@@ -244,9 +286,9 @@ fn apply_portable_update(plan: &PreparedUpdate) -> Result<(), UpdateError> {
             if previously_existed && backup.exists() {
                 restore_failed |= fs::rename(&backup, &destination).is_err();
             }
-            for (previous, had_backup) in replaced.iter().rev() {
+            for (index, previous, had_backup) in replaced.iter().rev() {
                 let current = folder.join(previous);
-                let saved = staging.path().join(format!("old-{previous}"));
+                let saved = staging.path().join(format!("old-{index}"));
                 restore_failed |= fs::remove_file(&current).is_err();
                 if *had_backup {
                     restore_failed |= fs::rename(&saved, &current).is_err();
@@ -261,7 +303,7 @@ fn apply_portable_update(plan: &PreparedUpdate) -> Result<(), UpdateError> {
             }
             return Err(UpdateError::Io(err));
         }
-        replaced.push((name, previously_existed));
+        replaced.push((i, name, previously_existed));
     }
     Ok(())
 }
@@ -451,6 +493,12 @@ mod tests {
         assert!(verify_portable_contents(&mut archive).is_err());
     }
 
+    fn mock_member(root: &Path, name: &str, contents: &[u8]) {
+        let path = root.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, contents).unwrap();
+    }
+
     fn make_test_portable_zip(path: &Path) {
         let mut writer = zip::ZipWriter::new(File::create(path).unwrap());
         for name in PORTABLE_MEMBERS {
@@ -484,7 +532,7 @@ mod tests {
     fn portable_in_place_update_preserves_unrelated_files() {
         let dir = tempfile::tempdir().unwrap();
         for name in PORTABLE_MEMBERS {
-            fs::write(dir.path().join(name), format!("old-{name}")).unwrap();
+            mock_member(dir.path(), name, format!("old-{name}").as_bytes());
         }
         fs::write(dir.path().join("settings.json"), b"keep settings").unwrap();
         let plan = mock_plan(dir.path());
@@ -508,7 +556,7 @@ mod tests {
             if name == "evolve-cli.exe" {
                 fs::create_dir(dir.path().join(name)).unwrap();
             } else {
-                fs::write(dir.path().join(name), format!("old-{name}")).unwrap();
+                mock_member(dir.path(), name, format!("old-{name}").as_bytes());
             }
         }
         let plan = mock_plan(dir.path());
@@ -600,6 +648,39 @@ mod tests {
             previous_update_failure(root.path()).as_deref(),
             Some("setup failed")
         );
+    }
+
+    #[test]
+    fn official_nested_portable_files_cannot_escape_through_linked_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outside.path(), dir.path().join("third_party")).unwrap();
+            assert!(
+                check_portable_member_parents(
+                    dir.path(),
+                    "third_party/OfficialStage2/evolve_tool.exe"
+                )
+                .is_err()
+            );
+        }
+        #[cfg(windows)]
+        {
+            // Symlink creation may require Developer Mode. If unsupported,
+            // the portable path contract is still exercised by other tests.
+            if std::os::windows::fs::symlink_dir(outside.path(), dir.path().join("third_party"))
+                .is_ok()
+            {
+                assert!(
+                    check_portable_member_parents(
+                        dir.path(),
+                        "third_party/OfficialStage2/evolve_tool.exe"
+                    )
+                    .is_err()
+                );
+            }
+        }
     }
 
     #[test]

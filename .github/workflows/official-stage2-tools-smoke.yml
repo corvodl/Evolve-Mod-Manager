@@ -1,0 +1,64 @@
+name: Verify official Stage 2 installer bundle
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/official-stage2-tools-smoke.yml
+      - scripts/package-official-stage2-tools.ps1
+      - .github/workflows/nightly.yml
+      - installer/EvolveModManager.iss
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-official-runtime:
+    # Never supply the private-repository access token to a fork or a different PR.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == 'corvodl/Evolve-Mod-Manager' && github.head_ref == 'feature/official-stage2-toolchain-safety'
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch developer tools and verify exact runtime hashes
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.EVOLVE_STAGE2_TOOLS_TOKEN }}
+          GIT_TERMINAL_PROMPT: 0
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+            throw 'Missing EVOLVE_STAGE2_TOOLS_TOKEN Actions secret.'
+          }
+          $folder = Join-Path $env:RUNNER_TEMP 'private-official-stage2'
+          & gh repo clone corvodl/Evolve-Official-Tools $folder -- --depth 1 --filter=blob:none
+          if ($LASTEXITCODE -ne 0) { throw 'Private official tools clone failed; verify repository Contents:Read permission.' }
+          ./scripts/package-official-stage2-tools.ps1 -SourceDirectory (Join-Path $folder 'evolve_tool_stage2')
+          Remove-Item -LiteralPath $folder -Recurse -Force
+          Write-Host 'Private tools fetched and every required runtime component SHA-256 verified.'
+      - name: Check installer includes official tools
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force 'target/release' | Out-Null
+          Set-Content -Path 'target/release/evolve-mod-manager.exe' -Value 'CI placeholder only'
+          Set-Content -Path 'target/release/evolve-cli.exe' -Value 'CI placeholder only'
+          # All optional tools are packaged by a separate job. The installer
+          # references their paths unconditionally, so provide inert fixtures
+          # here rather than downloading unrelated vendors twice.
+          foreach ($component in @('FFDec', 'Ruffle', 'RuffleWeb', 'vgmstream', 'oggvorbis2fsb5')) {
+            $placeholder = Join-Path "dist/third_party/$component" 'CI-placeholder.txt'
+            New-Item -ItemType Directory -Force (Split-Path -Parent $placeholder) | Out-Null
+            Set-Content -LiteralPath $placeholder -Value 'CI fixture, not a redistributable tool'
+          }
+          Set-Content -Path 'dist/third_party/THIRD_PARTY_TOOLS.txt' -Value 'CI fixture'
+          $compiler = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Inno Setup 6/ISCC.exe'
+          if (!(Test-Path $compiler)) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot install Inno Setup' }
+          }
+          if (!(Test-Path $compiler)) { throw 'Inno Setup unavailable' }
+          & $compiler '/DAppVersion=0.1.0-ci-official' 'installer/EvolveModManager.iss'
+          if ($LASTEXITCODE -ne 0) { throw 'Installer compile with the official runtime failed' }
+          $output = 'dist/EvolveModManager-Setup-0.1.0-ci-official.exe'
+          if (!(Test-Path $output -PathType Leaf)) { throw 'Verified official installer not produced' }
+          # Do not upload this CI-only installer: its app binaries are placeholders.
+          Write-Host 'Official runtime successfully included in the installer.'

@@ -173,7 +173,7 @@ pub fn create_project(
         .ok()
         .is_some_and(|(source, digest, changed)| {
             !changed
-                && modding_keys::signing_keys(stage).is_ok()
+                && modding_keys::public_key(stage).is_ok()
                 && matches!(exact_planned_target(stage, &source, &digest), Ok(Some(_)))
         });
     if !ready_stage {
@@ -224,10 +224,11 @@ pub fn create_project(
     if basename != pak.name {
         return Err("Source archive basename changed after import".into());
     }
-    let keys = modding_keys::signing_keys(stage)?;
+    let official = crate::official_stage2_tools::for_stage(stage)?;
+    let public = modding_keys::public_key(stage)?;
     let planned = exact_planned_target(stage, &source, &original_sha)?;
     let (staged, launchable) = if let Some(path) = planned {
-        inspect_signed_pak(&path, &keys.public, &authenticated_name)
+        inspect_signed_pak(&path, &public, &authenticated_name)
             .map_err(|e| format!("Existing signed stage is invalid: {e}"))?;
         (path, true)
     } else {
@@ -253,7 +254,7 @@ pub fn create_project(
                         .into(),
                 );
             }
-            inspect_signed_pak(&dest, &keys.public, &authenticated_name)
+            inspect_signed_pak(&dest, &public, &authenticated_name)
                 .map_err(|e| format!("Staged imported PAK failed verification: {e}"))?;
         } else {
             let temp = tempfile::Builder::new()
@@ -261,16 +262,23 @@ pub fn create_project(
                 .tempdir_in(&root)
                 .map_err(|e| e.to_string())?;
             let authored = temp.path().join(&basename);
-            resign_signed_pak_with_original_name(
-                &source,
-                original_key,
-                &keys.private,
-                &keys.public,
-                &authenticated_name,
-                &basename,
-                &authored,
-            )
-            .map_err(|e| format!("Could not sign isolated editing copy: {e}"))?;
+            if let Some(tools) = official.as_ref() {
+                tools
+                    .rekey_copy(&source, &authenticated_name, &authored)
+                    .map_err(|e| format!("Official imported PAK could not be converted: {e}"))?;
+            } else {
+                let keys = modding_keys::signing_keys(stage)?;
+                resign_signed_pak_with_original_name(
+                    &source,
+                    original_key,
+                    &keys.private,
+                    &keys.public,
+                    &authenticated_name,
+                    &basename,
+                    &authored,
+                )
+                .map_err(|e| format!("Could not sign isolated editing copy: {e}"))?;
+            }
             if sha(&source)? != original_sha {
                 return Err(
                     "Source changed while preparing staged copy; nothing was published".into(),

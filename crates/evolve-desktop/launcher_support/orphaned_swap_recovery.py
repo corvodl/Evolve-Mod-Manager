@@ -52,9 +52,9 @@ def plan_recovery(game: Path) -> list[RecoveryItem]:
     for backup in game.rglob('*' + SUFFIX):
         _require_safe_file(game, backup)
         target = Path(str(backup)[:-len(SUFFIX)])
-        # The original swap only backs up PAKs and the 4096-byte injector shim.
+        # Official stages also own the original dbghelp.dll backup.
         if target.suffix.casefold() != '.pak' and (
-                target.name.casefold() != 'inject.dll' or
+                target.name.casefold() not in ('inject.dll', 'dbghelp.dll') or
                 target.parent != game / 'bin64_SteamRetail'):
             raise ValueError('Unexpected backup type: ' + str(backup))
         if (target.name.casefold() == 'inject.dll' and backup.stat().st_size != 4096):

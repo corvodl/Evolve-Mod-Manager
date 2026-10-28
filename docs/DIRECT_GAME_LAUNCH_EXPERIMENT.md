@@ -1,3 +1,29 @@
+
+## Separate Evolve Test Environment
+
+Settings → Game Storage includes independent **Test Client executable** and
+**Test Game root** selectors and a **Play through Test Client** toggle. This
+explicit option affects both Play actions. The test launcher is always run via
+Client Launch, never the experimental Direct Launch smoke host.
+
+- Test Client can have an executable name other than
+  `ModdedEvolveLauncher.exe`; the selected file must be a real .exe.
+- Test Game needs its own `bin64_SteamRetail/Evolve.exe`. This selection
+  intentionally does **not** require the production injector file inventory;
+  the test build and production build are distinct.
+- For **modded** Test Client play, configure or create a separate Test Game
+  signing stage and restore/swap folder. A stage created for production cannot
+  be reused against the Test Game. The current mod builder still requires the
+  source Test Game PAKs to be in a supported signed/ZIP layout for its
+  reversible, verified preparation pipeline; the test client not checking
+  expected files does not eliminate that build-time requirement.
+- For **clean** Test Client play, signing stage setup is not needed. The chosen
+  Test Client must itself be configured to start the selected Test Game; the
+  manager does not rewrite proprietary client configuration, credentials or
+  relay settings.
+- Switching the toggle off selects unchanged production game/client and stage
+  paths; neither installation's originals or recovery journals are deleted.
+
 # Experimental Direct Launch enabled for live testing (October 27, 2026)
 
 **Direct Launch is enabled for real Windows gameplay testing.** The former unconditional `require_ready()` error was removed; the Rust preflight checks only the installed game and client runtime files. The worker then attempts the actual Stage 2 service startup, verifies the installed game-side SteamCompat/Stage2Trace DLLs and catalog, and launches Evolve. Missing dependencies or failed service startup produce diagnostic errors, not an arbitrary feature lock. Client Launch remains selectable as a fallback.
@@ -23,14 +49,14 @@ The executable-file preflight no longer substitutes for runtime readiness. The a
 
 ## Selected launch mode
 
-**Direct Launch is the default**, including for settings files created before the launch mode existed. In **Settings → Game Storage → Set Up Manager**, choose Direct Launch or Client Launch. The preference is saved when selected and is used by both Home Play buttons:
+**Client Launch is the default for new or unspecified settings** because it runs the original launcher and preserves the real relay, authenticated profile and Shift+Tab friends overlay. An explicitly saved Direct Launch preference remains unchanged for testing. In **Settings → Game Storage → Set Up Manager**, choose Client Launch or experimental Direct Launch. Both Home Play buttons use the selection:
 
-| Action | Direct Launch (default) | Client Launch |
+| Action | Direct Launch (experimental) | Client Launch (default) |
 | --- | --- | --- |
 | Play without Mods | Verify the game, refuse unresolved original backups, restore normal manager network policy and start `Evolve.exe` as the interactive standard user with original game PAKs | Launch normal `ModdedEvolveLauncher.exe` as the interactive standard user, keeping its repair and profile services |
 | Play with Mods | Build/sign enabled projects, prepare and verify the reversible journal, swap custom-signed PAKs and `inject.dll` **before** process creation, arm independent rollback watchdog, then start `Evolve.exe` directly | Keep established Frida `CreateProcessW` interception and client-owned process launch, signed PAK swap, and watchdog |
 
-The Direct Launch button is no longer separate. Both Play buttons use the setting. Switching to Client Launch never erases signing-stage backups or rewrites an active journal.
+The Direct Launch button is no longer separate. Both Play buttons use the setting. Switching to Client Launch never erases signing-stage backups or rewrites an active journal. The shipped client's `--stage2-smoke --no-launch --keep` path does not initialize the normal launcher relay control, authenticated social profile and overlay endpoint, so Direct Launch is not the recommended online route. The client-owned CreateProcessW interception remains available to swap only enabled-profile PAKs. When it sees the game being created it records a read-only 2000/2002 loopback connectivity snapshot without copying, creating, or logging session credentials.
 
 Direct mode does not require a client executable just to save the game path, build a new signing stage, or run either Play action. Existing Client Launch setups remain supported. Direct startup uses the verified Explorer medium-integrity desktop token (not the manager's elevated administrator token), game binary working directory and the three Steam app-ID environment fields logged by the client. Direct mode uses a separate `direct_standard_user_launch.py` helper rather than overwriting any existing client token broker.
 

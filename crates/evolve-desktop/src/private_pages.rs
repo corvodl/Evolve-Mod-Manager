@@ -1,8 +1,8 @@
 //! Private-manager-aligned landing, documentation and informational pages.
 //! Home deliberately does not enumerate PAKs or scan the user's installation.
 use super::{Message, Page, State};
-use crate::design;
-use iced::widget::{button, column, container, image, row, scrollable, svg, text};
+use crate::{design, developer_hotkeys};
+use iced::widget::{button, column, container, image, row, scrollable, stack, svg, text, tooltip};
 use iced::{Background, Border, Element, Fill, Length};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -55,6 +55,56 @@ fn surface<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Contai
                 radius: if design::is_legacy(theme) { 1.0 } else { 10.0 }.into(),
             },
             ..container::Style::default()
+        })
+}
+
+/// Translucent surfaces belong to Home only. Other pages retain opaque
+/// panels because the artwork is exclusive to the Home view.
+fn home_surface<'a>(
+    content: impl Into<Element<'a, Message>>,
+    wallpaper: bool,
+) -> iced::widget::Container<'a, Message> {
+    surface(content).style(move |theme| {
+        let mut backdrop = design::surface(theme);
+        backdrop.a = if wallpaper { 0.88 } else { 1.0 };
+        container::Style {
+            background: Some(Background::Color(backdrop)),
+            border: Border {
+                color: design::border(theme),
+                width: 1.0,
+                radius: if design::is_legacy(theme) { 1.0 } else { 10.0 }.into(),
+            },
+            ..container::Style::default()
+        }
+    })
+}
+
+/// The launch actions are the most important Home controls. Keep the panel
+/// compact, but distinguish it from news and onboarding with a restrained
+/// Evolve-red border and a very slight tint, without sacrificing contrast.
+fn home_play_surface<'a>(
+    content: impl Into<Element<'a, Message>>,
+    wallpaper: bool,
+) -> iced::widget::Container<'a, Message> {
+    container(content)
+        .width(Fill)
+        .padding([13, 18])
+        .style(move |theme| {
+            let mut backdrop = design::surface(theme);
+            let accent = theme.palette().primary;
+            backdrop.r = backdrop.r * 0.94 + accent.r * 0.06;
+            backdrop.g = backdrop.g * 0.94 + accent.g * 0.06;
+            backdrop.b = backdrop.b * 0.94 + accent.b * 0.06;
+            backdrop.a = if wallpaper { 0.91 } else { 1.0 };
+            container::Style {
+                background: Some(Background::Color(backdrop)),
+                border: Border {
+                    color: accent,
+                    width: 1.25,
+                    radius: if design::is_legacy(theme) { 1.0 } else { 10.0 }.into(),
+                },
+                ..container::Style::default()
+            }
         })
 }
 
@@ -123,68 +173,112 @@ fn tile(name: &'static str, description: &'static str, page: Page) -> Element<'s
     .into()
 }
 
-fn status_card<'a>(label: &'static str, value: String) -> Element<'a, Message> {
-    surface(
+fn status_card<'a>(label: &'static str, value: String, wallpaper: bool) -> Element<'a, Message> {
+    home_surface(
         column![
             text(label).size(13),
             text(value).size(12).style(design::muted),
         ]
         .spacing(8),
+        wallpaper,
     )
     .into()
 }
 
-fn latest_announcement(state: &State) -> Element<'_, Message> {
+/// The long +build identifier remains available on hover, but never
+/// dominates the narrow At a Glance column.
+fn short_client_version(version: &str) -> String {
+    if let Some((release, build)) = version.split_once('+') {
+        let prefix: String = build.chars().take(8).collect();
+        if !release.is_empty() && !prefix.is_empty() {
+            return format!("v{release} · {prefix}");
+        }
+    }
+    if version.chars().count() > 28 {
+        return format!("v{}…", version.chars().take(24).collect::<String>());
+    }
+    format!("v{version}")
+}
+
+fn client_version_card<'a>(version: Option<&str>, wallpaper: bool) -> Element<'a, Message> {
+    let value: Element<'a, Message> = if let Some(version) = version {
+        tooltip(
+            text(short_client_version(version))
+                .size(12)
+                .style(design::muted),
+            text(format!("Full client version: v{version}")).size(11),
+            tooltip::Position::Top,
+        )
+        .into()
+    } else {
+        text("Not detected").size(12).style(design::muted).into()
+    };
+    home_surface(
+        column![text("Client Version").size(13), value].spacing(8),
+        wallpaper,
+    )
+    .into()
+}
+
+/// A horizontal announcement preview uses the wide panel efficiently, with
+/// one small uncropped attachment alongside the excerpt. Full images and
+/// additional embeds remain available on What's New.
+fn latest_announcement(state: &State, wallpaper: bool) -> Element<'_, Message> {
     let news = &state.news;
-    let mut content = column![
-        row![
-            text("Announcements").size(19),
-            design::button("More in What's New")
-                .on_press(Message::Navigate(Page::WhatsNew))
-                .style(design::secondary),
-        ]
-        .spacing(12)
-        .align_y(iced::Center),
+    let heading = row![
+        text("Announcements").size(19),
+        design::button("More in What's New")
+            .on_press(Message::Navigate(Page::WhatsNew))
+            .style(design::secondary),
     ]
-    .spacing(10);
+    .spacing(12)
+    .align_y(iced::Center);
+
+    let mut details = column![].spacing(6).width(Fill);
+    let mut preview: Option<Element<'_, Message>> = None;
     if let Some(post) = news.cache.announcements.first() {
         if !post.title.is_empty() {
-            content = content.push(text(&post.title).size(18));
+            details = details.push(text(&post.title).size(16));
         }
-        content = content.push(
+        details = details.push(
             text(format!("{}  ·  {}", post.author, post.timestamp))
-                .size(12)
+                .size(11)
                 .style(design::muted),
         );
         for body in [&post.content, &post.description] {
             if !body.is_empty() {
-                let excerpt: String = body.chars().take(700).collect();
-                content = content.push(text(excerpt).size(13));
+                let excerpt: String = body.chars().take(260).collect();
+                details = details.push(text(excerpt).size(12));
             }
         }
-        for url in post.image_urls.iter().take(2) {
-            if !crate::whats_new::allowed_image_url(url) {
-                continue;
-            }
+        if let Some(url) = post
+            .image_urls
+            .iter()
+            .find(|url| crate::whats_new::allowed_image_url(url))
+        {
             if let Some(handle) = news.image_handles.get(url) {
-                content = content.push(
-                    image(handle.clone())
-                        .width(Fill)
-                        .height(Length::Fixed(260.0))
-                        .content_fit(iced::ContentFit::Contain),
+                preview = Some(
+                    container(
+                        image(handle.clone())
+                            .width(Length::Fixed(340.0))
+                            .height(Length::Fixed(125.0))
+                            .content_fit(iced::ContentFit::Contain),
+                    )
+                    .width(Length::Fixed(340.0))
+                    .into(),
                 );
             } else if news.image_failures.contains(url) {
-                content = content.push(
+                details = details.push(
                     text("Image preview unavailable")
                         .size(11)
                         .style(design::muted),
                 );
             } else {
-                content = content.push(text("Loading image…").size(11).style(design::muted));
+                details = details.push(text("Loading image…").size(11).style(design::muted));
             }
         }
     } else {
-        content = content.push(
+        details = details.push(
             text(if news.loading {
                 "Loading the latest announcement…"
             } else {
@@ -194,7 +288,18 @@ fn latest_announcement(state: &State) -> Element<'_, Message> {
             .style(design::muted),
         );
     }
-    surface(content).into()
+
+    let body: Element<'_, Message> = if let Some(preview) = preview {
+        row![details, preview]
+            .spacing(16)
+            .align_y(iced::Center)
+            .into()
+    } else {
+        details.into()
+    };
+    home_surface(column![heading, body].spacing(7), wallpaper)
+        .padding([12, 15])
+        .into()
 }
 
 /// The optional Home art is distinct from animated progress indicators.
@@ -207,19 +312,29 @@ fn home_banner() -> Option<iced::widget::image::Handle> {
 }
 
 fn load_home_banner() -> Option<iced::widget::image::Handle> {
-    let base = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    let candidates = [
-        base.join("assets").join("default_loading.dds"),
-        base.join("default_loading.dds"),
-    ];
-    for path in candidates {
-        if let Ok(data) = std::fs::read(&path)
-            && let Some((width, height, rgba)) = decode_home_dds(&data)
-        {
-            return Some(iced::widget::image::Handle::from_rgba(width, height, rgba));
+    // Let installers or portable users override the bundled image. A missing
+    // or corrupt external DDS should not make the Home artwork disappear.
+    if let Some(base) = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
+    {
+        let candidates = [
+            base.join("assets").join("default_loading.dds"),
+            base.join("default_loading.dds"),
+        ];
+        for path in candidates {
+            if let Ok(data) = std::fs::read(&path)
+                && let Some((width, height, rgba)) = decode_home_dds(&data)
+            {
+                return Some(iced::widget::image::Handle::from_rgba(width, height, rgba));
+            }
         }
     }
-    None
+    // Some updater paths only replace the executable. Embed the verified
+    // 1920×1080 original so the hero art survives those updates as well.
+    let bundled = include_bytes!("../../../assets/default_loading.dds");
+    let (width, height, rgba) = decode_home_dds(bundled)?;
+    Some(iced::widget::image::Handle::from_rgba(width, height, rgba))
 }
 
 /// Strictly bounded DXT1 (BC1) DDS support for the provided Home banner.
@@ -297,7 +412,7 @@ fn decode_home_dds(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
                     let out = (y * width as usize + x) * 4;
                     // Subdued artwork lets the controls and workbench remain legible.
                     for channel in 0..3 {
-                        rgba[out + channel] = (palette[index][channel] as u16 * 52 / 100) as u8;
+                        rgba[out + channel] = (palette[index][channel] as u16 * 59 / 100) as u8;
                     }
                     rgba[out + 3] = if c0 <= c1 && index == 3 { 0 } else { 255 };
                 }
@@ -308,6 +423,7 @@ fn decode_home_dds(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
 }
 
 pub(super) fn home(state: &State) -> Element<'_, Message> {
+    let wallpaper = state.preferences.show_home_background;
     let hero = if let Some(workspace) = super::home_recent_workspace(state) {
         let project = state.modding_projects.as_ref().and_then(|projects| {
             projects.iter().find(|project| {
@@ -333,7 +449,7 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                 )
             })
             .unwrap_or_else(|| "Last selected editable project".into());
-        surface(
+        home_surface(
             row![
                 column![
                     legacy_section_label(
@@ -368,48 +484,64 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
             ]
             .spacing(12)
             .align_y(iced::Center),
+            wallpaper,
         )
-        .padding([20, 24])
+        .padding([13, 18])
     } else {
-        surface(
+        let paths_selected = !state.preferences.game_installation.is_empty()
+            && !state.preferences.client_executable.is_empty();
+        let primary_action = if paths_selected {
+            design::button("Open Asset Library")
+                .on_press(Message::Navigate(Page::AssetLibrary))
+                .style(design::primary)
+        } else {
+            design::button("Getting Started")
+                .on_press(Message::Navigate(Page::Docs))
+                .style(design::primary)
+        };
+        let secondary_action = if paths_selected {
+            design::button("Getting Started").on_press(Message::Navigate(Page::Docs))
+        } else {
+            design::button("Open Asset Library").on_press(Message::Navigate(Page::AssetLibrary))
+        };
+        home_surface(
             row![
                 column![
-                    legacy_section_label("GETTING STARTED", state.preferences.ui_theme == "Evolve Legacy"),
-                text("Ready to make your first mod?").size(22),
-                text("Start by importing a PAK into the Asset Library, or follow Docs for a guided setup. Your last selected project will appear here once you have one.")
-                    .size(13)
+                    legacy_section_label(
+                        "GETTING STARTED",
+                        state.preferences.ui_theme == "Evolve Legacy"
+                    ),
+                    text(if paths_selected {
+                        "Create your first mod"
+                    } else {
+                        "Ready to make your first mod?"
+                    })
+                    .size(18),
+                    text(if paths_selected {
+                        "Import a PAK into the Asset Library to begin editing."
+                    } else {
+                        "Configure your paths in Settings, then import a PAK to begin."
+                    })
+                    .size(12)
                     .style(design::muted),
-                row![
-                    design::button("Getting Started")
-                        .on_press(Message::Navigate(Page::Docs))
-                        .style(design::primary),
-                    design::button("Open Asset Library")
-                        .on_press(Message::Navigate(Page::AssetLibrary)),
+                    row![primary_action, secondary_action].spacing(8),
                 ]
-                .spacing(9),
-                ]
-                .spacing(12)
+                .spacing(7)
                 .width(Fill),
             ]
             .spacing(12)
             .align_y(iced::Center),
+            wallpaper,
         )
-        .padding([20, 24])
-    };
-    let hero: Element<'_, Message> = if let Some(handle) = home_banner() {
-        // Full-width 16:9 hero, darkened so labels remain readable.
-        let picture = image(handle)
-            .width(Fill)
-            .height(Length::Fixed(280.0))
-            .content_fit(iced::ContentFit::Cover);
-        column![container(picture).width(Fill), hero,]
-            .spacing(0)
-            .into()
-    } else {
-        hero.into()
+        .padding([12, 18])
     };
     let quick = column![
-        legacy_section_label("PLAY EVOLVE", state.preferences.ui_theme == "Evolve Legacy"),
+        row![
+            legacy_section_label("PLAY EVOLVE", state.preferences.ui_theme == "Evolve Legacy"),
+            text("Launch Evolve").size(20),
+        ]
+        .spacing(12)
+        .align_y(iced::Center),
         text(if state.developer_unlocked && state.developer_online_mods {
             "Developer online testing is armed. All enabled mods are eligible, including gameplay changes. Actual server acceptance is not guaranteed."
         } else {
@@ -418,15 +550,21 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
             .size(12)
             .style(design::muted),
         row![
-            design::button(if state.developer_unlocked && state.developer_online_mods { "Play with Mods Online · Dev Test" } else { "Play with Mods" }).on_press(Message::PlayWithMods).style(design::primary),
-            design::button("Play without Mods").on_press(Message::PlayWithoutMods).style(design::secondary),
+            design::button(if state.developer_unlocked && state.developer_online_mods { "Play with Mods Online · Dev Test" } else { "Play with Mods" })
+                .on_press(Message::PlayWithMods)
+                .padding([10, 17])
+                .style(design::primary),
+            design::button("Play without Mods")
+                .on_press(Message::PlayWithoutMods)
+                .padding([10, 15])
+                .style(design::secondary),
         ]
         .spacing(8),
-        text(format!("Launch method: {} (change in Settings). Both Play buttons follow this choice. Direct mode starts Evolve.exe without the client, but client profile services are not yet reproduced.", state.preferences.game_launch_mode))
+        text(format!("Launch method: {} (change in Settings). Client Launch uses the original relay, profiles and friends overlay. Direct Launch is experimental and does not yet reproduce the full client session.", state.preferences.game_launch_mode))
             .size(12)
             .style(design::muted),
     ]
-    .spacing(9);
+    .spacing(8);
     let entries = column![
         text("Your workspace").size(19),
         text("Everything in the manager, one click away.")
@@ -485,7 +623,8 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                 "Select EvolveGame in Settings".to_owned()
             } else {
                 state.preferences.game_installation.clone()
-            }
+            },
+            wallpaper,
         ),
         status_card(
             "Modded Evolve client",
@@ -493,22 +632,18 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                 "Select ModdedEvolveLauncher.exe in Settings".to_owned()
             } else {
                 state.preferences.client_executable.clone()
-            }
+            },
+            wallpaper,
         ),
-        status_card(
-            "Client Version",
-            state.client_version.as_ref().map_or_else(
-                || "Not detected".to_owned(),
-                |version| format!("v{version}")
-            ),
-        ),
+        client_version_card(state.client_version.as_deref(), wallpaper),
         status_card(
             "Signing stage",
             if state.preferences.stage.is_empty() {
                 "Not prepared".to_owned()
             } else {
                 "Isolated offline stage configured".to_owned()
-            }
+            },
+            wallpaper,
         ),
         status_card(
             "Editing project",
@@ -516,23 +651,52 @@ pub(super) fn home(state: &State) -> Element<'_, Message> {
                 "None selected".to_owned()
             } else {
                 state.preferences.current_workspace.clone()
-            }
+            },
+            wallpaper,
         ),
     ]
     .spacing(9)
     .width(Length::FillPortion(2));
-    scrollable(
+    // Scroll the Home controls above a fixed, viewport-sized background.
+    // The art has no layout height of its own, so it never pushes the page
+    // below the fold; the background stays in place while cards scroll.
+    let content = scrollable(
         column![
             hero,
-            quick,
-            latest_announcement(state),
+            home_play_surface(quick, wallpaper),
+            latest_announcement(state, wallpaper),
             row![entries, status].spacing(14),
         ]
-        .spacing(20)
+        .spacing(13)
         .padding(12),
     )
-    .height(Fill)
-    .into()
+    .width(Fill)
+    .height(Fill);
+
+    if let Some(handle) = wallpaper.then(home_banner).flatten() {
+        // Cover the available viewport, not a 280px banner. The DDS decoder
+        // already darkens the image; a subtle shade ensures text over the
+        // artwork stays readable even on bright regions.
+        let background = image(handle)
+            .width(Fill)
+            .height(Fill)
+            .content_fit(iced::ContentFit::Cover);
+        let shade = container(iced::widget::space().width(Fill).height(Fill))
+            .width(Fill)
+            .height(Fill)
+            .style(|_| container::Style {
+                background: Some(Background::Color(iced::Color::from_rgba(
+                    0.015, 0.018, 0.025, 0.18,
+                ))),
+                ..container::Style::default()
+            });
+        stack![background, shade, content]
+            .width(Fill)
+            .height(Fill)
+            .into()
+    } else {
+        content.into()
+    }
 }
 
 fn docs_spec(
@@ -1185,6 +1349,29 @@ fn actor_rows(state: &State) -> Element<'_, Message> {
         .spacing(5);
         for entry in &actor.fields {
             let field = entry.field;
+            let selected = state.actor_edit.is_some_and(|(id, addr, f, _)| {
+                id == actor.id && addr == actor.address && f == field
+            });
+            let key = (actor.id, actor.address, field);
+            let frozen = state.actor_frozen.get(&key);
+            let editable = state.developer_unlocked && !state.actor_busy;
+            let value_cell: Element<'_, Message> = if selected {
+                design::text_input("Value", &state.actor_edit_value)
+                    .on_input(Message::ActorEditValue)
+                    .on_submit(Message::ActorWrite)
+                    .width(90)
+                    .into()
+            } else {
+                design::button(entry.display.as_str())
+                    .on_press_maybe(editable.then_some(Message::ActorEdit(
+                        actor.id,
+                        actor.address,
+                        field,
+                        entry.bits,
+                    )))
+                    .width(90)
+                    .into()
+            };
             rows = rows.push(
                 row![
                     text(format!(
@@ -1195,10 +1382,15 @@ fn actor_rows(state: &State) -> Element<'_, Message> {
                     ))
                     .size(12)
                     .width(Fill),
-                    text(entry.display.clone()).size(13).width(90),
-                    design::button("Edit").on_press_maybe((!state.actor_busy).then_some(
-                        Message::ActorEdit(actor.id, actor.address, field, entry.bits)
-                    )),
+                    value_cell,
+                    iced::widget::checkbox(frozen.is_some())
+                        .label("Freeze")
+                        .on_toggle(move |checked| Message::ActorFreeze(
+                            actor.id,
+                            actor.address,
+                            field,
+                            checked
+                        )),
                 ]
                 .align_y(iced::Alignment::Center)
                 .spacing(8),
@@ -1207,6 +1399,148 @@ fn actor_rows(state: &State) -> Element<'_, Message> {
         list = list.push(surface(rows.padding(10)));
     }
     list.into()
+}
+
+fn developer_keybind_controls(state: &State) -> Element<'_, Message> {
+    let mut rows = column![
+        text("Developer shortcuts").size(17),
+        text("Active while the overlay is on and Evolve has focus. No keyboard hooks.")
+            .size(12)
+            .style(design::muted),
+    ]
+    .spacing(7);
+    for action in developer_hotkeys::Action::ALL {
+        let current =
+            developer_hotkeys::Keybind(state.preferences.developer_hotkeys[action.index()]);
+        rows = rows.push(
+            row![
+                text(action.label()).width(Length::Fixed(185.0)),
+                iced::widget::pick_list(
+                    developer_hotkeys::Keybind::OPTIONS,
+                    Some(current),
+                    move |key| Message::DeveloperKeybindChanged(action, key),
+                )
+                .width(Length::Fixed(145.0)),
+            ]
+            .align_y(iced::Alignment::Center)
+            .spacing(8),
+        );
+    }
+    rows = rows.push(
+        text(state.developer_hotkey_status.as_str())
+            .size(12)
+            .style(design::muted),
+    );
+    rows.into()
+}
+
+fn teleport_controls(state: &State) -> Element<'_, Message> {
+    let enabled = state.developer_unlocked
+        && state.armor_offline_confirmed
+        && state.live_edit_enabled
+        && !state.developer_online_mods
+        && !state.teleport_busy
+        && state
+            .runtime_snapshot
+            .as_ref()
+            .and_then(|s| s.pid)
+            .is_some();
+
+    surface(
+        column![
+            text("Teleport").size(19),
+            text("Offline only · One-shot physics XYZ · No hooks or freezing")
+                .size(12)
+                .style(design::muted),
+            row![
+                design::text_input("X", &state.teleport_x)
+                    .on_input(|v| Message::TeleportXYZChanged(0, v)),
+                design::text_input("Y", &state.teleport_y)
+                    .on_input(|v| Message::TeleportXYZChanged(1, v)),
+                design::text_input("Z", &state.teleport_z)
+                    .on_input(|v| Message::TeleportXYZChanged(2, v)),
+            ]
+            .spacing(8),
+            row![
+                design::button("Read position")
+                    .on_press_maybe(enabled.then_some(Message::TeleportCapture(false))),
+                design::button("Save position")
+                    .on_press_maybe(enabled.then_some(Message::TeleportCapture(true))),
+                design::button("Teleport XYZ")
+                    .on_press_maybe(enabled.then_some(Message::TeleportAbsolute)),
+                design::button("Return to saved").on_press_maybe(
+                    (enabled && state.teleport_saved.is_some())
+                        .then_some(Message::TeleportReturnSaved)
+                ),
+            ]
+            .spacing(8),
+            text("Relative move · 20 units per click (world axes)")
+                .size(12)
+                .style(design::muted),
+            row![
+                text("X").width(Length::Fixed(24.0)),
+                design::button("−20 X")
+                    .on_press_maybe(enabled.then_some(Message::TeleportRelative(-20.0, 0.0, 0.0))),
+                design::button("+20 X")
+                    .on_press_maybe(enabled.then_some(Message::TeleportRelative(20.0, 0.0, 0.0))),
+            ]
+            .align_y(iced::Alignment::Center)
+            .spacing(8),
+            row![
+                text("Y").width(Length::Fixed(24.0)),
+                design::button("−20 Y")
+                    .on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, -20.0, 0.0))),
+                design::button("+20 Y")
+                    .on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, 20.0, 0.0))),
+            ]
+            .align_y(iced::Alignment::Center)
+            .spacing(8),
+            row![
+                text("Z").width(Length::Fixed(24.0)),
+                design::button("−20 Z")
+                    .on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, 0.0, -20.0))),
+                design::button("+20 Z")
+                    .on_press_maybe(enabled.then_some(Message::TeleportRelative(0.0, 0.0, 20.0))),
+            ]
+            .align_y(iced::Alignment::Center)
+            .spacing(8),
+            text("Approximate crosshair teleport").size(17),
+            text("Uses actor facing (+Y), not the camera ray. No geometry collision test.")
+                .size(12)
+                .style(design::muted),
+            row![
+                text("Distance").width(Length::Fixed(65.0)),
+                design::text_input("30", &state.teleport_aim_distance)
+                    .on_input(Message::TeleportAimDistanceChanged)
+                    .width(Length::Fixed(90.0)),
+                design::button("Preview coordinates").on_press_maybe(
+                    (enabled && !state.teleport_aim_preview_busy)
+                        .then_some(Message::TeleportPreviewAim)
+                ),
+                design::button("Teleport to Crosshair")
+                    .on_press_maybe(enabled.then_some(Message::TeleportAim)),
+            ]
+            .align_y(iced::Alignment::Center)
+            .spacing(8),
+            iced::widget::checkbox(state.teleport_overlay.is_some())
+                .label("Show external overlay and enable shortcuts (windowed fullscreen)")
+                .on_toggle(Message::TeleportOverlayChanged),
+            developer_keybind_controls(state),
+            text("The overlay marks the screen center only; it is not a raycast hit location.")
+                .size(12)
+                .style(design::muted),
+            text(if state.teleport_busy {
+                "Teleport operation running..."
+            } else {
+                state.teleport_status.as_str()
+            })
+            .size(12)
+            .style(design::muted),
+        ]
+        .spacing(9)
+        .padding(10),
+    )
+    .into()
 }
 
 pub(super) fn developer(state: &State) -> Element<'_, Message> {
@@ -1282,10 +1616,10 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
                         .size(12)
                         .style(design::muted),
                         iced::widget::checkbox(state.armor_offline_confirmed)
-                            .label("Confirm isolated offline match (required to write)")
+                            .label("Enable guided armor scanning (optional)")
                             .on_toggle(Message::ArmorOfflineChanged),
                         iced::widget::checkbox(state.live_edit_enabled)
-                            .label("Enable one-shot actor field writes (experimental)")
+                            .label("Enable actor memory writes / Freeze (experimental)")
                             .on_toggle(Message::LiveEditEnabled),
                         design::button(if state.actor_busy {
                             "Reading actors..."
@@ -1305,30 +1639,9 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
                             .size(12)
                             .style(design::muted),
                         actor_rows(state),
-                        text("Field editor").size(19),
-                        text(
-                            state
-                                .actor_edit
-                                .as_ref()
-                                .map(|(_, _, field, _)| field.title())
-                                .unwrap_or("Click Edit on an actor field above")
-                        )
-                        .size(12)
-                        .style(design::muted),
-                        design::text_input("New field value", &state.actor_edit_value)
-                            .on_input(Message::ActorEditValue),
-                        design::button("Write selected field once").on_press_maybe(
-                            (state.actor_edit.is_some()
-                                && !state.actor_busy
-                                && state.live_edit_enabled
-                                && state.armor_offline_confirmed
-                                && !state.developer_online_mods
-                                && !state.actor_edit_value.trim().is_empty())
-                            .then_some(Message::ActorWrite)
-                        ),
-                        text("One-shot writes · Offline only · Value checked before write")
-                            .size(12)
-                            .style(design::muted),
+                        teleport_controls(state),
+                        text("Click a value to edit it · Enter to write · Freeze holds the current value")
+                            .size(12).style(design::muted),
                         design::button("Lock developer area").on_press(Message::LockDeveloper),
                     ]
                     .spacing(12)
@@ -1363,5 +1676,25 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
         .spacing(13)
         .padding(12)
         .into()
+    }
+}
+
+#[cfg(test)]
+mod home_layout_tests {
+    use super::short_client_version;
+
+    #[test]
+    fn client_build_is_short_but_release_is_preserved() {
+        assert_eq!(
+            short_client_version("0.1.95+b45fa23dbded9764d99cd3e021ba40fb8e6d3a93"),
+            "v0.1.95 · b45fa23d"
+        );
+        assert_eq!(short_client_version("1.2.3"), "v1.2.3");
+    }
+
+    #[test]
+    fn older_long_versions_are_bounded() {
+        let displayed = short_client_version("012345678901234567890123456789");
+        assert_eq!(displayed, "v012345678901234567890123…");
     }
 }

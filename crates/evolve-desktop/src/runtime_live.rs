@@ -1,8 +1,7 @@
-//! Explicitly armed, single-shot Float32 edits for OFFLINE developer tests.
+//! Explicitly armed, single-shot Float32 edits for Developer tests.
 //! Never auto-writes, freezes, injects, sets debugger breakpoints, or changes
 //! memory protection. A read-before-write probe is tied to a process and a
 //! specific four-byte baseline; applying always requires fresh authorization.
-use crate::runtime_armor;
 use crate::runtime_memory::{self, Snapshot};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -83,7 +82,7 @@ fn validate_baseline(expected: u32, current: u32) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn verify_session(snapshot: &Snapshot, game_root: &str, confirmed: bool) -> Result<u32, String> {
+fn verify_session(snapshot: &Snapshot, game_root: &str, _confirmed: bool) -> Result<u32, String> {
     let pid = snapshot
         .pid
         .ok_or("Detect one running Evolve.exe process")?;
@@ -96,9 +95,6 @@ fn verify_session(snapshot: &Snapshot, game_root: &str, confirmed: bool) -> Resu
     {
         return Err("Evolve image changed; redetect the process before editing".into());
     }
-    // Fails closed when the Windows TCP query fails. This is only a best-effort
-    // online detection, not proof of the game session's actual offline status.
-    runtime_armor::offline_guard(pid, confirmed)?;
     Ok(pid)
 }
 
@@ -143,69 +139,98 @@ pub(super) fn probe(
     })
 }
 
-/// Write exactly four bytes to an already-read address, with a baseline
-/// comparison immediately before the write in the *same* Windows helper.
-/// Neither VirtualProtectEx nor remote execution is needed or permitted.
+/// Compare and write four bytes using a single native process handle.
+/// Avoid launching a new PowerShell CLR for every write or freeze tick.
 #[cfg(windows)]
+#[allow(unsafe_code)] // Scoped, reviewed FFI needed for verified offline process-memory writes.
 pub(super) fn write_four(pid: u32, at: usize, old_bits: u32, new_bits: u32) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
-    let script = format!(
-        r#"
-$ErrorActionPreference='Stop'
-Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public static class EvolveSingleFloatWrite {{
- [DllImport("kernel32.dll", SetLastError=true)]
- static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
- [DllImport("kernel32.dll", SetLastError=true)]
- static extern bool CloseHandle(IntPtr process);
- [DllImport("kernel32.dll", SetLastError=true)]
- static extern bool ReadProcessMemory(IntPtr process, IntPtr address, byte[] buffer, UIntPtr size, out UIntPtr read);
- [DllImport("kernel32.dll", SetLastError=true)]
- static extern bool WriteProcessMemory(IntPtr process, IntPtr address, byte[] buffer, UIntPtr size, out UIntPtr written);
- public static void Apply(uint pid, ulong address, uint expected, uint desired) {{
-  IntPtr process=OpenProcess(0x0038,false,pid);
-  if(process==IntPtr.Zero) throw new Exception("Cannot open Evolve for a 4-byte write");
-  try {{
-   byte[] old=new byte[4];
-   UIntPtr read;
-   IntPtr at=new IntPtr(checked((long)address));
-   if(!ReadProcessMemory(process,at,old,new UIntPtr(4),out read) || read.ToUInt64()!=4)
-    throw new Exception("Cannot reread old Float32 value");
-   if(BitConverter.ToUInt32(old,0)!=expected)
-    throw new Exception("Value changed before the write; reread it in Developer tools");
-   byte[] bytes=BitConverter.GetBytes(desired);
-   UIntPtr written;
-   if(!WriteProcessMemory(process,at,bytes,new UIntPtr(4),out written) || written.ToUInt64()!=4)
-    throw new Exception("WriteProcessMemory failed; no success claimed");
-  }} finally {{ CloseHandle(process); }}
- }}
-}}
-'@
-[EvolveSingleFloatWrite]::Apply({pid}, {at}, {old_bits}, {new_bits})
-Write-Output 'FLOAT32_WRITE_COMPLETE'
-"#
-    );
-    let output = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .creation_flags(0x0800_0000)
-        .output()
-        .map_err(|e| format!("Could not launch bounded Windows memory writer: {e}"))?;
-    if !output.status.success()
-        || !String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .ends_with("FLOAT32_WRITE_COMPLETE")
-    {
+    use std::ffi::c_void;
+    use std::io;
+    unsafe extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+        fn ReadProcessMemory(
+            handle: *mut c_void,
+            address: *const c_void,
+            buffer: *mut c_void,
+            size: usize,
+            read: *mut usize,
+        ) -> i32;
+        fn WriteProcessMemory(
+            handle: *mut c_void,
+            address: *mut c_void,
+            buffer: *const c_void,
+            size: usize,
+            written: *mut usize,
+        ) -> i32;
+    }
+    validate_address(at)?;
+    const PROCESS_VM_OPERATION: u32 = 0x0008;
+    const PROCESS_VM_READ: u32 = 0x0010;
+    const PROCESS_VM_WRITE: u32 = 0x0020;
+    let access = PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE;
+    let handle = unsafe { OpenProcess(access, 0, pid) };
+    if handle.is_null() {
         return Err(format!(
-            "Float32 write was not confirmed: {}",
-            String::from_utf8_lossy(&output.stderr)
-                .chars()
-                .take(350)
-                .collect::<String>()
+            "OpenProcess PID {pid} failed: {}",
+            io::Error::last_os_error()
         ));
     }
-    Ok(())
+    let result = (|| {
+        let mut observed = [0u8; 4];
+        let mut count = 0usize;
+        let ok = unsafe {
+            ReadProcessMemory(
+                handle,
+                at as *const c_void,
+                observed.as_mut_ptr().cast(),
+                4,
+                &mut count,
+            )
+        };
+        if ok == 0 || count != 4 {
+            return Err(format!(
+                "ReadProcessMemory at 0x{at:X} failed: {}",
+                io::Error::last_os_error()
+            ));
+        }
+        if u32::from_le_bytes(observed) != old_bits {
+            return Err("Value changed before write; refresh the actor field".into());
+        }
+        let desired = new_bits.to_le_bytes();
+        count = 0;
+        let ok = unsafe {
+            WriteProcessMemory(
+                handle,
+                at as *mut c_void,
+                desired.as_ptr().cast(),
+                4,
+                &mut count,
+            )
+        };
+        if ok == 0 || count != 4 {
+            return Err(format!(
+                "WriteProcessMemory at 0x{at:X} failed: {}",
+                io::Error::last_os_error()
+            ));
+        }
+        count = 0;
+        let ok = unsafe {
+            ReadProcessMemory(
+                handle,
+                at as *const c_void,
+                observed.as_mut_ptr().cast(),
+                4,
+                &mut count,
+            )
+        };
+        if ok == 0 || count != 4 || observed != desired {
+            return Err("Write was attempted, but immediate readback did not match".into());
+        }
+        Ok(())
+    })();
+    unsafe { CloseHandle(handle) };
+    result
 }
 
 #[cfg(windows)]

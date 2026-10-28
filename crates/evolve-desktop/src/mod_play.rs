@@ -243,6 +243,7 @@ pub fn launch_enabled(
     // still determine actual network access.
     developer_online: bool,
     direct_launch: bool,
+    test_client: bool,
 ) -> Result<(usize, u32, usize, Option<String>), String> {
     let signed = selected_signed_mods(&stage)?;
     if mods.is_empty() && signed.is_empty() {
@@ -264,6 +265,8 @@ pub fn launch_enabled(
     }
     let setup = if direct_launch {
         play_setup::configure_direct_helper(&game, &stage, &swap)
+    } else if test_client {
+        play_setup::configure_test_helper(&game, &client, &stage, &swap)
     } else {
         play_setup::configure_existing_helper(&game, &client, &stage, &swap)
     };
@@ -278,9 +281,29 @@ pub fn launch_enabled(
     }
     progress.store(5, Ordering::Relaxed);
 
+    // A manual "Build & Prepare Offline Test" profile may remain staged
+    // from before the enabled-mod workflow existed. Its ID legitimately
+    // differs from the current automatic profile marker. The journal
+    // contains byte-exact backups and a rollback transaction, so restore
+    // ANY previously staged profile before applying the new enabled set.
+    // This only restores files inside the isolated signing stage. It does
+    // not delete that manual profile from profiles.json or touch game files.
+    if let Err(issue) = restore_previous_staged_profile(&stage) {
+        return launch_for_repair(
+            &game,
+            &client,
+            &swap,
+            &format!("Previous mod setup could not be restored: {issue}"),
+        );
+    }
+
+    // Stage ONLY selected modified archives after restoring an older staged
+    // profile. A sparse stage has no copy of unrelated original game PAKs.
     let mut destinations = HashSet::new();
     let mut targets = Vec::with_capacity(mods.len());
     for project in &mods {
+        modding_projects::provision_selected_original(project, &stage)
+            .map_err(|e| format!("{}: cannot prepare selected original: {e}", project.label))?;
         let target = modding_projects::offline_test_target(project, &stage)
             .map_err(|e| format!("{}: {e}", project.label))?;
         if !destinations.insert(target.to_ascii_lowercase()) {
@@ -298,23 +321,9 @@ pub fn launch_enabled(
             ));
         }
     }
-    let keys = modding_keys::signing_keys(&stage)?;
-
-    // A manual "Build & Prepare Offline Test" profile may remain staged
-    // from before the enabled-mod workflow existed. Its ID legitimately
-    // differs from the current automatic profile marker. The journal
-    // contains byte-exact backups and a rollback transaction, so restore
-    // ANY previously staged profile before applying the new enabled set.
-    // This only restores files inside the isolated signing stage. It does
-    // not delete that manual profile from profiles.json or touch game files.
-    if let Err(issue) = restore_previous_staged_profile(&stage) {
-        return launch_for_repair(
-            &game,
-            &client,
-            &swap,
-            &format!("Previous mod setup could not be restored: {issue}"),
-        );
-    }
+    // Profile staging requires only verification keys here.
+    let original_public = modding_keys::original_public_key(&stage)?;
+    let public = modding_keys::public_key(&stage)?;
 
     let mut built = Vec::with_capacity(mods.len());
     for (index, (project, target)) in mods.iter().zip(targets).enumerate() {
@@ -355,8 +364,8 @@ pub fn launch_enabled(
                 &profile.id,
                 output,
                 target,
-                &keys.original_public,
-                &keys.public,
+                &original_public,
+                &public,
                 &basename,
             )
             .map_err(|e| format!("Could not add {target}: {e}"))?;
@@ -371,7 +380,7 @@ pub fn launch_enabled(
             ).map_err(|e| format!("Could not enable registered PAK {}: {e}", item.target))?;
         }
         progress.store(78, Ordering::Relaxed);
-        evolve_core::apply_profile_stage(&stage, &profile.id, &keys.original_public, &keys.public)
+        evolve_core::apply_profile_stage(&stage, &profile.id, &original_public, &public)
             .map_err(|e| format!("Could not activate enabled mods: {e}"))?;
         Ok(())
     })();
@@ -395,6 +404,8 @@ pub fn launch_enabled(
             Ok(count) => count,
             Err(issue) => return launch_for_repair(&game, &client, &swap, &issue),
         };
+    // apply_profile_stage published its exact modified-PAK selection. The
+    // immutable full signing inventory and other installed PAKs stay intact.
     // Staging-only self-repair: accept a rebuilt hook ONLY when it hashes
     // exactly to this setup's saved original digest. A changed installed DLL
     // or unresolved game swap still falls back to the regular client.

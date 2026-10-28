@@ -259,7 +259,7 @@ def _inject_stage2_trace(api, process_info, dll_path):
         api["VirtualFreeEx"](process_info.hProcess, remote, 0, 0x8000)
 
 
-def launch_standard_user(executable, *, game=False, args=(), trace_dll=None, runtime_env=None, log_path=None):
+def launch_standard_user(executable, *, game=False, test_client=False, args=(), trace_dll=None, runtime_env=None, log_path=None):
     if trace_dll and not game:
         raise ValueError("Stage2Trace injection is restricted to Evolve.exe")
     if not game and args and (list(args)[0] != "--stage2-smoke"
@@ -276,6 +276,9 @@ def launch_standard_user(executable, *, game=False, args=(), trace_dll=None, run
     if game:
         if exe.name.casefold() != "evolve.exe" or exe.parent.name.casefold() != "bin64_steamretail":
             raise ValueError("Direct game launch requires bin64_SteamRetail/Evolve.exe")
+    elif test_client:
+        if exe.suffix.casefold() != ".exe":
+            raise ValueError("Configured Test Client must be a Windows .exe")
     elif exe.name.casefold() != "moddedevolvelauncher.exe":
         raise ValueError("Only a configured ModdedEvolveLauncher.exe may be launched")
     api = _win()
@@ -465,14 +468,20 @@ def diagnose_processes():
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--launch", metavar="CLIENT_EXE")
+    parser.add_argument("--launch-test", metavar="TEST_CLIENT_EXE")
     parser.add_argument("--launch-game", metavar="EVOLVE_EXE")
     parser.add_argument("--diagnose-pid", type=int, metavar="PID")
     parser.add_argument("--diagnose-processes", action="store_true")
     args = parser.parse_args(argv)
-    if sum([bool(args.launch), bool(args.launch_game), args.diagnose_pid is not None, args.diagnose_processes]) != 1:
+    if sum([bool(args.launch), bool(args.launch_test), bool(args.launch_game),
+            args.diagnose_pid is not None, args.diagnose_processes]) != 1:
         parser.error("Pass exactly one --launch EXE, --diagnose-pid PID, or --diagnose-processes")
-    if args.launch or args.launch_game:
-        process = launch_standard_user(args.launch_game or args.launch, game=bool(args.launch_game))
+    if args.launch or args.launch_game or args.launch_test:
+        process = launch_standard_user(
+            args.launch_game or args.launch_test or args.launch,
+            game=bool(args.launch_game),
+            test_client=bool(args.launch_test),
+        )
         try:
             actual = get_elevation(process.pid)
             print(

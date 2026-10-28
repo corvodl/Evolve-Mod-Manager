@@ -44,8 +44,15 @@ Name: "audiotools"; Description: "Include vgmstream decoder and Vorbis FSB5 soun
 [Files]
 Source: "..\target\release\evolve-mod-manager.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\target\release\evolve-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\target\release\evolve-teleport-overlay.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\assets\hunt.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\assets\default_loading.dds"; DestDir: "{app}\assets"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
+; In CI smoke tests the official vendor bundle is intentionally absent; release
+; builds must populate this path from the verified private release first.
+#if FileExists("..\dist\third_party\OfficialStage2\evolve_tool.exe")
+Source: "..\dist\third_party\OfficialStage2\*"; DestDir: "{app}\third_party\OfficialStage2"; Flags: ignoreversion recursesubdirs createallsubdirs
+#endif
 ; Bundle verified upstream portable distributions, never game assets.
 ; User can deselect the GFX tools task; only manager is required.
 Source: "..\dist\third_party\FFDec\*"; DestDir: "{app}\third_party\FFDec"; Flags: ignoreversion recursesubdirs createallsubdirs; Tasks: gfxeditors

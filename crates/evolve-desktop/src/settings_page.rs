@@ -104,7 +104,7 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
         column![
             heading(
                 "SET UP MANAGER / INSTALLED GAME",
-                "Both launch modes use the installed game and client files. Direct Launch uses the client's compatibility/profile services in a separate host."
+                "Client Launch uses the real client for relay, profiles and friends overlay. Direct Launch is for experimental startup testing."
             ),
             text("GAME LAUNCH METHOD").size(12),
             row![
@@ -115,7 +115,7 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
                     .on_press(Message::PreferenceGameLaunchMode("Direct Launch"))
                     .style(if state.preferences.game_launch_mode == "Direct Launch" { design::primary } else { design::secondary }),
             ].spacing(8),
-            text("Direct Launch is experimental and enabled for live testing. Both Play buttons start the game directly when selected; the manager reports missing runtime components or recovery errors instead of disabling the feature. Client Launch remains available.")
+            text("Recommended: Client Launch for authenticated profiles, relay and Shift+Tab friends. Direct Launch currently uses a Stage 2 smoke host and does not establish the full relay/overlay session. Explicit Direct selection is preserved.")
                 .size(11).style(design::muted),
             text("Game location (EvolveGame or bin64_SteamRetail)").size(12),
             row![
@@ -145,7 +145,7 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
                 if state.preferences.game_launch_mode == "Direct Launch" {
                     "Game and compatible client selected. Direct modded play also needs verified signing and recovery files."
                 } else {
-                    "Installed game and client found. Modded play also requires a verified signing stage."
+                    "Full client selected for relay, authenticated profile and friends overlay. Modded play also requires a verified signing stage and Frida."
                 }
             } else if state.preferences.game_launch_mode == "Direct Launch" {
                 "Select valid game and client paths for Steam/profile services, then save."
@@ -166,7 +166,7 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
                     .style(design::secondary),
             ]
             .spacing(8),
-            text("The manager can generate a fresh isolated signing stage, locally created RSA keys, signed PAK copies and private-compatible recovery helpers without modifying the installed game.")
+            text("Creates a lightweight signing inventory. Only PAKs edited by enabled mods are copied/signed into the stage. Original game PAKs remain in place.")
                 .size(11)
                 .style(design::muted),
             row![
@@ -177,7 +177,7 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
                 })
                 .on_press_maybe((!state.busy).then_some(Message::StartAutomaticSetup))
                 .style(design::primary),
-                text("Requires available Game Storage space; optional original snapshots follow Settings > Keep original snapshots.")
+                text("Sparse setup saves disk space. Permanent full-game snapshots are optional and disabled by default.")
                     .size(11)
                     .style(design::muted),
             ]
@@ -186,6 +186,68 @@ fn game_client_setup(state: &State) -> Element<'_, Message> {
         .spacing(9),
     )
     .into()
+}
+
+fn test_environment_setup(state: &State) -> Element<'_, Message> {
+    let enabled = state.preferences.play_through_test_client;
+    let valid = crate::play_setup::validate_test_paths(
+        &state.preferences.test_game_installation,
+        &state.preferences.test_client_executable,
+        &state.preferences.game_installation,
+        &state.preferences.client_executable,
+    )
+    .is_ok();
+    panel(
+        column![
+            heading(
+                "EVOLVE TEST ENVIRONMENT",
+                "A separate Test Client and Test Game build for mod testing. Production files and recovery settings are kept separate."
+            ),
+            row![
+                design::button(if enabled { "Test Client: ON" } else { "Test Client: OFF" })
+                    .on_press(Message::PreferenceUseTestClient(!enabled))
+                    .style(if enabled { design::primary } else { design::secondary }),
+                text(if enabled {
+                    "Both Play buttons use the Test Client and Test Game."
+                } else {
+                    "Both Play buttons use the normal client and game."
+                })
+                .size(12).style(design::muted),
+            ].spacing(10).align_y(iced::Center),
+            text("Test Client executable (separate .exe build)").size(12),
+            row![
+                design::text_input("Select Test Client .exe", &state.preferences.test_client_executable)
+                    .on_input(Message::PreferenceTestClientExecutable),
+                design::button("Browse…").on_press(Message::PickTestClient).style(design::secondary),
+            ].spacing(8),
+            text("Test Game directory (separate EvolveGame build)").size(12),
+            row![
+                design::text_input("Select Test Game folder", &state.preferences.test_game_installation)
+                    .on_input(Message::PreferenceTestGameInstall),
+                design::button("Browse…").on_press(Message::PickTestGame).style(design::secondary),
+            ].spacing(8),
+            text(if valid {
+                "Separate Test Client and Test Game verified. The test client must be configured to launch this Test Game."
+            } else {
+                "Choose both test builds. The Test Game only needs its executable here; production PAK inventory checks are not used."
+            }).size(11).style(design::muted),
+            row![
+                design::button("Save Test Environment")
+                    .on_press(Message::SaveTestSetup)
+                    .style(design::secondary),
+                design::button(if state.busy { "Creating Test Setup…" } else { "Create Test Mod Setup" })
+                    .on_press_maybe((!state.busy && valid).then_some(Message::StartTestAutomaticSetup))
+                    .style(design::secondary),
+            ].spacing(8),
+            text("Modded test launches use an independent Test signing stage and swap journal. Creating a Test Mod Setup uses the existing signed-PAK setup workflow; unsupported test archive formats will be reported, not silently replaced.").size(11).style(design::muted),
+            text("Test signing stage (separate from production)").size(12),
+            design::text_input("Test stage folder", &state.preferences.test_stage)
+                .on_input(Message::PreferenceTestStage),
+            text("Test recovery / swap folder").size(12),
+            design::text_input("Test swap folder", &state.preferences.test_swap)
+                .on_input(Message::PreferenceTestSwap),
+        ].spacing(9),
+    ).into()
 }
 
 fn storage(state: &State) -> Element<'_, Message> {
@@ -431,6 +493,17 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 design::button(text(format!("Explorer: {}", state.preferences.file_explorer_side))).on_press(Message::PreferenceExplorerSide).style(design::secondary)
             ].spacing(8),
             design::button(text(format!("Reduce menu animation: {}", if state.preferences.reduce_motion { "On" } else { "Off" }))).on_press(Message::PreferenceReduceMotion).style(design::secondary),
+            text("HOME SCREEN ARTWORK").size(12),
+            row![
+                design::button("Background On")
+                    .on_press_maybe((!state.preferences.show_home_background).then_some(Message::PreferenceHomeBackground))
+                    .style(if state.preferences.show_home_background { design::primary } else { design::secondary }),
+                design::button("Background Off")
+                    .on_press_maybe(state.preferences.show_home_background.then_some(Message::PreferenceHomeBackground))
+                    .style(if !state.preferences.show_home_background { design::primary } else { design::secondary }),
+            ].spacing(8),
+            text("Off hides the Evolve artwork and restores opaque Home panels. This only affects Home, keeps other themes and pages unchanged, and is saved automatically.")
+                .size(11).style(design::muted),
             text("MODERN THEME ACCENT COLOR").size(12),
             row![
                 design::button("Default")
@@ -476,7 +549,38 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             let ruffle = crate::gfx_bundled_tools::valid_ruffle(&state.preferences.ruffle_executable);
             let ruffle_web = crate::gfx_bundled_tools::valid_ruffle_web(&state.preferences.ruffle_web_runtime);
             column![
-                heading("INTEGRATIONS", "Configure external tools for exporting models and editing game GFX."),
+                heading("INTEGRATIONS", "Configure Discord activity and external editing tools."),
+                panel(column![
+                    text("DISCORD RICH PRESENCE · LOCAL ONLY").size(15),
+                    text("No account linking, OAuth, bot, or token. Uses the desktop Discord app through local IPC. Discord's own Activity Privacy settings also control visibility.")
+                        .size(12).style(design::muted),
+                    design::button(if state.preferences.discord_presence_enabled { "Rich Presence: On" } else { "Rich Presence: Off" })
+                        .on_press(Message::PreferenceDiscordToggle("enabled")).style(design::secondary),
+                    text("Manager: 1563784115785048114 (Evolve Mod Manager). Game: 1565093139616763987 (Evolve). Automatically switches when Evolve starts/closes. Override below applies only to the manager.")
+                        .size(11).style(design::muted),
+                    design::text_input("Manager application ID (optional developer override)", &state.preferences.discord_application_id)
+                        .on_input(Message::PreferenceDiscordAppId),
+                    row![
+                        design::button(if state.preferences.discord_show_game { "Gameplay: On" } else { "Gameplay: Off" })
+                            .on_press(Message::PreferenceDiscordToggle("game")).style(design::secondary),
+                        design::button(if state.preferences.discord_show_manager { "Manager: On" } else { "Manager: Off" })
+                            .on_press(Message::PreferenceDiscordToggle("manager")).style(design::secondary),
+                    ].spacing(8),
+                    row![
+                        design::button(if state.preferences.discord_show_character { "Character / Stage: On" } else { "Character / Stage: Off" })
+                            .on_press(Message::PreferenceDiscordToggle("character")).style(design::secondary),
+                        design::button(if state.preferences.discord_show_stats { "Health / Armor: On" } else { "Health / Armor: Off" })
+                            .on_press(Message::PreferenceDiscordToggle("stats")).style(design::secondary),
+                    ].spacing(8),
+                    row![
+                        design::button(if state.preferences.discord_show_profile { "Mod Profile: On" } else { "Mod Profile: Off" })
+                            .on_press(Message::PreferenceDiscordToggle("profile")).style(design::secondary),
+                        design::button(if state.preferences.discord_minimal { "Privacy: Minimal" } else { "Privacy: Detailed" })
+                            .on_press(Message::PreferenceDiscordToggle("minimal")).style(design::secondary),
+                    ].spacing(8),
+                    text("Character names use the read-only local IEntity resolver and known aliases; unknown names are hidden. Health is available when validated. Armor and evolution are monster-only. Maps, modes and game art still need verified sources. Discord may prioritize the game's own presence over the manager's activity.")
+                        .size(11).style(design::muted),
+                ].spacing(8)),
                 panel(column![
                     text("BLENDER · FBX EXPORT").size(15),
                     if crate::blender_install::valid_blender(&state.blender_path).is_some() {
@@ -658,9 +762,9 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         .spacing(12)
         .into(),
         Tab::Advanced => column![
-        heading("BACKUPS & RECOVERY", "Preserve source archives and restoration history."),
+        heading("BACKUPS & RECOVERY", "Recovery copies are needed only for modified PAKs being swapped."),
         panel(column![
-            design::button(text(format!("Keep permanent original snapshots: {}", if state.preferences.keep_original_snapshots { "On" } else { "Off" }))).on_press(Message::PreferenceSnapshots).style(design::secondary),
+            design::button(text(format!("Keep full-game snapshots (extra disk use): {}", if state.preferences.keep_original_snapshots { "On" } else { "Off" }))).on_press(Message::PreferenceSnapshots).style(design::secondary),
             design::button(text(format!("Show activity during tasks: {}", if state.preferences.show_activity_on_tasks { "On" } else { "Off" }))).on_press(Message::PreferenceActivity).style(design::secondary),
             text("Crash reports").size(15),
             text("Local diagnostics for model loading, GPU uploads, and Rust crashes. Enabled by default; logs may include local asset names and file paths.")
@@ -678,6 +782,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         ].spacing(12).into(),
         Tab::Storage => column![
         game_client_setup(state),
+        test_environment_setup(state),
         heading("GAME STORAGE", "Review disk usage and configure future setups without changing active recovery files."),
         storage(state),
         heading("ASSET LIBRARY", "Keep extracted reference PAKs available across Modding, models and levels."),

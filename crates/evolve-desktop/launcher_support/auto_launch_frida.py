@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import socket
 from pathlib import Path
 import subprocess
 import sys
@@ -22,6 +23,7 @@ import standard_user_launch
 LAUNCHER = Path(r'C:\Users\billn\AppData\Local\Programs\Modded Evolve\ModdedEvolveLauncher.exe')
 GAME_EXE = Path(r'C:\Games\ModdedEvolve\EvolveGame\bin64_SteamRetail\Evolve.exe')
 WAIT_SECONDS = 900
+TEST_CLIENT = False
 
 
 def canonical_exec_path(path: str) -> str:
@@ -70,12 +72,13 @@ def is_evolve_launch(app: str, cmd: str) -> bool:
 def preflight() -> None:
     if os.name != 'nt' or sys.maxsize <= 2**32:
         raise RuntimeError('Requires 64-bit Windows and 64-bit Python 3.11.')
-    global LAUNCHER, GAME_EXE
+    global LAUNCHER, GAME_EXE, TEST_CLIENT
     import json
     config_path = Path(__file__).with_name('launcher_config.json')
     if config_path.is_file():
         config = json.loads(config_path.read_text(encoding='utf-8'))
         if config.get('launcher'): LAUNCHER = Path(config['launcher'])
+        TEST_CLIENT = config.get('test_client') is True
     state = swapper.require_state()
     GAME_EXE = Path(swapper.ordinary_windows_path(state['game'])) / 'bin64_SteamRetail' / 'Evolve.exe'
     if (Path(state['stage'])/'REFRESHED-TO.json').exists():
@@ -189,6 +192,23 @@ def make_js() -> str:
     return FRIDA_JS.replace('__GAME_PATH__', json.dumps(str(GAME_EXE)))
 
 
+def probe_full_client_services():
+    """Read-only loopback readiness snapshot; never synthesize relay credentials.
+
+    The native launcher, not this helper, authenticates the relay and owns the
+    real friends overlay. Lack of a TCP listener is diagnostic only: overlay
+    startup can race Evolve creation on some client revisions.
+    """
+    ready = {}
+    for label, port in (("frontend", 2000), ("friends_overlay", 2002)):
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+                ready[label] = True
+        except OSError:
+            ready[label] = False
+    return ready
+
+
 class SwapController:
     def __init__(self, proc, script):
         self.proc = proc
@@ -227,6 +247,19 @@ class SwapController:
                 self.finished.set()
                 return
             try:
+                services = probe_full_client_services()
+                print(
+                    "CLIENT_LAUNCH_LOCAL_SERVICES "
+                    + "frontend_2000=" + ("reachable" if services["frontend"] else "unavailable")
+                    + " friends_overlay_2002=" + ("reachable" if services["friends_overlay"] else "unavailable"),
+                    flush=True,
+                )
+                if not services["friends_overlay"]:
+                    print(
+                        "WARNING: friends overlay listener is not yet reachable; "
+                        "original client remains responsible for relay/overlay initialization.",
+                        flush=True,
+                    )
                 print('Evolve creation paused inside launcher; swapping prepared archives...', flush=True)
                 from types import SimpleNamespace
                 swapper.swap(SimpleNamespace(confirm_launcher_paused=True))
@@ -312,7 +345,7 @@ def main() -> int:
         # Explorer's verified MEDIUM-integrity user token. Never silently
         # fall back to an elevated subprocess on failure.
         own_privileges = standard_user_launch.get_elevation()
-        launcher = standard_user_launch.launch_standard_user(LAUNCHER)
+        launcher = standard_user_launch.launch_standard_user(LAUNCHER, test_client=TEST_CLIENT)
         actual_privileges = standard_user_launch.get_elevation(launcher.pid)
         print(
             f"Privilege diagnostic: swap_helper_pid={os.getpid()} elevated={own_privileges['elevated']}; "

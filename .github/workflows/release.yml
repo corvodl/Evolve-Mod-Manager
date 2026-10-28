@@ -82,7 +82,7 @@ jobs:
         run: |
           $folder = "dist/EvolveModManager-Portable"
           New-Item -ItemType Directory -Force $folder | Out-Null
-          foreach ($name in @("evolve-mod-manager.exe", "evolve-cli.exe")) {
+          foreach ($name in @("evolve-mod-manager.exe", "evolve-cli.exe", "evolve-teleport-overlay.exe")) {
             $source = Join-Path "target/release" $name
             if (!(Test-Path $source)) { throw "Windows binary missing: $name" }
             Copy-Item -LiteralPath $source -Destination (Join-Path $folder $name)

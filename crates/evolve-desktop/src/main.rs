@@ -13,7 +13,9 @@ mod blender_install;
 mod client_version;
 mod crash_diagnostics;
 mod design;
+mod discord_presence;
 mod developer_auth;
+mod developer_hotkeys;
 mod direct_runtime;
 mod explorer_tree;
 mod gfx_bundled_tools;
@@ -42,6 +44,7 @@ mod mod_play;
 mod modding_keys;
 mod modding_page;
 mod modding_projects;
+mod official_stage2_tools;
 mod online_guard;
 mod orientation_gizmo;
 mod play_dialog;
@@ -54,6 +57,7 @@ mod runtime_health;
 mod runtime_live;
 mod runtime_memory;
 mod runtime_signatures;
+mod runtime_teleport;
 mod selection;
 mod settings;
 mod settings_page;
@@ -181,6 +185,8 @@ struct LevelTransformDiff {
     old_local: evolve_core::Transform,
     new_local: evolve_core::Transform,
 }
+
+type ActorFreezeOutcome = ((u32, usize, runtime_actors::Field), Result<bool, String>);
 
 #[derive(Default)]
 struct State {
@@ -375,10 +381,26 @@ struct State {
     developer_attempts: u8,
     developer_checking: bool,
     actor_listing: Option<runtime_actors::Listing>,
+    teleport_reading: Option<runtime_teleport::Reading>,
+    teleport_saved: Option<runtime_teleport::Reading>,
+    teleport_busy: bool,
+    teleport_status: String,
+    teleport_x: String,
+    teleport_y: String,
+    teleport_z: String,
+    teleport_aim_distance: String,
+    teleport_aim_pending: Option<f32>,
+    teleport_aim_preview_busy: bool,
+    teleport_overlay: Option<std::process::Child>,
+    teleport_hotkey_rx: Option<std::sync::mpsc::Receiver<String>>,
+    developer_hotkey_status: String,
     actor_busy: bool,
     actor_status: String,
     actor_edit: Option<(u32, usize, runtime_actors::Field, u32)>,
     actor_edit_value: String,
+    actor_frozen: HashMap<(u32, usize, runtime_actors::Field), u32>,
+    actor_freeze_busy: bool,
+    actor_freeze_generation: u64,
     runtime_snapshot: Option<runtime_memory::Snapshot>,
     runtime_checking: bool,
     runtime_address: String,
@@ -670,10 +692,13 @@ enum Operation {
         Arc<AtomicUsize>,
         bool,
         bool,
+        bool,
     ),
     LaunchCleanClient(PathBuf, PathBuf, Option<PathBuf>),
+    LaunchCleanTestClient(PathBuf, PathBuf, Option<PathBuf>),
     LaunchDirectGame(PathBuf, PathBuf, Option<PathBuf>),
     CreateInitialSetup(PathBuf, PathBuf, PathBuf, bool),
+    CreateTestSetup(PathBuf, PathBuf, bool),
     RestoreExistingOfflineLauncher(PathBuf, PathBuf),
     RebuildSignedPak(
         PathBuf,
@@ -778,6 +803,7 @@ enum Completed {
     CleanClientStarted(u32, Vec<String>),
     DirectGameStarted(u32, Vec<String>),
     InitialSetupCreated(initial_setup::InitialSetup),
+    TestSetupCreated(initial_setup::InitialSetup),
     GamePakBaselineRefreshed(initial_setup::InitialSetup),
     OfflineLauncherRestored(usize, bool),
     OfflineLauncherRecoveryWarning(String),
@@ -1519,6 +1545,7 @@ impl Operation {
                 progress,
                 online_requested,
                 direct_launch,
+                test_client,
             ) => {
                 let mods = if projects.is_dir() {
                     discover_projects(&projects, &stage)?
@@ -1538,6 +1565,7 @@ impl Operation {
                     progress,
                     online_requested,
                     direct_launch,
+                    test_client,
                 )
                 .map(|(count, id, warnings, recovery)| {
                     Completed::EnabledModsLaunched(count, id, warnings, recovery, online_requested)
@@ -1575,9 +1603,20 @@ impl Operation {
                 let (id, warnings) = play_setup::launch_clean(&game, &client, swap.as_deref())?;
                 Ok(Completed::CleanClientStarted(id, warnings))
             }
+            Self::LaunchCleanTestClient(game, client, swap) => {
+                let (id, warnings) =
+                    play_setup::launch_clean_test(&game, &client, swap.as_deref())?;
+                Ok(Completed::CleanClientStarted(id, warnings))
+            }
             Self::CreateInitialSetup(game, client, storage, snapshots) => {
                 initial_setup::create(&game, &client, &storage, snapshots)
                     .map(Completed::InitialSetupCreated)
+            }
+            Self::CreateTestSetup(game, storage, snapshots) => {
+                // The test launcher is a separate build and may not share the
+                // production client's executable filename.
+                initial_setup::create(&game, &PathBuf::new(), &storage, snapshots)
+                    .map(Completed::TestSetupCreated)
             }
             Self::RestoreExistingOfflineLauncher(stage, swap) => {
                 match restore_existing_offline_client(&stage, &swap) {
@@ -1661,6 +1700,9 @@ enum Message {
     LibraryImportStart,
     LibraryImportCancel,
     SettingsTab(settings_page::Tab),
+    PreferenceDiscordToggle(&'static str),
+    PreferenceDiscordAppId(String),
+    DiscordPresenceTick,
     LibrarySearchChanged(String),
     LibraryMenu(&'static str),
     ModdingMenu(&'static str),
@@ -1887,10 +1929,28 @@ enum Message {
     DeveloperProcessPrivilegesFinished(Result<String, String>),
     ActorRefresh,
     ActorRefreshed(Result<runtime_actors::Listing, String>),
+    TeleportCapture(bool),
+    TeleportCaptured(bool, Result<runtime_teleport::Reading, String>),
+    TeleportXYZChanged(usize, String),
+    TeleportAbsolute,
+    TeleportRelative(f32, f32, f32),
+    TeleportReturnSaved,
+    TeleportAimDistanceChanged(String),
+    TeleportAim,
+    TeleportPreviewAim,
+    TeleportPreviewed(Result<runtime_teleport::Position, String>),
+    TeleportOverlayChanged(bool),
+    TeleportOverlayPoll,
+    DeveloperKeybindChanged(developer_hotkeys::Action, developer_hotkeys::Keybind),
+    TeleportDo(runtime_teleport::Destination, Option<(u32, u32)>),
+    TeleportMoved(Result<runtime_teleport::Reading, String>),
     ActorEdit(u32, usize, runtime_actors::Field, u32),
     ActorEditValue(String),
     ActorWrite,
     ActorWritten(Result<runtime_actors::WriteResult, String>),
+    ActorFreeze(u32, usize, runtime_actors::Field, bool),
+    ActorFreezeTick,
+    ActorFreezeDone(u64, Vec<ActorFreezeOutcome>),
     RuntimeDetect,
     RuntimeDetected(runtime_memory::Snapshot),
     RuntimeAddressChanged(String),
@@ -1941,7 +2001,18 @@ enum Message {
     PlayWithoutMods,
     DismissPlayNotice,
     SaveGameSetup,
+    SaveTestSetup,
     StartAutomaticSetup,
+    StartTestAutomaticSetup,
+    PreferenceUseTestClient(bool),
+    PreferenceTestGameInstall(String),
+    PreferenceTestClientExecutable(String),
+    PreferenceTestStage(String),
+    PreferenceTestSwap(String),
+    PickTestGame,
+    PickTestClient,
+    PickedTestGame(Option<PathBuf>),
+    PickedTestClient(Option<PathBuf>),
     PreferenceGameLaunchMode(&'static str),
     PreferenceGameInstall(String),
     PreferenceClientExecutable(String),
@@ -1977,6 +2048,7 @@ enum Message {
     PreferenceExplorerSide,
     PreferenceAppearance,
     PreferenceUiTheme(&'static str),
+    PreferenceHomeBackground,
     PreferenceAccentPreset(&'static str),
     PreferenceReduceMotion,
     PreferenceSnapshots,
@@ -2415,8 +2487,10 @@ fn operation_label(operation: &Operation) -> &'static str {
         Operation::StartExistingOfflineLauncher(..) => "Preparing original offline launcher",
         Operation::PlayEnabledMods(..) => "Building and launching enabled mods",
         Operation::LaunchCleanClient(..) => "Opening regular game client",
+        Operation::LaunchCleanTestClient(..) => "Opening separate Test Client",
         Operation::LaunchDirectGame(..) => "Starting Evolve directly (experimental)",
         Operation::CreateInitialSetup(..) => "Creating isolated offline setup",
+        Operation::CreateTestSetup(..) => "Creating isolated Test Game mod setup",
         Operation::RestoreExistingOfflineLauncher(..) => "Restoring original game files",
         Operation::ExportLevelGlb(..) | Operation::ExportLevelFbx(..) => "Exporting level scene",
         Operation::StageInit(..) => "Initializing protected signing stage",
@@ -2449,8 +2523,10 @@ fn launch(state: &mut State, operation: Operation) -> Task<Message> {
         Operation::StartExistingOfflineLauncher(..) => {
             "Preparing offline play...".into()
         }
-        Operation::PlayEnabledMods(.., online_requested, direct_launch) => {
-            if *direct_launch {
+        Operation::PlayEnabledMods(.., online_requested, direct_launch, test_client) => {
+            if *test_client {
+                "Building enabled mods for the separate Test Game and opening Test Client…".into()
+            } else if *direct_launch {
                 "Building mods, preparing verified backups, and launching Evolve.exe directly…".into()
             } else if *online_requested {
                 "Building enabled mods and launching the normal client for Developer testing…".into()
@@ -2462,12 +2538,18 @@ fn launch(state: &mut State, operation: Operation) -> Task<Message> {
             "Building the isolated offline setup: generating local signing keys, validating/resigning original game PAKs, preparing a verified hook copy and independent recovery scripts. Original game files will not be altered."
                 .into()
         }
+        Operation::CreateTestSetup(..) => {
+            "Creating a separate Test Game signing stage and recovery folder without touching the production game. Unsupported test PAK layouts will be reported.".into()
+        }
         Operation::LaunchDirectGame(..) => {
             "Checking originals before experimental direct offline game launch...".into()
         }
         Operation::LaunchCleanClient(..) => {
             "Checking that original PAKs and the recovery journal are clean before opening the normal client..."
                 .into()
+        }
+        Operation::LaunchCleanTestClient(..) => {
+            "Opening Test Client with the separate Test Game installation and without touching production PAKs…".into()
         }
         Operation::CreateProjectFromLibrary(..) => {
             "Checking imported files and making a private editing copy...".into()
@@ -2939,6 +3021,40 @@ fn home_recent_workspace(state: &State) -> Option<PathBuf> {
         return None;
     }
     Some(path)
+}
+
+// The companion only draws notifications and reports Win32 hotkeys. Game
+// memory changes always run through the manager's existing offline guards.
+fn notify_dev_overlay(state: &mut State, message: &str) {
+    use std::io::Write;
+    let Some(stdin) = state
+        .teleport_overlay
+        .as_mut()
+        .and_then(|c| c.stdin.as_mut())
+    else {
+        return;
+    };
+    let clean: String = message
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(96)
+        .collect();
+    let _ = writeln!(stdin, "NOTIFY {clean}");
+    let _ = stdin.flush();
+}
+
+fn send_dev_bind(state: &mut State, action: developer_hotkeys::Action) {
+    use std::io::Write;
+    let key = developer_hotkeys::Keybind(state.preferences.developer_hotkeys[action.index()]);
+    let (mods, vk) = key.win32().unwrap_or((0, 0));
+    if let Some(stdin) = state
+        .teleport_overlay
+        .as_mut()
+        .and_then(|c| c.stdin.as_mut())
+    {
+        let _ = writeln!(stdin, "BIND {} {mods} {vk}", action.index());
+        let _ = stdin.flush();
+    }
 }
 
 fn update(state: &mut State, message: Message) -> Task<Message> {
@@ -3803,6 +3919,27 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::SettingsTab(tab) => state.settings_tab = tab,
+        Message::PreferenceDiscordAppId(value) => {
+            if value.len() <= 25 && value.bytes().all(|c| c.is_ascii_digit()) {
+                state.preferences.discord_application_id = value;
+                persist_preferences(state);
+            }
+        }
+        Message::PreferenceDiscordToggle(which) => {
+            let p = &mut state.preferences;
+            match which {
+                "enabled" => p.discord_presence_enabled = !p.discord_presence_enabled,
+                "game" => p.discord_show_game = !p.discord_show_game,
+                "manager" => p.discord_show_manager = !p.discord_show_manager,
+                "character" => p.discord_show_character = !p.discord_show_character,
+                "stats" => p.discord_show_stats = !p.discord_show_stats,
+                "profile" => p.discord_show_profile = !p.discord_show_profile,
+                "minimal" => p.discord_minimal = !p.discord_minimal,
+                _ => {}
+            }
+            persist_preferences(state);
+        }
+        Message::DiscordPresenceTick => {}
         Message::LibrarySearchChanged(value) => {
             state.library_search = value;
             state.library_page = 0;
@@ -4083,6 +4220,409 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.developer_password = value;
             }
         }
+        Message::DeveloperKeybindChanged(action, key) => {
+            if !state.developer_unlocked {
+                return Task::none();
+            }
+            if key.0 > 28
+                || (key.0 != 0
+                    && state
+                        .preferences
+                        .developer_hotkeys
+                        .iter()
+                        .enumerate()
+                        .any(|(i, existing)| i != action.index() && *existing == key.0))
+            {
+                state.developer_hotkey_status =
+                    "Shortcut already assigned; choose a different key".into();
+                return Task::none();
+            }
+            state.preferences.developer_hotkeys[action.index()] = key.0;
+            send_dev_bind(state, action);
+            state.developer_hotkey_status = format!("{}: {key}", action.label());
+            if let Ok(path) = settings_path()
+                && let Err(error) = save_to(&path, &state.preferences)
+            {
+                state.developer_hotkey_status =
+                    format!("Shortcut set for session, but save failed: {error}");
+            }
+        }
+        Message::TeleportOverlayPoll => {
+            let ended = state
+                .teleport_overlay
+                .as_mut()
+                .is_some_and(|child| child.try_wait().ok().flatten().is_some());
+            if ended {
+                state.teleport_overlay = None;
+                state.teleport_hotkey_rx = None;
+                state.developer_hotkey_status = "Overlay exited; shortcuts inactive".into();
+                return Task::none();
+            }
+            if !state.developer_unlocked
+                || state.developer_online_mods
+                || !state.live_edit_enabled
+                || !state.armor_offline_confirmed
+            {
+                return Task::none();
+            }
+            let Some(output) = state
+                .teleport_hotkey_rx
+                .as_ref()
+                .and_then(|rx| rx.try_recv().ok())
+            else {
+                return Task::none();
+            };
+            if let Some(raw) = output.strip_prefix("BINDFAIL ") {
+                state.developer_hotkey_status = format!(
+                    "Could not register hotkey {} (already in use by Windows or another app)",
+                    raw.trim()
+                );
+                return Task::none();
+            }
+            let Some(raw) = output.strip_prefix("HOTKEY ") else {
+                return Task::none();
+            };
+            let Some(action) = raw
+                .trim()
+                .parse::<usize>()
+                .ok()
+                .and_then(developer_hotkeys::Action::from_index)
+            else {
+                return Task::none();
+            };
+            if state.preferences.developer_hotkeys[action.index()] == 0 {
+                return Task::none();
+            }
+            return match action {
+                developer_hotkeys::Action::Aim => Task::done(Message::TeleportAim),
+                developer_hotkeys::Action::Save => Task::done(Message::TeleportCapture(true)),
+                developer_hotkeys::Action::Return => Task::done(Message::TeleportReturnSaved),
+                developer_hotkeys::Action::XMinus => {
+                    Task::done(Message::TeleportRelative(-20.0, 0.0, 0.0))
+                }
+                developer_hotkeys::Action::XPlus => {
+                    Task::done(Message::TeleportRelative(20.0, 0.0, 0.0))
+                }
+                developer_hotkeys::Action::YMinus => {
+                    Task::done(Message::TeleportRelative(0.0, -20.0, 0.0))
+                }
+                developer_hotkeys::Action::YPlus => {
+                    Task::done(Message::TeleportRelative(0.0, 20.0, 0.0))
+                }
+                developer_hotkeys::Action::ZMinus => {
+                    Task::done(Message::TeleportRelative(0.0, 0.0, -20.0))
+                }
+                developer_hotkeys::Action::ZPlus => {
+                    Task::done(Message::TeleportRelative(0.0, 0.0, 20.0))
+                }
+            };
+        }
+        Message::TeleportAimDistanceChanged(value) => {
+            if state.developer_unlocked && value.len() <= 12 {
+                state.teleport_aim_distance = value;
+            }
+        }
+        Message::TeleportOverlayChanged(visible) => {
+            if let Some(mut child) = state.teleport_overlay.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            state.teleport_hotkey_rx = None;
+            if !visible {
+                state.teleport_status = "Crosshair overlay closed".into();
+                return Task::none();
+            }
+            if !state.developer_unlocked
+                || state.developer_online_mods
+                || !state.armor_offline_confirmed
+                || !state.live_edit_enabled
+            {
+                state.teleport_status = "Overlay requires an isolated offline match".into();
+                return Task::none();
+            }
+            let Some(pid) = state.runtime_snapshot.as_ref().and_then(|s| s.pid) else {
+                state.teleport_status = "Detect Evolve.exe first".into();
+                return Task::none();
+            };
+            if let Err(error) = runtime_armor::offline_guard(pid, true) {
+                state.teleport_status = error;
+                return Task::none();
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                let path = std::env::current_exe()
+                    .ok()
+                    .map(|p| p.with_file_name("evolve-teleport-overlay.exe"));
+                let result = path
+                    .ok_or_else(|| "Cannot locate manager installation".to_owned())
+                    .and_then(|path| {
+                        std::process::Command::new(path)
+                            .arg(pid.to_string())
+                            .arg(std::process::id().to_string())
+                            .stdin(std::process::Stdio::piped())
+                            .stdout(std::process::Stdio::piped())
+                            .creation_flags(0x0800_0000)
+                            .spawn()
+                            .map_err(|e| format!("Cannot launch overlay companion: {e}"))
+                    });
+                match result {
+                    Ok(mut child) => {
+                        if let Some(stdout) = child.stdout.take() {
+                            let (tx, rx) = std::sync::mpsc::channel::<String>();
+                            std::thread::spawn(move || {
+                                use std::io::BufRead;
+                                for line in std::io::BufReader::new(stdout).lines() {
+                                    let Ok(line) = line else { break };
+                                    if tx.send(line).is_err() {
+                                        break;
+                                    }
+                                }
+                            });
+                            state.teleport_hotkey_rx = Some(rx);
+                        }
+                        state.teleport_overlay = Some(child);
+                        for action in developer_hotkeys::Action::ALL {
+                            send_dev_bind(state, action);
+                        }
+                        state.teleport_status =
+                            "Approximate crosshair overlay and hotkeys enabled".into();
+                    }
+                    Err(error) => state.teleport_status = error,
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                state.teleport_status = "External overlay requires Windows".into();
+            }
+        }
+        Message::TeleportAim => {
+            if !state.developer_unlocked || state.teleport_busy {
+                return Task::none();
+            }
+            let raw = state.teleport_aim_distance.trim();
+            let raw = if raw.is_empty() { "30" } else { raw };
+            let distance = raw
+                .parse::<f32>()
+                .ok()
+                .filter(|v| v.is_finite() && (5.0..=100.0).contains(v));
+            let Some(distance) = distance else {
+                state.teleport_status = "Aim distance must be 5 to 100 units".into();
+                return Task::none();
+            };
+            state.teleport_aim_pending = Some(distance);
+            return Task::done(Message::TeleportCapture(true));
+        }
+        Message::TeleportPreviewAim => {
+            if !state.developer_unlocked
+                || state.developer_online_mods
+                || !state.armor_offline_confirmed
+                || !state.live_edit_enabled
+                || state.teleport_aim_preview_busy
+                || state.teleport_busy
+            {
+                return Task::none();
+            }
+            let Some(snapshot) = state.runtime_snapshot.clone() else {
+                state.teleport_status = "Detect Evolve.exe first".into();
+                return Task::none();
+            };
+            let raw = state.teleport_aim_distance.trim();
+            let raw = if raw.is_empty() { "30" } else { raw };
+            let distance = raw
+                .parse::<f32>()
+                .ok()
+                .filter(|v| v.is_finite() && (5.0..=100.0).contains(v));
+            let Some(distance) = distance else {
+                state.teleport_status = "Aim distance must be 5 to 100 units".into();
+                return Task::none();
+            };
+            state.teleport_aim_preview_busy = true;
+            let root = state.preferences.game_storage_root.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        runtime_teleport::preview_aim(&snapshot, &root, true, distance)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Aim preview failed: {e}")))
+                },
+                Message::TeleportPreviewed,
+            );
+        }
+        Message::TeleportPreviewed(result) => {
+            state.teleport_aim_preview_busy = false;
+            if !state.developer_unlocked || state.developer_online_mods {
+                return Task::none();
+            }
+            match result {
+                Ok(pos) => {
+                    state.teleport_status =
+                        format!("Approximate actor-facing destination: {}", pos.label())
+                }
+                Err(error) => state.teleport_status = format!("Aim unavailable: {error}"),
+            }
+        }
+        Message::TeleportCapture(save) => {
+            if !state.developer_unlocked
+                || state.developer_online_mods
+                || !state.armor_offline_confirmed
+                || !state.live_edit_enabled
+                || state.teleport_busy
+            {
+                state.teleport_status = "Enable offline editing in an isolated match".into();
+                return Task::none();
+            }
+            let Some(snapshot) = state.runtime_snapshot.clone() else {
+                state.teleport_status = "Detect Evolve.exe first".into();
+                return Task::none();
+            };
+            state.teleport_busy = true;
+            state.teleport_status = "Reading local physics coordinates...".into();
+            let root = state.preferences.game_storage_root.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        runtime_teleport::inspect(&snapshot, &root, true)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Teleport read failed: {e}")))
+                },
+                move |result| Message::TeleportCaptured(save, result),
+            );
+        }
+        Message::TeleportCaptured(save, result) => {
+            state.teleport_busy = false;
+            if !state.developer_unlocked
+                || state.developer_online_mods
+                || !state.armor_offline_confirmed
+                || !state.live_edit_enabled
+            {
+                state.teleport_aim_pending = None;
+                return Task::none();
+            }
+            match result {
+                Ok(reading) => {
+                    state.teleport_reading = Some(reading);
+                    state.teleport_x = format!("{:.3}", reading.position.x);
+                    state.teleport_y = format!("{:.3}", reading.position.y);
+                    state.teleport_z = format!("{:.3}", reading.position.z);
+                    if save {
+                        state.teleport_saved = Some(reading);
+                        state.teleport_status =
+                            format!("Saved position: {}", reading.position.label());
+                        notify_dev_overlay(state, "Position saved");
+                        if let Some(distance) = state.teleport_aim_pending.take() {
+                            return Task::done(Message::TeleportDo(
+                                runtime_teleport::Destination::ActorAim(distance),
+                                None,
+                            ));
+                        }
+                    } else {
+                        state.teleport_status =
+                            format!("Local player: {}", reading.position.label());
+                    }
+                }
+                Err(error) => {
+                    state.teleport_aim_pending = None;
+                    state.teleport_status = format!("Teleport unavailable: {error}");
+                }
+            }
+        }
+        Message::TeleportXYZChanged(axis, value) => {
+            if state.developer_unlocked && !state.teleport_busy && value.len() <= 24 {
+                match axis {
+                    0 => state.teleport_x = value,
+                    1 => state.teleport_y = value,
+                    2 => state.teleport_z = value,
+                    _ => {}
+                }
+            }
+        }
+        Message::TeleportAbsolute => {
+            if let Ok(pos) = runtime_teleport::parse_position(
+                &state.teleport_x,
+                &state.teleport_y,
+                &state.teleport_z,
+            ) {
+                return Task::done(Message::TeleportDo(
+                    runtime_teleport::Destination::Absolute(pos),
+                    None,
+                ));
+            }
+            state.teleport_status = "Enter valid X, Y, Z coordinates".into();
+        }
+        Message::TeleportRelative(x, y, z) => {
+            return Task::done(Message::TeleportDo(
+                runtime_teleport::Destination::Relative(runtime_teleport::Position { x, y, z }),
+                None,
+            ));
+        }
+        Message::TeleportReturnSaved => {
+            let Some(saved) = state.teleport_saved else {
+                state.teleport_status = "Save a position first".into();
+                return Task::none();
+            };
+            return Task::done(Message::TeleportDo(
+                runtime_teleport::Destination::Absolute(saved.position),
+                Some((saved.pid, saved.actor_id)),
+            ));
+        }
+        Message::TeleportDo(destination, identity) => {
+            if !state.developer_unlocked
+                || state.developer_online_mods
+                || !state.armor_offline_confirmed
+                || !state.live_edit_enabled
+                || state.teleport_busy
+            {
+                state.teleport_status = "Teleport requires unlocked offline writes".into();
+                return Task::none();
+            }
+            let Some(snapshot) = state.runtime_snapshot.clone() else {
+                state.teleport_status = "Detect Evolve.exe first".into();
+                return Task::none();
+            };
+            state.teleport_busy = true;
+            state.teleport_status = "Applying one-shot physics teleport...".into();
+            let root = state.preferences.game_storage_root.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        runtime_teleport::teleport(&snapshot, &root, true, destination, identity)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Teleport failed: {e}")))
+                },
+                Message::TeleportMoved,
+            );
+        }
+        Message::TeleportMoved(result) => {
+            state.teleport_busy = false;
+            if !state.developer_unlocked
+                || state.developer_online_mods
+                || !state.armor_offline_confirmed
+                || !state.live_edit_enabled
+            {
+                return Task::none();
+            }
+            match result {
+                Ok(reading) => {
+                    state.teleport_reading = Some(reading);
+                    state.teleport_x = format!("{:.3}", reading.position.x);
+                    state.teleport_y = format!("{:.3}", reading.position.y);
+                    state.teleport_z = format!("{:.3}", reading.position.z);
+                    state.teleport_status = format!(
+                        "Teleported to {}. Movement input may resume falling.",
+                        reading.position.label()
+                    );
+                    notify_dev_overlay(state, &format!("Teleported: {}", reading.position.label()));
+                }
+                Err(error) => {
+                    notify_dev_overlay(state, &format!("Teleport refused: {error}"));
+                    state.teleport_status = format!("Teleport refused: {error}");
+                }
+            }
+        }
         Message::ActorRefresh => {
             if !state.developer_unlocked || state.actor_busy {
                 return Task::none();
@@ -4143,16 +4683,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::ActorWrite => {
-            if !state.developer_unlocked
-                || !state.armor_offline_confirmed
-                || !state.live_edit_enabled
-                || state.developer_online_mods
-                || state.actor_busy
-            {
+            if !state.developer_unlocked || !state.live_edit_enabled || state.actor_busy {
+                state.actor_status = "Enable actor memory writes before applying a value.".into();
                 return Task::none();
             }
             let (Some(snapshot), Some((id, address, field, bits))) =
-                (state.runtime_snapshot.clone(), state.actor_edit.take())
+                (state.runtime_snapshot.clone(), state.actor_edit)
             else {
                 return Task::none();
             };
@@ -4173,7 +4709,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ActorWritten(result) => {
             state.actor_busy = false;
             if state.developer_unlocked {
-                state.actor_status = match result {
+                let notice = match &result {
+                    Ok(outcome) => format!("{} set to {}", outcome.field.title(), outcome.after),
+                    Err(error) => format!("Actor write failed: {error}"),
+                };
+                notify_dev_overlay(state, &notice);
+                state.actor_status = match &result {
                     Ok(outcome) => format!(
                         "{} {}: {} -> {}. Refresh to read current values.",
                         outcome.actor,
@@ -4183,7 +4724,116 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     ),
                     Err(e) => format!("Write refused or unconfirmed: {e}"),
                 };
-                return Task::done(Message::ActorRefresh);
+                if let Ok(outcome) = &result {
+                    let edited = state.actor_edit.take();
+                    if let Some(list) = &mut state.actor_listing {
+                        for actor in &mut list.actors {
+                            if !edited.is_some_and(|(id, addr, _, _)| {
+                                actor.id == id && actor.address == addr
+                            }) {
+                                continue;
+                            }
+                            let Some(value) =
+                                actor.fields.iter_mut().find(|v| v.field == outcome.field)
+                            else {
+                                continue;
+                            };
+                            let bits = if outcome.field == runtime_actors::Field::Stage {
+                                outcome.after.parse::<u32>().ok().map(|v| v | (v << 8))
+                            } else {
+                                outcome.after.parse::<f32>().ok().map(f32::to_bits)
+                            };
+                            let Some(bits) = bits else { continue };
+                            value.bits = bits;
+                            value.display = outcome.after.clone();
+                            if let Some((id, addr, field, _)) = edited
+                                && let Some(held) = state.actor_frozen.get_mut(&(id, addr, field))
+                            {
+                                *held = bits;
+                                state.actor_freeze_generation =
+                                    state.actor_freeze_generation.wrapping_add(1);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Message::ActorFreeze(id, addr, field, checked) => {
+            let key = (id, addr, field);
+            if !checked {
+                state.actor_frozen.remove(&key);
+                state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
+                notify_dev_overlay(state, &format!("Unfrozen {}", field.title()));
+                return Task::none();
+            }
+            if !state.developer_unlocked || !state.live_edit_enabled {
+                state.actor_status = "Enable actor memory writes before freezing fields".into();
+                return Task::none();
+            }
+            let bits = state
+                .actor_listing
+                .as_ref()
+                .and_then(|l| l.actors.iter().find(|a| a.id == id && a.address == addr))
+                .and_then(|a| a.fields.iter().find(|v| v.field == field))
+                .map(|v| v.bits);
+            if let Some(bits) = bits {
+                state.actor_frozen.insert(key, bits);
+                state.actor_status = format!("Holding {} at its current value", field.title());
+                notify_dev_overlay(state, &format!("Holding {}", field.title()));
+            }
+        }
+        Message::ActorFreezeTick => {
+            if state.actor_freeze_busy
+                || state.actor_frozen.is_empty()
+                || !state.developer_unlocked
+                || !state.live_edit_enabled
+            {
+                return Task::none();
+            }
+            let Some(snapshot) = state.runtime_snapshot.clone() else {
+                state.actor_frozen.clear();
+                return Task::none();
+            };
+            state.actor_freeze_busy = true;
+            let root = state.preferences.game_storage_root.clone();
+            let fields: Vec<_> = state.actor_frozen.iter().map(|(k, v)| (*k, *v)).collect();
+            let generation = state.actor_freeze_generation;
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        fields
+                            .into_iter()
+                            .map(|((id, addr, field), bits)| {
+                                (
+                                    (id, addr, field),
+                                    runtime_actors::freeze_once(
+                                        &snapshot, &root, id, addr, field, bits,
+                                    ),
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .await
+                    .unwrap_or_else(|error| {
+                        vec![(
+                            (0, 0, runtime_actors::Field::Health),
+                            Err(error.to_string()),
+                        )]
+                    })
+                },
+                move |result| Message::ActorFreezeDone(generation, result),
+            );
+        }
+        Message::ActorFreezeDone(generation, results) => {
+            state.actor_freeze_busy = false;
+            if generation != state.actor_freeze_generation {
+                return Task::none();
+            }
+            for (key, result) in results {
+                if let Err(error) = result {
+                    state.actor_frozen.remove(&key);
+                    state.actor_status = format!("Freeze stopped for {}: {error}", key.2.title());
+                }
             }
         }
         Message::RuntimeAddressChanged(value) => {
@@ -4216,11 +4866,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             state.live_edit_cancel = None;
             state.live_edit_busy = false;
-            state.live_edit_enabled = armed && state.armor_offline_confirmed;
+            state.live_edit_enabled = armed;
+            if !state.live_edit_enabled {
+                if let Some(mut child) = state.teleport_overlay.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                state.teleport_aim_pending = None;
+                state.actor_frozen.clear();
+                state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
+            }
             state.live_edit_probe = None;
             state.live_edit_generation = state.live_edit_generation.wrapping_add(1);
             state.live_edit_report = if state.live_edit_enabled {
-                "Single-shot edits armed for this OFFLINE session. First read a Float32 candidate; only a fresh read enables a write.".into()
+                "Memory writes armed for the current Evolve process. Only verified actor fields or freshly read Float32 values can be changed.".into()
             } else {
                 "Live editing disarmed. No automatic writes or freezing.".into()
             };
@@ -4233,7 +4892,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::LiveEditProbe(source) => {
             if !state.developer_unlocked
                 || !state.live_edit_enabled
-                || !state.armor_offline_confirmed
                 || state.live_edit_busy
                 || state.runtime_checking
             {
@@ -4301,7 +4959,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::LiveEditApply => {
             if !state.developer_unlocked
                 || !state.live_edit_enabled
-                || !state.armor_offline_confirmed
                 || state.live_edit_busy
                 || state.runtime_checking
             {
@@ -4316,7 +4973,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let desired = state.live_edit_value.clone();
             state.live_edit_busy = true;
             state.live_edit_report =
-                "Checking current baseline, offline status, then writing one Float32...".into();
+                "Checking the current value and process identity, then writing one Float32...".into();
             let generation = state.live_edit_generation;
             let cancel = Arc::new(AtomicBool::new(false));
             state.live_edit_cancel = Some(cancel.clone());
@@ -4353,33 +5010,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     "Float32 write not confirmed: {e}. Read the address again before retrying."
                 ),
             };
+            let notice = if state.live_edit_report.starts_with("One-shot") {
+                "Float32 edit applied"
+            } else {
+                "Float32 edit not confirmed"
+            };
+            notify_dev_overlay(state, notice);
         }
         Message::ArmorOfflineChanged(confirmed) => {
-            if !confirmed {
-                state.actor_edit = None;
-            }
-
-            if confirmed && state.developer_online_mods {
-                state.status =
-                    "Disable experimental modded-online mode before arming offline memory tools."
-                        .into();
-                return Task::none();
-            }
+            // Guided armor scanning is a separate opt-in from actor field edits.
+            // Changing this checkbox does not disarm the memory writer.
             state.armor_offline_confirmed = confirmed;
             if confirmed {
                 state.armor_pid_seen = state.runtime_snapshot.as_ref().and_then(|s| s.pid);
-            }
-            if !confirmed {
-                state.live_edit_enabled = false;
-                if let Some(cancel) = &state.live_edit_cancel {
-                    cancel.store(true, Ordering::Relaxed);
-                }
-                state.live_edit_cancel = None;
-                state.live_edit_probe = None;
-                state.live_edit_generation = state.live_edit_generation.wrapping_add(1);
-                state.live_edit_busy = false;
-                state.live_edit_report =
-                    "Offline session confirmation withdrawn; live editing disabled.".into();
+            } else {
                 if let Some(cancel) = &state.armor_cancel {
                     cancel.store(true, Ordering::Relaxed);
                 }
@@ -4387,8 +5031,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.armor_scan = None;
                 state.armor_live = None;
                 state.armor_generation = state.armor_generation.wrapping_add(1);
-                state.armor_report =
-                    "Offline authorization withdrawn; armor monitoring stopped.".into();
+                state.armor_report = "Guided armor scanning disabled.".into();
             }
         }
         Message::ArmorBegin => {
@@ -4493,6 +5136,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 return Task::none();
             }
             state.armor_pid_seen = pid;
+            state.actor_frozen.clear();
+            state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
             state.live_edit_enabled = false;
             if let Some(cancel) = &state.live_edit_cancel {
                 cancel.store(true, Ordering::Relaxed);
@@ -4602,8 +5247,18 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::RuntimeDetected(snapshot) => {
+            state.actor_frozen.clear();
+            state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
             state.actor_listing = None;
             state.actor_edit = None;
+            state.teleport_reading = None;
+            state.teleport_saved = None;
+            state.teleport_aim_pending = None;
+            if let Some(mut child) = state.teleport_overlay.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            state.teleport_status.clear();
             state.runtime_checking = false;
             if state.developer_unlocked {
                 state.armor_pid_seen = snapshot.pid;
@@ -4799,9 +5454,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .unwrap_or_else(|error| format!("Phase 3 preview rejected: {error}"));
         }
         Message::LockDeveloper => {
+            state.actor_frozen.clear();
+            state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
             state.actor_listing = None;
             state.actor_edit = None;
             state.actor_status.clear();
+            state.teleport_reading = None;
+            state.teleport_saved = None;
+            state.teleport_aim_pending = None;
+            if let Some(mut child) = state.teleport_overlay.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            state.teleport_status.clear();
             state.developer_network_generation = state.developer_network_generation.wrapping_add(1);
             state.developer_network_busy = false;
             state.developer_online_mods = false;
@@ -4925,16 +5590,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             match result {
                 Ok(status) => {
                     state.developer_online_mods = true;
-                    // Online mode must not reuse the separate offline-only
-                    // memory edit permissions or stale memory probes.
+                    // Network mode does not determine memory-edit permissions.
+                    // Address/PID validation and the explicit write arm remain active.
                     state.armor_offline_confirmed = false;
-                    state.live_edit_enabled = false;
-                    state.live_edit_probe = None;
-                    state.live_edit_generation = state.live_edit_generation.wrapping_add(1);
-                    if let Some(cancel) = &state.live_edit_cancel {
-                        cancel.store(true, Ordering::Relaxed);
-                    }
-                    state.live_edit_cancel = None;
                     state.runtime_health_scan = None;
                     state.armor_scan = None;
                     state.armor_live = None;
@@ -7541,6 +8199,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.settings_status = format!("Interface theme: {name}. Applies immediately.");
             }
         }
+        Message::PreferenceHomeBackground => {
+            state.preferences.show_home_background = !state.preferences.show_home_background;
+            persist_preferences(state);
+        }
         Message::PreferenceAppearance => {
             state.preferences.appearance_mode = if state.preferences.appearance_mode == "Dark" {
                 "Light".into()
@@ -7666,6 +8328,45 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::PreferenceGameInstall(value) => state.preferences.game_installation = value,
+        Message::PreferenceUseTestClient(enabled) => {
+            state.preferences.play_through_test_client = enabled;
+            persist_preferences(state);
+        }
+        Message::PreferenceTestGameInstall(value) => {
+            state.preferences.test_game_installation = value
+        }
+        Message::PreferenceTestClientExecutable(value) => {
+            state.preferences.test_client_executable = value
+        }
+        Message::PreferenceTestStage(value) => state.preferences.test_stage = value,
+        Message::PreferenceTestSwap(value) => state.preferences.test_swap = value,
+        Message::PickTestGame | Message::PickTestClient => {
+            let game = matches!(message, Message::PickTestGame);
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        native_export_picker(if game { "folder" } else { "file" })
+                    })
+                    .await
+                    .unwrap_or(None)
+                },
+                move |selection| {
+                    if game {
+                        Message::PickedTestGame(selection)
+                    } else {
+                        Message::PickedTestClient(selection)
+                    }
+                },
+            );
+        }
+        Message::PickedTestGame(Some(path)) => {
+            state.preferences.test_game_installation = path.to_string_lossy().into_owned();
+        }
+        Message::PickedTestClient(Some(path)) => {
+            state.preferences.test_client_executable = path.to_string_lossy().into_owned();
+        }
+        Message::PickedTestGame(None) | Message::PickedTestClient(None) => {}
+
         Message::PreferenceClientExecutable(value) => {
             state.preferences.client_executable = value;
             state.client_version = None;
@@ -7748,7 +8449,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.preferences.game_storage_root = storage.to_string_lossy().into_owned();
             persist_preferences(state);
             state.status = format!(
-                "Creating this manager's own setup under {}. Generating keys, verifying original PAKs and preparing local recovery helpers. Installed originals remain untouched.",
+                "Creating sparse setup under {}. Verifying original PAK signatures and creating an inventory; staged copies will be built only for enabled mods. Installed originals remain untouched.",
                 storage.display()
             );
             return launch(
@@ -7760,6 +8461,66 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.preferences.keep_original_snapshots,
                 ),
             );
+        }
+        Message::StartTestAutomaticSetup => {
+            if state.busy {
+                return Task::none();
+            }
+            let (game, _) = match play_setup::validate_test_paths(
+                &state.preferences.test_game_installation,
+                &state.preferences.test_client_executable,
+                &state.preferences.game_installation,
+                &state.preferences.client_executable,
+            ) {
+                Ok(paths) => paths,
+                Err(error) => {
+                    state.status =
+                        format!("Select separate Test Client and Test Game builds first: {error}");
+                    return Task::none();
+                }
+            };
+            if !state.preferences.test_stage.is_empty() || !state.preferences.test_swap.is_empty() {
+                state.status = "Test stage/swap paths already configured. Preserve them; clear both Test paths only to create a new independent setup. Nothing was deleted.".into();
+                return Task::none();
+            }
+            let storage = match settings_path().and_then(|file| {
+                settings::setup_storage_directory(&file, &state.preferences.game_storage_root)
+            }) {
+                Ok(path) => path.join("TestEnvironment"),
+                Err(error) => {
+                    state.status = format!("Cannot select Test Environment storage: {error}");
+                    return Task::none();
+                }
+            };
+            return launch(
+                state,
+                Operation::CreateTestSetup(
+                    game,
+                    storage,
+                    state.preferences.keep_original_snapshots,
+                ),
+            );
+        }
+        Message::SaveTestSetup => {
+            match play_setup::validate_test_paths(
+                &state.preferences.test_game_installation,
+                &state.preferences.test_client_executable,
+                &state.preferences.game_installation,
+                &state.preferences.client_executable,
+            ) {
+                Ok((game, client)) => {
+                    state.preferences.test_game_installation = game.to_string_lossy().into_owned();
+                    state.preferences.test_client_executable =
+                        client.to_string_lossy().into_owned();
+                    persist_preferences(state);
+                    state.settings_status = "Separate Test Client/Game paths saved; the Play toggle controls which environment is used.".into();
+                    state.status = state.settings_status.clone();
+                }
+                Err(error) => {
+                    state.settings_status = format!("Test Environment setup incomplete: {error}");
+                    state.status = state.settings_status.clone();
+                }
+            }
         }
         Message::SaveGameSetup => {
             match play_setup::validate_paths(
@@ -7810,11 +8571,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             state.active_play = Some(kind);
             state.play_notice = Some(play_dialog::Notice::preparing(kind));
-            let direct_launch = state.preferences.game_launch_mode == "Direct Launch";
-            let paths = play_setup::validate_paths(
-                &state.preferences.game_installation,
-                &state.preferences.client_executable,
-            );
+            let test_mode = state.preferences.play_through_test_client;
+            // The separate Test Client owns its game's startup. Never use the
+            // production Direct Launch smoke host for this other game build.
+            let direct_launch = !test_mode && state.preferences.game_launch_mode == "Direct Launch";
+            let paths = if test_mode {
+                play_setup::validate_test_paths(
+                    &state.preferences.test_game_installation,
+                    &state.preferences.test_client_executable,
+                    &state.preferences.game_installation,
+                    &state.preferences.client_executable,
+                )
+            } else {
+                play_setup::validate_paths(
+                    &state.preferences.game_installation,
+                    &state.preferences.client_executable,
+                )
+            };
             let (game, client) = match paths {
                 Ok(paths) => paths,
                 Err(error) => {
@@ -7822,7 +8595,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.settings_tab = settings_page::Tab::Storage;
                     state.settings_advanced_paths = true;
                     state.status = format!(
-                        "Set Up Manager: {error}. Choose your installed game folder (and the client for Client Launch), then Save Setup."
+                        "Set Up Manager: {error}. Check the selected production or Test Environment paths, then Save Setup."
                     );
                     state.play_notice = Some(play_dialog::Notice::finished(
                         kind,
@@ -7834,7 +8607,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
             };
             if is_modded {
-                let online_requested = state.developer_unlocked && state.developer_online_mods;
+                // The real Test Client should retain its relay/profile access.
+                // Do not apply the production offline-only firewall policy to it.
+                let online_requested =
+                    test_mode || (state.developer_unlocked && state.developer_online_mods);
                 if online_requested
                     && (state.armor_offline_confirmed
                         || state.live_edit_enabled
@@ -7850,13 +8626,25 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.active_play = None;
                     return Task::none();
                 }
-                if state.preferences.stage.trim().is_empty()
-                    || state.preferences.swap.trim().is_empty()
-                {
+                let selected_stage = if test_mode {
+                    &state.preferences.test_stage
+                } else {
+                    &state.preferences.stage
+                };
+                let selected_swap = if test_mode {
+                    &state.preferences.test_swap
+                } else {
+                    &state.preferences.swap
+                };
+                if selected_stage.trim().is_empty() || selected_swap.trim().is_empty() {
                     state.page = Some(Page::Settings);
                     state.settings_tab = settings_page::Tab::Storage;
                     state.settings_advanced_paths = true;
-                    state.status = "Modded play needs a verified signing stage. Use Create Offline Setup in Settings to build the keys, re-signed PAKs and recovery helpers automatically from your game installation. Existing stage/swap folders can also be selected under Advanced paths. No game files were changed.".into();
+                    state.status = if test_mode {
+                        "Test modded play needs its own Test signing stage and Test recovery folder. Use Create Test Mod Setup or select existing test-specific paths in Settings. Production stage/swap files are never reused.".into()
+                    } else {
+                        "Modded play needs a verified signing stage. Use Create Offline Setup in Settings to build the keys, re-signed PAKs and recovery helpers automatically from your game installation. Existing stage/swap folders can also be selected under Advanced paths. No game files were changed.".into()
+                    };
                     state.play_notice = Some(play_dialog::Notice::finished(
                         kind,
                         play_dialog::Phase::Error,
@@ -7879,29 +8667,62 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.active_play = None;
                     return Task::none();
                 }
+                if test_mode {
+                    // Never retarget an existing production recovery journal.
+                    let prod_stage = std::fs::canonicalize(&state.preferences.stage).ok();
+                    let prod_swap = std::fs::canonicalize(&state.preferences.swap).ok();
+                    let selected_test_stage = std::fs::canonicalize(selected_stage).ok();
+                    let selected_test_swap = std::fs::canonicalize(selected_swap).ok();
+                    if selected_test_stage.is_some() && selected_test_stage == prod_stage
+                        || selected_test_swap.is_some() && selected_test_swap == prod_swap
+                        || selected_stage == &state.preferences.stage
+                        || selected_swap == &state.preferences.swap
+                    {
+                        state.status = "Test Environment cannot reuse the production signing stage or recovery journal. Configure separate Test stage/swap paths.".into();
+                        state.play_notice = Some(play_dialog::Notice::finished(
+                            kind,
+                            play_dialog::Phase::Error,
+                            state.status.clone(),
+                        ));
+                        state.active_play = None;
+                        return Task::none();
+                    }
+                }
                 let progress = Arc::new(AtomicUsize::new(0));
                 state.mod_launch_progress = Some(progress.clone());
                 return launch(
                     state,
                     Operation::PlayEnabledMods(
                         PathBuf::from(&state.preferences.projects),
-                        PathBuf::from(&state.preferences.stage),
-                        PathBuf::from(&state.preferences.swap),
+                        PathBuf::from(selected_stage),
+                        PathBuf::from(selected_swap),
                         game,
                         client,
                         progress,
                         online_requested,
                         direct_launch,
+                        test_mode,
                     ),
                 );
             }
-            let swap = (!state.preferences.swap.trim().is_empty())
-                .then(|| PathBuf::from(&state.preferences.swap));
+            let selected_swap = if test_mode {
+                &state.preferences.test_swap
+            } else {
+                &state.preferences.swap
+            };
+            let swap = (!selected_swap.trim().is_empty()).then(|| PathBuf::from(selected_swap));
             if direct_launch {
                 state.status = "Launching unmodded Evolve.exe directly with original PAKs…".into();
                 return launch(state, Operation::LaunchDirectGame(game, client, swap));
             }
-            state.status = "Opening the normal client with original PAKs…".into();
+            state.status = if test_mode {
+                "Opening the separate Test Client with the Test Game installation…".into()
+            } else {
+                "Opening the normal client with original PAKs…".into()
+            };
+            if test_mode {
+                return launch(state, Operation::LaunchCleanTestClient(game, client, swap));
+            }
             return launch(state, Operation::LaunchCleanClient(game, client, swap));
         }
         Message::PreferenceStage(value) => {
@@ -10102,12 +10923,24 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::Settings);
                     state.settings_tab = settings_page::Tab::Storage;
                 }
+                Ok(Completed::TestSetupCreated(report)) => {
+                    state.preferences.test_stage = report.stage.to_string_lossy().into_owned();
+                    state.preferences.test_swap = report.swap.to_string_lossy().into_owned();
+                    persist_preferences(state);
+                    state.status = format!(
+                        "Separate Test Mod Setup prepared: {} signed PAKs. Test stage: {}. Production stage and recovery files were unchanged.",
+                        report.signed_count,
+                        report.stage.display()
+                    );
+                    state.page = Some(Page::Settings);
+                    state.settings_tab = settings_page::Tab::Storage;
+                }
                 Ok(Completed::InitialSetupCreated(report)) => {
                     state.preferences.stage = report.stage.to_string_lossy().into_owned();
                     state.preferences.swap = report.swap.to_string_lossy().into_owned();
                     persist_preferences(state);
                     state.status = format!(
-                        "Offline setup verified: {} signed original PAKs, {} plain archives, local signing key and recovery helpers. Original snapshots: {}. Game PAKs unchanged. Stage: {}. You can now build/stage your modded PAKs and use Play with Mods.",
+                        "Sparse setup verified: {} signed stock PAKs inventoried, {} plain archives. Only PAKs targeted by enabled mods are staged when needed. Permanent original snapshots: {}. Game PAKs unchanged. Stage: {}.",
                         report.signed_count,
                         report.plain_count,
                         if report.snapshots {
@@ -10261,7 +11094,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::ProfileApplied(tx)) => {
                     state.profile_feedback = format!(
-                        "Applied {} signed mod PAKs to ISOLATED offline stage only. Transaction {} requires recovery before another profile.",
+                        "Applied {} signed mod PAKs to ISOLATED offline stage only and selected exactly those PAKs for client swap. Transaction {} requires recovery before another profile. Verify the offline launcher before playing.",
                         tx.entries.len(),
                         tx.id
                     );
@@ -10270,7 +11103,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::ProfileRecovered(tx)) => {
                     state.profile_feedback = format!(
-                        "Restored {} original PAKs from verified offline batch backups.",
+                        "Restored {} original PAKs from verified offline batch backups and cleared the active client PAK selection.",
                         tx.entries.len()
                     );
                     state.status = state.profile_feedback.clone();
@@ -11150,6 +11983,7 @@ struct Desktop {
     activity_id: Option<window::Id>,
     play_notice_id: Option<window::Id>,
     export_id: Option<window::Id>,
+    discord_presence: discord_presence::Service,
 }
 
 /// Use the shipped application artwork for titlebars and taskbar icons on
@@ -11182,6 +12016,7 @@ impl Desktop {
             Task::none()
         };
         let client_version_task = inspect_client_version_task(&state.preferences.client_executable);
+        let discord_presence = discord_presence::Service::start(discord_presence::Config::from_state(&state));
         (
             Self {
                 state,
@@ -11192,6 +12027,7 @@ impl Desktop {
                 activity_id: None,
                 play_notice_id: None,
                 export_id: None,
+                discord_presence,
             },
             Task::batch([
                 opened.map(|_| Message::ViewerOpened),
@@ -11286,6 +12122,11 @@ impl Desktop {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        if matches!(message, Message::DiscordPresenceTick | Message::PreferenceDiscordToggle(_) | Message::PreferenceDiscordAppId(_)) {
+            let task = update(&mut self.state, message);
+            self.discord_presence.publish(discord_presence::Config::from_state(&self.state));
+            return task;
+        }
         match message {
             Message::MenuCommand(inner) => {
                 self.state.viewer_menu = None;
@@ -11541,12 +12382,28 @@ impl Desktop {
         } else {
             Subscription::none()
         };
+        let dev_overlay_input = if self.state.teleport_overlay.is_some() {
+            iced::time::every(Duration::from_millis(125)).map(|_| Message::TeleportOverlayPoll)
+        } else {
+            Subscription::none()
+        };
+        let actor_freeze = if !self.state.actor_frozen.is_empty()
+            && self.state.developer_unlocked
+            && self.state.live_edit_enabled
+        {
+            iced::time::every(Duration::from_secs(2)).map(|_| Message::ActorFreezeTick)
+        } else {
+            Subscription::none()
+        };
         let news_poll = if matches!(self.state.page, Some(Page::Home | Page::WhatsNew)) {
             iced::time::every(Duration::from_secs(600)).map(|_| Message::RefreshNews)
         } else {
             Subscription::none()
         };
         Subscription::batch([
+            iced::time::every(Duration::from_secs(8)).map(|_| Message::DiscordPresenceTick),
+            dev_overlay_input,
+            actor_freeze,
             news_poll,
             armor_recovery,
             armor_pulse,

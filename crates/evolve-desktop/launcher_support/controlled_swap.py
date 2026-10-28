@@ -97,6 +97,44 @@ def all_closed():
         stop('Close Evolve.exe AND ModdedEvolveLauncher.exe before this operation.')
 
 
+def selected_signed_entries(stage, plan):
+    """Choose only profile-target PAKs; keep the full immutable rekey inventory.
+
+    Missing manifest preserves the legacy full-swap workflow for manual stages.
+    A present manifest must be valid; never silently fall back to all PAKs.
+    """
+    signed = [e for e in plan['entries'] if e.get('kind') == 'signed-encrypted']
+    manifest = stage / 'active_mod_paks.json'
+    if not manifest.exists() and not manifest.is_symlink():
+        return signed
+    import stat
+    metadata = manifest.lstat()
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 64 * 1024:
+        stop('Unsafe enabled-profile PAK manifest')
+    spec = read_json(manifest)
+    targets = spec.get('targets')
+    if spec.get('schema') != 1 or not isinstance(targets, list) or not 0 < len(targets) <= 512:
+        stop('Invalid enabled-profile PAK selection')
+    names = set()
+    for raw in targets:
+        if not isinstance(raw, str) or not raw or len(raw) > 1024:
+            stop('Invalid selected PAK path')
+        normalized = raw.replace('\\', '/')
+        parts = normalized.split('/')
+        if (normalized != raw or normalized.startswith('/') or
+                any(part in ('', '.', '..') or ':' in part for part in parts) or
+                not normalized.lower().endswith('.pak')):
+            stop('Unsafe selected PAK path')
+        lowered = normalized.casefold()
+        if lowered in names:
+            stop('Duplicate enabled-profile PAK target')
+        names.add(lowered)
+    selected = [e for e in signed if str(e.get('path', '')).replace('\\', '/').casefold() in names]
+    if len(selected) != len(names):
+        stop('Enabled profile references PAKs missing from signed stage')
+    return selected
+
+
 def list_files(game, stage):
     plan = read_json(stage / 'rekey_plan.json')
     status = read_json(stage / 'stage_status.json')
@@ -110,7 +148,7 @@ def list_files(game, stage):
     if not signed or len(signed) != status.get('count'):
         stop('Archive count differs from verified stage status.')
     files = []
-    for entry in signed:
+    for entry in selected_signed_entries(stage, plan):
         rel = Path(entry['path'])
         if rel.is_absolute() or '..' in rel.parts or rel.suffix.lower() != '.pak':
             stop(f'Unsafe archive path: {rel}')
@@ -123,6 +161,16 @@ def list_files(game, stage):
     files.append({'name':'bin64_SteamRetail/inject.dll', 'target':str(shim_target),
                   'source':str(shim_source), 'ready':str(shim_target) + READY,
                   'backup':str(shim_target) + BACKUP})
+    if status.get('signer') == 'official-2025':
+        original_debug = game / 'bin64_SteamRetail' / 'dbghelp.dll'
+        custom_debug = stage / 'dbghelp-custom.dll'
+        if (not original_debug.is_file() or not custom_debug.is_file()
+                or sha(original_debug) != status.get('original_dbghelp_sha256', '').lower()
+                or sha(custom_debug) != status.get('dbghelp_sha256', '').lower()):
+            stop('Official dbghelp.dll original/stage mismatch; restore normal client first.')
+        files.append({'name':'bin64_SteamRetail/dbghelp.dll', 'target':str(original_debug),
+                      'source':str(custom_debug), 'ready':str(original_debug) + READY,
+                      'backup':str(original_debug) + BACKUP})
     return files, status
 
 
@@ -151,7 +199,7 @@ def check(args):
     shim=(game/'bin64_SteamRetail'/'inject.dll').read_bytes()
     if not oldkey.exists() or len(shim)!=4096 or shim[0x870:0x870+140]!=oldkey.read_bytes():
         stop('Installed inject.dll does not match original public key.')
-    print(f'CHECK PASSED: {len(files)-1} signed archives and one custom RSA shim are available.')
+    print(f'CHECK PASSED: {status["count"]} signed archives and matching runtime DLLs are available.')
     print(f'Estimated temporary staging volume: {total_bytes/1024**3:.2f} GiB plus reserve.')
     print(f'Free space on game volume: {shutil.disk_usage(game).free/1024**3:.2f} GiB.')
     print('No game files changed. Next: verify x64dbg can pause BEFORE Evolve.exe creation.')
@@ -197,6 +245,49 @@ def preserve_abandoned_partial(partial, target, ready, backup):
     stop(f'Could not allocate a distinct preservation name for: {partial}')
 
 
+def prepared_slot_is_regular(path):
+    """Reject symlinks, reparse points and oversized temporary copies."""
+    import stat
+    try:
+        meta = path.lstat()
+    except FileNotFoundError:
+        return False
+    reparse = getattr(meta, 'st_file_attributes', 0) & getattr(
+        stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0
+    )
+    if not stat.S_ISREG(meta.st_mode) or reparse or meta.st_size > 16 * 1024**3:
+        stop(f'Unsafe prepared copy; no game files changed: {path}')
+    return True
+
+
+def preserve_outdated_ready_copy(item):
+    """Retire only a verified temporary READY file, never a stock PAK/backup."""
+    ready = Path(item['ready'])
+    target = Path(item['target'])
+    backup = Path(item['backup'])
+    if backup.exists() or backup.is_symlink():
+        stop(f'Original backup still exists; restore before refreshing: {backup}')
+    if not target.is_file() or target.is_symlink():
+        stop(f'Installed game original missing or unsafe: {target}')
+    if not prepared_slot_is_regular(ready):
+        stop(f'Prepared copy disappeared before it could be preserved: {ready}')
+    for attempt in range(64):
+        preserved = ready.with_name(
+            f'{ready.name}.stale-{time.time_ns()}-{attempt}'
+        )
+        if preserved.exists() or preserved.is_symlink():
+            continue
+        try:
+            ready.rename(preserved)
+        except FileExistsError:
+            continue
+        except OSError as error:
+            stop(f'Could not preserve outdated prepared copy {ready}: {error}')
+        print(f'Preserved outdated profile prepared copy: {preserved}', flush=True)
+        return preserved
+    stop(f'Could not allocate a safe stale-copy name for: {ready}')
+
+
 def prepare(args):
     all_closed()
     if STATE_FILE.exists():
@@ -216,12 +307,44 @@ def prepare(args):
     custom_shim_file = stage / 'inject-custom.dll'
     if sha(custom_shim_file) != status.get('shim_sha256','').lower():
         stop('Staged custom shim SHA256 differs from the verified staging report.')
+    # A previous profile can leave behind READY files no longer listed in
+    # the restored journal. Validate the full selection and ORIGINAL targets
+    # before retiring any temporary copy; never overwrite a live/unknown PAK.
+    plan = read_json(stage / 'rekey_plan.json')
+    original_hashes = {
+        str(entry['path']).replace('\\', '/').casefold(): entry.get('sha256')
+        for entry in plan['entries'] if entry.get('kind') == 'signed-encrypted'
+    }
     required = 0
+    reusable = {}
+    outdated = set()
     for item in files:
         source = Path(item['source']); target = Path(item['target'])
-        if not target.is_file() or not source.is_file(): stop(f'Missing installed or staged file: {item["name"]}')
-        if Path(item['backup']).exists(): stop(f'Existing backup: {item["backup"]}')
-        if not Path(item['ready']).exists(): required += source.stat().st_size
+        ready = Path(item['ready']); backup = Path(item['backup'])
+        if (not target.is_file() or target.is_symlink()
+                or not source.is_file() or source.is_symlink()):
+            stop(f'Missing or unsafe installed/staged file: {item["name"]}')
+        if backup.exists() or backup.is_symlink():
+            stop(f'Original backup remains; restore before preparing: {backup}')
+        if prepared_slot_is_regular(ready):
+            source_hash = sha(source)
+            if ready.stat().st_size == source.stat().st_size and sha(ready) == source_hash:
+                reusable[item['name']] = source_hash
+                continue
+            # Only stale, non-PAK ready copies are recyclable. Confirm the
+            # installed stock archive still hashes to its original setup
+            # digest; the injector and optional dbghelp were checked above.
+            if item['name'].casefold().endswith('.pak'):
+                original_hash = original_hashes.get(
+                    item['name'].replace('\\', '/').casefold()
+                )
+                if (not isinstance(original_hash, str)
+                        or len(original_hash) != 64
+                        or any(c not in '0123456789abcdef' for c in original_hash.lower())
+                        or sha(target).lower() != original_hash.lower()):
+                    stop(f'Installed stock PAK differs from signing inventory: {item["name"]}')
+            outdated.add(item['name'])
+        required += source.stat().st_size
     if os.path.splitdrive(str(game))[0].casefold() != os.path.splitdrive(str(stage))[0].casefold() and os.name=='nt':
         print('NOTE: staged PAKs on another volume; prepare copies them onto the game volume.')
     free = shutil.disk_usage(game).free
@@ -231,15 +354,17 @@ def prepare(args):
     # Full hash each source during copy, then verify the destination bytes independently.
     for i, item in enumerate(files, 1):
         source = Path(item['source']); ready = Path(item['ready'])
-        if ready.exists():
-            if source.stat().st_size != ready.stat().st_size:
-                stop(f'Existing prepared file differs from staged source: {ready}')
-            # Both copies are fully rehashed before any existing cache is
-            # trusted. Keep the verified digest; do not read READY a second time.
+        if item['name'] in reusable:
+            # Revalidate at publication time; a previous preflight hash alone
+            # cannot authorize a ready file if its bytes changed afterward.
             verified_digest = sha(source)
-            if verified_digest != sha(ready):
-                stop(f'Existing prepared file differs from staged source: {ready}')
+            if (verified_digest != reusable[item['name']]
+                    or not prepared_slot_is_regular(ready)
+                    or sha(ready) != verified_digest):
+                stop(f'Prepared copy changed during verification: {ready}')
         else:
+            if item['name'] in outdated:
+                preserve_outdated_ready_copy(item)
             ready.parent.mkdir(parents=True, exist_ok=True)
             partial = Path(str(ready) + '.partial')
             if partial.exists() or partial.is_symlink():

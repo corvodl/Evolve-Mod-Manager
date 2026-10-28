@@ -158,9 +158,174 @@ pub fn staged_target(stage: &Path, source: &Path) -> Result<String, String> {
     Ok(label)
 }
 
+/// Materialize one authenticated stock PAK only when an enabled Mod Project
+/// needs it. Sparse setups intentionally have NO full-game staging copy.
+/// Never modify installed PAKs; publish one verified file atomically.
+pub fn ensure_selected_stage_pak(stage: &Path, relative: &str) -> Result<(), String> {
+    use evolve_core::signed_pak::{inspect_signed_pak, resign_signed_pak_with_original_name};
+    use sha2::{Digest, Sha256};
+    if !relative.to_ascii_lowercase().ends_with(".pak")
+        || relative
+            .split('/')
+            .any(|p| p.is_empty() || p == "." || p == ".." || p.contains('\\') || p.contains(':'))
+        || relative.starts_with('/')
+    {
+        return Err("Unsafe selected PAK path".into());
+    }
+    let stage = fs::canonicalize(stage).map_err(|e| format!("Invalid signing stage: {e}"))?;
+    let status: serde_json::Value = serde_json::from_slice(
+        &fs::read(stage.join("stage_status.json")).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("Invalid signing status: {e}"))?;
+    let plan: serde_json::Value = serde_json::from_slice(
+        &fs::read(stage.join("rekey_plan.json")).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("Invalid signing inventory: {e}"))?;
+    let entry = plan["entries"]
+        .as_array()
+        .and_then(|rows| {
+            rows.iter().find(|item| {
+                item["path"].as_str() == Some(relative)
+                    && item["kind"].as_str() == Some("signed-encrypted")
+            })
+        })
+        .ok_or("Selected PAK is not in this game's verified signing inventory")?;
+    let root = fs::canonicalize(
+        plan["source_root"]
+            .as_str()
+            .ok_or("Signing inventory has no source game root")?,
+    )
+    .map_err(|e| format!("Signing inventory's game is missing: {e}"))?;
+    if root.starts_with(&stage) || stage.starts_with(&root) {
+        return Err("Game and signing stage must not overlap".into());
+    }
+    let original = root.join(relative);
+    if !fs::symlink_metadata(&original).is_ok_and(|m| m.file_type().is_file())
+        || !fs::canonicalize(&original).is_ok_and(|path| path.starts_with(&root))
+    {
+        return Err(format!(
+            "Missing, linked or unsafe original game PAK: {relative}"
+        ));
+    }
+    let source_sha = entry["sha256"]
+        .as_str()
+        .ok_or("Missing original PAK digest")?;
+    if source_sha.len() != 64 || !source_sha.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return Err("Invalid pinned game PAK SHA-256".into());
+    }
+    fn digest(path: &Path) -> Result<String, String> {
+        use std::io::Read;
+        let mut f = fs::File::open(path).map_err(|e| e.to_string())?;
+        let mut hasher = Sha256::new();
+        let mut buf = [0u8; 256 * 1024];
+        loop {
+            let n = f.read(&mut buf).map_err(|e| e.to_string())?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+        Ok(format!("{:x}", hasher.finalize()))
+    }
+    if !digest(&original)?.eq_ignore_ascii_case(source_sha) {
+        return Err(format!(
+            "Original game PAK has changed since setup: {relative}"
+        ));
+    }
+    let basename = signed_basename(&original)?;
+    let signed_name = entry["signed_name"].as_str().unwrap_or(&basename);
+    if signed_name != basename && signed_name != basename.to_ascii_lowercase() {
+        return Err("Untrusted authenticated PAK basename".into());
+    }
+    let original_key = original_public_key(&stage)?;
+    let custom_key = public_key(&stage)?;
+    inspect_signed_pak(&original, &original_key, signed_name)
+        .map_err(|e| format!("Installed original PAK signature failed: {e}"))?;
+    let paks = fs::canonicalize(stage.join("paks"))
+        .map_err(|e| format!("Signing stage has no paks directory: {e}"))?;
+    let target = paks.join(relative);
+    if let Ok(meta) = fs::symlink_metadata(&target) {
+        if !meta.file_type().is_file()
+            || !fs::canonicalize(&target).is_ok_and(|path| path.starts_with(&paks))
+        {
+            return Err("Existing selected stage target is not a safe regular file".into());
+        }
+        inspect_signed_pak(&target, &custom_key, signed_name)
+            .map_err(|e| format!("Existing selected stage PAK failed signature: {e}"))?;
+        return Ok(());
+    }
+    // Existing full stages can also recover one missing original when the
+    // immutable inventory and installed signature still authenticate it.
+    // The stage must be idle; caller restores prior profile before provisioning.
+    if status["status"].as_str() != Some("fully-staged-offline") {
+        return Err("Signing stage is not ready for selected-PAK repair".into());
+    }
+    let parent = target.parent().ok_or("Selected PAK lacks parent")?;
+    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    // Only manager-created, non-linked stage folders may receive a PAK.
+    let canonical_parent = fs::canonicalize(parent).map_err(|e| e.to_string())?;
+    if !canonical_parent.starts_with(&paks) {
+        return Err("Selected stage destination escaped signing workspace".into());
+    }
+    let temp = tempfile::Builder::new()
+        .prefix(".selected-pak-")
+        .tempdir_in(parent)
+        .map_err(|e| e.to_string())?;
+    let output = temp.path().join(&basename);
+    if fs::read(&original_key).map_err(|e| e.to_string())?
+        == fs::read(&custom_key).map_err(|e| e.to_string())?
+    {
+        // Supplied original developer key: stock PAK already authenticates.
+        // Copy ONLY this selected archive, with no mass re-signing.
+        fs::copy(&original, &output).map_err(|e| e.to_string())?;
+    } else if let Some(official) = crate::official_stage2_tools::for_stage(&stage)? {
+        official.rekey_copy(&original, signed_name, &output)?;
+    } else {
+        let keys = signing_keys(&stage)?;
+        resign_signed_pak_with_original_name(
+            &original,
+            &original_key,
+            &keys.private,
+            &custom_key,
+            signed_name,
+            &basename,
+            &output,
+        )
+        .map_err(|e| format!("Cannot sign selected PAK {relative}: {e}"))?;
+    }
+    inspect_signed_pak(&output, &custom_key, signed_name)
+        .map_err(|e| format!("Selected PAK failed signing verification: {e}"))?;
+    if !digest(&original)?.eq_ignore_ascii_case(source_sha) {
+        return Err("Original game PAK changed during selected signing".into());
+    }
+    // hard_link publishes without overwriting anything even if another
+    // process unexpectedly creates the target while the copy is prepared.
+    fs::hard_link(&output, &target)
+        .map_err(|e| format!("Cannot publish selected PAK without overwrite: {e}"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn selecting_unknown_or_unsafe_sparse_targets_never_creates_game_copies() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stage = tmp.path().join("stage");
+        fs::create_dir(&stage).unwrap();
+        fs::create_dir(stage.join("paks")).unwrap();
+        for invalid in [
+            "Game/../other.pak",
+            "Game\\other.pak",
+            "../other.pak",
+            "a.txt",
+        ] {
+            assert!(ensure_selected_stage_pak(&stage, invalid).is_err());
+        }
+        assert!(ensure_selected_stage_pak(&stage, "Game/UI_Assets.pak").is_err());
+        assert_eq!(fs::read_dir(stage.join("paks")).unwrap().count(), 0);
+    }
+
     #[test]
     fn bundled_original_key_is_tried_even_after_mismatched_local_keys() {
         let root = tempfile::tempdir().unwrap();

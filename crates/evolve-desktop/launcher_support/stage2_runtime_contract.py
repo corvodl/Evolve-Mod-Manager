@@ -105,16 +105,24 @@ def catalog_from_local_appdata(local_appdata=None) -> Path:
 
 
 def validate_modes(raw: str) -> str:
+    """Accept the client's semicolon log format; pass a canonical list to the DLL.
+
+    The service host reports `modes=Stage2Listener;Stage2ProfileCompat;...`,
+    while Stage2Trace's environment contract uses comma-separated flags.
+    Preserve order and contents; never drop an unknown but valid mode.
+    """
     if not isinstance(raw, str) or not raw or len(raw) > 4096:
         raise RuntimeError("The client did not provide a valid Stage2 modes string")
-    modes = raw.split(",")
+    if ";" in raw and "," in raw:
+        raise RuntimeError("Client's Stage2 modes contain mixed separators")
+    modes = raw.split(";" if ";" in raw else ",")
     if any(not _MODE_PATTERN.fullmatch(item) for item in modes):
         raise RuntimeError("Client's Stage2 modes are malformed")
     if not _REQUIRED_MODES.issubset(set(modes)):
         raise RuntimeError("Client's Stage2 compatibility modes omit profile or listener support")
     if len(modes) != len(set(modes)):
         raise RuntimeError("Client's Stage2 compatibility modes contain duplicates")
-    return raw
+    return ",".join(modes)
 
 
 def validated_optional_session_environment(raw) -> dict[str, str]:
@@ -167,9 +175,23 @@ def validate_hook_startup(log_text: str, provider: Path, modes: str) -> None:
         raise RuntimeError("Stage2Trace failed to enable its game hooks")
     if f"STEAM_EMU active provider={provider}" not in log_text:
         raise RuntimeError("Game did not activate the verified Steam compatibility provider")
-    expected_line = "Modes from MODDED_EVOLVE_STAGE2_MODES: " + validate_modes(modes)
-    if expected_line not in log_text:
-        raise RuntimeError("Stage2Trace did not activate the client's intended mode set")
+    # The client and hook can list exactly the same modes in different orders.
+    # Validate each observed list before comparing sets, so duplicates, malformed
+    # names and unexpected/missing modes still fail closed. The log belongs to
+    # this launch (the caller truncates it before starting Evolve.exe).
+    marker = "Modes from MODDED_EVOLVE_STAGE2_MODES: "
+    observed_lines = [
+        line.partition(marker)[2].strip()
+        for line in log_text.splitlines()
+        if marker in line
+    ]
+    if not observed_lines:
+        raise RuntimeError("Stage2Trace did not report the client's intended mode set")
+    expected_modes = frozenset(validate_modes(modes).split(","))
+    for observed in observed_lines:
+        active_modes = frozenset(validate_modes(observed).split(","))
+        if active_modes != expected_modes:
+            raise RuntimeError("Stage2Trace activated missing or unexpected compatibility modes")
 
 
 def wait_for_hook_startup(log_path: Path, provider: Path, modes: str, process, timeout=20) -> None:
