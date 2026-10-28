@@ -101,7 +101,7 @@ fn plausible_pair(current_bits: u32, max_bits: u32) -> bool {
         && maximum > 0.0
         && maximum <= 1_000_000.0
         && current >= 0.0
-        && current <= maximum + (maximum * 0.01).max(0.01)
+        && current <= 100_000.0 // Offline edits can deliberately exceed nominal maximum
 }
 
 #[cfg(windows)]
@@ -530,7 +530,7 @@ mod tests {
         assert_eq!(stage_number(0), None);
         assert_eq!(stage_number(0x0404), None);
         assert!(plausible_pair(200.0f32.to_bits(), 500.0f32.to_bits()));
-        assert!(!plausible_pair(600.0f32.to_bits(), 500.0f32.to_bits()));
+        assert!(plausible_pair(600.0f32.to_bits(), 500.0f32.to_bits()));
         assert!(!plausible_pair(f32::NAN.to_bits(), 500.0f32.to_bits()));
         assert!(!plausible_pair(0.0f32.to_bits(), 0.0f32.to_bits()));
     }
