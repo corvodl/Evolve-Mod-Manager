@@ -300,7 +300,10 @@ impl Preferences {
         if !self.discord_application_id.is_empty()
             && (self.discord_application_id.len() < 15
                 || self.discord_application_id.len() > 25
-                || !self.discord_application_id.bytes().all(|byte| byte.is_ascii_digit()))
+                || !self
+                    .discord_application_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit()))
         {
             return Err(SettingsError::InvalidValue);
         }

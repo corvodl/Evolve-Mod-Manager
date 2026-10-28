@@ -13,10 +13,10 @@ mod blender_install;
 mod client_version;
 mod crash_diagnostics;
 mod design;
-mod discord_presence;
 mod developer_auth;
 mod developer_hotkeys;
 mod direct_runtime;
+mod discord_presence;
 mod explorer_tree;
 mod gfx_bundled_tools;
 mod gfx_dependencies;
@@ -3295,7 +3295,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     let available: usize = info.catalog.profiles.iter().map(|p| p.mods.len()).sum();
                     state.signed_status = format!(
                         "{} registered signed PAK(s); {} selected for Play with Mods.",
-                        available, info.selected.len()
+                        available,
+                        info.selected.len()
                     );
                     state.profile_catalog = Some(info.catalog.clone());
                     state.signed_ui = Some(info);
@@ -3307,14 +3308,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::SignedPakToggle(profile_id, mod_id, enabled) => {
-            if state.busy || state.signed_busy { return Task::none(); }
+            if state.busy || state.signed_busy {
+                return Task::none();
+            }
             if enabled {
                 let collision = state.modding_projects.as_ref().and_then(|projects| {
-                    let target = state.signed_ui.as_ref()
+                    let target = state
+                        .signed_ui
+                        .as_ref()
                         .and_then(|ui| ui.catalog.profiles.iter().find(|p| p.id == profile_id))
                         .and_then(|p| p.mods.iter().find(|m| m.id == mod_id))
                         .map(|m| m.target.as_str())?;
-                    projects.iter().find(|p| p.enabled && p.target.eq_ignore_ascii_case(target))
+                    projects
+                        .iter()
+                        .find(|p| p.enabled && p.target.eq_ignore_ascii_case(target))
                 });
                 if let Some(project) = collision {
                     state.signed_status = format!(
@@ -3330,16 +3337,23 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             state.signed_busy = true;
             let stage = PathBuf::from(&state.preferences.stage);
-            return Task::perform(async move {
-                let expected = stage.clone();
-                let result = tokio::task::spawn_blocking(move || {
-                    mod_play::select_signed(
-                        &stage, mod_play::SignedChoice { profile_id, mod_id }, enabled
-                    )
-                }).await.map_err(|e| format!("Could not update signed PAK toggle: {e}"))
+            return Task::perform(
+                async move {
+                    let expected = stage.clone();
+                    let result = tokio::task::spawn_blocking(move || {
+                        mod_play::select_signed(
+                            &stage,
+                            mod_play::SignedChoice { profile_id, mod_id },
+                            enabled,
+                        )
+                    })
+                    .await
+                    .map_err(|e| format!("Could not update signed PAK toggle: {e}"))
                     .and_then(|value| value);
-                (expected, result)
-            }, |(stage, result)| Message::SignedPakToggled(stage, result));
+                    (expected, result)
+                },
+                |(stage, result)| Message::SignedPakToggled(stage, result),
+            );
         }
         Message::SignedPakToggled(stage, result) => {
             state.signed_busy = false;
@@ -3348,10 +3362,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             match result {
                 Ok(info) => {
-                    state.signed_status = format!(
-                        "{} registered signed PAK(s) enabled.",
-                        info.selected.len()
-                    );
+                    state.signed_status =
+                        format!("{} registered signed PAK(s) enabled.", info.selected.len());
                     state.profile_catalog = Some(info.catalog.clone());
                     state.signed_ui = Some(info);
                 }
@@ -4972,7 +4984,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let desired = state.live_edit_value.clone();
             state.live_edit_busy = true;
             state.live_edit_report =
-                "Checking the current value and process identity, then writing one Float32...".into();
+                "Checking the current value and process identity, then writing one Float32..."
+                    .into();
             let generation = state.live_edit_generation;
             let cancel = Arc::new(AtomicBool::new(false));
             state.live_edit_cancel = Some(cancel.clone());
@@ -12015,7 +12028,8 @@ impl Desktop {
             Task::none()
         };
         let client_version_task = inspect_client_version_task(&state.preferences.client_executable);
-        let discord_presence = discord_presence::Service::start(discord_presence::Config::from_state(&state));
+        let discord_presence =
+            discord_presence::Service::start(discord_presence::Config::from_state(&state));
         (
             Self {
                 state,
@@ -12121,9 +12135,15 @@ impl Desktop {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
-        if matches!(message, Message::DiscordPresenceTick | Message::PreferenceDiscordToggle(_) | Message::PreferenceDiscordAppId(_)) {
+        if matches!(
+            message,
+            Message::DiscordPresenceTick
+                | Message::PreferenceDiscordToggle(_)
+                | Message::PreferenceDiscordAppId(_)
+        ) {
             let task = update(&mut self.state, message);
-            self.discord_presence.publish(discord_presence::Config::from_state(&self.state));
+            self.discord_presence
+                .publish(discord_presence::Config::from_state(&self.state));
             return task;
         }
         match message {

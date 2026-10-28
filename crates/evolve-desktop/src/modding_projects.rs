@@ -1247,8 +1247,12 @@ pub fn build_project_raw(
     let original_index = evolve_core::open_verified_signed_pak(&original, &public, signed_name)
         .map_err(|e| e.to_string())?;
     for rel in &added {
-        if original_index.info.entries.iter()
-            .any(|entry| entry.path.eq_ignore_ascii_case(rel)) {
+        if original_index
+            .info
+            .entries
+            .iter()
+            .any(|entry| entry.path.eq_ignore_ascii_case(rel))
+        {
             return Err(format!(
                 "Source PAK already contains added member {rel}; re-extract this project instead"
             ));
@@ -1385,7 +1389,15 @@ pub fn build_project_raw(
                     format!("Cannot restore the original PAK filename after signing: {e}")
                 })?;
             }
-            Ok((format!("{} modified member(s), {} registered addition(s)", reports, added.len()), output, verified))
+            Ok((
+                format!(
+                    "{} modified member(s), {} registered addition(s)",
+                    reports,
+                    added.len()
+                ),
+                output,
+                verified,
+            ))
         }
         Err(error) => {
             // The core uses an atomic tempfile on failure. Remove only our
