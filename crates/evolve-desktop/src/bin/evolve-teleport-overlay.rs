@@ -13,7 +13,7 @@ mod windows {
     use std::io::{BufRead, Write};
     use std::ptr::{null, null_mut};
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::time::{Duration, Instant};
 
     type Handle = *mut c_void;
@@ -46,6 +46,7 @@ mod windows {
 
     static GAME_PID: AtomicU32 = AtomicU32::new(0);
     static MANAGER_PID: AtomicU32 = AtomicU32::new(0);
+    static GAME_FOCUSED: AtomicBool = AtomicBool::new(false);
     static TOAST: Mutex<Option<(String, Instant)>> = Mutex::new(None);
 
     #[repr(C)]
@@ -231,10 +232,14 @@ mod windows {
                 let active = unsafe { GetForegroundWindow() };
                 let mut pid = 0;
                 unsafe { GetWindowThreadProcessId(active, &mut pid) };
-                if pid != GAME_PID.load(Ordering::Relaxed) {
+                let game_focused = pid == GAME_PID.load(Ordering::Relaxed);
+                let toast_visible = TOAST.lock().is_ok_and(|toast| toast.is_some());
+                if !game_focused && !(pid == MANAGER_PID.load(Ordering::Relaxed) && toast_visible) {
+                    GAME_FOCUSED.store(false, Ordering::Relaxed);
                     unsafe { ShowWindow(hwnd, SW_HIDE) };
                     return 0;
                 }
+                GAME_FOCUSED.store(game_focused, Ordering::Relaxed);
                 let mut rect = Rect::default();
                 let mut point = Point::default();
                 if unsafe { GetClientRect(active, &mut rect) } == 0
@@ -247,14 +252,17 @@ mod windows {
                 }
                 let cx = point.x + (rect.right - rect.left) / 2;
                 let cy = point.y + (rect.bottom - rect.top) / 2;
+                let (x, y) = if game_focused {
+                    (cx - WIDTH / 2, cy - 26)
+                } else {
+                    // Manager-initiated actions still show a toast without an aim marker.
+                    (point.x + rect.right - WIDTH - 24, point.y + 16)
+                };
                 unsafe {
                     SetWindowPos(
                         hwnd,
                         (-1isize) as Hwnd,
-                        cx - WIDTH / 2,
-                        cy - 26,
-                        WIDTH,
-                        HEIGHT,
+                        x, y, WIDTH, HEIGHT,
                         SWP_NOACTIVATE | SWP_SHOWWINDOW,
                     )
                 };
@@ -271,6 +279,7 @@ mod windows {
                         bottom: HEIGHT,
                     };
                     unsafe { FillRect(hdc, &rect, GetStockObject(4)) };
+                    if GAME_FOCUSED.load(Ordering::Relaxed) {
                     let pen = unsafe { CreatePen(0, 2, 0x0050_50FF) };
                     if !pen.is_null() {
                         let old_pen = unsafe { SelectObject(hdc, pen) };
@@ -291,6 +300,7 @@ mod windows {
                         SetBkMode(hdc, 1);
                         SetTextColor(hdc, 0x00FF_FFFF);
                         TextOutW(hdc, 54, 49, label.as_ptr(), label.len() as i32);
+                    }
                     }
                     let active = TOAST.lock().ok().and_then(|toast| {
                         toast
