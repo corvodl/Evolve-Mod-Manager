@@ -146,6 +146,7 @@ pub(super) fn probe(
 /// Compare and write four bytes using a single native process handle.
 /// Avoid launching a new PowerShell CLR for every write or freeze tick.
 #[cfg(windows)]
+#[allow(unsafe_code)] // Scoped, reviewed FFI needed for verified offline process-memory writes.
 pub(super) fn write_four(pid: u32, at: usize, old_bits: u32, new_bits: u32) -> Result<(), String> {
     use std::ffi::c_void;
     use std::io;
@@ -153,12 +154,18 @@ pub(super) fn write_four(pid: u32, at: usize, old_bits: u32, new_bits: u32) -> R
         fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
         fn CloseHandle(handle: *mut c_void) -> i32;
         fn ReadProcessMemory(
-            handle: *mut c_void, address: *const c_void, buffer: *mut c_void,
-            size: usize, read: *mut usize,
+            handle: *mut c_void,
+            address: *const c_void,
+            buffer: *mut c_void,
+            size: usize,
+            read: *mut usize,
         ) -> i32;
         fn WriteProcessMemory(
-            handle: *mut c_void, address: *mut c_void, buffer: *const c_void,
-            size: usize, written: *mut usize,
+            handle: *mut c_void,
+            address: *mut c_void,
+            buffer: *const c_void,
+            size: usize,
+            written: *mut usize,
         ) -> i32;
     }
     validate_address(at)?;
@@ -168,16 +175,28 @@ pub(super) fn write_four(pid: u32, at: usize, old_bits: u32, new_bits: u32) -> R
     let access = PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE;
     let handle = unsafe { OpenProcess(access, 0, pid) };
     if handle.is_null() {
-        return Err(format!("OpenProcess PID {pid} failed: {}", io::Error::last_os_error()));
+        return Err(format!(
+            "OpenProcess PID {pid} failed: {}",
+            io::Error::last_os_error()
+        ));
     }
     let result = (|| {
         let mut observed = [0u8; 4];
         let mut count = 0usize;
         let ok = unsafe {
-            ReadProcessMemory(handle, at as *const c_void, observed.as_mut_ptr().cast(), 4, &mut count)
+            ReadProcessMemory(
+                handle,
+                at as *const c_void,
+                observed.as_mut_ptr().cast(),
+                4,
+                &mut count,
+            )
         };
         if ok == 0 || count != 4 {
-            return Err(format!("ReadProcessMemory at 0x{at:X} failed: {}", io::Error::last_os_error()));
+            return Err(format!(
+                "ReadProcessMemory at 0x{at:X} failed: {}",
+                io::Error::last_os_error()
+            ));
         }
         if u32::from_le_bytes(observed) != old_bits {
             return Err("Value changed before write; refresh the actor field".into());
@@ -185,14 +204,29 @@ pub(super) fn write_four(pid: u32, at: usize, old_bits: u32, new_bits: u32) -> R
         let desired = new_bits.to_le_bytes();
         count = 0;
         let ok = unsafe {
-            WriteProcessMemory(handle, at as *mut c_void, desired.as_ptr().cast(), 4, &mut count)
+            WriteProcessMemory(
+                handle,
+                at as *mut c_void,
+                desired.as_ptr().cast(),
+                4,
+                &mut count,
+            )
         };
         if ok == 0 || count != 4 {
-            return Err(format!("WriteProcessMemory at 0x{at:X} failed: {}", io::Error::last_os_error()));
+            return Err(format!(
+                "WriteProcessMemory at 0x{at:X} failed: {}",
+                io::Error::last_os_error()
+            ));
         }
         count = 0;
         let ok = unsafe {
-            ReadProcessMemory(handle, at as *const c_void, observed.as_mut_ptr().cast(), 4, &mut count)
+            ReadProcessMemory(
+                handle,
+                at as *const c_void,
+                observed.as_mut_ptr().cast(),
+                4,
+                &mut count,
+            )
         };
         if ok == 0 || count != 4 || observed != desired {
             return Err("Write was attempted, but immediate readback did not match".into());
