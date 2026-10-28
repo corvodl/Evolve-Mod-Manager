@@ -1,0 +1,349 @@
+{
+  "schema": 1,
+  "discord_application_id": "1565093139616763987",
+  "portrait_count": 39,
+  "upload_status": "not_uploaded",
+  "asset_size": "1024x1024",
+  "characters": [
+    {
+      "source": "abe.dds",
+      "asset_key": "abe",
+      "filename": "abe.png",
+      "display_name": "Abe",
+      "team": "hunter",
+      "internal_names": []
+    },
+    {
+      "source": "abeRenegade.dds",
+      "asset_key": "aberenegade",
+      "filename": "aberenegade.png",
+      "display_name": "Renegade Abe",
+      "team": "hunter",
+      "internal_names": []
+    },
+    {
+      "source": "bucket.dds",
+      "asset_key": "bucket",
+      "filename": "bucket.png",
+      "display_name": "Bucket",
+      "team": "hunter",
+      "internal_names": []
+    },
+    {
+      "source": "bucketCaptain.dds",
+      "asset_key": "bucketcaptain",
+      "filename": "bucketcaptain.png",
+      "display_name": "Captain Bucket",
+      "team": "hunter",
+      "internal_names": []
+    },
+    {
+      "source": "cabot.dds",
+      "asset_key": "cabot",
+      "filename": "cabot.png",
+      "display_name": "Cabot",
+      "team": "hunter",
+      "internal_names": []
+    },
+    {
+      "source": "cabotBattle.dds",
+      "asset_key": "cabotbattle",
+      "filename": "cabotbattle.png",
+      "display_name": "Battle Cabot",
+      "team": "hunter",
+      "internal_names": []
+    },
+    {
+      "source": "caira.dds",
+      "asset_key": "caira",
+      "filename": "caira.png",
+      "display_name": "Caira",
+      "team": "hunter",
+      "internal_names": []
+    },
+    {
+      "source": "cairaLowgrav.dds",
+      "asset_key": "cairalowgrav",
+      "filename": "cairalowgrav.png",
+      "display_name": "Caira (Lowgrav)",
+      "team": "hunter",
+      "internal_names": []
+    },
+    {
+      "source": "crow.dds",
+      "asset_key": "crow",
+      "filename": "crow.png",
+      "display_name": "Crow",
+      "team": "hunter",
+      "internal_names": []
+    },
+    {
+      "source": "emet.dds",
+      "asset_key": "emet",
+      "filename": "emet.png",
+      "display_name": "Emet",
+      "team": "hunter",
+      "internal_names": []
+    },
+    {
+      "source": "goliath.dds",
+      "asset_key": "goliath",
+      "filename": "goliath.png",
+      "display_name": "Goliath",
+      "team": "monster",
+      "internal_names": [
+        "GoliathABot"
+      ]
+    },
+    {
+      "source": "goliathMeteor.dds",
+      "asset_key": "goliathmeteor",
+      "filename": "goliathmeteor.png",
+      "display_name": "Meteor Goliath",
+      "team": "monster",
+      "internal_names": [
+        "goliathmeteorABot",
+        "goliathmeteorBot"
+      ]
+    },
+    {
+      "source": "griffin.dds",
+      "asset_key": "griffin",
+      "filename": "griffin.png",
+      "display_name": "Griffin",
+      "team": "hunter",
+      "internal_names": []
+    },
+    {
+      "source": "griffinElectro.dds",
+      "asset_key": "griffinelectro",
+      "filename": "griffinelectro.png",
+      "display_name": "Electro Griffin",
+      "team": "hunter",
+      "internal_names": []
+    },
+    {
+      "source": "grounder.dds",
+      "asset_key": "grounder",
+      "filename": "grounder.png",
+      "display_name": "Kraken",
+      "team": "monster",
+      "internal_names": [
+        "GrounderABot",
+        "Grounder"
+      ]
+    },
+    {
+      "source": "hank.dds",
+      "asset_key": "hank",
+      "filename": "hank.png",
+      "display_name": "Hank",
+      "team": "hunter",
+      "internal_names": []
+    },
+    {
+      "source": "hankSgt.dds",
+      "asset_key": "hanksgt",
+      "filename": "hanksgt.png",
+      "display_name": "Sgt. Hank",
+      "team": "hunter",
+      "internal_names": []
+    },
+    {
+      "source": "hyde.dds",
+      "asset_key": "hyde",
+      "filename": "hyde.png",
+      "display_name": "Hyde",
+      "team": "hunter",
+      "internal_names": [
+        "AssaultDBot"
+      ]
+    },
+    {
+      "source": "hydeHellfire.dds",
+      "asset_key": "hydehellfire",
+      "filename": "hydehellfire.png",
+      "display_name": "Hellfire Hyde",
+      "team": "hunter",
+      "internal_names": []
+    },
+    {
+      "source": "krakenElder.dds",
+      "asset_key": "krakenelder",
+      "filename": "krakenelder.png",
+      "display_name": "Elder Kraken",
+      "team": "monster",
+      "internal_names": [
+        "KrakenABot",
+        "Kraken"
+      ]
+    },
+    {
+      "source": "lazarus.dds",
+      "asset_key": "lazarus",
+      "filename": "lazarus.png",
+      "display_name": "Lazarus",
+      "team": "hunter",
+      "internal_names": []
+    },
+    {
+      "source": "lennox.dds",
+      "asset_key": "lennox",
+      "filename": "lennox.png",
+      "display_name": "Lennox",
+      "team": "hunter",
+      "internal_names": []
+    },
+    {
+      "source": "lurker.dds",
+      "asset_key": "lurker",
+      "filename": "lurker.png",
+      "display_name": "Gorgon",
+      "team": "monster",
+      "internal_names": [
+        "LurkerABot",
+        "Lurker"
+      ]
+    },
+    {
+      "source": "maggie.dds",
+      "asset_key": "maggie",
+      "filename": "maggie.png",
+      "display_name": "Maggie",
+      "team": "hunter",
+      "internal_names": []
+    },
+    {
+      "source": "maggieSavage.dds",
+      "asset_key": "maggiesavage",
+      "filename": "maggiesavage.png",
+      "display_name": "Savage Maggie",
+      "team": "hunter",
+      "internal_names": []
+    },
+    {
+      "source": "markov.dds",
+      "asset_key": "markov",
+      "filename": "markov.png",
+      "display_name": "Markov",
+      "team": "hunter",
+      "internal_names": [
+        "AssaultEBot"
+      ]
+    },
+    {
+      "source": "markovBlitz.dds",
+      "asset_key": "markovblitz",
+      "filename": "markovblitz.png",
+      "display_name": "Blitz Markov",
+      "team": "hunter",
+      "internal_names": []
+    },
+    {
+      "source": "parnell.dds",
+      "asset_key": "parnell",
+      "filename": "parnell.png",
+      "display_name": "Parnell",
+      "team": "hunter",
+      "internal_names": [
+        "AssaultBBot"
+      ]
+    },
+    {
+      "source": "parnellTank.dds",
+      "asset_key": "parnelltank",
+      "filename": "parnelltank.png",
+      "display_name": "Tank Parnell",
+      "team": "hunter",
+      "internal_names": []
+    },
+    {
+      "source": "rocky.dds",
+      "asset_key": "rocky",
+      "filename": "rocky.png",
+      "display_name": "Behemoth",
+      "team": "monster",
+      "internal_names": [
+        "RockyABot",
+        "Rocky"
+      ]
+    },
+    {
+      "source": "rockybobcicle.dds",
+      "asset_key": "rockybobcicle",
+      "filename": "rockybobcicle.png",
+      "display_name": "Glacial Behemoth",
+      "team": "monster",
+      "internal_names": [
+        "RockybobsicleABot",
+        "Rockybobsicle"
+      ]
+    },
+    {
+      "source": "scrap.dds",
+      "asset_key": "scrap",
+      "filename": "scrap.png",
+      "display_name": "Scrap",
+      "team": "unknown",
+      "internal_names": []
+    },
+    {
+      "source": "slim.dds",
+      "asset_key": "slim",
+      "filename": "slim.png",
+      "display_name": "Slim",
+      "team": "hunter",
+      "internal_names": []
+    },
+    {
+      "source": "sunny.dds",
+      "asset_key": "sunny",
+      "filename": "sunny.png",
+      "display_name": "Sunny",
+      "team": "hunter",
+      "internal_names": []
+    },
+    {
+      "source": "tech.dds",
+      "asset_key": "tech",
+      "filename": "tech.png",
+      "display_name": "Tech",
+      "team": "unknown",
+      "internal_names": []
+    },
+    {
+      "source": "teleporter.dds",
+      "asset_key": "teleporter",
+      "filename": "teleporter.png",
+      "display_name": "Wraith",
+      "team": "monster",
+      "internal_names": [
+        "TeleporterABot"
+      ]
+    },
+    {
+      "source": "torvald.dds",
+      "asset_key": "torvald",
+      "filename": "torvald.png",
+      "display_name": "Torvald",
+      "team": "hunter",
+      "internal_names": []
+    },
+    {
+      "source": "val.dds",
+      "asset_key": "val",
+      "filename": "val.png",
+      "display_name": "Val",
+      "team": "hunter",
+      "internal_names": []
+    },
+    {
+      "source": "valRogue.dds",
+      "asset_key": "valrogue",
+      "filename": "valrogue.png",
+      "display_name": "Rogue Val",
+      "team": "hunter",
+      "internal_names": []
+    }
+  ]
+}
