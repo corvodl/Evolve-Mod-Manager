@@ -3287,7 +3287,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return load_signed_paks(PathBuf::from(&state.preferences.stage));
         }
         Message::SignedProfilesLoaded(stage, result) => {
-            if stage != PathBuf::from(&state.preferences.stage) || state.signed_busy {
+            if stage.as_path() != std::path::Path::new(&state.preferences.stage)
+                || state.signed_busy
+            {
                 return Task::none();
             }
             match result {
@@ -3357,7 +3359,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::SignedPakToggled(stage, result) => {
             state.signed_busy = false;
-            if stage != PathBuf::from(&state.preferences.stage) {
+            if stage.as_path() != std::path::Path::new(&state.preferences.stage) {
                 return Task::none();
             }
             match result {
@@ -13703,7 +13705,8 @@ mod project_edit_tests {
         assert!(state.developer_online_mods);
         assert!(!state.developer_network_busy);
         assert!(!state.armor_offline_confirmed);
-        assert!(!state.live_edit_enabled);
+        // Network policy no longer disarms the separately armed memory writer.
+        assert!(state.live_edit_enabled);
         assert!(state.developer_network_status.contains("Removed"));
 
         let _ = update(&mut state, Message::DeveloperOnlineMods(false));

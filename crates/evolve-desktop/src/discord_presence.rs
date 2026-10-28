@@ -10,7 +10,7 @@ const EVOLVE_GAME_DISCORD_APPLICATION_ID: &str = "1565093139616763987";
 
 /// The active IPC connection must use the app matching the visible activity.
 /// User-supplied developer override applies only to the manager application.
-fn active_application_id<'a>(cfg: &'a Config, game_pid: Option<u32>) -> &'a str {
+fn active_application_id(cfg: &Config, game_pid: Option<u32>) -> &str {
     if game_pid.is_some() && cfg.show_game {
         EVOLVE_GAME_DISCORD_APPLICATION_ID
     } else {
@@ -188,13 +188,12 @@ fn format_activity(
                 "Playing Evolve".to_owned()
             };
             let mut values = vec![cfg.game_version.clone()];
-            if cfg.show_character {
-                if let Some(stage) = actor
+            if cfg.show_character
+                && let Some(stage) = actor
                     .filter(|a| a.verified_monster)
                     .and_then(|a| a.evolution.as_ref())
-                {
-                    values.push(format!("Evolution {stage}"));
-                }
+            {
+                values.push(format!("Evolution {stage}"));
             }
             if let Some(mode) = cfg.game_mode.as_ref() {
                 values.push(mode.clone());
@@ -213,10 +212,10 @@ fn format_activity(
                     values.push(format!("Armor {a}"));
                 }
             }
-            if cfg.show_profile {
-                if let Some(profile) = cfg.mod_profile.as_ref() {
-                    values.push(profile.clone());
-                }
+            if cfg.show_profile
+                && let Some(profile) = cfg.mod_profile.as_ref()
+            {
+                values.push(profile.clone());
             }
             (details, values.join(" • "))
         }
@@ -453,20 +452,20 @@ mod windows {
             // This is best-effort and cannot guarantee Discord display priority.
             let refresh_due =
                 running_game.is_some() && last_presence_update.elapsed() >= Duration::from_secs(30);
-            if next != last_activity || (next.is_some() && refresh_due) {
-                if let Some(ref mut connected) = pipe {
-                    match activity(connected, next.clone(), nonce) {
-                        Ok(()) => {
-                            last_activity = next;
-                            last_presence_update = Instant::now();
-                        }
-                        Err(_) => {
-                            pipe = None;
-                            last_activity = None;
-                        }
+            if (next != last_activity || (next.is_some() && refresh_due))
+                && let Some(ref mut connected) = pipe
+            {
+                match activity(connected, next.clone(), nonce) {
+                    Ok(()) => {
+                        last_activity = next;
+                        last_presence_update = Instant::now();
                     }
-                    nonce += 1;
+                    Err(_) => {
+                        pipe = None;
+                        last_activity = None;
+                    }
                 }
+                nonce += 1;
             }
             thread::sleep(Duration::from_secs(8));
         }
@@ -495,7 +494,7 @@ impl Service {
             let _ = std::thread::Builder::new()
                 .name("discord-presence".into())
                 .spawn(move || windows::worker(thread_shared, thread_running));
-            return Self { shared, running };
+            Self { shared, running }
         }
         #[cfg(not(windows))]
         {
@@ -580,9 +579,11 @@ mod tests {
 
     #[test]
     fn unknown_actor_does_not_infer_monster_from_stage_or_armor() {
-        let mut unknown = LocalActor::default();
-        unknown.armor = Some("999".into());
-        unknown.evolution = Some("Stage 1".into());
+        let unknown = LocalActor {
+            armor: Some("999".into()),
+            evolution: Some("Stage 1".into()),
+            ..LocalActor::default()
+        };
         let state = format_activity(&sample(), Some(123), Some(&unknown), 100).unwrap();
         assert!(!state.to_string().contains("Armor"));
         assert!(!state.to_string().contains("Evolution"));
