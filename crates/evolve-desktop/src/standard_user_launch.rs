@@ -2,12 +2,25 @@
 //! integrity Windows session instead of inheriting this manager's admin token.
 //! The Windows Win32 token boundary lives in a separately checked Python 3.11
 //! helper; this Rust crate preserves the workspace-wide ban on unsafe code.
+use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::Path;
 #[cfg(windows)]
 use std::process::{Command, Stdio};
 
 const BROKER_SCRIPT: &str = include_str!("../launcher_support/standard_user_launch.py");
+// Source-reviewed helper from repository revision 62715a8ab2. Its installed
+// Windows copy can be CRLF; normalize ONLY line endings for identity checks.
+const PREVIOUS_BROKER_SHA256: &str =
+    "5fbdefdbfe621dd154af01f5d0bd27987171cfb31430b0d2f5adeb96a82ca59c";
+
+fn normalized_digest(bytes: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    Some(format!(
+        "{:x}",
+        Sha256::digest(text.replace("\r\n", "\n").as_bytes())
+    ))
+}
 
 #[cfg(any(windows, test))]
 fn parse_launch_report(stdout: &str) -> Result<u32, String> {
@@ -100,6 +113,15 @@ pub fn inspect_privileges() -> Result<String, String> {
 /// Publish the exact source-reviewed helper into the existing private swap
 /// directory. Reject foreign scripts; never run substituted Python code.
 pub fn install_into_swap(swap: &Path) -> Result<(), String> {
+    install_into_swap_with_prior(swap, PREVIOUS_BROKER_SHA256)
+}
+
+fn install_into_swap_with_prior(swap: &Path, trusted_prior_digest: &str) -> Result<(), String> {
+    if trusted_prior_digest.len() != 64
+        || !trusted_prior_digest.bytes().all(|c| c.is_ascii_hexdigit())
+    {
+        return Err("Invalid trusted helper migration digest".into());
+    }
     let meta = std::fs::symlink_metadata(swap).map_err(|e| e.to_string())?;
     if !meta.file_type().is_dir() {
         return Err("Swap helper folder must be a normal directory".into());
@@ -112,7 +134,49 @@ pub fn install_into_swap(swap: &Path) -> Result<(), String> {
             }
             let existing = std::fs::read(&target).map_err(|e| e.to_string())?;
             if existing != BROKER_SCRIPT.as_bytes() {
-                return Err("An unrecognized standard_user_launch.py already exists. Preserve it and use a clean trusted swap helper folder.".into());
+                if normalized_digest(&existing).as_deref() != Some(trusted_prior_digest) {
+                    return Err("An unrecognized standard_user_launch.py already exists. Preserve it and use a clean trusted swap helper folder.".into());
+                }
+                let preserved = swap.join(format!(
+                    "standard_user_launch.py.previous-{}",
+                    &trusted_prior_digest[..16]
+                ));
+                match std::fs::symlink_metadata(&preserved) {
+                    Ok(meta)
+                        if meta.file_type().is_file()
+                            && std::fs::read(&preserved).map_err(|e| e.to_string())?
+                                == existing =>
+                    {
+                        ()
+                    }
+                    Ok(_) => {
+                        return Err(
+                            "A different preserved standard-user helper already exists".into()
+                        );
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        std::fs::hard_link(&target, &preserved)
+                            .map_err(|e| format!("Cannot preserve older trusted helper: {e}"))?;
+                    }
+                    Err(error) => return Err(format!("Cannot inspect preserved helper: {error}")),
+                }
+                let mut scratch = tempfile::Builder::new()
+                    .prefix(".evolve-standard-user-update-")
+                    .tempfile_in(swap)
+                    .map_err(|e| e.to_string())?;
+                scratch
+                    .write_all(BROKER_SCRIPT.as_bytes())
+                    .map_err(|e| e.to_string())?;
+                scratch
+                    .as_file_mut()
+                    .sync_all()
+                    .map_err(|e| e.to_string())?;
+                if std::fs::read(&target).map_err(|e| e.to_string())? != existing {
+                    return Err("Standard-user helper changed during verified migration".into());
+                }
+                scratch.persist(&target).map_err(|e| {
+                    format!("Cannot publish verified standard-user helper: {}", e.error)
+                })?;
             }
             Ok(())
         }
@@ -174,5 +238,25 @@ mod tests {
         std::fs::write(&path, b"unknown script").unwrap();
         assert!(install_into_swap(root.path()).is_err());
         assert_eq!(std::fs::read(path).unwrap(), b"unknown script");
+    }
+
+    #[test]
+    fn only_exact_trusted_prior_can_be_preserved_and_migrated() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("standard_user_launch.py");
+        let prior = b"source-reviewed prior helper\r\n";
+        std::fs::write(&path, prior).unwrap();
+        let digest = normalized_digest(prior).unwrap();
+        assert!(install_into_swap(root.path()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), prior);
+        install_into_swap_with_prior(root.path(), &digest).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), BROKER_SCRIPT.as_bytes());
+        let backup = root.path().join(format!(
+            "standard_user_launch.py.previous-{}",
+            &digest[..16]
+        ));
+        assert_eq!(std::fs::read(&backup).unwrap(), prior);
+        install_into_swap(root.path()).unwrap();
+        assert_eq!(std::fs::read(&backup).unwrap(), prior);
     }
 }

@@ -90,3 +90,12 @@ preserves old ready files and journal under unique non-PAK names before
 publishing a clean `restored` journal. Run the existing private helper's
 `prepare` action next, then the manager's advanced signed-PAK verification.
 Neither step authorizes live installation if the manager's guard fails.
+
+An already present `standard_user_launch.py` can also block the private
+helper even when the staged PAKs and prepared journal are sound. The manager
+accepts its exact currently bundled bytes and, after this change, can migrate
+**only** the verified prior revision `62715a8ab2` (SHA-256 after CRLF-to-LF
+normalization `5fbdefdbfe621dd154af01f5d0bd27987171cfb31430b0d2f5adeb96a82ca59c`).
+Migration preserves the old helper under a separate `*.previous-*` name before
+publishing the new one. Unknown helpers still fail closed; never delete or
+overwrite an arbitrary existing script to make a launch pass.
