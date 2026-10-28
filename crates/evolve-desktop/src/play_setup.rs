@@ -114,6 +114,11 @@ const NIGHTLY_70_AUTO_LAUNCH_SHA256: &str =
 // LF source or its CRLF-only Windows-distributed form.
 const POST_TOKEN_AUTO_LAUNCH_SHA256: &str =
     "4d478ff3ef66e92da637d1cb64ece129157c56f5d4101dbd7fb6d09f515f4785";
+// The next published source (commit a012351a) can also differ from the
+// executable's embedded CRLF bytes when checked out with LF line endings.
+// Accept only this exact LF-normalized source, never an arbitrary edit.
+const FULL_CLIENT_AUTO_LAUNCH_SHA256: &str =
+    "e3a66b8d769849e8989e500a1f9ada2e278be2e27e1d391a31c15e9b2bb602af";
 const PREVIOUS_CONTROLLED_SWAP_SHA256: &str =
     "5229e00859664c13c846de65e346031d4ff05c77f52170212dcd631a111a614d";
 // Exact bundled controlled_swap.py shipped through Nightly 60 (PR #79/#80).
@@ -146,6 +151,7 @@ const KNOWN_AUTO_LAUNCH_SHA256: &[&str] = &[
     NIGHTLY_70_AUTO_LAUNCH_SHA256,
     PRE_TOKEN_AUTO_LAUNCH_SHA256,
     POST_TOKEN_AUTO_LAUNCH_SHA256,
+    FULL_CLIENT_AUTO_LAUNCH_SHA256,
 ];
 const CURRENT_AUTO_LAUNCH: &str = include_str!("../launcher_support/auto_launch_frida.py");
 const CURRENT_CONTROLLED_SWAP: &str = include_str!("../launcher_support/controlled_swap.py");
@@ -564,6 +570,10 @@ mod tests {
         assert!(
             KNOWN_AUTO_LAUNCH_SHA256
                 .contains(&"4d478ff3ef66e92da637d1cb64ece129157c56f5d4101dbd7fb6d09f515f4785")
+        );
+        assert!(
+            KNOWN_AUTO_LAUNCH_SHA256
+                .contains(&"e3a66b8d769849e8989e500a1f9ada2e278be2e27e1d391a31c15e9b2bb602af")
         );
     }
 
