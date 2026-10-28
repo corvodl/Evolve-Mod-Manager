@@ -376,7 +376,7 @@ pub fn launch_enabled(
             let basename = item.target.rsplit('/').next().unwrap_or_default();
             evolve_core::add_mod_to_profile(
                 &stage, &profile.id, Path::new(&item.source), &item.target,
-                &keys.original_public, &keys.public, basename,
+                &original_public, &public, basename,
             ).map_err(|e| format!("Could not enable registered PAK {}: {e}", item.target))?;
         }
         progress.store(78, Ordering::Relaxed);
