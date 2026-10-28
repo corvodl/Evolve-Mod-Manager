@@ -9,7 +9,7 @@ use runtime_memory::Snapshot;
 
 const ENTITY_SYSTEM_RVA: usize = 0x28D58E8;
 const MAX_ENTITY_INDEX: usize = 65536;
-const MAX_DISCOVERED_ACTORS: usize = 96;
+const MAX_DISCOVERED_ACTORS: usize = 2048;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Field {
@@ -355,11 +355,9 @@ mod windows {
                         continue;
                     }
                     let candidate = read_actor(&h, id, actor, p, false);
-                    // For nonlocal entities, retain the stricter requirement
-                    // that at least one field independently validates.
-                    if !candidate.fields.is_empty() {
-                        actors.push(candidate);
-                    }
+                    // Actor identity is structural; absence of known stats does not
+                    // make a valid actor disappear from the viewer.
+                    actors.push(candidate);
                 }
             }
         }
@@ -376,7 +374,7 @@ mod windows {
         let status = if local_fields == 0 {
             format!("{coverage} Field offsets unverified for this actor/build; writes unavailable.")
         } else if route.is_none() {
-            format!("{coverage} Other actors unavailable (entity mapping unresolved).")
+            format!("{coverage} Entity-to-actor backlink unavailable for this build; nonlocal actor discovery requires validated mapping.")
         } else {
             coverage
         };
@@ -385,6 +383,32 @@ mod windows {
             actors,
             status,
         })
+    }
+
+    /// One bounded freeze iteration. Read and validate the live actor before any
+    /// write; refuse to freeze a stale or replaced actor.
+    pub(crate) fn freeze_once(
+        snapshot: &Snapshot, root: &str, id: u32, actor_addr: usize,
+        field: Field, desired: u32,
+    ) -> Result<bool, String> {
+        let pid = snapshot.pid.ok_or("Game process not detected")?;
+        runtime_armor::offline_guard(pid, true)?;
+        let listing = inspect(snapshot, root)?;
+        let actor = listing.actors.iter()
+            .find(|a| a.id == id && a.address == actor_addr)
+            .ok_or("Frozen actor despawned or its identity changed")?;
+        let value = actor.fields.iter().find(|v| v.field == field)
+            .ok_or("Frozen field is no longer validated")?;
+        if value.bits == desired { return Ok(false); }
+        let (_, h, _) = process_and_handle(snapshot, root)?;
+        if q(&h, actor_addr + 0x38) != Some(actor.entity)
+            || u32_at(&h, actor.entity + 0x18) != Some(id)
+            || u32_at(&h, value.address) != Some(value.bits) {
+            return Err("Frozen actor or field changed before write".into());
+        }
+        runtime_armor::offline_guard(pid, true)?;
+        runtime_live::write_four(pid, value.address, value.bits, desired)?;
+        Ok(true)
     }
 
     pub(crate) fn write(
@@ -461,10 +485,16 @@ mod windows {
     }
 }
 #[cfg(windows)]
-pub(super) use windows::{inspect, write};
+pub(super) use windows::{freeze_once, inspect, write};
 #[cfg(not(windows))]
 pub(super) fn inspect(_: &Snapshot, _: &str) -> Result<Listing, String> {
     Err("Runtime actor inspection requires Windows".into())
+}
+#[cfg(not(windows))]
+pub(super) fn freeze_once(
+    _: &Snapshot, _: &str, _: u32, _: usize, _: Field, _: u32,
+) -> Result<bool, String> {
+    Err("Runtime freezing requires Windows".into())
 }
 #[cfg(not(windows))]
 pub(super) fn write(
