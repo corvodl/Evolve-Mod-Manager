@@ -632,7 +632,7 @@ mod tests {
                 .iter()
                 .filter(|p| !p.internal_names.is_empty())
                 .count(),
-            11
+            14
         );
         let mut seen = std::collections::HashSet::new();
         for portrait in portraits {
@@ -685,6 +685,27 @@ mod tests {
         assert!(activity["assets"].get("large_image").is_none());
     }
 
+    #[test]
+    fn maps_new_assault_internal_names_to_existing_portrait_assets() {
+        for (internal, display, key) in [
+            ("AssaultFBot", "Torvald", "torvald"),
+            ("AssaultGBot", "Lennox", "lennox"),
+            ("AssaultE_BlitzBot", "Blitz Markov", "markovblitz"),
+        ] {
+            assert_eq!(character_from_entity_name(internal), Some((display, Team::Hunter)));
+            let portrait = portrait_for_display_name(display).unwrap();
+            assert_eq!(portrait.asset_key, key);
+            assert_eq!(portrait.team, Team::Hunter);
+            let actor = LocalActor {
+                name: Some(display.into()),
+                ..LocalActor::default()
+            };
+            let activity = format_activity(&sample(), Some(123), Some(&actor), 100).unwrap();
+            assert_eq!(activity["assets"]["large_image"], key);
+            assert_eq!(activity["assets"]["large_text"], display);
+        }
+        assert_eq!(character_from_entity_name("assaulte_blitzbot"), Some(("Blitz Markov", Team::Hunter)));
+    }
     #[test]
     fn maps_observed_local_entity_names_to_characters() {
         assert_eq!(
