@@ -499,6 +499,8 @@ struct State {
     modding_page: usize,
     modding_changes_page: usize,
     editor_replace_source: String,
+    // Import sheet is anchored beneath the selected explorer row.
+    editor_replace_dialog: Option<usize>,
     modding_menu: Option<&'static str>,
     modding_advanced: bool,
     modding_profiles: bool,
@@ -1738,6 +1740,10 @@ enum Message {
     ModdingBuildForOfflineTest,
     ModdingUnpackPak,
     EditorReplacementChanged(String),
+    EditorOpenReplacement,
+    EditorBrowseReplacement,
+    EditorReplacementPicked(Option<PathBuf>),
+    EditorCancelReplacement,
     EditorImportRawMember,
     EditorRestoreRawMember,
     ModdingToggleProfiles,
@@ -2761,6 +2767,8 @@ fn clear_viewer_asset(state: &mut State) {
     state.playing = false;
     state.motion_time = 0.0;
     state.viewer_context_index = None;
+    state.editor_replace_dialog = None;
+    state.editor_replace_source.clear();
     state.viewer_queued_preview = None;
 }
 
@@ -3592,6 +3600,64 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::EditorReplacementChanged(value) => state.editor_replace_source = value,
+        Message::EditorOpenReplacement => {
+            let Some(index) = state.viewer_context_index else {
+                state.status = "Right-click a target asset before importing over it.".into();
+                return Task::none();
+            };
+            if state.busy || state.viewer_from_library {
+                state.status =
+                    "Import is available only for an idle editable Modding project.".into();
+                return Task::none();
+            }
+            let valid_project = state
+                .modding_selected
+                .and_then(|i| state.modding_projects.as_ref()?.get(i))
+                .and_then(|p| std::fs::canonicalize(p.workspace.join("files")).ok())
+                .zip(
+                    state
+                        .inventory
+                        .as_ref()
+                        .and_then(|i| std::fs::canonicalize(&i.root).ok()),
+                )
+                .is_some_and(|(project, current)| project == current);
+            if !valid_project || state.selected != Some(index) {
+                state.status = "Open this asset inside its editable Modding project first.".into();
+                return Task::none();
+            }
+            state.editor_replace_dialog = Some(index);
+            state.editor_replace_source.clear();
+        }
+        Message::EditorBrowseReplacement => {
+            if state.editor_replace_dialog.is_none() || state.busy {
+                return Task::none();
+            }
+            return Task::perform(
+                async {
+                    tokio::task::spawn_blocking(|| native_export_picker("file"))
+                        .await
+                        .unwrap_or(None)
+                },
+                Message::EditorReplacementPicked,
+            );
+        }
+        Message::EditorReplacementPicked(selected) => {
+            if state.editor_replace_dialog.is_some()
+                && let Some(path) = selected
+            {
+                let ok = std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file());
+                if ok {
+                    state.editor_replace_source = path.to_string_lossy().into_owned();
+                    state.status = format!("Source selected: {}", path.display());
+                } else {
+                    state.status = "Choose an existing, regular replacement file.".into();
+                }
+            }
+        }
+        Message::EditorCancelReplacement => {
+            state.editor_replace_dialog = None;
+            state.editor_replace_source.clear();
+        }
         Message::EditorImportRawMember | Message::EditorRestoreRawMember => {
             let restore = matches!(message, Message::EditorRestoreRawMember);
             if state.viewer_from_library {
@@ -3639,8 +3705,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     ),
                 );
             }
+            if state.editor_replace_dialog != state.selected {
+                state.status = "Open the replacement sheet for this target file first.".into();
+                return Task::none();
+            }
             if state.editor_replace_source.trim().is_empty() {
-                state.status = "Choose a separate local replacement file path.".into();
+                state.status = "Browse for a replacement file or drag it into the viewer.".into();
                 return Task::none();
             }
             return launch(
@@ -5692,6 +5762,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::DropPath(path) => {
+            if state.editor_replace_dialog.is_some() {
+                let regular = std::fs::symlink_metadata(&path)
+                    .is_ok_and(|metadata| metadata.file_type().is_file());
+                if regular {
+                    state.editor_replace_source = path.to_string_lossy().into_owned();
+                    state.status = format!("Dropped replacement source: {}", path.display());
+                } else {
+                    state.status =
+                        "Drop one regular source file (PNG, DDS, or another matching asset)."
+                            .into();
+                }
+                return Task::none();
+            }
             let metadata = match std::fs::symlink_metadata(&path) {
                 Ok(metadata) if !metadata.file_type().is_symlink() => metadata,
                 _ => {
@@ -6436,6 +6519,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ViewerContextFile(index) => {
             // Right click selects a file without triggering an expensive decode.
+            // Changing targets closes any previous import sheet.
+            if state.editor_replace_dialog != Some(index) {
+                state.editor_replace_dialog = None;
+                state.editor_replace_source.clear();
+            }
             if state
                 .inventory
                 .as_ref()
@@ -9857,6 +9945,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.viewer_tab = ViewerTab::Compare;
                 }
                 Ok(Completed::ImportedRawProjectMember(changed, member, workspace)) => {
+                    state.editor_replace_dialog = None;
+                    state.editor_replace_source.clear();
+                    state.viewer_context_index = None;
                     state.status = if changed {
                         format!(
                             "Imported {member} into isolated project; verified pre-edit backup retained."

@@ -1595,6 +1595,191 @@ fn explorer_on_left(side: &str) -> bool {
     side.eq_ignore_ascii_case("left")
 }
 
+fn file_context_actions(state: &State) -> Element<'_, Message> {
+    if let Some(index) = state.viewer_context_index {
+        if let Some(entry) = state
+            .inventory
+            .as_ref()
+            .and_then(|inv| inv.entries.get(index))
+        {
+            let filename = entry.relative_path.as_str();
+            let is_cdf = filename.to_ascii_lowercase().ends_with(".cdf");
+            let is_dds = filename.to_ascii_lowercase().ends_with(".dds")
+                || filename.to_ascii_lowercase().ends_with(".dds.0");
+            let is_model = [".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cdf"]
+                .iter()
+                .any(|extension| filename.to_ascii_lowercase().ends_with(extension));
+            panel(
+                column![
+                    row![
+                        text("FILE ACTIONS").size(13),
+                        text(filename).size(11).style(design::muted).width(Fill),
+                        design::button("✕").on_press(Message::ViewerContextClose),
+                    ]
+                    .spacing(7),
+                    column![
+                        design::button("Preview")
+                            .width(Fill)
+                            .style(design::text_button)
+                            .on_press(Message::ViewerPreviewSelected),
+                        design::button("Import over…")
+                            .width(Fill)
+                            .style(design::text_button)
+                            .on_press_maybe(
+                                (!state.viewer_from_library && !state.busy)
+                                    .then_some(Message::EditorOpenReplacement)
+                            ),
+                        design::button("Restore original")
+                            .width(Fill)
+                            .style(design::text_button)
+                            .on_press_maybe(
+                                (!state.viewer_from_library && !state.busy)
+                                    .then_some(Message::EditorRestoreRawMember)
+                            ),
+                        design::button("Copy path")
+                            .width(Fill)
+                            .style(design::text_button)
+                            .on_press(Message::ViewerCopySelectedPath),
+                        design::button("Show in Explorer")
+                            .width(Fill)
+                            .style(design::text_button)
+                            .on_press(Message::ViewerRevealSelectedFile),
+                        design::button("Dependencies")
+                            .width(Fill)
+                            .style(design::text_button)
+                            .on_press(Message::StartDependencyInspection),
+                        design::button("Preview full CDF")
+                            .width(Fill)
+                            .style(design::text_button)
+                            .on_press_maybe(is_cdf.then_some(Message::ViewerPreviewStaticCdf)),
+                        design::button("Export DDS → PNG")
+                            .width(Fill)
+                            .style(design::text_button)
+                            .on_press_maybe(is_dds.then_some(Message::ExportOpen)),
+                        design::button("Rigged FBX")
+                            .width(Fill)
+                            .style(design::text_button)
+                            .on_press_maybe(
+                                (is_model && !state.busy).then_some(Message::ExportOpen)
+                            ),
+                    ]
+                    .spacing(2),
+                    if filename.to_ascii_lowercase().ends_with(".fsb")
+                        || filename.to_ascii_lowercase().ends_with(".fdp")
+                        || filename.to_ascii_lowercase().ends_with(".fev")
+                    {
+                        let fsb = filename.to_ascii_lowercase().ends_with(".fsb");
+                        let fdp = filename.to_ascii_lowercase().ends_with(".fdp");
+                        let editable = !state.viewer_from_library && !state.busy;
+                        Element::from(
+                            column![
+                                text("AUDIO TOOLS · FMOD").size(13),
+                                design::button("Inspect FMOD asset").on_press_maybe(
+                                    (!state.audio_busy).then_some(Message::AudioInspect)
+                                ),
+                                design::text_input(
+                                    if fdp {
+                                        "Waveform # (starts at 1)"
+                                    } else {
+                                        "Sound sample # (starts at 1)"
+                                    },
+                                    &state.audio_subsong
+                                )
+                                .on_input(Message::AudioSubsongChanged),
+                                row![
+                                    design::button("Preview sound").on_press_maybe(
+                                        (fsb && !state.audio_busy)
+                                            .then_some(Message::AudioPreviewSample)
+                                    ),
+                                    design::button("Export selected WAV").on_press_maybe(
+                                        (fsb && !state.audio_busy)
+                                            .then_some(Message::AudioExportSample)
+                                    ),
+                                ]
+                                .spacing(6),
+                                row![
+                                    design::button("Open FMOD Designer").on_press_maybe(
+                                        (fdp && editable).then_some(Message::AudioOpenDesigner)
+                                    ),
+                                    design::button("Replace waveform WAV").on_press_maybe(
+                                        (fdp && editable && !state.audio_busy)
+                                            .then_some(Message::AudioReplaceWaveform)
+                                    ),
+                                ]
+                                .spacing(6),
+                                design::button("Rebuild Sound Bank · Replace WAV/OGG")
+                                    .on_press_maybe(
+                                        (fsb && editable && !state.audio_busy)
+                                            .then_some(Message::AudioNativeRebuild)
+                                    ),
+                                design::button("Import rebuilt FSB/FEV").on_press_maybe(
+                                    (!fdp && editable && !state.audio_busy)
+                                        .then_some(Message::AudioImportRebuilt)
+                                ),
+                                text(state.audio_status.as_str())
+                                    .size(11)
+                                    .style(design::muted),
+                            ]
+                            .spacing(7),
+                        )
+                    } else {
+                        Element::from(text(""))
+                    },
+                ]
+                .spacing(6),
+            )
+            .into()
+        } else {
+            Element::<Message>::from(text("Selected file is no longer indexed."))
+        }
+    } else {
+        Element::<Message>::from(
+            text("Right-click a file for actions.")
+                .size(11)
+                .style(design::muted),
+        )
+    }
+}
+
+fn replacement_sheet(state: &State, index: usize) -> Element<'_, Message> {
+    let target = state
+        .inventory
+        .as_ref()
+        .and_then(|inv| inv.entries.get(index))
+        .map_or("No target selected", |entry| entry.relative_path.as_str());
+    let lower = target.to_ascii_lowercase();
+    let texture = lower.ends_with(".dds") || lower.ends_with(".dds.0");
+    panel(
+        column![
+            row![
+                text("REPLACE PROJECT ASSET").size(13).width(Fill),
+                design::button("✕").on_press(Message::EditorCancelReplacement)
+            ].spacing(8),
+            text(target).size(12),
+            text(if texture {
+                "PNG images are converted into the original DDS format and mip layout when supported."
+            } else {
+                "Choose a separate source file. The exact destination path is already selected."
+            }).size(11).style(design::muted),
+            row![
+                design::button("Browse files…")
+                    .on_press_maybe((!state.busy).then_some(Message::EditorBrowseReplacement)),
+                text("or drag a file into this window").size(11).style(design::muted)
+            ].spacing(8),
+            design::text_input("Selected source file (optional manual path)", &state.editor_replace_source)
+                .on_input(Message::EditorReplacementChanged),
+            row![
+                design::button("Import replacement")
+                    .on_press_maybe((!state.busy && !state.editor_replace_source.trim().is_empty())
+                        .then_some(Message::EditorImportRawMember)),
+                design::button("Cancel").on_press(Message::EditorCancelReplacement),
+            ].spacing(8),
+            text("The extracted original is backed up and verified before replacement. Source PAKs are never modified.")
+                .size(11).style(design::muted),
+        ].spacing(8)
+    ).into()
+}
+
 fn explorer(state: &State) -> Element<'_, Message> {
     let mut rows =
         column![row![text("File / Folder").width(Fill), text("Size").width(90)].spacing(8)]
@@ -1668,6 +1853,14 @@ fn explorer(state: &State) -> Element<'_, Message> {
             item.into()
         };
         rows = rows.push(item);
+        if entry.index.is_some() && entry.index == state.viewer_context_index {
+            rows = rows.push(file_context_actions(state));
+        }
+        if let Some(index) = entry.index
+            && Some(index) == state.editor_replace_dialog
+        {
+            rows = rows.push(replacement_sheet(state, index));
+        }
     }
     if total == 0 {
         rows = rows.push(
@@ -1705,163 +1898,16 @@ fn explorer(state: &State) -> Element<'_, Message> {
                     design::button("Index folder").on_press(Message::StartScan),
                 ]
                 .spacing(8),
-                if let Some(index) = state.viewer_context_index {
-                    if let Some(entry) = state
-                        .inventory
-                        .as_ref()
-                        .and_then(|inv| inv.entries.get(index))
-                    {
-                        let filename = entry.relative_path.as_str();
-                        let is_cdf = filename.to_ascii_lowercase().ends_with(".cdf");
-                        let is_dds = filename.to_ascii_lowercase().ends_with(".dds")
-                            || filename.to_ascii_lowercase().ends_with(".dds.0");
-                        let is_model = [".skin", ".skinm", ".chr", ".chrm", ".cgf", ".cdf"]
-                            .iter()
-                            .any(|extension| filename.to_ascii_lowercase().ends_with(extension));
-                        panel(
-                            column![
-                                row![
-                                    text("FILE ACTIONS").size(13),
-                                    text(filename).size(11).style(design::muted).width(Fill),
-                                    design::button("✕").on_press(Message::ViewerContextClose),
-                                ]
-                                .spacing(7),
-                                row![
-                                    design::button("Preview")
-                                        .on_press(Message::ViewerPreviewSelected),
-                                    design::button("Copy path")
-                                        .on_press(Message::ViewerCopySelectedPath),
-                                    design::button("Show in Explorer")
-                                        .on_press(Message::ViewerRevealSelectedFile),
-                                    design::button("Dependencies")
-                                        .on_press(Message::StartDependencyInspection),
-                                ]
-                                .spacing(6),
-                                row![
-                                    design::button("Preview full CDF").on_press_maybe(
-                                        is_cdf.then_some(Message::ViewerPreviewStaticCdf)
-                                    ),
-                                    design::button("Export DDS → PNG")
-                                        .on_press_maybe(is_dds.then_some(Message::ExportOpen)),
-                                    design::button("Rigged FBX").on_press_maybe(
-                                        (is_model && !state.busy).then_some(Message::ExportOpen)
-                                    ),
-                                    design::button("Restore original").on_press_maybe(
-                                        (!state.viewer_from_library && !state.busy)
-                                            .then_some(Message::EditorRestoreRawMember)
-                                    ),
-                                ]
-                                .spacing(6),
-                                if filename.to_ascii_lowercase().ends_with(".fsb")
-                                    || filename.to_ascii_lowercase().ends_with(".fdp")
-                                    || filename.to_ascii_lowercase().ends_with(".fev")
-                                {
-                                    let fsb = filename.to_ascii_lowercase().ends_with(".fsb");
-                                    let fdp = filename.to_ascii_lowercase().ends_with(".fdp");
-                                    let editable = !state.viewer_from_library && !state.busy;
-                                    Element::from(
-                                        column![
-                                            text("AUDIO TOOLS · FMOD").size(13),
-                                            design::button("Inspect FMOD asset").on_press_maybe(
-                                                (!state.audio_busy)
-                                                    .then_some(Message::AudioInspect)
-                                            ),
-                                            design::text_input(
-                                                if fdp {
-                                                    "Waveform # (starts at 1)"
-                                                } else {
-                                                    "Sound sample # (starts at 1)"
-                                                },
-                                                &state.audio_subsong
-                                            )
-                                            .on_input(Message::AudioSubsongChanged),
-                                            row![
-                                                design::button("Preview sound").on_press_maybe(
-                                                    (fsb && !state.audio_busy)
-                                                        .then_some(Message::AudioPreviewSample)
-                                                ),
-                                                design::button("Export selected WAV")
-                                                    .on_press_maybe(
-                                                        (fsb && !state.audio_busy)
-                                                            .then_some(Message::AudioExportSample)
-                                                    ),
-                                            ]
-                                            .spacing(6),
-                                            row![
-                                                design::button("Open FMOD Designer")
-                                                    .on_press_maybe(
-                                                        (fdp && editable)
-                                                            .then_some(Message::AudioOpenDesigner)
-                                                    ),
-                                                design::button("Replace waveform WAV")
-                                                    .on_press_maybe(
-                                                        (fdp && editable && !state.audio_busy)
-                                                            .then_some(
-                                                                Message::AudioReplaceWaveform
-                                                            )
-                                                    ),
-                                            ]
-                                            .spacing(6),
-                                            design::button("Rebuild Sound Bank · Replace WAV/OGG")
-                                                .on_press_maybe(
-                                                    (fsb && editable && !state.audio_busy)
-                                                        .then_some(Message::AudioNativeRebuild)
-                                                ),
-                                            design::button("Import rebuilt FSB/FEV")
-                                                .on_press_maybe(
-                                                    (!fdp && editable && !state.audio_busy)
-                                                        .then_some(Message::AudioImportRebuilt)
-                                                ),
-                                            text(state.audio_status.as_str())
-                                                .size(11)
-                                                .style(design::muted),
-                                        ]
-                                        .spacing(7),
-                                    )
-                                } else {
-                                    Element::from(text(""))
-                                },
-                            ]
-                            .spacing(6),
-                        )
-                        .into()
-                    } else {
-                        Element::<Message>::from(text("Selected file is no longer indexed."))
-                    }
+                text("Right-click a file to open actions beside it.")
+                    .size(11)
+                    .style(design::muted),
+                text(if state.viewer_from_library {
+                    "Source assets are read-only. Create a Modding project to replace them."
                 } else {
-                    Element::<Message>::from(
-                        text("Right-click a file for actions.")
-                            .size(11)
-                            .style(design::muted),
-                    )
-                },
-                if state.viewer_from_library {
-                    Element::<Message>::from(
-                        text(
-                            "Protected read-only source. To edit, open a separate Modding project.",
-                        )
-                        .size(11)
-                        .style(design::muted),
-                    )
-                } else {
-                    column![
-                        design::text_input(
-                            "Existing local file to import over selected project asset...",
-                            &state.editor_replace_source
-                        )
-                        .on_input(Message::EditorReplacementChanged),
-                        design::button("Import over selected project asset (backup)")
-                            .on_press_maybe(
-                                (!state.busy).then_some(Message::EditorImportRawMember)
-                            ),
-                        design::button("Restore selected original (keep edited backup)")
-                            .on_press_maybe(
-                                (!state.busy).then_some(Message::EditorRestoreRawMember)
-                            ),
-                    ]
-                    .spacing(5)
-                    .into()
-                },
+                    "Select a project file, right-click → Import over…; browse for a file or drag it into the viewer."
+                })
+                .size(11)
+                .style(design::muted),
                 scrollable(rows).height(Fill),
                 row![
                     design::button("◀ Previous").on_press_maybe(
