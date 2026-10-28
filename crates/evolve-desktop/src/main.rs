@@ -4051,7 +4051,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if state.preferences.developer_hotkeys[action.index()] == 0 {
                 return Task::none();
             }
-            match action {
+            return match action {
                 developer_hotkeys::Action::Aim => Task::done(Message::TeleportAim),
                 developer_hotkeys::Action::Save => Task::done(Message::TeleportCapture(true)),
                 developer_hotkeys::Action::Return => Task::done(Message::TeleportReturnSaved),
@@ -4061,7 +4061,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 developer_hotkeys::Action::YPlus => Task::done(Message::TeleportRelative(0.0, 20.0, 0.0)),
                 developer_hotkeys::Action::ZMinus => Task::done(Message::TeleportRelative(0.0, 0.0, -20.0)),
                 developer_hotkeys::Action::ZPlus => Task::done(Message::TeleportRelative(0.0, 0.0, 20.0)),
-            }
+            };
         }
         Message::TeleportAimDistanceChanged(value) => {
             if state.developer_unlocked && value.len() <= 12 {
@@ -4254,6 +4254,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.teleport_saved = Some(reading);
                         state.teleport_status =
                             format!("Saved position: {}", reading.position.label());
+                        notify_dev_overlay(state, "Position saved");
                         if let Some(distance) = state.teleport_aim_pending.take() {
                             return Task::done(Message::TeleportDo(
                                 runtime_teleport::Destination::ActorAim(distance),
@@ -4357,8 +4358,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         "Teleported to {}. Movement input may resume falling.",
                         reading.position.label()
                     );
+                    notify_dev_overlay(state, &format!("Teleported: {}", reading.position.label()));
                 }
-                Err(error) => state.teleport_status = format!("Teleport refused: {error}"),
+                Err(error) => {
+                    notify_dev_overlay(state, &format!("Teleport refused: {error}"));
+                    state.teleport_status = format!("Teleport refused: {error}");
+                }
             }
         }
         Message::ActorRefresh => {
@@ -4451,6 +4456,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::ActorWritten(result) => {
             state.actor_busy = false;
             if state.developer_unlocked {
+                let notice = match &result {
+                    Ok(outcome) => format!("{} set to {}", outcome.field.title(), outcome.after),
+                    Err(error) => format!("Actor write failed: {error}"),
+                };
+                notify_dev_overlay(state, &notice);
                 state.actor_status = match &result {
                     Ok(outcome) => format!(
                         "{} {}: {} -> {}. Refresh to read current values.",
@@ -4500,6 +4510,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if !checked {
                 state.actor_frozen.remove(&key);
                 state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
+                notify_dev_overlay(state, &format!("Unfrozen {}", field.title()));
                 return Task::none();
             }
             if !state.developer_unlocked
@@ -4519,6 +4530,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if let Some(bits) = bits {
                 state.actor_frozen.insert(key, bits);
                 state.actor_status = format!("Holding {} at its current value", field.title());
+                notify_dev_overlay(state, &format!("Holding {}", field.title()));
             }
         }
         Message::ActorFreezeTick => {
@@ -4753,6 +4765,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     "Float32 write not confirmed: {e}. Read the address again before retrying."
                 ),
             };
+            let notice = if state.live_edit_report.starts_with("One-shot") {
+                "Float32 edit applied"
+            } else { "Float32 edit not confirmed" };
+            notify_dev_overlay(state, notice);
         }
         Message::ArmorOfflineChanged(confirmed) => {
             if !confirmed {
