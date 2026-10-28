@@ -88,46 +88,17 @@ pub(super) struct LocalActor {
 fn label(input: &str) -> String {
     input.chars().filter(|c| !c.is_control()).take(128).collect()
 }
-fn character_asset(name: &str) -> Option<&'static str> {
-    match name.to_ascii_lowercase().as_str() {
-        "goliath" => Some("goliath"),
-        "meteor goliath" => Some("meteor_goliath"),
-        "kraken" => Some("kraken"),
-        "elder kraken" => Some("elder_kraken"),
-        "wraith" => Some("wraith"),
-        "behemoth" => Some("behemoth"),
-        "gorgon" => Some("gorgon"),
-        "maggie" => Some("maggie"),
-        "markov" => Some("markov"),
-        "val" => Some("val"),
-        "hank" => Some("hank"),
-        "lazarus" => Some("lazarus"),
-        "hyde" => Some("hyde"),
-        "parnell" => Some("parnell"),
-        "cabot" => Some("cabot"),
-        "caira" => Some("caira"),
-        "slim" => Some("slim"),
-        "sunny" => Some("sunny"),
-        "emet" => Some("emet"),
-        "kala" => Some("kala"),
-        "jack" => Some("jack"),
-        "crow" => Some("crow"),
-        "griffin" => Some("griffin"),
-        "abe" => Some("abe"),
-        "bucket" => Some("bucket"),
-        _ => None,
-    }
-}
 fn format_activity(cfg: &Config, game_pid: Option<u32>, actor: Option<&LocalActor>, start: i64) -> Option<serde_json::Value> {
     use serde_json::json;
     let game = game_pid.is_some() && cfg.show_game;
     if !cfg.enabled || (!game && !cfg.show_manager) { return None; }
-    let (details, state, small_image) = if game {
+    let (details, state) = if game {
         if cfg.minimal {
-            ("Playing Modded Evolve".to_owned(), "In game".to_owned(), None)
+            ("Playing Evolve".to_owned(), "In game".to_owned())
         } else {
-            let name = actor.and_then(|a| a.name.as_ref()).filter(|_| cfg.show_character);
-            let details = name.map_or_else(|| "Playing Evolve".to_owned(), |n| format!("Playing as {n}"));
+            // No character name is published until its source is confirmed
+            // against the verified local IEntity and multiple playable actors.
+            let details = "Playing Evolve".to_owned();
             let mut values = vec![cfg.game_version.clone()];
             if cfg.show_character {
                 if let Some(stage) = actor.and_then(|a| a.evolution.as_ref()) {
@@ -143,7 +114,7 @@ fn format_activity(cfg: &Config, game_pid: Option<u32>, actor: Option<&LocalActo
             if cfg.show_profile {
                 if let Some(profile) = cfg.mod_profile.as_ref() { values.push(profile.clone()); }
             }
-            (details, values.join(" • "), name.and_then(|n| character_asset(n)))
+            (details, values.join(" • "))
         }
     } else {
         let details = if cfg.minimal { "Using Evolve Mod Manager".to_owned() }
@@ -154,13 +125,9 @@ fn format_activity(cfg: &Config, game_pid: Option<u32>, actor: Option<&LocalActo
             } else if cfg.show_profile {
                 cfg.mod_profile.clone().unwrap_or_else(|| "Modded Evolve".into())
             } else { "Modded Evolve".to_owned() };
-        (details, state, None)
+        (details, state)
     };
-    let mut assets = json!({"large_image":"evolve", "large_text":"Modded Evolve"});
-    if let Some(asset) = small_image {
-        assets["small_image"] = json!(asset);
-        assets["small_text"] = json!(actor.and_then(|a| a.name.as_deref()).unwrap_or(""));
-    }
+    let assets = json!({"large_image":"evolve", "large_text":"Modded Evolve"});
     Some(json!({
         "details": label(&details),
         "state": label(&state),
@@ -232,9 +199,8 @@ mod windows {
         let listing = runtime_actors::inspect(snapshot, root).ok()?;
         let actor = listing.actors.iter().find(|actor| actor.local)?;
         let mut info = LocalActor::default();
-        if !actor.name.starts_with("Actor entity") {
-            info.name = Some(actor.name.clone());
-        }
+        // The current actor name is a nearby-string heuristic, not a
+        // verified IEntity character identity; never copy it to Discord.
         for field in &actor.fields {
             use runtime_actors::Field;
             match field.field {
@@ -277,7 +243,7 @@ mod windows {
                     last_actor_check = Instant::now() - Duration::from_secs(60);
                     last_pid = snapshot.pid;
                 }
-                if snapshot.pid.is_some() && cfg.show_character
+                if snapshot.pid.is_some() && (cfg.show_character || cfg.show_stats)
                     && last_actor_check.elapsed() >= Duration::from_secs(20) {
                     last_actor_check = Instant::now();
                     local_actor = actor_info(&snapshot,&cfg.game_root);
@@ -293,7 +259,7 @@ mod windows {
                 app_id = cfg.app_id.clone();
                 last_activity = None;
             }
-            let visible_actor = if cfg.show_character { local_actor.as_ref() } else { None };
+            let visible_actor = if cfg.show_character || cfg.show_stats { local_actor.as_ref() } else { None };
             let next = format_activity(&cfg,running_game,visible_actor,if running_game.is_some() {session_start} else {manager_start});
             if next != last_activity {
                 if let Some(ref mut connected) = pipe {
@@ -363,15 +329,16 @@ mod tests {
         }
     }
     #[test]
-    fn activity_uses_validated_actor_fields_and_never_guesses_map() {
+    fn gameplay_hides_unverified_character_name_and_keeps_validated_stats() {
         let actor = LocalActor{name:Some("Goliath".into()),evolution:Some("Stage 2".into()),
             health:Some("8500".into()),armor:Some("1000".into())};
         let act = format_activity(&sample(),Some(100),Some(&actor),100).unwrap();
-        assert_eq!(act["details"],"Playing as Goliath");
+        assert_eq!(act["details"],"Playing Evolve");
+        assert!(!act.to_string().contains("Goliath"));
         assert!(act["state"].as_str().unwrap().contains("HP 8500"));
         assert!(act["state"].as_str().unwrap().contains("Evolution Stage 2"));
         assert!(!act["state"].as_str().unwrap().contains("Map:"));
-        assert_eq!(act["assets"]["small_image"],"goliath");
+        assert!(act["assets"].get("small_image").is_none());
     }
     #[test]
     fn privacy_mode_hides_character_stats_and_mods() {
@@ -379,6 +346,7 @@ mod tests {
         cfg.minimal = true;
         let actor=LocalActor{name:Some("Wraith".into()),health:Some("1".into()),..Default::default()};
         let act=format_activity(&cfg,Some(123),Some(&actor),100).unwrap();
+        assert_eq!(act["details"], "Playing Evolve");
         assert!(!act.to_string().contains("Wraith"));
         assert!(!act.to_string().contains("My Mod"));
         assert!(!act.to_string().contains("HP"));
