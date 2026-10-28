@@ -4356,6 +4356,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             else {
                 return Task::none();
             };
+            if let Some(raw) = output.strip_prefix("BINDOK ") {
+                if let Ok(index) = raw.trim().parse::<usize>()
+                    && let Some(action) = developer_hotkeys::Action::from_index(index)
+                {
+                    state.developer_hotkey_status =
+                        format!("Shortcut active in Evolve: {}", action.label());
+                }
+                return Task::none();
+            }
             if let Some(raw) = output.strip_prefix("BINDFAIL ") {
                 state.developer_hotkey_status = format!(
                     "Could not register hotkey {} (already in use by Windows or another app)",
@@ -4493,8 +4502,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.teleport_status = "Aim distance must be 5 to 100 units".into();
                 return Task::none();
             };
-            state.teleport_aim_pending = Some(distance);
-            return Task::done(Message::TeleportCapture(true));
+            // Aim is resolved during the teleport itself. Do not first run an
+            // asynchronous save/read round trip or overwrite the saved position.
+            return Task::done(Message::TeleportDo(
+                runtime_teleport::Destination::ActorAim(distance),
+                None,
+            ));
         }
         Message::TeleportPreviewAim => {
             if !state.developer_unlocked
