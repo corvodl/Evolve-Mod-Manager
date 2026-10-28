@@ -49,6 +49,53 @@ pub fn client_exe(input: &str) -> Result<PathBuf, String> {
     fs::canonicalize(path).map_err(|e| format!("Cannot inspect client executable: {e}"))
 }
 
+/// The test game may contain a different set of PAKs and runtime DLLs.
+/// Only require its game executable here; do NOT run production signing-file
+/// checks simply to select the separate testing installation.
+pub fn test_game_root(input: &str) -> Result<PathBuf, String> {
+    let path = Path::new(input.trim());
+    let root = if path.file_name().is_some_and(|name| name.eq_ignore_ascii_case("bin64_SteamRetail")) {
+        path.parent().ok_or("Test Game executable folder has no parent")?
+    } else {
+        path
+    };
+    if !regular(&root.join("bin64_SteamRetail/Evolve.exe")) {
+        return Err("Select the separate Test Game directory containing bin64_SteamRetail/Evolve.exe".into());
+    }
+    fs::canonicalize(root).map_err(|e| format!("Cannot inspect Test Game: {e}"))
+}
+
+/// Unlike production, Test Client may have a different executable name.
+pub fn test_client_exe(input: &str) -> Result<PathBuf, String> {
+    let path = Path::new(input.trim());
+    if !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("exe")) || !regular(path) {
+        return Err("Select the separate Test Client .exe file".into());
+    }
+    fs::canonicalize(path).map_err(|e| format!("Cannot inspect Test Client: {e}"))
+}
+
+/// Test and production must never share their game/client installations.
+pub fn validate_test_paths(
+    test_game: &str,
+    test_client: &str,
+    production_game: &str,
+    production_client: &str,
+) -> Result<(PathBuf, PathBuf), String> {
+    let game = test_game_root(test_game)?;
+    let client = test_client_exe(test_client)?;
+    if let Ok(production) = game_root(production_game) {
+        if game == production {
+            return Err("Test Game cannot be the production game installation".into());
+        }
+    }
+    if let Ok(production) = client_exe(production_client) {
+        if client == production {
+            return Err("Test Client cannot be the production client executable".into());
+        }
+    }
+    Ok((game, client))
+}
+
 /// Hints are tried only when there is no explicit saved user selection.
 pub fn detect_game() -> Option<String> {
     game_root(GAME_HINT)
@@ -452,6 +499,36 @@ pub fn launch_clean(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn separate_test_game_uses_executable_not_production_file_inventory() {
+        let root = tempfile::tempdir().unwrap();
+        let live = root.path().join("production");
+        let test = root.path().join("test");
+        let client = root.path().join("TestClient.exe");
+        let prod_client = root.path().join("ModdedEvolveLauncher.exe");
+        for dir in [&live, &test] {
+            fs::create_dir_all(dir.join("bin64_SteamRetail")).unwrap();
+            fs::write(dir.join("bin64_SteamRetail/Evolve.exe"), b"game").unwrap();
+        }
+        fs::write(live.join("bin64_SteamRetail/inject.dll"), b"shim").unwrap();
+        fs::write(&client, b"test client").unwrap();
+        fs::write(&prod_client, b"production client").unwrap();
+        let (found_game, found_client) = validate_test_paths(
+            test.to_str().unwrap(), client.to_str().unwrap(),
+            live.to_str().unwrap(), prod_client.to_str().unwrap()
+        ).unwrap();
+        assert_eq!(found_game, fs::canonicalize(&test).unwrap());
+        assert_eq!(found_client, fs::canonicalize(&client).unwrap());
+        assert!(validate_test_paths(
+            live.to_str().unwrap(), client.to_str().unwrap(),
+            live.to_str().unwrap(), prod_client.to_str().unwrap()
+        ).is_err());
+        assert!(validate_test_paths(
+            test.to_str().unwrap(), prod_client.to_str().unwrap(),
+            live.to_str().unwrap(), prod_client.to_str().unwrap()
+        ).is_err());
+    }
 
     #[test]
     fn bin_folder_normalizes_to_game_root() {
