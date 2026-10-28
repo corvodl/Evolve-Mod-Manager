@@ -133,23 +133,6 @@ fn ps(command: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// User confirmation is necessary but not a proof of offline mode. Refuse scans
-/// when Windows reports an established non-local TCP peer owned by Evolve.
-/// UDP and external game-service state cannot be conclusively checked here.
-#[cfg(windows)]
-pub(super) fn offline_guard(pid: u32, confirmed: bool) -> Result<(), String> {
-    if !confirmed {
-        return Err("Confirm a strictly offline, local match before scanning.".into());
-    }
-    let output = ps(&format!(
-        "$ErrorActionPreference='Stop'; $peers=@(Get-NetTCPConnection -OwningProcess {pid} -State Established | Where-Object {{ $_.RemoteAddress -notin @('127.0.0.1','::1','0.0.0.0','::') }}); if ($peers.Count -gt 0) {{ 'REMOTE_PEER' }} else {{ 'NO_TCP_PEER' }}"
-    ))?;
-    if !output.trim().ends_with("NO_TCP_PEER") {
-        return Err("Offline guard: remote TCP connection detected or offline state unknown. No scan performed.".into());
-    }
-    Ok(())
-}
-
 #[cfg(windows)]
 fn verify_process(snapshot: &Snapshot, game_root: &str) -> Result<u32, String> {
     let pid = snapshot
@@ -230,11 +213,11 @@ public static class EvolveReadOnlyRegions {{
 pub(super) fn discover(
     snapshot: &Snapshot,
     game_root: &str,
-    offline_confirmed: bool,
+    _offline_confirmed: bool,
     cancel: &AtomicBool,
 ) -> Result<Scan, String> {
     let pid = verify_process(snapshot, game_root)?;
-    offline_guard(pid, offline_confirmed)?;
+
     let regions = regions(pid)?;
     let handle: read_process_memory::ProcessHandle = pid
         .try_into()
@@ -294,14 +277,14 @@ pub(super) fn refine(
     game_root: &str,
     previous: Scan,
     step: Step,
-    offline_confirmed: bool,
+    _offline_confirmed: bool,
     cancel: &AtomicBool,
 ) -> Result<Scan, String> {
     let pid = verify_process(snapshot, game_root)?;
     if pid != previous.pid {
         return Err("Different Evolve instance; begin another full armor scan".into());
     }
-    offline_guard(pid, offline_confirmed)?;
+
     if step == Step::Feed && previous.damage_steps == 0 {
         return Err("Take armor damage and filter Damage before feeding".into());
     }
@@ -353,7 +336,7 @@ pub(super) fn monitor(
     snapshot: &Snapshot,
     game_root: &str,
     scan: &Scan,
-    offline_confirmed: bool,
+    _offline_confirmed: bool,
 ) -> Result<Option<f32>, String> {
     let Some(address) = scan.verified_address() else {
         return Ok(None);
@@ -362,7 +345,7 @@ pub(super) fn monitor(
     if pid != scan.pid {
         return Err("Game restarted; armor address is stale".into());
     }
-    offline_guard(pid, offline_confirmed)?;
+
     let handle: read_process_memory::ProcessHandle = pid
         .try_into()
         .map_err(|e| format!("Cannot open game read-only: {e}"))?;

@@ -1474,10 +1474,10 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
                         .size(12)
                         .style(design::muted),
                         iced::widget::checkbox(state.armor_offline_confirmed)
-                            .label("Confirm isolated offline match (required to write)")
+                            .label("Enable guided armor scanning (optional)")
                             .on_toggle(Message::ArmorOfflineChanged),
                         iced::widget::checkbox(state.live_edit_enabled)
-                            .label("Enable one-shot actor field writes (experimental)")
+                            .label("Enable actor memory writes / Freeze (experimental)")
                             .on_toggle(Message::LiveEditEnabled),
                         design::button(if state.actor_busy {
                             "Reading actors..."
