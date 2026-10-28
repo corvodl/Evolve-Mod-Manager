@@ -123,38 +123,61 @@ pub(super) struct LocalActor {
     pub armor: Option<String>,
 }
 
-// Explicit internal IEntity names. The first five were observed through the
-// live name resolver; monster aliases below were supplied by the user and still
-// need runtime verification. Match the complete base name, never a substring.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The portrait registry is the sole mapping from the original entity
+/// identifier to display name, team, and Discord image key. Every portrait is
+/// present even when its game identifier is not yet known; adding a newly
+/// discovered name only requires editing the manifest's internal_names list.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 enum Team {
     Monster,
     Hunter,
+    Unknown,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CharacterPortrait {
+    asset_key: String,
+    display_name: String,
+    team: Team,
+    internal_names: Vec<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CharacterPortraitRegistry {
+    characters: Vec<CharacterPortrait>,
+}
+
+fn character_portraits() -> &'static [CharacterPortrait] {
+    static REGISTRY: std::sync::OnceLock<CharacterPortraitRegistry> =
+        std::sync::OnceLock::new();
+    &REGISTRY
+        .get_or_init(|| {
+            serde_json::from_str(include_str!(
+                "../../../assets/discord/character_portraits.json"
+            ))
+            .expect("checked-in Discord portrait manifest must be valid JSON")
+        })
+        .characters
 }
 
 fn character_from_entity_name(raw: &str) -> Option<(&'static str, Team)> {
-    let lower = raw.trim().to_ascii_lowercase();
-    // Evolve samples end with "ABot", "BBot", "DBot" or "EBot".
-    // Strip only the two common trailing characters after the variant letter.
-    // Keep the character/variant letter in names like "AssaultEBot".
-    let name = lower.strip_suffix("bot").unwrap_or(&lower);
-    let result = match name {
-        "goliatha" => ("Goliath", Team::Monster),
-        "teleportera" => ("Wraith", Team::Monster),
-        "assaulte" => ("Markov", Team::Hunter),
-        "assaultb" => ("Parnell", Team::Hunter),
-        "assaultd" => ("Hyde", Team::Hunter),
-        // The next six internal aliases have not yet been confirmed by a
-        // running-game probe; support their likely *ABot suffix forms.
-        "groundera" | "grounder" => ("Kraken", Team::Monster),
-        "rockya" | "rocky" => ("Behemoth", Team::Monster),
-        "rockybobsiclea" | "rockybobsicle" => ("Glacial Behemoth", Team::Monster),
-        "lurkera" | "lurker" => ("Gorgon", Team::Monster),
-        "krakena" | "kraken" => ("Elder Kraken", Team::Monster),
-        "goliathmeteora" | "goliathmeteor" => ("Meteor Goliath", Team::Monster),
-        _ => return None,
-    };
-    Some(result)
+    let name = raw.trim();
+    character_portraits()
+        .iter()
+        .find(|portrait| {
+            portrait
+                .internal_names
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(name))
+        })
+        .map(|portrait| (portrait.display_name.as_str(), portrait.team))
+}
+
+fn portrait_for_display_name(name: &str) -> Option<&'static CharacterPortrait> {
+    character_portraits()
+        .iter()
+        .find(|portrait| portrait.display_name.eq_ignore_ascii_case(name))
 }
 
 fn label(input: &str) -> String {
@@ -235,10 +258,22 @@ fn format_activity(
         };
         (details, state)
     };
-    // Asset keys are scoped to each Discord application. Avoid attaching the
-    // manager's image key to the Evolve ID until it is uploaded there.
+    // Character art belongs to the separate Evolve Discord application.
+    // Asset keys match the 39 PNGs in the import-ready portrait bundle.
+    // Unrecognized characters have no guessed picture; the manager keeps its
+    // own logo, and privacy/minimal modes never reveal character imagery.
     let assets = if game {
-        json!({})
+        if cfg.show_character && !cfg.minimal {
+            actor
+                .and_then(|a| a.name.as_deref())
+                .and_then(portrait_for_display_name)
+                .map(|portrait| {
+                    json!({"large_image": portrait.asset_key, "large_text": portrait.display_name})
+                })
+                .unwrap_or_else(|| json!({}))
+        } else {
+            json!({})
+        }
     } else {
         json!({"large_image":"evolve", "large_text":"Evolve Mod Manager"})
     };
@@ -587,6 +622,43 @@ mod tests {
         let state = format_activity(&sample(), Some(123), Some(&unknown), 100).unwrap();
         assert!(!state.to_string().contains("Armor"));
         assert!(!state.to_string().contains("Evolution"));
+    }
+
+    #[test]
+    fn registry_keeps_all_portraits_even_without_internal_names() {
+        let portraits = character_portraits();
+        assert_eq!(portraits.len(), 39);
+        assert_eq!(portraits.iter().filter(|p| !p.internal_names.is_empty()).count(), 11);
+        let mut seen = std::collections::HashSet::new();
+        for portrait in portraits {
+            assert!(seen.insert(portrait.asset_key.as_str()), "Duplicate Discord asset key");
+            assert!(portrait.asset_key.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'));
+            assert!(!portrait.display_name.is_empty());
+        }
+        assert_eq!(portrait_for_display_name("Renegade Abe").unwrap().asset_key, "aberenegade");
+        assert_eq!(portrait_for_display_name("Glacial Behemoth").unwrap().asset_key, "rockybobcicle");
+        assert_eq!(portrait_for_display_name("Tech").unwrap().team, Team::Unknown);
+        assert_eq!(character_from_entity_name("UnknownABot"), None);
+    }
+
+    #[test]
+    fn game_portrait_uses_exact_character_art_key() {
+        let actor = LocalActor {
+            name: Some("Elder Kraken".into()),
+            verified_monster: true,
+            ..LocalActor::default()
+        };
+        let activity = format_activity(&sample(), Some(123), Some(&actor), 100).unwrap();
+        assert_eq!(activity["assets"]["large_image"], "krakenelder");
+        assert_eq!(activity["assets"]["large_text"], "Elder Kraken");
+        let mut hidden = sample();
+        hidden.show_character = false;
+        let activity = format_activity(&hidden, Some(123), Some(&actor), 100).unwrap();
+        assert!(activity["assets"].get("large_image").is_none());
+        hidden.show_character = true;
+        hidden.minimal = true;
+        let activity = format_activity(&hidden, Some(123), Some(&actor), 100).unwrap();
+        assert!(activity["assets"].get("large_image").is_none());
     }
 
     #[test]
