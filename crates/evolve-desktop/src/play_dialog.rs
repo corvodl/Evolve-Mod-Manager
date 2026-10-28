@@ -10,6 +10,7 @@ pub enum Kind {
     Modded,
     Clean,
     Manager,
+    FbxExport,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,6 +37,7 @@ impl Notice {
                 Kind::Modded => "Building enabled mods and verifying the signed PAKs, hook and original-file recovery state. No in-game swap has happened yet.".into(),
                 Kind::Clean => "Opening the regular client. The manager will not install mod files.".into(),
                 Kind::Manager => "Checking the current manager task.".into(),
+                Kind::FbxExport => "Exporting the selected asset to FBX.".into(),
             },
         }
     }
@@ -50,10 +52,14 @@ impl Notice {
 
     pub fn title(&self) -> &'static str {
         match self.phase {
+            Phase::Preparing if self.kind == Kind::FbxExport => "Preparing FBX export",
             Phase::Preparing => "Preparing game launch",
             Phase::Success if self.kind == Kind::Modded => "Modded game launch confirmed",
+            Phase::Success if self.kind == Kind::FbxExport => "FBX export completed",
             Phase::Success => "Regular client opened",
+            Phase::Warning if self.kind == Kind::FbxExport => "FBX export warning",
             Phase::Warning => "Mods were not installed",
+            Phase::Error if self.kind == Kind::FbxExport => "FBX export failed",
             Phase::Error if self.kind == Kind::Manager => "Manager operation failed",
             Phase::Error => "Game launch needs attention",
         }
@@ -66,7 +72,21 @@ pub fn view(state: &State) -> Element<'_, Message> {
             .padding(24)
             .into();
     };
-    let stage = if notice.phase == Phase::Preparing && notice.kind == Kind::Modded {
+    let stage = if notice.kind == Kind::FbxExport {
+        match notice.phase {
+            Phase::Preparing => "EXPORTING — building the FBX file",
+            Phase::Success => "COMPLETE — FBX export",
+            Phase::Warning => "WARNING — FBX export",
+            Phase::Error => "ERROR — FBX export validation failed",
+        }
+    } else if notice.kind == Kind::Manager {
+        match notice.phase {
+            Phase::Preparing => "PREPARING — manager task",
+            Phase::Success => "COMPLETE — manager task",
+            Phase::Warning => "WARNING — manager task",
+            Phase::Error => "ERROR — manager task failed",
+        }
+    } else if notice.phase == Phase::Preparing && notice.kind == Kind::Modded {
         let progress = state
             .mod_launch_progress
             .as_ref()
@@ -94,6 +114,9 @@ pub fn view(state: &State) -> Element<'_, Message> {
             "The manager did not confirm that enabled mods were installed. Close Evolve before retrying or restoring. Do not manually delete backup files or the swap journal."
         }
         (Kind::Clean, _) => "Regular-client mode does not apply the modded PAK swap.",
+        (Kind::FbxExport, _) => {
+            "The FBX export stopped before publishing a completed file. Review the Blender diagnostic above; original model, UVs and textures were not changed."
+        }
         (Kind::Manager, _) => {
             "Review this error before repeating the operation. The manager's Activity window retains the detail."
         }
@@ -115,11 +138,15 @@ pub fn view(state: &State) -> Element<'_, Message> {
             label: match notice.phase {
                 Phase::Success => "Launch completed".into(),
                 Phase::Warning => "Game opened without verified mods".into(),
+                Phase::Error if notice.kind == Kind::FbxExport => "FBX export stopped".into(),
+                Phase::Error if notice.kind == Kind::Manager => "Manager task stopped".into(),
                 Phase::Error => "Launch operation stopped".into(),
                 Phase::Preparing => "Preparing game launch".into(),
             },
             detail: match notice.phase {
                 Phase::Success => "Completed".into(),
+                _ if notice.kind == Kind::FbxExport => "No completed FBX was published".into(),
+                _ if notice.kind == Kind::Manager => "Manager task did not complete".into(),
                 _ => "No completed modded swap can be assumed".into(),
             },
             percent: (notice.phase == Phase::Success).then_some(100),
@@ -165,6 +192,12 @@ pub fn view(state: &State) -> Element<'_, Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_error_does_not_claim_game_launch_failure() {
+        let export = Notice::finished(Kind::FbxExport, Phase::Error, "invalid tangent");
+        assert_eq!(export.title(), "FBX export failed");
+    }
 
     #[test]
     fn readiness_is_distinct_from_a_verified_launch() {

@@ -9878,8 +9878,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if let Some(notice) = launch_notice {
                 state.play_notice = Some(notice);
             } else if let Err(error) = &result {
+                let export_failed = state.busy_operation.as_deref().is_some_and(|label| {
+                    label.contains("Exporting")
+                        && (label.contains("character")
+                            || label.contains("asset bundle")
+                            || label.contains("level scene"))
+                }) && (error.contains("Blender")
+                    || error.contains("FBX")
+                    || error.contains("fbx"));
                 state.play_notice = Some(play_dialog::Notice::finished(
-                    play_dialog::Kind::Manager,
+                    if export_failed {
+                        play_dialog::Kind::FbxExport
+                    } else {
+                        play_dialog::Kind::Manager
+                    },
                     play_dialog::Phase::Error,
                     error.clone(),
                 ));
@@ -12421,7 +12433,11 @@ impl Desktop {
         } else if self.activity_id == Some(id) {
             "Activity | Evolve Mod Manager".into()
         } else if self.play_notice_id == Some(id) {
-            "Game Launch | Evolve Mod Manager".into()
+            match self.state.play_notice.as_ref().map(|notice| notice.kind) {
+                Some(play_dialog::Kind::FbxExport) => "FBX Export | Evolve Mod Manager".into(),
+                Some(play_dialog::Kind::Manager) => "Manager Operation | Evolve Mod Manager".into(),
+                _ => "Game Launch | Evolve Mod Manager".into(),
+            }
         } else if self.preferences_id == Some(id) {
             "Evolve Mod Manager — Viewer Preferences".into()
         } else if self.inspector_id == Some(id) {
