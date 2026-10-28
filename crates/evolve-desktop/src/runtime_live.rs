@@ -1,8 +1,7 @@
-//! Explicitly armed, single-shot Float32 edits for OFFLINE developer tests.
+//! Explicitly armed, single-shot Float32 edits for Developer tests.
 //! Never auto-writes, freezes, injects, sets debugger breakpoints, or changes
 //! memory protection. A read-before-write probe is tied to a process and a
 //! specific four-byte baseline; applying always requires fresh authorization.
-use crate::runtime_armor;
 use crate::runtime_memory::{self, Snapshot};
 use std::sync::atomic::{AtomicBool, Ordering};
 
