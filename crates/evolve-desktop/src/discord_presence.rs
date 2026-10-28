@@ -874,7 +874,7 @@ mod tests {
         let jack = portrait_for_display_name("Jack").unwrap();
         assert_eq!(jack.asset_key, "scrap");
         assert_eq!(jack.team, Team::Hunter);
-        assert_eq!(portrait_for_display_name("Necro Lazarus"), None);
+        assert!(portrait_for_display_name("Necro Lazarus").is_none());
         assert_eq!(character_from_entity_name("MedicB_NecroBot"), None);
         let actor = LocalActor {
             name: Some("Jack".into()),
