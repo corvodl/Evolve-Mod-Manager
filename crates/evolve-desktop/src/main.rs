@@ -4344,10 +4344,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.teleport_status = "Detect Evolve.exe first".into();
                 return Task::none();
             };
-            if let Err(error) = runtime_armor::offline_guard(pid, true) {
-                state.teleport_status = error;
-                return Task::none();
-            }
+            // The explicit Developer write-arm and validated Evolve PID above
+            // are sufficient here; the removed TCP/offline guard must not
+            // block the overlay when the relay/profile connection is active.
             #[cfg(windows)]
             {
                 use std::os::windows::process::CommandExt;
