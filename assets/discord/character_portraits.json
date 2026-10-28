@@ -192,7 +192,9 @@
       "filename": "lennox.png",
       "display_name": "Lennox",
       "team": "hunter",
-      "internal_names": []
+      "internal_names": [
+        "AssaultGBot"
+      ]
     },
     {
       "source": "lurker.dds",
@@ -237,7 +239,9 @@
       "filename": "markovblitz.png",
       "display_name": "Blitz Markov",
       "team": "hunter",
-      "internal_names": []
+      "internal_names": [
+        "AssaultE_BlitzBot"
+      ]
     },
     {
       "source": "parnell.dds",
@@ -327,7 +331,9 @@
       "filename": "torvald.png",
       "display_name": "Torvald",
       "team": "hunter",
-      "internal_names": []
+      "internal_names": [
+        "AssaultFBot"
+      ]
     },
     {
       "source": "val.dds",
