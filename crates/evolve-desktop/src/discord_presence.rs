@@ -146,22 +146,43 @@ struct CharacterPortrait {
 #[derive(Debug, serde::Deserialize)]
 struct CharacterPortraitRegistry {
     characters: Vec<CharacterPortrait>,
+    unillustrated_characters: Vec<UnillustratedCharacter>,
+    non_player_entities: Vec<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct UnillustratedCharacter {
+    display_name: String,
+    team: Team,
+    internal_names: Vec<String>,
+}
+
+fn portrait_registry() -> &'static CharacterPortraitRegistry {
+    static REGISTRY: std::sync::OnceLock<CharacterPortraitRegistry> = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        serde_json::from_str(include_str!(
+            "../../../assets/discord/character_portraits.json"
+        ))
+        .expect("checked-in Discord portrait manifest must be valid JSON")
+    })
 }
 
 fn character_portraits() -> &'static [CharacterPortrait] {
-    static REGISTRY: std::sync::OnceLock<CharacterPortraitRegistry> = std::sync::OnceLock::new();
-    &REGISTRY
-        .get_or_init(|| {
-            serde_json::from_str(include_str!(
-                "../../../assets/discord/character_portraits.json"
-            ))
-            .expect("checked-in Discord portrait manifest must be valid JSON")
-        })
-        .characters
+    &portrait_registry().characters
 }
 
 fn character_from_entity_name(raw: &str) -> Option<(&'static str, Team)> {
     let name = raw.trim();
+    let registry = portrait_registry();
+    // NPC copies, summons, decoys and co-op actors are not evidence of the
+    // currently controlled player character. Never assign their portraits.
+    if registry
+        .non_player_entities
+        .iter()
+        .any(|excluded| excluded.eq_ignore_ascii_case(name))
+    {
+        return None;
+    }
     character_portraits()
         .iter()
         .find(|portrait| {
@@ -171,6 +192,18 @@ fn character_from_entity_name(raw: &str) -> Option<(&'static str, Team)> {
                 .any(|known| known.eq_ignore_ascii_case(name))
         })
         .map(|portrait| (portrait.display_name.as_str(), portrait.team))
+        .or_else(|| {
+            registry
+                .unillustrated_characters
+                .iter()
+                .find(|character| {
+                    character
+                        .internal_names
+                        .iter()
+                        .any(|known| known.eq_ignore_ascii_case(name))
+                })
+                .map(|character| (character.display_name.as_str(), character.team))
+        })
 }
 
 fn portrait_for_display_name(name: &str) -> Option<&'static CharacterPortrait> {
@@ -186,6 +219,33 @@ fn label(input: &str) -> String {
         .take(128)
         .collect()
 }
+/// The runtime reports stage as a decimal 1, 2 or 3. Accept the older
+/// "Stage N" form in tests and previously cached state without duplicating
+/// the word Stage in Discord.
+fn presence_stage(value: &str) -> Option<u8> {
+    let value = value.trim().strip_prefix("Stage ").unwrap_or(value.trim());
+    let stage = value.parse::<u8>().ok()?;
+    (1..=3).contains(&stage).then_some(stage)
+}
+
+/// External Float32 values arrive with three decimal places. Discord's
+/// compact activity lines use rounded integers with thousands separators.
+fn presence_number(value: &str) -> Option<String> {
+    let numeric = value.trim().parse::<f64>().ok()?;
+    if !numeric.is_finite() || !(0.0..=1_000_000_000.0).contains(&numeric) {
+        return None;
+    }
+    let digits = (numeric.round() as u64).to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    Some(grouped)
+}
+
 fn format_activity(
     cfg: &Config,
     game_pid: Option<u32>,
@@ -201,45 +261,40 @@ fn format_activity(
         if cfg.minimal {
             ("Playing Evolve".to_owned(), "In game".to_owned())
         } else {
-            let details = if cfg.show_character {
-                actor
-                    .and_then(|a| a.name.as_deref())
-                    .map(|name| format!("Playing as {name}"))
-                    .unwrap_or_else(|| "Playing Evolve".to_owned())
-            } else {
-                "Playing Evolve".to_owned()
-            };
-            let mut values = vec![cfg.game_version.clone()];
-            if cfg.show_character
-                && let Some(stage) = actor
-                    .filter(|a| a.verified_monster)
-                    .and_then(|a| a.evolution.as_ref())
+            let visible = cfg.show_character.then_some(actor).flatten();
+            let mut details = visible
+                .and_then(|a| a.name.as_deref())
+                .map(|name| format!("Playing as {name}"))
+                .unwrap_or_else(|| "Playing Evolve".to_owned());
+            if let Some(stage) = visible
+                .filter(|a| a.verified_monster)
+                .and_then(|a| a.evolution.as_deref())
+                .and_then(presence_stage)
             {
-                values.push(format!("Evolution {stage}"));
+                details.push_str(&format!(" · Stage {stage}"));
             }
-            if let Some(mode) = cfg.game_mode.as_ref() {
-                values.push(mode.clone());
-            }
-            if let Some(map) = cfg.map.as_ref() {
-                values.push(map.clone());
-            }
+            let mut stats = Vec::new();
             if cfg.show_stats {
-                if let Some(h) = actor.and_then(|a| a.health.as_ref()) {
-                    values.push(format!("HP {h}"));
-                }
-                if let Some(a) = actor
-                    .filter(|a| a.verified_monster)
-                    .and_then(|a| a.armor.as_ref())
+                if let Some(health) = actor
+                    .and_then(|a| a.health.as_deref())
+                    .and_then(presence_number)
                 {
-                    values.push(format!("Armor {a}"));
+                    stats.push(format!("Health {health}"));
+                }
+                if let Some(armor) = actor
+                    .filter(|a| a.verified_monster)
+                    .and_then(|a| a.armor.as_deref())
+                    .and_then(presence_number)
+                {
+                    stats.push(format!("Armor {armor}"));
                 }
             }
-            if cfg.show_profile
-                && let Some(profile) = cfg.mod_profile.as_ref()
-            {
-                values.push(profile.clone());
-            }
-            (details, values.join(" • "))
+            let state = if stats.is_empty() {
+                "In match".to_owned()
+            } else {
+                stats.join(" · ")
+            };
+            (details, state)
         }
     } else {
         let details = "Evolve Mod Manager".to_owned();
