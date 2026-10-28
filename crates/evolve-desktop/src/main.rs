@@ -183,6 +183,8 @@ struct LevelTransformDiff {
     new_local: evolve_core::Transform,
 }
 
+type ActorFreezeOutcome = ((u32, usize, runtime_actors::Field), Result<bool, String>);
+
 #[derive(Default)]
 struct State {
     input: String,
@@ -1876,10 +1878,7 @@ enum Message {
     ActorWritten(Result<runtime_actors::WriteResult, String>),
     ActorFreeze(u32, usize, runtime_actors::Field, bool),
     ActorFreezeTick,
-    ActorFreezeDone(
-        u64,
-        Vec<((u32, usize, runtime_actors::Field), Result<bool, String>)>,
-    ),
+    ActorFreezeDone(u64, Vec<ActorFreezeOutcome>),
     RuntimeDetect,
     RuntimeDetected(runtime_memory::Snapshot),
     RuntimeAddressChanged(String),
@@ -4015,30 +4014,26 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     let edited = state.actor_edit.take();
                     if let Some(list) = &mut state.actor_listing {
                         for actor in &mut list.actors {
-                            if actor.name == outcome.actor {
-                                if let Some(value) =
-                                    actor.fields.iter_mut().find(|v| v.field == outcome.field)
-                                {
-                                    if let Some(bits) =
-                                        if outcome.field == runtime_actors::Field::Stage {
-                                            outcome.after.parse::<u32>().ok().map(|v| v | (v << 8))
-                                        } else {
-                                            outcome.after.parse::<f32>().ok().map(f32::to_bits)
-                                        }
-                                    {
-                                        value.bits = bits;
-                                        value.display = outcome.after.clone();
-                                        if let Some((id, addr, field, _)) = edited {
-                                            if let Some(held) =
-                                                state.actor_frozen.get_mut(&(id, addr, field))
-                                            {
-                                                *held = bits;
-                                                state.actor_freeze_generation =
-                                                    state.actor_freeze_generation.wrapping_add(1);
-                                            }
-                                        }
-                                    }
-                                }
+                            if !edited.is_some_and(|(id, addr, _, _)| actor.id == id && actor.address == addr) {
+                                continue;
+                            }
+                            let Some(value) = actor.fields.iter_mut().find(|v| v.field == outcome.field) else {
+                                continue;
+                            };
+                            let bits = if outcome.field == runtime_actors::Field::Stage {
+                                outcome.after.parse::<u32>().ok().map(|v| v | (v << 8))
+                            } else {
+                                outcome.after.parse::<f32>().ok().map(f32::to_bits)
+                            };
+                            let Some(bits) = bits else { continue };
+                            value.bits = bits;
+                            value.display = outcome.after.clone();
+                            if let Some((id, addr, field, _)) = edited
+                                && let Some(held) = state.actor_frozen.get_mut(&(id, addr, field))
+                            {
+                                *held = bits;
+                                state.actor_freeze_generation =
+                                    state.actor_freeze_generation.wrapping_add(1);
                             }
                         }
                     }
