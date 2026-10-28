@@ -10,6 +10,9 @@ fn main() {}
 #[allow(unsafe_code)] // Isolated, minimal Win32/GDI interface for an external overlay window.
 mod windows {
     use std::ffi::c_void;
+    use std::io::{BufRead, Write};
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
     use std::ptr::{null, null_mut};
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -32,13 +35,18 @@ mod windows {
     const WM_DESTROY: u32 = 2;
     const WM_PAINT: u32 = 15;
     const WM_TIMER: u32 = 0x0113;
+    const WM_HOTKEY: u32 = 0x0312;
+    const WM_APP_BIND: u32 = 0x8001;
+    const WM_APP_NOTIFY: u32 = 0x8002;
+    const MOD_NOREPEAT: u32 = 0x4000;
     const SYNCHRONIZE: u32 = 0x0010_0000;
     const WAIT_TIMEOUT: u32 = 0x0000_0102;
-    const WIDTH: i32 = 190;
-    const HEIGHT: i32 = 82;
+    const WIDTH: i32 = 256;
+    const HEIGHT: i32 = 154;
 
     static GAME_PID: AtomicU32 = AtomicU32::new(0);
     static MANAGER_PID: AtomicU32 = AtomicU32::new(0);
+    static TOAST: Mutex<Option<(String, Instant)>> = Mutex::new(None);
 
     #[repr(C)]
     #[derive(Default, Clone, Copy)]
@@ -125,10 +133,15 @@ mod windows {
         fn BeginPaint(hwnd: Hwnd, paint: *mut PaintStruct) -> Hdc;
         fn EndPaint(hwnd: Hwnd, paint: *const PaintStruct) -> i32;
         fn FillRect(hdc: Hdc, rect: *const Rect, brush: Hbrush) -> i32;
+        fn PostMessageW(hwnd: Hwnd, msg: u32, wp: usize, lp: isize) -> i32;
+        fn InvalidateRect(hwnd: Hwnd, rect: *const Rect, erase: i32) -> i32;
+        fn RegisterHotKey(hwnd: Hwnd, id: i32, mods: u32, vk: u32) -> i32;
+        fn UnregisterHotKey(hwnd: Hwnd, id: i32) -> i32;
     }
     #[link(name = "gdi32")]
     unsafe extern "system" {
         fn GetStockObject(id: i32) -> Handle;
+        fn CreateSolidBrush(color: u32) -> Hbrush;
         fn CreatePen(style: i32, width: i32, color: u32) -> Handle;
         fn SelectObject(hdc: Hdc, object: Handle) -> Handle;
         fn DeleteObject(object: Handle) -> i32;
@@ -162,9 +175,48 @@ mod windows {
         }
     }
 
+    fn has_game_focus() -> bool {
+        let mut pid = 0;
+        unsafe { GetWindowThreadProcessId(GetForegroundWindow(), &mut pid) };
+        pid == GAME_PID.load(Ordering::Relaxed)
+    }
+
     unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, wp: usize, lp: isize) -> isize {
         match msg {
+            WM_APP_BIND => {
+                let id = wp as i32 + 1;
+                if !(1..=9).contains(&id) { return 0; }
+                unsafe { UnregisterHotKey(hwnd, id) };
+                let encoded = lp as u32;
+                let vk = encoded & 0xFFFF;
+                let mods = encoded >> 16;
+                if vk != 0 {
+                    let ok = unsafe { RegisterHotKey(hwnd, id, mods | MOD_NOREPEAT, vk) };
+                    if ok == 0 {
+                        println!("BINDFAIL {}", id - 1);
+                        let _ = std::io::stdout().flush();
+                    }
+                }
+                0
+            }
+            WM_APP_NOTIFY => {
+                unsafe { InvalidateRect(hwnd, null(), 0) };
+                0
+            }
+            WM_HOTKEY => {
+                if has_game_focus() && (1..=9).contains(&(wp as i32)) {
+                    println!("HOTKEY {}", wp - 1);
+                    let _ = std::io::stdout().flush();
+                }
+                0
+            }
             WM_TIMER => {
+                if let Ok(mut toast) = TOAST.lock() {
+                    if toast.as_ref().is_some_and(|(_, until)| Instant::now() >= *until) {
+                        *toast = None;
+                        unsafe { InvalidateRect(hwnd, null(), 0) };
+                    }
+                }
                 if !process_alive(GAME_PID.load(Ordering::Relaxed))
                     || !process_alive(MANAGER_PID.load(Ordering::Relaxed))
                 {
@@ -184,6 +236,9 @@ mod windows {
                     || unsafe { ClientToScreen(active, &mut point) } == 0
                 {
                     return 0;
+                }
+                if TOAST.lock().is_ok_and(|toast| toast.is_some()) {
+                    unsafe { InvalidateRect(hwnd, null(), 0) };
                 }
                 let cx = point.x + (rect.right - rect.left) / 2;
                 let cy = point.y + (rect.bottom - rect.top) / 2;
@@ -230,13 +285,34 @@ mod windows {
                     unsafe {
                         SetBkMode(hdc, 1);
                         SetTextColor(hdc, 0x00FF_FFFF);
-                        TextOutW(hdc, 23, 49, label.as_ptr(), label.len() as i32);
+                        TextOutW(hdc, 54, 49, label.as_ptr(), label.len() as i32);
+                    }
+                    let active = TOAST.lock().ok().and_then(|toast| {
+                        toast.as_ref()
+                            .filter(|(_, until)| Instant::now() < *until)
+                            .map(|(s, _)| s.clone())
+                    });
+                    if let Some(message) = active {
+                        let rect = Rect { left: 4, top: 87, right: WIDTH - 4, bottom: 149 };
+                        let brush = unsafe { CreateSolidBrush(0x00282723) };
+                        if !brush.is_null() {
+                            unsafe { FillRect(hdc, &rect, brush); DeleteObject(brush); }
+                        }
+                        let text: Vec<u16> = message.chars().take(37).collect::<String>().encode_utf16().collect();
+                        unsafe {
+                            SetBkMode(hdc, 1);
+                            SetTextColor(hdc, 0x00FFFFFF);
+                            TextOutW(hdc, 13, 110, text.as_ptr(), text.len() as i32);
+                        }
                     }
                 }
                 unsafe { EndPaint(hwnd, &ps) };
                 0
             }
             WM_DESTROY => {
+                for i in 1..=9 {
+                    unsafe { UnregisterHotKey(hwnd, i); }
+                }
                 unsafe { PostQuitMessage(0) };
                 0
             }
@@ -300,6 +376,31 @@ mod windows {
             }
             SetLayeredWindowAttributes(hwnd, 0, 255, LWA_COLORKEY);
             SetTimer(hwnd, 1, 120, null());
+            // Reader never touches game memory. UI-thread-only Win32 hotkey
+            // registration is requested via WM_APP_BIND; toast state is shared.
+            std::thread::spawn(move || {
+                let lines = std::io::BufReader::new(std::io::stdin().lock()).lines();
+                for line in lines {
+                    let Ok(line) = line else { break };
+                    if let Some(rest) = line.strip_prefix("NOTIFY ") {
+                        let message: String = rest.chars()
+                            .filter(|c| !c.is_control()).take(96).collect();
+                        if let Ok(mut toast) = TOAST.lock() {
+                            *toast = Some((message, Instant::now() + Duration::from_millis(2600)));
+                        }
+                        unsafe { PostMessageW(hwnd as usize as Hwnd, WM_APP_NOTIFY, 0, 0); }
+                    } else if let Some(rest) = line.strip_prefix("BIND ") {
+                        let parts: Vec<u32> = rest.split_whitespace()
+                            .filter_map(|s| s.parse::<u32>().ok()).collect();
+                        if parts.len() == 3 && parts[0] < 9 &&
+                            parts[1] <= 7 && (parts[2] == 0 || (0x75..=0x7B).contains(&parts[2]))
+                        {
+                            let encoded = ((parts[1] << 16) | parts[2]) as isize;
+                            unsafe { PostMessageW(hwnd as usize as Hwnd, WM_APP_BIND, parts[0] as usize, encoded); }
+                        }
+                    }
+                }
+            });
             let mut msg = Message::default();
             while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
                 TranslateMessage(&msg);
