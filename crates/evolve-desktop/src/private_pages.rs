@@ -1,7 +1,7 @@
 //! Private-manager-aligned landing, documentation and informational pages.
 //! Home deliberately does not enumerate PAKs or scan the user's installation.
 use super::{Message, Page, State};
-use crate::design;
+use crate::{design, developer_hotkeys};
 use iced::widget::{button, column, container, image, row, scrollable, stack, svg, text, tooltip};
 use iced::{Background, Border, Element, Fill, Length};
 
@@ -1401,6 +1401,34 @@ fn actor_rows(state: &State) -> Element<'_, Message> {
     list.into()
 }
 
+fn developer_keybind_controls(state: &State) -> Element<'_, Message> {
+    let mut rows = column![
+        text("Developer shortcuts").size(17),
+        text("Active while the overlay is on and Evolve has focus. No keyboard hooks.")
+            .size(12).style(design::muted),
+    ].spacing(7);
+    for action in developer_hotkeys::Action::ALL {
+        let current = developer_hotkeys::Keybind(
+            state.preferences.developer_hotkeys[action.index()]
+        );
+        rows = rows.push(
+            row![
+                text(action.label()).width(Length::Fixed(185.0)),
+                iced::widget::pick_list(
+                    developer_hotkeys::Keybind::OPTIONS,
+                    Some(current),
+                    move |key| Message::DeveloperKeybindChanged(action, key),
+                ).width(Length::Fixed(145.0)),
+            ].align_y(iced::Alignment::Center).spacing(8)
+        );
+    }
+    rows = rows.push(
+        text(state.developer_hotkey_status.as_str())
+            .size(12).style(design::muted)
+    );
+    rows.into()
+}
+
 fn teleport_controls(state: &State) -> Element<'_, Message> {
     let enabled = state.developer_unlocked
         && state.armor_offline_confirmed
@@ -1490,8 +1518,9 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
             .align_y(iced::Alignment::Center)
             .spacing(8),
             iced::widget::checkbox(state.teleport_overlay.is_some())
-                .label("Show external aim marker (windowed fullscreen)")
+                .label("Show external overlay and enable shortcuts (windowed fullscreen)")
                 .on_toggle(Message::TeleportOverlayChanged),
+            developer_keybind_controls(state),
             text("The overlay marks the screen center only; it is not a raycast hit location.")
                 .size(12)
                 .style(design::muted),
