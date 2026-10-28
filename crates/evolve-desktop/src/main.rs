@@ -382,6 +382,10 @@ struct State {
     teleport_x: String,
     teleport_y: String,
     teleport_z: String,
+    teleport_aim_distance: String,
+    teleport_aim_pending: Option<f32>,
+    teleport_aim_preview_busy: bool,
+    teleport_overlay: Option<std::process::Child>,
     actor_busy: bool,
     actor_status: String,
     actor_edit: Option<(u32, usize, runtime_actors::Field, u32)>,
@@ -1903,6 +1907,11 @@ enum Message {
     TeleportAbsolute,
     TeleportRelative(f32, f32, f32),
     TeleportReturnSaved,
+    TeleportAimDistanceChanged(String),
+    TeleportAim,
+    TeleportPreviewAim,
+    TeleportPreviewed(Result<runtime_teleport::Position, String>),
+    TeleportOverlayChanged(bool),
     TeleportDo(runtime_teleport::Destination, Option<(u32, u32)>),
     TeleportMoved(Result<runtime_teleport::Reading, String>),
     ActorEdit(u32, usize, runtime_actors::Field, u32),
@@ -3962,6 +3971,112 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::DeveloperPasswordChanged(value) => {
             if !state.developer_checking && value.len() <= 128 {
                 state.developer_password = value;
+            }
+        }
+        Message::TeleportAimDistanceChanged(value) => {
+            if state.developer_unlocked && value.len() <= 12 {
+                state.teleport_aim_distance = value;
+            }
+        }
+        Message::TeleportOverlayChanged(visible) => {
+            if let Some(mut child) = state.teleport_overlay.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            if !visible {
+                state.teleport_status = "Crosshair overlay closed".into();
+                return Task::none();
+            }
+            if !state.developer_unlocked || state.developer_online_mods
+                || !state.armor_offline_confirmed || !state.live_edit_enabled
+            {
+                state.teleport_status = "Overlay requires an isolated offline match".into();
+                return Task::none();
+            }
+            let Some(pid) = state.runtime_snapshot.as_ref().and_then(|s| s.pid) else {
+                state.teleport_status = "Detect Evolve.exe first".into();
+                return Task::none();
+            };
+            if let Err(error) = runtime_armor::offline_guard(pid, true) {
+                state.teleport_status = error;
+                return Task::none();
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                let path = std::env::current_exe().ok()
+                    .map(|p| p.with_file_name("evolve-teleport-overlay.exe"));
+                let result = path.ok_or_else(|| "Cannot locate manager installation".to_owned())
+                    .and_then(|path| std::process::Command::new(path)
+                        .arg(pid.to_string())
+                        .arg(std::process::id().to_string())
+                        .creation_flags(0x0800_0000)
+                        .spawn().map_err(|e| format!("Cannot launch overlay companion: {e}")));
+                match result {
+                    Ok(child) => {
+                        state.teleport_overlay = Some(child);
+                        state.teleport_status = "Approximate crosshair overlay enabled".into();
+                    }
+                    Err(error) => state.teleport_status = error,
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                state.teleport_status = "External overlay requires Windows".into();
+            }
+        }
+        Message::TeleportAim => {
+            if !state.developer_unlocked || state.teleport_busy {
+                return Task::none();
+            }
+            let distance = state.teleport_aim_distance.trim().parse::<f32>().ok()
+                .filter(|v| v.is_finite() && (5.0..=100.0).contains(v));
+            let Some(distance) = distance else {
+                state.teleport_status = "Aim distance must be 5 to 100 units".into();
+                return Task::none();
+            };
+            state.teleport_aim_pending = Some(distance);
+            return Task::done(Message::TeleportCapture(true));
+        }
+        Message::TeleportPreviewAim => {
+            if !state.developer_unlocked || state.developer_online_mods
+                || !state.armor_offline_confirmed || !state.live_edit_enabled
+                || state.teleport_aim_preview_busy || state.teleport_busy
+            {
+                return Task::none();
+            }
+            let Some(snapshot) = state.runtime_snapshot.clone() else {
+                state.teleport_status = "Detect Evolve.exe first".into();
+                return Task::none();
+            };
+            let distance = state.teleport_aim_distance.trim().parse::<f32>().ok()
+                .filter(|v| v.is_finite() && (5.0..=100.0).contains(v));
+            let Some(distance) = distance else {
+                state.teleport_status = "Aim distance must be 5 to 100 units".into();
+                return Task::none();
+            };
+            state.teleport_aim_preview_busy = true;
+            let root = state.preferences.game_storage_root.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        runtime_teleport::preview_aim(&snapshot, &root, true, distance)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Aim preview failed: {e}")))
+                },
+                Message::TeleportPreviewed,
+            );
+        }
+        Message::TeleportPreviewed(result) => {
+            state.teleport_aim_preview_busy = false;
+            if !state.developer_unlocked || state.developer_online_mods {
+                return Task::none();
+            }
+            match result {
+                Ok(pos) => state.teleport_status =
+                    format!("Approximate actor-facing destination: {}", pos.label()),
+                Err(error) => state.teleport_status = format!("Aim unavailable: {error}"),
             }
         }
         Message::TeleportCapture(save) => {
