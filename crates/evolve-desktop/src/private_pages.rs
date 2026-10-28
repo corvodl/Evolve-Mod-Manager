@@ -1363,21 +1363,37 @@ fn actor_rows(state: &State) -> Element<'_, Message> {
                     .into()
             } else {
                 design::button(entry.display.as_str())
-                    .on_press_maybe(editable.then_some(
-                        Message::ActorEdit(actor.id, actor.address, field, entry.bits)
-                    ))
+                    .on_press_maybe(editable.then_some(Message::ActorEdit(
+                        actor.id,
+                        actor.address,
+                        field,
+                        entry.bits,
+                    )))
                     .width(90)
                     .into()
             };
             rows = rows.push(
                 row![
-                    text(format!("{}  +0x{:X}  ({})", field.title(), field.offset(), field.kind()))
-                        .size(12).width(Fill),
+                    text(format!(
+                        "{}  +0x{:X}  ({})",
+                        field.title(),
+                        field.offset(),
+                        field.kind()
+                    ))
+                    .size(12)
+                    .width(Fill),
                     value_cell,
                     iced::widget::checkbox(frozen.is_some())
                         .label("Freeze")
-                        .on_toggle(move |checked| Message::ActorFreeze(actor.id, actor.address, field, checked)),
-                ].align_y(iced::Alignment::Center).spacing(8)
+                        .on_toggle(move |checked| Message::ActorFreeze(
+                            actor.id,
+                            actor.address,
+                            field,
+                            checked
+                        )),
+                ]
+                .align_y(iced::Alignment::Center)
+                .spacing(8),
             );
         }
         list = list.push(surface(rows.padding(10)));
