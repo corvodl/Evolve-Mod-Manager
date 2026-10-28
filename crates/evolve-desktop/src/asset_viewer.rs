@@ -1595,116 +1595,8 @@ fn explorer_on_left(side: &str) -> bool {
     side.eq_ignore_ascii_case("left")
 }
 
-fn explorer(state: &State) -> Element<'_, Message> {
-    let mut rows =
-        column![row![text("File / Folder").width(Fill), text("Size").width(90)].spacing(8)]
-            .spacing(2);
-    let total = if let Some(inv) = &state.inventory {
-        inv.entries.len()
-    } else if let Some(signed) = &state.signed_pak {
-        signed.entries.len()
-    } else {
-        state.pak.as_ref().map_or(0, |pak| pak.entries.len())
-    };
-    for entry in state.viewer_rows.iter().cloned() {
-        let indent = "  ".repeat(entry.depth.min(20));
-        let title = if entry.directory {
-            format!(
-                "{indent}{} 📁 {}",
-                if state.viewer_collapsed.contains(&entry.path) && state.viewer_search.is_empty() {
-                    "▸"
-                } else {
-                    "▾"
-                },
-                entry.name
-            )
-        } else {
-            let label = if entry.name.to_ascii_lowercase().ends_with(".cdf") {
-                format!("◇ {} · Character assembly", entry.name)
-            } else {
-                entry.name.clone()
-            };
-            format!("{indent}  {label}")
-        };
-        let action = if entry.directory {
-            Message::ViewerToggleFolder(entry.path)
-        } else if entry.path.starts_with("@assemblies/") {
-            Message::ViewerOpenStaticCdf(entry.index.expect("CDF assembly row has source index"))
-        } else {
-            Message::ViewerSelectFile(entry.index.expect("file row has source index"))
-        };
-        let item = design::button(
-            row![
-                text(title).size(12).width(Fill),
-                text(if entry.directory {
-                    String::new()
-                } else {
-                    format!("{} KiB", entry.bytes.div_ceil(1024))
-                })
-                .size(12)
-                .width(90),
-            ]
-            .spacing(7),
-        )
-        .width(Fill)
-        .padding(5)
-        .style(
-            if entry.index.is_some()
-                && entry
-                    .index
-                    .is_some_and(|i| state.file_selection.indices.contains(&i))
-            {
-                design::primary
-            } else {
-                design::text_button
-            },
-        )
-        .on_press(action);
-        let item: Element<'_, Message> = if let Some(index) = entry.index {
-            mouse_area(item)
-                .on_right_press(Message::ViewerContextFile(index))
-                .into()
-        } else {
-            item.into()
-        };
-        rows = rows.push(item);
-    }
-    if total == 0 {
-        rows = rows.push(
-            text("No archive or extracted folder indexed.")
-                .size(13)
-                .style(design::muted),
-        );
-    }
-    let source = state
-        .signed_pak
-        .as_ref()
-        .map(|pak| pak.archive_name.as_str())
-        .or_else(|| state.pak.as_ref().map(|pak| pak.source_file.as_str()))
-        .or_else(|| state.inventory.as_ref().map(|inv| inv.root.as_str()))
-        .unwrap_or("No source selected");
 
-    panel(
-        container(
-            column![
-                row![
-                    text("FILE EXPLORER").size(16),
-                    text(format!("{total} files")).size(12)
-                ]
-                .spacing(16),
-                text("PAK / PROJECT").size(12),
-                tooltip(
-                    text(compact_source_name(source)).size(12),
-                    text(source).size(11),
-                    tooltip::Position::Bottom,
-                ),
-                design::text_input("Search files and folders...", &state.viewer_search)
-                    .on_input(Message::ViewerSearchChanged),
-                row![
-                    design::button("Preview selected").on_press(Message::ViewerPreviewSelected),
-                    design::button("Index folder").on_press(Message::StartScan),
-                ]
-                .spacing(8),
+fn file_context_actions(state: &State) -> Element<'_, Message> {
                 if let Some(index) = state.viewer_context_index {
                     if let Some(entry) = state
                         .inventory
@@ -1745,6 +1637,10 @@ fn explorer(state: &State) -> Element<'_, Message> {
                                         .on_press_maybe(is_dds.then_some(Message::ExportOpen)),
                                     design::button("Rigged FBX").on_press_maybe(
                                         (is_model && !state.busy).then_some(Message::ExportOpen)
+                                    ),
+                                    design::button("Import over…").on_press_maybe(
+                                        (!state.viewer_from_library && !state.busy)
+                                            .then_some(Message::EditorOpenReplacement)
                                     ),
                                     design::button("Restore original").on_press_maybe(
                                         (!state.viewer_from_library && !state.busy)
@@ -1834,34 +1730,172 @@ fn explorer(state: &State) -> Element<'_, Message> {
                             .size(11)
                             .style(design::muted),
                     )
-                },
-                if state.viewer_from_library {
-                    Element::<Message>::from(
-                        text(
-                            "Protected read-only source. To edit, open a separate Modding project.",
-                        )
-                        .size(11)
-                        .style(design::muted),
-                    )
+                }
+}
+
+fn replacement_sheet(state: &State, index: usize) -> Element<'_, Message> {
+    let target = state.inventory.as_ref()
+        .and_then(|inv| inv.entries.get(index))
+        .map_or("No target selected", |entry| entry.relative_path.as_str());
+    let lower = target.to_ascii_lowercase();
+    let texture = lower.ends_with(".dds") || lower.ends_with(".dds.0");
+    panel(
+        column![
+            row![
+                text("REPLACE PROJECT ASSET").size(13).width(Fill),
+                design::button("✕").on_press(Message::EditorCancelReplacement)
+            ].spacing(8),
+            text(target).size(12),
+            text(if texture {
+                "PNG images are converted into the original DDS format and mip layout when supported."
+            } else {
+                "Choose a separate source file. The exact destination path is already selected."
+            }).size(11).style(design::muted),
+            row![
+                design::button("Browse files…")
+                    .on_press_maybe((!state.busy).then_some(Message::EditorBrowseReplacement)),
+                text("or drag a file into this window").size(11).style(design::muted)
+            ].spacing(8),
+            design::text_input("Selected source file (optional manual path)", &state.editor_replace_source)
+                .on_input(Message::EditorReplacementChanged),
+            row![
+                design::button("Import replacement")
+                    .on_press_maybe((!state.busy && !state.editor_replace_source.trim().is_empty())
+                        .then_some(Message::EditorImportRawMember)),
+                design::button("Cancel").on_press(Message::EditorCancelReplacement),
+            ].spacing(8),
+            text("The extracted original is backed up and verified before replacement. Source PAKs are never modified.")
+                .size(11).style(design::muted),
+        ].spacing(8)
+    ).into()
+}
+
+fn explorer(state: &State) -> Element<'_, Message> {
+    let mut rows =
+        column![row![text("File / Folder").width(Fill), text("Size").width(90)].spacing(8)]
+            .spacing(2);
+    let total = if let Some(inv) = &state.inventory {
+        inv.entries.len()
+    } else if let Some(signed) = &state.signed_pak {
+        signed.entries.len()
+    } else {
+        state.pak.as_ref().map_or(0, |pak| pak.entries.len())
+    };
+    for entry in state.viewer_rows.iter().cloned() {
+        let indent = "  ".repeat(entry.depth.min(20));
+        let title = if entry.directory {
+            format!(
+                "{indent}{} 📁 {}",
+                if state.viewer_collapsed.contains(&entry.path) && state.viewer_search.is_empty() {
+                    "▸"
                 } else {
-                    column![
-                        design::text_input(
-                            "Existing local file to import over selected project asset...",
-                            &state.editor_replace_source
-                        )
-                        .on_input(Message::EditorReplacementChanged),
-                        design::button("Import over selected project asset (backup)")
-                            .on_press_maybe(
-                                (!state.busy).then_some(Message::EditorImportRawMember)
-                            ),
-                        design::button("Restore selected original (keep edited backup)")
-                            .on_press_maybe(
-                                (!state.busy).then_some(Message::EditorRestoreRawMember)
-                            ),
-                    ]
-                    .spacing(5)
-                    .into()
+                    "▾"
                 },
+                entry.name
+            )
+        } else {
+            let label = if entry.name.to_ascii_lowercase().ends_with(".cdf") {
+                format!("◇ {} · Character assembly", entry.name)
+            } else {
+                entry.name.clone()
+            };
+            format!("{indent}  {label}")
+        };
+        let action = if entry.directory {
+            Message::ViewerToggleFolder(entry.path)
+        } else if entry.path.starts_with("@assemblies/") {
+            Message::ViewerOpenStaticCdf(entry.index.expect("CDF assembly row has source index"))
+        } else {
+            Message::ViewerSelectFile(entry.index.expect("file row has source index"))
+        };
+        let item = design::button(
+            row![
+                text(title).size(12).width(Fill),
+                text(if entry.directory {
+                    String::new()
+                } else {
+                    format!("{} KiB", entry.bytes.div_ceil(1024))
+                })
+                .size(12)
+                .width(90),
+            ]
+            .spacing(7),
+        )
+        .width(Fill)
+        .padding(5)
+        .style(
+            if entry.index.is_some()
+                && entry
+                    .index
+                    .is_some_and(|i| state.file_selection.indices.contains(&i))
+            {
+                design::primary
+            } else {
+                design::text_button
+            },
+        )
+        .on_press(action);
+        let item: Element<'_, Message> = if let Some(index) = entry.index {
+            mouse_area(item)
+                .on_right_press(Message::ViewerContextFile(index))
+                .into()
+        } else {
+            item.into()
+        };
+        rows = rows.push(item);
+        if entry.index == state.viewer_context_index {
+            rows = rows.push(file_context_actions(state));
+        }
+        if entry.index == state.editor_replace_dialog {
+            rows = rows.push(replacement_sheet(state, entry.index.unwrap()));
+        }
+    }
+    if total == 0 {
+        rows = rows.push(
+            text("No archive or extracted folder indexed.")
+                .size(13)
+                .style(design::muted),
+        );
+    }
+    let source = state
+        .signed_pak
+        .as_ref()
+        .map(|pak| pak.archive_name.as_str())
+        .or_else(|| state.pak.as_ref().map(|pak| pak.source_file.as_str()))
+        .or_else(|| state.inventory.as_ref().map(|inv| inv.root.as_str()))
+        .unwrap_or("No source selected");
+
+    panel(
+        container(
+            column![
+                row![
+                    text("FILE EXPLORER").size(16),
+                    text(format!("{total} files")).size(12)
+                ]
+                .spacing(16),
+                text("PAK / PROJECT").size(12),
+                tooltip(
+                    text(compact_source_name(source)).size(12),
+                    text(source).size(11),
+                    tooltip::Position::Bottom,
+                ),
+                design::text_input("Search files and folders...", &state.viewer_search)
+                    .on_input(Message::ViewerSearchChanged),
+                row![
+                    design::button("Preview selected").on_press(Message::ViewerPreviewSelected),
+                    design::button("Index folder").on_press(Message::StartScan),
+                ]
+                .spacing(8),
+                text("Right-click a file to open actions beside it.")
+                    .size(11)
+                    .style(design::muted),
+                text(if state.viewer_from_library {
+                    "Source assets are read-only. Create a Modding project to replace them."
+                } else {
+                    "Select a project file, right-click → Import over…; browse for a file or drag it into the viewer."
+                })
+                .size(11)
+                .style(design::muted),
                 scrollable(rows).height(Fill),
                 row![
                     design::button("◀ Previous").on_press_maybe(
