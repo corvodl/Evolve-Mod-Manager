@@ -3485,7 +3485,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     PathBuf::from(&state.preferences.stage),
                 ),
             );
-            Task::batch([projects, signed])
+            return Task::batch([projects, signed]);
         }
         Message::ModdingToggleAdvanced => state.modding_advanced = !state.modding_advanced,
         Message::ModdingToggleProfiles => {
