@@ -149,8 +149,7 @@ struct CharacterPortraitRegistry {
 }
 
 fn character_portraits() -> &'static [CharacterPortrait] {
-    static REGISTRY: std::sync::OnceLock<CharacterPortraitRegistry> =
-        std::sync::OnceLock::new();
+    static REGISTRY: std::sync::OnceLock<CharacterPortraitRegistry> = std::sync::OnceLock::new();
     &REGISTRY
         .get_or_init(|| {
             serde_json::from_str(include_str!(
@@ -628,16 +627,41 @@ mod tests {
     fn registry_keeps_all_portraits_even_without_internal_names() {
         let portraits = character_portraits();
         assert_eq!(portraits.len(), 39);
-        assert_eq!(portraits.iter().filter(|p| !p.internal_names.is_empty()).count(), 11);
+        assert_eq!(
+            portraits
+                .iter()
+                .filter(|p| !p.internal_names.is_empty())
+                .count(),
+            11
+        );
         let mut seen = std::collections::HashSet::new();
         for portrait in portraits {
-            assert!(seen.insert(portrait.asset_key.as_str()), "Duplicate Discord asset key");
-            assert!(portrait.asset_key.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'));
+            assert!(
+                seen.insert(portrait.asset_key.as_str()),
+                "Duplicate Discord asset key"
+            );
+            assert!(
+                portrait
+                    .asset_key
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+            );
             assert!(!portrait.display_name.is_empty());
         }
-        assert_eq!(portrait_for_display_name("Renegade Abe").unwrap().asset_key, "aberenegade");
-        assert_eq!(portrait_for_display_name("Glacial Behemoth").unwrap().asset_key, "rockybobcicle");
-        assert_eq!(portrait_for_display_name("Tech").unwrap().team, Team::Unknown);
+        assert_eq!(
+            portrait_for_display_name("Renegade Abe").unwrap().asset_key,
+            "aberenegade"
+        );
+        assert_eq!(
+            portrait_for_display_name("Glacial Behemoth")
+                .unwrap()
+                .asset_key,
+            "rockybobcicle"
+        );
+        assert_eq!(
+            portrait_for_display_name("Tech").unwrap().team,
+            Team::Unknown
+        );
         assert_eq!(character_from_entity_name("UnknownABot"), None);
     }
 
