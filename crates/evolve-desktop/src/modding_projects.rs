@@ -1579,6 +1579,9 @@ pub fn import_raw_member(
     member: &str,
     replacement_source: &Path,
 ) -> Result<bool, String> {
+    if !safe_member(member) {
+        return Err("Replacement target must be an existing safe project member".into());
+    }
     let lower = member.to_ascii_lowercase();
     let png = replacement_source
         .extension()
