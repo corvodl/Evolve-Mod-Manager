@@ -585,6 +585,56 @@ fn imported_paks(state: &State) -> Element<'_, Message> {
     .into()
 }
 
+/// Registered signed PAKs are not editable Mod Projects. This list lets the
+/// user opt them into the *same* Play with Mods pipeline without rebuilding.
+fn signed_paks(state: &State) -> Element<'_, Message> {
+    let mut entries = column![].spacing(6);
+    if let Some(ui) = &state.signed_ui {
+        for profile in &ui.catalog.profiles {
+            if profile.mods.is_empty() { continue; }
+            entries = entries.push(
+                text(profile.name.as_str()).size(13)
+            );
+            for item in &profile.mods {
+                let choice = crate::mod_play::SignedChoice {
+                    profile_id: profile.id.clone(), mod_id: item.id.clone()
+                };
+                let enabled = ui.selected.contains(&choice);
+                let target = item.target.clone();
+                entries = entries.push(
+                    row![
+                        design::button(if enabled { "On" } else { "Off" })
+                            .style(if enabled { design::primary } else { design::secondary })
+                            .on_press_maybe((!state.signed_busy && !state.busy).then_some(
+                                Message::SignedPakToggle(profile.id.clone(), item.id.clone(), !enabled)
+                            )),
+                        text(target).size(12).width(Fill),
+                        text(if enabled { "Selected" } else { "Not selected" })
+                            .size(11).style(design::muted),
+                    ].spacing(8).align_y(iced::Center)
+                );
+            }
+        }
+    } else {
+        entries = entries.push(text("Refresh Mods to load registered signed PAKs.")
+            .size(12).style(design::muted));
+    }
+    panel(
+        column![
+            row![
+                text("REGISTERED SIGNED PAKS").size(13),
+                space().width(Fill),
+                design::button("Refresh").style(design::secondary)
+                    .on_press(Message::SignedProfilesReload),
+            ].spacing(8).align_y(iced::Center),
+            text("Enable existing signed archives directly. They are verified and staged on Play with Mods without reimporting or rebuilding. Only selected archives are used.")
+                .size(11).style(design::muted),
+            scrollable(entries).height(Length::Fixed(165.0)),
+            text(state.signed_status.as_str()).size(11).style(design::muted),
+        ].spacing(7)
+    ).into()
+}
+
 fn profiles(state: &State) -> Element<'_, Message> {
     let mut catalog = column![].spacing(3);
     if let Some(data) = &state.profile_catalog {
@@ -732,6 +782,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             design::button("Models…").on_press(Message::GuidedEdit(crate::guided_modding::Action::Open(true))),
         ].spacing(6),
         imported_paks(state),
+        signed_paks(state),
         projects(state),
         row![
             text("Mod name").size(12),
