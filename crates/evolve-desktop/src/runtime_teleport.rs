@@ -46,6 +46,8 @@ pub(super) struct Reading {
 pub(super) enum Destination {
     Absolute(Position),
     Relative(Position),
+    /// Approximate forward destination from the actor's own (w,x,y,z) rotation.
+    ActorAim(f32),
 }
 pub(super) fn parse_position(x: &str, y: &str, z: &str) -> Result<Position, String> {
     let parse = |s: &str| s.trim().parse::<f32>()
@@ -155,7 +157,53 @@ mod windows {
         Ok(Resolved { pid, actor_id, entity, movement, physics, pos })
     }
 
-    pub(super) fn inspect(snapshot: &Snapshot, root: &str, offline: bool) -> Result<Reading, String> {
+    fn approximate_actor_aim(
+        handle: &ProcessHandle,
+        entity: usize,
+        origin: Position,
+        distance: f32,
+    ) -> Result<Position, String> {
+        if !distance.is_finite() || !(5.0..=100.0).contains(&distance) {
+            return Err("Aim distance must be 5 to 100 units".into());
+        }
+        // CryEngine Quat is w,x,y,z, in the entity's local transform at +0x4C.
+        // +Y is the entity's local forward axis; this is NOT camera pitch or a raycast.
+        let [w, x, y, z] = [
+            u32_at(handle, entity + 0x4C)?,
+            u32_at(handle, entity + 0x50)?,
+            u32_at(handle, entity + 0x54)?,
+            u32_at(handle, entity + 0x58)?,
+        ].map(f32::from_bits);
+        let len2 = w*w + x*x + y*y + z*z;
+        if !len2.is_finite() || !(0.8..=1.2).contains(&len2) {
+            return Err("Actor orientation is not a valid unit quaternion".into());
+        }
+        let normal = len2.sqrt();
+        let (w,x,y,z) = (w/normal,x/normal,y/normal,z/normal);
+        let forward = Position {
+            x: 2.0*(x*y - w*z),
+            y: 1.0 - 2.0*(x*x+z*z),
+            z: 2.0*(y*z + w*x),
+        };
+        let target = origin.add(Position {
+            x: forward.x * distance,
+            y: forward.y * distance,
+            // Slight lift to reduce ground interpenetration; no collision test performed.
+            z: forward.z * distance + 2.0,
+        });
+        if !target.finite() { return Err("Calculated aim target is outside world limits".into()); }
+        Ok(target)
+    }
+
+    pub(crate) fn preview_aim(snapshot: &Snapshot, root: &str, offline: bool, distance: f32) -> Result<Position, String> {
+        if !offline { return Err("Confirm an isolated offline match".into()); }
+        let r = resolve(snapshot, root)?;
+        runtime_armor::offline_guard(r.pid, offline)?;
+        let (_, handle, _) = session(snapshot, root)?;
+        approximate_actor_aim(&handle, r.entity, r.pos, distance)
+    }
+
+    pub(crate) fn inspect(snapshot: &Snapshot, root: &str, offline: bool) -> Result<Reading, String> {
         if !offline { return Err("Confirm an isolated offline match".into()); }
         let r = resolve(snapshot, root)?;
         runtime_armor::offline_guard(r.pid, offline)?;
@@ -163,6 +211,7 @@ mod windows {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(unsafe_code)] // Scoped FFI follows runtime_live's reviewed external process-write pattern.
     fn write_xyz(pid: u32, addr: usize, expected: Position, target: Position) -> Result<(), String> {
         use std::io;
         unsafe extern "system" {
@@ -201,7 +250,7 @@ mod windows {
         result
     }
 
-    pub(super) fn teleport(
+    pub(crate) fn teleport(
         snapshot: &Snapshot,
         root: &str,
         offline: bool,
@@ -214,7 +263,14 @@ mod windows {
             return Err("Saved location belongs to a different actor or game session".into());
         }
         runtime_armor::offline_guard(r.pid, offline)?;
-        let target = match dest { Destination::Absolute(p)=>p, Destination::Relative(delta)=>r.pos.add(delta) };
+        let target = match dest {
+            Destination::Absolute(p) => p,
+            Destination::Relative(delta) => r.pos.add(delta),
+            Destination::ActorAim(distance) => {
+                let (_, h, _) = session(snapshot, root)?;
+                approximate_actor_aim(&h, r.entity, r.pos, distance)?
+            }
+        };
         if !target.finite() { return Err("Target coordinates outside valid range".into()); }
         let diff = Position {x:target.x-r.pos.x, y:target.y-r.pos.y, z:target.z-r.pos.z};
         if [diff.x,diff.y,diff.z].into_iter().any(|n| n.abs() > MAX_STEP) {
@@ -234,10 +290,14 @@ mod windows {
     }
 }
 #[cfg(windows)]
-pub(super) use windows::{inspect, teleport};
+pub(super) use windows::{inspect, preview_aim, teleport};
 #[cfg(not(windows))]
 pub(super) fn inspect(_: &Snapshot, _: &str, _: bool) -> Result<Reading,String> {
     Err("Teleport requires Windows".into())
+}
+#[cfg(not(windows))]
+pub(super) fn preview_aim(_: &Snapshot, _: &str, _: bool, _: f32) -> Result<Position,String> {
+    Err("Aim preview requires Windows".into())
 }
 #[cfg(not(windows))]
 pub(super) fn teleport(_: &Snapshot, _: &str, _: bool, _: Destination, _: Option<(u32,u32)>) -> Result<Reading,String> {
@@ -251,6 +311,15 @@ mod tests {
         assert!(parse_position("1","2","3").is_ok());
         assert!(parse_position("NaN","0","0").is_err());
         assert!(parse_position("999999","0","0").is_err());
+    }
+    #[test]
+    fn direction_requires_unit_quaternion() {
+        // An identity quaternion, in CryEngine wxyz order, means local +Y.
+        let f = |w:f32,x:f32,y:f32,z:f32| Position {
+            x:2.0*(x*y-w*z), y:1.0-2.0*(x*x+z*z), z:2.0*(y*z+w*x),
+        };
+        assert!(f(1.0,0.0,0.0,0.0).near(Position{x:0.0,y:1.0,z:0.0}));
+        assert!(f(0.70710677,0.0,0.0,0.70710677).near(Position{x:-1.0,y:0.0,z:0.0}));
     }
     #[test]
     fn relative_position_is_three_axis() {
