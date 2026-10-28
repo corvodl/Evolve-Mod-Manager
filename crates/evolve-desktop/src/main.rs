@@ -13705,7 +13705,8 @@ mod project_edit_tests {
         assert!(state.developer_online_mods);
         assert!(!state.developer_network_busy);
         assert!(!state.armor_offline_confirmed);
-        assert!(!state.live_edit_enabled);
+        // Network policy no longer disarms the separately armed memory writer.
+        assert!(state.live_edit_enabled);
         assert!(state.developer_network_status.contains("Removed"));
 
         let _ = update(&mut state, Message::DeveloperOnlineMods(false));
