@@ -669,11 +669,22 @@ mod tests {
             38
         );
         let mut seen = std::collections::HashSet::new();
+        let mut unique_actor_names = std::collections::HashSet::new();
         for portrait in portraits {
             assert!(
                 seen.insert(portrait.asset_key.as_str()),
                 "Duplicate Discord asset key"
             );
+            assert!(
+                portrait.internal_names.len() <= 1,
+                "Each playable character has exactly one canonical entity name"
+            );
+            for name in &portrait.internal_names {
+                assert!(
+                    unique_actor_names.insert(name.to_ascii_lowercase()),
+                    "Playable entity name must not belong to multiple portraits"
+                );
+            }
             assert!(
                 portrait
                     .asset_key
@@ -809,7 +820,7 @@ mod tests {
             ("AssaultDBot", "Hyde"),
             ("AssaultD_HellfireBot", "Hellfire Hyde"),
             ("AssaultBBot", "Parnell"),
-            ("MedicParnellTankBot", "Tank Parnell"),
+            ("MedicParnellTankBot", "Parnell (Tank)"),
             ("AssaultFBot", "Torvald"),
             ("AssaultGBot", "Lennox"),
             ("AssaultAbeRenegadeBot", "Renegade Abe"),
@@ -821,7 +832,7 @@ mod tests {
             ("TrackingFBot", "Crow"),
             ("MedicBBot", "Lazarus"),
             ("MedicCBot", "Caira"),
-            ("MedicC_LowgravBot", "Caira (Lowgrav)"),
+            ("MedicC_LowgravBot", "Lowgrav Caira"),
             ("MedicEBot", "Val"),
             ("MedicE_RogueBot", "Rogue Val"),
             ("MedicFBot", "Slim"),
@@ -843,34 +854,25 @@ mod tests {
     }
 
     #[test]
-    fn local_coop_variants_use_the_corresponding_playable_portrait() {
-        for (internal, expected) in [
-            ("GoliathCoopBot", "Goliath"),
-            ("GoliathBGHCoopBot", "Goliath"),
-            ("GoliathMeteorCoopBot", "Meteor Goliath"),
-            ("GoliathMeteorBGHCoopBot", "Meteor Goliath"),
-            ("GrounderCoopBot", "Kraken"),
-            ("KrakenElderCoopBot", "Elder Kraken"),
-            ("TeleporterCoopBot", "Wraith"),
-            ("RockyCoopBot", "Behemoth"),
-            ("LurkerCoopBot", "Gorgon"),
-            ("LurkerDDBot", "Gorgon"),
-        ] {
-            assert_eq!(
-                character_from_entity_name(internal),
-                Some((expected, Team::Monster))
+    fn coop_npc_and_minion_entities_do_not_resolve_as_playable_characters() {
+        for excluded in &portrait_registry().non_player_entities {
+            assert!(
+                character_from_entity_name(excluded).is_none(),
+                "NPC/minion/coop variant must not be treated as playable: {excluded}"
             );
+        }
+        // The confirmed player names are intentionally single-source.
+        for identifier in ["TrackingGBot", "SupportGBot"] {
+            assert_eq!(character_from_entity_name(identifier), None);
         }
     }
 
     #[test]
     fn jack_uses_scrap_internal_name_and_existing_transparent_portrait() {
-        for internal in ["Scrap", "TrackingGBot", "SupportGBot"] {
-            assert_eq!(
-                character_from_entity_name(internal),
-                Some(("Jack", Team::Hunter))
-            );
-        }
+        assert_eq!(
+            character_from_entity_name("Scrap"),
+            Some(("Jack", Team::Hunter))
+        );
         let jack = portrait_for_display_name("Jack").unwrap();
         assert_eq!(jack.asset_key, "scrap");
         assert_eq!(jack.team, Team::Hunter);
