@@ -181,20 +181,28 @@ fn inspect_project(
                 // The signed file is checked and materialized at Play time.
                 let status = read_json(&stage.join("stage_status.json"), 128 * 1024)?;
                 if status["status"].as_str() != Some("fully-staged-offline")
-                    || source.components().any(|x| matches!(x, std::path::Component::ParentDir))
+                    || source
+                        .components()
+                        .any(|x| matches!(x, std::path::Component::ParentDir))
                     || !source.starts_with(&base)
                 {
                     return Err("Original staged archive is unavailable".into());
                 }
-                let relative = source.strip_prefix(&base)
+                let relative = source
+                    .strip_prefix(&base)
                     .map_err(|_| "Project source is outside its stage")?
-                    .to_string_lossy().replace('\\', "/");
+                    .to_string_lossy()
+                    .replace('\\', "/");
                 let plan = read_json(&stage.join("rekey_plan.json"), 32 * 1024 * 1024)?;
-                if !plan["entries"].as_array().is_some_and(|rows| rows.iter().any(|entry| {
-                    entry["path"].as_str() == Some(relative.as_str())
-                        && entry["kind"].as_str() == Some("signed-encrypted")
-                })) {
-                    return Err("Project source is missing from authenticated signing inventory".into());
+                if !plan["entries"].as_array().is_some_and(|rows| {
+                    rows.iter().any(|entry| {
+                        entry["path"].as_str() == Some(relative.as_str())
+                            && entry["kind"].as_str() == Some("signed-encrypted")
+                    })
+                }) {
+                    return Err(
+                        "Project source is missing from authenticated signing inventory".into(),
+                    );
                 }
                 source.to_path_buf()
             };
@@ -1193,31 +1201,44 @@ pub fn provision_selected_original(project: &ProjectRow, stage: &Path) -> Result
         &project.workspace.join(".evolve-pak-workspace.json"),
         8 * 1024 * 1024,
     )?;
-    let paks = fs::canonicalize(stage.join("paks"))
-        .map_err(|_| "Signing stage has no paks directory")?;
+    let paks =
+        fs::canonicalize(stage.join("paks")).map_err(|_| "Signing stage has no paks directory")?;
     let relative = if manifest["extraction_mode"].as_str() == Some("imported-snapshot") {
         let plan = read_json(&stage.join("rekey_plan.json"), 8 * 1024 * 1024)?;
         let root = fs::canonicalize(
-            plan["source_root"].as_str().ok_or("Signing inventory has no game root")?
-        ).map_err(|e| e.to_string())?;
+            plan["source_root"]
+                .as_str()
+                .ok_or("Signing inventory has no game root")?,
+        )
+        .map_err(|e| e.to_string())?;
         let source = fs::canonicalize(
-            manifest["imported_source"].as_str()
-                .ok_or("Imported project is missing its original PAK location")?
-        ).map_err(|e| e.to_string())?;
-        source.strip_prefix(&root).map_err(|_| {
-            "Imported project belongs to a different game installation"
-        })?.to_string_lossy().replace('\\', "/")
+            manifest["imported_source"]
+                .as_str()
+                .ok_or("Imported project is missing its original PAK location")?,
+        )
+        .map_err(|e| e.to_string())?;
+        source
+            .strip_prefix(&root)
+            .map_err(|_| "Imported project belongs to a different game installation")?
+            .to_string_lossy()
+            .replace('\\', "/")
     } else {
         let source = Path::new(
-            manifest["source_pak"].as_str()
-                .ok_or("Editable project has no staged original path")?
+            manifest["source_pak"]
+                .as_str()
+                .ok_or("Editable project has no staged original path")?,
         );
-        if source.components().any(|p| matches!(p, std::path::Component::ParentDir)) {
+        if source
+            .components()
+            .any(|p| matches!(p, std::path::Component::ParentDir))
+        {
             return Err("Editable source contains unsafe parent traversal".into());
         }
-        source.strip_prefix(&paks).map_err(|_| {
-            "This project belongs to a different signing stage"
-        })?.to_string_lossy().replace('\\', "/")
+        source
+            .strip_prefix(&paks)
+            .map_err(|_| "This project belongs to a different signing stage")?
+            .to_string_lossy()
+            .replace('\\', "/")
     };
     super::modding_keys::ensure_selected_stage_pak(stage, &relative)
 }
