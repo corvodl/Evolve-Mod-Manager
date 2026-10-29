@@ -410,6 +410,7 @@ mod tests {
             name: name.to_owned(),
             local,
             fields: Vec::new(),
+            energy: crate::runtime_energy::Reading::default(),
         };
         let mut players = parse_latest_roster(LOG).unwrap();
         assert!(join_actors(
