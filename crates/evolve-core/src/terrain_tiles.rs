@@ -41,35 +41,61 @@ fn invalid(message: &str) -> TerrainError {
 
 fn parse_tree(indices: &[i16]) -> Result<Vec<Tile>, TerrainError> {
     fn node(
-        indices: &[i16], cursor: &mut usize, x: u32, y: u32,
-        size: u32, depth: u32, out: &mut Vec<Tile>
+        indices: &[i16],
+        cursor: &mut usize,
+        x: u32,
+        y: u32,
+        size: u32,
+        depth: u32,
+        out: &mut Vec<Tile>,
     ) -> Result<(), TerrainError> {
         if depth > 16 || out.len() > MAX_NODES || *cursor >= indices.len() {
             return Err(TerrainError::Limits);
         }
         let raw = indices[*cursor];
         *cursor += 1;
-        if raw < 0 { return Ok(()); }
-        out.push(Tile { index: raw as usize, x, y, size });
+        if raw < 0 {
+            return Ok(());
+        }
+        out.push(Tile {
+            index: raw as usize,
+            x,
+            y,
+            size,
+        });
         // The engine writes FOUR child slots for every node that has its
         // own tile. Each child is either a negative sentinel or a subtree.
         if *cursor == indices.len() {
             // Only accepted at root for older flat terrain index tables.
             return Ok(());
         }
-        if size < 2 { return Err(invalid("terrain texture quadtree too deep")); }
+        if size < 2 {
+            return Err(invalid("terrain texture quadtree too deep"));
+        }
         let half = size / 2;
-        for (dx, dy) in [(0,0), (1,0), (0,1), (1,1)] {
-            node(indices, cursor, x + dx * half, y + dy * half, half, depth + 1, out)?;
+        for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+            node(
+                indices,
+                cursor,
+                x + dx * half,
+                y + dy * half,
+                half,
+                depth + 1,
+                out,
+            )?;
         }
         Ok(())
     }
-    if indices.is_empty() || indices[0] < 0 {return Err(invalid("terrain texture root has no tile"));}
+    if indices.is_empty() || indices[0] < 0 {
+        return Err(invalid("terrain texture root has no tile"));
+    }
     // Logical map coordinates are independent of pixel resolution.
     let mut out = Vec::new();
     let mut cursor = 0;
     node(indices, &mut cursor, 0, 0, MAX_ATLAS, 0, &mut out)?;
-    if cursor != indices.len() {return Err(invalid("terrain quadtree index contains unused entries"));}
+    if cursor != indices.len() {
+        return Err(invalid("terrain quadtree index contains unused entries"));
+    }
     Ok(out)
 }
 
@@ -86,13 +112,18 @@ fn map_format(value: u32) -> Option<DdsFormat> {
 
 fn color_sector(format: u32, dimension: u32, bytes: &[u8]) -> Result<RgbaImage, TerrainError> {
     if format == 2 {
-        let count = (dimension as usize).checked_mul(dimension as usize)
-            .and_then(|n| n.checked_mul(4)).ok_or(TerrainError::Limits)?;
-        let pixels = bytes.get(..count).ok_or_else(||invalid("truncated RGBA terrain sector"))?;
+        let count = (dimension as usize)
+            .checked_mul(dimension as usize)
+            .and_then(|n| n.checked_mul(4))
+            .ok_or(TerrainError::Limits)?;
+        let pixels = bytes
+            .get(..count)
+            .ok_or_else(|| invalid("truncated RGBA terrain sector"))?;
         return RgbaImage::from_raw(dimension, dimension, pixels.to_vec())
             .ok_or(TerrainError::Limits);
     }
-    let format = map_format(format).ok_or_else(||invalid("unsupported baked terrain color format"))?;
+    let format =
+        map_format(format).ok_or_else(|| invalid("unsupported baked terrain color format"))?;
     decode_linear_bc_surface(dimension, dimension, format, bytes)
         .map_err(|e| TerrainError::Format(format!("baked terrain BC decode: {e}")))
 }
@@ -132,16 +163,25 @@ pub fn read_terrain_texture_atlas(path: &Path) -> Result<TerrainTextureAtlas, Te
         return Err(TerrainError::Limits);
     }
     let header = read_terrain_texture_header(path)?;
-    if header.flags & 2 != 0 {return Err(invalid("big endian terrain tiles unsupported"));}
-    let first = header.layers.first().ok_or_else(||invalid("no baked color layer"))?;
+    if header.flags & 2 != 0 {
+        return Err(invalid("big endian terrain tiles unsupported"));
+    }
+    let first = header
+        .layers
+        .first()
+        .ok_or_else(|| invalid("no baked color layer"))?;
     let dim = u32::from(first.sector_pixels);
     let sector_bytes = first.sector_bytes as usize;
     if sector_bytes == 0 || sector_bytes > MAX_SECTOR_BYTES {
         return Err(TerrainError::Limits);
     }
-    let stride = header.layers.iter().try_fold(0usize, |sum, layer| {
-        sum.checked_add(layer.sector_bytes as usize)
-    }).ok_or(TerrainError::Limits)?;
+    let stride = header
+        .layers
+        .iter()
+        .try_fold(0usize, |sum, layer| {
+            sum.checked_add(layer.sector_bytes as usize)
+        })
+        .ok_or(TerrainError::Limits)?;
     if stride == 0 || stride > 128 * 1024 * 1024 {
         return Err(TerrainError::Limits);
     }
@@ -151,18 +191,21 @@ pub fn read_terrain_texture_atlas(path: &Path) -> Result<TerrainTextureAtlas, Te
     let mut count_bytes = [0u8; 2];
     file.read_exact(&mut count_bytes)?;
     let count = u16::from_le_bytes(count_bytes) as usize;
-    if count == 0 || count > MAX_NODES {return Err(TerrainError::Limits);}
+    if count == 0 || count > MAX_NODES {
+        return Err(TerrainError::Limits);
+    }
     let mut index_bytes = vec![0u8; count * 2];
     file.read_exact(&mut index_bytes)?;
-    let indices = index_bytes.chunks_exact(2)
-        .map(|pair| i16::from_le_bytes([pair[0],pair[1]]))
+    let indices = index_bytes
+        .chunks_exact(2)
+        .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
         .collect::<Vec<_>>();
     let nodes = parse_tree(&indices)?;
     if nodes.is_empty() || nodes.len() > MAX_TILES {
         return Err(TerrainError::Limits);
     }
     let data_at = index_at + 2 + index_bytes.len() as u64;
-    let mut image = RgbaImage::from_pixel(MAX_ATLAS, MAX_ATLAS, Rgba([255,255,255,255]));
+    let mut image = RgbaImage::from_pixel(MAX_ATLAS, MAX_ATLAS, Rgba([255, 255, 255, 255]));
     let mut sector = vec![0u8; sector_bytes];
     let mut decoded_tiles = 0;
     let color_multiplier = header.color_multiplier;
@@ -170,9 +213,14 @@ pub fn read_terrain_texture_atlas(path: &Path) -> Result<TerrainTextureAtlas, Te
         return Err(invalid("invalid baked color correction multiplier"));
     }
     for tile in nodes.iter().copied() {
-        let tile_at = (tile.index as u64).checked_mul(stride as u64)
-            .and_then(|p| data_at.checked_add(p)).ok_or(TerrainError::Limits)?;
-        if tile_at.checked_add(sector_bytes as u64).is_none_or(|end| end > meta.len()) {
+        let tile_at = (tile.index as u64)
+            .checked_mul(stride as u64)
+            .and_then(|p| data_at.checked_add(p))
+            .ok_or(TerrainError::Limits)?;
+        if tile_at
+            .checked_add(sector_bytes as u64)
+            .is_none_or(|end| end > meta.len())
+        {
             return Err(invalid("terrain tile index points beyond source package"));
         }
         file.seek(SeekFrom::Start(tile_at))?;
@@ -182,8 +230,11 @@ pub fn read_terrain_texture_atlas(path: &Path) -> Result<TerrainTextureAtlas, Te
         decoded_tiles += 1;
     }
     Ok(TerrainTextureAtlas {
-        image, nodes: nodes.len(), decoded_tiles,
-        color_format: first.texture_format, incomplete: false,
+        image,
+        nodes: nodes.len(),
+        decoded_tiles,
+        color_format: first.texture_format,
+        incomplete: false,
     })
 }
 
@@ -193,7 +244,7 @@ mod tests {
     fn fixture(tree: &[i16], tiles: &[[u8; 4]]) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(b"CRY\0");
-        out.extend_from_slice(&[100,0]);
+        out.extend_from_slice(&[100, 0]);
         out.extend_from_slice(&9u16.to_le_bytes());
         out.extend_from_slice(&1u16.to_le_bytes());
         out.extend_from_slice(&0u16.to_le_bytes());
@@ -203,8 +254,14 @@ mod tests {
         out.extend_from_slice(&2u32.to_le_bytes());
         out.extend_from_slice(&64u32.to_le_bytes());
         out.extend_from_slice(&(tree.len() as u16).to_le_bytes());
-        for i in tree {out.extend_from_slice(&i.to_le_bytes());}
-        for tile in tiles { for _ in 0..16 {out.extend_from_slice(tile);} }
+        for i in tree {
+            out.extend_from_slice(&i.to_le_bytes());
+        }
+        for tile in tiles {
+            for _ in 0..16 {
+                out.extend_from_slice(tile);
+            }
+        }
         out
     }
     #[test]
@@ -212,18 +269,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("terraintexture.pak");
         // Root 0, child 1 covers X-low/Y-low quadrant.
-        let bytes = fixture(&[0, 1, -1, -1, -1, -1, -1, -1, -1], &[
-            [40,70,100,255],[180,50,30,255],
-        ]);
-        std::fs::write(&file,bytes).unwrap();
-        let atlas=read_terrain_texture_atlas(&file).unwrap();
-        assert_eq!(atlas.decoded_tiles,2);
-        assert_eq!(atlas.image.get_pixel(20,20).0,[180,50,30,255]);
-        assert_eq!(atlas.image.get_pixel(1700,1700).0,[40,70,100,255]);
+        let bytes = fixture(
+            &[0, 1, -1, -1, -1, -1, -1, -1, -1],
+            &[[40, 70, 100, 255], [180, 50, 30, 255]],
+        );
+        std::fs::write(&file, bytes).unwrap();
+        let atlas = read_terrain_texture_atlas(&file).unwrap();
+        assert_eq!(atlas.decoded_tiles, 2);
+        assert_eq!(atlas.image.get_pixel(20, 20).0, [180, 50, 30, 255]);
+        assert_eq!(atlas.image.get_pixel(1700, 1700).0, [40, 70, 100, 255]);
     }
     #[test]
     fn rejects_truncated_or_inconsistent_quadtree() {
         assert!(parse_tree(&[0, 1]).is_err());
-        assert!(parse_tree(&[0, -1,-1,-1,-1, 9]).is_err());
+        assert!(parse_tree(&[0, -1, -1, -1, -1, 9]).is_err());
     }
 }
