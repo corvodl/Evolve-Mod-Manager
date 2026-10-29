@@ -212,6 +212,7 @@ mod tests {
         assert!(known_monster("TeleporterABot"));
         assert!(known_monster("KrakenElderBot"));
         assert!(known_monster("RockyABot"));
+        assert!(known_monster("RockyBobcicleBot"));
         assert!(!known_monster("AssaultEBot"));
         assert!(!known_monster("TrackingCBot"));
         assert!(!known_monster("Actor entity 0x14 (name unresolved)"));
