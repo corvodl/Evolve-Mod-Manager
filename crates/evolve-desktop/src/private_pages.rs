@@ -1784,7 +1784,9 @@ fn overlay_controls(state: &State) -> Element<'_, Message> {
 
 fn network_controls(state: &State) -> Element<'_, Message> {
     column![
-        text("Developer-only · Firewall policy").size(12).style(design::muted),
+        text("Developer-only · Firewall policy")
+            .size(12)
+            .style(design::muted),
         iced::widget::checkbox(state.developer_online_mods)
             .label("Allow modded online testing")
             .on_toggle(Message::DeveloperOnlineMods),
@@ -1795,23 +1797,26 @@ fn network_controls(state: &State) -> Element<'_, Message> {
         } else {
             "Offline isolation selected"
         })
-        .size(12).style(design::muted),
+        .size(12)
+        .style(design::muted),
         text(state.developer_network_status.as_str())
-            .size(12).style(design::muted),
+            .size(12)
+            .style(design::muted),
         text("Process privileges").size(17),
         text("Manager: High · Client/Game: Medium")
-            .size(12).style(design::muted),
+            .size(12)
+            .style(design::muted),
         design::button(if state.developer_privilege_busy {
             "Inspecting process tokens..."
         } else {
             "Inspect Client / Game Privileges"
         })
         .on_press_maybe(
-            (!state.developer_privilege_busy)
-                .then_some(Message::DeveloperInspectProcessPrivileges)
+            (!state.developer_privilege_busy).then_some(Message::DeveloperInspectProcessPrivileges)
         ),
         text(state.developer_privilege_status.as_str())
-            .size(12).style(design::muted),
+            .size(12)
+            .style(design::muted),
     ]
     .spacing(8)
     .into()
@@ -1820,17 +1825,32 @@ fn network_controls(state: &State) -> Element<'_, Message> {
 fn actor_controls(state: &State) -> Element<'_, Message> {
     column![
         text("Offline memory · Validate fields before editing")
-            .size(12).style(design::muted),
+            .size(12)
+            .style(design::muted),
         design::button(if state.runtime_checking {
             "Detecting..."
         } else {
             "Detect Evolve.exe"
         })
         .on_press_maybe((!state.runtime_checking).then_some(Message::RuntimeDetect)),
-        text(state.runtime_snapshot.as_ref().map(|s| s.status.as_str()).unwrap_or("Not detected"))
-            .size(12).style(design::muted),
-        text(state.runtime_snapshot.as_ref().map(|s| s.executable.as_str()).unwrap_or("Executable not checked"))
-            .size(12).style(design::muted),
+        text(
+            state
+                .runtime_snapshot
+                .as_ref()
+                .map(|s| s.status.as_str())
+                .unwrap_or("Not detected")
+        )
+        .size(12)
+        .style(design::muted),
+        text(
+            state
+                .runtime_snapshot
+                .as_ref()
+                .map(|s| s.executable.as_str())
+                .unwrap_or("Executable not checked")
+        )
+        .size(12)
+        .style(design::muted),
         iced::widget::checkbox(state.armor_offline_confirmed)
             .label("Enable guided armor scanning (optional)")
             .on_toggle(Message::ArmorOfflineChanged),
@@ -1844,14 +1864,21 @@ fn actor_controls(state: &State) -> Element<'_, Message> {
         })
         .on_press_maybe(
             (!state.actor_busy
-                && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some())
-                .then_some(Message::ActorRefresh)
+                && state
+                    .runtime_snapshot
+                    .as_ref()
+                    .and_then(|s| s.pid)
+                    .is_some())
+            .then_some(Message::ActorRefresh)
         ),
-        text(state.actor_status.as_str()).size(12).style(design::muted),
+        text(state.actor_status.as_str())
+            .size(12)
+            .style(design::muted),
         match_perk_rows(state),
         actor_rows(state),
         text("Click a value to edit it · Enter to write · Freeze holds the current value")
-            .size(12).style(design::muted),
+            .size(12)
+            .style(design::muted),
     ]
     .spacing(9)
     .into()
@@ -1894,16 +1921,20 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
         let mut content = column![
             text("Developer").size(24),
             text("Open a section to access its tools and settings.")
-                .size(12).style(design::muted),
+                .size(12)
+                .style(design::muted),
             row![
                 design::button("Expand all").on_press(Message::DeveloperExpandAll(true)),
                 design::button("Collapse all").on_press(Message::DeveloperExpandAll(false)),
-            ].spacing(8),
-        ].spacing(10);
+            ]
+            .spacing(8),
+        ]
+        .spacing(10);
         for section in DeveloperSection::ALL {
             content = content.push(developer_section(state, section));
         }
-        content = content.push(design::button("Lock developer area").on_press(Message::LockDeveloper));
+        content =
+            content.push(design::button("Lock developer area").on_press(Message::LockDeveloper));
         scrollable(content.padding(12)).height(Fill).into()
     } else {
         column![
@@ -1912,14 +1943,16 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
                 column![
                     text("Password protected").size(17),
                     text("Developer features are not available without authorized credentials.")
-                        .size(13).style(design::muted),
+                        .size(13)
+                        .style(design::muted),
                     design::text_input("Developer password", &state.developer_password)
                         .secure(true)
                         .on_input(Message::DeveloperPasswordChanged)
                         .on_submit(Message::UnlockDeveloper),
                     design::button("Unlock").on_press(Message::UnlockDeveloper),
                     text(state.developer_status.as_str())
-                        .size(12).style(design::muted),
+                        .size(12)
+                        .style(design::muted),
                 ]
                 .spacing(12)
             ),
