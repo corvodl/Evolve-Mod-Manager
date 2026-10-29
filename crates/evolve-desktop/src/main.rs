@@ -19,6 +19,7 @@ mod direct_runtime;
 mod discord_presence;
 mod explorer_tree;
 mod gfx_bundled_tools;
+mod text_asset_editor;
 mod gfx_dependencies;
 mod gfx_editor;
 mod gfx_external_textures;
@@ -254,6 +255,7 @@ struct State {
     cdf_damage_preparing: bool,
     cdf_legacy_2012: bool,
     texture_preview: Option<image::Handle>,
+    text_document: Option<text_asset_editor::Document>,
     gfx_session: Option<gfx_editor::Session>,
     gfx_apply_pending: bool,
     modding_build_after_gfx_apply: bool,
@@ -1871,6 +1873,11 @@ enum Message {
     EditorCancelReplacement,
     EditorImportRawMember,
     EditorRestoreRawMember,
+    TextEditorOpen,
+    TextEditorAction(iced::widget::text_editor::Action),
+    TextEditorSave,
+    TextEditorDiscard,
+    TextEditorClose,
     ModdingToggleProfiles,
     OpenLibrarySettings,
     LibraryToggleConfiguration,
@@ -2416,6 +2423,7 @@ fn is_viewer_model_source(path: &str) -> bool {
 fn is_viewer_preview_source(path: &str) -> bool {
     let name = path.to_ascii_lowercase();
     is_viewer_model_source(&name)
+        || text_asset_editor::compatible(&name)
         || [
             ".cdf", ".dds", ".caf", ".mtl", ".gfx", ".fsb", ".fev", ".fdp",
         ]
@@ -3887,6 +3895,114 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     PathBuf::from(&state.editor_replace_source),
                 ),
             );
+        }
+        Message::TextEditorOpen => {
+            if state.text_document.as_ref().is_some_and(|doc| doc.dirty()) {
+                state.status =
+                    "Save or Discard text changes before opening a different file.".into();
+                return Task::none();
+            }
+            let Some(inventory) = state.inventory.as_ref() else {
+                state.status = "Index extracted files to open text documents.".into();
+                return Task::none();
+            };
+            if state.file_selection.indices.len() != 1 {
+                state.status = "Select exactly one XML, Lua or TXT asset.".into();
+                return Task::none();
+            }
+            let Some(member) = state
+                .selected
+                .and_then(|index| inventory.entries.get(index))
+                .map(|file| file.relative_path.clone())
+            else {
+                state.status = "Select an extracted text file first.".into();
+                return Task::none();
+            };
+            // Only an indexed, physically selected file may enter the editor.
+            let project = state
+                .modding_selected
+                .and_then(|index| state.modding_projects.as_ref()?.get(index))
+                .cloned();
+            match text_asset_editor::Document::open(
+                Path::new(&inventory.root),
+                &member,
+                if state.viewer_from_library { None } else { project },
+                PathBuf::from(&state.preferences.projects),
+            ) {
+                Ok(document) => {
+                    state.status = if document.editable {
+                        format!("Editing {member} — Save creates a verified EditorBackups revision.")
+                    } else {
+                        format!("Previewing {member} (read-only Asset Library source). Open an editable Modding project to save.")
+                    };
+                    state.input = PathBuf::from(&inventory.root)
+                        .join(&member)
+                        .to_string_lossy()
+                        .into_owned();
+                    state.text_document = Some(document);
+                    state.model = None;
+                    state.texture_preview = None;
+                    state.gfx_active = false;
+                    state.cdf_surfaces = None;
+                    state.viewer_sidebar_active = ViewerSidebarTab::Files;
+                }
+                Err(error) => state.status = error,
+            }
+        }
+        Message::TextEditorAction(action) => {
+            if let Some(doc) = state.text_document.as_mut()
+                && doc.editable && !state.busy
+            {
+                doc.content.perform(action);
+                if doc.content.text().len() as u64 > text_asset_editor::MAX_TEXT_BYTES {
+                    doc.discard();
+                    state.status =
+                        "Text edit exceeded 2 MiB. Current unsaved buffer reset to last save.".into();
+                }
+            }
+        }
+        Message::TextEditorSave => {
+            if state.busy {
+                state.status = "Finish the current operation before saving text.".into();
+                return Task::none();
+            }
+            let Some(doc) = state.text_document.as_mut() else {
+                state.status = "No text asset is open.".into();
+                return Task::none();
+            };
+            match doc.save() {
+                Ok(changed) => {
+                    let member = doc.member.clone();
+                    state.status = if changed {
+                        format!("Saved {member} into the editable project with a verified backup. Build the mod to sign the updated PAK.")
+                    } else {
+                        format!("{member} has no new changes.")
+                    };
+                    if changed {
+                        return launch(
+                            state,
+                            Operation::IndexProjects(
+                                PathBuf::from(&state.preferences.projects),
+                                PathBuf::from(&state.preferences.stage),
+                            ),
+                        );
+                    }
+                }
+                Err(error) => state.status = format!("Text save refused: {error}"),
+            }
+        }
+        Message::TextEditorDiscard => {
+            if let Some(doc) = state.text_document.as_mut() {
+                doc.discard();
+                state.status = "Discarded unsaved text edits.".into();
+            }
+        }
+        Message::TextEditorClose => {
+            if state.text_document.as_ref().is_some_and(|doc| doc.dirty()) {
+                state.status = "Save or Discard the text edits before closing.".into();
+                return Task::none();
+            }
+            state.text_document = None;
         }
         Message::GuidedEdit(action) => return guided_modding::update(state, action),
         Message::ModdingKind(kind) => {
@@ -7427,6 +7543,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::ViewerSelectFile(index) => {
+            if state.text_document.as_ref().is_some_and(|doc| doc.dirty())
+                && state.selected != Some(index)
+            {
+                state.status =
+                    "Save or Discard the open text changes before selecting another asset.".into();
+                return Task::none();
+            }
+            state.text_document = None;
             state.viewer_context_index = None;
             // An old dependency diagram must not describe a newly selected file.
             state.dependency_graph = None;
@@ -7493,6 +7617,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state,
                     if is_cdf {
                         Message::ViewerPreviewStaticCdf
+                    } else if state
+                        .inventory
+                        .as_ref()
+                        .and_then(|inv| inv.entries.get(index))
+                        .is_some_and(|entry| text_asset_editor::compatible(&entry.relative_path))
+                    {
+                        Message::TextEditorOpen
                     } else if is_gfx {
                         Message::GfxOpenSelected
                     } else if state
@@ -7928,6 +8059,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return launch(state, operation);
         }
         Message::ViewerPreviewSelected => {
+            if state.text_document.as_ref().is_some_and(|doc| doc.dirty()) {
+                state.status = "Save or Discard the current text edits before previewing another asset.".into();
+                return Task::none();
+            }
             if state.busy {
                 state.viewer_queued_preview = state.selected;
                 state.status = "Asset preview queued until the current operation finishes.".into();
@@ -7962,6 +8097,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.input = source.to_string_lossy().to_string();
             state.texture_preview = None;
             let filename = relative.relative_path.to_ascii_lowercase();
+            if text_asset_editor::compatible(&filename) {
+                return update(state, Message::TextEditorOpen);
+            }
             // The explicit Preview button must use the same complete CDF
             // assembly pipeline as single-click auto-preview. Parsing only
             // dependency metadata here left the viewer with no geometry.
