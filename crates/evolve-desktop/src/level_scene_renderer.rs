@@ -86,6 +86,20 @@ fn safe_virtual(raw: &str) -> Option<String> {
     Some(parts.join("/").to_ascii_lowercase())
 }
 
+/// Compiled render companions use the same authored virtual owner and do
+/// not authorize unrelated basename matches.
+fn compiled_render_path(model: &str) -> String {
+    let source = Path::new(model);
+    let ext = source.extension().and_then(|ext| ext.to_str()).unwrap_or_default();
+    if ext.eq_ignore_ascii_case("skin") {
+        source.with_extension("skinm").to_string_lossy().to_string()
+    } else if ext.eq_ignore_ascii_case("chr") {
+        source.with_extension("chrm").to_string_lossy().to_string()
+    } else {
+        model.to_string()
+    }
+}
+
 fn relevant_asset(path: &str) -> bool {
     [".cgf", ".cga", ".cgfm", ".cgam", ".skinm", ".chrm", ".mtl"]
         .iter()
@@ -349,7 +363,7 @@ pub(super) fn assemble(
     if let Some(scene) = scene {
         let mut wanted = HashSet::new();
         for object in scene.objects.iter().filter(|o| !o.hidden && !o.model.is_empty()) {
-            if let Some(model) = safe_virtual(&object.model) {
+            if let Some(model) = safe_virtual(&compiled_render_path(&object.model)) {
                 wanted.insert(model.clone());
                 if object.material.is_empty() {
                     wanted.insert(Path::new(&model).with_extension("mtl").to_string_lossy().to_string());
@@ -387,7 +401,7 @@ pub(super) fn assemble(
                     budget_hit = true;
                     break;
                 }
-                let source = match sources.lookup(&object.model) {
+                let source = match sources.lookup(&compiled_render_path(&object.model)) {
                     Ok(Some(source)) => source,
                     Ok(None) => {
                         report.unresolved += 1;
@@ -485,6 +499,22 @@ pub(super) fn assemble(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compiled_character_render_companion_stays_in_authored_folder() {
+        assert_eq!(
+            compiled_render_path("objects/characters/hunter.skin"),
+            "objects/characters/hunter.skinm",
+        );
+        assert_eq!(
+            compiled_render_path("objects/characters/hunter.chr"),
+            "objects/characters/hunter.chrm",
+        );
+        assert_eq!(
+            compiled_render_path("objects/world/rock.cgf"),
+            "objects/world/rock.cgf",
+        );
+    }
 
     #[test]
     fn safe_lookup_rejects_paths_outside_game_virtual_root() {
