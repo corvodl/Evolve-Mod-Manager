@@ -1439,7 +1439,11 @@ fn ai_pause_controls(state: &State) -> Element<'_, Message> {
         && state.live_edit_enabled
         && !state.developer_online_mods
         && !state.ai_pause_busy
-        && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some();
+        && state
+            .runtime_snapshot
+            .as_ref()
+            .and_then(|s| s.pid)
+            .is_some();
     let can_pause = ready
         && !state.ai_pause_owned
         && state.ai_pause_probe.is_some_and(|probe| probe.value == 0);
