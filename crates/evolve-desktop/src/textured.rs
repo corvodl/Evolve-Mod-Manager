@@ -86,6 +86,7 @@ pub struct Scene {
     pub pan_x: f32,
     pub pan_y: f32,
     pub shift: bool,
+    pub level_camera: Option<super::level_camera::Camera>,
 }
 
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -204,11 +205,15 @@ impl shader::Program<super::Message> for Scene {
             // 3D perspective and depth test, with original source UV winding.
             let perspective = (2.5 - depth).max(0.12);
             let scale = self.zoom.clamp(0.2, 80.0) * 1.6;
-            let projected = [
-                xr * scale / perspective / ratio + self.pan_x,
-                yr * scale / perspective + self.pan_y,
-                ((2.5 - depth) / 5.0).clamp(0., 1.),
-            ];
+            let projected = if let Some(camera) = self.level_camera {
+                camera.project(*raw, self.yaw, self.pitch, ratio, self.zoom)
+            } else {
+                [
+                    xr * scale / perspective / ratio + self.pan_x,
+                    yr * scale / perspective + self.pan_y,
+                    ((2.5 - depth) / 5.0).clamp(0., 1.),
+                ]
+            };
             let mut normal = data
                 .normals
                 .as_ref()
@@ -245,14 +250,16 @@ impl shader::Program<super::Message> for Scene {
                 let yr = z * cp - back * sp;
                 let depth = z * sp + back * cp;
                 let perspective = (2.5 - depth).max(0.12);
-                ground.push(GroundVertex {
-                    position: [
+                let position = if let Some(camera) = self.level_camera {
+                    camera.project(raw, self.yaw, self.pitch, ratio, self.zoom)
+                } else {
+                    [
                         xr * scale / perspective / ratio + self.pan_x,
                         yr * scale / perspective + self.pan_y,
                         ((2.5 - depth) / 5.0).clamp(0., 1.),
-                    ],
-                    rgba: line.color,
-                });
+                    ]
+                };
+                ground.push(GroundVertex { position, rgba: line.color });
             }
         }
         Primitive {
