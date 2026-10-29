@@ -43,6 +43,37 @@ impl DocsSection {
     ];
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub(super) enum DeveloperSection {
+    Network,
+    Actors,
+    Ai,
+    Teleport,
+    Overlay,
+    Keybinds,
+}
+impl DeveloperSection {
+    pub(super) const ALL: [Self; 6] = [
+        Self::Network,
+        Self::Actors,
+        Self::Ai,
+        Self::Teleport,
+        Self::Overlay,
+        Self::Keybinds,
+    ];
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::Network => "Network & Process",
+            Self::Actors => "Actors & Memory",
+            Self::Ai => "AI Controls",
+            Self::Teleport => "Teleport & Fly",
+            Self::Overlay => "External Overlay",
+            Self::Keybinds => "Keybinds",
+        }
+    }
+}
+
 fn surface<'a>(content: impl Into<Element<'a, Message>>) -> iced::widget::Container<'a, Message> {
     container(content)
         .width(Fill)
@@ -1454,11 +1485,11 @@ fn developer_keybind_controls(state: &State) -> Element<'_, Message> {
         .filter(|&&k| k != 0)
         .count();
     let mut rows = column![
-        text("Developer shortcuts").size(17),
-        text(format!("{assigned}/9 shortcuts assigned. Shortcuts require the overlay and enabled actor writes to teleport."))
+        text("Keybind assignments").size(17),
+        text(format!("{assigned}/10 shortcuts assigned. Shortcuts require the overlay and enabled actor writes for movement."))
             .size(12)
             .style(design::muted),
-        design::button("Load suggested shortcuts (F6–F12, Ctrl+F6/F7)")
+        design::button("Load suggested (F6–F12, Ctrl+F6/F7/F8)")
             .on_press(Message::DeveloperKeybindDefaults),
         text(if assigned == 0 {
             "No shortcuts assigned yet. Click the button above or select keys below."
@@ -1557,8 +1588,7 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
         && state.teleport_hold_cancel.is_none();
     let enabled = can_read && state.live_edit_enabled;
 
-    surface(
-        column![
+    column![
             text("Teleport").size(19),
             text("Teleport & freeze · read position without arming writes; enable actor memory writes to move")
                 .size(12)
@@ -1705,6 +1735,14 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
             ]
             .align_y(iced::Alignment::Center)
             .spacing(8),
+
+        ]
+        .spacing(9)
+        .into()
+}
+
+fn overlay_controls(state: &State) -> Element<'_, Message> {
+    column![
             iced::widget::checkbox(
                 state.teleport_overlay.is_some() || state.teleport_overlay_pending
             )
@@ -1736,129 +1774,137 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
             })
             .size(12)
             .style(design::muted),
-            developer_keybind_controls(state),
             text("Overlay appears only over Evolve while the game is in focus. The center marker is not a raycast hit location.")
                 .size(12)
                 .style(design::muted),
-
-        ]
-        .spacing(9)
-        .padding(10),
-    )
+    ]
+    .spacing(9)
     .into()
+}
+
+fn network_controls(state: &State) -> Element<'_, Message> {
+    column![
+        text("Developer-only · Firewall policy").size(12).style(design::muted),
+        iced::widget::checkbox(state.developer_online_mods)
+            .label("Allow modded online testing")
+            .on_toggle(Message::DeveloperOnlineMods),
+        text(if state.developer_network_busy {
+            "Applying network policy..."
+        } else if state.developer_online_mods {
+            "Online testing enabled · Server acceptance not guaranteed"
+        } else {
+            "Offline isolation selected"
+        })
+        .size(12).style(design::muted),
+        text(state.developer_network_status.as_str())
+            .size(12).style(design::muted),
+        text("Process privileges").size(17),
+        text("Manager: High · Client/Game: Medium")
+            .size(12).style(design::muted),
+        design::button(if state.developer_privilege_busy {
+            "Inspecting process tokens..."
+        } else {
+            "Inspect Client / Game Privileges"
+        })
+        .on_press_maybe(
+            (!state.developer_privilege_busy)
+                .then_some(Message::DeveloperInspectProcessPrivileges)
+        ),
+        text(state.developer_privilege_status.as_str())
+            .size(12).style(design::muted),
+    ]
+    .spacing(8)
+    .into()
+}
+
+fn actor_controls(state: &State) -> Element<'_, Message> {
+    column![
+        text("Offline memory · Validate fields before editing")
+            .size(12).style(design::muted),
+        design::button(if state.runtime_checking {
+            "Detecting..."
+        } else {
+            "Detect Evolve.exe"
+        })
+        .on_press_maybe((!state.runtime_checking).then_some(Message::RuntimeDetect)),
+        text(state.runtime_snapshot.as_ref().map(|s| s.status.as_str()).unwrap_or("Not detected"))
+            .size(12).style(design::muted),
+        text(state.runtime_snapshot.as_ref().map(|s| s.executable.as_str()).unwrap_or("Executable not checked"))
+            .size(12).style(design::muted),
+        iced::widget::checkbox(state.armor_offline_confirmed)
+            .label("Enable guided armor scanning (optional)")
+            .on_toggle(Message::ArmorOfflineChanged),
+        iced::widget::checkbox(state.live_edit_enabled)
+            .label("Enable actor memory writes / Freeze (experimental)")
+            .on_toggle(Message::LiveEditEnabled),
+        design::button(if state.actor_busy {
+            "Reading actors and perks..."
+        } else {
+            "Refresh actors and match perks"
+        })
+        .on_press_maybe(
+            (!state.actor_busy
+                && state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_some())
+                .then_some(Message::ActorRefresh)
+        ),
+        text(state.actor_status.as_str()).size(12).style(design::muted),
+        match_perk_rows(state),
+        actor_rows(state),
+        text("Click a value to edit it · Enter to write · Freeze holds the current value")
+            .size(12).style(design::muted),
+    ]
+    .spacing(9)
+    .into()
+}
+
+/// A collapsed section renders only its header; expensive runtime actor
+/// listings are not rebuilt until their section is opened.
+fn developer_section(state: &State, section: DeveloperSection) -> Element<'_, Message> {
+    let expanded = state.developer_sections_expanded.contains(&section);
+    let mut content = column![
+        design::button(
+            row![
+                text(if expanded { "▾" } else { "▸" }).size(18),
+                text(section.title()).size(17),
+            ]
+            .spacing(10)
+            .align_y(iced::Center)
+        )
+        .style(design::secondary)
+        .width(Fill)
+        .on_press(Message::ToggleDeveloperSection(section)),
+    ]
+    .spacing(10);
+    if expanded {
+        let controls = match section {
+            DeveloperSection::Network => network_controls(state),
+            DeveloperSection::Actors => actor_controls(state),
+            DeveloperSection::Ai => ai_pause_controls(state),
+            DeveloperSection::Teleport => teleport_controls(state),
+            DeveloperSection::Overlay => overlay_controls(state),
+            DeveloperSection::Keybinds => developer_keybind_controls(state),
+        };
+        content = content.push(controls);
+    }
+    surface(content).into()
 }
 
 pub(super) fn developer(state: &State) -> Element<'_, Message> {
     if state.developer_unlocked {
-        scrollable(
-            column![
-                text("Developer").size(24),
-                surface(
-                    column![
-                        text("Network testing").size(19),
-                        text("Developer-only · Firewall policy")
-                            .size(12)
-                            .style(design::muted),
-                        iced::widget::checkbox(state.developer_online_mods)
-                            .label("Allow modded online testing")
-                            .on_toggle(Message::DeveloperOnlineMods),
-                        text(if state.developer_network_busy {
-                            "Applying network policy..."
-                        } else if state.developer_online_mods {
-                            "Online testing enabled · Server acceptance not guaranteed"
-                        } else {
-                            "Offline isolation selected"
-                        })
-                        .size(12)
-                        .style(design::muted),
-                        text(state.developer_network_status.as_str())
-                            .size(12)
-                            .style(design::muted),
-                        text("Process privileges").size(19),
-                        text("Manager: High · Client/Game: Medium")
-                            .size(12)
-                            .style(design::muted),
-                        design::button(if state.developer_privilege_busy {
-                            "Inspecting process tokens..."
-                        } else {
-                            "Inspect Client / Game Privileges"
-                        })
-                        .on_press_maybe(
-                            (!state.developer_privilege_busy)
-                                .then_some(Message::DeveloperInspectProcessPrivileges)
-                        ),
-                        text(state.developer_privilege_status.as_str())
-                            .size(12)
-                            .style(design::muted),
-                        text("Runtime actors").size(19),
-                        text("Offline memory · Validate fields before editing")
-                            .size(12)
-                            .style(design::muted),
-                        design::button(if state.runtime_checking {
-                            "Detecting..."
-                        } else {
-                            "Detect Evolve.exe"
-                        })
-                        .on_press_maybe(
-                            (!state.runtime_checking).then_some(Message::RuntimeDetect)
-                        ),
-                        text(
-                            state
-                                .runtime_snapshot
-                                .as_ref()
-                                .map(|s| s.status.as_str())
-                                .unwrap_or("Not detected")
-                        )
-                        .size(12)
-                        .style(design::muted),
-                        text(
-                            state
-                                .runtime_snapshot
-                                .as_ref()
-                                .map(|s| s.executable.as_str())
-                                .unwrap_or("Executable not checked")
-                        )
-                        .size(12)
-                        .style(design::muted),
-                        iced::widget::checkbox(state.armor_offline_confirmed)
-                            .label("Enable guided armor scanning (optional)")
-                            .on_toggle(Message::ArmorOfflineChanged),
-                        iced::widget::checkbox(state.live_edit_enabled)
-                            .label("Enable actor memory writes / Freeze (experimental)")
-                            .on_toggle(Message::LiveEditEnabled),
-                        design::button(if state.actor_busy {
-                            "Reading actors and perks..."
-                        } else {
-                            "Refresh actors and match perks"
-                        })
-                        .on_press_maybe(
-                            (!state.actor_busy
-                                && state
-                                    .runtime_snapshot
-                                    .as_ref()
-                                    .and_then(|s| s.pid)
-                                    .is_some())
-                            .then_some(Message::ActorRefresh)
-                        ),
-                        text(state.actor_status.as_str())
-                            .size(12)
-                            .style(design::muted),
-                        match_perk_rows(state),
-                        actor_rows(state),
-                        ai_pause_controls(state),
-                        teleport_controls(state),
-                        text("Click a value to edit it · Enter to write · Freeze holds the current value")
-                            .size(12).style(design::muted),
-                        design::button("Lock developer area").on_press(Message::LockDeveloper),
-                    ]
-                    .spacing(12)
-                ),
-            ]
-            .spacing(13)
-            .padding(12),
-        )
-        .height(Fill)
-        .into()
+        let mut content = column![
+            text("Developer").size(24),
+            text("Open a section to access its tools and settings.")
+                .size(12).style(design::muted),
+            row![
+                design::button("Expand all").on_press(Message::DeveloperExpandAll(true)),
+                design::button("Collapse all").on_press(Message::DeveloperExpandAll(false)),
+            ].spacing(8),
+        ].spacing(10);
+        for section in DeveloperSection::ALL {
+            content = content.push(developer_section(state, section));
+        }
+        content = content.push(design::button("Lock developer area").on_press(Message::LockDeveloper));
+        scrollable(content.padding(12)).height(Fill).into()
     } else {
         column![
             text("Developer").size(24),
@@ -1866,16 +1912,14 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
                 column![
                     text("Password protected").size(17),
                     text("Developer features are not available without authorized credentials.")
-                        .size(13)
-                        .style(design::muted),
+                        .size(13).style(design::muted),
                     design::text_input("Developer password", &state.developer_password)
                         .secure(true)
                         .on_input(Message::DeveloperPasswordChanged)
                         .on_submit(Message::UnlockDeveloper),
                     design::button("Unlock").on_press(Message::UnlockDeveloper),
                     text(state.developer_status.as_str())
-                        .size(12)
-                        .style(design::muted),
+                        .size(12).style(design::muted),
                 ]
                 .spacing(12)
             ),
