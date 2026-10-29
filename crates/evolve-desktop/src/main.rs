@@ -4276,18 +4276,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.keyboard_modifiers.control(),
                 );
                 state.library_selected = state.library_selection.primary_after(index);
-                if !state.keyboard_modifiers.control() && !state.keyboard_modifiers.shift() {
-                    if let Some(archive) = state
-                        .library_catalog
-                        .as_ref()
-                        .and_then(|c| c.archives.get(index))
-                        .cloned()
-                    {
-                        if level_library::likely_level_pak(&archive) && !state.busy {
+                if !state.keyboard_modifiers.control() && !state.keyboard_modifiers.shift()
+                    && let Some(archive) = state.library_catalog.as_ref().and_then(|c| c.archives.get(index)).cloned()
+                    && level_library::likely_level_pak(&archive) && !state.busy
+                {
                             let cache = state.preview_cache.clone();
                             return launch(state, Operation::OpenImportedMap(archive, 0, cache));
-                        }
-                    }
                 }
             }
         }
