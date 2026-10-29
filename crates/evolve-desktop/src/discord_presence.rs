@@ -52,10 +52,13 @@ impl Config {
                 .gfx_session
                 .as_ref()
                 .map(|session| session.relative.clone()),
+            Page::Models if state.text_document.is_some() => state
+                .text_document
+                .as_ref()
+                .map(|document| document.member.clone()),
             Page::Models
                 if state.model.is_some()
                     || state.texture_preview.is_some()
-                    || state.text_document.is_some()
                     || state.character.is_some() =>
             {
                 std::path::Path::new(&state.input)
