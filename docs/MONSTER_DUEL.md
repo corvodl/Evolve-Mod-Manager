@@ -5,7 +5,15 @@ entity-spawning implementation. Nothing in this branch calls CryEngine functions
 or modifies the game process. Do not infer Stage 2 support from older
 Evolve/Legacy modes.
 
-## High-value discovery
+## Updated constraint: Stage 2 has no Defend / Second Monster effect
+
+The user confirmed these historical modes/effects are not available in the
+current Stage 2 client. Do not use their presence as the first live acceptance
+test, and do not claim the Stage 2 runtime still has their minion spawning path.
+The initial probe now operates in an **ordinary offline Stage 2 match with
+hunter bots**, validating multi-actor discovery and damage-field changes.
+
+## Historical lead (requires asset/runtime verification)
 
 Older Evolve modes already use additional monster-like AI actors:
 - Defend periodically spawns Stage 1 Goliath minions alongside the primary
@@ -57,40 +65,55 @@ user-prompted snapshots with actor IDs, entity names, linked actor addresses,
 positions, and plausible stage/health/armor fields. It never writes game memory
 or invokes engine functions.
 
-1. Baseline: local playable monster in a normal offline match.
-2. If **Second Monster** or **Defend** is actually supported in the current
-   build, activate it, wait until the AI minion is present, and capture another
-   snapshot. Capture only after loading finishes.
-3. Capture a third snapshot after an attempted ability/melee hit or after
-   observing combat, without changing actors/session between snapshots 2 and 3.
+1. Baseline: local playable monster in a normal **offline Stage 2 match with
+   hunter bots**. This does not require Defend or any legacy map effect.
+2. Approach a visible hunter bot, do not attack, and capture a second snapshot
+   **in the same match**.
+3. Hit that same hunter bot with one monster ability or melee attack; capture
+   a third snapshot quickly, without changing matches.
+
+This provides a control case for Evolve's actual Stage 2 actor registry,
+health fields and monster-to-hunter damage path. It is **not** evidence that
+a second monster can be created or damaged.
 
 Provide complete Lua output. A delta in health/armor is evidence only when the
 same live actor pointer and entity ID are still present; it doesn't by itself
 prove who caused the damage. A zero delta does not prove the attack was a valid
 hit or that faction filtering rejected it.
 
-If the effect/mode is **not present in Stage 2**, stop there: inspect game PAKs
-for the historical minion entity definitions/game rules/spawn events before
-claiming an executable path. No guessing at ABI vtable indices.
+Since historical effects are absent, inspect Stage 2 PAKs and, separately,
+Legacy PAKs supplied by the user for monster actor class/archetype definitions,
+registered entity classes and native spawn initialization. The manager already
+classifies gameplay paths including `Libs/GameRules/`,
+`Libs/EntityArchetypes/`, `Libs/AI/`, `Libs/Actor/`, and `Entities/`.
+These are **search scopes**, not confirmed locations of spawn code.
+
+Compare any Legacy Defend/Second Monster definitions to Stage 2 before attempting
+a port. Data-only restoration will not work if the underlying native game-mode
+logic and runtime classes were removed. No guessing at ABI vtable indices.
 
 ## Actual implementation milestones and acceptance tests
 
-1. **Find a native minion path.** Identify minion entity name, class/archetype,
-   actor linkage (if any), initialization, AI controller, lifetime, and
-   spawn ownership. Compare Defend/Second Monster assets to Stage 2 assets.
-2. **Make two monsters coexist offline.** Validate distinct IDs/entities,
+1. **Establish current Stage 2 baseline.** In normal offline matches, identify
+   local monster and AI hunter actors, compare entity names, fields, actor
+   backlinks, and a controlled monster-to-hunter damage event.
+2. **Research monster class/spawn lifecycle.** Compare Stage 2 monster
+   class/archetype definitions with any available Legacy Defend/Second Monster
+   assets. Determine the actor registration/creation, AI controller, lifetime,
+   authority and cleanup interfaces. Do not assume a PAK-only approach.
+3. **Make two monsters coexist offline.** Validate distinct IDs/entities,
    physics, health/armor, animations, behavior, and clean despawn. Do not
    create a raw memory clone or overwrite an existing player's actor pointer.
-3. **Investigate targeting and damage.** Capture controlled attacks and health
+4. **Investigate targeting and damage.** Capture controlled attacks and health
    changes, infer whether game rules/team/faction filters prevent friendly
    monster damage, and locate the actual decision point before changing it.
-4. **Combat prototype.** Support Goliath vs Goliath with intentional opposing
+5. **Combat prototype.** Support Goliath vs Goliath with intentional opposing
    allegiance and damage, reliable ability collision/knockback, and a repeatable
    reset mechanism. Only add a functional test button after calls are verified.
-5. **Player-vs-player prototype.** Separate player/channel ownership,
+6. **Player-vs-player prototype.** Separate player/channel ownership,
    replication, input, spawn lifecycle, spectators, and reconnect handling.
    This is more difficult than an offline monster-vs-AI duel.
-6. **Mode rules.** Remove 4v1 assumptions from teams, victory, round start,
+7. **Mode rules.** Remove 4v1 assumptions from teams, victory, round start,
    ability unlocks/evolution, HUD and score.
 
 ### Decision gate
@@ -108,3 +131,8 @@ changes the other's verified health/armor (followed by successful cleanup).
 - Scan is bounded (8192 live entities, 256 stored actors, 70 displayed).
 - The script requires compatible current Stage 2 offsets and an attached
   offline Evolve.exe. It has not been tested against an in-game session.
+- It observes monster-versus-hunter combat only as a control case; does
+  not infer monster-versus-monster damage filtering from that case.
+- If the normal match contains no enumerated nonlocal hunter actors, investigate
+  the entity-to-actor backlink or name registry rather than inferring that
+  the hunter bots are not present.
