@@ -4348,13 +4348,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .as_mut()
                 .is_some_and(|child| child.try_wait().ok().flatten().is_some());
             if ended {
-                let startup_error = state
-                    .teleport_hotkey_rx
-                    .as_ref()
-                    .and_then(|rx| {
-                        rx.try_iter()
-                            .find_map(|line| line.strip_prefix("OVERLAY_ERROR ").map(str::to_owned))
-                    });
+                let startup_error = state.teleport_hotkey_rx.as_ref().and_then(|rx| {
+                    rx.try_iter()
+                        .find_map(|line| line.strip_prefix("OVERLAY_ERROR ").map(str::to_owned))
+                });
                 state.teleport_overlay = None;
                 state.teleport_hotkey_rx = None;
                 state.teleport_status = startup_error
@@ -4510,8 +4507,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             // The overlay is read-only and may run independently of optional
             // armor scanning, live actor writes, and the network testing mode.
             // Writing actions remain protected by their own Developer checks.
-            state.teleport_overlay_generation =
-                state.teleport_overlay_generation.wrapping_add(1);
+            state.teleport_overlay_generation = state.teleport_overlay_generation.wrapping_add(1);
             state.teleport_overlay_pending = false;
             if let Some(mut child) = state.teleport_overlay.take() {
                 let _ = child.kill();
@@ -4555,9 +4551,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::TeleportOverlayDetected(generation, snapshot) => {
-            if generation != state.teleport_overlay_generation
-                || !state.teleport_overlay_pending
-            {
+            if generation != state.teleport_overlay_generation || !state.teleport_overlay_pending {
                 return Task::none();
             }
             state.teleport_overlay_pending = false;
@@ -4629,7 +4623,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         for action in developer_hotkeys::Action::ALL {
                             send_dev_bind(state, action);
                         }
-                        state.teleport_status = "Starting overlay... Switch to Evolve to see the marker.".into();
+                        state.teleport_status =
+                            "Starting overlay... Switch to Evolve to see the marker.".into();
                         state.developer_hotkey_status = "Registering shortcuts...".into();
                     }
                     Err(error) => {
@@ -5515,8 +5510,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             );
         }
         Message::RuntimeDetected(snapshot) => {
-            state.teleport_overlay_generation =
-                state.teleport_overlay_generation.wrapping_add(1);
+            state.teleport_overlay_generation = state.teleport_overlay_generation.wrapping_add(1);
             state.teleport_overlay_pending = false;
             state.actor_frozen.clear();
             state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
@@ -5725,8 +5719,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .unwrap_or_else(|error| format!("Phase 3 preview rejected: {error}"));
         }
         Message::LockDeveloper => {
-            state.teleport_overlay_generation =
-                state.teleport_overlay_generation.wrapping_add(1);
+            state.teleport_overlay_generation = state.teleport_overlay_generation.wrapping_add(1);
             state.teleport_overlay_pending = false;
             if state.teleport_hold_cancel.is_some() {
                 state.teleport_hold_status =
