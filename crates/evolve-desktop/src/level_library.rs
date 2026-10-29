@@ -427,14 +427,12 @@ fn open_selected(
                 let mut applied = false;
                 if let (Some(assembled), Some((terrain_mesh, _))) =
                     (full_scene.as_mut(), terrain.as_ref())
+                    && let Some(surface) = assembled.surfaces.first_mut()
+                    && surface.first_index == 0
+                    && surface.index_count == terrain_mesh.indices.len() as u32
                 {
-                    if let Some(surface) = assembled.surfaces.first_mut()
-                        && surface.first_index == 0
-                        && surface.index_count == terrain_mesh.indices.len() as u32
-                    {
-                        surface.diffuse = Some(std::sync::Arc::new(atlas.image));
-                        applied = true;
-                    }
+                    surface.diffuse = Some(std::sync::Arc::new(atlas.image));
+                    applied = true;
                 }
                 diagnostics.push(format!(
                     "Original baked terrain: decoded {} indexed surface tiles (BC/RGBA format {}) into 2048×2048 ground-color atlas. {}",
