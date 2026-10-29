@@ -12832,6 +12832,53 @@ fn main() -> iced::Result {
 mod project_edit_tests {
     use super::*;
 
+    #[test]
+    fn teleport_buttons_only_need_write_arm_not_armor_or_network_mode() {
+        let mut state = State {
+            developer_unlocked: true,
+            developer_online_mods: true,
+            armor_offline_confirmed: false,
+            live_edit_enabled: false,
+            ..State::default()
+        };
+        let target = runtime_teleport::Destination::Relative(
+            runtime_teleport::Position { x: 0.0, y: 0.0, z: 20.0 }
+        );
+        let _ = update(&mut state, Message::TeleportDo(target, None));
+        assert!(state.teleport_status.contains("actor memory writes"));
+        state.live_edit_enabled = true;
+        let _ = update(&mut state, Message::TeleportDo(target, None));
+        assert!(state.teleport_status.is_empty() || state.teleport_status.contains("Locating"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn teleport_lazy_process_detection_without_an_armor_scan() {
+        let mut state = State {
+            developer_unlocked: true,
+            developer_online_mods: true,
+            armor_offline_confirmed: false,
+            live_edit_enabled: true,
+            ..State::default()
+        };
+        let _ = update(&mut state, Message::TeleportDetect(TeleportRequest::Capture(false)));
+        assert!(state.teleport_detect_pending);
+        let generation = state.teleport_detect_generation;
+        let old = runtime_memory::Snapshot {
+            pid: Some(4784),
+            module_base: Some(0x140000000),
+            status: "Game detected".into(),
+            executable: "Evolve.exe".into(),
+        };
+        let _ = update(
+            &mut state,
+            Message::TeleportAutoDetected(generation, TeleportRequest::Capture(false), old),
+        );
+        assert!(!state.teleport_detect_pending);
+        assert_eq!(state.runtime_snapshot.as_ref().and_then(|s| s.pid), Some(4784));
+        assert!(state.live_edit_enabled);
+    }
+
     #[cfg(windows)]
     #[test]
     fn overlay_preview_does_not_require_offline_armor_or_memory_writes() {
