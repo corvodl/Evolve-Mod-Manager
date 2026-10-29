@@ -553,17 +553,19 @@ pub(super) fn assemble(
                     let source_virtual = render_candidates(&object.model)
                         .into_iter()
                         .find(|candidate| {
-                            let candidate_extension = Path::new(candidate)
-                                .extension()
-                                .and_then(|e| e.to_str());
+                            let candidate_extension =
+                                Path::new(candidate).extension().and_then(|e| e.to_str());
                             candidate_extension.is_some_and(|extension| {
-                                source.path.extension().and_then(|e| e.to_str())
+                                source
+                                    .path
+                                    .extension()
+                                    .and_then(|e| e.to_str())
                                     .is_some_and(|actual| actual.eq_ignore_ascii_case(extension))
                             })
                         })
                         .unwrap_or_else(|| object.model.clone());
-                    let explicit = (!object.material.trim().is_empty())
-                        .then_some(object.material.as_str());
+                    let explicit =
+                        (!object.material.trim().is_empty()).then_some(object.material.as_str());
                     match assembly_materials::material_for_part(
                         &source_virtual,
                         explicit,
