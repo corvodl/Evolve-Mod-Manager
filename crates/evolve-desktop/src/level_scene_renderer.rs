@@ -172,7 +172,9 @@ where
                 Ok(_) => reasons.push(format!("{candidate}: no renderable geometry")),
                 Err(error) => reasons.push(format!("{candidate}: {error}")),
             },
-            Ok(None) => reasons.push(format!("{candidate}: not present in matching imported PAKs")),
+            Ok(None) => reasons.push(format!(
+                "{candidate}: not present in matching imported PAKs"
+            )),
             Err(error) => reasons.push(format!("{candidate}: {error}")),
         }
     }
@@ -801,7 +803,10 @@ mod tests {
             ]
         );
         assert_eq!(source.archive, "same-imported-build");
-        assert_eq!(source.path, PathBuf::from("Objects/natural/rocks/riverbank02_a.cgfm"));
+        assert_eq!(
+            source.path,
+            PathBuf::from("Objects/natural/rocks/riverbank02_a.cgfm")
+        );
         assert_eq!(parts.len(), 1);
         assert!(note.unwrap().contains("compiled render companion"));
     }
@@ -840,9 +845,13 @@ mod tests {
             |_path| {
                 Ok(vec![RenderMesh {
                     info: ModelInfo {
-                        format: "test".into(), version: 7, chunk_count: 1,
-                        vertex_count: 3, triangle_count: 1,
-                        original_uv0: false, original_normals: false,
+                        format: "test".into(),
+                        version: 7,
+                        chunk_count: 1,
+                        vertex_count: 3,
+                        triangle_count: 1,
+                        original_uv0: false,
+                        original_normals: false,
                     },
                     positions: vec![[0.0, 0.0, 0.0]; 3],
                     indices: vec![0, 1, 2],
@@ -852,7 +861,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(source.path.extension().and_then(|e| e.to_str()), Some("cgf"));
+        assert_eq!(
+            source.path.extension().and_then(|e| e.to_str()),
+            Some("cgf")
+        );
         assert!(note.is_none());
     }
 
