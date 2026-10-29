@@ -79,7 +79,7 @@ impl<'a> Cursor<'a> {
                 if next != 0xff {
                     next as usize
                 } else {
-                    value = self.u16();
+                    value = self.u16()?;
                     self.extended(value)?
                 }
             } else {
