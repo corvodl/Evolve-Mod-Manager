@@ -53,7 +53,7 @@ fn map_group(relative: &str) -> (String, String) {
     // A Layer subdirectory is not itself a separate map.
     let folder = parts.len().saturating_sub(1);
     let map_index = if folder > 0 && parts[folder - 1].eq_ignore_ascii_case("layers") {
-        folder - 2
+        folder.saturating_sub(2)
     } else {
         folder.saturating_sub(1)
     };
