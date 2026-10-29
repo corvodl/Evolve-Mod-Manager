@@ -1218,9 +1218,14 @@ impl Pipeline {
             self.depth_dimensions = size;
         }
         self.world_renderer.prepare(
-            device, queue, primitive.world.as_ref(), primitive.camera,
-            primitive.yaw, primitive.pitch,
-            size.0 as f32 / size.1.max(1) as f32, primitive.zoom,
+            device,
+            queue,
+            primitive.world.as_ref(),
+            primitive.camera,
+            primitive.yaw,
+            primitive.pitch,
+            size.0 as f32 / size.1.max(1) as f32,
+            primitive.zoom,
         );
         let floor_bytes = bytemuck::cast_slice(&primitive.ground);
         self.ground_count = primitive.ground.len() as u32;
@@ -1435,36 +1440,36 @@ impl Pipeline {
             pass.draw(0..self.ground_count, 0..1);
         }
         if self.index_count > 0 {
-        pass.set_pipeline(&self.render_pipeline);
-        pass.set_vertex_buffer(0, self.vertex.slice(..));
-        pass.set_index_buffer(self.index.slice(..), wgpu::IndexFormat::Uint32);
-        if self.surface_table_valid {
-            // NoDraw-only characters intentionally have zero visible parts.
-            // Do not silently fall back to rendering the whole mesh.
-            // Write the depth of every opaque original face before any
-            // transparent section; authoring order is not render order.
-            for surface in self.gpu_surfaces.iter().filter(|part| !part.transparent) {
-                pass.set_pipeline(if surface.masked {
-                    &self.masked_pipeline
-                } else {
-                    &self.render_pipeline
-                });
-                pass.set_bind_group(0, &surface.bind_group, &[]);
-                pass.draw_indexed(surface.range.clone(), 0, 0..1);
+            pass.set_pipeline(&self.render_pipeline);
+            pass.set_vertex_buffer(0, self.vertex.slice(..));
+            pass.set_index_buffer(self.index.slice(..), wgpu::IndexFormat::Uint32);
+            if self.surface_table_valid {
+                // NoDraw-only characters intentionally have zero visible parts.
+                // Do not silently fall back to rendering the whole mesh.
+                // Write the depth of every opaque original face before any
+                // transparent section; authoring order is not render order.
+                for surface in self.gpu_surfaces.iter().filter(|part| !part.transparent) {
+                    pass.set_pipeline(if surface.masked {
+                        &self.masked_pipeline
+                    } else {
+                        &self.render_pipeline
+                    });
+                    pass.set_bind_group(0, &surface.bind_group, &[]);
+                    pass.draw_indexed(surface.range.clone(), 0, 0..1);
+                }
+                for surface in self.gpu_surfaces.iter().filter(|part| part.transparent) {
+                    pass.set_pipeline(if surface.opacity_map {
+                        &self.opacity_pipeline
+                    } else {
+                        &self.translucent_pipeline
+                    });
+                    pass.set_bind_group(0, &surface.bind_group, &[]);
+                    pass.draw_indexed(surface.range.clone(), 0, 0..1);
+                }
+            } else {
+                pass.set_bind_group(0, &self.group, &[]);
+                pass.draw_indexed(0..self.index_count, 0, 0..1);
             }
-            for surface in self.gpu_surfaces.iter().filter(|part| part.transparent) {
-                pass.set_pipeline(if surface.opacity_map {
-                    &self.opacity_pipeline
-                } else {
-                    &self.translucent_pipeline
-                });
-                pass.set_bind_group(0, &surface.bind_group, &[]);
-                pass.draw_indexed(surface.range.clone(), 0, 0..1);
-            }
-        } else {
-            pass.set_bind_group(0, &self.group, &[]);
-            pass.draw_indexed(0..self.index_count, 0, 0..1);
-        }
         }
         self.world_renderer.draw(&mut pass);
     }
