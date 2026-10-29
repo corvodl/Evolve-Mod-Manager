@@ -7300,7 +7300,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::LevelCameraFocus => {
-            if let Some(point) = state.level_selected
+            if let Some(point) = state
+                .level_selected
                 .and_then(|index| state.level_scene.as_ref()?.objects.get(index))
                 .map(|object| object.world.position)
                 && let Some(camera) = state.level_camera.as_mut()
@@ -7314,16 +7315,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.pitch = 32.0;
             state.zoom = 1.0;
             state.level_keys.clear();
-            state.level_camera = state.model.as_ref()
+            state.level_camera = state
+                .model
+                .as_ref()
                 .map(|mesh| level_camera::Camera::frame(mesh, state.yaw, state.pitch));
         }
         Message::LevelCameraKey(_, key, pressed) => {
             if key == 'f' && pressed {
                 return update(state, Message::LevelCameraFocus);
             }
-            if ['w','a','s','d','q','e'].contains(&key) {
-                if pressed { state.level_keys.insert(key); }
-                else { state.level_keys.remove(&key); }
+            if ['w', 'a', 's', 'd', 'q', 'e'].contains(&key) {
+                if pressed {
+                    state.level_keys.insert(key);
+                } else {
+                    state.level_keys.remove(&key);
+                }
             }
         }
         Message::LevelCameraTick => {
@@ -11888,7 +11894,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::Levels);
                     state.zoom = 1.0;
                     state.level_keys.clear();
-                    state.level_camera = state.model.as_ref()
+                    state.level_camera = state
+                        .model
+                        .as_ref()
                         .map(|mesh| level_camera::Camera::frame(mesh, state.yaw, state.pitch));
                 }
                 Ok(Completed::ProjectLevelSaved(project, saved)) => {
@@ -11989,7 +11997,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.pan_x = 0.0;
                     state.pan_y = 0.0;
                     state.level_keys.clear();
-                    state.level_camera = state.model.as_ref()
+                    state.level_camera = state
+                        .model
+                        .as_ref()
                         .map(|mesh| level_camera::Camera::frame(mesh, state.yaw, state.pitch));
                 }
                 Ok(Completed::Level(scene, source, hash)) => {
@@ -12712,8 +12722,12 @@ fn view(state: &State) -> Element<'_, Message> {
             let description = if let Some(texture) = &state.texture {
                 format!(
                     "DDS: {} × {} | {:?} | {} mip(s) | {} part(s) | top mip {} bytes",
-                    texture.width, texture.height, texture.format,
-                    texture.mipmaps, texture.streaming_parts, texture.top_mip_bytes
+                    texture.width,
+                    texture.height,
+                    texture.format,
+                    texture.mipmaps,
+                    texture.streaming_parts,
+                    texture.top_mip_bytes
                 )
             } else {
                 "Select a local DDS and choose Inspect DDS.".to_owned()
@@ -12897,7 +12911,9 @@ fn view(state: &State) -> Element<'_, Message> {
         Page::Levels => column![
             text("Level Editor opened in a separate window.").size(18),
             design::button("Open Level Editor Window").on_press(Message::OpenLevelEditorWindow),
-        ].spacing(12).into(),
+        ]
+        .spacing(12)
+        .into(),
         Page::Settings => settings_page::view(state),
     };
 
@@ -13141,7 +13157,6 @@ fn level_editor_contents(state: &State) -> Element<'_, Message> {
             },
             text("GLB/FBX includes verified mesh instances and optional terrain. Texture/material, compiled vegetation, scripting and full map fidelity remain gated."),
     ].spacing(14).into()
-
 }
 
 /// One native main window, model/asset editor, and separate export settings window. All costly
@@ -13488,7 +13503,9 @@ impl Desktop {
         if self.export_id == Some(id) {
             asset_viewer::export_dialog(&self.state)
         } else if self.level_id == Some(id) {
-            scrollable(level_editor_contents(&self.state)).height(Fill).into()
+            scrollable(level_editor_contents(&self.state))
+                .height(Fill)
+                .into()
         } else if self.activity_id == Some(id) {
             activity_window::view(&self.state)
         } else if self.play_notice_id == Some(id) {
@@ -13635,15 +13652,17 @@ impl Desktop {
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key: iced::keyboard::Key::Character(value),
                     ..
-                }) if status == iced::event::Status::Ignored => {
-                    value.chars().next().map(|key| Message::LevelCameraKey(id, key.to_ascii_lowercase(), true))
-                }
+                }) if status == iced::event::Status::Ignored => value
+                    .chars()
+                    .next()
+                    .map(|key| Message::LevelCameraKey(id, key.to_ascii_lowercase(), true)),
                 iced::Event::Keyboard(iced::keyboard::Event::KeyReleased {
                     key: iced::keyboard::Key::Character(value),
                     ..
-                }) => {
-                    value.chars().next().map(|key| Message::LevelCameraKey(id, key.to_ascii_lowercase(), false))
-                }
+                }) => value
+                    .chars()
+                    .next()
+                    .map(|key| Message::LevelCameraKey(id, key.to_ascii_lowercase(), false)),
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
                     ..
