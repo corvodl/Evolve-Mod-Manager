@@ -3,7 +3,9 @@
 use super::{Message, State};
 use evolve_core::{LevelScene, Transform};
 use iced::widget::canvas::{self, Path, Stroke};
-use iced::widget::{button, canvas as canvas_widget, column, container, row, scrollable, text, text_input};
+use iced::widget::{
+    button, canvas as canvas_widget, column, container, row, scrollable, text, text_input,
+};
 use iced::{Color, Element, Fill, Length, Point, Rectangle, Renderer, Theme, mouse};
 use std::sync::Arc;
 
