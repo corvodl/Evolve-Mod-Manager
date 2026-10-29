@@ -3,10 +3,10 @@
 //! Reuse the verified imported inventory and original material loader, rather
 //! than drawing a guessed map mesh or borrowing same-named files from another
 //! game build. All loads run in the existing blocking Operation worker.
-use crate::{asset_cache::SharedCache, assembly_materials, textured::Surface};
+use crate::{assembly_materials, asset_cache::SharedCache, textured::Surface};
 use evolve_core::{
-    ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, Transform,
-    imported_archive_files, imported_library, read_model,
+    ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, Transform, imported_archive_files,
+    imported_library, read_model,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -31,8 +31,16 @@ impl Report {
     pub fn status(&self) -> String {
         format!(
             "{} model instances · {} unique meshes · {} textured material sets · {} missing/unsupported dependencies. {}",
-            self.placed, self.geometries, self.textured, self.unresolved,
-            self.notes.iter().take(5).cloned().collect::<Vec<_>>().join(" "),
+            self.placed,
+            self.geometries,
+            self.textured,
+            self.unresolved,
+            self.notes
+                .iter()
+                .take(5)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" "),
         )
     }
     fn note(&mut self, message: String) {
@@ -68,7 +76,10 @@ fn safe_virtual(raw: &str) -> Option<String> {
     if path.is_empty() || path.starts_with('/') || path.contains(':') {
         return None;
     }
-    let parts = path.split('/').filter(|part| !part.is_empty()).collect::<Vec<_>>();
+    let parts = path
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
     if parts.is_empty() || parts.iter().any(|part| matches!(*part, "." | "..")) {
         return None;
     }
@@ -77,23 +88,30 @@ fn safe_virtual(raw: &str) -> Option<String> {
 
 fn relevant_asset(path: &str) -> bool {
     [".cgf", ".cga", ".cgfm", ".cgam", ".skinm", ".chrm", ".mtl"]
-        .iter().any(|ext| path.ends_with(ext))
+        .iter()
+        .any(|ext| path.ends_with(ext))
 }
 
 impl Index {
     fn new(selected: &ImportedPak, report: &mut Report) -> Result<Self, String> {
         let build = (selected.builds.len() == 1).then(|| selected.builds[0].clone());
-        let library_root = Path::new(&selected.directory).parent().map(Path::to_path_buf);
+        let library_root = Path::new(&selected.directory)
+            .parent()
+            .map(Path::to_path_buf);
         let mut index = Self {
-            files: HashMap::new(), inventories: HashMap::new(),
-            build, library_root, selected_id: selected.id.clone(),
+            files: HashMap::new(),
+            inventories: HashMap::new(),
+            build,
+            library_root,
+            selected_id: selected.id.clone(),
         };
         let mut archives = vec![selected.clone()];
         if let (Some(root), Some(label)) = (&index.library_root, &index.build) {
             let library = imported_library(root).map_err(|e| e.to_string())?;
-            let others = library.archives.into_iter().filter(|pak| {
-                pak.id != selected.id && pak.builds.iter().any(|b| b == label)
-            });
+            let others = library
+                .archives
+                .into_iter()
+                .filter(|pak| pak.id != selected.id && pak.builds.iter().any(|b| b == label));
             for pak in others.take(MAX_ARCHIVES - 1) {
                 archives.push(pak);
             }
@@ -102,7 +120,9 @@ impl Index {
             report.note("Build provenance is ambiguous; cross-PAK resources are disabled.".into());
         }
         if archives.len() == MAX_ARCHIVES {
-            report.note("Cross-PAK index capped at 256 archives; some assets may be unavailable.".into());
+            report.note(
+                "Cross-PAK index capped at 256 archives; some assets may be unavailable.".into(),
+            );
         }
         // Every manifest-listed asset is checked by the existing read-only
         // inventory validator before it can be indexed.
@@ -116,7 +136,9 @@ impl Index {
             };
             let root = PathBuf::from(&inventory.root);
             for asset in &inventory.entries {
-                let Some(key) = safe_virtual(&asset.relative_path) else { continue };
+                let Some(key) = safe_virtual(&asset.relative_path) else {
+                    continue;
+                };
                 if relevant_asset(&key) {
                     index.files.entry(key).or_default().push(AssetLocation {
                         archive: pak.id.clone(),
@@ -133,24 +155,44 @@ impl Index {
     }
 
     fn lookup(&self, raw: &str) -> Result<Option<&AssetLocation>, String> {
-        let Some(key) = safe_virtual(raw) else { return Err(format!("Unsafe source asset path: {raw}")); };
-        let Some(found) = self.files.get(&key) else { return Ok(None) };
+        let Some(key) = safe_virtual(raw) else {
+            return Err(format!("Unsafe source asset path: {raw}"));
+        };
+        let Some(found) = self.files.get(&key) else {
+            return Ok(None);
+        };
         // Prefer the selected map PAK's exact member. Across other PAKs,
         // duplicates cannot safely be selected by filename or import order.
         if let Some(selected) = found.iter().find(|a| a.archive == self.selected_id) {
             return Ok(Some(selected));
         }
-        if found.len() == 1 { Ok(found.first()) }
-        else { Err(format!("Ambiguous imported asset {raw} appears in {} PAKs", found.len())) }
+        if found.len() == 1 {
+            Ok(found.first())
+        } else {
+            Err(format!(
+                "Ambiguous imported asset {raw} appears in {} PAKs",
+                found.len()
+            ))
+        }
     }
 }
 
 fn neutral(first_index: u32, index_count: u32) -> Surface {
     Surface {
-        first_index, index_count, visible: true, transparent: false,
-        diffuse: None, normal: None, emissive: None, armor_emissive: None,
-        emission_strength: 1.0, kala_emission_state: None, emissive_uv: None,
-        specular: None, gloss: None, opacity: None,
+        first_index,
+        index_count,
+        visible: true,
+        transparent: false,
+        diffuse: None,
+        normal: None,
+        emissive: None,
+        armor_emissive: None,
+        emission_strength: 1.0,
+        kala_emission_state: None,
+        emissive_uv: None,
+        specular: None,
+        gloss: None,
+        opacity: None,
     }
 }
 
@@ -174,9 +216,21 @@ fn rotate(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
 fn transformed(tf: Transform, v: [f32; 3], normal: bool) -> [f32; 3] {
     let scaled = if normal {
         [
-            v[0] / if tf.scale[0].abs() < 0.000001 { 1.0 } else { tf.scale[0] },
-            v[1] / if tf.scale[1].abs() < 0.000001 { 1.0 } else { tf.scale[1] },
-            v[2] / if tf.scale[2].abs() < 0.000001 { 1.0 } else { tf.scale[2] },
+            v[0] / if tf.scale[0].abs() < 0.000001 {
+                1.0
+            } else {
+                tf.scale[0]
+            },
+            v[1] / if tf.scale[1].abs() < 0.000001 {
+                1.0
+            } else {
+                tf.scale[1]
+            },
+            v[2] / if tf.scale[2].abs() < 0.000001 {
+                1.0
+            } else {
+                tf.scale[2]
+            },
         ]
     } else {
         [v[0] * tf.scale[0], v[1] * tf.scale[1], v[2] * tf.scale[2]]
@@ -206,22 +260,41 @@ fn append(
     if nverts + part.positions.len() > MAX_VERTICES
         || nindices + part.indices.len() > MAX_INDICES
         || ranges.len() + materials.len().max(1) > MAX_SURFACES
-        || part.indices.iter().any(|index| *index as usize >= part.positions.len())
-    { return false; }
-    let Ok(base) = u32::try_from(nverts) else { return false };
-    let Ok(start) = u32::try_from(nindices) else { return false };
+        || part
+            .indices
+            .iter()
+            .any(|index| *index as usize >= part.positions.len())
+    {
+        return false;
+    }
+    let Ok(base) = u32::try_from(nverts) else {
+        return false;
+    };
+    let Ok(start) = u32::try_from(nindices) else {
+        return false;
+    };
     for (i, pos) in part.positions.iter().copied().enumerate() {
         target.positions.push(transformed(transform, pos, false));
         target.uv0.as_mut().unwrap().push(
-            part.uv0.as_ref().and_then(|uv| uv.get(i)).copied().unwrap_or([0.0, 0.0])
+            part.uv0
+                .as_ref()
+                .and_then(|uv| uv.get(i))
+                .copied()
+                .unwrap_or([0.0, 0.0]),
         );
         target.normals.as_mut().unwrap().push(transformed(
             transform,
-            part.normals.as_ref().and_then(|normals| normals.get(i)).copied().unwrap_or([0.0, 0.0, 1.0]),
+            part.normals
+                .as_ref()
+                .and_then(|normals| normals.get(i))
+                .copied()
+                .unwrap_or([0.0, 0.0, 1.0]),
             true,
         ));
     }
-    target.indices.extend(part.indices.iter().map(|index| base + *index));
+    target
+        .indices
+        .extend(part.indices.iter().map(|index| base + *index));
     if materials.is_empty() {
         ranges.push(neutral(start, part.indices.len() as u32));
     } else {
@@ -244,15 +317,27 @@ pub(super) fn assemble(
     let mut combined = RenderMesh {
         info: ModelInfo {
             format: "Original Evolve level geometry preview".into(),
-            version: 1, chunk_count: 0, vertex_count: 0, triangle_count: 0,
-            original_uv0: true, original_normals: true,
+            version: 1,
+            chunk_count: 0,
+            vertex_count: 0,
+            triangle_count: 0,
+            original_uv0: true,
+            original_normals: true,
         },
-        positions: Vec::new(), indices: Vec::new(),
-        uv0: Some(Vec::new()), normals: Some(Vec::new()),
+        positions: Vec::new(),
+        indices: Vec::new(),
+        uv0: Some(Vec::new()),
+        normals: Some(Vec::new()),
     };
     let mut surfaces = Vec::new();
     if let Some(terrain) = terrain {
-        if !append(&mut combined, &mut surfaces, terrain, &[], Transform::default()) {
+        if !append(
+            &mut combined,
+            &mut surfaces,
+            terrain,
+            &[],
+            Transform::default(),
+        ) {
             report.note("Terrain exceeded the current viewport geometry budget.".into());
         }
     }
@@ -264,9 +349,15 @@ pub(super) fn assemble(
         let mut models = Vec::<(RenderMesh, Vec<Surface>)>::new();
         let mut failures = HashSet::<(String, String)>::new();
         let mut budget_hit = false;
-        for object in scene.objects.iter().filter(|obj| !obj.hidden && !obj.model.is_empty()) {
+        for object in scene
+            .objects
+            .iter()
+            .filter(|obj| !obj.hidden && !obj.model.is_empty())
+        {
             let key = (object.model.clone(), object.material.clone());
-            if failures.contains(&key) { continue; }
+            if failures.contains(&key) {
+                continue;
+            }
             let model_index = if let Some(index) = resolved.get(&key) {
                 *index
             } else {
@@ -283,7 +374,10 @@ pub(super) fn assemble(
                         continue;
                     }
                     Err(error) => {
-                        report.unresolved += 1; report.note(error); failures.insert(key); continue;
+                        report.unresolved += 1;
+                        report.note(error);
+                        failures.insert(key);
+                        continue;
                     }
                 };
                 let mesh = match read_model(&source.path) {
@@ -299,8 +393,10 @@ pub(super) fn assemble(
                 let authored_material = if object.material.is_empty() {
                     // This is an exact sibling candidate, not a global filename
                     // search. A missing authored material stays untextured.
-                    Path::new(&object.model).with_extension("mtl")
-                        .to_string_lossy().to_string()
+                    Path::new(&object.model)
+                        .with_extension("mtl")
+                        .to_string_lossy()
+                        .to_string()
                 } else if object.material.to_ascii_lowercase().ends_with(".mtl") {
                     object.material.clone()
                 } else {
@@ -310,11 +406,16 @@ pub(super) fn assemble(
                 if let Ok(Some(material)) = sources.lookup(&authored_material) {
                     if let Some(inventory) = original_inventory {
                         match assembly_materials::load_model(
-                            &source.path, &material.path, inventory,
-                            sources.library_root.as_deref(), sources.build.as_deref(), cache,
+                            &source.path,
+                            &material.path,
+                            inventory,
+                            sources.library_root.as_deref(),
+                            sources.build.as_deref(),
+                            cache,
                         ) {
                             Ok((parts, warnings)) => {
-                                report.textured += usize::from(parts.iter().any(|part| part.diffuse.is_some()));
+                                report.textured +=
+                                    usize::from(parts.iter().any(|part| part.diffuse.is_some()));
                                 material_ranges = parts;
                                 for note in warnings.into_iter().take(2) {
                                     report.note(format!("{}: {note}", object.name));
@@ -338,7 +439,10 @@ pub(super) fn assemble(
                 break;
             }
             report.placed += 1;
-            if report.placed >= MAX_PLACEMENTS { budget_hit = true; break; }
+            if report.placed >= MAX_PLACEMENTS {
+                budget_hit = true;
+                break;
+            }
         }
         if budget_hit {
             report.note("Viewport reached a geometry, placement or GPU-surface budget; remaining objects are not rendered.".into());
@@ -349,7 +453,11 @@ pub(super) fn assemble(
     }
     combined.info.vertex_count = combined.positions.len();
     combined.info.triangle_count = combined.indices.len() / 3;
-    Ok(Some(Assembled { mesh: combined, surfaces, report }))
+    Ok(Some(Assembled {
+        mesh: combined,
+        surfaces,
+        report,
+    }))
 }
 
 #[cfg(test)]
@@ -358,8 +466,16 @@ mod tests {
 
     #[test]
     fn safe_lookup_rejects_paths_outside_game_virtual_root() {
-        assert_eq!(safe_virtual("Objects\\World\\Tree.cgf").as_deref(), Some("objects/world/tree.cgf"));
-        for path in ["../tree.cgf", "C:/Windows/x.cgf", "/etc/passwd", "objects/./tree.cgf"] {
+        assert_eq!(
+            safe_virtual("Objects\\World\\Tree.cgf").as_deref(),
+            Some("objects/world/tree.cgf")
+        );
+        for path in [
+            "../tree.cgf",
+            "C:/Windows/x.cgf",
+            "/etc/passwd",
+            "objects/./tree.cgf",
+        ] {
             assert!(safe_virtual(path).is_none());
         }
     }
