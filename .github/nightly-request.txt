@@ -1,5 +1,6 @@
 # Update this file on main to request a Nightly release build.
 # GitHub Actions runs .github/workflows/nightly.yml only on this file's main-branch change or manual dispatch.
-request: merge-prs-130-131-132-133
+request: merged-prs-134-through-140-2026-10-29
 requested: 2026-10-29
-description: Build main after merging PR #130 Level Editor, PR #131 camera-relative Fly/Teleport, PR #132 Monster Duel diagnostics, PR #133 feasibility research
+base-main-commit: 8646f8c7e0246a0d061ad6187929c1c47c7ea5ef
+description: Build main after merging PR #134 Fly movement, #135 runtime research, #136 read-only inspector, #137 Level Editor, #138 Arena experiment, #139 official signing fix, #140 launch performance.
