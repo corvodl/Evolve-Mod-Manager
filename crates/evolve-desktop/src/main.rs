@@ -11776,7 +11776,6 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     } else {
                         state.level_surfaces = None;
                         state.level_picks = None;
-                    state.level_picks = None;
                         state.model = loaded
                             .terrain
                             .as_ref()
