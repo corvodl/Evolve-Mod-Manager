@@ -5499,7 +5499,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             state.match_perks = None;
                             state.runtime_research = None;
                             state.runtime_research_status =
-                                "Running game changed during refresh; diagnostics invalidated".into();
+                                "Running game changed during refresh; diagnostics invalidated"
+                                    .into();
                             state.actor_status =
                                 "Evolve changed during refresh; detect it again".into();
                             state.match_perks_status.clear();
@@ -5510,7 +5511,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         match research {
                             Ok(report) => {
                                 state.runtime_research_status =
-                                    "Validated local identity; research readouts are read-only".into();
+                                    "Validated local identity; research readouts are read-only"
+                                        .into();
                                 state.runtime_research = Some(report);
                             }
                             Err(error) => {
