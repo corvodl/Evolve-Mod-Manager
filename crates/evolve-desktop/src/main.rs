@@ -4350,7 +4350,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
             // Explicit opt-in: all defaults remain Disabled unless the user
             // clicks Load suggested shortcuts, preserving custom preferences.
-            state.preferences.developer_hotkeys = [22, 23, 24, 25, 26, 27, 28, 1, 2];
+            state.preferences.developer_hotkeys = developer_hotkeys::SUGGESTED;
             for action in developer_hotkeys::Action::ALL {
                 send_dev_bind(state, action);
             }
