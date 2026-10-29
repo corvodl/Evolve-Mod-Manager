@@ -194,6 +194,14 @@ struct LevelTransformDiff {
 }
 
 type ActorFreezeOutcome = ((u32, usize, runtime_actors::Field), Result<bool, String>);
+type ActorRefreshResult = Result<
+    (
+        runtime_actors::Listing,
+        Result<runtime_match_perks::Listing, String>,
+        Result<runtime_research::Report, String>,
+    ),
+    String,
+>;
 
 #[derive(Clone, Copy, Debug)]
 enum TeleportRequest {
@@ -2050,16 +2058,7 @@ enum Message {
     DeveloperInspectProcessPrivileges,
     DeveloperProcessPrivilegesFinished(Result<String, String>),
     ActorRefresh,
-    ActorRefreshed(
-        Result<
-            (
-                runtime_actors::Listing,
-                Result<runtime_match_perks::Listing, String>,
-                Result<runtime_research::Report, String>,
-            ),
-            String,
-        >,
-    ),
+    ActorRefreshed(ActorRefreshResult),
     TeleportCapture(bool),
     TeleportCaptured(bool, Result<runtime_teleport::Reading, String>),
     TeleportXYZChanged(usize, String),
