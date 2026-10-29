@@ -419,8 +419,7 @@ pub fn read_terrain_texture_header(path: &Path) -> Result<TerrainTextureHeader, 
         let texture_format = u32::from_le_bytes(record[4..8].try_into().unwrap());
         let sector_bytes = u32::from_le_bytes(record[8..12].try_into().unwrap());
         if reserved != 0
-            || sector_pixels < 4
-            || sector_pixels > 8192
+            || !(4..=8192).contains(&sector_pixels)
             || !sector_pixels.is_power_of_two()
             || sector_bytes == 0
             || sector_bytes > 64 * 1024 * 1024
