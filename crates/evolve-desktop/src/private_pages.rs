@@ -1402,7 +1402,12 @@ fn actor_rows(state: &State) -> Element<'_, Message> {
 }
 
 fn developer_keybind_controls(state: &State) -> Element<'_, Message> {
-    let assigned = state.preferences.developer_hotkeys.iter().filter(|&&k| k != 0).count();
+    let assigned = state
+        .preferences
+        .developer_hotkeys
+        .iter()
+        .filter(|&&k| k != 0)
+        .count();
     let mut rows = column![
         text("Developer shortcuts").size(17),
         text(format!("{assigned}/9 shortcuts assigned. Shortcuts require the overlay and enabled actor writes to teleport."))
