@@ -82,9 +82,8 @@ impl Camera {
             return;
         }
         let distance = self.speed.clamp(0.1, 5000.0) * seconds / norm;
-        for i in 0..3 {
-            vector[i] *= distance;
-            self.position[i] += vector[i];
+        for (coordinate, displacement) in self.position.iter_mut().zip(vector) {
+            *coordinate += displacement * distance;
         }
     }
 
@@ -132,8 +131,7 @@ mod tests {
     use super::*;
     #[test]
     fn first_person_camera_moves_in_view_direction_and_strafes() {
-        let mut camera = Camera::default();
-        camera.speed = 10.0;
+        let mut camera = Camera { speed: 10.0, ..Camera::default() };
         camera.advance(&HashSet::from(['w']), 0.0, 0.0, 1.0 / 10.0);
         assert!((camera.position[1] - 1.0).abs() < 0.001);
         camera.advance(&HashSet::from(['d']), 0.0, 0.0, 0.1);
