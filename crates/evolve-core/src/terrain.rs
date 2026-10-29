@@ -241,6 +241,215 @@ pub fn decode_terrain_bytes(source: &[u8], render_grid: u32) -> Result<TerrainMe
     })
 }
 
+/// One authentic terrain paint layer entry from Heightmap.dat's XML header.
+/// This is not the baked terrain diffuse: CryEngine stores its surface tiles
+/// separately in TerrainTexture.xml and terraintexture.pak.
+#[derive(Clone, Debug)]
+pub struct TerrainPaintMap {
+    pub width: u32,
+    pub height: u32,
+    pub layer_names: std::collections::BTreeMap<u8, String>,
+    /// Exactly width * height bytes in the original layer bitmap order.
+    pub ids: Vec<u8>,
+}
+
+impl TerrainPaintMap {
+    pub fn id_at(&self, x: u32, y: u32) -> Option<u8> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        self.ids
+            .get(x as usize * self.height as usize + y as usize)
+            .copied()
+    }
+}
+
+/// Decode the optional native v2 layer-ID bitmap without altering the source.
+/// Unknown trailing compiled terrain sections remain opaque. The bitmap must
+/// be complete and uncompressed with the original verified section markers.
+pub fn decode_terrain_paint_bytes(bytes: &[u8]) -> Result<Option<TerrainPaintMap>, TerrainError> {
+    if !(24..=MAX_TERRAIN_FILE).contains(&bytes.len()) || bytes[0] != 0xff {
+        return Err(TerrainError::Format("unsupported terrain header".into()));
+    }
+    let xml_len = usize::from(u16::from_le_bytes([bytes[1], bytes[2]]));
+    let xml_end = 3usize.checked_add(xml_len).ok_or(TerrainError::Limits)?;
+    let xml = bytes
+        .get(3..xml_end)
+        .ok_or_else(|| TerrainError::Format("truncated terrain layer metadata".into()))?;
+    let (width, height, _, _) = parse_metadata(xml)?;
+    let height_bytes = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|n| n.checked_mul(2))
+        .ok_or(TerrainError::Limits)?;
+    let header = xml_end
+        .checked_add(4 + SECTION.len())
+        .ok_or(TerrainError::Limits)?;
+    if bytes.get(xml_end..header) != Some([&4u32.to_le_bytes()[..], SECTION].concat().as_slice())
+        || get_u32(bytes, header)? as usize != height_bytes
+        || get_u32(bytes, header + 4)? as usize != height_bytes
+        || get_u32(bytes, header + 8)? != 0
+    {
+        return Err(TerrainError::Format(
+            "invalid original heightmap section".into(),
+        ));
+    }
+    let next = header
+        .checked_add(12)
+        .and_then(|p| p.checked_add(height_bytes))
+        .ok_or(TerrainError::Limits)?;
+    if bytes.get(next..next + NEXT.len()) != Some(NEXT) {
+        return Err(TerrainError::Format("terrain paint marker missing".into()));
+    }
+    let meta = next + NEXT.len();
+    if meta == bytes.len() {
+        return Ok(None);
+    } // Old height-only exports
+    let size = get_u32(bytes, meta)? as usize;
+    if size != (width as usize * height as usize)
+        || get_u32(bytes, meta + 4)? as usize != size
+        || get_u32(bytes, meta + 8)? != 0
+    {
+        return Err(TerrainError::Format(
+            "unexpected terrain layer bitmap layout".into(),
+        ));
+    }
+    let start = meta + 12;
+    let ids = bytes
+        .get(start..start + size)
+        .ok_or_else(|| TerrainError::Format("truncated terrain layer bitmap".into()))?
+        .to_vec();
+    let mut names = std::collections::BTreeMap::new();
+    let mut reader = Reader::from_reader(xml);
+    loop {
+        match reader
+            .read_event()
+            .map_err(|e| TerrainError::Format(e.to_string()))?
+        {
+            Event::Start(e) | Event::Empty(e) if e.name().as_ref() == b"Layer" => {
+                let mut id = None;
+                let mut name = None;
+                for attr in e.attributes() {
+                    let attr = attr.map_err(|e| TerrainError::Format(e.to_string()))?;
+                    if attr.key.as_ref() == b"LayerId" {
+                        id = attr
+                            .unescape_value()
+                            .ok()
+                            .and_then(|v| v.parse::<u8>().ok());
+                    } else if attr.key.as_ref() == b"Name" {
+                        name = attr.unescape_value().ok().map(|v| v.to_string());
+                    }
+                }
+                if let (Some(id), Some(name)) = (id, name)
+                    && name.len() <= 128
+                {
+                    names.insert(id, name);
+                }
+                if names.len() > 256 {
+                    return Err(TerrainError::Limits);
+                }
+            }
+            Event::DocType(_) | Event::GeneralRef(_) => {
+                return Err(TerrainError::Format("unsafe layer XML".into()));
+            }
+            Event::Eof => break,
+            _ => (),
+        }
+    }
+    Ok(Some(TerrainPaintMap {
+        width,
+        height,
+        layer_names: names,
+        ids,
+    }))
+}
+
+/// Validated original CryEngine baked terrain texture package header.
+/// The tile payload/quadtree still needs exact TerrainTexture.xml mapping:
+/// this inspection intentionally cannot be mistaken for rendered terrain.
+#[derive(Clone, Debug)]
+pub struct TerrainTextureHeader {
+    pub version: u16,
+    pub flags: u16,
+    pub color_multiplier: f32,
+    pub layers: Vec<TerrainTextureLayer>,
+}
+#[derive(Clone, Debug)]
+pub struct TerrainTextureLayer {
+    pub sector_pixels: u16,
+    pub texture_format: u32,
+    pub sector_bytes: u32,
+}
+pub fn read_terrain_texture_header(path: &Path) -> Result<TerrainTextureHeader, TerrainError> {
+    use std::io::Read;
+    let meta = fs::symlink_metadata(path)?;
+    if !meta.file_type().is_file() || meta.len() < 24 || meta.len() > 2 * 1024 * 1024 * 1024 {
+        return Err(TerrainError::Limits);
+    }
+    let mut file = fs::File::open(path)?;
+    let mut header = [0u8; 16];
+    file.read_exact(&mut header)?;
+    if header[..4] != *b"CRY\0" || header[4] != 100 {
+        return Err(TerrainError::Format(
+            "Not a CryEngine baked terrain surface texture header".into(),
+        ));
+    }
+    let version = u16::from_le_bytes([header[6], header[7]]);
+    if !matches!(version, 9 | 10) {
+        return Err(TerrainError::Format(format!(
+            "Unsupported terrain texture container version {version}"
+        )));
+    }
+    let count = u16::from_le_bytes([header[8], header[9]]) as usize;
+    let flags = u16::from_le_bytes([header[10], header[11]]);
+    if !(1..=8).contains(&count) || flags & 2 != 0 {
+        return Err(TerrainError::Format(
+            "Unsupported layer count or big-endian terrain surface data".into(),
+        ));
+    }
+    let color_multiplier = f32::from_le_bytes(header[12..16].try_into().unwrap());
+    if !color_multiplier.is_finite() || !(0.0..=256.0).contains(&color_multiplier) {
+        return Err(TerrainError::Limits);
+    }
+    let mut layers = Vec::with_capacity(count);
+    for _ in 0..count {
+        let mut record = [0u8; 12];
+        file.read_exact(&mut record)?;
+        let sector_pixels = u16::from_le_bytes([record[0], record[1]]);
+        let reserved = u16::from_le_bytes([record[2], record[3]]);
+        let texture_format = u32::from_le_bytes(record[4..8].try_into().unwrap());
+        let sector_bytes = u32::from_le_bytes(record[8..12].try_into().unwrap());
+        if reserved != 0
+            || !(4..=8192).contains(&sector_pixels)
+            || !sector_pixels.is_power_of_two()
+            || sector_bytes == 0
+            || sector_bytes > 64 * 1024 * 1024
+        {
+            return Err(TerrainError::Format(
+                "Invalid baked terrain layer descriptor".into(),
+            ));
+        }
+        layers.push(TerrainTextureLayer {
+            sector_pixels,
+            texture_format,
+            sector_bytes,
+        });
+    }
+    Ok(TerrainTextureHeader {
+        version,
+        flags,
+        color_multiplier,
+        layers,
+    })
+}
+
+pub fn read_terrain_paint(path: &Path) -> Result<Option<TerrainPaintMap>, TerrainError> {
+    let meta = fs::symlink_metadata(path)?;
+    if !meta.file_type().is_file() || meta.len() > MAX_TERRAIN_FILE as u64 {
+        return Err(TerrainError::Limits);
+    }
+    decode_terrain_paint_bytes(&fs::read(path)?)
+}
+
 pub fn read_terrain(path: &Path, render_grid: u32) -> Result<TerrainMesh, TerrainError> {
     let meta = fs::symlink_metadata(path)?;
     if !meta.file_type().is_file() || meta.len() > MAX_TERRAIN_FILE as u64 {
@@ -347,6 +556,54 @@ mod tests {
             .unwrap();
         data[idx + 7] = b'3';
         assert!(decode_terrain_bytes(&data, 16).is_err());
+    }
+
+    #[test]
+    fn decodes_original_terrain_layer_id_bitmap_without_guessing_colors() {
+        let mut data = sample_data();
+        let width = 16 * 16;
+        data.extend_from_slice(&(width as u32).to_le_bytes());
+        data.extend_from_slice(&(width as u32).to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend((0..width).map(|i| (i % 3) as u8));
+        let paint = decode_terrain_paint_bytes(&data).unwrap().unwrap();
+        assert_eq!(paint.id_at(0, 0), Some(0));
+        assert_eq!(paint.id_at(1, 0), Some(1));
+        assert_eq!(paint.id_at(16, 0), None);
+        assert!(paint.layer_names.is_empty());
+        data[3
+            + br#"<Heightmap Width="16" Height="16" UnitSize="2" MaxHeight="100"/>"#.len()
+            + 4
+            + SECTION.len()
+            + 12
+            + 16 * 16 * 2
+            + NEXT.len()] = 0xff;
+        assert!(decode_terrain_paint_bytes(&data).is_err());
+    }
+
+    #[test]
+    fn validates_original_baked_terrain_texture_layer_descriptors() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("terraintexture.pak");
+        let mut data = Vec::new();
+        data.extend_from_slice(b"CRY\0");
+        data.extend_from_slice(&[100, 0]);
+        data.extend_from_slice(&9u16.to_le_bytes());
+        data.extend_from_slice(&1u16.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        data.extend_from_slice(&256u16.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&11u32.to_le_bytes());
+        data.extend_from_slice(&65536u32.to_le_bytes());
+        std::fs::write(&file, &data).unwrap();
+        let info = read_terrain_texture_header(&file).unwrap();
+        assert_eq!(info.version, 9);
+        assert_eq!(info.layers.len(), 1);
+        assert_eq!(info.layers[0].sector_bytes, 65536);
+        data[4] = 42;
+        std::fs::write(&file, &data).unwrap();
+        assert!(read_terrain_texture_header(&file).is_err());
     }
 
     #[test]

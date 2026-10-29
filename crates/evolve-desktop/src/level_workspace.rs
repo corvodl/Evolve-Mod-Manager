@@ -220,10 +220,12 @@ fn world_viewport(state: &State) -> Element<'_, Message> {
                 pan_x: state.pan_x,
                 pan_y: state.pan_y,
                 shift: state.keyboard_modifiers.shift(),
+                level_camera: state.level_camera,
+                world: state.level_world.clone(),
             },
         })
         .width(Fill)
-        .height(Length::Fixed(460.0))
+        .height(Length::Fixed(700.0))
         .into()
     } else {
         text("No verified level geometry loaded. Select a map PAK containing mesh or heightmap resources.")
@@ -316,13 +318,19 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                     .on_press(Message::LevelToggleOverview),
             ].spacing(8),
             row![
+                text("RMB-drag: look · WASD: fly · Q/E: down/up · F: focus").size(12),
+                text(format!("Speed {:.0} units/s", state.level_camera.map_or(0.0, |c| c.speed))).size(12),
+                iced::widget::slider(1.0..=2500.0, state.level_camera.map_or(120.0, |c| c.speed), Message::LevelCameraSpeedChanged).width(Fill),
+            ].spacing(8),
+            row![
                 text("Yaw").size(12),
                 iced::widget::slider(-180.0..=180.0, state.yaw, Message::YawChanged).width(Fill),
                 text("Pitch").size(12),
                 iced::widget::slider(-85.0..=85.0, state.pitch, Message::PitchChanged).width(Fill),
-                text("Zoom").size(12),
-                iced::widget::slider(0.2..=4.0, state.zoom.max(0.2), Message::ZoomChanged).width(Fill),
-                button("Reset Camera").on_press(Message::ViewerResetCamera),
+                text(format!("Zoom {:.1}×", state.zoom)).size(12),
+                iced::widget::slider(0.2..=80.0, state.zoom.clamp(0.2, 80.0), Message::ZoomChanged).width(Fill),
+                button("Reset Camera").on_press(Message::LevelCameraReset),
+                button("Focus selected (F)").on_press(Message::LevelCameraFocus),
             ].spacing(8),
             if state.level_show_overview {
                 Element::from(column![

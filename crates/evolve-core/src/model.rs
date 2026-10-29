@@ -250,21 +250,30 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
                 "invalid geometry stream dimensions".into(),
             ));
         }
-        if streams
-            .insert(
-                stream_type,
-                Stream {
-                    offset: offset + header_size,
-                    count,
-                    stride,
-                    big_endian: swapped,
-                },
-            )
-            .is_some()
-        {
-            return Err(ModelError::Format(
-                "ambiguous duplicate vertex/index stream".into(),
-            ));
+        let candidate = Stream {
+            offset: offset + header_size,
+            count,
+            stride,
+            big_endian: swapped,
+        };
+        if let Some(previous) = streams.get(&stream_type) {
+            // Some compiled assets repeat byte-identical datastream chunks.
+            // They cannot change the resolved geometry. Distinct streams
+            // still require explicit owning-mesh chunk references.
+            let size = count * stride;
+            if previous.count != count
+                || previous.stride != stride
+                || previous.big_endian != swapped
+                || data.get(previous.offset..previous.offset + size)
+                    != data.get(candidate.offset..candidate.offset + size)
+            {
+                return Err(ModelError::Format(
+                    "ambiguous duplicate vertex/index stream; requires owning mesh reference"
+                        .into(),
+                ));
+            }
+        } else {
+            streams.insert(stream_type, candidate);
         }
     }
     let packed = !streams.contains_key(&0);
@@ -279,13 +288,13 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
     if !(3..=MAX_VERTICES).contains(&nv)
         || !(3..=MAX_INDICES).contains(&ni)
         || ni % 3 != 0
-        || !matches!(indices_stream.stride, 2)
+        || !matches!(indices_stream.stride, 2 | 4)
     {
         return Err(ModelError::Limits);
     }
     if !matches!(
         (packed, positions_stream.stride),
-        (true, 16) | (false, 8) | (false, 12)
+        (true, 16) | (false, 8) | (false, 12) | (false, 16)
     ) {
         return Err(ModelError::Format("unknown vertex encoding".into()));
     }
@@ -343,6 +352,9 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
             }
             [v[0], v[1], v[2]]
         } else {
+            // A 16-byte stream contains a float3 vertex plus an original
+            // fourth component. Preserve the authoritative XYZ, and do not
+            // assume the fourth float is a homogeneous coordinate.
             [
                 endian_f32(data, at, positions_stream.big_endian)?,
                 endian_f32(data, at + 4, positions_stream.big_endian)?,
@@ -358,8 +370,10 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
     }
     let indices = (0..ni)
         .map(|i| {
-            let at = indices_stream.offset + i * 2;
-            if indices_stream.big_endian {
+            let at = indices_stream.offset + i * indices_stream.stride;
+            if indices_stream.stride == 4 {
+                endian_u32(data, at, indices_stream.big_endian).unwrap_or(u32::MAX)
+            } else if indices_stream.big_endian {
                 u16::from_be_bytes([data[at], data[at + 1]]) as u32
             } else {
                 u16::from_le_bytes([data[at], data[at + 1]]) as u32
@@ -503,6 +517,142 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
         uv0,
         normals,
     })
+}
+
+/// Decode authored multi-node meshes by following the source MeshChunk's
+/// explicit stream-chunk references. Distinct repeated stream types must never
+/// be selected by file order, count, proximity, or guessed mesh ownership.
+///
+/// The returned submeshes are kept separate; the caller can apply the exact
+/// parent placement per submesh and avoid conflating local material slots.
+pub fn parse_world_model_parts(data: &[u8]) -> Result<Vec<RenderMesh>, ModelError> {
+    let (format, _, chunks) = validate_chunks(data)?;
+    if format != "CrChF v7" {
+        return parse_model_bytes(data).map(|part| vec![part]);
+    }
+    const MESH: u32 = 0x08001000;
+    let mesh_chunks = chunks
+        .iter()
+        .filter(|(ty, _, _, _)| *ty == MESH)
+        .collect::<Vec<_>>();
+    if mesh_chunks.is_empty() {
+        return parse_model_bytes(data).map(|part| vec![part]);
+    }
+    if mesh_chunks.len() > 1024 {
+        return Err(ModelError::Limits);
+    }
+    let table_count = u32at(data, 8)? as usize;
+    let table_offset = u32at(data, 12)? as usize;
+    let mut directory = HashMap::<u32, (u32, usize, usize)>::new();
+    for i in 0..table_count {
+        let at = table_offset + i * 16;
+        let kind = u32at(data, at)?;
+        let id = u32at(data, at + 4)?;
+        let len = u32at(data, at + 8)? as usize;
+        let offset = u32at(data, at + 12)? as usize;
+        if directory.insert(id, (kind, offset, len)).is_some() {
+            return Err(ModelError::Format("duplicate chunk identifiers".into()));
+        }
+    }
+    let mut parts = Vec::with_capacity(mesh_chunks.len());
+    for (_, at, size, _) in mesh_chunks {
+        if *size < 92 {
+            return Err(ModelError::Format(
+                "truncated original mesh stream references".into(),
+            ));
+        }
+        let vertices = u32at(data, at + 28)?;
+        let normals = u32at(data, at + 32)?;
+        let uv = u32at(data, at + 36)?;
+        let indices = u32at(data, at + 48)?;
+        let tangents = u32at(data, at + 52)?;
+        let packed = u32at(data, at + 88)?;
+        let expected_vertices = u32at(data, at + 8)?;
+        let expected_indices = u32at(data, at + 12)?;
+        if expected_vertices < 3
+            || expected_vertices > MAX_VERTICES as u32
+            || expected_indices < 3
+            || expected_indices > MAX_INDICES as u32
+        {
+            return Err(ModelError::Limits);
+        }
+        // All nonzero optional source references must point at an original
+        // stream of the exact declared semantic type.
+        let mut selected = Vec::<(u32, usize, usize)>::new();
+        for (reference, semantic) in [
+            (vertices, 0u32),
+            (packed, 15),
+            (normals, 1),
+            (uv, 2),
+            (indices, 5),
+            (tangents, 6),
+        ] {
+            if reference == 0 || reference == u32::MAX {
+                continue;
+            }
+            let Some(&(kind, stream_at, stream_size)) = directory.get(&reference) else {
+                return Err(ModelError::Format(
+                    "mesh references missing datastream".into(),
+                ));
+            };
+            if kind != CRCHF_STREAM || stream_size < 24 || u32at(data, stream_at + 4)? != semantic {
+                return Err(ModelError::Format(
+                    "mesh stream reference has wrong semantic".into(),
+                ));
+            }
+            selected.push((reference, stream_at, stream_size));
+        }
+        let has_position = selected
+            .iter()
+            .any(|(_, offset, _)| matches!(u32at(data, offset + 4), Ok(0 | 15)));
+        if !has_position || indices == 0 || indices == u32::MAX {
+            return Err(ModelError::Format(
+                "mesh lacks referenced vertex/index streams".into(),
+            ));
+        }
+        if selected.len() > 8 {
+            return Err(ModelError::Limits);
+        }
+        // Preserve the original stream payload byte-for-byte; only construct
+        // a small transient CrChF directory to invoke the existing validated
+        // vertex/normal/UV/triangle decoder.
+        let header_end = 16 + selected.len() * 16;
+        let mut temporary = vec![0u8; header_end];
+        temporary[..8].copy_from_slice(b"CrChF\x07\0\0");
+        temporary[8..12].copy_from_slice(&(selected.len() as u32).to_le_bytes());
+        temporary[12..16].copy_from_slice(&16u32.to_le_bytes());
+        for (index, (id, source_at, size)) in selected.iter().enumerate() {
+            let new_at = temporary.len();
+            let end = new_at.checked_add(*size).ok_or(ModelError::Limits)?;
+            if end > MAX_BYTES {
+                return Err(ModelError::Limits);
+            }
+            let table = 16 + index * 16;
+            temporary[table..table + 4].copy_from_slice(&CRCHF_STREAM.to_le_bytes());
+            temporary[table + 4..table + 8].copy_from_slice(&id.to_le_bytes());
+            temporary[table + 8..table + 12].copy_from_slice(&(*size as u32).to_le_bytes());
+            temporary[table + 12..table + 16].copy_from_slice(&(new_at as u32).to_le_bytes());
+            temporary.extend_from_slice(&data[*source_at..*source_at + *size]);
+        }
+        let mesh = parse_model_bytes(&temporary)?;
+        if mesh.positions.len() != expected_vertices as usize
+            || mesh.indices.len() != expected_indices as usize
+        {
+            return Err(ModelError::Format(
+                "mesh and referenced datastream counts differ".into(),
+            ));
+        }
+        parts.push(mesh);
+    }
+    Ok(parts)
+}
+
+pub fn read_world_model_parts(path: &Path) -> Result<Vec<RenderMesh>, ModelError> {
+    let meta = fs::symlink_metadata(path)?;
+    if !meta.file_type().is_file() || meta.len() > MAX_BYTES as u64 {
+        return Err(ModelError::Limits);
+    }
+    parse_world_model_parts(&fs::read(path)?)
 }
 
 /// Whether a verified original CryEngine SUBSETS table was provided.
@@ -714,6 +864,61 @@ pub(crate) mod tests {
         }
         data
     }
+    #[test]
+    fn authored_mesh_references_resolve_two_distinct_stream_sets() {
+        let source = fixture();
+        let old_count = u32at(&source, 8).unwrap() as usize;
+        assert_eq!(old_count, 3);
+        let mut chunks = Vec::new();
+        for i in 0..3 {
+            let at = 16 + i * 16;
+            let offset = u32at(&source, at + 12).unwrap() as usize;
+            let size = u32at(&source, at + 8).unwrap() as usize;
+            chunks.push(source[offset..offset + size].to_vec());
+        }
+        let mut data = vec![0u8; 16 + 8 * 16];
+        data[..8].copy_from_slice(b"CrChF\x07\0\0");
+        data[8..12].copy_from_slice(&8u32.to_le_bytes());
+        data[12..16].copy_from_slice(&16u32.to_le_bytes());
+        for index in 0..6 {
+            let mut payload = chunks[index % 3].clone();
+            if index == 3 {
+                // Different original vertex positions prove the streams
+                // are resolved through mesh references, not iteration order.
+                payload[24 + 12..24 + 16].copy_from_slice(&2.0f32.to_le_bytes());
+            }
+            let offset = data.len();
+            let table = 16 + index * 16;
+            data[table..table + 4].copy_from_slice(&CRCHF_STREAM.to_le_bytes());
+            data[table + 4..table + 8].copy_from_slice(&((index + 1) as u32).to_le_bytes());
+            data[table + 8..table + 12].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+            data[table + 12..table + 16].copy_from_slice(&(offset as u32).to_le_bytes());
+            data.extend_from_slice(&payload);
+        }
+        for i in 0..2 {
+            let mut mesh = vec![0u8; 104];
+            mesh[8..12].copy_from_slice(&3u32.to_le_bytes());
+            mesh[12..16].copy_from_slice(&3u32.to_le_bytes());
+            mesh[28..32].copy_from_slice(&((1 + i * 3) as u32).to_le_bytes());
+            mesh[36..40].copy_from_slice(&((3 + i * 3) as u32).to_le_bytes());
+            mesh[48..52].copy_from_slice(&((2 + i * 3) as u32).to_le_bytes());
+            let offset = data.len();
+            let table = 16 + (6 + i) * 16;
+            data[table..table + 4].copy_from_slice(&0x08001000u32.to_le_bytes());
+            data[table + 4..table + 8].copy_from_slice(&((7 + i) as u32).to_le_bytes());
+            data[table + 8..table + 12].copy_from_slice(&(mesh.len() as u32).to_le_bytes());
+            data[table + 12..table + 16].copy_from_slice(&(offset as u32).to_le_bytes());
+            data.extend_from_slice(&mesh);
+        }
+        assert!(parse_model_bytes(&data).is_err());
+        let parts = parse_world_model_parts(&data).unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].indices, vec![0, 1, 2]);
+        assert_eq!(parts[1].indices, vec![0, 1, 2]);
+        assert_eq!(parts[0].positions[1][0], 1.0);
+        assert_eq!(parts[1].positions[1][0], 2.0);
+    }
+
     // The pre-Stage-2 2012 client uses CryTek 0x745 and legacy 16-byte
     // terminal chunk records, not the CrChF v7 chunk table.
     fn legacy_2012_fixture() -> Vec<u8> {

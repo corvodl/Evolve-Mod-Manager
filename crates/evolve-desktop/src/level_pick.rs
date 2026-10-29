@@ -27,6 +27,7 @@ struct Projection {
     yaw: f32,
     pitch: f32,
     zoom: f32,
+    camera: Option<super::level_camera::Camera>,
     pan_x: f32,
     pan_y: f32,
     width: f32,
@@ -52,7 +53,8 @@ impl Projection {
             extent,
             yaw: scene.yaw.to_radians(),
             pitch: scene.pitch.to_radians(),
-            zoom: scene.zoom.clamp(0.2, 4.0),
+            zoom: scene.zoom.clamp(0.2, 80.0),
+            camera: scene.level_camera,
             pan_x: scene.pan_x,
             pan_y: scene.pan_y,
             width: bounds.width.max(1.0),
@@ -60,6 +62,20 @@ impl Projection {
         })
     }
     fn project(&self, raw: [f32; 3]) -> [f32; 3] {
+        if let Some(camera) = self.camera {
+            let ndc = camera.project(
+                raw,
+                self.yaw.to_degrees(),
+                self.pitch.to_degrees(),
+                self.width / self.height,
+                self.zoom,
+            );
+            return [
+                (ndc[0] + 1.0) * self.width * 0.5,
+                (1.0 - ndc[1]) * self.height * 0.5,
+                ndc[2],
+            ];
+        }
         let x = (raw[0] - self.center[0]) / self.extent;
         let y = (raw[1] - self.center[1]) / self.extent;
         let z = (raw[2] - self.center[2]) / self.extent;
@@ -243,18 +259,54 @@ impl shader::Program<Message> for LevelViewport {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
         ) && !self.inner.shift
             && let Some(position) = cursor.position_in(bounds)
-            && let Some(projection) = Projection::new(&self.inner, bounds)
-            && let Some(index) = pick(
-                &self.inner.mesh,
-                &self.picks,
-                &projection,
-                [position.x, position.y],
-            )
         {
-            return Some(shader::Action::publish(Message::LevelSelect(index)).and_capture());
+            let triangles = Projection::new(&self.inner, bounds).and_then(|proj| {
+                pick(
+                    &self.inner.mesh,
+                    &self.picks,
+                    &proj,
+                    [position.x, position.y],
+                )
+            });
+            let instance = self.inner.world.as_ref().and_then(|world| {
+                self.inner.level_camera.and_then(|camera| {
+                    let point = [
+                        2.0 * position.x / bounds.width.max(1.0) - 1.0,
+                        1.0 - 2.0 * position.y / bounds.height.max(1.0),
+                    ];
+                    world.pick(
+                        camera,
+                        self.inner.yaw,
+                        self.inner.pitch,
+                        bounds.width / bounds.height.max(1.0),
+                        self.inner.zoom,
+                        point,
+                    )
+                })
+            });
+            if let Some(index) = triangles.or(instance) {
+                return Some(shader::Action::publish(Message::LevelSelect(index)).and_capture());
+            }
         }
         navigation
-            .map(super::view_navigation::message)
+            .map(|gesture| match gesture {
+                super::view_navigation::Gesture::Zoom(delta) => {
+                    Message::LevelCameraZoomWheel(delta)
+                }
+                super::view_navigation::Gesture::Pan(dx, dy) => {
+                    // In flight mode RMB-drag is mouse-look rather than
+                    // shifting the entire rendered map off the screen.
+                    if self.inner.level_camera.is_some() {
+                        Message::ViewerOrbitDelta(
+                            dx * bounds.width * 0.175,
+                            -dy * bounds.height * 0.175,
+                        )
+                    } else {
+                        Message::LevelCameraPanDelta(dx, dy)
+                    }
+                }
+                other => super::view_navigation::message(other),
+            })
             .map(|message| shader::Action::publish(message).and_capture())
     }
     fn draw(

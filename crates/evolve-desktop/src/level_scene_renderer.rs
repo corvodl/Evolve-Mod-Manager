@@ -3,17 +3,16 @@
 //! Reuse the verified imported inventory and original material loader, rather
 //! than drawing a guessed map mesh or borrowing same-named files from another
 //! game build. All loads run in the existing blocking Operation worker.
-use crate::{assembly_materials, asset_cache::SharedCache, textured::Surface};
+use crate::{assembly_materials, asset_cache::SharedCache, textured::Surface, world_instances};
 use evolve_core::{
     ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, Transform, imported_archive_files,
-    imported_library, read_model,
+    imported_library, read_world_model_parts,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-const MAX_ARCHIVES: usize = 256;
-const MAX_MODELS: usize = 256;
-const MAX_PLACEMENTS: usize = 8_000;
+const MAX_ARCHIVES: usize = 1_024;
+const MAX_MODELS: usize = 1_024;
 const MAX_VERTICES: usize = 1_500_000;
 const MAX_INDICES: usize = 4_500_000;
 const MAX_SURFACES: usize = 2_048;
@@ -56,6 +55,7 @@ pub(super) struct Assembled {
     pub surfaces: Vec<Surface>,
     pub picks: Vec<PickRange>,
     pub report: Report,
+    pub world: std::sync::Arc<world_instances::World>,
 }
 
 #[derive(Clone, Debug)]
@@ -111,6 +111,27 @@ fn compiled_render_path(model: &str) -> String {
     }
 }
 
+/// Prefer the exact source path; compiled geometry companions are only
+/// accepted at the exact same virtual owner/stem in the same imported build.
+fn render_candidates(raw: &str) -> Vec<String> {
+    let exact = compiled_render_path(raw);
+    let path = Path::new(&exact);
+    let ext = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default();
+    let mut candidates = vec![exact.clone()];
+    let compiled = match ext.to_ascii_lowercase().as_str() {
+        "cgf" => Some("cgfm"),
+        "cga" => Some("cgam"),
+        _ => None,
+    };
+    if let Some(ext) = compiled {
+        candidates.push(path.with_extension(ext).to_string_lossy().into_owned());
+    }
+    candidates
+}
+
 fn relevant_asset(path: &str) -> bool {
     [".cgf", ".cga", ".cgfm", ".cgam", ".skinm", ".chrm", ".mtl"]
         .iter()
@@ -151,7 +172,7 @@ impl Index {
         }
         if archives.len() == MAX_ARCHIVES {
             report.note(
-                "Cross-PAK index capped at 256 archives; some assets may be unavailable.".into(),
+                "Cross-PAK index capped at 1024 archives; some assets may be unavailable.".into(),
             );
         }
         // Every manifest-listed asset is checked by the existing read-only
@@ -376,7 +397,8 @@ pub(super) fn assemble(
         normals: Some(Vec::new()),
     };
     let mut surfaces = Vec::new();
-    let mut picks = Vec::new();
+    let picks = Vec::new();
+    let mut world = world_instances::World::default();
     if let Some(terrain) = terrain
         && !append(
             &mut combined,
@@ -396,7 +418,11 @@ pub(super) fn assemble(
             .filter(|o| !o.hidden && !o.model.is_empty())
         {
             if let Some(model) = safe_virtual(&compiled_render_path(&object.model)) {
-                wanted.insert(model.clone());
+                for candidate in render_candidates(&object.model) {
+                    if let Some(key) = safe_virtual(&candidate) {
+                        wanted.insert(key);
+                    }
+                }
                 if object.material.is_empty() {
                     wanted.insert(
                         Path::new(&model)
@@ -420,8 +446,10 @@ pub(super) fn assemble(
         let sources = Index::new(archive, &wanted, &mut report, project_inventory)?;
         // Geometry is decoded once per exact model/material pair; each authored
         // actor transform creates a distinct visible scene instance.
-        let mut resolved = HashMap::<(String, String), usize>::new();
-        let mut models = Vec::<(RenderMesh, Vec<Surface>)>::new();
+        let mut resolved = HashMap::<(String, String), Vec<usize>>::new();
+        // A compiled mesh is decoded once, not copied into each object's
+        // vertex/index arrays. GPU draw calls use instanced transforms.
+        let mut models = Vec::<world_instances::ModelGroup>::new();
         let mut failures = HashSet::<(String, String)>::new();
         let mut budget_hit = false;
         for (object_index, object) in scene
@@ -434,30 +462,45 @@ pub(super) fn assemble(
             if failures.contains(&key) {
                 continue;
             }
-            let model_index = if let Some(index) = resolved.get(&key) {
-                *index
+            let model_indices = if let Some(indices) = resolved.get(&key) {
+                indices.clone()
             } else {
                 if models.len() >= MAX_MODELS {
                     budget_hit = true;
                     break;
                 }
-                let source = match sources.lookup(&compiled_render_path(&object.model)) {
-                    Ok(Some(source)) => source,
-                    Ok(None) => {
-                        report.unresolved += 1;
-                        report.note(format!("Missing model {}", object.model));
-                        failures.insert(key);
-                        continue;
+                // An exact virtual-path companion is not a filename search:
+                // it inherits the original authored directory and basename.
+                // Ambiguous hits remain errors and are never bypassed by
+                // silently taking an unrelated copy.
+                let mut chosen = None;
+                let mut lookup_error = None;
+                for candidate in render_candidates(&object.model) {
+                    match sources.lookup(&candidate) {
+                        Ok(Some(hit)) => {
+                            chosen = Some(hit);
+                            break;
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            lookup_error = Some(error);
+                            break;
+                        }
                     }
-                    Err(error) => {
-                        report.unresolved += 1;
-                        report.note(error);
-                        failures.insert(key);
-                        continue;
-                    }
+                }
+                let source = if let Some(source) = chosen {
+                    source
+                } else {
+                    report.unresolved += 1;
+                    report.note(
+                        lookup_error
+                            .unwrap_or_else(|| format!("Missing exact model {}", object.model)),
+                    );
+                    failures.insert(key);
+                    continue;
                 };
-                let mesh = match read_model(&source.path) {
-                    Ok(mesh) => mesh,
+                let meshes = match read_world_model_parts(&source.path) {
+                    Ok(meshes) => meshes,
                     Err(error) => {
                         report.unresolved += 1;
                         report.note(format!("Cannot decode {}: {error}", object.model));
@@ -465,6 +508,10 @@ pub(super) fn assemble(
                         continue;
                     }
                 };
+                if models.len().saturating_add(meshes.len()) > MAX_MODELS {
+                    budget_hit = true;
+                    break;
+                }
                 let original_inventory = sources.inventories.get(&source.archive);
                 let authored_material = if object.material.is_empty() {
                     // This is an exact sibling candidate, not a global filename
@@ -479,7 +526,9 @@ pub(super) fn assemble(
                     format!("{}.mtl", object.material)
                 };
                 let mut material_ranges = Vec::new();
-                if let Ok(Some(material)) = sources.lookup(&authored_material) {
+                if meshes.len() == 1
+                    && let Ok(Some(material)) = sources.lookup(&authored_material)
+                {
                     if let Some(inventory) = original_inventory {
                         match assembly_materials::load_model(
                             &source.path,
@@ -500,37 +549,50 @@ pub(super) fn assemble(
                             Err(error) => report.note(format!("{} material: {error}", object.name)),
                         }
                     }
+                } else if meshes.len() > 1 {
+                    report.note(format!(
+                        "{}: {} verified mesh sections; per-node materials unverified",
+                        object.name,
+                        meshes.len(),
+                    ));
                 } else {
                     report.note(format!("No verified material for {}", object.name));
                 }
-                let index = models.len();
-                models.push((mesh, material_ranges));
-                resolved.insert(key, index);
-                report.geometries += 1;
-                index
+                let mut indices = Vec::with_capacity(meshes.len());
+                for mesh in meshes {
+                    let radius = world_instances::radius(&mesh);
+                    let parts = if material_ranges.is_empty() {
+                        vec![neutral(0, mesh.indices.len() as u32)]
+                    } else {
+                        material_ranges.clone()
+                    };
+                    indices.push(models.len());
+                    models.push(world_instances::ModelGroup {
+                        mesh: std::sync::Arc::new(mesh),
+                        surfaces: parts,
+                        instances: Vec::new(),
+                        radius,
+                    });
+                    report.geometries += 1;
+                }
+                resolved.insert(key, indices.clone());
+                indices
             };
-            let (mesh, parts) = &models[model_index];
-            let before = combined.indices.len();
-            if !append(&mut combined, &mut surfaces, mesh, parts, object.world) {
-                budget_hit = true;
-                break;
+            for group in model_indices {
+                models[group].instances.push(world_instances::Instance {
+                    object_index,
+                    transform: object.world,
+                });
             }
-            picks.push(PickRange {
-                object_index,
-                first_index: before,
-                index_count: combined.indices.len() - before,
-            });
             report.placed += 1;
-            if report.placed >= MAX_PLACEMENTS {
-                budget_hit = true;
-                break;
-            }
         }
         if budget_hit {
-            report.note("Viewport reached a geometry, placement or GPU-surface budget; remaining objects are not rendered.".into());
+            report.note("Original unique model resource cap reached; some geometry resources could not be resolved.".into());
         }
+        world.groups = models;
+        world.instance_count = report.placed;
     }
-    if combined.indices.is_empty() {
+    if combined.indices.is_empty() && world.instance_count == 0 {
         return Ok(None);
     }
     combined.info.vertex_count = combined.positions.len();
@@ -540,6 +602,7 @@ pub(super) fn assemble(
         surfaces,
         picks,
         report,
+        world: std::sync::Arc::new(world),
     }))
 }
 
@@ -603,6 +666,18 @@ pub(super) fn reproject_after_edit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_static_mesh_companions_do_not_search_other_folders() {
+        assert_eq!(
+            render_candidates("objects/natural/rock.cgf"),
+            vec!["objects/natural/rock.cgf", "objects/natural/rock.cgfm"]
+        );
+        assert_eq!(
+            render_candidates("objects/props/door.cga"),
+            vec!["objects/props/door.cga", "objects/props/door.cgam"]
+        );
+    }
 
     #[test]
     fn compiled_character_render_companion_stays_in_authored_folder() {

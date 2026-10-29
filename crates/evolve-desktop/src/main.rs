@@ -36,6 +36,7 @@ mod gfx_tool_install;
 mod guided_modding;
 mod initial_setup;
 mod launcher_bridge;
+mod level_camera;
 mod level_library;
 mod level_pick;
 mod level_scene_renderer;
@@ -82,6 +83,7 @@ mod viewer_inspector;
 mod viewport;
 mod whats_new;
 mod work_progress;
+mod world_instances;
 use asset_cache::{SharedCache, decoded_dds, decoded_dds_indexed};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
@@ -360,8 +362,11 @@ struct State {
         usize,
     )>,
     level_read_only: bool,
+    level_camera: Option<level_camera::Camera>,
+    level_keys: HashSet<char>,
     level_surfaces: Option<Arc<Vec<textured::Surface>>>,
     level_picks: Option<Arc<Vec<level_scene_renderer::PickRange>>>,
+    level_world: Option<Arc<world_instances::World>>,
     level_project: Option<modding_projects::ProjectRow>,
     level_open_after_copy: bool,
     level_diagnostics: Vec<String>,
@@ -1876,6 +1881,7 @@ enum Message {
     LibraryOpenMap(usize),
     LevelMapSelect(usize),
     LevelOpenSelectedModProject,
+    OpenLevelEditorWindow,
     LevelGizmoMove(usize, f32),
     LevelSaveProjectChanges,
     LevelToggleOverview,
@@ -1916,6 +1922,13 @@ enum Message {
     ViewerOrbitDelta(f32, f32),
     ViewerPanDelta(f32, f32),
     ViewerZoomWheel(f32),
+    LevelCameraZoomWheel(f32),
+    LevelCameraPanDelta(f32, f32),
+    LevelCameraSpeedChanged(f32),
+    LevelCameraFocus,
+    LevelCameraReset,
+    LevelCameraKey(window::Id, char, bool),
+    LevelCameraTick,
     ViewerSearchChanged(String),
     ViewerPreviousPage,
     ViewerNextPage,
@@ -2451,6 +2464,9 @@ fn restore_level_history(state: &mut State, undo: bool) {
     match result {
         Some(Ok(scene)) => {
             track_level_dirty(state, &diff.guid, previous, target);
+            if let Some(world) = &state.level_world {
+                state.level_world = Some(Arc::new(world.updated(&scene)));
+            }
             state.level_scene = Some(Arc::new(scene));
             let other = if undo {
                 &mut state.level_redo
@@ -4304,6 +4320,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let cache = state.preview_cache.clone();
             return launch(state, Operation::OpenImportedMap(archive, 0, cache));
         }
+        Message::OpenLevelEditorWindow => return Task::none(),
         Message::LevelToggleOverview => state.level_show_overview = !state.level_show_overview,
         Message::LevelGizmoMove(axis, distance) => {
             if state.level_project.is_none()
@@ -7112,6 +7129,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         {
                             state.model = Some(Arc::new(reprojected));
                         }
+                        if let Some(world) = &state.level_world {
+                            state.level_world = Some(Arc::new(world.updated(&edited)));
+                        }
                         state.level_scene = Some(Arc::new(edited));
                         sync_level_fields(state);
                         state.status =
@@ -7318,6 +7338,56 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::ViewerZoomWheel(amount) => {
             state.zoom = (state.zoom * 1.1f32.powf(amount)).clamp(0.2, 4.0);
+        }
+        Message::LevelCameraZoomWheel(amount) => {
+            state.zoom = (state.zoom * 1.1f32.powf(amount)).clamp(0.2, 80.0);
+        }
+        Message::LevelCameraPanDelta(dx, dy) => {
+            state.pan_x = (state.pan_x + dx).clamp(-80.0, 80.0);
+            state.pan_y = (state.pan_y + dy).clamp(-80.0, 80.0);
+        }
+        Message::LevelCameraSpeedChanged(speed) => {
+            if let Some(camera) = state.level_camera.as_mut() {
+                camera.speed = speed.clamp(1.0, 2500.0);
+            }
+        }
+        Message::LevelCameraFocus => {
+            if let Some(point) = state
+                .level_selected
+                .and_then(|index| state.level_scene.as_ref()?.objects.get(index))
+                .map(|object| object.world.position)
+                && let Some(camera) = state.level_camera.as_mut()
+            {
+                camera.focus(point, state.yaw, state.pitch, 12.0);
+                state.zoom = 1.0;
+            }
+        }
+        Message::LevelCameraReset => {
+            state.yaw = -30.0;
+            state.pitch = 32.0;
+            state.zoom = 1.0;
+            state.level_keys.clear();
+            state.level_camera = state
+                .model
+                .as_ref()
+                .map(|mesh| level_camera::Camera::frame(mesh, state.yaw, state.pitch));
+        }
+        Message::LevelCameraKey(_, key, pressed) => {
+            if key == 'f' && pressed {
+                return update(state, Message::LevelCameraFocus);
+            }
+            if ['w', 'a', 's', 'd', 'q', 'e'].contains(&key) {
+                if pressed {
+                    state.level_keys.insert(key);
+                } else {
+                    state.level_keys.remove(&key);
+                }
+            }
+        }
+        Message::LevelCameraTick => {
+            if let Some(camera) = state.level_camera.as_mut() {
+                camera.advance(&state.level_keys, state.yaw, state.pitch, 1.0 / 60.0);
+            }
         }
         Message::ViewerSearchChanged(filter) => {
             state.viewer_context_index = None;
@@ -11859,6 +11929,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                 }
                 Ok(Completed::Terrain(mesh, info)) => {
+                    state.level_world = None;
                     state.cdf_surfaces = None;
                     state.cdf_report = None;
                     state.cdf_rest_mesh = None;
@@ -11875,6 +11946,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.playing = false;
                     state.page = Some(Page::Levels);
                     state.zoom = 1.0;
+                    state.level_keys.clear();
+                    state.level_camera = state
+                        .model
+                        .as_ref()
+                        .map(|mesh| level_camera::Camera::frame(mesh, state.yaw, state.pitch));
                 }
                 Ok(Completed::ProjectLevelSaved(project, saved)) => {
                     state.status = if saved {
@@ -11945,10 +12021,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.level_selection.clear();
                     state.level_selected = None;
                     if let Some(assembled) = loaded.full_scene {
+                        state.level_world = Some(assembled.world.clone());
                         state.level_surfaces = Some(Arc::new(assembled.surfaces));
                         state.level_picks = Some(Arc::new(assembled.picks));
                         state.model = Some(Arc::new(assembled.mesh));
                     } else {
+                        state.level_world = None;
                         state.level_surfaces = None;
                         state.level_picks = None;
                         state.model = loaded
@@ -11973,9 +12051,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.zoom = 1.0;
                     state.pan_x = 0.0;
                     state.pan_y = 0.0;
+                    state.level_keys.clear();
+                    state.level_camera = state
+                        .model
+                        .as_ref()
+                        .map(|mesh| level_camera::Camera::frame(mesh, state.yaw, state.pitch));
                 }
                 Ok(Completed::Level(scene, source, hash)) => {
                     state.library_map = None;
+                    state.level_world = None;
                     state.level_project = None;
                     state.level_surfaces = None;
                     state.level_picks = None;
@@ -12694,8 +12778,12 @@ fn view(state: &State) -> Element<'_, Message> {
             let description = if let Some(texture) = &state.texture {
                 format!(
                     "DDS: {} × {} | {:?} | {} mip(s) | {} part(s) | top mip {} bytes",
-                    texture.width, texture.height, texture.format,
-                    texture.mipmaps, texture.streaming_parts, texture.top_mip_bytes
+                    texture.width,
+                    texture.height,
+                    texture.format,
+                    texture.mipmaps,
+                    texture.streaming_parts,
+                    texture.top_mip_bytes
                 )
             } else {
                 "Select a local DDS and choose Inspect DDS.".to_owned()
@@ -12768,6 +12856,8 @@ fn view(state: &State) -> Element<'_, Message> {
                             emissive_gain:state.emissive_strength,
                             emissive_time:state.decal_time,
                             pan_x:state.pan_x,pan_y:state.pan_y,shift:state.keyboard_modifiers.shift(),
+                            level_camera: None,
+                            world: None,
                         }).width(Fill).height(Length::Fixed(400.)).into()
                     }else{
                         canvas(MeshViewport{
@@ -12876,64 +12966,11 @@ fn view(state: &State) -> Element<'_, Message> {
             ].spacing(14).into()
         }
         Page::Levels => column![
-            text(if state.library_map.is_some() { "Level Editor · Imported Map" } else { "Level Editor · Source Preview" }).size(19),
-            if let Some((_, maps, selected)) = &state.library_map {
-                let mut choices = iced::widget::column![text("MAPS IN SELECTED PAK").size(12)].spacing(4);
-                for (index, map) in maps.iter().enumerate().take(48) {
-                    choices = choices.push(design::button(text(if index == *selected { format!("● {}", map.name) } else { map.name.clone() })).on_press(Message::LevelMapSelect(index)));
-                }
-                Element::from(iced::widget::scrollable(choices).height(Length::Fixed(100.0)))
-            } else { Element::from(text("Open a map from Asset Library to browse verified map sources.")) },
-            row![
-                design::button("File").on_press(Message::LibraryMenu("LevelFile")),
-                text(if state.level_read_only { "READ-ONLY IMPORT · create a modding project to edit" } else { "LOCAL SOURCE" }).size(12),
-            ].spacing(10),
-            if state.library_menu == Some("LevelFile") {
-                Element::from(column![
-                    design::button("Open as Modding Project").on_press_maybe((state.level_project.is_none() && state.library_map.is_some()).then_some(Message::LibraryMakeModProject)),
-                    design::button("Open Selected Modding Project").on_press_maybe(state.modding_selected.map(|_| Message::LevelOpenSelectedModProject)),
-                    design::button("Save Edited Project Layer").on_press_maybe((state.level_project.is_some() && state.level_dirty_count > 0).then_some(Message::LevelSaveProjectChanges)),
-                ].spacing(4))
-            } else { Element::from(text("")) },
-            level_workspace::view(state),
-            text(if state.level_read_only { "Verified source view; no source files are changed. Vegetation instance streams and unsupported shaders remain unresolved." } else { "Read Level/LYR or Heightmap.dat without touching installed game assets." }),
-            if state.level_diagnostics.is_empty() { Element::from(text("")) } else {
-                Element::from(iced::widget::scrollable(
-                    iced::widget::column(state.level_diagnostics.iter().take(12).map(|note| Element::from(text(note.as_str()).size(11))))
-                        .spacing(2)
-                ).height(Length::Fixed(70.0)))
-            },
-            if state.level_read_only {
-                Element::from(text("Imported source files are protected. File → Open as Modding Project to edit."))
-            } else {
-                Element::from(column![
-                row![
-                    design::button("Read level placements").on_press_maybe((!state.level_read_only).then_some(Message::StartLevelInspection)),
-                    design::button("Load heightmap geometry").on_press_maybe((!state.level_read_only).then_some(Message::StartTerrainInspection)),
-                    design::button("Export geometry scene GLB").on_press_maybe((!state.level_read_only).then_some(Message::StartLevelGlbExport)),
-                    design::button("Export geometry scene FBX").on_press_maybe((!state.level_read_only).then_some(Message::StartLevelFbxExport)),
-                ].spacing(8),
-                row![
-                    design::text_input("Exact extracted asset root...",&state.assets_root)
-                        .on_input(Message::AssetsRootChanged).width(Fill),
-                    design::text_input("Optional Heightmap.dat source...",&state.terrain_source)
-                        .on_input(Message::TerrainSourceChanged).width(Fill),
-                ].spacing(8),
-                text(if let Some(scene)=&state.level_scene {
-                    format!("{} level objects, {} unresolved diagnostics; source transforms preserved.",
-                        scene.objects.len(),scene.diagnostics.len())
-                }else{"No placement source inspected.".into()}),
-                ].spacing(8))
-            },
-            text("The unified perspective viewport is above, beside the object outliner."),
-            if blender_install::valid_blender(&state.blender_path).is_some() {
-                Element::from(text("Blender detected automatically for scene FBX").size(12))
-            } else {
-                Element::from(design::text_input("Find Blender.exe for scene FBX…", &state.blender_path)
-                    .on_input(Message::BlenderChanged))
-            },
-            text("GLB/FBX includes verified mesh instances and optional terrain. Texture/material, compiled vegetation, scripting and full map fidelity remain gated."),
-        ].spacing(14).into(),
+            text("Level Editor opened in a separate window.").size(18),
+            design::button("Open Level Editor Window").on_press(Message::OpenLevelEditorWindow),
+        ]
+        .spacing(12)
+        .into(),
         Page::Settings => settings_page::view(state),
     };
 
@@ -13117,6 +13154,68 @@ fn initial_state() -> State {
     }
     result
 }
+fn level_editor_contents(state: &State) -> Element<'_, Message> {
+    column![
+            text(if state.library_map.is_some() { "Level Editor · Imported Map" } else { "Level Editor · Source Preview" }).size(19),
+            if let Some((_, maps, selected)) = &state.library_map {
+                let mut choices = iced::widget::column![text("MAPS IN SELECTED PAK").size(12)].spacing(4);
+                for (index, map) in maps.iter().enumerate().take(48) {
+                    choices = choices.push(design::button(text(if index == *selected { format!("● {}", map.name) } else { map.name.clone() })).on_press(Message::LevelMapSelect(index)));
+                }
+                Element::from(iced::widget::scrollable(choices).height(Length::Fixed(100.0)))
+            } else { Element::from(text("Open a map from Asset Library to browse verified map sources.")) },
+            row![
+                design::button("File").on_press(Message::LibraryMenu("LevelFile")),
+                text(if state.level_read_only { "READ-ONLY IMPORT · create a modding project to edit" } else { "LOCAL SOURCE" }).size(12),
+            ].spacing(10),
+            if state.library_menu == Some("LevelFile") {
+                Element::from(column![
+                    design::button("Open as Modding Project").on_press_maybe((state.level_project.is_none() && state.library_map.is_some()).then_some(Message::LibraryMakeModProject)),
+                    design::button("Open Selected Modding Project").on_press_maybe(state.modding_selected.map(|_| Message::LevelOpenSelectedModProject)),
+                    design::button("Save Edited Project Layer").on_press_maybe((state.level_project.is_some() && state.level_dirty_count > 0).then_some(Message::LevelSaveProjectChanges)),
+                ].spacing(4))
+            } else { Element::from(text("")) },
+            level_workspace::view(state),
+            text(if state.level_read_only { "Verified source view; no source files are changed. Vegetation instance streams and unsupported shaders remain unresolved." } else { "Read Level/LYR or Heightmap.dat without touching installed game assets." }),
+            if state.level_diagnostics.is_empty() { Element::from(text("")) } else {
+                Element::from(iced::widget::scrollable(
+                    iced::widget::column(state.level_diagnostics.iter().take(12).map(|note| Element::from(text(note.as_str()).size(11))))
+                        .spacing(2)
+                ).height(Length::Fixed(70.0)))
+            },
+            if state.level_read_only {
+                Element::from(text("Imported source files are protected. File → Open as Modding Project to edit."))
+            } else {
+                Element::from(column![
+                row![
+                    design::button("Read level placements").on_press_maybe((!state.level_read_only).then_some(Message::StartLevelInspection)),
+                    design::button("Load heightmap geometry").on_press_maybe((!state.level_read_only).then_some(Message::StartTerrainInspection)),
+                    design::button("Export geometry scene GLB").on_press_maybe((!state.level_read_only).then_some(Message::StartLevelGlbExport)),
+                    design::button("Export geometry scene FBX").on_press_maybe((!state.level_read_only).then_some(Message::StartLevelFbxExport)),
+                ].spacing(8),
+                row![
+                    design::text_input("Exact extracted asset root...",&state.assets_root)
+                        .on_input(Message::AssetsRootChanged).width(Fill),
+                    design::text_input("Optional Heightmap.dat source...",&state.terrain_source)
+                        .on_input(Message::TerrainSourceChanged).width(Fill),
+                ].spacing(8),
+                text(if let Some(scene)=&state.level_scene {
+                    format!("{} level objects, {} unresolved diagnostics; source transforms preserved.",
+                        scene.objects.len(),scene.diagnostics.len())
+                }else{"No placement source inspected.".into()}),
+                ].spacing(8))
+            },
+            text("The unified perspective viewport is above, beside the object outliner."),
+            if blender_install::valid_blender(&state.blender_path).is_some() {
+                Element::from(text("Blender detected automatically for scene FBX").size(12))
+            } else {
+                Element::from(design::text_input("Find Blender.exe for scene FBX…", &state.blender_path)
+                    .on_input(Message::BlenderChanged))
+            },
+            text("GLB/FBX includes verified mesh instances and optional terrain. Texture/material, compiled vegetation, scripting and full map fidelity remain gated."),
+    ].spacing(14).into()
+}
+
 /// One native main window, model/asset editor, and separate export settings window. All costly
 /// asset operations stay in the existing worker queue, independent of either
 /// window's render loop.
@@ -13124,6 +13223,7 @@ struct Desktop {
     state: State,
     main_id: window::Id,
     viewer_id: Option<window::Id>,
+    level_id: Option<window::Id>,
     inspector_id: Option<window::Id>,
     preferences_id: Option<window::Id>,
     activity_id: Option<window::Id>,
@@ -13169,6 +13269,7 @@ impl Desktop {
                 state,
                 main_id,
                 viewer_id: None,
+                level_id: None,
                 inspector_id: None,
                 preferences_id: None,
                 activity_id: None,
@@ -13183,6 +13284,20 @@ impl Desktop {
                 client_version_task,
             ]),
         )
+    }
+
+    fn open_level_editor(&mut self) -> Task<Message> {
+        if self.level_id.is_some() {
+            return Task::none();
+        }
+        let (id, opened) = window::open(window::Settings {
+            icon: app_window_icon(),
+            size: iced::Size::new(1700.0, 1000.0),
+            min_size: Some(iced::Size::new(1050.0, 720.0)),
+            ..window::Settings::default()
+        });
+        self.level_id = Some(id);
+        opened.map(|_| Message::ViewerOpened)
     }
 
     fn open_viewer(&mut self) -> Task<Message> {
@@ -13288,6 +13403,8 @@ impl Desktop {
                 self.update(*inner)
             }
             Message::OpenViewer => self.open_viewer(),
+            Message::OpenLevelEditorWindow => self.open_level_editor(),
+            Message::LevelCameraKey(id, _, _) if self.level_id != Some(id) => Task::none(),
             Message::ExportOpen => {
                 let prepare = update(&mut self.state, Message::ExportOpen);
                 Task::batch([prepare, self.open_export()])
@@ -13352,6 +13469,10 @@ impl Desktop {
                         self.export_id = None;
                         self.state.export_dialog_open = false;
                     }
+                    if self.level_id == Some(id) {
+                        self.level_id = None;
+                        self.state.level_keys.clear();
+                    }
                     if self.viewer_id == Some(id) {
                         self.viewer_id = None;
                         self.state.viewer_menu = None;
@@ -13387,6 +13508,12 @@ impl Desktop {
                 let project_scan_done = self.state.modding_open_editor_when_scanned
                     && matches!(&message, Message::Finished(Ok(Completed::Inventory(_))));
                 let finished = matches!(&message, Message::Finished(_));
+                let opens_level = matches!(
+                    &message,
+                    Message::Finished(Ok(Completed::ImportedMap(_)
+                        | Completed::Terrain(_, _)
+                        | Completed::Level(_, _, _)))
+                );
                 let opens_model = matches!(
                     &message,
                     Message::Finished(Ok(Completed::Model(_, _)
@@ -13421,7 +13548,10 @@ impl Desktop {
                     Task::none()
                 };
                 let notice = self.open_play_notice();
-                if opens_model && self.viewer_id.is_none() {
+                if opens_level && self.state.page == Some(Page::Levels) && self.level_id.is_none() {
+                    let open = self.open_level_editor();
+                    Task::batch([command, open, activity, notice])
+                } else if opens_model && self.viewer_id.is_none() {
                     let open = self.open_viewer();
                     self.state.viewer_from_library = launched_from_library;
                     Task::batch([command, open, activity, notice])
@@ -13435,6 +13565,10 @@ impl Desktop {
     fn view(&self, id: window::Id) -> Element<'_, Message> {
         if self.export_id == Some(id) {
             asset_viewer::export_dialog(&self.state)
+        } else if self.level_id == Some(id) {
+            scrollable(level_editor_contents(&self.state))
+                .height(Fill)
+                .into()
         } else if self.activity_id == Some(id) {
             activity_window::view(&self.state)
         } else if self.play_notice_id == Some(id) {
@@ -13459,6 +13593,8 @@ impl Desktop {
     fn title(&self, id: window::Id) -> String {
         if self.export_id == Some(id) {
             "Export Settings | Evolve Mod Manager".into()
+        } else if self.level_id == Some(id) {
+            "Level Editor | Evolve Mod Manager".into()
         } else if self.activity_id == Some(id) {
             "Activity | Evolve Mod Manager".into()
         } else if self.play_notice_id == Some(id) {
@@ -13501,6 +13637,11 @@ impl Desktop {
             || !self.state.mod_toggle_animations.is_empty()
         {
             iced::time::every(Duration::from_millis(40)).map(|_| Message::Tick)
+        } else {
+            Subscription::none()
+        };
+        let level_camera_tick = if self.level_id.is_some() {
+            iced::time::every(Duration::from_millis(16)).map(|_| Message::LevelCameraTick)
         } else {
             Subscription::none()
         };
@@ -13565,11 +13706,26 @@ impl Desktop {
             armor_recovery,
             armor_pulse,
             playback,
+            level_camera_tick,
             startup,
             scan_progress,
             wheel,
             window::close_events().map(Message::WindowClosed),
-            iced::event::listen_with(|event, _status, id| match event {
+            iced::event::listen_with(|event, status, id| match event {
+                iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Character(value),
+                    ..
+                }) if status == iced::event::Status::Ignored => value
+                    .chars()
+                    .next()
+                    .map(|key| Message::LevelCameraKey(id, key.to_ascii_lowercase(), true)),
+                iced::Event::Keyboard(iced::keyboard::Event::KeyReleased {
+                    key: iced::keyboard::Key::Character(value),
+                    ..
+                }) => value
+                    .chars()
+                    .next()
+                    .map(|key| Message::LevelCameraKey(id, key.to_ascii_lowercase(), false)),
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
                     ..

@@ -42,6 +42,7 @@ pub mod signed_pak;
 pub mod skin_preview;
 pub mod staging;
 pub mod terrain;
+mod terrain_tiles;
 
 pub use animation::{
     AnimatedGlb, AnimationError, AnimationReference, CafInspection, MotionClip, PoseSample,
@@ -117,7 +118,8 @@ pub use library_import::{
 };
 pub use model::{
     ModelError, ModelInfo, RenderMesh, export_model_obj, has_original_mesh_subset_table,
-    original_mesh_subsets, parse_model_bytes, read_model,
+    original_mesh_subsets, parse_model_bytes, parse_world_model_parts, read_model,
+    read_world_model_parts,
 };
 pub use native_caf::{
     CafBonePose, CafController, NativeCafError, NativeCafMotion, decode_native_caf, read_native_caf,
@@ -148,8 +150,11 @@ pub use signed_pak::{
 };
 pub use skin_preview::{VerifiedCafAssembly, VerifiedCafSkin};
 pub use terrain::{
-    TerrainError, TerrainInfo, TerrainMesh, decode_terrain_bytes, export_terrain_obj, read_terrain,
+    TerrainError, TerrainInfo, TerrainMesh, TerrainPaintMap, TerrainTextureHeader,
+    TerrainTextureLayer, decode_terrain_bytes, decode_terrain_paint_bytes, export_terrain_obj,
+    read_terrain, read_terrain_paint, read_terrain_texture_header,
 };
+pub use terrain_tiles::{TerrainTextureAtlas, read_terrain_texture_atlas};
 
 pub use staging::{
     StageError, StageTransaction, apply_stage_pak, apply_stage_pak_with_additions,
