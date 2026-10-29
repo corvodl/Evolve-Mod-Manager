@@ -99,6 +99,8 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             column![
                 design::button("Refresh catalog")
                     .on_press(Message::MenuCommand(Box::new(Message::LibraryRefresh))),
+                design::button("Open as Modding Project")
+                    .on_press(Message::MenuCommand(Box::new(Message::LibraryMakeModProject))),
                 design::button("Export files and assemblies…")
                     .on_press(Message::MenuCommand(Box::new(Message::LibraryExport))),
                 design::button("Open Asset Library Folder in Explorer")
@@ -127,6 +129,8 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
         ),
         Some("Tools") => Some(
             column![
+                design::button("Open in Level Editor")
+                    .on_press_maybe(state.library_selected.map(Message::LibraryOpenMap)),
                 design::button("Preview selected PAK")
                     .on_press(Message::MenuCommand(Box::new(Message::LibraryPreview))),
                 design::button("Create editable project").on_press(Message::MenuCommand(Box::new(
@@ -144,7 +148,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
 
     let mut layout = column![
         text("Asset Library").size(24),
-        text("Preview and export PAKs you have already extracted. The Asset Library is read-only; editing, building and signing are performed in Modding.")
+        text("Select a Levels PAK to open its maps automatically in the read-only Level Editor. File → Open as Modding Project creates an editable copy.")
             .size(12).style(design::muted),
         container(menu).padding([4, 8]).width(Fill).style(|theme| container::Style {
             background: Some(Background::Color(design::field(theme))),
