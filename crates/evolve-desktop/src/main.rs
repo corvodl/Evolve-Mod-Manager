@@ -61,6 +61,7 @@ mod runtime_health;
 mod runtime_live;
 mod runtime_match_perks;
 mod runtime_memory;
+mod runtime_research;
 mod runtime_signatures;
 mod runtime_teleport;
 mod selection;
@@ -193,6 +194,14 @@ struct LevelTransformDiff {
 }
 
 type ActorFreezeOutcome = ((u32, usize, runtime_actors::Field), Result<bool, String>);
+type ActorRefreshResult = Result<
+    (
+        runtime_actors::Listing,
+        Result<runtime_match_perks::Listing, String>,
+        Result<runtime_research::Report, String>,
+    ),
+    String,
+>;
 
 #[derive(Clone, Copy, Debug)]
 enum TeleportRequest {
@@ -419,6 +428,8 @@ struct State {
     developer_attempts: u8,
     developer_checking: bool,
     actor_listing: Option<runtime_actors::Listing>,
+    runtime_research: Option<runtime_research::Report>,
+    runtime_research_status: String,
     match_perks: Option<runtime_match_perks::Listing>,
     match_perks_status: String,
     teleport_reading: Option<runtime_teleport::Reading>,
@@ -2048,15 +2059,7 @@ enum Message {
     DeveloperInspectProcessPrivileges,
     DeveloperProcessPrivilegesFinished(Result<String, String>),
     ActorRefresh,
-    ActorRefreshed(
-        Result<
-            (
-                runtime_actors::Listing,
-                Result<runtime_match_perks::Listing, String>,
-            ),
-            String,
-        >,
-    ),
+    ActorRefreshed(ActorRefreshResult),
     TeleportCapture(bool),
     TeleportCaptured(bool, Result<runtime_teleport::Reading, String>),
     TeleportXYZChanged(usize, String),
@@ -5495,7 +5498,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     tokio::task::spawn_blocking(move || {
                         let actors = runtime_actors::inspect(&snapshot, &root)?;
                         let perks = runtime_match_perks::inspect(&snapshot, &root, &actors.actors);
-                        Ok((actors, perks))
+                        let research = runtime_research::inspect(&snapshot, &root, &actors);
+                        Ok((actors, perks, research))
                     })
                     .await
                     .unwrap_or_else(|e| Err(format!("Actor scan failed: {e}")))
@@ -5507,11 +5511,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.actor_busy = false;
             if state.developer_unlocked {
                 match result {
-                    Ok((listing, perks)) => {
+                    Ok((listing, perks, research)) => {
                         if state.runtime_snapshot.as_ref().and_then(|s| s.pid) != Some(listing.pid)
                         {
                             state.actor_listing = None;
                             state.match_perks = None;
+                            state.runtime_research = None;
+                            state.runtime_research_status =
+                                "Running game changed during refresh; diagnostics invalidated"
+                                    .into();
                             state.actor_status =
                                 "Evolve changed during refresh; detect it again".into();
                             state.match_perks_status.clear();
@@ -5519,6 +5527,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         }
                         state.actor_status = listing.status.clone();
                         state.actor_listing = Some(listing);
+                        match research {
+                            Ok(report) => {
+                                state.runtime_research_status =
+                                    "Validated local identity; research readouts are read-only"
+                                        .into();
+                                state.runtime_research = Some(report);
+                            }
+                            Err(error) => {
+                                state.runtime_research = None;
+                                state.runtime_research_status =
+                                    format!("Runtime research unavailable: {error}");
+                            }
+                        }
                         match perks {
                             Ok(perks) => {
                                 state.match_perks_status = perks.status.clone();
@@ -5534,6 +5555,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.actor_listing = None;
                         state.actor_status = err;
                         state.match_perks = None;
+                        state.runtime_research = None;
+                        state.runtime_research_status =
+                            "No valid actor/session identity for research inspection".into();
                         state.match_perks_status =
                             "Actor scan unavailable; match perks not verified".into();
                     }
