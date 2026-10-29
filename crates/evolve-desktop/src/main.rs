@@ -860,7 +860,7 @@ enum Completed {
     DeclaredClip(usize, String, NativeCafMotion),
     Level(LevelScene, PathBuf, String),
     ImportedMap(Box<level_library::LoadedMap>),
-    ProjectLevelSaved(modding_projects::ProjectRow, usize, bool),
+    ProjectLevelSaved(modding_projects::ProjectRow, bool),
     EditedLevelExported(PathBuf, usize),
     Terrain(RenderMesh, TerrainInfo),
     SignedPak(SignedPakInfo),
@@ -1315,7 +1315,7 @@ impl Operation {
                     &member,
                     &target,
                 )?;
-                Ok(Completed::ProjectLevelSaved(project, 0, saved))
+                Ok(Completed::ProjectLevelSaved(project, saved))
             }
             Self::InspectLevel(source) => {
                 let checksum = level_source_hash(&source)?;
@@ -11832,7 +11832,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::Levels);
                     state.zoom = 1.0;
                 }
-                Ok(Completed::ProjectLevelSaved(project, _, saved)) => {
+                Ok(Completed::ProjectLevelSaved(project, saved)) => {
                     state.status = if saved {
                         "Edited level saved through the verified Modding project backup/import process.".into()
                     } else {
