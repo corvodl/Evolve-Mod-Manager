@@ -287,8 +287,11 @@ pub fn view(state: &State) -> Element<'_, Message> {
         ]
         .spacing(10),
         text(e.note.as_str()).size(12),
-        design::text_input("Find character, ability, model or build…", &e.search)
-            .on_input(|s| message(Action::Search(s))),
+        design::text_input(
+            "Find character, ability, perk, effect set, model or build…",
+            &e.search,
+        )
+        .on_input(|s| message(Action::Search(s))),
         text(format!(
             "{} editable / {} imported matches (first 80 / 40 shown; narrow the search)",
             matching.len(),
@@ -324,14 +327,14 @@ pub fn view(state: &State) -> Element<'_, Message> {
             .push(text(path.as_str()).size(12))
             .push(
                 design::text_input(
-                    "Find a value, e.g. cooldown, damage, health…",
+                    "Find a value, e.g. cooldown, damage, variant…",
                     &e.fields_search,
                 )
                 .on_input(|s| message(Action::FieldSearch(s))),
             )
             .push(
                 text(format!(
-                    "{} numeric/boolean fields (first 80 shown; | separates stages, commas separate vector components)",
+                    "{} numeric/boolean fields (first 80 shown; authored | stage/variant lists and comma-separated vector widths are validated, not rewritten)",
                     matching.len()
                 ))
                 .size(11),
@@ -387,5 +390,46 @@ mod tests {
         // staging worker, rather than being rejected by the obsolete guard.
         let _ = update(&mut state, Action::Prepare(0));
         assert!(state.busy);
+    }
+
+    #[test]
+    fn imported_effectset_perks_appear_in_gameplay_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = serde_json::json!({
+            "version": 1,
+            "source": "C:/EvolveGame/items.pak",
+            "entries": [{"path": "Libs/Items/Perks/Assault/Perk_Assault_Rearm.effectset"}]
+        });
+        std::fs::write(dir.path().join("asset-library.json"), manifest.to_string()).unwrap();
+        let archive = ImportedPak {
+            id: "2".repeat(20),
+            name: "items.pak".into(),
+            source: "C:/EvolveGame/items.pak".into(),
+            directory: dir.path().to_string_lossy().into_owned(),
+            group: "Items".into(),
+            description: "Items".into(),
+            entries: 1,
+            extracted_bytes: 1,
+            warnings: 0,
+            builds: vec![],
+        };
+        let mut state = State {
+            library_catalog: Some(ImportedLibrary {
+                root: dir.path().to_string_lossy().into_owned(),
+                archives: vec![archive],
+                builds: vec![],
+                total_bytes: 1,
+                ignored: 0,
+            }),
+            ..State::default()
+        };
+        state.guided_editor.open = true;
+        state.guided_editor.models = false;
+        refresh_imports(&mut state);
+        assert_eq!(state.guided_editor.imports.len(), 1);
+        assert_eq!(
+            state.guided_editor.imports[0].1,
+            "Libs/Items/Perks/Assault/Perk_Assault_Rearm.effectset"
+        );
     }
 }

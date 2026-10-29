@@ -2119,6 +2119,51 @@ mod tests {
         assert!(read_gameplay_document(&project, "../outside.xml").is_err());
     }
     #[test]
+    fn effectset_perks_are_indexed_edited_and_backed_up() {
+        let temp = tempfile::tempdir().unwrap();
+        let projects = temp.path().join("projects");
+        let workspace = projects.join("Perks");
+        let member = "Libs/Items/Perks/MPerkBrawlerHighEffect.effectset";
+        let file = workspace.join("files").join(member);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let original = br#"<effectSet name="MPerkBrawlerHighEffect" levels="3"><effect class="GameProperty"><param name="value" value="0.06|0.07|0.09"/><param name="bUITreatAsPercentage" value="True"/></effect></effectSet>"#;
+        fs::write(&file, original).unwrap();
+        fs::write(workspace.join(".evolve-pak-workspace.json"), serde_json::to_vec(&serde_json::json!({
+            "version":1, "entries":[{"path":member,"format":"raw", "sha256":format!("{:x}",Sha256::digest(original))}]
+        })).unwrap()).unwrap();
+        let project = ProjectRow {
+            label: "Perks".into(),
+            target: "items.pak".into(),
+            source_build: "Test".into(),
+            status: "Draft".into(),
+            details: String::new(),
+            workspace: workspace.clone(),
+            modified: vec![],
+            changed_known: true,
+            enabled: false,
+        };
+        assert_eq!(guided_members(&project, false).unwrap(), vec![member]);
+        assert!(guided_members(&project, true).unwrap().is_empty());
+        let snapshot = read_gameplay_document(&project, member).unwrap();
+        let mut fields = evolve_core::gameplay_values::fields(&snapshot).unwrap();
+        assert_eq!(fields.len(), 3);
+        fields[1].value = "0.07|0.08|0.10".into();
+        fields[2].value = "False".into();
+        assert!(save_gameplay_document(&project, &projects, member, &snapshot, &fields).unwrap());
+        let saved = fs::read_to_string(&file).unwrap();
+        assert!(saved.contains(r#"value="0.07|0.08|0.10""#));
+        assert!(saved.contains(r#"value="False""#));
+        assert!(save_gameplay_document(&project, &projects, member, &snapshot, &fields).is_err());
+        assert_eq!(
+            fs::read_dir(workspace.join("EditorBackups"))
+                .unwrap()
+                .count(),
+            1
+        );
+        assert!(restore_original_raw_member(&project, &projects, member).unwrap());
+        assert_eq!(fs::read(&file).unwrap(), original);
+    }
+    #[test]
     fn converted_xml_import_restore_and_binary_serialization_preserve_identity() {
         let temp = tempfile::tempdir().unwrap();
         let projects = temp.path().join("projects");
