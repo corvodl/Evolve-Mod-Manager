@@ -119,7 +119,10 @@ fn pick(
             .first_index
             .saturating_add(range.index_count)
             .min(mesh.indices.len());
-        for tri in mesh.indices[range.first_index.min(end)..end].as_chunks::<3>().0 {
+        for tri in mesh.indices[range.first_index.min(end)..end]
+            .as_chunks::<3>()
+            .0
+        {
             if tested >= 300_000 {
                 return closest.1;
             }
