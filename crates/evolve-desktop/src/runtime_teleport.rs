@@ -125,7 +125,11 @@ fn fly_forward(quaternion: [f32; 4]) -> Result<Position, String> {
     let fy = 1.0 - 2.0 * (x * x + z * z);
     let forward_len = (fx * fx + fy * fy).sqrt();
     if forward_len.is_finite() && forward_len >= 0.25 {
-        return Ok(Position { x: fx / forward_len, y: fy / forward_len, z: 0.0 });
+        return Ok(Position {
+            x: fx / forward_len,
+            y: fy / forward_len,
+            z: 0.0,
+        });
     }
     // Horizontal left/right remains well-defined when local forward is
     // vertical. Recover planar forward as a 90-degree rotation of local +X.
@@ -133,17 +137,28 @@ fn fly_forward(quaternion: [f32; 4]) -> Result<Position, String> {
     let right_y = 2.0 * (x * y + w * z);
     let right_len = (right_x * right_x + right_y * right_y).sqrt();
     if right_len.is_finite() && right_len >= 0.01 {
-        return Ok(Position { x: -right_y / right_len, y: right_x / right_len, z: 0.0 });
+        return Ok(Position {
+            x: -right_y / right_len,
+            y: right_x / right_len,
+            z: 0.0,
+        });
     }
     if forward_len.is_finite() && forward_len >= 0.01 {
-        return Ok(Position { x: fx / forward_len, y: fy / forward_len, z: 0.0 });
+        return Ok(Position {
+            x: fx / forward_len,
+            y: fy / forward_len,
+            z: 0.0,
+        });
     }
     Err("Local actor orientation temporarily has no stable horizontal axes".into())
 }
 
 /// A transient unusable orientation must never end Fly Mode or reset its
 /// anchor. Preserve the last verified planar heading until a new one is read.
-fn stable_fly_heading(quaternion: [f32; 4], last_heading: &mut Option<Position>) -> Option<Position> {
+fn stable_fly_heading(
+    quaternion: [f32; 4],
+    last_heading: &mut Option<Position>,
+) -> Option<Position> {
     if let Ok(heading) = fly_forward(quaternion) {
         *last_heading = Some(heading);
     }
@@ -247,10 +262,14 @@ mod windows {
     /// read-process-memory operations during an active game-frame update.
     fn actor_orientation(h: &ProcessHandle, entity: usize) -> Result<[f32; 4], String> {
         let bytes = read(h, entity + 0x4C, 16)?;
-        let bytes: [u8; 16] = bytes.try_into().map_err(|_| "Incomplete actor rotation read")?;
+        let bytes: [u8; 16] = bytes
+            .try_into()
+            .map_err(|_| "Incomplete actor rotation read")?;
         let mut rotation = [0.0f32; 4];
         for (value, chunk) in rotation.iter_mut().zip(bytes.chunks_exact(4)) {
-            let raw: [u8; 4] = chunk.try_into().map_err(|_| "Incomplete rotation component")?;
+            let raw: [u8; 4] = chunk
+                .try_into()
+                .map_err(|_| "Incomplete rotation component")?;
             *value = f32::from_le_bytes(raw);
         }
         Ok(rotation)
@@ -737,10 +756,7 @@ mod windows {
                     // Pure Space/Ctrl flight needs no horizontal direction.
                     // Do not interrupt vertical motion when looking straight up.
                     let heading = if input.forward != 0.0 || input.strafe != 0.0 {
-                        stable_fly_heading(
-                            actor_orientation(&handle, r.entity)?,
-                            &mut last_heading,
-                        )
+                        stable_fly_heading(actor_orientation(&handle, r.entity)?, &mut last_heading)
                     } else {
                         last_heading
                     };
@@ -998,12 +1014,20 @@ mod tests {
         let straight_up = fly_forward([half, half, 0.0, 0.0]).unwrap();
         let straight_down = fly_forward([half, -half, 0.0, 0.0]).unwrap();
         for direction in [straight_up, straight_down] {
-            assert!(direction.near(Position { x: 0.0, y: 1.0, z: 0.0 }));
+            assert!(direction.near(Position {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0
+            }));
         }
         // Combined 90-degree yaw and 90-degree pitch should preserve yaw,
         // not stop when the actor looks vertically.
         let sideways = fly_forward([0.5, 0.5, 0.5, 0.5]).unwrap();
-        assert!(sideways.near(Position { x: -1.0, y: 0.0, z: 0.0 }));
+        assert!(sideways.near(Position {
+            x: -1.0,
+            y: 0.0,
+            z: 0.0
+        }));
     }
 
     #[test]
