@@ -12561,57 +12561,33 @@ fn view(state: &State) -> Element<'_, Message> {
             text(if state.level_read_only { "Verified source view; no source files are changed. Vegetation instance streams and unsupported shaders remain unresolved." } else { "Read Level/LYR or Heightmap.dat without touching installed game assets." }),
             if state.level_diagnostics.is_empty() { Element::from(text("")) } else {
                 Element::from(iced::widget::scrollable(
-                    iced::widget::column(state.level_diagnostics.iter().take(12).map(|note| Element::from(text(note).size(11))))
+                    iced::widget::column(state.level_diagnostics.iter().take(12).map(|note| Element::from(text(note.as_str()).size(11))))
                         .spacing(2)
                 ).height(Length::Fixed(70.0)))
             },
-            row![
-                design::button("Read level placements").on_press_maybe((!state.level_read_only).then_some(Message::StartLevelInspection)),
-                design::button("Load heightmap geometry").on_press_maybe((!state.level_read_only).then_some(Message::StartTerrainInspection)),
-                design::button("Export geometry scene GLB").on_press_maybe((!state.level_read_only).then_some(Message::StartLevelGlbExport)),
-                design::button("Export geometry scene FBX").on_press_maybe((!state.level_read_only).then_some(Message::StartLevelFbxExport)),
-            ].spacing(8),
-            row![
-                design::text_input("Exact extracted asset root...",&state.assets_root)
-                    .on_input(Message::AssetsRootChanged).width(Fill),
-                design::text_input("Optional Heightmap.dat source...",&state.terrain_source)
-                    .on_input(Message::TerrainSourceChanged).width(Fill),
-            ].spacing(8),
-            text(if let Some(scene)=&state.level_scene {
-                format!("{} level objects, {} unresolved diagnostics; source transforms preserved.",
-                    scene.objects.len(),scene.diagnostics.len())
-            }else{"No placement source inspected.".into()}),
-            if !state.level_read_only {
-            if let Some(mesh)=&state.model {
-                let display:Element<'_,Message> = if mesh.uv0.is_some(){
-                    shader(TexturedScene{
-                        mesh:mesh.clone(),surfaces:None,diffuse:state.diffuse.clone(),
-                            normal_map:state.normal_map.clone(),emissive:state.emissive_map.clone(),
-                            specular:state.specular_map.clone(),gloss:state.gloss_map.clone(),
-                        yaw:state.yaw,pitch:state.pitch,zoom:state.zoom.max(0.2),
-                            light_strength:state.light_strength,
-                            emissive_gain:state.emissive_strength,
-                            emissive_time:state.decal_time,
-                            pan_x:state.pan_x,pan_y:state.pan_y,shift:state.keyboard_modifiers.shift(),
-                    }).width(Fill).height(Length::Fixed(400.)).into()
-                }else{
-                    canvas(MeshViewport{
-                        mesh:mesh.clone(),yaw:state.yaw,pitch:state.pitch,zoom:state.zoom.max(0.2),
-                            pan_x:state.pan_x,pan_y:state.pan_y,shift:state.keyboard_modifiers.shift(),
-                    }).width(Fill).height(Length::Fixed(400.)).into()
-                };
-                display
-            }else{
-                let fallback:Element<'_,Message>=text("Load an original source heightmap to see terrain triangles.").into();
-                fallback
-            }
-            } else { Element::from(text("The interactive world viewport is shown above; imported originals remain read-only.")) },
-            row![
-                text("Yaw"),
-                slider(-180.0..=180.0,state.yaw,Message::YawChanged).width(Fill),
-                text("Pitch"),
-                slider(-85.0..=85.0,state.pitch,Message::PitchChanged).width(Fill),
-            ].spacing(8),
+            if state.level_read_only {
+                Element::from(text("Imported source files are protected. File → Open as Modding Project to edit."))
+            } else {
+                Element::from(column![
+                row![
+                    design::button("Read level placements").on_press_maybe((!state.level_read_only).then_some(Message::StartLevelInspection)),
+                    design::button("Load heightmap geometry").on_press_maybe((!state.level_read_only).then_some(Message::StartTerrainInspection)),
+                    design::button("Export geometry scene GLB").on_press_maybe((!state.level_read_only).then_some(Message::StartLevelGlbExport)),
+                    design::button("Export geometry scene FBX").on_press_maybe((!state.level_read_only).then_some(Message::StartLevelFbxExport)),
+                ].spacing(8),
+                row![
+                    design::text_input("Exact extracted asset root...",&state.assets_root)
+                        .on_input(Message::AssetsRootChanged).width(Fill),
+                    design::text_input("Optional Heightmap.dat source...",&state.terrain_source)
+                        .on_input(Message::TerrainSourceChanged).width(Fill),
+                ].spacing(8),
+                text(if let Some(scene)=&state.level_scene {
+                    format!("{} level objects, {} unresolved diagnostics; source transforms preserved.",
+                        scene.objects.len(),scene.diagnostics.len())
+                }else{"No placement source inspected.".into()}),
+                ].spacing(8))
+            },
+            text("The unified perspective viewport is above, beside the object outliner."),
             if blender_install::valid_blender(&state.blender_path).is_some() {
                 Element::from(text("Blender detected automatically for scene FBX").size(12))
             } else {
