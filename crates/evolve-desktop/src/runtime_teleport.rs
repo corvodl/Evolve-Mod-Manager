@@ -179,10 +179,10 @@ fn stable_camera_heading(
     direction: Option<Position>,
     last_heading: &mut Option<Position>,
 ) -> Option<Position> {
-    if let Some(direction) = direction {
-        if let Ok(heading) = camera_forward(direction) {
-            *last_heading = Some(heading);
-        }
+    if let Some(direction) = direction
+        && let Ok(heading) = camera_forward(direction)
+    {
+        *last_heading = Some(heading);
     }
     *last_heading
 }
