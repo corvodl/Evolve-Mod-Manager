@@ -272,9 +272,25 @@ impl shader::Program<super::Message> for Scene {
             }
         }
         Primitive {
-            points,
-            ground,
-            indices: data.indices.clone(),
+            // In level mode the GPU world renderer clips actual world-space
+            // triangles against the camera near plane. Do not draw a second
+            // copy of terrain through legacy CPU NDC projection: it turns
+            // triangles crossing the camera into giant apparent surfaces.
+            points: if self.level_camera.is_some() {
+                Vec::new()
+            } else {
+                points
+            },
+            ground: if self.level_camera.is_some() {
+                Vec::new()
+            } else {
+                ground
+            },
+            indices: if self.level_camera.is_some() {
+                Vec::new()
+            } else {
+                data.indices.clone()
+            },
             surfaces: self.surfaces.clone(),
             diffuse: self.diffuse.clone(),
             normal_map: self.normal_map.clone(),

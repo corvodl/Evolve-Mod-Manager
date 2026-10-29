@@ -761,6 +761,70 @@ fn verified_opacity(
 /// Load exact source subset/material IDs for a standalone .skinm/.chrm.
 /// The ordinary model viewer previously resolved an MTL's textures but never
 /// built the per-subset GPU surfaces, so 11-slot models appeared untextured.
+/// World CGF files can hold multiple independently NODE-referenced meshes
+/// while the authored MTL has just one leaf. In that specific unambiguous
+/// case every section receives the *same original* material without guessing
+/// submesh slot IDs or failing the multi-stream source decoder.
+pub fn original_single_leaf_surface(
+    material: &Path,
+    inventory: &Inventory,
+    imported: Option<&Path>,
+    build: Option<&str>,
+    cache: &SharedCache,
+) -> Result<(Surface, Vec<String>), String> {
+    let document = read_material(material).map_err(|e| e.to_string())?;
+    if document.slots.len() != 1 {
+        return Err(format!(
+            "{} MTL leaves require the source per-mesh subset table",
+            document.slots.len()
+        ));
+    }
+    let leaf = &document.slots[0];
+    let visible = !leaf.shader.eq_ignore_ascii_case("NoDraw");
+    let mut surface = Surface {
+        first_index: 0,
+        index_count: 0, // filled from each *verified* mesh's index count
+        visible,
+        transparent: false,
+        diffuse: None,
+        normal: None,
+        emissive: None,
+        armor_emissive: None,
+        emission_strength: leaf.glow_amount.unwrap_or(1.0).max(0.0),
+        kala_emission_state: None,
+        emissive_uv: source_decal_motion(leaf),
+        specular: None,
+        gloss: None,
+        opacity: None,
+    };
+    if !visible {
+        return Ok((surface, Vec::new()));
+    }
+    let (maps, warnings) = authored_maps(
+        &document,
+        material,
+        &material.to_string_lossy(),
+        0,
+        MaterialLookup {
+            inventory,
+            imported,
+            build,
+        },
+        cache,
+        &mut TextureBudget::default(),
+        None,
+    )?;
+    let [diffuse, normal, emissive, specular, gloss, opacity] = maps;
+    surface.diffuse = diffuse;
+    surface.normal = normal;
+    surface.emissive = emissive;
+    surface.specular = specular;
+    surface.gloss = gloss;
+    surface.opacity = verified_opacity(leaf, opacity);
+    surface.transparent = needs_alpha_blending(leaf) && surface.opacity.is_some();
+    Ok((surface, warnings))
+}
+
 pub fn load_model(
     source: &Path,
     material: &Path,

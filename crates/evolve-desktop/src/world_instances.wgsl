@@ -9,6 +9,7 @@ struct Camera {
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(0) @binding(1) var tex_sampler: sampler;
 @group(0) @binding(2) var albedo: texture_2d<f32>;
+@group(0) @binding(3) var authored_opacity: texture_2d<f32>;
 struct Output {
   @builtin(position) clip: vec4<f32>,
   @location(0) uv: vec2<f32>,
@@ -42,6 +43,8 @@ fn vs_main(
 @fragment
 fn fs_main(input:Output)->@location(0) vec4<f32> {
   let base=textureSample(albedo,tex_sampler,input.uv);
+  let coverage=textureSample(authored_opacity,tex_sampler,input.uv).r;
+  if (coverage < 0.5) { discard; }
   var n=input.normal;
   if length(n)<0.01 {
     n=normalize(cross(dpdx(input.world),dpdy(input.world)));

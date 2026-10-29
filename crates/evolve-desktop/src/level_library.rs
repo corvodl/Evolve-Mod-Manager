@@ -431,8 +431,23 @@ fn open_selected(
                     && surface.first_index == 0
                     && surface.index_count == terrain_mesh.indices.len() as u32
                 {
-                    surface.diffuse = Some(std::sync::Arc::new(atlas.image));
-                    applied = true;
+                    let diffuse = std::sync::Arc::new(atlas.image);
+                    surface.diffuse = Some(diffuse.clone());
+                    // The level's authored terrain now renders as a world
+                    // mesh via the GPU instancing pipeline, not CPU NDC
+                    // triangles. Bind the decoded original atlas there too.
+                    let mut world = (*assembled.world).clone();
+                    if let Some(ground) = world.groups.first_mut()
+                        && ground
+                            .instances
+                            .first()
+                            .is_some_and(|entry| entry.object_index == usize::MAX)
+                        && let Some(material) = ground.surfaces.first_mut()
+                    {
+                        material.diffuse = Some(diffuse);
+                        applied = true;
+                    }
+                    assembled.world = std::sync::Arc::new(world);
                 }
                 diagnostics.push(format!(
                     "Original baked terrain: decoded {} indexed surface tiles (BC/RGBA format {}) into 2048×2048 ground-color atlas. {}",

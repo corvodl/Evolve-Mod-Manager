@@ -3,7 +3,9 @@
 use super::{Message, State};
 use evolve_core::{LevelScene, Transform};
 use iced::widget::canvas::{self, Path, Stroke};
-use iced::widget::{button, canvas as canvas_widget, column, row, scrollable, text, text_input};
+use iced::widget::{
+    button, canvas as canvas_widget, column, container, row, scrollable, text, text_input,
+};
 use iced::{Color, Element, Fill, Length, Point, Rectangle, Renderer, Theme, mouse};
 use std::sync::Arc;
 
@@ -225,7 +227,7 @@ fn world_viewport(state: &State) -> Element<'_, Message> {
             },
         })
         .width(Fill)
-        .height(Length::Fixed(700.0))
+        .height(Fill)
         .into()
     } else {
         text("No verified level geometry loaded. Select a map PAK containing mesh or heightmap resources.")
@@ -308,7 +310,10 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     };
     row![
         column![
-            text("PERSPECTIVE VIEWPORT · ORIGINAL LEVEL GEOMETRY").size(14),
+            container(row![
+                text("⌖  PERSPECTIVE").size(12),
+                text("  ·  ORIGINAL STAGE 2 SCENE").size(11).color(MUTED),
+            ].spacing(5)).padding(5),
             world_viewport(state),
             row![
                 button("Perspective").on_press(Message::ViewerCameraPreset("Isometric")),
@@ -356,19 +361,20 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             } else {
                 Element::from(text("Select objects in the Scene Outliner. Orbit, pan and zoom in the 3D viewport.").size(12).color(MUTED))
             },
-        ].spacing(8).width(Length::FillPortion(4)),
+        ].spacing(6).width(Length::FillPortion(4)).height(Fill),
         column![
-            text("SCENE OUTLINER").size(14),
+            text("▤  OUTLINER").size(13),
             text_input("Filter layer, object or model...", &state.level_filter)
                 .on_input(Message::LevelFilterChanged),
-            scrollable(outliner).height(Length::Fixed(240.0)),
+            scrollable(outliner).height(Length::FillPortion(3)),
             text(format!(
                 "{visible} matching placements · {} selected · Shift range / Ctrl toggle",
                 state.level_selection.indices.len()
             ))
             .size(12)
             .color(MUTED),
-            details,
+            text("☷  DETAILS  /  TRANSFORM").size(13),
+            scrollable(details).height(Length::FillPortion(2)),
             row![
                 button("Undo").on_press_maybe(
                     (!state.level_read_only && !state.level_undo.is_empty()).then_some(Message::LevelUndoTransform)
@@ -398,9 +404,11 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 .color(MUTED),
         ]
         .spacing(7)
-        .width(Length::FillPortion(2)),
+        .width(Length::Fixed(380.0))
+        .height(Fill),
     ]
-    .spacing(12)
+    .spacing(9)
+    .height(Fill)
     .into()
 }
 

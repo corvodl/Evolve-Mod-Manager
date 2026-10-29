@@ -531,14 +531,17 @@ pub fn parse_world_model_parts(data: &[u8]) -> Result<Vec<RenderMesh>, ModelErro
         return parse_model_bytes(data).map(|part| vec![part]);
     }
     const MESH: u32 = 0x08001000;
-    let mesh_chunks = chunks
+    // A compiled CGF may contain standalone physics, collision, or helper
+    // mesh chunks. Draw NODE-referenced render meshes, not every MeshChunk.
+    const NODE: u32 = 0x0800100B;
+    let all_mesh_chunks = chunks
         .iter()
         .filter(|(ty, _, _, _)| *ty == MESH)
         .collect::<Vec<_>>();
-    if mesh_chunks.is_empty() {
+    if all_mesh_chunks.is_empty() {
         return parse_model_bytes(data).map(|part| vec![part]);
     }
-    if mesh_chunks.len() > 1024 {
+    if all_mesh_chunks.len() > 1024 {
         return Err(ModelError::Limits);
     }
     let table_count = u32at(data, 8)? as usize;
@@ -553,6 +556,51 @@ pub fn parse_world_model_parts(data: &[u8]) -> Result<Vec<RenderMesh>, ModelErro
         if directory.insert(id, (kind, offset, len)).is_some() {
             return Err(ModelError::Format("duplicate chunk identifiers".into()));
         }
+    }
+    let mut render_refs = std::collections::HashSet::new();
+    let mut has_nodes = false;
+    for (kind, at, size, _) in &chunks {
+        if *kind != NODE {
+            continue;
+        }
+        has_nodes = true;
+        if *size < 68 {
+            return Err(ModelError::Format("truncated render node chunk".into()));
+        }
+        let name = data.get(*at..*at + 64).ok_or(ModelError::Limits)?;
+        let end = name
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(name.len());
+        let label = String::from_utf8_lossy(&name[..end]).to_ascii_lowercase();
+        // Collision and physics-only NODEs are not render surfaces. Drawing
+        // their MeshChunks creates giant neutral domes and bounding proxies.
+        let collision = label.starts_with("$physics")
+            || label.starts_with("phys_")
+            || label.starts_with("collision_")
+            || label.starts_with("proxy_")
+            || label.ends_with("_proxy");
+        if collision {
+            continue;
+        }
+        let target = u32at(data, *at + 64)?;
+        if let Some((MESH, mesh_offset, _)) = directory.get(&target) {
+            render_refs.insert(*mesh_offset);
+        }
+    }
+    let mesh_chunks = if has_nodes {
+        all_mesh_chunks
+            .into_iter()
+            .filter(|(_, at, _, _)| render_refs.contains(at))
+            .collect::<Vec<_>>()
+    } else {
+        // Simple original geometry can have MeshChunks without a NODE table.
+        all_mesh_chunks
+    };
+    if mesh_chunks.is_empty() {
+        return Err(ModelError::Format(
+            "No renderable mesh nodes; physics/proxy geometry is excluded".into(),
+        ));
     }
     let mut parts = Vec::with_capacity(mesh_chunks.len());
     for (_, at, size, _) in mesh_chunks {
@@ -917,6 +965,54 @@ pub(crate) mod tests {
         assert_eq!(parts[1].indices, vec![0, 1, 2]);
         assert_eq!(parts[0].positions[1][0], 1.0);
         assert_eq!(parts[1].positions[1][0], 2.0);
+    }
+
+    #[test]
+    fn original_node_ownership_excludes_physics_proxy_meshes() {
+        let source = fixture();
+        let mut data = vec![0u8; 16 + 7 * 16];
+        data[..8].copy_from_slice(b"CrChF\x07\0\0");
+        data[8..12].copy_from_slice(&7u32.to_le_bytes());
+        data[12..16].copy_from_slice(&16u32.to_le_bytes());
+        let mut add = |index: usize, kind: u32, id: u32, payload: &[u8]| {
+            let table = 16 + index * 16;
+            let offset = data.len();
+            data[table..table + 4].copy_from_slice(&kind.to_le_bytes());
+            data[table + 4..table + 8].copy_from_slice(&id.to_le_bytes());
+            data[table + 8..table + 12].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+            data[table + 12..table + 16].copy_from_slice(&(offset as u32).to_le_bytes());
+            data.extend_from_slice(payload);
+        };
+        for i in 0..3 {
+            let at = 16 + i * 16;
+            let offset = u32at(&source, at + 12).unwrap() as usize;
+            let size = u32at(&source, at + 8).unwrap() as usize;
+            add(
+                i,
+                CRCHF_STREAM,
+                (i + 1) as u32,
+                &source[offset..offset + size],
+            );
+        }
+        let mut mesh = vec![0u8; 104];
+        mesh[8..12].copy_from_slice(&3u32.to_le_bytes());
+        mesh[12..16].copy_from_slice(&3u32.to_le_bytes());
+        mesh[28..32].copy_from_slice(&1u32.to_le_bytes());
+        mesh[36..40].copy_from_slice(&3u32.to_le_bytes());
+        mesh[48..52].copy_from_slice(&2u32.to_le_bytes());
+        add(3, 0x08001000, 10, &mesh);
+        add(4, 0x08001000, 11, &mesh);
+        let mut render_node = vec![0u8; 84];
+        render_node[..12].copy_from_slice(b"rock_visible");
+        render_node[64..68].copy_from_slice(&10u32.to_le_bytes());
+        add(5, 0x0800100B, 20, &render_node);
+        let mut physics = vec![0u8; 84];
+        physics[..10].copy_from_slice(b"$physics_0");
+        physics[64..68].copy_from_slice(&11u32.to_le_bytes());
+        add(6, 0x0800100B, 21, &physics);
+        let parts = parse_world_model_parts(&data).unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].indices, vec![0, 1, 2]);
     }
 
     // The pre-Stage-2 2012 client uses CryTek 0x745 and legacy 16-byte

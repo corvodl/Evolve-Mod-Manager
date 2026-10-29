@@ -20,16 +20,19 @@ pub fn overlay<'a>(
     };
     let backdrop =
         mouse_area(container(space().width(Fill).height(Fill))).on_press(Message::DismissMenus);
+    // Flat, rectangular Windows-desktop context menus: dense items, a
+    // single crisp border and no rounded floating-card silhouette.
+    // Preserve Iced's accessible menu actions without native Win32 unsafe.
     let popup = container(scrollable(items).height(Length::Shrink))
-        .padding(8)
+        .padding(4)
         .width(Length::Fixed(menu_width))
         .max_height(440)
         .style(|theme| container::Style {
-            background: Some(Background::Color(design::surface(theme))),
+            background: Some(Background::Color(design::field(theme))),
             border: Border {
                 color: design::border(theme),
                 width: 1.0,
-                radius: 7.0.into(),
+                radius: 2.0.into(),
             },
             ..container::Style::default()
         });
