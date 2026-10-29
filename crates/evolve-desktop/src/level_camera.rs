@@ -72,7 +72,7 @@ impl Camera {
         let f = axis('w', 's');
         let r = axis('d', 'a');
         let z = axis('e', 'q');
-        let mut vector = [
+        let vector = [
             f * forward[0] + r * right[0],
             f * forward[1] + r * right[1],
             f * forward[2] + z,
