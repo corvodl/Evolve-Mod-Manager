@@ -846,6 +846,61 @@ pub(crate) mod tests {
         }
         data
     }
+    #[test]
+    fn authored_mesh_references_resolve_two_distinct_stream_sets() {
+        let source = fixture();
+        let old_count = u32at(&source, 8).unwrap() as usize;
+        assert_eq!(old_count, 3);
+        let mut chunks = Vec::new();
+        for i in 0..3 {
+            let at = 16 + i * 16;
+            let offset = u32at(&source, at + 12).unwrap() as usize;
+            let size = u32at(&source, at + 8).unwrap() as usize;
+            chunks.push(source[offset..offset + size].to_vec());
+        }
+        let mut data = vec![0u8; 16 + 8 * 16];
+        data[..8].copy_from_slice(b"CrChF\x07\0\0");
+        data[8..12].copy_from_slice(&8u32.to_le_bytes());
+        data[12..16].copy_from_slice(&16u32.to_le_bytes());
+        for index in 0..6 {
+            let mut payload = chunks[index % 3].clone();
+            if index == 3 {
+                // Different original vertex positions prove the streams
+                // are resolved through mesh references, not iteration order.
+                payload[24 + 12..24 + 16].copy_from_slice(&2.0f32.to_le_bytes());
+            }
+            let offset = data.len();
+            let table = 16 + index * 16;
+            data[table..table + 4].copy_from_slice(&CRCHF_STREAM.to_le_bytes());
+            data[table + 4..table + 8].copy_from_slice(&((index + 1) as u32).to_le_bytes());
+            data[table + 8..table + 12].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+            data[table + 12..table + 16].copy_from_slice(&(offset as u32).to_le_bytes());
+            data.extend_from_slice(&payload);
+        }
+        for i in 0..2 {
+            let mut mesh = vec![0u8; 104];
+            mesh[8..12].copy_from_slice(&3u32.to_le_bytes());
+            mesh[12..16].copy_from_slice(&3u32.to_le_bytes());
+            mesh[28..32].copy_from_slice(&((1+i*3) as u32).to_le_bytes());
+            mesh[36..40].copy_from_slice(&((3+i*3) as u32).to_le_bytes());
+            mesh[48..52].copy_from_slice(&((2+i*3) as u32).to_le_bytes());
+            let offset = data.len();
+            let table = 16 + (6+i) * 16;
+            data[table..table + 4].copy_from_slice(&0x08001000u32.to_le_bytes());
+            data[table + 4..table + 8].copy_from_slice(&((7+i) as u32).to_le_bytes());
+            data[table + 8..table + 12].copy_from_slice(&(mesh.len() as u32).to_le_bytes());
+            data[table + 12..table + 16].copy_from_slice(&(offset as u32).to_le_bytes());
+            data.extend_from_slice(&mesh);
+        }
+        assert!(parse_model_bytes(&data).is_err());
+        let parts = parse_world_model_parts(&data).unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].indices, vec![0, 1, 2]);
+        assert_eq!(parts[1].indices, vec![0, 1, 2]);
+        assert_eq!(parts[0].positions[1][0], 1.0);
+        assert_eq!(parts[1].positions[1][0], 2.0);
+    }
+
     // The pre-Stage-2 2012 client uses CryTek 0x745 and legacy 16-byte
     // terminal chunk records, not the CrChF v7 chunk table.
     fn legacy_2012_fixture() -> Vec<u8> {
