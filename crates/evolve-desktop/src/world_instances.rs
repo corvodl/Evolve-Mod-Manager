@@ -7,7 +7,7 @@ use iced::wgpu;
 use iced::wgpu::util::{DeviceExt, TextureDataOrder};
 use std::sync::Arc;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(super) struct ModelGroup {
     pub mesh: Arc<RenderMesh>,
     pub surfaces: Vec<Surface>,
@@ -19,7 +19,7 @@ pub(super) struct Instance {
     pub object_index: usize,
     pub transform: Transform,
 }
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub(super) struct World {
     pub groups: Vec<ModelGroup>,
     pub instance_count: usize,
