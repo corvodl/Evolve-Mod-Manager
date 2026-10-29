@@ -1596,6 +1596,23 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
             )
                 .label("Show external overlay and enable shortcuts (windowed fullscreen)")
                 .on_toggle(Message::TeleportOverlayChanged),
+            iced::widget::checkbox(state.teleport_overlay_experimental)
+                .label("Experimental hooked input (Windows keyboard hook)")
+                .on_toggle(Message::TeleportOverlayExperimentalChanged),
+            text("Experimental mode captures F6–F12 hotkeys using a Windows low-level keyboard hook while Evolve is focused. The visual overlay remains external. No game injection; exclusive fullscreen and protected input are not guaranteed.")
+                .size(12)
+                .style(design::muted),
+            text(if state.teleport_overlay_experimental {
+                if state.teleport_hook_ready {
+                    "Experimental hook installed · shortcuts are captured only while Evolve has focus."
+                } else if state.teleport_overlay.is_some() {
+                    "Experimental hook starting · check shortcut status below."
+                } else {
+                    "Experimental mode selected · start the external overlay to enable the hook."
+                }
+            } else {
+                "Standard mode · Windows RegisterHotKey shortcuts."
+            }).size(12).style(design::muted),
             text(if state.teleport_overlay_pending {
                 "Detecting running game..."
             } else if state.teleport_status.is_empty() {
