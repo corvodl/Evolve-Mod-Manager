@@ -160,9 +160,7 @@ fn fly_forward(quaternion: [f32; 4]) -> Result<Position, String> {
 /// source. Keep the game camera's pitch out of WASD: Space/Ctrl owns altitude.
 /// Cache the last heading when the camera looks nearly straight up or down.
 fn camera_forward(direction: Position) -> Result<Position, String> {
-    let len2 = direction.x * direction.x
-        + direction.y * direction.y
-        + direction.z * direction.z;
+    let len2 = direction.x * direction.x + direction.y * direction.y + direction.z * direction.z;
     if !len2.is_finite() || !(0.8..=1.2).contains(&len2) {
         return Err("Camera direction is not a valid unit vector".into());
     }
@@ -262,9 +260,7 @@ fn approximate_aim_target(
     if !distance.is_finite() || !(5.0..=100.0).contains(&distance) {
         return Err("Aim distance must be 5 to 100 units".into());
     }
-    let len2 = direction.x * direction.x
-        + direction.y * direction.y
-        + direction.z * direction.z;
+    let len2 = direction.x * direction.x + direction.y * direction.y + direction.z * direction.z;
     if !len2.is_finite() || !(0.8..=1.2).contains(&len2) {
         return Err("Camera direction is not a valid unit vector".into());
     }
@@ -366,9 +362,8 @@ mod windows {
     /// used if the first pointer/vector is unavailable (e.g. a view transition).
     fn camera_direction(h: &ProcessHandle, base: usize) -> Result<Position, String> {
         let game = q(h, base + ENTITY_SYSTEM_RVA - 0x10)?;
-        let primary = q(h, game + CAMERA_GAME_PTR).and_then(|ptr| {
-            camera_vector(h, ptr + CAMERA_GAME_VECTOR)
-        });
+        let primary =
+            q(h, game + CAMERA_GAME_PTR).and_then(|ptr| camera_vector(h, ptr + CAMERA_GAME_VECTOR));
         if let Ok(direction) = primary {
             return Ok(direction);
         }
@@ -1325,12 +1320,14 @@ mod tests {
             Some(north),
         );
         assert_eq!(stable_camera_heading(None, &mut last), Some(north));
-        assert!(camera_forward(Position {
-            x: f32::NAN,
-            y: 0.0,
-            z: 0.0,
-        })
-        .is_err());
+        assert!(
+            camera_forward(Position {
+                x: f32::NAN,
+                y: 0.0,
+                z: 0.0,
+            })
+            .is_err()
+        );
         let mut unset = None;
         assert!(stable_camera_heading(None, &mut unset).is_none());
         assert!(stable_fly_heading([1.0, 0.0, 0.0, 0.0], &mut unset).is_some());
@@ -1360,11 +1357,16 @@ mod tests {
         assert!(upward.x > origin.x && downward.x > origin.x);
         assert!(approximate_aim_target(origin, up, 0.0).is_err());
         assert!(approximate_aim_target(origin, up, 101.0).is_err());
-        assert!(approximate_aim_target(origin, Position {
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        }, 30.0).is_err());
-    }
-
-}
+        assert!(
+            approximate_aim_target(
+                origin,
+                Position {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                30.0
+            )
+            .is_err()
+        );
+    }}
