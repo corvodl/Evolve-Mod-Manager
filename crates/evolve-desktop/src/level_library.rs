@@ -98,13 +98,14 @@ fn terrain_resource(
     let folder = map_virtual_folder(map)
         .ok_or_else(|| "Cannot determine the original map's virtual folder".to_owned())?;
     let requested = format!("{folder}/{member_name}");
-    let mut loaded_inventory = None;
-    let selected_inventory = if let Some(inv) = inventory {
-        inv
+    let loaded_inventory = if inventory.is_none() {
+        Some(imported_archive_files(selected).map_err(|e| e.to_string())?)
     } else {
-        loaded_inventory = Some(imported_archive_files(selected).map_err(|e| e.to_string())?);
-        loaded_inventory.as_ref().expect("inventory loaded")
+        None
     };
+    let selected_inventory = inventory
+        .or(loaded_inventory.as_ref())
+        .ok_or_else(|| "No verified imported map inventory".to_owned())?;
     let library_root = Path::new(&selected.directory).parent();
     let build = (selected.builds.len() == 1).then(|| selected.builds[0].as_str());
     auto_resources::exact(selected_inventory, &requested, library_root, build)
