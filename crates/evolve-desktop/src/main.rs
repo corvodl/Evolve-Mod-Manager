@@ -1981,6 +1981,7 @@ enum Message {
     TeleportOverlayDetected(u64, runtime_memory::Snapshot),
     TeleportOverlayPoll,
     DeveloperKeybindChanged(developer_hotkeys::Action, developer_hotkeys::Keybind),
+    DeveloperKeybindDefaults,
     TeleportDo(runtime_teleport::Destination, Option<(u32, u32)>),
     TeleportMoved(Result<runtime_teleport::Reading, String>),
     TeleportDetect(TeleportRequest),
@@ -4341,6 +4342,25 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::DeveloperPasswordChanged(value) => {
             if !state.developer_checking && value.len() <= 128 {
                 state.developer_password = value;
+            }
+        }
+        Message::DeveloperKeybindDefaults => {
+            if !state.developer_unlocked {
+                return Task::none();
+            }
+            // Explicit opt-in: all defaults remain Disabled unless the user
+            // clicks Load suggested shortcuts, preserving custom preferences.
+            state.preferences.developer_hotkeys = [22, 23, 24, 25, 26, 27, 28, 1, 2];
+            for action in developer_hotkeys::Action::ALL {
+                send_dev_bind(state, action);
+            }
+            state.developer_hotkey_status =
+                "9 suggested shortcuts assigned (F6–F12, Ctrl+F6/F7). Activate the overlay to use them.".into();
+            if let Ok(path) = settings_path()
+                && let Err(error) = save_to(&path, &state.preferences)
+            {
+                state.developer_hotkey_status =
+                    format!("Suggested shortcuts assigned for session; settings save failed: {error}");
             }
         }
         Message::DeveloperKeybindChanged(action, key) => {
