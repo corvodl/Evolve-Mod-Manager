@@ -4,8 +4,8 @@
 //! guessed global map root, automatic editing, or modification of game files.
 use crate::{asset_cache::SharedCache, level_scene_renderer, modding_projects::ProjectRow};
 use evolve_core::{
-    ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, TerrainInfo, imported_archive_files, scan_directory,
-    parse_level_scene, read_terrain,
+    ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, TerrainInfo, imported_archive_files,
+    parse_level_scene, read_terrain, scan_directory,
 };
 use std::collections::BTreeMap;
 use std::fs;
@@ -47,12 +47,13 @@ fn map_group(relative: &str) -> (String, String) {
     let parts: Vec<&str> = relative.split('/').filter(|p| !p.is_empty()).collect();
     if let Some((index, name)) = parts.iter().enumerate().find_map(|(index, part)| {
         (part.eq_ignore_ascii_case("levels") || part.eq_ignore_ascii_case("maps"))
-            .then(|| parts.get(index + 1).map(|name| (index, name))).flatten()
+            .then(|| parts.get(index + 1).map(|name| (index, name)))
+            .flatten()
     }) {
-            return (
-                parts[..=index + 1].join("/").to_ascii_lowercase(),
-                (*name).to_string(),
-            );
+        return (
+            parts[..=index + 1].join("/").to_ascii_lowercase(),
+            (*name).to_string(),
+        );
     }
     // A Layer subdirectory is not itself a separate map.
     let folder = parts.len().saturating_sub(1);
@@ -113,7 +114,9 @@ fn discover_inventory(inventory: &Inventory) -> Result<(PathBuf, Vec<MapCandidat
         });
         let path = PathBuf::from(&entry.relative_path);
         if vegetation {
-            if group.vegetation.is_none() { group.vegetation = Some(path); }
+            if group.vegetation.is_none() {
+                group.vegetation = Some(path);
+            }
         } else if terrain {
             if group.terrain.is_none() {
                 group.terrain = Some(path);
@@ -164,23 +167,54 @@ pub(super) fn open(
 /// Open a verified copy owned by the Modding project. The caller supplies the
 /// manager-indexed ProjectRow; this function never treats an arbitrary folder
 /// as an editable project or creates new files.
-pub(super) fn open_project(project: ProjectRow, index: usize, cache: &SharedCache, library_root: &Path) -> Result<LoadedMap, String> {
+pub(super) fn open_project(
+    project: ProjectRow,
+    index: usize,
+    cache: &SharedCache,
+    library_root: &Path,
+) -> Result<LoadedMap, String> {
     let inventory = scan_directory(&project.workspace.join("files")).map_err(|e| e.to_string())?;
     let (root, maps) = discover_inventory(&inventory)?;
-    let build = if library_root.is_dir() && !project.source_build.trim().is_empty() { vec![project.source_build.clone()] } else { Vec::new() };
-    let archive = ImportedPak {
-        id: "editable-level-project".into(), name: project.target.clone(),
-        source: project.workspace.display().to_string(),
-        directory: library_root.join("editable-level-project").display().to_string(),
-        group: "Levels".into(), description: "Editable modding project".into(),
-        entries: inventory.entries.len(), extracted_bytes: inventory.total_bytes,
-        warnings: 0, builds: build,
+    let build = if library_root.is_dir() && !project.source_build.trim().is_empty() {
+        vec![project.source_build.clone()]
+    } else {
+        Vec::new()
     };
-    open_selected(archive, root, maps, index, cache, Some(inventory), Some(project))
+    let archive = ImportedPak {
+        id: "editable-level-project".into(),
+        name: project.target.clone(),
+        source: project.workspace.display().to_string(),
+        directory: library_root
+            .join("editable-level-project")
+            .display()
+            .to_string(),
+        group: "Levels".into(),
+        description: "Editable modding project".into(),
+        entries: inventory.entries.len(),
+        extracted_bytes: inventory.total_bytes,
+        warnings: 0,
+        builds: build,
+    };
+    open_selected(
+        archive,
+        root,
+        maps,
+        index,
+        cache,
+        Some(inventory),
+        Some(project),
+    )
 }
 
-fn open_selected(archive: ImportedPak, root: PathBuf, maps: Vec<MapCandidate>, index: usize,
-    cache: &SharedCache, project_inventory: Option<Inventory>, project: Option<ProjectRow>) -> Result<LoadedMap, String> {
+fn open_selected(
+    archive: ImportedPak,
+    root: PathBuf,
+    maps: Vec<MapCandidate>,
+    index: usize,
+    cache: &SharedCache,
+    project_inventory: Option<Inventory>,
+    project: Option<ProjectRow>,
+) -> Result<LoadedMap, String> {
     let index = index.min(maps.len().saturating_sub(1));
     let chosen = &maps[index];
     let mut diagnostics = Vec::new();
@@ -227,13 +261,22 @@ fn open_selected(archive: ImportedPak, root: PathBuf, maps: Vec<MapCandidate>, i
     }
     if let Some(relative) = &chosen.vegetation {
         let path = verified_source(&root, relative, 192 * 1024 * 1024)?;
-        let data = scene.get_or_insert_with(|| LevelScene { schema: 1, objects: Vec::new(), diagnostics: Vec::new() });
+        let data = scene.get_or_insert_with(|| LevelScene {
+            schema: 1,
+            objects: Vec::new(),
+            diagnostics: Vec::new(),
+        });
         match crate::vegetation_map::inspect_file(&path, data) {
             Ok(veg) => {
-                diagnostics.push(format!("Decoded {} vegetation instances from {} source prototypes (format v{}).", veg.instances, veg.prototypes, veg.version));
+                diagnostics.push(format!(
+                    "Decoded {} vegetation instances from {} source prototypes (format v{}).",
+                    veg.instances, veg.prototypes, veg.version
+                ));
                 diagnostics.extend(veg.warnings);
             }
-            Err(reason) => diagnostics.push(format!("VegetationMap.dat exists but could not be decoded: {reason}")),
+            Err(reason) => diagnostics.push(format!(
+                "VegetationMap.dat exists but could not be decoded: {reason}"
+            )),
         }
     }
     let terrain = if let Some(relative) = &chosen.terrain {
