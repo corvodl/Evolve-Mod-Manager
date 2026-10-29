@@ -259,7 +259,10 @@ impl shader::Program<super::Message> for Scene {
                         ((2.5 - depth) / 5.0).clamp(0., 1.),
                     ]
                 };
-                ground.push(GroundVertex { position, rgba: line.color });
+                ground.push(GroundVertex {
+                    position,
+                    rgba: line.color,
+                });
             }
         }
         Primitive {
