@@ -38,6 +38,7 @@ mod initial_setup;
 mod launcher_bridge;
 mod level_library;
 mod level_scene_renderer;
+mod level_pick;
 mod vegetation_map;
 mod level_workspace;
 mod library_picker;
@@ -351,6 +352,7 @@ struct State {
     )>,
     level_read_only: bool,
     level_surfaces: Option<Arc<Vec<textured::Surface>>>,
+    level_picks: Option<Arc<Vec<level_scene_renderer::PickRange>>>,
     level_project: Option<modding_projects::ProjectRow>,
     level_open_after_copy: bool,
     level_diagnostics: Vec<String>,
@@ -11715,6 +11717,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     );
                     state.terrain = Some(info);
                     state.level_surfaces = None;
+                    state.level_picks = None;
                     state.model = Some(Arc::new(mesh));
                     state.skin_preview = None;
                     state.playing = false;
@@ -11753,9 +11756,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.level_selected = None;
                     if let Some(assembled) = loaded.full_scene {
                         state.level_surfaces = Some(Arc::new(assembled.surfaces));
+                        state.level_picks = Some(Arc::new(assembled.picks));
                         state.model = Some(Arc::new(assembled.mesh));
                     } else {
                         state.level_surfaces = None;
+                        state.level_picks = None;
+                    state.level_picks = None;
                         state.model = loaded
                             .terrain
                             .as_ref()
@@ -11783,6 +11789,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.library_map = None;
                     state.level_project = None;
                     state.level_surfaces = None;
+                    state.level_picks = None;
                     state.level_read_only = false;
                     state.level_diagnostics.clear();
                     state.model = None;
