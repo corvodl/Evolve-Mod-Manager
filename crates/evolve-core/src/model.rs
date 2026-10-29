@@ -967,6 +967,49 @@ pub(crate) mod tests {
         assert_eq!(parts[1].positions[1][0], 2.0);
     }
 
+    #[test]
+    fn original_node_ownership_excludes_physics_proxy_meshes() {
+        let source = fixture();
+        let mut data = vec![0u8; 16 + 7 * 16];
+        data[..8].copy_from_slice(b"CrChF\x07\0\0");
+        data[8..12].copy_from_slice(&7u32.to_le_bytes());
+        data[12..16].copy_from_slice(&16u32.to_le_bytes());
+        let mut add = |index: usize, kind: u32, id: u32, payload: &[u8]| {
+            let table = 16 + index * 16;
+            let offset = data.len();
+            data[table..table + 4].copy_from_slice(&kind.to_le_bytes());
+            data[table + 4..table + 8].copy_from_slice(&id.to_le_bytes());
+            data[table + 8..table + 12].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+            data[table + 12..table + 16].copy_from_slice(&(offset as u32).to_le_bytes());
+            data.extend_from_slice(payload);
+        };
+        for i in 0..3 {
+            let at = 16 + i * 16;
+            let offset = u32at(&source, at + 12).unwrap() as usize;
+            let size = u32at(&source, at + 8).unwrap() as usize;
+            add(i, CRCHF_STREAM, (i + 1) as u32, &source[offset..offset + size]);
+        }
+        let mut mesh = vec![0u8; 104];
+        mesh[8..12].copy_from_slice(&3u32.to_le_bytes());
+        mesh[12..16].copy_from_slice(&3u32.to_le_bytes());
+        mesh[28..32].copy_from_slice(&1u32.to_le_bytes());
+        mesh[36..40].copy_from_slice(&3u32.to_le_bytes());
+        mesh[48..52].copy_from_slice(&2u32.to_le_bytes());
+        add(3, 0x08001000, 10, &mesh);
+        add(4, 0x08001000, 11, &mesh);
+        let mut render_node = vec![0u8; 84];
+        render_node[..12].copy_from_slice(b"rock_visible");
+        render_node[64..68].copy_from_slice(&10u32.to_le_bytes());
+        add(5, 0x0800100B, 20, &render_node);
+        let mut physics = vec![0u8; 84];
+        physics[..10].copy_from_slice(b"$physics_0");
+        physics[64..68].copy_from_slice(&11u32.to_le_bytes());
+        add(6, 0x0800100B, 21, &physics);
+        let parts = parse_world_model_parts(&data).unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].indices, vec![0, 1, 2]);
+    }
+
     // The pre-Stage-2 2012 client uses CryTek 0x745 and legacy 16-byte
     // terminal chunk records, not the CrChF v7 chunk table.
     fn legacy_2012_fixture() -> Vec<u8> {
