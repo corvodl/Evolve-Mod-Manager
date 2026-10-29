@@ -411,6 +411,7 @@ struct State {
     teleport_hold_releasing: bool,
     teleport_hold_status: String,
     teleport_hold_generation: u64,
+    teleport_fly_speed: String,
     teleport_x: String,
     teleport_y: String,
     teleport_z: String,
@@ -1982,6 +1983,7 @@ enum Message {
     TeleportDetect(TeleportRequest),
     TeleportAutoDetected(u64, TeleportRequest, runtime_memory::Snapshot),
     TeleportHold(runtime_teleport::HoldMode),
+    TeleportFlySpeedChanged(String),
     TeleportHoldRelease,
     TeleportHoldFinished(u64, Result<runtime_teleport::Reading, String>),
     ActorEdit(u32, usize, runtime_actors::Field, u32),
@@ -4507,6 +4509,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.runtime_snapshot = Some(snapshot);
             return Task::done(request.message());
         }
+        Message::TeleportFlySpeedChanged(value) => {
+            if state.developer_unlocked
+                && state.teleport_hold_cancel.is_none()
+                && value.len() <= 12
+            {
+                state.teleport_fly_speed = value;
+            }
+        }
         Message::TeleportHold(mode) => {
             if !state.developer_unlocked
                 || !state.live_edit_enabled
@@ -4521,21 +4531,37 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let Some(snapshot) = state.runtime_snapshot.clone().filter(|s| s.pid.is_some() && s.module_base.is_some()) else {
                 return Task::done(Message::TeleportDetect(TeleportRequest::Hold(mode)));
             };
+            let fly_speed = if mode == runtime_teleport::HoldMode::Fly {
+                let raw = state.teleport_fly_speed.trim();
+                match runtime_teleport::parse_fly_speed(if raw.is_empty() { "8" } else { raw }) {
+                    Ok(speed) => speed,
+                    Err(error) => {
+                        state.teleport_hold_status = error;
+                        return Task::none();
+                    }
+                }
+            } else {
+                0.0
+            };
             let stop = Arc::new(AtomicBool::new(false));
             state.teleport_hold_cancel = Some(stop.clone());
             state.teleport_hold_mode = Some(mode);
             state.teleport_hold_releasing = false;
             state.teleport_hold_generation = state.teleport_hold_generation.wrapping_add(1);
             let generation = state.teleport_hold_generation;
-            state.teleport_hold_status = format!(
-                "Engaging {} hold at the current physics coordinates...",
-                mode.label()
-            );
+            state.teleport_hold_status = if mode == runtime_teleport::HoldMode::Fly {
+                format!("Starting approximate Fly Mode at {fly_speed:.1} units/sec. Switch to Evolve and use WASD, Space, Ctrl.")
+            } else {
+                format!(
+                    "Engaging {} hold at the current physics coordinates...",
+                    mode.label()
+                )
+            };
             let root = state.preferences.game_storage_root.clone();
             return Task::perform(
                 async move {
                     tokio::task::spawn_blocking(move || {
-                        runtime_teleport::hold(&snapshot, &root, true, mode, stop)
+                        runtime_teleport::hold(&snapshot, &root, true, mode, fly_speed, stop)
                     })
                     .await
                     .unwrap_or_else(|e| Err(format!("Coordinate hold worker failed: {e}")))
@@ -4560,7 +4586,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             match result {
                 Ok(reading) => {
                     state.teleport_hold_status =
-                        "Coordinate hold released; normal physics resumes (falling may accelerate)"
+                        "Coordinate hold/Fly Mode released. Game gravity and falling remain unchanged."
                             .into();
                     notify_dev_overlay(state, "Coordinate hold released");
                     state.teleport_reading = Some(reading);
