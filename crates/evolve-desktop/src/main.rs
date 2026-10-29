@@ -7543,11 +7543,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::ViewerSelectFile(index) => {
-            if state.text_document.as_ref().is_some_and(|doc| doc.dirty())
-                && state.selected != Some(index)
-            {
-                state.status =
-                    "Save or Discard the open text changes before selecting another asset.".into();
+            if state.text_document.as_ref().is_some_and(|doc| doc.dirty()) {
+                if state.selected != Some(index) {
+                    state.status =
+                        "Save or Discard the open text changes before selecting another asset.".into();
+                }
                 return Task::none();
             }
             state.text_document = None;
