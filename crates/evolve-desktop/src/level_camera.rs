@@ -131,7 +131,10 @@ mod tests {
     use super::*;
     #[test]
     fn first_person_camera_moves_in_view_direction_and_strafes() {
-        let mut camera = Camera { speed: 10.0, ..Camera::default() };
+        let mut camera = Camera {
+            speed: 10.0,
+            ..Camera::default()
+        };
         camera.advance(&HashSet::from(['w']), 0.0, 0.0, 1.0 / 10.0);
         assert!((camera.position[1] - 1.0).abs() < 0.001);
         camera.advance(&HashSet::from(['d']), 0.0, 0.0, 0.1);
