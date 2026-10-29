@@ -4510,9 +4510,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return Task::done(request.message());
         }
         Message::TeleportFlySpeedChanged(value) => {
-            if state.developer_unlocked
-                && state.teleport_hold_cancel.is_none()
-                && value.len() <= 12
+            if state.developer_unlocked && state.teleport_hold_cancel.is_none() && value.len() <= 12
             {
                 state.teleport_fly_speed = value;
             }
@@ -4528,7 +4526,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     "Finish other teleport operations and enable actor writes first".into();
                 return Task::none();
             }
-            let Some(snapshot) = state.runtime_snapshot.clone().filter(|s| s.pid.is_some() && s.module_base.is_some()) else {
+            let Some(snapshot) = state
+                .runtime_snapshot
+                .clone()
+                .filter(|s| s.pid.is_some() && s.module_base.is_some())
+            else {
                 return Task::done(Message::TeleportDetect(TeleportRequest::Hold(mode)));
             };
             let fly_speed = if mode == runtime_teleport::HoldMode::Fly {
@@ -4550,7 +4552,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.teleport_hold_generation = state.teleport_hold_generation.wrapping_add(1);
             let generation = state.teleport_hold_generation;
             state.teleport_hold_status = if mode == runtime_teleport::HoldMode::Fly {
-                format!("Starting approximate Fly Mode at {fly_speed:.1} units/sec. Switch to Evolve and use WASD, Space, Ctrl.")
+                format!(
+                    "Starting approximate Fly Mode at {fly_speed:.1} units/sec. Switch to Evolve and use WASD, Space, Ctrl."
+                )
             } else {
                 format!(
                     "Engaging {} hold at the current physics coordinates...",
@@ -4769,7 +4773,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             {
                 return Task::none();
             }
-            let Some(snapshot) = state.runtime_snapshot.clone().filter(|s| s.pid.is_some() && s.module_base.is_some()) else {
+            let Some(snapshot) = state
+                .runtime_snapshot
+                .clone()
+                .filter(|s| s.pid.is_some() && s.module_base.is_some())
+            else {
                 return Task::done(Message::TeleportDetect(TeleportRequest::Preview));
             };
             let raw = state.teleport_aim_distance.trim();
@@ -4817,7 +4825,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.teleport_status = "Finish the current teleport operation first".into();
                 return Task::none();
             }
-            let Some(snapshot) = state.runtime_snapshot.clone().filter(|s| s.pid.is_some() && s.module_base.is_some()) else {
+            let Some(snapshot) = state
+                .runtime_snapshot
+                .clone()
+                .filter(|s| s.pid.is_some() && s.module_base.is_some())
+            else {
                 return Task::done(Message::TeleportDetect(TeleportRequest::Capture(save)));
             };
             state.teleport_busy = true;
@@ -4915,11 +4927,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 || state.teleport_hold_cancel.is_some()
             {
                 state.teleport_status =
-                    "Teleport requires enabled actor memory writes and no other teleport operation".into();
+                    "Teleport requires enabled actor memory writes and no other teleport operation"
+                        .into();
                 return Task::none();
             }
-            let Some(snapshot) = state.runtime_snapshot.clone().filter(|s| s.pid.is_some() && s.module_base.is_some()) else {
-                return Task::done(Message::TeleportDetect(TeleportRequest::Move(destination, identity)));
+            let Some(snapshot) = state
+                .runtime_snapshot
+                .clone()
+                .filter(|s| s.pid.is_some() && s.module_base.is_some())
+            else {
+                return Task::done(Message::TeleportDetect(TeleportRequest::Move(
+                    destination,
+                    identity,
+                )));
             };
             state.teleport_busy = true;
             state.teleport_status = "Applying one-shot physics teleport...".into();
@@ -12867,9 +12887,11 @@ mod project_edit_tests {
             live_edit_enabled: false,
             ..State::default()
         };
-        let target = runtime_teleport::Destination::Relative(
-            runtime_teleport::Position { x: 0.0, y: 0.0, z: 20.0 }
-        );
+        let target = runtime_teleport::Destination::Relative(runtime_teleport::Position {
+            x: 0.0,
+            y: 0.0,
+            z: 20.0,
+        });
         let _ = update(&mut state, Message::TeleportDo(target, None));
         assert!(state.teleport_status.contains("actor memory writes"));
         state.live_edit_enabled = true;
@@ -12887,7 +12909,10 @@ mod project_edit_tests {
             live_edit_enabled: true,
             ..State::default()
         };
-        let _ = update(&mut state, Message::TeleportDetect(TeleportRequest::Capture(false)));
+        let _ = update(
+            &mut state,
+            Message::TeleportDetect(TeleportRequest::Capture(false)),
+        );
         assert!(state.teleport_detect_pending);
         let generation = state.teleport_detect_generation;
         let old = runtime_memory::Snapshot {
@@ -12901,7 +12926,10 @@ mod project_edit_tests {
             Message::TeleportAutoDetected(generation, TeleportRequest::Capture(false), old),
         );
         assert!(!state.teleport_detect_pending);
-        assert_eq!(state.runtime_snapshot.as_ref().and_then(|s| s.pid), Some(4784));
+        assert_eq!(
+            state.runtime_snapshot.as_ref().and_then(|s| s.pid),
+            Some(4784)
+        );
         assert!(state.live_edit_enabled);
     }
 
