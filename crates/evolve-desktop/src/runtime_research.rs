@@ -1,7 +1,7 @@
 //! Read-only Stage 2 research inspection for the Developer > Actors section.
 //! PR #135 documents observations; only build/identity-validated memory reads
 //! are exposed here. This module never writes memory or invokes game methods.
-use crate::{runtime_actors, runtime_memory};
+use crate::{runtime_actors, runtime_energy, runtime_memory};
 use runtime_memory::Snapshot;
 
 const ENTITY_SYSTEM_RVA: usize = 0x28D58E8;
@@ -10,106 +10,6 @@ const ACTOR_VTABLE_RVA: usize = 0x24B3790;
 const INVENTORY_VTABLE_RVA: usize = 0x2263350;
 const PROXY_VTABLE_RVA: usize = 0x22E2DE0;
 const LIVING_VTABLE_RVA: usize = 0x2336010;
-const MONSTER_ENERGY_KEY_RVA: usize = 0x28D5AE0;
-
-/// Verified on the inspected Stage 2 runtime. The key changes with the process;
-/// never persist these decoded values or treat them as directly writable floats.
-fn monster_stage(word: u32) -> Option<u8> {
-    match word & 0xFFFF {
-        0x0101 => Some(1),
-        0x0202 => Some(2),
-        0x0303 => Some(3),
-        _ => None,
-    }
-}
-
-fn known_monster(name: &str) -> bool {
-    // Match internal entity-name families, never the fallback "Actor entity ..."
-    // label. This prevents hunter offsets being interpreted as monster energy.
-    [
-        "Goliath",
-        "Kraken",
-        "Grounder",
-        "Teleporter",
-        "Rocky",
-        "Rockybobsicle",
-        "Lurker",
-        "Scorpid",
-    ]
-    .iter()
-    .any(|prefix| name.starts_with(prefix))
-}
-
-fn evolution_current(raw: u32, key: u32) -> f32 {
-    f32::from_bits((raw ^ key).rotate_right(9))
-}
-fn evolution_max(raw: u32, key: u32) -> f32 {
-    f32::from_bits((raw ^ key).rotate_left(16))
-}
-fn traversal_current(raw: u32, key: u32) -> f32 {
-    f32::from_bits(raw ^ key ^ 0x0093F6E4)
-}
-fn traversal_max(raw: u32, key: u32) -> f32 {
-    f32::from_bits((raw ^ key).rotate_left(7))
-}
-fn bounded_resource(current: f32, maximum: f32) -> bool {
-    current.is_finite()
-        && maximum.is_finite()
-        && (0.0..=maximum).contains(&current)
-        && (0.0..=1000.0).contains(&maximum)
-}
-
-fn checked_evolution(
-    stage_word: u32,
-    current_raw: u32,
-    max_raw: u32,
-    key: u32,
-) -> Result<(u8, f32, f32), &'static str> {
-    let stage = monster_stage(stage_word).ok_or("Evolution stage unrecognized")?;
-    let current = evolution_current(current_raw, key);
-    let maximum = evolution_max(max_raw, key);
-    let expected = match stage {
-        1 => 24.0,
-        2 => 28.0,
-        3 => 0.0,
-        _ => return Err("Unsupported evolution stage"),
-    };
-    if !bounded_resource(current, maximum) || maximum != expected {
-        return Err("Energy decode/rules mismatch; no readout for this build");
-    }
-    Ok((stage, current, maximum))
-}
-
-fn checked_traversal(current_raw: u32, max_raw: u32, key: u32) -> Result<(f32, f32), &'static str> {
-    let current = traversal_current(current_raw, key);
-    let maximum = traversal_max(max_raw, key);
-    if !bounded_resource(current, maximum) || maximum <= 0.0 {
-        return Err("Traversal decode out of plausible bounds");
-    }
-    Ok((current, maximum))
-}
-
-/// Decoded, read-only snapshot of a validated local monster's evolution bar.
-/// Stage 3 intentionally has a zero-length bar and no percentage.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct EvolutionEnergy {
-    pub stage: u8,
-    pub current: f32,
-    pub maximum: f32,
-}
-impl EvolutionEnergy {
-    pub fn percentage(self) -> Option<u8> {
-        if self.stage == 3 || !bounded_resource(self.current, self.maximum) || self.maximum <= 0.0 {
-            return None;
-        }
-        Some(
-            (self.current / self.maximum * 100.0)
-                .round()
-                .clamp(0.0, 100.0) as u8,
-        )
-    }
-}
-
 #[derive(Clone, Debug)]
 pub(super) struct Inventory {
     pub actor_name: String,
@@ -258,11 +158,11 @@ mod windows {
         h: &ProcessHandle,
         base: usize,
         local: &runtime_actors::Actor,
-    ) -> Result<(String, String, Option<EvolutionEnergy>), String> {
-        if !local.local || !known_monster(&local.name) {
+    ) -> Result<(String, String, Option<runtime_energy::EvolutionEnergy>), String> {
+        if !local.local || !runtime_energy::known_monster(&local.name) {
             return Err("Local actor is not a recognized Stage 2 monster".into());
         }
-        expected_vtable(h, local.address, base, ACTOR_VTABLE_RVA)?;
+        expected_vtable(h, local.address, base, runtime_energy::ACTOR_VTABLE_RVA)?;
         if ptr(h, local.address + 0x38)? != local.entity
             || u32_at(h, local.entity + 0x18)? != local.id
         {
@@ -275,7 +175,7 @@ mod windows {
 
         let stage_word = u32_at(h, local.address + 0x1260)?;
         let key_at = base
-            .checked_add(MONSTER_ENERGY_KEY_RVA)
+            .checked_add(runtime_energy::KEY_RVA)
             .ok_or("Key RVA overflow")?;
         let key = u32_at(h, key_at)?;
         let evolution_raw = u32_at(h, local.address + 0x16FC)?;
@@ -294,34 +194,25 @@ mod windows {
         }
 
         let decoded_evolution =
-            checked_evolution(stage_word, evolution_raw, evolution_max_raw, key);
-        let snapshot = decoded_evolution
-            .as_ref()
-            .ok()
-            .map(|&(stage, current, maximum)| EvolutionEnergy {
-                stage,
-                current,
-                maximum,
-            });
+            runtime_energy::evolution(stage_word, evolution_raw, evolution_max_raw, key);
         let evolution = match decoded_evolution {
-            Ok((stage, current, maximum)) => {
-                if stage == 3 {
-                    "Evolution: stage 3 · bar inactive (0/0); READ-ONLY".to_owned()
-                } else {
-                    format!("Evolution: stage {stage} · {current:.2}/{maximum:.2}; READ-ONLY")
-                }
+            Some(energy) if energy.stage == 3 => {
+                "Evolution: stage 3 · bar inactive (0/0); READ-ONLY".to_owned()
             }
-            Err(reason) => format!("Evolution unavailable: {reason}"),
+            Some(energy) => format!(
+                "Evolution: stage {} · {:.2}/{:.2}; READ-ONLY",
+                energy.stage, energy.current, energy.maximum
+            ),
+            None => "Evolution unavailable: energy decode/rules mismatch".to_owned(),
         };
-        let traversal = match checked_traversal(traversal_raw, traversal_max_raw, key) {
-            Ok((current, maximum)) => {
-                format!(
-                    "Traversal: {current:.2}/{maximum:.2}; READ-ONLY (no recharge-rate offset verified)"
-                )
-            }
-            Err(reason) => format!("Traversal unavailable: {reason}"),
+        let traversal = match runtime_energy::traversal(traversal_raw, traversal_max_raw, key) {
+            Some(energy) => format!(
+                "Traversal: {:.2}/{:.2}; READ-ONLY (no recharge-rate offset verified)",
+                energy.current, energy.maximum
+            ),
+            None => "Traversal unavailable: invalid encoded value or non-100 maximum".to_owned(),
         };
-        Ok((evolution, traversal, snapshot))
+        Ok((evolution, traversal, decoded_evolution))
     }
 
     /// Used by Discord without invoking the much heavier inventory/roster
@@ -331,7 +222,7 @@ mod windows {
         snapshot: &Snapshot,
         root: &str,
         local: &runtime_actors::Actor,
-    ) -> Result<EvolutionEnergy, String> {
+    ) -> Result<runtime_energy::EvolutionEnergy, String> {
         let now = runtime_memory::inspect(root);
         if snapshot.pid.is_none()
             || now.pid != snapshot.pid
@@ -597,7 +488,7 @@ pub(super) fn inspect_evolution(
     _: &Snapshot,
     _: &str,
     _: &runtime_actors::Actor,
-) -> Result<EvolutionEnergy, String> {
+) -> Result<runtime_energy::EvolutionEnergy, String> {
     Err("Live monster energy inspection requires Windows".into())
 }
 
@@ -633,134 +524,6 @@ mod tests {
         assert!(!slot_default_bytes(&[0xC7, 0x41, 12, 2, 0, 0, 0], 12, 1));
         assert!(!slot_default_bytes(&[0x90, 0x41, 12, 1, 0, 0, 0], 12, 1));
     }
-    #[test]
-    fn stage_decode_ignores_upper_bits_but_rejects_bad_low_word() {
-        assert_eq!(monster_stage(0xFA36_0101), Some(1));
-        assert_eq!(monster_stage(0x55FA_0202), Some(2));
-        assert_eq!(monster_stage(0x1234_0303), Some(3));
-        assert_eq!(monster_stage(0x0102), None);
-        assert_eq!(monster_stage(0), None);
-    }
-
-    #[test]
-    fn evolution_decodes_two_keys_and_stage_bounds() {
-        for key in [0xB805B8B7, 0xC0B73BB2] {
-            for (stage, current, maximum) in [
-                (0x101, 0.0f32, 24.0f32),
-                (0x101, 24.0, 24.0),
-                (0x202, 0.0, 28.0),
-                (0x202, 28.0, 28.0),
-                (0x303, 0.0, 0.0),
-            ] {
-                let raw_current = current.to_bits().rotate_left(9) ^ key;
-                let raw_max = maximum.to_bits().rotate_right(16) ^ key;
-                assert_eq!(
-                    checked_evolution(stage, raw_current, raw_max, key).unwrap(),
-                    (monster_stage(stage).unwrap(), current, maximum)
-                );
-            }
-            let bad_current = f32::NAN.to_bits().rotate_left(9) ^ key;
-            let max = 24.0f32.to_bits().rotate_right(16) ^ key;
-            assert!(checked_evolution(0x101, bad_current, max, key).is_err());
-            assert!(
-                checked_evolution(
-                    0x303,
-                    1.0f32.to_bits().rotate_left(9) ^ key,
-                    0.0f32.to_bits().rotate_right(16) ^ key,
-                    key
-                )
-                .is_err()
-            );
-        }
-    }
-
-    #[test]
-    fn evolution_percentage_is_rounded_and_stage_three_hidden() {
-        assert_eq!(
-            EvolutionEnergy {
-                stage: 1,
-                current: 0.0,
-                maximum: 24.0
-            }
-            .percentage(),
-            Some(0)
-        );
-        assert_eq!(
-            EvolutionEnergy {
-                stage: 1,
-                current: 12.0,
-                maximum: 24.0
-            }
-            .percentage(),
-            Some(50)
-        );
-        assert_eq!(
-            EvolutionEnergy {
-                stage: 2,
-                current: 11.0,
-                maximum: 28.0
-            }
-            .percentage(),
-            Some(39)
-        );
-        assert_eq!(
-            EvolutionEnergy {
-                stage: 2,
-                current: 28.0,
-                maximum: 28.0
-            }
-            .percentage(),
-            Some(100)
-        );
-        assert_eq!(
-            EvolutionEnergy {
-                stage: 3,
-                current: 0.0,
-                maximum: 0.0
-            }
-            .percentage(),
-            None
-        );
-        assert_eq!(
-            EvolutionEnergy {
-                stage: 1,
-                current: f32::INFINITY,
-                maximum: 24.0
-            }
-            .percentage(),
-            None
-        );
-        assert_eq!(
-            EvolutionEnergy {
-                stage: 2,
-                current: 29.0,
-                maximum: 28.0
-            }
-            .percentage(),
-            None
-        );
-    }
-
-    #[test]
-    fn traversal_decode_is_distinct_from_evolution() {
-        for key in [0xB805B8B7, 0xC0B73BB2] {
-            let current = 30.0f32;
-            let maximum = 100.0f32;
-            let raw_current = current.to_bits() ^ key ^ 0x0093F6E4;
-            let raw_max = maximum.to_bits().rotate_right(7) ^ key;
-            assert_eq!(
-                checked_traversal(raw_current, raw_max, key).unwrap(),
-                (current, maximum)
-            );
-            let nan = f32::INFINITY.to_bits() ^ key ^ 0x0093F6E4;
-            assert!(checked_traversal(nan, raw_max, key).is_err());
-        }
-        assert!(known_monster("TeleporterABot"));
-        assert!(known_monster("KrakenElderBot"));
-        assert!(!known_monster("TrackingABot"));
-        assert!(!known_monster("Actor entity 0x42 (name unresolved)"));
-    }
-
     #[test]
     fn projectile_offsets_remain_class_specific_hypotheses() {
         let findings = projectile_observations();
