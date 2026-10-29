@@ -210,16 +210,17 @@ mod windows {
         {
             return Err("Inventory changed while reading; refresh again".into());
         }
+        let in_list = selected_registered(current, &items);
         Ok(Inventory {
             actor_name: actor.name.clone(),
             actor_id: actor.id,
             inventory_address: inv,
-            item_ids: items.clone(),
+            item_ids: items,
             registered_ids: registered,
             loadout,
             current,
             previous,
-            selected_in_list: selected_registered(current, &items),
+            selected_in_list: in_list,
             actor_mirrors_match: mirrors_match,
         })
     }
@@ -393,7 +394,7 @@ mod tests {
     use super::*;
     #[test]
     fn item_bounds_reject_unaligned_reversed_and_excessive() {
-        assert_eq!(item_bounds(0x10000, 0x1002).is_err(), true);
+        assert!(item_bounds(0x10000, 0x1002).is_err());
         assert!(item_bounds(0x11000, 0x10000).is_err());
         assert!(item_bounds(0x10000, 0x10104).is_err());
         assert_eq!(item_bounds(0x10000, 0x1002C).unwrap(), 11);
