@@ -37,7 +37,7 @@ impl Camera {
         if !lo.iter().all(|x| x.is_finite()) || !hi.iter().all(|x| x.is_finite()) {
             return Self::default();
         }
-        let center = std::array::from_fn(|axis| (lo[axis] + hi[axis]) * 0.5);
+        let center: [f32; 3] = std::array::from_fn(|axis| (lo[axis] + hi[axis]) * 0.5);
         let extent = (0..3)
             .map(|axis| hi[axis] - lo[axis])
             .fold(1.0f32, f32::max);
