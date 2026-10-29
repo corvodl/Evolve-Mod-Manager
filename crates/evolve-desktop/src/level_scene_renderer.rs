@@ -364,6 +364,55 @@ mod tests {
         }
     }
     #[test]
+    fn combined_scene_offsets_indices_and_material_ranges_per_instance() {
+        let source = RenderMesh {
+            info: ModelInfo {
+                format: "Fixture".into(), version: 1, chunk_count: 1,
+                vertex_count: 3, triangle_count: 1,
+                original_uv0: true, original_normals: true,
+            },
+            positions: vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]],
+            indices: vec![0, 1, 2],
+            uv0: Some(vec![[0., 0.], [1., 0.], [0., 1.]]),
+            normals: Some(vec![[0., 0., 1.]; 3]),
+        };
+        let mut combined = RenderMesh {
+            info: source.info.clone(), positions: Vec::new(),
+            indices: Vec::new(), uv0: Some(Vec::new()), normals: Some(Vec::new()),
+        };
+        let mut ranges = Vec::new();
+        assert!(append(&mut combined, &mut ranges, &source, &[neutral(0, 3)], Transform::default()));
+        let translated = Transform {
+            position: [20.0, 0.0, 5.0], ..Transform::default()
+        };
+        assert!(append(&mut combined, &mut ranges, &source, &[neutral(0, 3)], translated));
+        assert_eq!(combined.indices, vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0].first_index, 0);
+        assert_eq!(ranges[1].first_index, 3);
+        assert_eq!(combined.positions[3], [20.0, 0.0, 5.0]);
+        assert_eq!(combined.positions[5], [20.0, 1.0, 5.0]);
+    }
+
+    #[test]
+    fn duplicate_cross_archive_paths_are_not_silently_selected() {
+        let key = "objects/tree.cgf".to_string();
+        let mut index = Index {
+            files: HashMap::new(), inventories: HashMap::new(),
+            build: None, library_root: None, selected_id: "selected".into(),
+        };
+        index.files.insert(key.clone(), vec![
+            AssetLocation { archive: "other-a".into(), path: PathBuf::from("a") },
+            AssetLocation { archive: "other-b".into(), path: PathBuf::from("b") },
+        ]);
+        assert!(index.lookup(&key).is_err());
+        index.files.get_mut(&key).unwrap().push(AssetLocation {
+            archive: "selected".into(), path: PathBuf::from("selected"),
+        });
+        assert_eq!(index.lookup(&key).unwrap().unwrap().path, PathBuf::from("selected"));
+    }
+
+    #[test]
     fn authored_world_transform_rotates_vertices_and_normals() {
         let tf = Transform {
             position: [10.0, 0.0, 2.0],
