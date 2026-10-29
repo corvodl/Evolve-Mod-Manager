@@ -223,7 +223,7 @@ fn world_viewport(state: &State) -> Element<'_, Message> {
             },
         })
         .width(Fill)
-        .height(Length::Fixed(460.0))
+        .height(Length::Fixed(700.0))
         .into()
     } else {
         text("No verified level geometry loaded. Select a map PAK containing mesh or heightmap resources.")
@@ -320,8 +320,8 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 iced::widget::slider(-180.0..=180.0, state.yaw, Message::YawChanged).width(Fill),
                 text("Pitch").size(12),
                 iced::widget::slider(-85.0..=85.0, state.pitch, Message::PitchChanged).width(Fill),
-                text("Zoom").size(12),
-                iced::widget::slider(0.2..=4.0, state.zoom.max(0.2), Message::ZoomChanged).width(Fill),
+                text(format!("Zoom {:.1}×", state.zoom)).size(12),
+                iced::widget::slider(0.2..=80.0, state.zoom.clamp(0.2, 80.0), Message::ZoomChanged).width(Fill),
                 button("Reset Camera").on_press(Message::ViewerResetCamera),
             ].spacing(8),
             if state.level_show_overview {
