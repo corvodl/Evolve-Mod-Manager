@@ -38,6 +38,7 @@ mod initial_setup;
 mod launcher_bridge;
 mod level_workspace;
 mod level_library;
+mod level_scene_renderer;
 mod library_picker;
 mod loading_wheel;
 mod menu_popup;
@@ -344,6 +345,7 @@ struct State {
     level_scene: Option<Arc<LevelScene>>,
     library_map: Option<(evolve_core::ImportedPak, Vec<level_library::MapCandidate>, usize)>,
     level_read_only: bool,
+    level_surfaces: Option<Arc<Vec<textured::Surface>>>,
     terrain: Option<TerrainInfo>,
     selected: Option<usize>,
     file_selection: MultiSelection,
@@ -714,7 +716,7 @@ enum Operation {
     LoadDeclaredClip(usize, String, Inventory, Option<PathBuf>, Option<String>),
     LoadDeclaredDba(String, Inventory, Option<PathBuf>, Option<String>, PathBuf),
     InspectLevel(PathBuf),
-    OpenImportedMap(evolve_core::ImportedPak, usize),
+    OpenImportedMap(evolve_core::ImportedPak, usize, SharedCache),
     ExportEditedLevel(
         PathBuf,
         PathBuf,
@@ -1259,8 +1261,8 @@ impl Operation {
                         render_source.display(),
                     ))
             }
-            Self::OpenImportedMap(archive, index) => {
-                level_library::open(archive, index).map(|map| Completed::ImportedMap(Box::new(map)))
+            Self::OpenImportedMap(archive, index, cache) => {
+                level_library::open(archive, index, &cache).map(|map| Completed::ImportedMap(Box::new(map)))
             }
             Self::InspectLevel(source) => {
                 let checksum = level_source_hash(&source)?;
@@ -4223,12 +4225,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::LibraryOpenMap(index) => {
             let Some(archive) = state.library_catalog.as_ref().and_then(|c| c.archives.get(index)).cloned() else { return Task::none(); };
             if state.busy { state.status = "Finish the current operation before opening a map.".into(); return Task::none(); }
-            return launch(state, Operation::OpenImportedMap(archive, 0));
+            return launch(state, Operation::OpenImportedMap(archive, 0, state.preview_cache.clone()));
         }
         Message::LevelMapSelect(index) => {
             let Some((archive, maps, _)) = &state.library_map else { return Task::none(); };
             if index >= maps.len() || state.busy { return Task::none(); }
-            return launch(state, Operation::OpenImportedMap(archive.clone(), index));
+            return launch(state, Operation::OpenImportedMap(archive.clone(), index, state.preview_cache.clone()));
         }
         Message::LibrarySelect(index) => {
             if state
@@ -11590,6 +11592,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         info.width, info.height, info.stride
                     );
                     state.terrain = Some(info);
+                    state.level_surfaces = None;
                     state.model = Some(Arc::new(mesh));
                     state.skin_preview = None;
                     state.playing = false;
@@ -11611,7 +11614,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.level_dirty_count = 0;
                     state.level_undo.clear(); state.level_redo.clear();
                     state.level_selection.clear(); state.level_selected = None;
-                    state.model = loaded.terrain.as_ref().map(|(mesh, _)| Arc::new(mesh.clone()));
+                    if let Some(assembled) = loaded.full_scene {
+                        state.level_surfaces = Some(Arc::new(assembled.surfaces));
+                        state.model = Some(Arc::new(assembled.mesh));
+                    } else {
+                        state.level_surfaces = None;
+                        state.model = loaded.terrain.as_ref().map(|(mesh, _)| Arc::new(mesh.clone()));
+                    }
                     state.terrain = loaded.terrain.map(|(_, info)| info);
                     state.diffuse = None; state.normal_map = None; state.emissive_map = None;
                     state.specular_map = None; state.gloss_map = None;
@@ -11621,6 +11630,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::Level(scene, source, hash)) => {
                     state.library_map = None;
+                    state.level_surfaces = None;
                     state.level_read_only = false;
                     state.status = format!(
                         "Loaded {} placed level objects; {} diagnostics.",
@@ -12533,10 +12543,10 @@ fn view(state: &State) -> Element<'_, Message> {
             level_workspace::view(state),
             text("Read Level/LYR or Heightmap.dat without touching installed game assets."),
             row![
-                design::button("Read level placements").on_press(Message::StartLevelInspection),
-                design::button("Load heightmap geometry").on_press(Message::StartTerrainInspection),
-                design::button("Export geometry scene GLB").on_press(Message::StartLevelGlbExport),
-                design::button("Export geometry scene FBX").on_press(Message::StartLevelFbxExport),
+                design::button("Read level placements").on_press_maybe((!state.level_read_only).then_some(Message::StartLevelInspection)),
+                design::button("Load heightmap geometry").on_press_maybe((!state.level_read_only).then_some(Message::StartTerrainInspection)),
+                design::button("Export geometry scene GLB").on_press_maybe((!state.level_read_only).then_some(Message::StartLevelGlbExport)),
+                design::button("Export geometry scene FBX").on_press_maybe((!state.level_read_only).then_some(Message::StartLevelFbxExport)),
             ].spacing(8),
             row![
                 design::text_input("Exact extracted asset root...",&state.assets_root)
@@ -12548,6 +12558,7 @@ fn view(state: &State) -> Element<'_, Message> {
                 format!("{} level objects, {} unresolved diagnostics; source transforms preserved.",
                     scene.objects.len(),scene.diagnostics.len())
             }else{"No placement source inspected.".into()}),
+            if !state.level_read_only {
             if let Some(mesh)=&state.model {
                 let display:Element<'_,Message> = if mesh.uv0.is_some(){
                     shader(TexturedScene{
@@ -12570,7 +12581,8 @@ fn view(state: &State) -> Element<'_, Message> {
             }else{
                 let fallback:Element<'_,Message>=text("Load an original source heightmap to see terrain triangles.").into();
                 fallback
-            },
+            }
+            } else { Element::from(text("The interactive world viewport is shown above; imported originals remain read-only.")) },
             row![
                 text("Yaw"),
                 slider(-180.0..=180.0,state.yaw,Message::YawChanged).width(Fill),
