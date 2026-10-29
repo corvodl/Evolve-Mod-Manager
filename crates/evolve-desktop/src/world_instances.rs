@@ -177,7 +177,7 @@ impl World {
                     .copied().map(f32::abs).fold(0.0,f32::max);
                 let radial_sq=delta.iter().map(|x|x*x).sum::<f32>()-dot*dot;
                 if radial_sq <= radius*radius && radius > 0.0 {
-                    let hit=(dot*dot-(radial_sq-radius*radius).max(0.0)).sqrt();
+                    let hit=(radius*radius-radial_sq.max(0.0)).max(0.0).sqrt();
                     let distance=(dot-hit).max(0.0);
                     if distance < closest.0 {closest=(distance,Some(instance.object_index));}
                 }
