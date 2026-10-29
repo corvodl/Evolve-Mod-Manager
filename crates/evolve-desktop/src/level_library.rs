@@ -2,6 +2,7 @@
 //!
 //! Only manifest-listed files in the selected archive are used. There is no
 //! guessed global map root, automatic editing, or modification of game files.
+use crate::{asset_cache::SharedCache, level_scene_renderer};
 use evolve_core::{
     ImportedPak, LevelScene, ModelInfo, RenderMesh, TerrainInfo, imported_archive_files,
     parse_level_scene, read_terrain,
@@ -24,6 +25,7 @@ pub(super) struct LoadedMap {
     pub scene: Option<LevelScene>,
     pub source: Option<PathBuf>,
     pub terrain: Option<(RenderMesh, TerrainInfo)>,
+    pub full_scene: Option<level_scene_renderer::Assembled>,
     pub diagnostics: Vec<String>,
 }
 
@@ -124,7 +126,7 @@ fn discover(archive: &ImportedPak) -> Result<(PathBuf, Vec<MapCandidate>), Strin
     Ok((root, maps))
 }
 
-pub(super) fn open(archive: ImportedPak, index: usize) -> Result<LoadedMap, String> {
+pub(super) fn open(archive: ImportedPak, index: usize, cache: &SharedCache) -> Result<LoadedMap, String> {
     let (root, maps) = discover(&archive)?;
     let index = index.min(maps.len().saturating_sub(1));
     let chosen = &maps[index];
@@ -192,7 +194,13 @@ pub(super) fn open(archive: ImportedPak, index: usize) -> Result<LoadedMap, Stri
     if scene.is_none() && terrain.is_none() {
         return Err(diagnostics.join(" "));
     }
-    Ok(LoadedMap { archive, maps, index, scene, source, terrain, diagnostics })
+    let full_scene = level_scene_renderer::assemble(
+        &archive, scene.as_ref(), terrain.as_ref().map(|(mesh, _)| mesh), cache,
+    )?;
+    if let Some(assembled) = &full_scene {
+        diagnostics.push(assembled.report.status());
+    }
+    Ok(LoadedMap { archive, maps, index, scene, source, terrain, full_scene, diagnostics })
 }
 
 #[cfg(test)]
