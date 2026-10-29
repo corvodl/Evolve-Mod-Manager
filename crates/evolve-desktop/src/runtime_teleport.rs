@@ -750,7 +750,6 @@ mod windows {
             }
             std::thread::sleep(Duration::from_millis(16));
         }
-        let _ = result;
         let position = position(&handle, r.physics, [0xB8, 0xBC, 0xC0])?;
         if !position.finite() {
             return Err("Player position became invalid after coordinate hold".into());
