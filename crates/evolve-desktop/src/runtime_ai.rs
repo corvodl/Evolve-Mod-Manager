@@ -6,9 +6,9 @@
 //! This is a local process-memory edit, not a console command. Only use in an
 //! isolated testing session. Changes are 0 -> 1 -> 0 with bit-exact compare,
 //! readback, and PID/main-module identity checks.
-use crate::runtime_memory::Snapshot;
 #[cfg(windows)]
 use crate::runtime_memory;
+use crate::runtime_memory::Snapshot;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Probe {
@@ -20,8 +20,10 @@ pub(super) struct Probe {
 
 impl Probe {
     pub fn describe(self) -> String {
-        format!("PID {} · ai_NoUpdate candidate 0x{:X} · Int32 {} (address identity must be verified externally)",
-            self.pid, self.address, self.value)
+        format!(
+            "PID {} · ai_NoUpdate candidate 0x{:X} · Int32 {} (address identity must be verified externally)",
+            self.pid, self.address, self.value
+        )
     }
 }
 
@@ -44,7 +46,9 @@ fn valid_address(address: usize) -> Result<(), String> {
 #[cfg(windows)]
 fn session(snapshot: &Snapshot, game_root: &str) -> Result<(u32, usize), String> {
     let pid = snapshot.pid.ok_or("Detect Evolve.exe first")?;
-    let base = snapshot.module_base.ok_or("Evolve module base unavailable")?;
+    let base = snapshot
+        .module_base
+        .ok_or("Evolve module base unavailable")?;
     let now = runtime_memory::inspect(game_root);
     if now.pid != Some(pid) || now.module_base != Some(base) {
         return Err("Game PID/module changed; rediscover the verified ai_NoUpdate address".into());
@@ -59,7 +63,9 @@ fn read_i32(pid: u32, address: usize) -> Result<u32, String> {
         .map_err(|e| format!("Cannot read Evolve: {e}"))?;
     let bytes = read_process_memory::copy_address(address, 4, &handle)
         .map_err(|e| format!("Cannot read ai_NoUpdate candidate: {e}"))?;
-    let raw: [u8; 4] = bytes.as_slice().try_into()
+    let raw: [u8; 4] = bytes
+        .as_slice()
+        .try_into()
         .map_err(|_| "Incomplete Int32 read")?;
     Ok(u32::from_le_bytes(raw))
 }
@@ -77,7 +83,12 @@ pub(super) fn inspect(snapshot: &Snapshot, root: &str, input: &str) -> Result<Pr
     if pid != pid_again || module_base != base_again || read_i32(pid, address)? != value {
         return Err("CVar value or game session changed during inspection".into());
     }
-    Ok(Probe { pid, module_base, address, value })
+    Ok(Probe {
+        pid,
+        module_base,
+        address,
+        value,
+    })
 }
 
 /// One-shot 0->1 to pause and 1->0 to restore. Ownership of a paused value is
@@ -92,7 +103,9 @@ pub(super) fn change(
     let expected = if pause { 0 } else { 1 };
     let new = if pause { 1 } else { 0 };
     if probe.value != expected {
-        return Err(format!("Expected original Int32 {expected}; inspect the address again"));
+        return Err(format!(
+            "Expected original Int32 {expected}; inspect the address again"
+        ));
     }
     valid_address(probe.address)?;
     let (pid, base) = session(snapshot, root)?;
@@ -107,7 +120,10 @@ pub(super) fn change(
     if read_i32(pid, probe.address)? != new {
         return Err("Write readback differs; AI state is not confirmed".into());
     }
-    Ok(Probe { value: new, ..probe })
+    Ok(Probe {
+        value: new,
+        ..probe
+    })
 }
 
 #[cfg(windows)]
