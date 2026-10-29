@@ -494,9 +494,10 @@ impl Renderer {
             // cutouts. Never misinterpret a packed diffuse alpha channel
             // (which may be gloss or specular) as vegetation coverage.
             let opaque = [255u8, 255, 255, 255];
-            let mask = surf.opacity.as_ref().filter(|img| {
-                (img.width() as u64) * (img.height() as u64) * 4 <= 32 * 1024 * 1024
-            });
+            let mask = surf
+                .opacity
+                .as_ref()
+                .filter(|img| (img.width() as u64) * (img.height() as u64) * 4 <= 32 * 1024 * 1024);
             let (mw, mh, mask_bytes) = mask
                 .map(|img| (img.width(), img.height(), img.as_raw().as_slice()))
                 .unwrap_or((1, 1, &opaque[..]));
