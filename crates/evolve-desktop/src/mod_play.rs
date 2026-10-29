@@ -276,12 +276,10 @@ pub fn launch_enabled(
     direct_launch: bool,
     test_client: bool,
 ) -> Result<(usize, u32, usize, Option<String>), String> {
-    let signed = selected_signed_mods(&stage)?;
-    if mods.is_empty() && signed.is_empty() {
-        return Err(
-            "Enable a Mod Project or registered signed PAK before pressing Play with Mods.".into(),
-        );
-    }
+    // Do not read the signed profile catalog yet. A prior valid batch journal
+    // intentionally blocks catalog reads until its isolated stage is restored.
+    // The original game backup checks and launch-helper validation below
+    // must pass before restoring any staged transaction.
     if direct_launch {
         super::direct_runtime::require_ready(&game, &client)?;
     }
@@ -327,6 +325,16 @@ pub fn launch_enabled(
             &client,
             &swap,
             &format!("Previous mod setup could not be restored: {issue}"),
+        );
+    }
+    // Previously selected_signed_mods ran BEFORE this recovery. The
+    // read-only profile catalog calls stage_status(), which intentionally
+    // reports Pending while bundle-active.json exists, causing Play with
+    // Mods to fail before its recovery path was reached.
+    let signed = selected_signed_mods(&stage)?;
+    if mods.is_empty() && signed.is_empty() {
+        return Err(
+            "Enable a Mod Project or registered signed PAK before pressing Play with Mods.".into(),
         );
     }
 
@@ -614,7 +622,16 @@ mod tests {
             owned_profile_id(&stage).unwrap().as_deref(),
             Some(manual.id.as_str())
         );
+        // Regression for the launch failure from a valid pending batch:
+        // the profile catalog rejects reads UNTIL this transaction is
+        // reconciled; Play with Mods must not pre-read it.
+        assert!(
+            selected_signed_mods(&stage)
+                .unwrap_err()
+                .contains("Stage has a pending swap")
+        );
         assert!(restore_previous_staged_profile(&stage).unwrap());
+        assert!(selected_signed_mods(&stage).unwrap().is_empty());
         assert_eq!(std::fs::read(&target).unwrap(), original);
         assert!(evolve_core::batch_stage_status(&stage).unwrap().is_none());
         assert!(
