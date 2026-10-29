@@ -1402,9 +1402,19 @@ fn actor_rows(state: &State) -> Element<'_, Message> {
 }
 
 fn developer_keybind_controls(state: &State) -> Element<'_, Message> {
+    let assigned = state.preferences.developer_hotkeys.iter().filter(|&&k| k != 0).count();
     let mut rows = column![
         text("Developer shortcuts").size(17),
-        text("Registered with Windows while the overlay is on; teleport actions require live memory edits.")
+        text(format!("{assigned}/9 shortcuts assigned. Shortcuts require the overlay and enabled actor writes to teleport."))
+            .size(12)
+            .style(design::muted),
+        design::button("Load suggested shortcuts (F6–F12, Ctrl+F6/F7)")
+            .on_press(Message::DeveloperKeybindDefaults),
+        text(if assigned == 0 {
+            "No shortcuts assigned yet. Click the button above or select keys below."
+        } else {
+            "Custom bindings are preserved unless you select Load suggested shortcuts."
+        })
             .size(12)
             .style(design::muted),
     ]
