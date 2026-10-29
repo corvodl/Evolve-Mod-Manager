@@ -290,8 +290,14 @@ impl Primitive {
     /// Level-editor-only axis guides in the existing depth-buffered line pass.
     /// Coordinates are projected NDC just like the ground grid.
     pub(super) fn add_level_axis(&mut self, a: [f32; 3], b: [f32; 3], color: [f32; 4]) {
-        self.ground.push(GroundVertex { position: a, rgba: color });
-        self.ground.push(GroundVertex { position: b, rgba: color });
+        self.ground.push(GroundVertex {
+            position: a,
+            rgba: color,
+        });
+        self.ground.push(GroundVertex {
+            position: b,
+            rgba: color,
+        });
     }
 }
 
