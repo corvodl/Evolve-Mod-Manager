@@ -1,6 +1,6 @@
 # Official Stage 2 developer toolchain: integration assessment
 
-> Source: developer-provided `evolve_tool_stage2_02.05.2025.zip`. Static inspection only. Neither the Windows binaries nor game runtime were executed. This does **not** change the current launch pipeline or establish redistribution permission.
+> Source: developer-provided `evolve_tool_stage2_02.05.2025.zip` (the runtime is packaged from the authorized private tool repository). The manager integration is implemented; the executable and in-game mixed-key behavior still require Windows/runtime validation. No redistribution permissions beyond the authorized release workflow are implied.
 
 ## Implementation (PR #101)
 
@@ -15,25 +15,33 @@ pinned toolchain supplied by the authorized release installer/portable ZIP, with
 2. Keep the original game/client installation intact. In particular, the
    official tools currently require an existing original
    `bin64_SteamRetail/dbghelp.dll` so a complete, reversible swap is possible.
-3. Choose **Set Up Manager** with the game and storage root. It detects and
-   checksum-verifies the installed local developer tools, creates the public
-   key stage, copies original signed PAKs into **isolated** storage and runs
-   the official `r` conversion there **once**. It authenticates all resulting
-   signed PAKs against the developer's public key before marking setup ready.
-4. Import/edit a PAK through the normal Modding page. **Build** uses the
-   official `d` and `e` commands for only the PAK containing edited assets,
-   verifies original member inventory, validates the signed result, and
-   reuses a SHA-keyed cache when the mod has not changed.
-5. **Play with Mods** stages only the enabled project's changed PAK outputs,
-   preserving the offline recovery journal. The launch helper continues to
-   swap the **one-time converted baseline** plus both official runtime DLLs
-   because the supplied RSA hook has only one active verification key.
+3. Choose **Set Up Manager** with the game and storage root. The current
+   setup uses a **sparse signing stage**: it verifies and hashes the installed
+   PAK inventory without copying or re-signing every archive. Permanent
+   original snapshots are optional and **off by default**.
+4. Import/edit a PAK through the normal Modding page. **Build** calls the
+   official `d` and `e` commands for the **specific PAK containing changed
+   assets**, preserves its other members, authenticates the signed output and
+   reuses a SHA-keyed cache if the inputs have not changed.
+5. **Play with Mods** provisions and stages only the enabled profile's changed
+   PAKs. The automatic launcher writes an exact `active_mod_paks.json` filter
+   and the recovery helper swaps only those PAKs plus the required official
+   `inject.dll` and `dbghelp.dll`. Unmodified stock PAKs are left in place.
+   An older manual stage with no selection manifest may still use its legacy
+   full-stage swap, so the sparse behavior is guaranteed for the
+   manager-controlled enabled-mod workflow, not arbitrary legacy stages.
+6. **Prepare Offline Test** accepts an already-signed official-tool output
+   using its original and stage **public verification keys**; it does not
+   require a Rust-managed private PEM. The official encoder is still required
+   when building changed contents.
 
-This changes the per-mod build cost but does **not** yet establish that
-unconverted stock-key PAKs can be mounted alongside official-new-key PAKs.
-Switching to a sparse *runtime* swap is not safe until verified in a live game.
-The developer's own instructions explicitly call for a one-time conversion of
-the full PAK library.
+**Compatibility caveat:** the supplied official tool's `r` command and
+runtime use a replacement signing key and injector. The sparse launcher
+*selects* only changed archives, but successful prelaunch signature checks do
+not establish that every combination of new-key modded and untouched
+stock-key PAKs will mount in the game. Verify on a disposable Test Game;
+do not automatically re-sign the entire game or silently fall back to the
+legacy full-swap path when a selection is invalid.
 
 **Never** run the official `r` command directly against your installed game. The manager applies it only to isolated copies. The source ZIP and C# projects remain private; authorized release packages carry the verified signing executable and runtime DLLs.
 
@@ -81,9 +89,9 @@ silently omitting official signing.
 A working signing executable includes recoverable signing material. Hash
 verification proves integrity and **does not** make that key secret.
 
-The existing manager-controlled runtime swap and original-file restoration
-remain unchanged; the official tools are used for isolated initial
-conversion and rebuilding affected PAKs.
+The manager-controlled runtime swap and original-file restoration remain
+in place; initial setup records an authenticated inventory rather than
+converting all stock PAKs, and edited PAKs are provisioned on demand.
 
 ## Verified capabilities and constraints
 
@@ -93,15 +101,35 @@ conversion and rebuilding affected PAKs.
 - The C# source contains an embedded RSA signing key. Public release bundles contain only the approved runtime executable and dependencies, and do not include the developer's source project, debug artifacts or original ZIP.
 - The original Stage 2 verification key in this source is **public**, not the original private signing key. A PAK signed with the new private key cannot be assumed compatible with the unmodified stock verifier. Mixing stock old-key archives and new-key mod archives is unverified.
 
-## Goal: only process PAKs containing edited assets
+## Current selective-signing workflow and limitations
 
-1. Verify the installed game's original PAK hashes, file ownership, public key and binary/hook compatibility. Preserve an untouched clean backup and recovery journal.
-2. If the runtime only supports the new verifier, perform the stock archive key transition **once per exact game build**. Persist and reuse the verified converted baseline; revalidate after a game update.
-3. Map changed mod members to the PAKs that contain them. Detect conflicting edits and compute a deterministic effective member set.
-4. Rebuild **only affected PAKs**. Because official `e` encodes a whole directory, any official-backend integration must first preserve all unmodified members of that PAK, not create an incomplete delta PAK. The current Rust builder can already replace individual members; compare both backends' authenticated outputs before switching the production implementation.
-5. Cache the replacement PAK by stock digest, selected changed member digests, active public/signing-key identity, and tool version. Rebuilding or re-signing unrelated PAKs after every mod change is unnecessary.
-6. Reduce the **runtime swap list** separately: a single new-key verifier may still require mounting the once-converted stock set even though only one mod PAK is new. A sparse swap with unconverted original PAKs must not be enabled without in-game proof that the verifier supports both keys or that supported overlays work.
-7. Restore the original key configuration and all original assets for an explicitly clean launch; verify interrupted and crash recovery.
+1. Setup verifies stock PAK signatures and SHA-256 identities, without
+   duplicating or re-signing the whole installed PAK library.
+2. When a project changes a member, the manager authenticates the stock
+   source, materializes only that PAK into an isolated stage, and converts
+   that working copy with the official tool if needed.
+3. `evolve_tool.exe d` unpacks the **entire selected PAK**; the manager
+   overlays only changed members and invokes `e` to sign one resulting PAK.
+   It checks the full original member inventory, unmodified member CRC/size
+   and changed member bytes before publication. This does **not** mean that
+   `e` encodes just one member inside a PAK.
+4. The cache key includes the original PAK digest, signing public-key digest,
+   authenticated basename and changed member hashes. Unchanged projects
+   reuse verified signed outputs.
+5. The enabled-mod launcher selects only edited target PAKs for swapping,
+   plus the two official runtime DLLs. Original installation PAKs outside
+   the selected set are neither copied nor replaced.
+6. The existing workflow rejects two enabled projects targeting the same
+   PAK (instead of silently composing them). Support for registered new
+   members through the official encoder still needs a separate
+   fully authenticated implementation; its current backend supports
+   replacements.
+7. Swapped originals have a journal and conditional restore. Optional
+   permanent full-game snapshots remain available but disabled by default.
+
+**Open verification:** test mixed original/new-key PAK loading, clean launch
+and rollback on the exact Windows game build. Do not infer mixed-key support
+from an encoder success code or a prelaunch RSA verification pass.
 
 ## Protect the supplied key
 
