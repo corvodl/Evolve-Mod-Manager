@@ -197,8 +197,10 @@ mod windows {
                     let ok = unsafe { RegisterHotKey(hwnd, id, mods | MOD_NOREPEAT, vk) };
                     if ok == 0 {
                         println!("BINDFAIL {}", id - 1);
-                        let _ = std::io::stdout().flush();
+                    } else {
+                        println!("BINDOK {}", id - 1);
                     }
+                    let _ = std::io::stdout().flush();
                 }
                 0
             }
@@ -232,8 +234,9 @@ mod windows {
                 let mut pid = 0;
                 unsafe { GetWindowThreadProcessId(active, &mut pid) };
                 let game_focused = pid == GAME_PID.load(Ordering::Relaxed);
-                let toast_visible = TOAST.lock().is_ok_and(|toast| toast.is_some());
-                if !game_focused && !(pid == MANAGER_PID.load(Ordering::Relaxed) && toast_visible) {
+                if !game_focused {
+                    // Never anchor a notification to the manager or another app.
+                    // Keep toasts pending until the game itself regains focus.
                     GAME_FOCUSED.store(false, Ordering::Relaxed);
                     unsafe { ShowWindow(hwnd, SW_HIDE) };
                     return 0;
@@ -253,12 +256,7 @@ mod windows {
                 }
                 let cx = point.x + (rect.right - rect.left) / 2;
                 let cy = point.y + (rect.bottom - rect.top) / 2;
-                let (x, y) = if game_focused {
-                    (cx - WIDTH / 2, cy - 26)
-                } else {
-                    // Manager-initiated actions still show a toast without an aim marker.
-                    (point.x + rect.right - WIDTH - 24, point.y + 16)
-                };
+                let (x, y) = (cx - WIDTH / 2, cy - 26);
                 unsafe {
                     SetWindowPos(
                         hwnd,

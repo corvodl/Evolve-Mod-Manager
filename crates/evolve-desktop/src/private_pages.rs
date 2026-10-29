@@ -1,7 +1,7 @@
 //! Private-manager-aligned landing, documentation and informational pages.
 //! Home deliberately does not enumerate PAKs or scan the user's installation.
 use super::{Message, Page, State};
-use crate::{design, developer_hotkeys};
+use crate::{design, developer_hotkeys, runtime_teleport};
 use iced::widget::{button, column, container, image, row, scrollable, stack, svg, text, tooltip};
 use iced::{Background, Border, Element, Fill, Length};
 
@@ -1440,6 +1440,7 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
         && state.live_edit_enabled
         && !state.developer_online_mods
         && !state.teleport_busy
+        && state.teleport_hold_cancel.is_none()
         && state
             .runtime_snapshot
             .as_ref()
@@ -1474,6 +1475,41 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
                 ),
             ]
             .spacing(8),
+            text("Coordinate freeze · hold your position in the air").size(17),
+            row![
+                design::button(if state.teleport_hold_mode == Some(runtime_teleport::HoldMode::Z) {
+                    "Holding Z"
+                } else {
+                    "Freeze Z (hover)"
+                })
+                .on_press_maybe(enabled.then_some(Message::TeleportHold(runtime_teleport::HoldMode::Z))),
+                design::button(if state.teleport_hold_mode == Some(runtime_teleport::HoldMode::Xyz) {
+                    "Holding XYZ"
+                } else {
+                    "Freeze XYZ"
+                })
+                .on_press_maybe(enabled.then_some(Message::TeleportHold(runtime_teleport::HoldMode::Xyz))),
+                design::button(if state.teleport_hold_releasing {
+                    "Releasing..."
+                } else {
+                    "Unfreeze"
+                })
+                .on_press_maybe(
+                    (state.teleport_hold_cancel.is_some() && !state.teleport_hold_releasing)
+                        .then_some(Message::TeleportHoldRelease)
+                ),
+            ]
+            .spacing(8),
+            text(if state.teleport_hold_status.is_empty() {
+                "Freeze Z keeps altitude while you move X/Y; Freeze XYZ locks all axes. Unfreeze to teleport again."
+            } else {
+                state.teleport_hold_status.as_str()
+            })
+            .size(12)
+            .style(design::muted),
+            text("Positional hold only; does not zero gravity velocity. Releasing may cause falling.")
+                .size(12)
+                .style(design::muted),
             text("Relative move · 20 units per click (world axes)")
                 .size(12)
                 .style(design::muted),

@@ -1,9 +1,12 @@
 //! Offline-only one-shot player teleport for the password-gated Developer page.
 //! Uses externally verified Stage 2 IEntity -> type-1 proxy -> CLivingEntity.
-//! No injection, debugger, hook, remote thread, freeze or repeated writes.
+//! No injection, debugger, hook or remote thread. Coordinate hold uses an\n//! explicitly cancellable, bounded-frequency external write loop.
 //! Layout/RVAs are pinned to the examined build; unknown builds fail closed.
 use crate::runtime_memory;
 use runtime_memory::Snapshot;
+#[cfg(windows)]
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, atomic::AtomicBool};
 
 const ENTITY_SYSTEM_RVA: usize = 0x28D58E8;
 const ENTITY_VTABLE_RVA: usize = 0x22DBC60;
@@ -46,6 +49,34 @@ pub(super) struct Reading {
     pub actor_id: u32,
     pub position: Position,
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum HoldMode {
+    /// Keep altitude while allowing normal horizontal movement.
+    Z,
+    /// Keep all three world-space coordinates fixed.
+    Xyz,
+}
+
+impl HoldMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Z => "Z (hover)",
+            Self::Xyz => "XYZ (position lock)",
+        }
+    }
+}
+
+/// Pure target selection used by the hold worker and its tests.
+fn held_position(anchor: Position, current: Position, mode: HoldMode) -> Position {
+    match mode {
+        HoldMode::Z => Position {
+            z: anchor.z,
+            ..current
+        },
+        HoldMode::Xyz => anchor,
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Destination {
     Absolute(Position),
@@ -75,6 +106,7 @@ mod windows {
     use super::*;
     use read_process_memory::{ProcessHandle, copy_address};
     use std::ffi::c_void;
+    use std::time::Duration;
 
     const PTR_MIN: usize = 0x10000;
     const PTR_MAX: usize = 0x0000_7FFF_FFFF_FFFF;
@@ -124,14 +156,77 @@ mod windows {
         }
         Ok(())
     }
-    fn session(snapshot: &Snapshot, root: &str) -> Result<(u32, ProcessHandle, usize), String> {
+    // Check the running executable and ASLR base directly instead of launching
+    // tasklist + PowerShell for every teleport (formerly multiple times per action).
+    // The main module is first in the process module list. Fail closed if the
+    // process is gone, inaccessible, or no longer the expected Evolve.exe.
+    #[allow(unsafe_code)]
+    fn running_evolve_base(pid: u32) -> Result<usize, String> {
+        use std::io;
+        unsafe extern "system" {
+            fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+            fn CloseHandle(handle: *mut c_void) -> i32;
+            fn K32EnumProcessModules(
+                handle: *mut c_void,
+                modules: *mut *mut c_void,
+                size: u32,
+                needed: *mut u32,
+            ) -> i32;
+            fn K32GetModuleBaseNameW(
+                handle: *mut c_void,
+                module: *mut c_void,
+                name: *mut u16,
+                size: u32,
+            ) -> u32;
+        }
+        const PROCESS_QUERY_INFORMATION: u32 = 0x0400;
+        const PROCESS_VM_READ: u32 = 0x0010;
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid) };
+        if handle.is_null() {
+            return Err(format!(
+                "Cannot verify Evolve process: {}",
+                io::Error::last_os_error()
+            ));
+        }
+        let result = (|| {
+            let mut main_module: *mut c_void = std::ptr::null_mut();
+            let mut needed = 0u32;
+            let ok = unsafe {
+                K32EnumProcessModules(
+                    handle,
+                    &mut main_module,
+                    std::mem::size_of::<*mut c_void>() as u32,
+                    &mut needed,
+                )
+            };
+            if ok == 0
+                || main_module.is_null()
+                || needed < std::mem::size_of::<*mut c_void>() as u32
+            {
+                return Err("Cannot verify running Evolve module".into());
+            }
+            let mut name = [0u16; 260];
+            let count = unsafe {
+                K32GetModuleBaseNameW(handle, main_module, name.as_mut_ptr(), name.len() as u32)
+            } as usize;
+            if count == 0
+                || !String::from_utf16_lossy(&name[..count]).eq_ignore_ascii_case("Evolve.exe")
+            {
+                return Err("Game PID no longer points to Evolve.exe; detect game again".into());
+            }
+            Ok(main_module as usize)
+        })();
+        unsafe { CloseHandle(handle) };
+        result
+    }
+
+    fn session(snapshot: &Snapshot, _root: &str) -> Result<(u32, ProcessHandle, usize), String> {
         let pid = snapshot.pid.ok_or("Detect Evolve.exe first")?;
-        let now = runtime_memory::inspect(root);
         let base = snapshot
             .module_base
             .ok_or("Evolve module base unavailable")?;
-        if now.pid != Some(pid) || now.module_base != Some(base) {
-            return Err("Game PID or executable changed; detect Evolve again".into());
+        if running_evolve_base(pid)? != base {
+            return Err("Game executable or module base changed; detect Evolve again".into());
         }
         let h: ProcessHandle = pid
             .try_into()
@@ -141,6 +236,8 @@ mod windows {
     struct Resolved {
         pid: u32,
         actor_id: u32,
+        client: usize,
+        actor: usize,
         entity: usize,
         movement: usize,
         physics: usize,
@@ -205,6 +302,8 @@ mod windows {
         Ok(Resolved {
             pid,
             actor_id,
+            client,
+            actor,
             entity,
             movement,
             physics,
@@ -369,6 +468,136 @@ mod windows {
         result
     }
 
+    /// Opens the game once for the duration of a coordinate hold; no repeated
+    /// PowerShell/tasklist queries, Win32 process creation, injection or hook.
+    /// The handle is scoped to the worker thread and is closed on all exits.
+    #[allow(unsafe_code)]
+    struct HoldWriter(*mut c_void);
+    #[allow(unsafe_code)]
+    impl HoldWriter {
+        fn open(pid: u32) -> Result<Self, String> {
+            use std::io;
+            unsafe extern "system" {
+                fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+            }
+            const ACCESS: u32 = 0x0008 | 0x0010 | 0x0020;
+            let handle = unsafe { OpenProcess(ACCESS, 0, pid) };
+            if handle.is_null() {
+                return Err(format!(
+                    "Cannot open game for coordinate hold: {}",
+                    io::Error::last_os_error()
+                ));
+            }
+            Ok(Self(handle))
+        }
+
+        fn write(&self, address: usize, bytes: &[u8]) -> Result<(), String> {
+            use std::io;
+            unsafe extern "system" {
+                fn WriteProcessMemory(
+                    handle: *mut c_void,
+                    address: *mut c_void,
+                    bytes: *const c_void,
+                    size: usize,
+                    written: *mut usize,
+                ) -> i32;
+            }
+            let mut written = 0usize;
+            let ok = unsafe {
+                WriteProcessMemory(
+                    self.0,
+                    address as *mut c_void,
+                    bytes.as_ptr().cast(),
+                    bytes.len(),
+                    &mut written,
+                )
+            };
+            if ok == 0 || written != bytes.len() {
+                return Err(format!(
+                    "Coordinate hold write failed: {}",
+                    io::Error::last_os_error()
+                ));
+            }
+            Ok(())
+        }
+    }
+    #[allow(unsafe_code)]
+    impl Drop for HoldWriter {
+        fn drop(&mut self) {
+            unsafe extern "system" {
+                fn CloseHandle(handle: *mut c_void) -> i32;
+            }
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+
+    /// Repeatedly correct physics position at ~60 Hz. This is positional
+    /// hovering, not a gravity/velocity override; some jitter can remain and
+    /// releasing the hold permits normal gravity to resume.
+    pub(crate) fn hold(
+        snapshot: &Snapshot,
+        root: &str,
+        offline: bool,
+        mode: HoldMode,
+        stop: Arc<AtomicBool>,
+    ) -> Result<Reading, String> {
+        if !offline {
+            return Err("Confirm an isolated offline match".into());
+        }
+        if stop.load(Ordering::Acquire) {
+            return Err("Coordinate hold canceled before starting".into());
+        }
+        let r = resolve(snapshot, root)?;
+        let (_, handle, base) = session(snapshot, root)?;
+        let writer = HoldWriter::open(r.pid)?;
+        let result = Reading {
+            pid: r.pid,
+            actor_id: r.actor_id,
+            position: r.pos,
+        };
+        while !stop.load(Ordering::Acquire) {
+            // Check that this is still the same controlled actor and validated
+            // physics object. Never write to a stale/repurposed player pointer.
+            if u32_at(&handle, r.client + 0x170)? != r.actor_id
+                || q(&handle, r.client + 0x178)? != r.actor
+                || q(&handle, r.actor + 0x38)? != r.entity
+                || u32_at(&handle, r.entity + 0x18)? != r.actor_id
+                || q(&handle, r.entity)? != base + ENTITY_VTABLE_RVA
+                || q(&handle, r.physics)? != base + LIVING_VTABLE_RVA
+            {
+                return Err(
+                    "Local actor or physics identity changed; coordinate hold stopped".into(),
+                );
+            }
+            let current = position(&handle, r.physics, [0xB8, 0xBC, 0xC0])?;
+            if !current.finite() {
+                return Err("Physics XYZ became invalid; coordinate hold stopped".into());
+            }
+            let target = held_position(r.pos, current, mode);
+            if (target.x - current.x).abs() > 0.01
+                || (target.y - current.y).abs() > 0.01
+                || (target.z - current.z).abs() > 0.01
+            {
+                // Only write the frozen axes. For hover, native movement
+                // retains control of X/Y and only the Z Float32 is corrected.
+                match mode {
+                    HoldMode::Z => writer.write(r.physics + 0xC0, &target.z.to_le_bytes())?,
+                    HoldMode::Xyz => {
+                        let mut bytes = [0u8; 12];
+                        for (index, value) in [target.x, target.y, target.z].iter().enumerate() {
+                            bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+                        }
+                        writer.write(r.physics + 0xB8, &bytes)?;
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(16));
+        }
+        Ok(result)
+    }
+
     pub(crate) fn teleport(
         snapshot: &Snapshot,
         root: &str,
@@ -425,7 +654,17 @@ mod windows {
     }
 }
 #[cfg(windows)]
-pub(super) use windows::{inspect, preview_aim, teleport};
+pub(super) use windows::{hold, inspect, preview_aim, teleport};
+#[cfg(not(windows))]
+pub(super) fn hold(
+    _: &Snapshot,
+    _: &str,
+    _: bool,
+    _: HoldMode,
+    _: Arc<AtomicBool>,
+) -> Result<Reading, String> {
+    Err("Coordinate hold requires Windows".into())
+}
 #[cfg(not(windows))]
 pub(super) fn inspect(_: &Snapshot, _: &str, _: bool) -> Result<Reading, String> {
     Err("Teleport requires Windows".into())
@@ -471,6 +710,28 @@ mod tests {
             y: 0.0,
             z: 0.0
         }));
+    }
+    #[test]
+    fn hover_holds_only_height_and_xyz_locks_all_axes() {
+        let anchor = Position {
+            x: 12.0,
+            y: 34.0,
+            z: 56.0,
+        };
+        let current = Position {
+            x: 91.0,
+            y: 82.0,
+            z: -3.0,
+        };
+        assert_eq!(
+            held_position(anchor, current, HoldMode::Z),
+            Position {
+                x: 91.0,
+                y: 82.0,
+                z: 56.0
+            }
+        );
+        assert_eq!(held_position(anchor, current, HoldMode::Xyz), anchor);
     }
     #[test]
     fn relative_position_is_three_axis() {
