@@ -184,16 +184,61 @@ impl canvas::Program<Message> for SceneOverview {
         }
     }
 }
+
+/// Unified level scene viewport: authored terrain and every resolved placed
+/// mesh share one depth-buffered wgpu scene. The outliner remains interactive.
+fn world_viewport(state: &State) -> Element<'_, Message> {
+    if let Some(mesh) = &state.model {
+        iced::widget::shader(super::level_pick::LevelViewport {
+            picks: state
+                .level_picks
+                .clone()
+                .unwrap_or_else(|| Arc::new(Vec::new())),
+            selected_pivot: state
+                .level_selected
+                .and_then(|i| state.level_scene.as_ref()?.objects.get(i))
+                .map(|o| o.world.position),
+            editable: state.level_project.is_some()
+                && state
+                    .level_selected
+                    .and_then(|i| state.level_scene.as_ref()?.objects.get(i))
+                    .is_some_and(|o| !o.kind.eq_ignore_ascii_case("Vegetation")),
+            inner: super::textured::Scene {
+                mesh: mesh.clone(),
+                surfaces: state.level_surfaces.clone(),
+                diffuse: None,
+                normal_map: None,
+                emissive: None,
+                specular: None,
+                gloss: None,
+                yaw: state.yaw,
+                pitch: state.pitch,
+                zoom: state.zoom.max(0.2),
+                light_strength: state.light_strength,
+                emissive_gain: state.emissive_strength,
+                emissive_time: state.decal_time,
+                pan_x: state.pan_x,
+                pan_y: state.pan_y,
+                shift: state.keyboard_modifiers.shift(),
+            },
+        })
+        .width(Fill)
+        .height(Length::Fixed(460.0))
+        .into()
+    } else {
+        text("No verified level geometry loaded. Select a map PAK containing mesh or heightmap resources.")
+            .size(12).color(MUTED).into()
+    }
+}
+
 pub(super) fn view(state: &State) -> Element<'_, Message> {
     let Some(scene) = &state.level_scene else {
         return column![
-            text("SCENE HIERARCHY").size(15),
-            text("Inspect a level to display a placement overview and object hierarchy.")
-                .size(12)
-                .color(MUTED)
-        ]
-        .spacing(8)
-        .into();
+            text("SCENE VIEWPORT").size(15),
+            world_viewport(state),
+            text("This map has no readable object placement layer; available terrain is still displayed.")
+                .size(12).color(MUTED),
+        ].spacing(8).into();
     };
     let mut outliner = column![].spacing(2);
     let query = state.level_filter.to_ascii_lowercase();
@@ -234,14 +279,22 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             text(format!("Status: {}", object.status))
                 .size(12)
                 .color(MUTED),
-            text("Edit local transform (position XYZ, rotation WXYZ, scale XYZ)").size(12),
+            text(if state.level_read_only {
+                "Imported source transforms · read-only"
+            } else {
+                "Edit local transform (position XYZ, rotation WXYZ, scale XYZ)"
+            })
+            .size(12),
             text_input("Position: x, y, z", &state.level_edit_position)
                 .on_input(Message::LevelEditPositionChanged),
             text_input("Rotation: w, x, y, z", &state.level_edit_rotation)
                 .on_input(Message::LevelEditRotationChanged),
             text_input("Scale: x, y, z", &state.level_edit_scale)
                 .on_input(Message::LevelEditScaleChanged),
-            button("Apply to preview").on_press(Message::LevelApplyTransform),
+            button("Apply to preview").on_press_maybe(
+                (!state.level_read_only && !object.kind.eq_ignore_ascii_case("Vegetation"))
+                    .then_some(Message::LevelApplyTransform)
+            ),
         ]
         .spacing(6)
         .into()
@@ -253,32 +306,49 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
     };
     row![
         column![
+            text("PERSPECTIVE VIEWPORT · ORIGINAL LEVEL GEOMETRY").size(14),
+            world_viewport(state),
             row![
-                text("LEVEL PLACEMENT OVERVIEW").size(14),
-                text(format!("{} objects", scene.objects.len())).size(12)
-            ]
-            .spacing(12),
-            canvas_widget(SceneOverview {
-                scene: scene.clone(),
-                selected_indices: state.level_selection.indices.clone(),
-                zoom: state.level_zoom.max(0.3),
-            })
-            .width(Fill)
-            .height(Length::Fixed(340.0)),
+                button("Perspective").on_press(Message::ViewerCameraPreset("Isometric")),
+                button("Top").on_press(Message::ViewerCameraPreset("Top")),
+                button("Front").on_press(Message::ViewerCameraPreset("Front")),
+                button(if state.level_show_overview { "Hide 2D Overview" } else { "Show 2D Overview" })
+                    .on_press(Message::LevelToggleOverview),
+            ].spacing(8),
             row![
+                text("Yaw").size(12),
+                iced::widget::slider(-180.0..=180.0, state.yaw, Message::YawChanged).width(Fill),
+                text("Pitch").size(12),
+                iced::widget::slider(-85.0..=85.0, state.pitch, Message::PitchChanged).width(Fill),
                 text("Zoom").size(12),
-                iced::widget::slider(
-                    0.3..=3.0,
-                    state.level_zoom.max(0.3),
-                    Message::LevelZoomChanged
-                )
-                .width(Length::Fixed(190.0)),
-                text("Read-only source placements").size(12).color(MUTED),
-            ]
-            .spacing(10),
-        ]
-        .spacing(8)
-        .width(Length::FillPortion(3)),
+                iced::widget::slider(0.2..=4.0, state.zoom.max(0.2), Message::ZoomChanged).width(Fill),
+                button("Reset Camera").on_press(Message::ViewerResetCamera),
+            ].spacing(8),
+            if state.level_show_overview {
+                Element::from(column![
+                    row![
+                        text("PLACEMENT OVERVIEW").size(12),
+                        text(format!("{} authored objects", scene.objects.len())).size(12),
+                    ].spacing(10),
+                    canvas_widget(SceneOverview {
+                        scene: scene.clone(),
+                        selected_indices: state.level_selection.indices.clone(),
+                        zoom: state.level_zoom.max(0.3),
+                    }).width(Fill).height(Length::Fixed(175.0)),
+                    row![
+                        text("Overview zoom").size(12),
+                        iced::widget::slider(
+                            0.3..=3.0,
+                            state.level_zoom.max(0.3),
+                            Message::LevelZoomChanged
+                        ).width(Length::Fixed(170.0)),
+                        text("Click a point to inspect its placement").size(12).color(MUTED),
+                    ].spacing(10),
+                ].spacing(7))
+            } else {
+                Element::from(text("Select objects in the Scene Outliner. Orbit, pan and zoom in the 3D viewport.").size(12).color(MUTED))
+            },
+        ].spacing(8).width(Length::FillPortion(4)),
         column![
             text("SCENE OUTLINER").size(14),
             text_input("Filter layer, object or model...", &state.level_filter)
@@ -293,10 +363,10 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             details,
             row![
                 button("Undo").on_press_maybe(
-                    (!state.level_undo.is_empty()).then_some(Message::LevelUndoTransform)
+                    (!state.level_read_only && !state.level_undo.is_empty()).then_some(Message::LevelUndoTransform)
                 ),
                 button("Redo").on_press_maybe(
-                    (!state.level_redo.is_empty()).then_some(Message::LevelRedoTransform)
+                    (!state.level_read_only && !state.level_redo.is_empty()).then_some(Message::LevelRedoTransform)
                 ),
                 text(format!("{} undo steps", state.level_undo.len()))
                     .size(12)
@@ -314,7 +384,7 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             )
             .on_input(Message::LevelEditOutputChanged),
             button("Export edited level copy")
-                .on_press_maybe((state.level_dirty_count > 0).then_some(Message::LevelExportEdits)),
+                .on_press_maybe((!state.level_read_only && state.level_dirty_count > 0).then_some(Message::LevelExportEdits)),
             text("Original level is read-only. Child world positions update in the preview.")
                 .size(12)
                 .color(MUTED),

@@ -36,6 +36,9 @@ mod gfx_tool_install;
 mod guided_modding;
 mod initial_setup;
 mod launcher_bridge;
+mod level_library;
+mod level_pick;
+mod level_scene_renderer;
 mod level_workspace;
 mod library_picker;
 mod loading_wheel;
@@ -71,6 +74,7 @@ mod textured;
 mod updater;
 mod updater_apply;
 mod uv_preview;
+mod vegetation_map;
 mod view_navigation;
 mod viewer_grid;
 mod viewer_inspector;
@@ -341,6 +345,18 @@ struct State {
     /// selected authored .skin metadata path.
     render_source: Option<PathBuf>,
     level_scene: Option<Arc<LevelScene>>,
+    library_map: Option<(
+        evolve_core::ImportedPak,
+        Vec<level_library::MapCandidate>,
+        usize,
+    )>,
+    level_read_only: bool,
+    level_surfaces: Option<Arc<Vec<textured::Surface>>>,
+    level_picks: Option<Arc<Vec<level_scene_renderer::PickRange>>>,
+    level_project: Option<modding_projects::ProjectRow>,
+    level_open_after_copy: bool,
+    level_diagnostics: Vec<String>,
+    level_show_overview: bool,
     terrain: Option<TerrainInfo>,
     selected: Option<usize>,
     file_selection: MultiSelection,
@@ -711,6 +727,15 @@ enum Operation {
     LoadDeclaredClip(usize, String, Inventory, Option<PathBuf>, Option<String>),
     LoadDeclaredDba(String, Inventory, Option<PathBuf>, Option<String>, PathBuf),
     InspectLevel(PathBuf),
+    OpenImportedMap(evolve_core::ImportedPak, usize, SharedCache),
+    OpenProjectLevel(modding_projects::ProjectRow, usize, SharedCache, PathBuf),
+    SaveProjectLevel(
+        modding_projects::ProjectRow,
+        PathBuf,
+        String,
+        Vec<(String, evolve_core::Transform)>,
+        PathBuf,
+    ),
     ExportEditedLevel(
         PathBuf,
         PathBuf,
@@ -834,6 +859,8 @@ enum Completed {
     ModelResources(String, auto_resources::AutoDiscovery),
     DeclaredClip(usize, String, NativeCafMotion),
     Level(LevelScene, PathBuf, String),
+    ImportedMap(Box<level_library::LoadedMap>),
+    ProjectLevelSaved(modding_projects::ProjectRow, bool),
     EditedLevelExported(PathBuf, usize),
     Terrain(RenderMesh, TerrainInfo),
     SignedPak(SignedPakInfo),
@@ -1253,6 +1280,42 @@ impl Operation {
                         "Unable to preview original model {}: {e}. For a .skin, index its exact .skinm compiled render companion in the same build.",
                         render_source.display(),
                     ))
+            }
+            Self::OpenImportedMap(archive, index, cache) => {
+                level_library::open(archive, index, &cache)
+                    .map(|map| Completed::ImportedMap(Box::new(map)))
+            }
+            Self::OpenProjectLevel(project, index, cache, library_root) => {
+                level_library::open_project(project, index, &cache, &library_root)
+                    .map(|map| Completed::ImportedMap(Box::new(map)))
+            }
+            Self::SaveProjectLevel(project, source, expected, edits, projects_root) => {
+                let root = std::fs::canonicalize(project.workspace.join("files"))
+                    .map_err(|e| e.to_string())?;
+                let source = std::fs::canonicalize(&source).map_err(|e| e.to_string())?;
+                let relative = source
+                    .strip_prefix(&root)
+                    .map_err(|_| "Level is not in this editable project")?;
+                let member = relative.to_string_lossy().replace('\\', "/");
+                if expected.is_empty() || level_source_hash(&source)? != expected {
+                    return Err("Editable level source changed during editing; reopen it".into());
+                }
+                let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
+                let target = scratch.path().join("edited.lyr");
+                evolve_core::export_edited_layers(&source, &target, &edits)
+                    .map_err(|e| e.to_string())?;
+                if level_source_hash(&source)? != expected {
+                    return Err(
+                        "Level source changed before project import; no changes saved".into(),
+                    );
+                }
+                let saved = modding_projects::import_raw_member(
+                    &project,
+                    &projects_root,
+                    &member,
+                    &target,
+                )?;
+                Ok(Completed::ProjectLevelSaved(project, saved))
             }
             Self::InspectLevel(source) => {
                 let checksum = level_source_hash(&source)?;
@@ -1798,6 +1861,12 @@ enum Message {
     LibrarySetByBuild(bool),
     LibraryNextBuild,
     LibrarySelect(usize),
+    LibraryOpenMap(usize),
+    LevelMapSelect(usize),
+    LevelOpenSelectedModProject,
+    LevelGizmoMove(usize, f32),
+    LevelSaveProjectChanges,
+    LevelToggleOverview,
     LibraryPreview,
     LibraryMakeModProject,
     RefreshGamePakBaseline,
@@ -2549,6 +2618,10 @@ fn operation_label(operation: &Operation) -> &'static str {
             "Loading original animation clip"
         }
         Operation::InspectLevel(..) | Operation::InspectTerrain(..) => "Inspecting level resources",
+        Operation::OpenImportedMap(..) | Operation::OpenProjectLevel(..) => {
+            "Assembling level scene"
+        }
+        Operation::SaveProjectLevel(..) => "Saving editable level project",
         Operation::ExportEditedLevel(..) => "Exporting edited level",
         Operation::InspectSignedPak(..) => "Verifying signed CryPAK",
         Operation::ExtractSignedPak(..) => "Extracting signed CryPAK",
@@ -4210,6 +4283,134 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 refresh_library_matches(state);
             }
         }
+        Message::LibraryOpenMap(index) => {
+            let Some(archive) = state
+                .library_catalog
+                .as_ref()
+                .and_then(|c| c.archives.get(index))
+                .cloned()
+            else {
+                return Task::none();
+            };
+            if state.busy {
+                state.status = "Finish the current operation before opening a map.".into();
+                return Task::none();
+            }
+            let cache = state.preview_cache.clone();
+            return launch(state, Operation::OpenImportedMap(archive, 0, cache));
+        }
+        Message::LevelToggleOverview => state.level_show_overview = !state.level_show_overview,
+        Message::LevelGizmoMove(axis, distance) => {
+            if state.level_project.is_none()
+                || axis > 2
+                || !distance.is_finite()
+                || distance.abs() > 10_000.0
+            {
+                return Task::none();
+            }
+            let Some(object) = state
+                .level_selected
+                .and_then(|i| state.level_scene.as_ref()?.objects.get(i))
+            else {
+                return Task::none();
+            };
+            if object.kind.eq_ignore_ascii_case("Vegetation") {
+                return Task::none();
+            }
+            let coords = state
+                .level_edit_position
+                .split(',')
+                .map(|x| x.trim().parse::<f32>())
+                .collect::<Result<Vec<_>, _>>();
+            if let Ok(mut coords) = coords
+                && coords.len() == 3
+            {
+                coords[axis] += distance;
+                state.level_edit_position = coords
+                    .iter()
+                    .map(|x| x.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+            }
+        }
+        Message::LevelSaveProjectChanges => {
+            let Some(project) = state.level_project.clone() else {
+                state.status = "Open a managed editable level project before saving.".into();
+                return Task::none();
+            };
+            if state.busy {
+                return Task::none();
+            }
+            let Some(source) = state.level_source.clone() else {
+                return Task::none();
+            };
+            let Some(scene) = &state.level_scene else {
+                return Task::none();
+            };
+            let edits = level_pending_edits(state);
+            if edits.is_empty() || edits.len() > 128 {
+                state.status = "Nothing to save, or too many pending edits (128 maximum).".into();
+                return Task::none();
+            }
+            let ids = edits
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<std::collections::HashSet<_>>();
+            if scene
+                .objects
+                .iter()
+                .filter(|obj| ids.contains(obj.id.as_str()))
+                .any(|obj| {
+                    obj.kind.eq_ignore_ascii_case("Vegetation")
+                        || PathBuf::from(&state.assets_root).join(&obj.layer) != source
+                })
+            {
+                state.status = "Save one authored LYR layer at a time; binary vegetation instances cannot be edited through the XML layer editor.".into();
+                return Task::none();
+            }
+            let expected = state.level_source_sha.clone();
+            let root = PathBuf::from(&state.preferences.projects);
+            return launch(
+                state,
+                Operation::SaveProjectLevel(project, source, expected, edits, root),
+            );
+        }
+        Message::LevelOpenSelectedModProject => {
+            let Some(project) = state
+                .modding_selected
+                .and_then(|i| state.modding_projects.as_ref()?.get(i))
+                .cloned()
+            else {
+                state.status = "Select an editable Modding project first.".into();
+                return Task::none();
+            };
+            if state.busy {
+                return Task::none();
+            }
+            let cache = state.preview_cache.clone();
+            let root = PathBuf::from(&state.library_root);
+            return launch(state, Operation::OpenProjectLevel(project, 0, cache, root));
+        }
+        Message::LevelMapSelect(index) => {
+            let Some((archive, maps, _)) = &state.library_map else {
+                return Task::none();
+            };
+            if index >= maps.len() || state.busy {
+                return Task::none();
+            }
+            let project = state.level_project.clone();
+            let archive = archive.clone();
+            let cache = state.preview_cache.clone();
+            return if let Some(project) = project {
+                let root = PathBuf::from(&state.library_root);
+                launch(
+                    state,
+                    Operation::OpenProjectLevel(project, index, cache, root),
+                )
+            } else {
+                launch(state, Operation::OpenImportedMap(archive, index, cache))
+            };
+        }
         Message::LibrarySelect(index) => {
             if state
                 .library_catalog
@@ -4227,6 +4428,19 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.keyboard_modifiers.control(),
                 );
                 state.library_selected = state.library_selection.primary_after(index);
+                if !state.keyboard_modifiers.control()
+                    && !state.keyboard_modifiers.shift()
+                    && let Some(archive) = state
+                        .library_catalog
+                        .as_ref()
+                        .and_then(|c| c.archives.get(index))
+                        .cloned()
+                    && level_library::likely_level_pak(&archive)
+                    && !state.busy
+                {
+                    let cache = state.preview_cache.clone();
+                    return launch(state, Operation::OpenImportedMap(archive, 0, cache));
+                }
             }
         }
         Message::LibraryPreviousPage => {
@@ -4247,16 +4461,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return launch(state, Operation::OpenImportedPak(pak));
         }
         Message::LibraryMakeModProject => {
-            if state.library_selection.indices.len() != 1 {
+            let imported_map = if state.level_read_only {
+                state.library_map.as_ref().map(|(pak, _, _)| pak.clone())
+            } else {
+                None
+            };
+            if imported_map.is_none() && state.library_selection.indices.len() != 1 {
                 state.status = "Select exactly one imported PAK to make an editable copy.".into();
                 return Task::none();
             }
-            let Some(pak) = state
-                .library_selected
-                .filter(|i| state.library_selection.indices.contains(i))
-                .and_then(|i| state.library_catalog.as_ref()?.archives.get(i))
-                .cloned()
-            else {
+            let Some(pak) = imported_map.or_else(|| {
+                state
+                    .library_selected
+                    .filter(|i| state.library_selection.indices.contains(i))
+                    .and_then(|i| state.library_catalog.as_ref()?.archives.get(i))
+                    .cloned()
+            }) else {
                 state.status = "Choose a verified imported archive first.".into();
                 return Task::none();
             };
@@ -4266,7 +4486,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let progress = Arc::new(ProjectCopyProgress::default());
             state.project_copy_progress = Some(progress.clone());
             let stage = PathBuf::from(&state.preferences.stage);
-            state.modding_open_editor_when_scanned = true;
+            state.level_open_after_copy = state.page == Some(Page::Levels);
+            state.modding_open_editor_when_scanned = !state.level_open_after_copy;
             return launch(
                 state,
                 Operation::CreateProjectFromLibrary(
@@ -6776,14 +6997,26 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::LevelEditRotationChanged(value) => state.level_edit_rotation = value,
         Message::LevelEditScaleChanged(value) => state.level_edit_scale = value,
         Message::LevelEditOutputChanged(value) => state.level_edit_output = value,
-        Message::LevelUndoTransform => restore_level_history(state, true),
-        Message::LevelRedoTransform => restore_level_history(state, false),
+        Message::LevelUndoTransform => {
+            if !state.level_read_only {
+                restore_level_history(state, true);
+            }
+        }
+        Message::LevelRedoTransform => {
+            if !state.level_read_only {
+                restore_level_history(state, false);
+            }
+        }
         Message::LevelApplyTransform => {
+            if state.level_read_only {
+                state.status = "Imported levels are read-only. Use File → Open as Modding Project to create an editable copy.".into();
+                return Task::none();
+            }
             let Some(index) = state.level_selected else {
                 state.status = "Select a placement to edit.".into();
                 return Task::none();
             };
-            let Some(scene) = &state.level_scene else {
+            let Some(scene) = state.level_scene.clone() else {
                 state.status = "Inspect the source level first.".into();
                 return Task::none();
             };
@@ -6791,6 +7024,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Selected level placement is no longer available.".into();
                 return Task::none();
             };
+            if object.kind.eq_ignore_ascii_case("Vegetation") {
+                state.status = "Binary vegetation instances are read-only; modify an authored XML layer object instead.".into();
+                return Task::none();
+            }
             let id = object.id.clone();
             let previous = object.local;
             let requested = match level_workspace::parse_transform(
@@ -6804,7 +7041,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     return Task::none();
                 }
             };
-            match evolve_core::edit_level_transform(scene, &id, requested) {
+            match evolve_core::edit_level_transform(&scene, &id, requested) {
                 Ok(edited) => {
                     let applied = edited.objects[index].local;
                     if applied != previous {
@@ -6824,6 +7061,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                             new_local: applied,
                         });
                         state.level_redo.clear();
+                        if let (Some(model), Some(picks)) = (&state.model, &state.level_picks)
+                            && let Some(reprojected) = level_scene_renderer::reproject_after_edit(
+                                model, picks, &scene, &edited,
+                            )
+                        {
+                            state.model = Some(Arc::new(reprojected));
+                        }
                         state.level_scene = Some(Arc::new(edited));
                         sync_level_fields(state);
                         state.status =
@@ -6835,6 +7079,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::LevelExportEdits => {
+            if state.level_read_only {
+                state.status = "Open as Modding Project before editing imported maps.".into();
+                return Task::none();
+            }
             let Some(source) = &state.level_source else {
                 state.status = "Inspect an original level before exporting edits.".into();
                 return Task::none();
@@ -10686,6 +10934,21 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         previous.and_then(|path| projects.iter().position(|p| p.workspace == path));
                     state.status = format!("Loaded {} editable project(s).", projects.len());
                     state.modding_projects = Some(projects);
+                    if state.level_open_after_copy {
+                        state.level_open_after_copy = false;
+                        if let Some(project) = state
+                            .modding_selected
+                            .and_then(|index| state.modding_projects.as_ref()?.get(index))
+                            .cloned()
+                        {
+                            let cache = state.preview_cache.clone();
+                            let root = PathBuf::from(&state.library_root);
+                            return launch(
+                                state,
+                                Operation::OpenProjectLevel(project, 0, cache, root),
+                            );
+                        }
+                    }
                     state.modding_name_input = state
                         .modding_selected
                         .and_then(|index| state.modding_projects.as_ref()?.get(index))
@@ -11561,13 +11824,121 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         info.width, info.height, info.stride
                     );
                     state.terrain = Some(info);
+                    state.level_surfaces = None;
+                    state.level_picks = None;
                     state.model = Some(Arc::new(mesh));
                     state.skin_preview = None;
                     state.playing = false;
                     state.page = Some(Page::Levels);
                     state.zoom = 1.0;
                 }
+                Ok(Completed::ProjectLevelSaved(project, saved)) => {
+                    state.status = if saved {
+                        "Edited level saved through the verified Modding project backup/import process.".into()
+                    } else {
+                        "Project level matches its original bytes.".into()
+                    };
+                    let index = state.library_map.as_ref().map_or(0, |(_, _, index)| *index);
+                    let root = PathBuf::from(&state.library_root);
+                    let cache = state.preview_cache.clone();
+                    return launch(
+                        state,
+                        Operation::OpenProjectLevel(project, index, cache, root),
+                    );
+                }
+                Ok(Completed::ImportedMap(loaded)) => {
+                    let loaded = *loaded;
+                    state.level_diagnostics = loaded.diagnostics.clone();
+                    state.level_show_overview = false;
+                    let map_name = loaded.maps[loaded.index].name.clone();
+                    state.input = loaded
+                        .source
+                        .as_ref()
+                        .map_or_else(String::new, |p| p.display().to_string());
+                    state.assets_root = loaded
+                        .project
+                        .as_ref()
+                        .map_or_else(
+                            || PathBuf::from(&loaded.archive.directory).join("files"),
+                            |project| project.workspace.join("files"),
+                        )
+                        .display()
+                        .to_string();
+                    state.terrain_source =
+                        loaded.maps[loaded.index]
+                            .terrain
+                            .as_ref()
+                            .map_or_else(String::new, |p| {
+                                PathBuf::from(&state.assets_root)
+                                    .join(p)
+                                    .display()
+                                    .to_string()
+                            });
+                    state.library_map = Some((loaded.archive.clone(), loaded.maps, loaded.index));
+                    state.level_read_only = loaded.project.is_none();
+                    state.level_project = loaded.project;
+                    state.level_scene = loaded.scene.map(Arc::new);
+                    state.level_source = loaded.source;
+                    state.level_source_sha = state
+                        .level_source
+                        .as_ref()
+                        .and_then(|p| level_source_hash(p).ok())
+                        .unwrap_or_default();
+                    state.level_original_transforms = state
+                        .level_scene
+                        .as_ref()
+                        .map(|scene| {
+                            scene
+                                .objects
+                                .iter()
+                                .map(|obj| (obj.id.clone(), obj.local))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    state.level_dirty_count = 0;
+                    state.level_undo.clear();
+                    state.level_redo.clear();
+                    state.level_selection.clear();
+                    state.level_selected = None;
+                    if let Some(assembled) = loaded.full_scene {
+                        state.level_surfaces = Some(Arc::new(assembled.surfaces));
+                        state.level_picks = Some(Arc::new(assembled.picks));
+                        state.model = Some(Arc::new(assembled.mesh));
+                    } else {
+                        state.level_surfaces = None;
+                        state.level_picks = None;
+                        state.model = loaded
+                            .terrain
+                            .as_ref()
+                            .map(|(mesh, _)| Arc::new(mesh.clone()));
+                    }
+                    state.terrain = loaded.terrain.map(|(_, info)| info);
+                    state.diffuse = None;
+                    state.normal_map = None;
+                    state.emissive_map = None;
+                    state.specular_map = None;
+                    state.gloss_map = None;
+                    state.status = format!(
+                        "Map {map_name} opened read-only. {}",
+                        loaded.diagnostics.join(" ")
+                    );
+                    state.page = Some(Page::Levels);
+                    state.level_zoom = 1.0;
+                    state.yaw = -30.0;
+                    state.pitch = 32.0;
+                    state.zoom = 1.0;
+                    state.pan_x = 0.0;
+                    state.pan_y = 0.0;
+                }
                 Ok(Completed::Level(scene, source, hash)) => {
+                    state.library_map = None;
+                    state.level_project = None;
+                    state.level_surfaces = None;
+                    state.level_picks = None;
+                    state.level_read_only = false;
+                    state.level_diagnostics.clear();
+                    state.model = None;
+                    state.terrain = None;
                     state.status = format!(
                         "Loaded {} placed level objects; {} diagnostics.",
                         scene.objects.len(),
@@ -12461,54 +12832,56 @@ fn view(state: &State) -> Element<'_, Message> {
             ].spacing(14).into()
         }
         Page::Levels => column![
-            text("Level source preview").size(19),
+            text(if state.library_map.is_some() { "Level Editor · Imported Map" } else { "Level Editor · Source Preview" }).size(19),
+            if let Some((_, maps, selected)) = &state.library_map {
+                let mut choices = iced::widget::column![text("MAPS IN SELECTED PAK").size(12)].spacing(4);
+                for (index, map) in maps.iter().enumerate().take(48) {
+                    choices = choices.push(design::button(text(if index == *selected { format!("● {}", map.name) } else { map.name.clone() })).on_press(Message::LevelMapSelect(index)));
+                }
+                Element::from(iced::widget::scrollable(choices).height(Length::Fixed(100.0)))
+            } else { Element::from(text("Open a map from Asset Library to browse verified map sources.")) },
+            row![
+                design::button("File").on_press(Message::LibraryMenu("LevelFile")),
+                text(if state.level_read_only { "READ-ONLY IMPORT · create a modding project to edit" } else { "LOCAL SOURCE" }).size(12),
+            ].spacing(10),
+            if state.library_menu == Some("LevelFile") {
+                Element::from(column![
+                    design::button("Open as Modding Project").on_press_maybe((state.level_project.is_none() && state.library_map.is_some()).then_some(Message::LibraryMakeModProject)),
+                    design::button("Open Selected Modding Project").on_press_maybe(state.modding_selected.map(|_| Message::LevelOpenSelectedModProject)),
+                    design::button("Save Edited Project Layer").on_press_maybe((state.level_project.is_some() && state.level_dirty_count > 0).then_some(Message::LevelSaveProjectChanges)),
+                ].spacing(4))
+            } else { Element::from(text("")) },
             level_workspace::view(state),
-            text("Read Level/LYR or Heightmap.dat without touching installed game assets."),
-            row![
-                design::button("Read level placements").on_press(Message::StartLevelInspection),
-                design::button("Load heightmap geometry").on_press(Message::StartTerrainInspection),
-                design::button("Export geometry scene GLB").on_press(Message::StartLevelGlbExport),
-                design::button("Export geometry scene FBX").on_press(Message::StartLevelFbxExport),
-            ].spacing(8),
-            row![
-                design::text_input("Exact extracted asset root...",&state.assets_root)
-                    .on_input(Message::AssetsRootChanged).width(Fill),
-                design::text_input("Optional Heightmap.dat source...",&state.terrain_source)
-                    .on_input(Message::TerrainSourceChanged).width(Fill),
-            ].spacing(8),
-            text(if let Some(scene)=&state.level_scene {
-                format!("{} level objects, {} unresolved diagnostics; source transforms preserved.",
-                    scene.objects.len(),scene.diagnostics.len())
-            }else{"No placement source inspected.".into()}),
-            if let Some(mesh)=&state.model {
-                let display:Element<'_,Message> = if mesh.uv0.is_some(){
-                    shader(TexturedScene{
-                        mesh:mesh.clone(),surfaces:None,diffuse:state.diffuse.clone(),
-                            normal_map:state.normal_map.clone(),emissive:state.emissive_map.clone(),
-                            specular:state.specular_map.clone(),gloss:state.gloss_map.clone(),
-                        yaw:state.yaw,pitch:state.pitch,zoom:state.zoom.max(0.2),
-                            light_strength:state.light_strength,
-                            emissive_gain:state.emissive_strength,
-                            emissive_time:state.decal_time,
-                            pan_x:state.pan_x,pan_y:state.pan_y,shift:state.keyboard_modifiers.shift(),
-                    }).width(Fill).height(Length::Fixed(400.)).into()
-                }else{
-                    canvas(MeshViewport{
-                        mesh:mesh.clone(),yaw:state.yaw,pitch:state.pitch,zoom:state.zoom.max(0.2),
-                            pan_x:state.pan_x,pan_y:state.pan_y,shift:state.keyboard_modifiers.shift(),
-                    }).width(Fill).height(Length::Fixed(400.)).into()
-                };
-                display
-            }else{
-                let fallback:Element<'_,Message>=text("Load an original source heightmap to see terrain triangles.").into();
-                fallback
+            text(if state.level_read_only { "Verified source view; no source files are changed. Vegetation instance streams and unsupported shaders remain unresolved." } else { "Read Level/LYR or Heightmap.dat without touching installed game assets." }),
+            if state.level_diagnostics.is_empty() { Element::from(text("")) } else {
+                Element::from(iced::widget::scrollable(
+                    iced::widget::column(state.level_diagnostics.iter().take(12).map(|note| Element::from(text(note.as_str()).size(11))))
+                        .spacing(2)
+                ).height(Length::Fixed(70.0)))
             },
-            row![
-                text("Yaw"),
-                slider(-180.0..=180.0,state.yaw,Message::YawChanged).width(Fill),
-                text("Pitch"),
-                slider(-85.0..=85.0,state.pitch,Message::PitchChanged).width(Fill),
-            ].spacing(8),
+            if state.level_read_only {
+                Element::from(text("Imported source files are protected. File → Open as Modding Project to edit."))
+            } else {
+                Element::from(column![
+                row![
+                    design::button("Read level placements").on_press_maybe((!state.level_read_only).then_some(Message::StartLevelInspection)),
+                    design::button("Load heightmap geometry").on_press_maybe((!state.level_read_only).then_some(Message::StartTerrainInspection)),
+                    design::button("Export geometry scene GLB").on_press_maybe((!state.level_read_only).then_some(Message::StartLevelGlbExport)),
+                    design::button("Export geometry scene FBX").on_press_maybe((!state.level_read_only).then_some(Message::StartLevelFbxExport)),
+                ].spacing(8),
+                row![
+                    design::text_input("Exact extracted asset root...",&state.assets_root)
+                        .on_input(Message::AssetsRootChanged).width(Fill),
+                    design::text_input("Optional Heightmap.dat source...",&state.terrain_source)
+                        .on_input(Message::TerrainSourceChanged).width(Fill),
+                ].spacing(8),
+                text(if let Some(scene)=&state.level_scene {
+                    format!("{} level objects, {} unresolved diagnostics; source transforms preserved.",
+                        scene.objects.len(),scene.diagnostics.len())
+                }else{"No placement source inspected.".into()}),
+                ].spacing(8))
+            },
+            text("The unified perspective viewport is above, beside the object outliner."),
             if blender_install::valid_blender(&state.blender_path).is_some() {
                 Element::from(text("Blender detected automatically for scene FBX").size(12))
             } else {
@@ -12520,7 +12893,7 @@ fn view(state: &State) -> Element<'_, Message> {
         Page::Settings => settings_page::view(state),
     };
 
-    let workspace: Element<'_, Message> = if page == Page::Files {
+    let workspace: Element<'_, Message> = if matches!(page, Page::Files | Page::Levels) {
         scrollable(workspace).height(Fill).into()
     } else {
         workspace
