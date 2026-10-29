@@ -86,12 +86,7 @@ pub(super) struct WriteResult {
 
 // Validate individual fields without making actor discovery depend on them.
 fn stage_number(bits: u32) -> Option<u32> {
-    match bits & 0xFFFF {
-        0x0101 => Some(1),
-        0x0202 => Some(2),
-        0x0303 => Some(3),
-        _ => None,
-    }
+    crate::runtime_energy::stage(bits).map(u32::from)
 }
 fn plausible_pair(current_bits: u32, max_bits: u32) -> bool {
     let current = f32::from_bits(current_bits);
