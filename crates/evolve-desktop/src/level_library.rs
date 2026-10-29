@@ -245,15 +245,56 @@ fn open_selected(
                 diagnostics.push(format!(
                     "Combined layers could not be assembled: {error}. Trying individual sources."
                 ));
-                for (name, bytes) in &sources {
-                    if let Ok(parsed) = parse_level_scene(&[(name.as_str(), bytes)]) {
-                        source = Some(root.join(name));
-                        scene = Some(parsed);
-                        diagnostics.push(
-                            "Showing a single readable layer; some placements may be absent."
-                                .into(),
-                        );
-                        break;
+                // A cross-layer duplicate ID must not make the imported map
+                // lose every other valid layer. For a READ-ONLY preview, parse
+                // independently and union verified placements without changing
+                // source GUIDs or authoring files. Cross-layer parenting cannot
+                // be reconstructed reliably on this recovery path.
+                if project.is_none() {
+                    let mut recovered = LevelScene {
+                        schema: 1,
+                        objects: Vec::new(),
+                        diagnostics: Vec::new(),
+                    };
+                    let mut valid_layers = 0usize;
+                    let mut duplicate_ids = 0usize;
+                    let mut seen_ids = std::collections::HashSet::new();
+                    for (name, bytes) in &sources {
+                        match parse_level_scene(&[(name.as_str(), bytes)]) {
+                            Ok(parsed) => {
+                                valid_layers += 1;
+                                for object in parsed.objects {
+                                    if seen_ids.insert(object.id.clone()) {
+                                        recovered.objects.push(object);
+                                    } else {
+                                        duplicate_ids += 1;
+                                    }
+                                }
+                            }
+                            Err(layer_error) => diagnostics.push(format!(
+                                "Layer {name} could not be recovered: {layer_error}"
+                            )),
+                        }
+                    }
+                    if !recovered.objects.is_empty() {
+                        diagnostics.push(format!(
+                            "Read-only recovery assembled {valid_layers} individually valid layers ({} unique placements; {duplicate_ids} repeated IDs omitted). Cross-layer parent transforms may be incomplete.",
+                            recovered.objects.len()
+                        ));
+                        scene = Some(recovered);
+                    }
+                }
+                if scene.is_none() {
+                    for (name, bytes) in &sources {
+                        if let Ok(parsed) = parse_level_scene(&[(name.as_str(), bytes)]) {
+                            source = Some(root.join(name));
+                            scene = Some(parsed);
+                            diagnostics.push(
+                                "Showing a single readable layer; some placements may be absent."
+                                    .into(),
+                            );
+                            break;
+                        }
                     }
                 }
             }
