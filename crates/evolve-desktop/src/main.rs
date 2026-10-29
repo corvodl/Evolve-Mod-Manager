@@ -385,6 +385,11 @@ struct State {
     teleport_saved: Option<runtime_teleport::Reading>,
     teleport_busy: bool,
     teleport_status: String,
+    teleport_hold_mode: Option<runtime_teleport::HoldMode>,
+    teleport_hold_cancel: Option<Arc<AtomicBool>>,
+    teleport_hold_releasing: bool,
+    teleport_hold_status: String,
+    teleport_hold_generation: u64,
     teleport_x: String,
     teleport_y: String,
     teleport_z: String,
@@ -1950,6 +1955,9 @@ enum Message {
     DeveloperKeybindChanged(developer_hotkeys::Action, developer_hotkeys::Keybind),
     TeleportDo(runtime_teleport::Destination, Option<(u32, u32)>),
     TeleportMoved(Result<runtime_teleport::Reading, String>),
+    TeleportHold(runtime_teleport::HoldMode),
+    TeleportHoldRelease,
+    TeleportHoldFinished(u64, Result<runtime_teleport::Reading, String>),
     ActorEdit(u32, usize, runtime_actors::Field, u32),
     ActorEditValue(String),
     ActorWrite,
@@ -4410,6 +4418,68 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
             };
         }
+        Message::TeleportHold(mode) => {
+            if !state.developer_unlocked
+                || state.developer_online_mods
+                || !state.armor_offline_confirmed
+                || !state.live_edit_enabled
+                || state.teleport_busy
+                || state.teleport_hold_cancel.is_some()
+            {
+                state.teleport_hold_status = "Finish other teleport operations and enable actor writes first".into();
+                return Task::none();
+            }
+            let Some(snapshot) = state.runtime_snapshot.clone() else {
+                state.teleport_hold_status = "Detect Evolve.exe first".into();
+                return Task::none();
+            };
+            let stop = Arc::new(AtomicBool::new(false));
+            state.teleport_hold_cancel = Some(stop.clone());
+            state.teleport_hold_mode = Some(mode);
+            state.teleport_hold_releasing = false;
+            state.teleport_hold_generation = state.teleport_hold_generation.wrapping_add(1);
+            let generation = state.teleport_hold_generation;
+            state.teleport_hold_status =
+                format!("Engaging {} hold at the current physics coordinates...", mode.label());
+            let root = state.preferences.game_storage_root.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        runtime_teleport::hold(&snapshot, &root, true, mode, stop)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Coordinate hold worker failed: {e}")))
+                },
+                move |result| Message::TeleportHoldFinished(generation, result),
+            );
+        }
+        Message::TeleportHoldRelease => {
+            if let Some(cancel) = state.teleport_hold_cancel.as_ref() {
+                cancel.store(true, Ordering::Release);
+                state.teleport_hold_releasing = true;
+                state.teleport_hold_status = "Releasing coordinate hold...".into();
+            }
+        }
+        Message::TeleportHoldFinished(generation, result) => {
+            if generation != state.teleport_hold_generation {
+                return Task::none();
+            }
+            state.teleport_hold_cancel = None;
+            state.teleport_hold_mode = None;
+            state.teleport_hold_releasing = false;
+            match result {
+                Ok(reading) => {
+                    state.teleport_hold_status =
+                        "Coordinate hold released; normal physics resumes (falling may accelerate)".into();
+                    notify_dev_overlay(state, "Coordinate hold released");
+                    state.teleport_reading = Some(reading);
+                }
+                Err(error) => {
+                    state.teleport_hold_status = format!("Coordinate hold stopped: {error}");
+                    notify_dev_overlay(state, "Coordinate hold stopped");
+                }
+            }
+        }
         Message::TeleportAimDistanceChanged(value) => {
             if state.developer_unlocked && value.len() <= 12 {
                 state.teleport_aim_distance = value;
@@ -4489,7 +4559,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::TeleportAim => {
-            if !state.developer_unlocked || state.teleport_busy {
+            if !state.developer_unlocked || state.teleport_busy || state.teleport_hold_cancel.is_some() {
                 return Task::none();
             }
             let raw = state.teleport_aim_distance.trim();
@@ -4565,6 +4635,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 || !state.armor_offline_confirmed
                 || !state.live_edit_enabled
                 || state.teleport_busy
+                || state.teleport_hold_cancel.is_some()
             {
                 state.teleport_status = "Enable offline editing in an isolated match".into();
                 return Task::none();
@@ -4670,6 +4741,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 || !state.armor_offline_confirmed
                 || !state.live_edit_enabled
                 || state.teleport_busy
+                || state.teleport_hold_cancel.is_some()
             {
                 state.teleport_status = "Teleport requires unlocked offline writes".into();
                 return Task::none();
@@ -4955,6 +5027,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LiveEditEnabled(armed) => {
             if !state.developer_unlocked {
+                return Task::none();
+            }
+            if !armed && state.teleport_hold_cancel.is_some() {
+                state.teleport_hold_status = "Unfreeze coordinates before disabling actor writes".into();
                 return Task::none();
             }
             if let Some(cancel) = &state.live_edit_cancel {
@@ -5306,6 +5382,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::RuntimeDetect => {
+            if state.teleport_hold_cancel.is_some() {
+                state.teleport_hold_status = "Unfreeze coordinates before detecting another process".into();
+                return Task::none();
+            }
             if !state.developer_unlocked || state.runtime_checking {
                 return Task::none();
             }
@@ -5551,6 +5631,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .unwrap_or_else(|error| format!("Phase 3 preview rejected: {error}"));
         }
         Message::LockDeveloper => {
+            if state.teleport_hold_cancel.is_some() {
+                state.teleport_hold_status = "Unfreeze coordinates before locking the Developer menu".into();
+                return Task::none();
+            }
             state.actor_frozen.clear();
             state.actor_freeze_generation = state.actor_freeze_generation.wrapping_add(1);
             state.actor_listing = None;
@@ -5628,6 +5712,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 result.unwrap_or_else(|error| format!("Privilege inspection failed: {error}"));
         }
         Message::DeveloperOnlineMods(allow) => {
+            if allow && state.teleport_hold_cancel.is_some() {
+                state.teleport_hold_status = "Unfreeze coordinates before enabling online testing".into();
+                return Task::none();
+            }
             if !state.developer_unlocked
                 || state.developer_network_busy
                 || state.busy
