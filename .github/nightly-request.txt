@@ -1,5 +1,5 @@
 # Update this file on main to request a Nightly release build.
 # GitHub Actions runs .github/workflows/nightly.yml only on this file's main-branch change or manual dispatch.
-request: merge-pr-129
-requested: 2026-10-28
-description: Build merged PR #129 - Fly Mode movement fix, Ctrl+F8 toggle, collapsible Developer menu
+request: merge-prs-130-131-132-133
+requested: 2026-10-29
+description: Build main after merging PR #130 Level Editor, PR #131 camera-relative Fly/Teleport, PR #132 Monster Duel diagnostics, PR #133 feasibility research
