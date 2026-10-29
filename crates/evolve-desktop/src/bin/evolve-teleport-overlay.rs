@@ -362,6 +362,8 @@ mod windows {
             return;
         };
         if game == 0 || manager == 0 || !process_alive(game) || !process_alive(manager) {
+            println!("OVERLAY_ERROR Evolve or the Mod Manager is no longer running");
+            let _ = std::io::stdout().flush();
             return;
         }
         GAME_PID.store(game, Ordering::Relaxed);
@@ -384,6 +386,8 @@ mod windows {
                 small_icon: null_mut(),
             };
             if RegisterClassExW(&wc) == 0 {
+                println!("OVERLAY_ERROR Could not register overlay window class");
+                let _ = std::io::stdout().flush();
                 return;
             }
             let hwnd = CreateWindowExW(
@@ -405,10 +409,24 @@ mod windows {
                 null(),
             );
             if hwnd.is_null() {
+                println!("OVERLAY_ERROR Could not create transparent overlay window");
+                let _ = std::io::stdout().flush();
                 return;
             }
-            SetLayeredWindowAttributes(hwnd, 0, 255, LWA_COLORKEY);
-            SetTimer(hwnd, 1, 120, null());
+            if SetLayeredWindowAttributes(hwnd, 0, 255, LWA_COLORKEY) == 0 {
+                println!("OVERLAY_ERROR Could not make overlay window transparent");
+                let _ = std::io::stdout().flush();
+                DestroyWindow(hwnd);
+                return;
+            }
+            if SetTimer(hwnd, 1, 120, null()) == 0 {
+                println!("OVERLAY_ERROR Could not start overlay position timer");
+                let _ = std::io::stdout().flush();
+                DestroyWindow(hwnd);
+                return;
+            }
+            println!("OVERLAY_READY");
+            let _ = std::io::stdout().flush();
             // Reader never touches game memory. UI-thread-only Win32 hotkey
             // registration is requested via WM_APP_BIND; toast state is shared.
             let hwnd_address = hwnd as usize;
