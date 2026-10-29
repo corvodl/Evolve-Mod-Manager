@@ -198,9 +198,12 @@ mod windows {
             return Err("Monster identity, stage or encoding key changed during read".into());
         }
 
-        let decoded_evolution = evolution_raw
-            .zip(evolution_max_raw)
-            .and_then(|(current, maximum)| runtime_energy::evolution(stage_word, current, maximum, key));
+        let decoded_evolution =
+            evolution_raw
+                .zip(evolution_max_raw)
+                .and_then(|(current, maximum)| {
+                    runtime_energy::evolution(stage_word, current, maximum, key)
+                });
         let evolution = match decoded_evolution {
             Some(energy) if energy.stage == 3 => {
                 "Evolution: stage 3 · bar inactive (0/0); READ-ONLY".to_owned()
