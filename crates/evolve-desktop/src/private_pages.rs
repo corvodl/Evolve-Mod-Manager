@@ -1483,12 +1483,12 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
                     "Freeze Z (hover)"
                 })
                 .on_press_maybe(enabled.then_some(Message::TeleportHold(runtime_teleport::HoldMode::Z))),
-                design::button(if state.teleport_hold_mode == Some(runtime_teleport::HoldMode::XYZ) {
+                design::button(if state.teleport_hold_mode == Some(runtime_teleport::HoldMode::Xyz) {
                     "Holding XYZ"
                 } else {
                     "Freeze XYZ"
                 })
-                .on_press_maybe(enabled.then_some(Message::TeleportHold(runtime_teleport::HoldMode::XYZ))),
+                .on_press_maybe(enabled.then_some(Message::TeleportHold(runtime_teleport::HoldMode::Xyz))),
                 design::button(if state.teleport_hold_releasing {
                     "Releasing..."
                 } else {
