@@ -441,10 +441,16 @@ mod tests {
         let path = dir.path().join("settings.json");
         fs::write(&path, r#"{"developer_hotkeys":[22,23,24,25,26,27,28,1,2]}"#).unwrap();
         let mut prefs = load_from(&path).unwrap();
-        assert_eq!(prefs.developer_hotkeys, vec![22,23,24,25,26,27,28,1,2,0]);
+        assert_eq!(
+            prefs.developer_hotkeys,
+            vec![22, 23, 24, 25, 26, 27, 28, 1, 2, 0]
+        );
         prefs.developer_hotkeys[9] = 3;
         save_to(&path, &prefs).unwrap();
-        assert_eq!(load_from(&path).unwrap().developer_hotkeys, vec![22,23,24,25,26,27,28,1,2,3]);
+        assert_eq!(
+            load_from(&path).unwrap().developer_hotkeys,
+            vec![22, 23, 24, 25, 26, 27, 28, 1, 2, 3]
+        );
     }
     #[test]
     fn legacy_theme_is_optional_and_restores_previous_modern_customizations() {
