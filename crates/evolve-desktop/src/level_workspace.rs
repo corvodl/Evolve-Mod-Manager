@@ -291,8 +291,10 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
                 .on_input(Message::LevelEditRotationChanged),
             text_input("Scale: x, y, z", &state.level_edit_scale)
                 .on_input(Message::LevelEditScaleChanged),
-            button("Apply to preview")
-                .on_press_maybe((!state.level_read_only && !object.kind.eq_ignore_ascii_case("Vegetation")).then_some(Message::LevelApplyTransform)),
+            button("Apply to preview").on_press_maybe(
+                (!state.level_read_only && !object.kind.eq_ignore_ascii_case("Vegetation"))
+                    .then_some(Message::LevelApplyTransform)
+            ),
         ]
         .spacing(6)
         .into()
