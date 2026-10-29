@@ -27,6 +27,7 @@ struct Projection {
     yaw: f32,
     pitch: f32,
     zoom: f32,
+    camera: Option<super::level_camera::Camera>,
     pan_x: f32,
     pan_y: f32,
     width: f32,
@@ -53,6 +54,7 @@ impl Projection {
             yaw: scene.yaw.to_radians(),
             pitch: scene.pitch.to_radians(),
             zoom: scene.zoom.clamp(0.2, 80.0),
+            camera: scene.level_camera,
             pan_x: scene.pan_x,
             pan_y: scene.pan_y,
             width: bounds.width.max(1.0),
@@ -60,6 +62,17 @@ impl Projection {
         })
     }
     fn project(&self, raw: [f32; 3]) -> [f32; 3] {
+        if let Some(camera) = self.camera {
+            let ndc = camera.project(
+                raw, self.yaw.to_degrees(), self.pitch.to_degrees(),
+                self.width / self.height, self.zoom,
+            );
+            return [
+                (ndc[0] + 1.0) * self.width * 0.5,
+                (1.0 - ndc[1]) * self.height * 0.5,
+                ndc[2],
+            ];
+        }
         let x = (raw[0] - self.center[0]) / self.extent;
         let y = (raw[1] - self.center[1]) / self.extent;
         let z = (raw[2] - self.center[2]) / self.extent;
