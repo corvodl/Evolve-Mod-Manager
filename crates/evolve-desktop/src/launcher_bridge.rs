@@ -1252,13 +1252,19 @@ fn prepared_ready_matches_current_stage(rows: &[Value]) -> Result<bool, String> 
     }
     for entry in rows {
         let source = Path::new(
-            entry["source"].as_str().ok_or("Prepared source path missing")?,
+            entry["source"]
+                .as_str()
+                .ok_or("Prepared source path missing")?,
         );
         let ready = Path::new(
-            entry["ready"].as_str().ok_or("Prepared ready path missing")?,
+            entry["ready"]
+                .as_str()
+                .ok_or("Prepared ready path missing")?,
         );
         let backup = Path::new(
-            entry["backup"].as_str().ok_or("Prepared backup path missing")?,
+            entry["backup"]
+                .as_str()
+                .ok_or("Prepared backup path missing")?,
         );
         let expected_sha = entry["sha256"].as_str().ok_or("Prepared SHA-256 missing")?;
         let expected_len = entry["bytes"].as_u64().ok_or("Prepared length missing")?;
@@ -2124,15 +2130,15 @@ mod tests {
             "bytes": bytes.len(),
             "sha256": sha(&source).unwrap()
         });
-        assert!(prepared_ready_matches_current_stage(&[record.clone()]).unwrap());
+        assert!(prepared_ready_matches_current_stage(std::slice::from_ref(&record)).unwrap());
         assert!(!prepared_ready_matches_current_stage(&[]).unwrap());
 
         // A changed mod or a tampered ready copy must force normal reprepare.
         fs::write(&source, b"changed mod, must copy and verify again").unwrap();
-        assert!(!prepared_ready_matches_current_stage(&[record.clone()]).unwrap());
+        assert!(!prepared_ready_matches_current_stage(std::slice::from_ref(&record)).unwrap());
         fs::write(&source, bytes).unwrap();
         fs::write(&ready, b"tampered ready copy").unwrap();
-        assert!(!prepared_ready_matches_current_stage(&[record.clone()]).unwrap());
+        assert!(!prepared_ready_matches_current_stage(std::slice::from_ref(&record)).unwrap());
 
         // Do not reuse if a live original-backup file still exists.
         fs::write(&ready, bytes).unwrap();
