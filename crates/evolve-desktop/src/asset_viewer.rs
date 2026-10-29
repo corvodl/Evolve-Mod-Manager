@@ -1343,9 +1343,13 @@ fn text_viewport(state: &State) -> Element<'_, Message> {
     ]
     .spacing(9)
     .align_y(iced::Center);
-    let content = text_editor(&doc.content)
-        .height(Fill)
-        .on_action_maybe(doc.editable.then_some(Message::TextEditorAction));
+    let content = if doc.editable {
+        text_editor(&doc.content)
+            .on_action(Message::TextEditorAction)
+            .height(Fill)
+    } else {
+        text_editor(&doc.content).height(Fill)
+    };
     // Iced's text editor is read-only when no on_action handler is attached.
     column![
         tools,
