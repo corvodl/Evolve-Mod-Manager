@@ -274,7 +274,8 @@ fn format_activity(
             }
             if let Some(percent) = actor
                 .filter(|a| {
-                    a.verified_monster
+                    cfg.show_stats
+                        && a.verified_monster
                         && a.evolution
                             .as_deref()
                             .and_then(presence_stage)
@@ -282,9 +283,7 @@ fn format_activity(
                 })
                 .and_then(|a| a.evolution_percentage)
             {
-                if cfg.show_stats {
-                    stats.push(format!("Evolution {percent}%"));
-                }
+                stats.push(format!("Evolution {percent}%"));
             }
             let state = if stats.is_empty() {
                 "In match".to_owned()
