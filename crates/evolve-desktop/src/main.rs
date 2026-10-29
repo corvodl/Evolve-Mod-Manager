@@ -346,6 +346,8 @@ struct State {
     library_map: Option<(evolve_core::ImportedPak, Vec<level_library::MapCandidate>, usize)>,
     level_read_only: bool,
     level_surfaces: Option<Arc<Vec<textured::Surface>>>,
+    level_diagnostics: Vec<String>,
+    level_show_overview: bool,
     terrain: Option<TerrainInfo>,
     selected: Option<usize>,
     file_selection: MultiSelection,
@@ -1810,6 +1812,7 @@ enum Message {
     LibrarySelect(usize),
     LibraryOpenMap(usize),
     LevelMapSelect(usize),
+    LevelToggleOverview,
     LibraryPreview,
     LibraryMakeModProject,
     RefreshGamePakBaseline,
@@ -4229,6 +4232,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let cache = state.preview_cache.clone();
             return launch(state, Operation::OpenImportedMap(archive, 0, cache));
         }
+        Message::LevelToggleOverview => state.level_show_overview = !state.level_show_overview,
         Message::LevelMapSelect(index) => {
             let Some((archive, maps, _)) = &state.library_map else { return Task::none(); };
             if index >= maps.len() || state.busy { return Task::none(); }
@@ -4281,15 +4285,16 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return launch(state, Operation::OpenImportedPak(pak));
         }
         Message::LibraryMakeModProject => {
-            if state.library_selection.indices.len() != 1 {
+            let imported_map = if state.level_read_only { state.library_map.as_ref().map(|(pak, _, _)| pak.clone()) } else { None };
+            if imported_map.is_none() && state.library_selection.indices.len() != 1 {
                 state.status = "Select exactly one imported PAK to make an editable copy.".into();
                 return Task::none();
             }
-            let Some(pak) = state
+            let Some(pak) = imported_map.or_else(|| state
                 .library_selected
                 .filter(|i| state.library_selection.indices.contains(i))
                 .and_then(|i| state.library_catalog.as_ref()?.archives.get(i))
-                .cloned()
+                .cloned())
             else {
                 state.status = "Choose a verified imported archive first.".into();
                 return Task::none();
@@ -11610,6 +11615,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::ImportedMap(loaded)) => {
                     let loaded = *loaded;
+                    state.level_diagnostics = loaded.diagnostics.clone();
+                    state.level_show_overview = false;
                     let map_name = loaded.maps[loaded.index].name.clone();
                     state.input = loaded.source.as_ref().map_or_else(String::new, |p| p.display().to_string());
                     state.assets_root = PathBuf::from(&loaded.archive.directory).join("files").display().to_string();
@@ -11641,6 +11648,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.library_map = None;
                     state.level_surfaces = None;
                     state.level_read_only = false;
+                    state.level_diagnostics.clear();
                     state.status = format!(
                         "Loaded {} placed level objects; {} diagnostics.",
                         scene.objects.len(),
@@ -12547,10 +12555,16 @@ fn view(state: &State) -> Element<'_, Message> {
                 text(if state.level_read_only { "READ-ONLY IMPORT · create a modding project to edit" } else { "LOCAL SOURCE" }).size(12),
             ].spacing(10),
             if state.library_menu == Some("LevelFile") {
-                Element::from(design::button("Open as Modding Project").on_press(Message::LibraryMakeModProject))
+                Element::from(design::button("Open as Modding Project").on_press_maybe(state.library_map.as_ref().map(|_| Message::LibraryMakeModProject)))
             } else { Element::from(text("")) },
             level_workspace::view(state),
-            text("Read Level/LYR or Heightmap.dat without touching installed game assets."),
+            text(if state.level_read_only { "Verified source view; no source files are changed. Vegetation instance streams and unsupported shaders remain unresolved." } else { "Read Level/LYR or Heightmap.dat without touching installed game assets." }),
+            if state.level_diagnostics.is_empty() { Element::from(text("")) } else {
+                Element::from(iced::widget::scrollable(
+                    iced::widget::column(state.level_diagnostics.iter().take(12).map(|note| Element::from(text(note).size(11))))
+                        .spacing(2)
+                ).height(Length::Fixed(70.0)))
+            },
             row![
                 design::button("Read level placements").on_press_maybe((!state.level_read_only).then_some(Message::StartLevelInspection)),
                 design::button("Load heightmap geometry").on_press_maybe((!state.level_read_only).then_some(Message::StartTerrainInspection)),
@@ -12609,7 +12623,7 @@ fn view(state: &State) -> Element<'_, Message> {
         Page::Settings => settings_page::view(state),
     };
 
-    let workspace: Element<'_, Message> = if page == Page::Files {
+    let workspace: Element<'_, Message> = if matches!(page, Page::Files | Page::Levels) {
         scrollable(workspace).height(Fill).into()
     } else {
         workspace
