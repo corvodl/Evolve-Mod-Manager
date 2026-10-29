@@ -826,6 +826,9 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             design::button("Restore original game files")
                 .style(design::secondary)
                 .on_press(Message::StartOfflineLauncherRestore),
+            design::button("Restore staged profile")
+                .style(design::secondary)
+                .on_press(Message::StartProfileRecover),
             design::button(if state.modding_advanced {
                 "Hide Advanced Archive Tools"
             } else {
