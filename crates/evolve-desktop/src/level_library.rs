@@ -5,7 +5,7 @@
 use crate::{asset_cache::SharedCache, level_scene_renderer, modding_projects::ProjectRow};
 use evolve_core::{
     ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, TerrainInfo, imported_archive_files,
-    parse_level_scene, read_terrain, scan_directory,
+    parse_level_scene, read_terrain, read_terrain_paint, scan_directory,
 };
 use std::collections::BTreeMap;
 use std::fs;
@@ -17,6 +17,8 @@ pub(super) struct MapCandidate {
     pub layers: Vec<PathBuf>,
     pub terrain: Option<PathBuf>,
     pub vegetation: Option<PathBuf>,
+    pub terrain_texture_xml: Option<PathBuf>,
+    pub terrain_texture_pak: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -102,7 +104,9 @@ fn discover_inventory(inventory: &Inventory) -> Result<(PathBuf, Vec<MapCandidat
         let layer = lower.ends_with(".lyr");
         let terrain = lower.ends_with("/heightmap.dat") || lower == "heightmap.dat";
         let vegetation = lower.ends_with("/vegetationmap.dat") || lower == "vegetationmap.dat";
-        if !(mission || layer || terrain || vegetation) {
+        let surface_xml = lower.ends_with("/terraintexture.xml") || lower == "terraintexture.xml";
+        let surface_pak = lower.ends_with("/terraintexture.pak") || lower == "terraintexture.pak";
+        if !(mission || layer || terrain || vegetation || surface_xml || surface_pak) {
             continue;
         }
         let (key, name) = map_group(&relative);
@@ -111,9 +115,19 @@ fn discover_inventory(inventory: &Inventory) -> Result<(PathBuf, Vec<MapCandidat
             layers: Vec::new(),
             terrain: None,
             vegetation: None,
+            terrain_texture_xml: None,
+            terrain_texture_pak: None,
         });
         let path = PathBuf::from(&entry.relative_path);
-        if vegetation {
+        if surface_xml {
+            if group.terrain_texture_xml.is_none() {
+                group.terrain_texture_xml = Some(path);
+            }
+        } else if surface_pak {
+            if group.terrain_texture_pak.is_none() {
+                group.terrain_texture_pak = Some(path);
+            }
+        } else if vegetation {
             if group.vegetation.is_none() {
                 group.vegetation = Some(path);
             }
@@ -322,6 +336,31 @@ fn open_selected(
     }
     let terrain = if let Some(relative) = &chosen.terrain {
         let exact = verified_source(&root, relative, 512 * 1024 * 1024)?;
+        match read_terrain_paint(&exact) {
+            Ok(Some(paint)) => {
+                let mut counts = std::collections::BTreeMap::<u8, usize>::new();
+                for id in paint.ids {
+                    *counts.entry(id).or_default() += 1;
+                }
+                diagnostics.push(format!(
+                    "Original terrain layer bitmap decoded: {} used layer IDs; {} authored names. Original baked terrain tile textures are separate.",
+                    counts.len(), paint.layer_names.len()
+                ));
+            }
+            Ok(None) => diagnostics.push(
+                "This original heightmap contains no readable terrain layer-ID section.".into()
+            ),
+            Err(error) => diagnostics.push(format!("Terrain paint data unsupported: {error}")),
+        }
+        match (&chosen.terrain_texture_xml, &chosen.terrain_texture_pak) {
+            (Some(xml), Some(pak)) => diagnostics.push(format!(
+                "Terrain paint sources found: {} and {}. Baked tile decoding is not yet supported.",
+                xml.display(), pak.display()
+            )),
+            _ => diagnostics.push(
+                "The baked ground texture requires source TerrainTexture.xml AND terraintexture.pak from this map; neither is reconstructed from Heightmap.dat alone.".into()
+            ),
+        }
         match read_terrain(&exact, 129) {
             Ok(data) => {
                 let info = data.info.clone();
