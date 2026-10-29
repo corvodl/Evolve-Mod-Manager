@@ -1718,7 +1718,7 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
             .align_y(iced::Alignment::Center)
             .spacing(8),
             text("Approximate crosshair teleport").size(17),
-            text("Uses actor facing (+Y), not the camera ray. No geometry collision test.")
+            text("Uses live camera direction from the player's position; no camera-origin raycast or collision test.")
                 .size(12)
                 .style(design::muted),
             row![
