@@ -250,21 +250,30 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
                 "invalid geometry stream dimensions".into(),
             ));
         }
-        if streams
-            .insert(
-                stream_type,
-                Stream {
-                    offset: offset + header_size,
-                    count,
-                    stride,
-                    big_endian: swapped,
-                },
-            )
-            .is_some()
-        {
-            return Err(ModelError::Format(
-                "ambiguous duplicate vertex/index stream".into(),
-            ));
+        let candidate = Stream {
+            offset: offset + header_size,
+            count,
+            stride,
+            big_endian: swapped,
+        };
+        if let Some(previous) = streams.get(&stream_type) {
+            // Some compiled assets repeat byte-identical datastream chunks.
+            // They cannot change the resolved geometry. Distinct streams
+            // still require explicit owning-mesh chunk references.
+            let size = count * stride;
+            if previous.count != count
+                || previous.stride != stride
+                || previous.big_endian != swapped
+                || data.get(previous.offset..previous.offset + size)
+                    != data.get(candidate.offset..candidate.offset + size)
+            {
+                return Err(ModelError::Format(
+                    "ambiguous duplicate vertex/index stream; requires owning mesh reference"
+                        .into(),
+                ));
+            }
+        } else {
+            streams.insert(stream_type, candidate);
         }
     }
     let packed = !streams.contains_key(&0);
@@ -279,13 +288,13 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
     if !(3..=MAX_VERTICES).contains(&nv)
         || !(3..=MAX_INDICES).contains(&ni)
         || ni % 3 != 0
-        || !matches!(indices_stream.stride, 2)
+        || !matches!(indices_stream.stride, 2 | 4)
     {
         return Err(ModelError::Limits);
     }
     if !matches!(
         (packed, positions_stream.stride),
-        (true, 16) | (false, 8) | (false, 12)
+        (true, 16) | (false, 8) | (false, 12) | (false, 16)
     ) {
         return Err(ModelError::Format("unknown vertex encoding".into()));
     }
@@ -343,6 +352,9 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
             }
             [v[0], v[1], v[2]]
         } else {
+            // A 16-byte stream contains a float3 vertex plus an original
+            // fourth component. Preserve the authoritative XYZ, and do not
+            // assume the fourth float is a homogeneous coordinate.
             [
                 endian_f32(data, at, positions_stream.big_endian)?,
                 endian_f32(data, at + 4, positions_stream.big_endian)?,
@@ -358,8 +370,10 @@ pub fn parse_model_bytes(data: &[u8]) -> Result<RenderMesh, ModelError> {
     }
     let indices = (0..ni)
         .map(|i| {
-            let at = indices_stream.offset + i * 2;
-            if indices_stream.big_endian {
+            let at = indices_stream.offset + i * indices_stream.stride;
+            if indices_stream.stride == 4 {
+                endian_u32(data, at, indices_stream.big_endian).unwrap_or(u32::MAX)
+            } else if indices_stream.big_endian {
                 u16::from_be_bytes([data[at], data[at + 1]]) as u32
             } else {
                 u16::from_le_bytes([data[at], data[at + 1]]) as u32
