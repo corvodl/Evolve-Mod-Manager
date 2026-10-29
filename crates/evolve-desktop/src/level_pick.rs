@@ -10,6 +10,15 @@ use std::sync::Arc;
 pub(super) struct LevelViewport {
     pub inner: textured::Scene,
     pub picks: Arc<Vec<PickRange>>,
+    pub selected_pivot: Option<[f32; 3]>,
+    pub editable: bool,
+}
+
+#[derive(Default)]
+pub(super) struct ViewState {
+    navigation: super::view_navigation::Navigation,
+    moving: Option<usize>,
+    last_cursor: Option<iced::Point>,
 }
 
 struct Projection {
@@ -107,13 +116,61 @@ fn pick(mesh: &RenderMesh, ranges: &[PickRange], projector: &Projection, click: 
 }
 
 impl shader::Program<Message> for LevelViewport {
-    type State = super::view_navigation::Navigation;
+    type State = ViewState;
     type Primitive = textured::Primitive;
     fn update(&self, state: &mut Self::State, event: &Event, bounds: Rectangle, cursor: mouse::Cursor)
         -> Option<shader::Action<Message>> {
         // Initialise the existing orbit/pan gesture for subsequent mouse moves
         // even when an object is selected by this click.
-        let navigation = state.handle(event, bounds, cursor, self.inner.shift);
+        let location = cursor.position_in(bounds);
+        if let Some(axis) = state.moving {
+            match event {
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                    state.moving = None;
+                    state.last_cursor = None;
+                    return Some(shader::Action::publish(Message::LevelApplyTransform).and_capture());
+                }
+                Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                    let Some(before) = state.last_cursor.replace(*position) else { return None };
+                    let Some(pivot) = self.selected_pivot else { return None };
+                    let Some(projector) = Projection::new(&self.inner, bounds) else { return None };
+                    let start = projector.project(pivot);
+                    let mut end = pivot;
+                    end[axis] += projector.extent * 0.05;
+                    let end = projector.project(end);
+                    let vx = end[0] - start[0]; let vy = end[1] - start[1];
+                    let denominator = vx * vx + vy * vy;
+                    if denominator < 1.0 { return None }
+                    let delta = ((position.x - before.x) * vx + (position.y - before.y) * vy)
+                        / denominator * projector.extent * 0.05;
+                    if !delta.is_finite() || delta.abs() > projector.extent { return None }
+                    return Some(shader::Action::publish(Message::LevelGizmoMove(axis, delta)).and_capture());
+                }
+                _ => return None,
+            }
+        }
+        if self.editable
+            && matches!(event, Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)))
+            && let (Some(pivot), Some(location)) = (self.selected_pivot, location)
+            && let Some(proj) = Projection::new(&self.inner, bounds)
+        {
+            let start = proj.project(pivot);
+            for axis in 0..3 {
+                let mut end = pivot; end[axis] += proj.extent * 0.05;
+                let end = proj.project(end);
+                let vx = end[0] - start[0]; let vy = end[1] - start[1];
+                let length = vx * vx + vy * vy;
+                if length < 16.0 { continue }
+                let t = (((location.x - start[0]) * vx + (location.y - start[1]) * vy) / length).clamp(0.0, 1.0);
+                let dx = location.x - (start[0] + t * vx); let dy = location.y - (start[1] + t * vy);
+                if dx * dx + dy * dy < 64.0 && t > 0.2 {
+                    state.moving = Some(axis);
+                    state.last_cursor = cursor.position().or(Some(iced::Point::new(location.x + bounds.x, location.y + bounds.y)));
+                    return Some(shader::Action::capture());
+                }
+            }
+        }
+        let navigation = state.navigation.handle(event, bounds, cursor, self.inner.shift);
         if matches!(event, Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)))
             && !self.inner.shift
             && let Some(position) = cursor.position_in(bounds)
@@ -126,7 +183,17 @@ impl shader::Program<Message> for LevelViewport {
             .map(|message| shader::Action::publish(message).and_capture())
     }
     fn draw(&self, state: &Self::State, cursor: mouse::Cursor, bounds: Rectangle) -> Self::Primitive {
-        <textured::Scene as shader::Program<Message>>::draw(&self.inner, state, cursor, bounds)
+        let mut primitive = <textured::Scene as shader::Program<Message>>::draw(&self.inner, &state.navigation, cursor, bounds);
+        if let Some(pivot) = self.selected_pivot && let Some(proj) = Projection::new(&self.inner, bounds) {
+            let start = proj.project(pivot);
+            let ndc = |p: [f32; 3]| [p[0] * 2.0 / proj.width - 1.0, 1.0 - p[1] * 2.0 / proj.height, p[2].clamp(0.0, 1.0)];
+            for (axis, color) in [[0.95, 0.20, 0.24, 1.0], [0.25, 0.90, 0.34, 1.0], [0.28, 0.56, 0.98, 1.0]].into_iter().enumerate() {
+                let mut end = pivot;
+                end[axis] += proj.extent * 0.05;
+                primitive.add_level_axis(ndc(start), ndc(proj.project(end)), color);
+            }
+        }
+        primitive
     }
 }
 
