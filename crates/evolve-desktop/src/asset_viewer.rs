@@ -8,7 +8,7 @@ use super::{
 use crate::design;
 use iced::widget::{
     canvas, column, container, image, mouse_area, progress_bar, row, scrollable, shader, slider,
-    stack, svg, text, text_input, tooltip,
+    stack, svg, text, text_editor, text_input, tooltip,
 };
 use iced::{
     Background, Border, Color, Element, Event, Fill, Length, Point, Rectangle, Renderer, Theme,
@@ -57,6 +57,10 @@ fn dropdown(state: &State) -> Option<Element<'_, Message>> {
             design::button("Save viewer layout").on_press(Message::MenuCommand(Box::new(Message::ViewerSaveLayout))),
         ].spacing(3).into(),
         "Edit" => column![
+            design::button("Open XML / Lua / TXT")
+                .on_press(Message::MenuCommand(Box::new(Message::TextEditorOpen))),
+            design::button("Save text changes")
+                .on_press(Message::MenuCommand(Box::new(Message::TextEditorSave))),
             design::button("Edit Scaleform GFX movie…")
                 .on_press(Message::MenuCommand(Box::new(Message::GfxOpenSelected))),
             design::button("Preferences…").on_press(Message::MenuCommand(Box::new(Message::OpenViewerPreferences))),
@@ -1310,7 +1314,60 @@ fn gfx_viewport(state: &State) -> Element<'_, Message> {
         .into()
 }
 
+fn text_viewport(state: &State) -> Element<'_, Message> {
+    let doc = state
+        .text_document
+        .as_ref()
+        .expect("text viewport is displayed only for a loaded text document");
+    let label = if doc.editable {
+        "Editable Modding project"
+    } else {
+        "Read-only Asset Library source"
+    };
+    let tools = row![
+        text("TEXT EDITOR").size(15),
+        text(doc.member.as_str()).size(12).width(Fill),
+        text(if doc.dirty() { "● Unsaved" } else { "Saved" })
+            .size(12)
+            .style(design::muted),
+        design::button("Save")
+            .style(design::primary)
+            .on_press_maybe((doc.editable && doc.dirty() && !state.busy)
+                .then_some(Message::TextEditorSave)),
+        design::button("Discard")
+            .style(design::secondary)
+            .on_press_maybe(doc.dirty().then_some(Message::TextEditorDiscard)),
+        design::button("Close")
+            .style(design::secondary)
+            .on_press(Message::TextEditorClose),
+    ]
+    .spacing(9)
+    .align_y(iced::Center);
+    let content = text_editor(&doc.content)
+        .height(Fill)
+        .on_action_maybe(doc.editable.then_some(Message::TextEditorAction));
+    // Iced's text editor is read-only when no on_action handler is attached.
+    column![
+        tools,
+        text(label).size(11).style(design::muted),
+        container(content)
+            .width(Fill)
+            .height(Fill)
+            .padding(9)
+            .style(|theme| container::Style {
+                background: Some(Background::Color(design::field(theme))),
+                ..container::Style::default()
+            }),
+    ]
+    .spacing(8)
+    .height(Fill)
+    .into()
+}
+
 fn viewport(state: &State) -> Element<'_, Message> {
+    if state.text_document.is_some() {
+        return text_viewport(state);
+    }
     if state.gfx_active {
         return gfx_viewport(state);
     }
