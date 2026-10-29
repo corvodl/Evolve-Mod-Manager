@@ -7016,7 +7016,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Select a placement to edit.".into();
                 return Task::none();
             };
-            let Some(scene) = &state.level_scene else {
+            let Some(scene) = state.level_scene.clone() else {
                 state.status = "Inspect the source level first.".into();
                 return Task::none();
             };
@@ -7024,6 +7024,10 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.status = "Selected level placement is no longer available.".into();
                 return Task::none();
             };
+            if object.kind.eq_ignore_ascii_case("Vegetation") {
+                state.status = "Binary vegetation instances are read-only; modify an authored XML layer object instead.".into();
+                return Task::none();
+            }
             let id = object.id.clone();
             let previous = object.local;
             let requested = match level_workspace::parse_transform(
@@ -7037,7 +7041,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     return Task::none();
                 }
             };
-            match evolve_core::edit_level_transform(scene, &id, requested) {
+            match evolve_core::edit_level_transform(&scene, &id, requested) {
                 Ok(edited) => {
                     let applied = edited.objects[index].local;
                     if applied != previous {
@@ -7059,7 +7063,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                         state.level_redo.clear();
                         if let (Some(model), Some(picks)) = (&state.model, &state.level_picks)
                             && let Some(reprojected) = level_scene_renderer::reproject_after_edit(
-                                model, picks, scene, &edited,
+                                model, picks, &scene, &edited,
                             )
                         {
                             state.model = Some(Arc::new(reprojected));
