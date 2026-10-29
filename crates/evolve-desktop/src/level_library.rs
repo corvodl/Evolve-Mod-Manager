@@ -43,9 +43,10 @@ pub(super) fn likely_level_pak(pak: &ImportedPak) -> bool {
 
 fn map_group(relative: &str) -> (String, String) {
     let parts: Vec<&str> = relative.split('/').filter(|p| !p.is_empty()).collect();
-    if let Some(index) = parts.iter().position(|p| {
-        p.eq_ignore_ascii_case("levels") || p.eq_ignore_ascii_case("maps")
-    }) {
+    if let Some(index) = parts
+        .iter()
+        .position(|p| p.eq_ignore_ascii_case("levels") || p.eq_ignore_ascii_case("maps"))
+    {
         if let Some(name) = parts.get(index + 1) {
             return (
                 parts[..=index + 1].join("/").to_ascii_lowercase(),
@@ -61,14 +62,20 @@ fn map_group(relative: &str) -> (String, String) {
         folder.saturating_sub(1)
     };
     let name = parts.get(map_index).copied().unwrap_or("Imported level");
-    (parts[..=map_index].join("/").to_ascii_lowercase(), name.to_string())
+    (
+        parts[..=map_index].join("/").to_ascii_lowercase(),
+        name.to_string(),
+    )
 }
 
 fn verified_source(root: &Path, relative: &Path, max_bytes: u64) -> Result<PathBuf, String> {
     let path = root.join(relative);
     let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
     if !metadata.file_type().is_file() || metadata.len() > max_bytes {
-        return Err(format!("Level source unavailable or too large: {}", path.display()));
+        return Err(format!(
+            "Level source unavailable or too large: {}",
+            path.display()
+        ));
     }
     let exact = fs::canonicalize(&path).map_err(|e| e.to_string())?;
     if !exact.starts_with(root) {
@@ -115,19 +122,33 @@ fn discover(archive: &ImportedPak) -> Result<(PathBuf, Vec<MapCandidate>), Strin
             let lower = p.to_string_lossy().to_ascii_lowercase();
             (u8::from(!lower.ends_with(".lyr")), lower)
         });
-        if candidate.layers.iter().any(|p| p.to_string_lossy().to_ascii_lowercase().ends_with(".lyr")) {
-            candidate.layers.retain(|p| p.to_string_lossy().to_ascii_lowercase().ends_with(".lyr"));
+        if candidate
+            .layers
+            .iter()
+            .any(|p| p.to_string_lossy().to_ascii_lowercase().ends_with(".lyr"))
+        {
+            candidate
+                .layers
+                .retain(|p| p.to_string_lossy().to_ascii_lowercase().ends_with(".lyr"));
         }
     }
     maps.retain(|map| !map.layers.is_empty() || map.terrain.is_some());
-    maps.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
+    maps.sort_by(|a, b| {
+        a.name
+            .to_ascii_lowercase()
+            .cmp(&b.name.to_ascii_lowercase())
+    });
     if maps.is_empty() {
         return Err("This imported PAK contains no verified mission XML, LYR placements, or Heightmap.dat. Select a map archive instead.".into());
     }
     Ok((root, maps))
 }
 
-pub(super) fn open(archive: ImportedPak, index: usize, cache: &SharedCache) -> Result<LoadedMap, String> {
+pub(super) fn open(
+    archive: ImportedPak,
+    index: usize,
+    cache: &SharedCache,
+) -> Result<LoadedMap, String> {
     let (root, maps) = discover(&archive)?;
     let index = index.min(maps.len().saturating_sub(1));
     let chosen = &maps[index];
@@ -141,21 +162,32 @@ pub(super) fn open(archive: ImportedPak, index: usize, cache: &SharedCache) -> R
         sources.push((path.to_string_lossy().into_owned(), bytes));
     }
     if chosen.layers.len() > 128 {
-        diagnostics.push(format!("Only 128 of {} layer sources were read.", chosen.layers.len()));
+        diagnostics.push(format!(
+            "Only 128 of {} layer sources were read.",
+            chosen.layers.len()
+        ));
     }
     let mut source = chosen.layers.first().map(|p| root.join(p));
     let mut scene = None;
     if !sources.is_empty() {
-        let slices = sources.iter().map(|(name, bytes)| (name.as_str(), bytes.as_slice())).collect::<Vec<_>>();
+        let slices = sources
+            .iter()
+            .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+            .collect::<Vec<_>>();
         match parse_level_scene(&slices) {
             Ok(parsed) => scene = Some(parsed),
             Err(error) => {
-                diagnostics.push(format!("Combined layers could not be assembled: {error}. Trying individual sources."));
+                diagnostics.push(format!(
+                    "Combined layers could not be assembled: {error}. Trying individual sources."
+                ));
                 for (name, bytes) in &sources {
                     if let Ok(parsed) = parse_level_scene(&[(name.as_str(), bytes)]) {
                         source = Some(root.join(name));
                         scene = Some(parsed);
-                        diagnostics.push("Showing a single readable layer; some placements may be absent.".into());
+                        diagnostics.push(
+                            "Showing a single readable layer; some placements may be absent."
+                                .into(),
+                        );
                         break;
                     }
                 }
@@ -167,21 +199,24 @@ pub(super) fn open(archive: ImportedPak, index: usize, cache: &SharedCache) -> R
         match read_terrain(&exact, 129) {
             Ok(data) => {
                 let info = data.info.clone();
-                Some((RenderMesh {
-                    info: ModelInfo {
-                        format: "CryEngine Heightmap.dat".into(),
-                        version: 1,
-                        chunk_count: 0,
-                        vertex_count: data.vertices.len(),
-                        triangle_count: data.indices.len() / 3,
-                        original_uv0: true,
-                        original_normals: true,
+                Some((
+                    RenderMesh {
+                        info: ModelInfo {
+                            format: "CryEngine Heightmap.dat".into(),
+                            version: 1,
+                            chunk_count: 0,
+                            vertex_count: data.vertices.len(),
+                            triangle_count: data.indices.len() / 3,
+                            original_uv0: true,
+                            original_normals: true,
+                        },
+                        positions: data.vertices,
+                        indices: data.indices,
+                        uv0: Some(data.uv),
+                        normals: Some(data.normals),
                     },
-                    positions: data.vertices,
-                    indices: data.indices,
-                    uv0: Some(data.uv),
-                    normals: Some(data.normals),
-                }, info))
+                    info,
+                ))
             }
             Err(error) => {
                 diagnostics.push(format!("Terrain decode unavailable: {error}"));
@@ -196,12 +231,24 @@ pub(super) fn open(archive: ImportedPak, index: usize, cache: &SharedCache) -> R
         return Err(diagnostics.join(" "));
     }
     let full_scene = level_scene_renderer::assemble(
-        &archive, scene.as_ref(), terrain.as_ref().map(|(mesh, _)| mesh), cache,
+        &archive,
+        scene.as_ref(),
+        terrain.as_ref().map(|(mesh, _)| mesh),
+        cache,
     )?;
     if let Some(assembled) = &full_scene {
         diagnostics.push(assembled.report.status());
     }
-    Ok(LoadedMap { archive, maps, index, scene, source, terrain, full_scene, diagnostics })
+    Ok(LoadedMap {
+        archive,
+        maps,
+        index,
+        scene,
+        source,
+        terrain,
+        full_scene,
+        diagnostics,
+    })
 }
 
 #[cfg(test)]
@@ -218,9 +265,16 @@ mod tests {
     #[test]
     fn only_level_archives_auto_open() {
         let mut pak = ImportedPak {
-            id: "a".repeat(20), name: "Textures.pak".into(), source: String::new(),
-            directory: String::new(), group: "Textures".into(), description: String::new(),
-            entries: 0, extracted_bytes: 0, warnings: 0, builds: vec![],
+            id: "a".repeat(20),
+            name: "Textures.pak".into(),
+            source: String::new(),
+            directory: String::new(),
+            group: "Textures".into(),
+            description: String::new(),
+            entries: 0,
+            extracted_bytes: 0,
+            warnings: 0,
+            builds: vec![],
         };
         assert!(!likely_level_pak(&pak));
         pak.name = "Levels_Island.pak".into();
