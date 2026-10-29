@@ -12538,7 +12538,7 @@ fn view(state: &State) -> Element<'_, Message> {
             if let Some((_, maps, selected)) = &state.library_map {
                 let mut choices = iced::widget::column![text("MAPS IN SELECTED PAK").size(12)].spacing(4);
                 for (index, map) in maps.iter().enumerate().take(48) {
-                    choices = choices.push(design::button(if index == *selected { format!("● {}", map.name) } else { map.name.clone() }).on_press(Message::LevelMapSelect(index)));
+                    choices = choices.push(design::button(text(if index == *selected { format!("● {}", map.name) } else { map.name.clone() })).on_press(Message::LevelMapSelect(index)));
                 }
                 Element::from(iced::widget::scrollable(choices).height(Length::Fixed(100.0)))
             } else { Element::from(text("Open a map from Asset Library to browse verified map sources.")) },
