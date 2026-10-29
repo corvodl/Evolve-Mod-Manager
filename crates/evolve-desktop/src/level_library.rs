@@ -16,6 +16,7 @@ pub(super) struct MapCandidate {
     pub name: String,
     pub layers: Vec<PathBuf>,
     pub terrain: Option<PathBuf>,
+    pub vegetation: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -94,7 +95,8 @@ fn discover(archive: &ImportedPak) -> Result<(PathBuf, Vec<MapCandidate>), Strin
         let mission = lower.ends_with("/mission.xml") || lower == "mission.xml";
         let layer = lower.ends_with(".lyr");
         let terrain = lower.ends_with("/heightmap.dat") || lower == "heightmap.dat";
-        if !(mission || layer || terrain) {
+        let vegetation = lower.ends_with("/vegetationmap.dat") || lower == "vegetationmap.dat";
+        if !(mission || layer || terrain || vegetation) {
             continue;
         }
         let (key, name) = map_group(&relative);
@@ -102,9 +104,12 @@ fn discover(archive: &ImportedPak) -> Result<(PathBuf, Vec<MapCandidate>), Strin
             name,
             layers: Vec::new(),
             terrain: None,
+            vegetation: None,
         });
         let path = PathBuf::from(&entry.relative_path);
-        if terrain {
+        if vegetation {
+            if group.vegetation.is_none() { group.vegetation = Some(path); }
+        } else if terrain {
             if group.terrain.is_none() {
                 group.terrain = Some(path);
             }
@@ -130,7 +135,7 @@ fn discover(archive: &ImportedPak) -> Result<(PathBuf, Vec<MapCandidate>), Strin
                 .retain(|p| p.to_string_lossy().to_ascii_lowercase().ends_with(".lyr"));
         }
     }
-    maps.retain(|map| !map.layers.is_empty() || map.terrain.is_some());
+    maps.retain(|map| !map.layers.is_empty() || map.terrain.is_some() || map.vegetation.is_some());
     maps.sort_by(|a, b| {
         a.name
             .to_ascii_lowercase()
@@ -190,6 +195,17 @@ pub(super) fn open(
                     }
                 }
             }
+        }
+    }
+    if let Some(relative) = &chosen.vegetation {
+        let path = verified_source(&root, relative, 192 * 1024 * 1024)?;
+        let data = scene.get_or_insert_with(|| LevelScene { schema: 1, objects: Vec::new(), diagnostics: Vec::new() });
+        match crate::vegetation_map::inspect_file(&path, data) {
+            Ok(veg) => {
+                diagnostics.push(format!("Decoded {} vegetation instances from {} source prototypes (format v{}).", veg.instances, veg.prototypes, veg.version));
+                diagnostics.extend(veg.warnings);
+            }
+            Err(reason) => diagnostics.push(format!("VegetationMap.dat exists but could not be decoded: {reason}")),
         }
     }
     let terrain = if let Some(relative) = &chosen.terrain {
