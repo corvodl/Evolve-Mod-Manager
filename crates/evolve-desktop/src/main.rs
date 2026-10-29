@@ -4374,7 +4374,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         Message::DeveloperExpandAll(expand) => {
             state.developer_sections_expanded.clear();
             if expand {
-                state.developer_sections_expanded.extend(private_pages::DeveloperSection::ALL);
+                state
+                    .developer_sections_expanded
+                    .extend(private_pages::DeveloperSection::ALL);
             }
         }
         Message::DeveloperPasswordChanged(value) => {
