@@ -258,7 +258,7 @@ mod windows {
         Ok(value)
     }
 
-    pub(super) fn inspect(
+    pub(crate) fn inspect(
         snapshot: &Snapshot,
         root: &str,
         actors: &runtime_actors::Listing,
