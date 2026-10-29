@@ -5012,11 +5012,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let generation = state.teleport_hold_generation;
             state.teleport_hold_status = if mode == runtime_teleport::HoldMode::Fly {
                 format!(
-                    "Starting Fly Mode ({}) at {fly_speed:.1} units/sec. WASD moves relative to the chosen frame; Space/Ctrl control altitude.", movement_frame.label()
+                    "Starting Fly Mode ({}) at {fly_speed:.1} units/sec. WASD moves relative to the chosen frame; Space/Ctrl control altitude.",
+                    movement_frame.label()
                 )
             } else if mode == runtime_teleport::HoldMode::Z {
                 format!(
-                    "Starting hover ({}) at {fly_speed:.1} units/sec. WASD moves X/Y; Z stays fixed.", movement_frame.label()
+                    "Starting hover ({}) at {fly_speed:.1} units/sec. WASD moves X/Y; Z stays fixed.",
+                    movement_frame.label()
                 )
             } else {
                 format!(
