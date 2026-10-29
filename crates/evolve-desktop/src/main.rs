@@ -12765,6 +12765,28 @@ fn main() -> iced::Result {
 mod project_edit_tests {
     use super::*;
 
+    #[cfg(windows)]
+    #[test]
+    fn overlay_preview_does_not_require_offline_armor_or_memory_writes() {
+        let mut state = State {
+            developer_unlocked: true,
+            developer_online_mods: true,
+            armor_offline_confirmed: false,
+            live_edit_enabled: false,
+            ..State::default()
+        };
+        let _ = update(&mut state, Message::TeleportOverlayChanged(true));
+        assert!(state.teleport_overlay_pending);
+        assert!(state.teleport_overlay.is_none());
+
+        // Disabling while game detection is pending invalidates the result.
+        let pending_generation = state.teleport_overlay_generation;
+        let _ = update(&mut state, Message::TeleportOverlayChanged(false));
+        assert!(!state.teleport_overlay_pending);
+        assert_ne!(pending_generation, state.teleport_overlay_generation);
+        assert_eq!(state.teleport_status, "Overlay disabled");
+    }
+
     #[test]
     fn mod_toggle_thumb_eases_without_changing_persisted_enable_state() {
         let mut animation = ModToggleAnimation {
