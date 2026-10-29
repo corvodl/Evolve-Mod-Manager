@@ -51,6 +51,7 @@ mod play_dialog;
 mod play_setup;
 mod private_pages;
 mod runtime_actors;
+mod runtime_ai;
 mod runtime_armor;
 mod runtime_experiments;
 mod runtime_health;
@@ -58,7 +59,6 @@ mod runtime_live;
 mod runtime_memory;
 mod runtime_signatures;
 mod runtime_teleport;
-mod runtime_ai;
 mod selection;
 mod settings;
 mod settings_page;
@@ -4345,14 +4345,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::AiAddressChanged(value) => {
-            if state.developer_unlocked && !state.ai_pause_busy && !state.ai_pause_owned && value.len() <= 80 {
+            if state.developer_unlocked
+                && !state.ai_pause_busy
+                && !state.ai_pause_owned
+                && value.len() <= 80
+            {
                 state.ai_pause_address = value;
                 state.ai_pause_probe = None;
                 state.ai_pause_status.clear();
             }
         }
         Message::AiInspect => {
-            if !state.developer_unlocked || state.developer_online_mods || state.ai_pause_owned || state.ai_pause_busy {
+            if !state.developer_unlocked
+                || state.developer_online_mods
+                || state.ai_pause_owned
+                || state.ai_pause_busy
+            {
                 return Task::none();
             }
             let Some(snapshot) = state.runtime_snapshot.clone() else {
@@ -4367,9 +4375,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.ai_pause_status = "Reading candidate Int32 value...".into();
             return Task::perform(
                 async move {
-                    tokio::task::spawn_blocking(move || runtime_ai::inspect(&snapshot, &root, &address))
-                        .await
-                        .unwrap_or_else(|e| Err(format!("AI read failed: {e}")))
+                    tokio::task::spawn_blocking(move || {
+                        runtime_ai::inspect(&snapshot, &root, &address)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("AI read failed: {e}")))
                 },
                 move |result| Message::AiInspected(generation, result),
             );
@@ -4398,7 +4408,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 || (pause && state.ai_pause_owned)
                 || (!pause && !state.ai_pause_owned)
             {
-                state.ai_pause_status = "Enable Developer memory writes; use this only for isolated testing".into();
+                state.ai_pause_status =
+                    "Enable Developer memory writes; use this only for isolated testing".into();
                 return Task::none();
             }
             let Some(probe) = state.ai_pause_probe else {
@@ -4415,9 +4426,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let generation = state.ai_pause_generation;
             return Task::perform(
                 async move {
-                    tokio::task::spawn_blocking(move || runtime_ai::change(&snapshot, &root, probe, pause))
-                        .await
-                        .unwrap_or_else(|e| Err(format!("AI flag write failed: {e}")))
+                    tokio::task::spawn_blocking(move || {
+                        runtime_ai::change(&snapshot, &root, probe, pause)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("AI flag write failed: {e}")))
                 },
                 move |result| Message::AiChanged(generation, pause, result),
             );
@@ -4436,7 +4449,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     } else {
                         "ai_NoUpdate restored to 0; AI updates should resume.".into()
                     };
-                    notify_dev_overlay(state, if pause { "AI update paused" } else { "AI update resumed" });
+                    notify_dev_overlay(
+                        state,
+                        if pause {
+                            "AI update paused"
+                        } else {
+                            "AI update resumed"
+                        },
+                    );
                 }
                 Err(e) => {
                     state.ai_pause_status = format!("AI state not changed/confirmed: {e}");
@@ -4450,7 +4470,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if let Some(probe) = state.ai_pause_probe {
                 let now = runtime_memory::inspect(&state.preferences.game_storage_root);
                 if now.pid == Some(probe.pid) && now.module_base == Some(probe.module_base) {
-                    state.ai_pause_status = "Game session still active; Resume AI before clearing tracking".into();
+                    state.ai_pause_status =
+                        "Game session still active; Resume AI before clearing tracking".into();
                     return Task::none();
                 }
             }
