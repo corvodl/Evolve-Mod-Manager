@@ -190,26 +190,36 @@ impl canvas::Program<Message> for SceneOverview {
 fn world_viewport(state: &State) -> Element<'_, Message> {
     if let Some(mesh) = &state.model {
         iced::widget::shader(super::level_pick::LevelViewport {
-            picks: state.level_picks.clone().unwrap_or_else(|| Arc::new(Vec::new())),
-            selected_pivot: state.level_selected.and_then(|i| state.level_scene.as_ref()?.objects.get(i)).map(|o| o.world.position),
-            editable: state.level_project.is_some() && state.level_selected.and_then(|i| state.level_scene.as_ref()?.objects.get(i)).is_some_and(|o| !o.kind.eq_ignore_ascii_case("Vegetation")),
+            picks: state
+                .level_picks
+                .clone()
+                .unwrap_or_else(|| Arc::new(Vec::new())),
+            selected_pivot: state
+                .level_selected
+                .and_then(|i| state.level_scene.as_ref()?.objects.get(i))
+                .map(|o| o.world.position),
+            editable: state.level_project.is_some()
+                && state
+                    .level_selected
+                    .and_then(|i| state.level_scene.as_ref()?.objects.get(i))
+                    .is_some_and(|o| !o.kind.eq_ignore_ascii_case("Vegetation")),
             inner: super::textured::Scene {
-            mesh: mesh.clone(),
-            surfaces: state.level_surfaces.clone(),
-            diffuse: None,
-            normal_map: None,
-            emissive: None,
-            specular: None,
-            gloss: None,
-            yaw: state.yaw,
-            pitch: state.pitch,
-            zoom: state.zoom.max(0.2),
-            light_strength: state.light_strength,
-            emissive_gain: state.emissive_strength,
-            emissive_time: state.decal_time,
-            pan_x: state.pan_x,
-            pan_y: state.pan_y,
-            shift: state.keyboard_modifiers.shift(),
+                mesh: mesh.clone(),
+                surfaces: state.level_surfaces.clone(),
+                diffuse: None,
+                normal_map: None,
+                emissive: None,
+                specular: None,
+                gloss: None,
+                yaw: state.yaw,
+                pitch: state.pitch,
+                zoom: state.zoom.max(0.2),
+                light_strength: state.light_strength,
+                emissive_gain: state.emissive_strength,
+                emissive_time: state.decal_time,
+                pan_x: state.pan_x,
+                pan_y: state.pan_y,
+                shift: state.keyboard_modifiers.shift(),
             },
         })
         .width(Fill)
