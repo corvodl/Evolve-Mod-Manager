@@ -1489,7 +1489,7 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
             })
             .size(12)
             .style(design::muted),
-            text("Coordinate freeze · hold your position in the air").size(17),
+            text("Coordinate freeze · hover and move horizontally in the air").size(17),
             row![
                 design::button(if state.teleport_hold_mode == Some(runtime_teleport::HoldMode::Z) {
                     "Holding Z"
@@ -1521,7 +1521,7 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
                 design::text_input("8", &state.teleport_fly_speed)
                     .on_input(Message::TeleportFlySpeedChanged)
                     .width(Length::Fixed(95.0)),
-                text("units / second (1–40)").size(12).style(design::muted),
+                text("hover / fly units per second (1–40)").size(12).style(design::muted),
                 design::button(if state.teleport_hold_mode == Some(runtime_teleport::HoldMode::Fly) {
                     "Flying..."
                 } else {
@@ -1534,13 +1534,13 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
             .align_y(iced::Alignment::Center)
             .spacing(8),
             text(if state.teleport_hold_status.is_empty() {
-                "Freeze Z holds altitude; Freeze XYZ locks position. Fly Mode moves a held position using keys while Evolve is focused."
+                "Freeze Z actively moves X/Y with WASD (no ground movement needed). Fly Mode adds Space/Ctrl for vertical movement. Freeze XYZ locks all axes."
             } else {
                 state.teleport_hold_status.as_str()
             })
             .size(12)
             .style(design::muted),
-            text("Experimental position-based flight: gravity and velocity are NOT disabled. Jitter is possible; stopping resumes falling.")
+            text("Position-based hover/flight writes XYZ, not gravity or velocity. If the game overrides movement, the hold stops and reports the problem.")
                 .size(12)
                 .style(design::muted),
             text("Relative move · 20 units per click (world axes)")
