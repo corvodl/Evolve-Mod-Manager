@@ -4348,10 +4348,20 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 .as_mut()
                 .is_some_and(|child| child.try_wait().ok().flatten().is_some());
             if ended {
+                let startup_error = state
+                    .teleport_hotkey_rx
+                    .as_ref()
+                    .and_then(|rx| {
+                        rx.try_iter()
+                            .find_map(|line| line.strip_prefix("OVERLAY_ERROR ").map(str::to_owned))
+                    });
                 state.teleport_overlay = None;
                 state.teleport_hotkey_rx = None;
-                state.teleport_status =
-                    "Overlay exited unexpectedly. Check that Evolve is still running and that the overlay companion is installed.".into();
+                state.teleport_status = startup_error
+                    .map(|error| format!("Overlay startup failed: {error}"))
+                    .unwrap_or_else(|| {
+                        "Overlay exited unexpectedly. Check that Evolve is still running and that the overlay companion is installed.".into()
+                    });
                 state.developer_hotkey_status = "Overlay exited; shortcuts inactive".into();
                 return Task::none();
             }
