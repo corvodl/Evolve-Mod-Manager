@@ -5,7 +5,7 @@
 use crate::{asset_cache::SharedCache, level_scene_renderer, modding_projects::ProjectRow};
 use evolve_core::{
     ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, TerrainInfo, imported_archive_files,
-    parse_level_scene, read_terrain, read_terrain_paint, scan_directory,
+    parse_level_scene, read_terrain, read_terrain_paint, read_terrain_texture_header, scan_directory,
 };
 use std::collections::BTreeMap;
 use std::fs;
@@ -353,10 +353,24 @@ fn open_selected(
             Err(error) => diagnostics.push(format!("Terrain paint data unsupported: {error}")),
         }
         match (&chosen.terrain_texture_xml, &chosen.terrain_texture_pak) {
-            (Some(xml), Some(pak)) => diagnostics.push(format!(
-                "Terrain paint sources found: {} and {}. Baked tile decoding is not yet supported.",
-                xml.display(), pak.display()
-            )),
+            (Some(xml), Some(pak)) => {
+                let found = verified_source(&root, pak, 2 * 1024 * 1024 * 1024);
+                match found.and_then(|path| read_terrain_texture_header(&path).map_err(|e| e.to_string())) {
+                    Ok(header) => {
+                        diagnostics.push(format!(
+                            "Original baked terrain package v{} detected ({} texture layers; formats and sector sizes: {}). Tile placement from {} must still be decoded.",
+                            header.version, header.layers.len(),
+                            header.layers.iter().map(|l| format!("{}×{} / format {} / {} bytes",
+                                l.sector_pixels, l.sector_pixels, l.texture_format, l.sector_bytes))
+                                .collect::<Vec<_>>().join("; "), xml.display()
+                        ));
+                    }
+                    Err(error) => diagnostics.push(format!(
+                        "Original baked terrain texture package {} cannot be decoded: {error}",
+                        pak.display(),
+                    )),
+                }
+            },
             _ => diagnostics.push(
                 "The baked ground texture requires source TerrainTexture.xml AND terraintexture.pak from this map; neither is reconstructed from Heightmap.dat alone.".into()
             ),
