@@ -2,9 +2,9 @@
 //!
 //! Only manifest-listed files in the selected archive are used. There is no
 //! guessed global map root, automatic editing, or modification of game files.
-use crate::{asset_cache::SharedCache, level_scene_renderer};
+use crate::{asset_cache::SharedCache, level_scene_renderer, modding_projects::ProjectRow};
 use evolve_core::{
-    ImportedPak, LevelScene, ModelInfo, RenderMesh, TerrainInfo, imported_archive_files,
+    ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, TerrainInfo, imported_archive_files, scan_directory,
     parse_level_scene, read_terrain,
 };
 use std::collections::BTreeMap;
@@ -28,6 +28,7 @@ pub(super) struct LoadedMap {
     pub source: Option<PathBuf>,
     pub terrain: Option<(RenderMesh, TerrainInfo)>,
     pub full_scene: Option<level_scene_renderer::Assembled>,
+    pub project: Option<ProjectRow>,
     pub diagnostics: Vec<String>,
 }
 
@@ -87,6 +88,10 @@ fn discover(archive: &ImportedPak) -> Result<(PathBuf, Vec<MapCandidate>), Strin
     // Revalidate the imported manifest and every original extracted file before
     // the editor uses a single byte.
     let inventory = imported_archive_files(archive).map_err(|e| e.to_string())?;
+    discover_inventory(&inventory)
+}
+
+fn discover_inventory(inventory: &Inventory) -> Result<(PathBuf, Vec<MapCandidate>), String> {
     let root = fs::canonicalize(&inventory.root).map_err(|e| e.to_string())?;
     let mut groups = BTreeMap::<String, MapCandidate>::new();
     for entry in &inventory.entries {
@@ -153,6 +158,29 @@ pub(super) fn open(
     cache: &SharedCache,
 ) -> Result<LoadedMap, String> {
     let (root, maps) = discover(&archive)?;
+    open_selected(archive, root, maps, index, cache, None, None)
+}
+
+/// Open a verified copy owned by the Modding project. The caller supplies the
+/// manager-indexed ProjectRow; this function never treats an arbitrary folder
+/// as an editable project or creates new files.
+pub(super) fn open_project(project: ProjectRow, index: usize, cache: &SharedCache, library_root: &Path) -> Result<LoadedMap, String> {
+    let inventory = scan_directory(&project.workspace.join("files")).map_err(|e| e.to_string())?;
+    let (root, maps) = discover_inventory(&inventory)?;
+    let build = if library_root.is_dir() && !project.source_build.trim().is_empty() { vec![project.source_build.clone()] } else { Vec::new() };
+    let archive = ImportedPak {
+        id: "editable-level-project".into(), name: project.target.clone(),
+        source: project.workspace.display().to_string(),
+        directory: library_root.join("editable-level-project").display().to_string(),
+        group: "Levels".into(), description: "Editable modding project".into(),
+        entries: inventory.entries.len(), extracted_bytes: inventory.total_bytes,
+        warnings: 0, builds: build,
+    };
+    open_selected(archive, root, maps, index, cache, Some(inventory), Some(project))
+}
+
+fn open_selected(archive: ImportedPak, root: PathBuf, maps: Vec<MapCandidate>, index: usize,
+    cache: &SharedCache, project_inventory: Option<Inventory>, project: Option<ProjectRow>) -> Result<LoadedMap, String> {
     let index = index.min(maps.len().saturating_sub(1));
     let chosen = &maps[index];
     let mut diagnostics = Vec::new();
@@ -249,6 +277,7 @@ pub(super) fn open(
         scene.as_ref(),
         terrain.as_ref().map(|(mesh, _)| mesh),
         cache,
+        project_inventory.as_ref(),
     )?;
     if let Some(assembled) = &full_scene {
         diagnostics.push(assembled.report.status());
@@ -261,6 +290,7 @@ pub(super) fn open(
         source,
         terrain,
         full_scene,
+        project,
         diagnostics,
     })
 }
