@@ -1435,24 +1435,29 @@ fn developer_keybind_controls(state: &State) -> Element<'_, Message> {
 }
 
 fn teleport_controls(state: &State) -> Element<'_, Message> {
-    let enabled = state.developer_unlocked
-        && state.armor_offline_confirmed
-        && state.live_edit_enabled
-        && !state.developer_online_mods
+    // Guided armor scanning is unrelated to teleporting. Process detection
+    // happens automatically on the first action if no snapshot is available.
+    let can_read = state.developer_unlocked
         && !state.teleport_busy
-        && state.teleport_hold_cancel.is_none()
-        && state
-            .runtime_snapshot
-            .as_ref()
-            .and_then(|s| s.pid)
-            .is_some();
+        && !state.teleport_detect_pending
+        && state.teleport_hold_cancel.is_none();
+    let enabled = can_read && state.live_edit_enabled;
 
     surface(
         column![
             text("Teleport").size(19),
-            text("Physics teleport and coordinate freeze · Memory writes require Developer authorization")
+            text("Teleport & freeze · read position without arming writes; enable actor memory writes to move")
                 .size(12)
                 .style(design::muted),
+            text(if state.teleport_detect_pending {
+                "Detecting Evolve.exe before the requested action..."
+            } else if state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_none() {
+                "Running Evolve.exe will be detected automatically on the first teleport action."
+            } else {
+                "Evolve.exe detected · action status and errors appear below."
+            })
+            .size(12)
+            .style(design::muted),
             row![
                 design::text_input("X", &state.teleport_x)
                     .on_input(|v| Message::TeleportXYZChanged(0, v)),
@@ -1464,9 +1469,9 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
             .spacing(8),
             row![
                 design::button("Read position")
-                    .on_press_maybe(enabled.then_some(Message::TeleportCapture(false))),
+                    .on_press_maybe(can_read.then_some(Message::TeleportCapture(false))),
                 design::button("Save position")
-                    .on_press_maybe(enabled.then_some(Message::TeleportCapture(true))),
+                    .on_press_maybe(can_read.then_some(Message::TeleportCapture(true))),
                 design::button("Teleport XYZ")
                     .on_press_maybe(enabled.then_some(Message::TeleportAbsolute)),
                 design::button("Return to saved").on_press_maybe(
@@ -1550,7 +1555,7 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
                     .on_input(Message::TeleportAimDistanceChanged)
                     .width(Length::Fixed(90.0)),
                 design::button("Preview coordinates").on_press_maybe(
-                    (enabled && !state.teleport_aim_preview_busy)
+                    (can_read && !state.teleport_aim_preview_busy)
                         .then_some(Message::TeleportPreviewAim)
                 ),
                 design::button("Teleport to Crosshair")
