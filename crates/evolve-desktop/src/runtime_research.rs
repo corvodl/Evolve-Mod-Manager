@@ -42,11 +42,11 @@ pub(super) struct Report {
 }
 
 fn item_bounds(start: usize, end: usize) -> Result<usize, String> {
-    if start < 0x10000 || end < start || start % 4 != 0 || end % 4 != 0 {
+    if start < 0x10000 || end < start || !start.is_multiple_of(4) || !end.is_multiple_of(4) {
         return Err("Inventory item-ID array bounds are invalid".into());
     }
     let span = end - start;
-    if span > 256 || span % 4 != 0 {
+    if span > 256 || !span.is_multiple_of(4) {
         return Err("Inventory item-ID array exceeds 64 entries".into());
     }
     Ok(span / 4)
