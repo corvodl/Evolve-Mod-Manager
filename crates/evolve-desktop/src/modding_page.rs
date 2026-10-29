@@ -87,8 +87,9 @@ fn dropdown(state: &State) -> Option<Element<'_, Message>> {
         "Edit" => column![
             design::button("Continue Editing")
                 .on_press(Message::MenuCommand(Box::new(Message::ModdingOpenProject))),
-            design::button("Open Level Editor")
-                .on_press(Message::MenuCommand(Box::new(Message::LevelOpenSelectedModProject))),
+            design::button("Open Level Editor").on_press(Message::MenuCommand(Box::new(
+                Message::LevelOpenSelectedModProject
+            ))),
             design::button("Review Changes").on_press(Message::MenuCommand(Box::new(
                 Message::ModdingReviewChanges
             ))),
@@ -745,7 +746,11 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             .on_press(Message::ModdingOpenProject),
         design::button("Edit Level")
             .style(design::secondary)
-            .on_press_maybe(state.modding_selected.map(|_| Message::LevelOpenSelectedModProject)),
+            .on_press_maybe(
+                state
+                    .modding_selected
+                    .map(|_| Message::LevelOpenSelectedModProject)
+            ),
     ]
     .spacing(7)
     .align_y(iced::Center);
