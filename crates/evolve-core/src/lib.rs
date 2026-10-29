@@ -148,7 +148,8 @@ pub use signed_pak::{
 };
 pub use skin_preview::{VerifiedCafAssembly, VerifiedCafSkin};
 pub use terrain::{
-    TerrainError, TerrainInfo, TerrainMesh, decode_terrain_bytes, export_terrain_obj, read_terrain,
+    TerrainError, TerrainInfo, TerrainMesh, TerrainPaintMap, decode_terrain_bytes,
+    decode_terrain_paint_bytes, export_terrain_obj, read_terrain, read_terrain_paint,
 };
 
 pub use staging::{
