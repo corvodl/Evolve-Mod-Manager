@@ -36,3 +36,29 @@ With a real imported Stage 2 map, verify:
 - Opening a map and navigating the viewport never modifies an imported asset. Existing library source files retain hashes.
 - Creating a modding project from the Level Editor File menu creates a separate editable copy and leaves originals untouched.
 - Large-map memory use, viewport drag frame rate, and build-scoped loading responsiveness meet the project's acceptance standard. A green CI build alone does not establish this.
+
+## Editable copy in the level viewport (new experimental path)
+
+Open **Modding → select project → Edit Level** (or **Edit → Open Level Editor**) to reopen the original editable project's extracted Level/LYR and terrain sources in the same viewer. A project created by **File → Open as Modding Project** from a read-only map is reopened automatically after indexing.
+
+In an editable session, select a mesh by clicking an actual projected triangle in the 3D viewport. A selected object's red/green/blue axis guides provide drag-to-translate on X/Y/Z. The transform inspector also supports precise translation, rotation and scale, Undo and Redo. The in-memory mesh preview is updated for the affected source object index ranges and normal vectors, without changing the underlying imported PAK.
+
+**File → Save Edited Project Layer** exports the changed XML to an isolated temporary file, checks the original source digest, and uses the existing managed Modding import transaction to back up and replace only that registered editable project member. The original Asset Library never changes. This command only allows one LYR/XML source layer and at most 128 pending edits; binary vegetation instances are read-only. Use Build Mod from Modding after a successful edit to produce the package.
+
+The picking routine is currently a **bounded source-triangle screen-space test**, not a GPU ID buffer or BVH. Huge levels may hit its triangle test limit and miss objects. The selected transform axis guides and viewport must be verified visually on Windows.
+
+## VegetationMap.dat format and decoder
+
+The editor now searches for a separate **LevelData/VegetationMap.dat** alongside normal layer and heightmap assets. For legacy CryEngine Sandbox archives, this file contains an MFC-length-prefixed serialized VegetationMap XML definition, followed by CNamedData blocks. It recognizes the named \`VegetationInstancesArray\` block and the explicit CryEngine packed record variants:
+
+- **Version 1:** 19 bytes (xyz Float32, scale Float32, u8 prototype ID, u8 brightness, u8 quantized yaw).
+- **Version 2:** 30 bytes (xyz Float32, scale Float32, u8 prototype ID, u8 brightness, three Float32 angles).
+- **Version 3:** 33 bytes (xyz Float32, scale Float32, i32 prototype ID, u8 brightness, three Float32 angles).
+
+Objects map to author-defined \`FileName\` .cgf paths in the same XML, then enter the normal verified cross-PAK geometry/material resolver as read-only placed instances. The decoder validates bounds, finite transforms, object indices, path safety, version and packed record stride, and handles zlib-compressed named blocks when the stream matches this format. Unknown or nonconforming Stage 2 variants produce an explicit diagnostic, not guessed objects.
+
+**Format source:** the original licensed CryEngine Sandbox/Lumberyard \`CVegetationMap::Serialize\`, \`SerializeInstances\`, \`CNamedData::Serialize\` and \`CArchive::readStringLength\` implementations. The format is grounded in source, but the live Evolve Stage 2 variant still requires real-map validation before marking full vegetation support.
+
+## Performance and shader limitations remain
+
+The world viewport still uses the existing CPU-projected, textured wgpu pipeline and a bounded combined mesh. The new triangle picker and in-memory transform updates do **not** constitute a dedicated scalable GPU-instanced or streamed scene renderer. A real world renderer must retain one GPU mesh per unique source model and use per-instance GPU transforms, camera frustum culling, spatial indexing/BVH, geometry/texture LOD and streaming; frame-time and memory tests on real multi-PAK Stage 2 maps are required. Lighting, terrain splats, physics and CryEngine vegetation wind/material shaders also remain unsupported.
