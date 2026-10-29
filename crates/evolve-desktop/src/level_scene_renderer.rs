@@ -107,7 +107,7 @@ fn relevant_asset(path: &str) -> bool {
 }
 
 impl Index {
-    fn new(selected: &ImportedPak, wanted: &HashSet<String>, report: &mut Report) -> Result<Self, String> {
+    fn new(selected: &ImportedPak, wanted: &HashSet<String>, report: &mut Report, project_inventory: Option<&Inventory>) -> Result<Self, String> {
         let build = (selected.builds.len() == 1).then(|| selected.builds[0].clone());
         let library_root = Path::new(&selected.directory)
             .parent()
@@ -141,11 +141,16 @@ impl Index {
         // Every manifest-listed asset is checked by the existing read-only
         // inventory validator before it can be indexed.
         for pak in archives {
-            let inventory = match imported_archive_files(&pak) {
-                Ok(found) => found,
-                Err(error) => {
-                    report.note(format!("Skipped unavailable {}: {error}", pak.name));
-                    continue;
+            let inventory = if pak.id == selected.id {
+                if let Some(project) = project_inventory { project.clone() }
+                else { imported_archive_files(&pak).map_err(|e| e.to_string())? }
+            } else {
+                match imported_archive_files(&pak) {
+                    Ok(found) => found,
+                    Err(error) => {
+                        report.note(format!("Skipped unavailable {}: {error}", pak.name));
+                        continue;
+                    }
                 }
             };
             let root = PathBuf::from(&inventory.root);
@@ -331,6 +336,7 @@ pub(super) fn assemble(
     scene: Option<&LevelScene>,
     terrain: Option<&RenderMesh>,
     cache: &SharedCache,
+    project_inventory: Option<&Inventory>,
 ) -> Result<Option<Assembled>, String> {
     let mut report = Report::default();
     let mut combined = RenderMesh {
@@ -376,7 +382,7 @@ pub(super) fn assemble(
                 if let Some(path) = safe_virtual(&material) { wanted.insert(path); }
             }
         }
-        let sources = Index::new(archive, &wanted, &mut report)?;
+        let sources = Index::new(archive, &wanted, &mut report, project_inventory)?;
         // Geometry is decoded once per exact model/material pair; each authored
         // actor transform creates a distinct visible scene instance.
         let mut resolved = HashMap::<(String, String), usize>::new();
