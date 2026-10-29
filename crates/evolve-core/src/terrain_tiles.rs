@@ -197,7 +197,7 @@ pub fn read_terrain_texture_atlas(path: &Path) -> Result<TerrainTextureAtlas, Te
     let mut index_bytes = vec![0u8; count * 2];
     file.read_exact(&mut index_bytes)?;
     let indices = index_bytes
-        .chunks_exact(2)
+        .as_chunks::<2>().0.iter()
         .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
         .collect::<Vec<_>>();
     let nodes = parse_tree(&indices)?;
