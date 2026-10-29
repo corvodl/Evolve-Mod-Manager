@@ -82,6 +82,7 @@ mod viewer_inspector;
 mod viewport;
 mod whats_new;
 mod work_progress;
+mod world_instances;
 use asset_cache::{SharedCache, decoded_dds, decoded_dds_indexed};
 use evolve_core::{
     AnimatedGlb, AnimationPolicy, AssemblyReport, AssetComparison, AssetResolution, BatchJournal,
@@ -356,6 +357,7 @@ struct State {
     level_keys: HashSet<char>,
     level_surfaces: Option<Arc<Vec<textured::Surface>>>,
     level_picks: Option<Arc<Vec<level_scene_renderer::PickRange>>>,
+    level_world: Option<Arc<world_instances::World>>,
     level_project: Option<modding_projects::ProjectRow>,
     level_open_after_copy: bool,
     level_diagnostics: Vec<String>,
@@ -11877,6 +11879,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     }
                 }
                 Ok(Completed::Terrain(mesh, info)) => {
+                    state.level_world = None;
                     state.cdf_surfaces = None;
                     state.cdf_report = None;
                     state.cdf_rest_mesh = None;
@@ -11968,10 +11971,12 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.level_selection.clear();
                     state.level_selected = None;
                     if let Some(assembled) = loaded.full_scene {
+                        state.level_world = Some(assembled.world.clone());
                         state.level_surfaces = Some(Arc::new(assembled.surfaces));
                         state.level_picks = Some(Arc::new(assembled.picks));
                         state.model = Some(Arc::new(assembled.mesh));
                     } else {
+                        state.level_world = None;
                         state.level_surfaces = None;
                         state.level_picks = None;
                         state.model = loaded
@@ -12004,6 +12009,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 Ok(Completed::Level(scene, source, hash)) => {
                     state.library_map = None;
+                    state.level_world = None;
                     state.level_project = None;
                     state.level_surfaces = None;
                     state.level_picks = None;
@@ -12801,6 +12807,7 @@ fn view(state: &State) -> Element<'_, Message> {
                             emissive_time:state.decal_time,
                             pan_x:state.pan_x,pan_y:state.pan_y,shift:state.keyboard_modifiers.shift(),
                             level_camera: None,
+                            world: None,
                         }).width(Fill).height(Length::Fixed(400.)).into()
                     }else{
                         canvas(MeshViewport{
