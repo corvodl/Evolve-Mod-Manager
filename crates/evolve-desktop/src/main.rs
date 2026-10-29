@@ -7397,7 +7397,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::LevelCameraTick => {
             if !state.level_window_focused
-                || state.level_last_pressed_at.is_some_and(|last| last.elapsed() > Duration::from_secs(5))
+                || state
+                    .level_last_pressed_at
+                    .is_some_and(|last| last.elapsed() > Duration::from_secs(5))
             {
                 // Safe watchdog: stop on lost focus or missing KeyReleased.
                 // Normal Windows key-repeat refreshes this while held.
