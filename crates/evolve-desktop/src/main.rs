@@ -3966,7 +3966,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 doc.content.perform(action);
                 if doc.content.text().len() as u64 > text_asset_editor::MAX_TEXT_BYTES {
                     doc.content = iced::widget::text_editor::Content::with_text(&previous);
-                    state.status = "Text edit exceeded 2 MiB; the oversized change was rejected and existing unsaved edits were preserved.".into();
+                    state.status =
+                        "Text edit exceeded 2 MiB; the oversized change was rejected and existing unsaved edits were preserved."
+                            .into();
                 }
             }
         }
