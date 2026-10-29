@@ -1484,6 +1484,27 @@ fn actor_rows(state: &State) -> Element<'_, Message> {
             .size(14)
         ]
         .spacing(5);
+        if actor.local {
+            let energy = &actor.energy;
+            rows = rows.push(
+                row![
+                    text("Monster evolution energy (read-only)").size(12).width(Fill),
+                    text(energy.evolution.map_or_else(
+                        || "Not verified for this actor/build".to_owned(),
+                        |v| format!("{:.1} / {:.1}", v.current, v.maximum)
+                    )).size(12),
+                ].spacing(8).align_y(iced::Alignment::Center)
+            );
+            rows = rows.push(
+                row![
+                    text("Monster traversal energy (read-only)").size(12).width(Fill),
+                    text(energy.traversal.map_or_else(
+                        || "Not verified for this actor/build".to_owned(),
+                        |v| format!("{:.1} / {:.1}", v.current, v.maximum)
+                    )).size(12),
+                ].spacing(8).align_y(iced::Alignment::Center)
+            );
+        }
         for entry in &actor.fields {
             let field = entry.field;
             let selected = state.actor_edit.is_some_and(|(id, addr, f, _)| {
