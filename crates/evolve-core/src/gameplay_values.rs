@@ -1,4 +1,4 @@
-//! Bounded numeric/boolean XML editing without invented gameplay defaults.
+//! Bounded numeric/boolean XML and CryXmlB editing without invented gameplay defaults.
 use quick_xml::{Reader, Writer, events::Event};
 
 pub const LIMIT: usize = 4 * 1024 * 1024;
@@ -22,12 +22,24 @@ fn numeric_shape(value: &str) -> Option<Vec<usize>> {
         })
         .collect()
 }
-fn scalar(value: &str) -> bool {
-    matches!(value, "true" | "false") || numeric_shape(value).is_some()
+fn boolean(value: &str) -> bool {
+    value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("false")
 }
+fn scalar(value: &str) -> bool {
+    boolean(value) || numeric_shape(value).is_some()
+}
+/// Enumerate numeric/boolean attributes from UTF-8 XML or CryXmlB. Binary
+/// input is decoded in memory only; callers keep the original bytes as their
+/// save baseline.
 pub fn fields(bytes: &[u8]) -> Result<Vec<ValueField>, String> {
+    // Accept authored UTF-8 XML or CryXmlB. Binary documents are decoded in
+    // memory only; callers keep the original bytes as their save baseline.
+    let xml = crate::cryxml::xml_bytes(bytes, LIMIT).map_err(|e| e.to_string())?;
     // Reuse the strict XML root/depth/entity checks used by the signed builder.
-    crate::cryxml::encode_xml(bytes, LIMIT).map_err(|e| e.to_string())?;
+    crate::cryxml::encode_xml(&xml, LIMIT).map_err(|e| e.to_string())?;
+    parse_fields(&xml)
+}
+fn parse_fields(bytes: &[u8]) -> Result<Vec<ValueField>, String> {
     let mut reader = Reader::from_reader(bytes);
     let mut out = Vec::new();
     let mut element = 0;
@@ -87,8 +99,13 @@ pub fn fields(bytes: &[u8]) -> Result<Vec<ValueField>, String> {
     }
     Ok(out)
 }
+/// Apply validated edits. Text XML stays text; CryXmlB is rebuilt as CryXmlB
+/// with its original root identity. Unchanged fields return the input bytes
+/// exactly, so an untouched save cannot alter formatting or binary tables.
 pub fn apply(bytes: &[u8], edits: &[ValueField]) -> Result<Vec<u8>, String> {
-    let expected = fields(bytes)?;
+    let xml = crate::cryxml::xml_bytes(bytes, LIMIT).map_err(|e| e.to_string())?;
+    crate::cryxml::encode_xml(&xml, LIMIT).map_err(|e| e.to_string())?;
+    let expected = parse_fields(&xml)?;
     if expected.len() != edits.len()
         || expected.iter().zip(edits).any(|(a, b)| {
             a.element != b.element || a.attribute != b.attribute || a.original != b.original
@@ -97,8 +114,8 @@ pub fn apply(bytes: &[u8], edits: &[ValueField]) -> Result<Vec<u8>, String> {
         return Err("Field selection no longer matches the source document".into());
     }
     for field in edits {
-        let valid = if matches!(field.original.as_str(), "true" | "false") {
-            matches!(field.value.as_str(), "true" | "false")
+        let valid = if boolean(&field.original) {
+            boolean(&field.value)
         } else {
             numeric_shape(&field.value).is_some()
                 && numeric_shape(&field.value) == numeric_shape(&field.original)
@@ -110,7 +127,11 @@ pub fn apply(bytes: &[u8], edits: &[ValueField]) -> Result<Vec<u8>, String> {
             ));
         }
     }
-    let mut reader = Reader::from_reader(bytes);
+    // An all-original edit set must not rewrite formatting or binary tables.
+    if edits.iter().all(|f| f.value == f.original) {
+        return Ok(bytes.to_vec());
+    }
+    let mut reader = Reader::from_reader(&xml[..]);
     let mut writer = Writer::new(Vec::new());
     let mut changed: std::collections::HashMap<usize, Vec<&ValueField>> =
         std::collections::HashMap::new();
@@ -122,7 +143,7 @@ pub fn apply(bytes: &[u8], edits: &[ValueField]) -> Result<Vec<u8>, String> {
         let event = reader.read_event().map_err(|e| e.to_string())?;
         let event = match event {
             Event::Start(e) | Event::Empty(e) => {
-                let empty = bytes[..reader.buffer_position() as usize].ends_with(b"/>");
+                let empty = xml[..reader.buffer_position() as usize].ends_with(b"/>");
                 let changes = changed.get(&element).map(Vec::as_slice).unwrap_or(&[]);
                 element += 1;
                 let e = if changes.is_empty() {
@@ -156,7 +177,11 @@ pub fn apply(bytes: &[u8], edits: &[ValueField]) -> Result<Vec<u8>, String> {
     }
     let result = writer.into_inner();
     crate::cryxml::encode_xml(&result, LIMIT).map_err(|e| e.to_string())?;
-    Ok(result)
+    if bytes.starts_with(b"CryXmlB\0") {
+        crate::cryxml::encode_edited_xml(bytes, &result, LIMIT).map_err(|e| e.to_string())
+    } else {
+        Ok(result)
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -186,6 +211,67 @@ mod tests {
             f[0].value = invalid.into();
             assert!(apply(xml, &f).is_err());
         }
+    }
+    #[test]
+    fn effectset_perk_values_preserve_variant_pipe_lists_and_strings() {
+        let xml = br#"<effectSet name="MPerkBrawlerHighEffect" transferable="true" duration="-1"><effect class="GameProperty"><param name="value" value="0.17|0.19|0.23"/><param name="bUITreatAsPercentage" value="True"/><param name="bApplyToSelf" value="1"/></effect></effectSet>"#;
+        let mut f = fields(xml).unwrap();
+        assert_eq!(f.len(), 5, "string values are not editable numbers");
+        assert_eq!(f[0].attribute, "transferable");
+        assert_eq!(f[2].original, "0.17|0.19|0.23");
+        assert_eq!(f[3].original, "True");
+        f[2].value = "0.18|0.20|0.24".into();
+        f[3].value = "False".into();
+        let edited = apply(xml, &f).unwrap();
+        let text = String::from_utf8(edited).unwrap();
+        assert!(text.contains(r#"value="0.18|0.20|0.24""#));
+        assert!(text.contains(r#"value="False""#));
+        assert!(text.contains(r#"name="MPerkBrawlerHighEffect""#));
+        // Stage counts are part of the authored structure and cannot drift.
+        f[2].value = "0.18|0.20".into();
+        assert!(apply(xml, &f).is_err());
+    }
+    #[test]
+    fn cryxmlb_effectset_edits_preserve_binary_container_and_variants() {
+        let xml = br#"<effectSet name="MPerkBrawlerHighEffect" levels="3"><effect class="GameProperty"><param name="value" value="0.17|0.19|0.23"/><param name="bUITreatAsPercentage" value="True"/></effect></effectSet>"#;
+        let binary = crate::cryxml::encode_xml(xml, LIMIT).unwrap();
+        let mut f = fields(&binary).unwrap();
+        assert_eq!(f.len(), 3);
+        assert_eq!(f[0].original, "3");
+        assert_eq!(f[1].original, "0.17|0.19|0.23");
+        assert_eq!(f[2].original, "True");
+        f[1].value = "0.18|0.20|0.24".into();
+        f[2].value = "False".into();
+        let edited = apply(&binary, &f).unwrap();
+        assert!(edited.starts_with(b"CryXmlB\0"));
+        let decoded = crate::cryxml::xml_bytes(&edited, LIMIT).unwrap();
+        let text = String::from_utf8(decoded.into_owned()).unwrap();
+        assert!(text.contains(r#"value="0.18|0.20|0.24""#));
+        assert!(text.contains(r#"value="False""#));
+        let unchanged = fields(&binary).unwrap();
+        assert_eq!(
+            apply(&binary, &unchanged).unwrap(),
+            binary,
+            "unchanged binary documents must keep their exact source bytes"
+        );
+    }
+    #[test]
+    #[ignore = "requires a local user-owned .effectset document"]
+    fn real_effectset_document_round_trip() {
+        let path =
+            std::env::var("EVOLVE_EFFECTSET_DOCUMENT").expect("set EVOLVE_EFFECTSET_DOCUMENT");
+        let bytes = std::fs::read(path).unwrap();
+        let f = fields(&bytes).unwrap();
+        assert!(!f.is_empty());
+        if bytes.starts_with(b"CryXmlB\0") {
+            crate::cryxml::xml_bytes(&bytes, LIMIT).unwrap();
+        }
+        let result = apply(&bytes, &f).unwrap();
+        assert_eq!(
+            result, bytes,
+            "unchanged .effectset must stay byte-identical"
+        );
+        eprintln!("{} editable .effectset fields validated", f.len());
     }
     #[test]
     #[ignore = "requires a local user-owned gameplay document"]

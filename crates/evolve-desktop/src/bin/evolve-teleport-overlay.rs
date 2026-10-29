@@ -13,7 +13,7 @@ mod windows {
     use std::io::{BufRead, Write};
     use std::ptr::{null, null_mut};
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
     type Handle = *mut c_void;
@@ -38,6 +38,20 @@ mod windows {
     const WM_HOTKEY: u32 = 0x0312;
     const WM_APP_BIND: u32 = 0x8001;
     const WM_APP_NOTIFY: u32 = 0x8002;
+    const WH_KEYBOARD_LL: i32 = 13;
+    const WM_KEYDOWN: usize = 0x0100;
+    const WM_KEYUP: usize = 0x0101;
+    const WM_SYSKEYDOWN: usize = 0x0104;
+    const WM_SYSKEYUP: usize = 0x0105;
+    const LLKHF_INJECTED: u32 = 0x10;
+    const MOD_ALT: u32 = 0x0001;
+    const MOD_CONTROL: u32 = 0x0002;
+    const MOD_SHIFT: u32 = 0x0004;
+    const VK_CONTROL: i32 = 0x11;
+    const VK_MENU: i32 = 0x12;
+    const VK_SHIFT: i32 = 0x10;
+    const VK_F6: u32 = 0x75;
+    const VK_F12: u32 = 0x7B;
     const MOD_NOREPEAT: u32 = 0x4000;
     const SYNCHRONIZE: u32 = 0x0010_0000;
     const WAIT_TIMEOUT: u32 = 0x0000_0102;
@@ -48,6 +62,14 @@ mod windows {
     static MANAGER_PID: AtomicU32 = AtomicU32::new(0);
     static GAME_FOCUSED: AtomicBool = AtomicBool::new(false);
     static TOAST: Mutex<Option<(String, Instant)>> = Mutex::new(None);
+    // The experimental low-level Windows keyboard hook is installed only
+    // inside this helper process. It never consumes keystrokes or changes game
+    // memory, and cannot guarantee visibility over exclusive fullscreen.
+    static EXPERIMENTAL_HOOKED_INPUT: AtomicBool = AtomicBool::new(false);
+    static KEYBOARD_HOOK: AtomicUsize = AtomicUsize::new(0);
+    static PRESSED_FKEYS: AtomicU32 = AtomicU32::new(0);
+    // Encoded as modifiers (high 16) and VK (low 16), same as WM_APP_BIND.
+    static BINDINGS: Mutex<[u32; 9]> = Mutex::new([0; 9]);
 
     #[repr(C)]
     #[derive(Default, Clone, Copy)]
@@ -88,6 +110,15 @@ mod windows {
         menu_name: *const u16,
         class_name: *const u16,
         small_icon: Handle,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct LowLevelKeyEvent {
+        vk_code: u32,
+        scan_code: u32,
+        flags: u32,
+        time: u32,
+        extra_info: usize,
     }
     #[repr(C)]
     #[derive(Default)]
@@ -138,6 +169,15 @@ mod windows {
         fn InvalidateRect(hwnd: Hwnd, rect: *const Rect, erase: i32) -> i32;
         fn RegisterHotKey(hwnd: Hwnd, id: i32, mods: u32, vk: u32) -> i32;
         fn UnregisterHotKey(hwnd: Hwnd, id: i32) -> i32;
+        fn SetWindowsHookExW(
+            kind: i32,
+            procedure: Option<unsafe extern "system" fn(i32, usize, isize) -> isize>,
+            module: Hinstance,
+            thread_id: u32,
+        ) -> Handle;
+        fn UnhookWindowsHookEx(hook: Handle) -> i32;
+        fn CallNextHookEx(hook: Handle, code: i32, wp: usize, lp: isize) -> isize;
+        fn GetAsyncKeyState(key: i32) -> i16;
     }
     #[link(name = "gdi32")]
     unsafe extern "system" {
@@ -182,6 +222,60 @@ mod windows {
         pid == GAME_PID.load(Ordering::Relaxed)
     }
 
+    fn key_down(vk: i32) -> bool {
+        (unsafe { GetAsyncKeyState(vk) } as u16 & 0x8000) != 0
+    }
+
+    fn current_modifiers() -> u32 {
+        let mut mods = 0;
+        if key_down(VK_CONTROL) {
+            mods |= MOD_CONTROL;
+        }
+        if key_down(VK_MENU) {
+            mods |= MOD_ALT;
+        }
+        if key_down(VK_SHIFT) {
+            mods |= MOD_SHIFT;
+        }
+        mods
+    }
+
+    // WH_KEYBOARD_LL callbacks run on the thread that installed the hook.
+    // Never block or write game memory in the callback. Keep it short; Windows
+    // may silently remove hooks that stall beyond LowLevelHooksTimeout.
+    unsafe extern "system" fn keyboard_hook(code: i32, wp: usize, lp: isize) -> isize {
+        let hook = KEYBOARD_HOOK.load(Ordering::Relaxed) as Handle;
+        if code >= 0 && lp != 0 {
+            let data = unsafe { &*(lp as *const LowLevelKeyEvent) };
+            if (VK_F6..=VK_F12).contains(&data.vk_code) {
+                let mask = 1u32 << (data.vk_code - VK_F6);
+                if wp == WM_KEYUP || wp == WM_SYSKEYUP {
+                    PRESSED_FKEYS.fetch_and(!mask, Ordering::Relaxed);
+                } else if (wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN)
+                    && data.flags & LLKHF_INJECTED == 0
+                    && has_game_focus()
+                {
+                    let pressed = PRESSED_FKEYS.fetch_or(mask, Ordering::Relaxed);
+                    if pressed & mask == 0 {
+                        let modifiers = current_modifiers();
+                        if let Ok(bindings) = BINDINGS.try_lock() {
+                            for (index, encoded) in bindings.iter().enumerate() {
+                                let vk = encoded & 0xFFFF;
+                                let mods = encoded >> 16;
+                                if vk == data.vk_code && mods == modifiers {
+                                    println!("HOTKEY {index}");
+                                    let _ = std::io::stdout().flush();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        unsafe { CallNextHookEx(hook, code, wp, lp) }
+    }
+
     unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, wp: usize, lp: isize) -> isize {
         match msg {
             WM_APP_BIND => {
@@ -193,12 +287,23 @@ mod windows {
                 let encoded = lp as u32;
                 let vk = encoded & 0xFFFF;
                 let mods = encoded >> 16;
-                if vk != 0 {
-                    let ok = unsafe { RegisterHotKey(hwnd, id, mods | MOD_NOREPEAT, vk) };
-                    if ok == 0 {
+                if EXPERIMENTAL_HOOKED_INPUT.load(Ordering::Relaxed) {
+                    if let Ok(mut binds) = BINDINGS.lock() {
+                        binds[(id - 1) as usize] = encoded;
+                        println!("BINDOK {}", id - 1);
+                        let _ = std::io::stdout().flush();
+                    } else {
                         println!("BINDFAIL {}", id - 1);
                         let _ = std::io::stdout().flush();
                     }
+                } else if vk != 0 {
+                    let ok = unsafe { RegisterHotKey(hwnd, id, mods | MOD_NOREPEAT, vk) };
+                    if ok == 0 {
+                        println!("BINDFAIL {}", id - 1);
+                    } else {
+                        println!("BINDOK {}", id - 1);
+                    }
+                    let _ = std::io::stdout().flush();
                 }
                 0
             }
@@ -232,8 +337,9 @@ mod windows {
                 let mut pid = 0;
                 unsafe { GetWindowThreadProcessId(active, &mut pid) };
                 let game_focused = pid == GAME_PID.load(Ordering::Relaxed);
-                let toast_visible = TOAST.lock().is_ok_and(|toast| toast.is_some());
-                if !game_focused && !(pid == MANAGER_PID.load(Ordering::Relaxed) && toast_visible) {
+                if !game_focused {
+                    // Never anchor a notification to the manager or another app.
+                    // Keep toasts pending until the game itself regains focus.
                     GAME_FOCUSED.store(false, Ordering::Relaxed);
                     unsafe { ShowWindow(hwnd, SW_HIDE) };
                     return 0;
@@ -253,12 +359,7 @@ mod windows {
                 }
                 let cx = point.x + (rect.right - rect.left) / 2;
                 let cy = point.y + (rect.bottom - rect.top) / 2;
-                let (x, y) = if game_focused {
-                    (cx - WIDTH / 2, cy - 26)
-                } else {
-                    // Manager-initiated actions still show a toast without an aim marker.
-                    (point.x + rect.right - WIDTH - 24, point.y + 16)
-                };
+                let (x, y) = (cx - WIDTH / 2, cy - 26);
                 unsafe {
                     SetWindowPos(
                         hwnd,
@@ -343,6 +444,10 @@ mod windows {
                 0
             }
             WM_DESTROY => {
+                let hook = KEYBOARD_HOOK.swap(0, Ordering::Relaxed) as Handle;
+                if !hook.is_null() {
+                    unsafe { UnhookWindowsHookEx(hook) };
+                }
                 for i in 1..=9 {
                     unsafe {
                         UnregisterHotKey(hwnd, i);
@@ -363,11 +468,15 @@ mod windows {
         let (Ok(game), Ok(manager)) = (game.parse::<u32>(), manager.parse::<u32>()) else {
             return;
         };
+        let experimental = args.next().as_deref() == Some("--experimental-hook");
         if game == 0 || manager == 0 || !process_alive(game) || !process_alive(manager) {
+            println!("OVERLAY_ERROR Evolve or the Mod Manager is no longer running");
+            let _ = std::io::stdout().flush();
             return;
         }
         GAME_PID.store(game, Ordering::Relaxed);
         MANAGER_PID.store(manager, Ordering::Relaxed);
+        EXPERIMENTAL_HOOKED_INPUT.store(experimental, Ordering::Relaxed);
         let class: Vec<u16> = "EvolveExternalAimPreview\0".encode_utf16().collect();
         unsafe {
             let instance = GetModuleHandleW(null());
@@ -386,6 +495,8 @@ mod windows {
                 small_icon: null_mut(),
             };
             if RegisterClassExW(&wc) == 0 {
+                println!("OVERLAY_ERROR Could not register overlay window class");
+                let _ = std::io::stdout().flush();
                 return;
             }
             let hwnd = CreateWindowExW(
@@ -407,10 +518,37 @@ mod windows {
                 null(),
             );
             if hwnd.is_null() {
+                println!("OVERLAY_ERROR Could not create transparent overlay window");
+                let _ = std::io::stdout().flush();
                 return;
             }
-            SetLayeredWindowAttributes(hwnd, 0, 255, LWA_COLORKEY);
-            SetTimer(hwnd, 1, 120, null());
+            if SetLayeredWindowAttributes(hwnd, 0, 255, LWA_COLORKEY) == 0 {
+                println!("OVERLAY_ERROR Could not make overlay window transparent");
+                let _ = std::io::stdout().flush();
+                DestroyWindow(hwnd);
+                return;
+            }
+            if SetTimer(hwnd, 1, 120, null()) == 0 {
+                println!("OVERLAY_ERROR Could not start overlay position timer");
+                let _ = std::io::stdout().flush();
+                DestroyWindow(hwnd);
+                return;
+            }
+            if experimental {
+                let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), instance, 0);
+                if hook.is_null() {
+                    println!(
+                        "OVERLAY_ERROR Windows low-level keyboard hook could not be installed"
+                    );
+                    let _ = std::io::stdout().flush();
+                    DestroyWindow(hwnd);
+                    return;
+                }
+                KEYBOARD_HOOK.store(hook as usize, Ordering::Relaxed);
+                println!("HOOK_READY");
+            }
+            println!("OVERLAY_READY");
+            let _ = std::io::stdout().flush();
             // Reader never touches game memory. UI-thread-only Win32 hotkey
             // registration is requested via WM_APP_BIND; toast state is shared.
             let hwnd_address = hwnd as usize;

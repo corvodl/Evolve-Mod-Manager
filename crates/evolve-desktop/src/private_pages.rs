@@ -1,7 +1,7 @@
 //! Private-manager-aligned landing, documentation and informational pages.
 //! Home deliberately does not enumerate PAKs or scan the user's installation.
 use super::{Message, Page, State};
-use crate::{design, developer_hotkeys};
+use crate::{design, developer_hotkeys, runtime_teleport};
 use iced::widget::{button, column, container, image, row, scrollable, stack, svg, text, tooltip};
 use iced::{Background, Border, Element, Fill, Length};
 
@@ -1401,10 +1401,70 @@ fn actor_rows(state: &State) -> Element<'_, Message> {
     list.into()
 }
 
+fn match_perk_rows(state: &State) -> Element<'_, Message> {
+    let mut rows = column![
+        text("Current match · character perks").size(19),
+        text(if state.match_perks_status.is_empty() {
+            "Refresh all actors to verify the round-start log against live perk entities."
+        } else {
+            state.match_perks_status.as_str()
+        })
+        .size(12)
+        .style(design::muted),
+    ]
+    .spacing(7);
+    if let Some(listing) = &state.match_perks {
+        for player in &listing.players {
+            let actor = match player.actor_id {
+                Some(id) => format!(
+                    " · Actor ID 0x{id:X}{}",
+                    if player.local { " (Local)" } else { "" }
+                ),
+                None => " · Actor not identified".to_owned(),
+            };
+            let perks = if player.perks.is_empty() {
+                "No selected perks".to_owned()
+            } else {
+                player.perks.join(" · ")
+            };
+            rows = rows.push(surface(
+                column![
+                    text(format!(
+                        "{} · {} ({}){actor}",
+                        player.class, player.display, player.character
+                    ))
+                    .size(13),
+                    text(format!("{}: {perks}", player.slot))
+                        .size(12)
+                        .style(design::muted),
+                ]
+                .spacing(4)
+                .padding(8),
+            ));
+        }
+    }
+    rows.into()
+}
+
 fn developer_keybind_controls(state: &State) -> Element<'_, Message> {
+    let assigned = state
+        .preferences
+        .developer_hotkeys
+        .iter()
+        .filter(|&&k| k != 0)
+        .count();
     let mut rows = column![
         text("Developer shortcuts").size(17),
-        text("Active while the overlay is on and Evolve has focus. No keyboard hooks.")
+        text(format!("{assigned}/9 shortcuts assigned. Shortcuts require the overlay and enabled actor writes to teleport."))
+            .size(12)
+            .style(design::muted),
+        design::button("Load suggested shortcuts (F6–F12, Ctrl+F6/F7)")
+            .on_press(Message::DeveloperKeybindDefaults),
+        text(if assigned == 0 {
+            "No shortcuts assigned yet. Click the button above or select keys below."
+        } else {
+            "Custom bindings are preserved unless you select Load suggested shortcuts."
+        })
             .size(12)
             .style(design::muted),
     ]
@@ -1489,23 +1549,29 @@ fn ai_pause_controls(state: &State) -> Element<'_, Message> {
 }
 
 fn teleport_controls(state: &State) -> Element<'_, Message> {
-    let enabled = state.developer_unlocked
-        && state.armor_offline_confirmed
-        && state.live_edit_enabled
-        && !state.developer_online_mods
+    // Guided armor scanning is unrelated to teleporting. Process detection
+    // happens automatically on the first action if no snapshot is available.
+    let can_read = state.developer_unlocked
         && !state.teleport_busy
-        && state
-            .runtime_snapshot
-            .as_ref()
-            .and_then(|s| s.pid)
-            .is_some();
+        && !state.teleport_detect_pending
+        && state.teleport_hold_cancel.is_none();
+    let enabled = can_read && state.live_edit_enabled;
 
     surface(
         column![
             text("Teleport").size(19),
-            text("Offline only · One-shot physics XYZ · No hooks or freezing")
+            text("Teleport & freeze · read position without arming writes; enable actor memory writes to move")
                 .size(12)
                 .style(design::muted),
+            text(if state.teleport_detect_pending {
+                "Detecting Evolve.exe before the requested action..."
+            } else if state.runtime_snapshot.as_ref().and_then(|s| s.pid).is_none() {
+                "Running Evolve.exe will be detected automatically on the first teleport action."
+            } else {
+                "Evolve.exe detected · action status and errors appear below."
+            })
+            .size(12)
+            .style(design::muted),
             row![
                 design::text_input("X", &state.teleport_x)
                     .on_input(|v| Message::TeleportXYZChanged(0, v)),
@@ -1517,9 +1583,9 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
             .spacing(8),
             row![
                 design::button("Read position")
-                    .on_press_maybe(enabled.then_some(Message::TeleportCapture(false))),
+                    .on_press_maybe(can_read.then_some(Message::TeleportCapture(false))),
                 design::button("Save position")
-                    .on_press_maybe(enabled.then_some(Message::TeleportCapture(true))),
+                    .on_press_maybe(can_read.then_some(Message::TeleportCapture(true))),
                 design::button("Teleport XYZ")
                     .on_press_maybe(enabled.then_some(Message::TeleportAbsolute)),
                 design::button("Return to saved").on_press_maybe(
@@ -1528,6 +1594,69 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
                 ),
             ]
             .spacing(8),
+            text(if state.teleport_busy {
+                "Teleport operation running..."
+            } else if state.teleport_status.is_empty() {
+                "Position and teleport errors appear here."
+            } else {
+                state.teleport_status.as_str()
+            })
+            .size(12)
+            .style(design::muted),
+            text("Coordinate freeze · hover and move horizontally in the air").size(17),
+            row![
+                design::button(if state.teleport_hold_mode == Some(runtime_teleport::HoldMode::Z) {
+                    "Holding Z"
+                } else {
+                    "Freeze Z (hover)"
+                })
+                .on_press_maybe(enabled.then_some(Message::TeleportHold(runtime_teleport::HoldMode::Z))),
+                design::button(if state.teleport_hold_mode == Some(runtime_teleport::HoldMode::Xyz) {
+                    "Holding XYZ"
+                } else {
+                    "Freeze XYZ"
+                })
+                .on_press_maybe(enabled.then_some(Message::TeleportHold(runtime_teleport::HoldMode::Xyz))),
+                design::button(if state.teleport_hold_releasing {
+                    "Releasing..."
+                } else {
+                    "Stop hold / Fly"
+                })
+                .on_press_maybe(
+                    (state.teleport_hold_cancel.is_some() && !state.teleport_hold_releasing)
+                        .then_some(Message::TeleportHoldRelease)
+                ),
+            ]
+            .spacing(8),
+            text("Fly Mode · WASD moves relative to actor facing; Space rises, Ctrl descends.")
+                .size(15),
+            row![
+                text("Speed").width(Length::Fixed(65.0)),
+                design::text_input("8", &state.teleport_fly_speed)
+                    .on_input(Message::TeleportFlySpeedChanged)
+                    .width(Length::Fixed(95.0)),
+                text("hover / fly units per second (1–40)").size(12).style(design::muted),
+                design::button(if state.teleport_hold_mode == Some(runtime_teleport::HoldMode::Fly) {
+                    "Flying..."
+                } else {
+                    "Enable Fly Mode"
+                })
+                    .on_press_maybe(enabled.then_some(
+                        Message::TeleportHold(runtime_teleport::HoldMode::Fly)
+                    )),
+            ]
+            .align_y(iced::Alignment::Center)
+            .spacing(8),
+            text(if state.teleport_hold_status.is_empty() {
+                "Freeze Z actively moves X/Y with WASD (no ground movement needed). Fly Mode adds Space/Ctrl for vertical movement. Freeze XYZ locks all axes."
+            } else {
+                state.teleport_hold_status.as_str()
+            })
+            .size(12)
+            .style(design::muted),
+            text("Position-based hover/flight writes XYZ, not gravity or velocity. If the game overrides movement, the hold stops and reports the problem.")
+                .size(12)
+                .style(design::muted),
             text("Relative move · 20 units per click (world axes)")
                 .size(12)
                 .style(design::muted),
@@ -1568,7 +1697,7 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
                     .on_input(Message::TeleportAimDistanceChanged)
                     .width(Length::Fixed(90.0)),
                 design::button("Preview coordinates").on_press_maybe(
-                    (enabled && !state.teleport_aim_preview_busy)
+                    (can_read && !state.teleport_aim_preview_busy)
                         .then_some(Message::TeleportPreviewAim)
                 ),
                 design::button("Teleport to Crosshair")
@@ -1576,20 +1705,42 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
             ]
             .align_y(iced::Alignment::Center)
             .spacing(8),
-            iced::widget::checkbox(state.teleport_overlay.is_some())
+            iced::widget::checkbox(
+                state.teleport_overlay.is_some() || state.teleport_overlay_pending
+            )
                 .label("Show external overlay and enable shortcuts (windowed fullscreen)")
                 .on_toggle(Message::TeleportOverlayChanged),
-            developer_keybind_controls(state),
-            text("The overlay marks the screen center only; it is not a raycast hit location.")
+            iced::widget::checkbox(state.teleport_overlay_experimental)
+                .label("Experimental hooked input (Windows keyboard hook)")
+                .on_toggle(Message::TeleportOverlayExperimentalChanged),
+            text("Experimental mode captures F6–F12 hotkeys using a Windows low-level keyboard hook while Evolve is focused. The visual overlay remains external. No game injection; exclusive fullscreen and protected input are not guaranteed.")
                 .size(12)
                 .style(design::muted),
-            text(if state.teleport_busy {
-                "Teleport operation running..."
+            text(if state.teleport_overlay_experimental {
+                if state.teleport_hook_ready {
+                    "Experimental hook installed · shortcuts are captured only while Evolve has focus."
+                } else if state.teleport_overlay.is_some() {
+                    "Experimental hook starting · check shortcut status below."
+                } else {
+                    "Experimental mode selected · start the external overlay to enable the hook."
+                }
+            } else {
+                "Standard mode · Windows RegisterHotKey shortcuts."
+            }).size(12).style(design::muted),
+            text(if state.teleport_overlay_pending {
+                "Detecting running game..."
+            } else if state.teleport_status.is_empty() {
+                "Overlay preview needs only a running Evolve.exe; teleport shortcuts still require armed memory writes."
             } else {
                 state.teleport_status.as_str()
             })
             .size(12)
             .style(design::muted),
+            developer_keybind_controls(state),
+            text("Overlay appears only over Evolve while the game is in focus. The center marker is not a raycast hit location.")
+                .size(12)
+                .style(design::muted),
+
         ]
         .spacing(9)
         .padding(10),
@@ -1676,9 +1827,9 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
                             .label("Enable actor memory writes / Freeze (experimental)")
                             .on_toggle(Message::LiveEditEnabled),
                         design::button(if state.actor_busy {
-                            "Reading actors..."
+                            "Reading actors and perks..."
                         } else {
-                            "Refresh all actors"
+                            "Refresh actors and match perks"
                         })
                         .on_press_maybe(
                             (!state.actor_busy
@@ -1692,6 +1843,7 @@ pub(super) fn developer(state: &State) -> Element<'_, Message> {
                         text(state.actor_status.as_str())
                             .size(12)
                             .style(design::muted),
+                        match_perk_rows(state),
                         actor_rows(state),
                         ai_pause_controls(state),
                         teleport_controls(state),
