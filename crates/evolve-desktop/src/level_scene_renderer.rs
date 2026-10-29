@@ -596,15 +596,18 @@ pub(super) fn assemble(
     // near-plane clipping avoids CPU projections that explode when the
     // editor approaches the ground; do not bake the terrain twice.
     if let Some(terrain) = terrain {
-        world.groups.insert(0, world_instances::ModelGroup {
-            mesh: std::sync::Arc::new(terrain.clone()),
-            surfaces: vec![neutral(0, terrain.indices.len() as u32)],
-            instances: vec![world_instances::Instance {
-                object_index: usize::MAX, // Ground is not a selectable placed object.
-                transform: Transform::default(),
-            }],
-            radius: world_instances::radius(terrain),
-        });
+        world.groups.insert(
+            0,
+            world_instances::ModelGroup {
+                mesh: std::sync::Arc::new(terrain.clone()),
+                surfaces: vec![neutral(0, terrain.indices.len() as u32)],
+                instances: vec![world_instances::Instance {
+                    object_index: usize::MAX, // Ground is not a selectable placed object.
+                    transform: Transform::default(),
+                }],
+                radius: world_instances::radius(terrain),
+            },
+        );
         world.instance_count += 1;
     }
     if combined.indices.is_empty() && world.instance_count == 0 {
