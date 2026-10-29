@@ -40,8 +40,10 @@ fn vs_main(
   out.world=world;
   return out;
 }
-@fragment
-fn fs_main(input:Output)->@location(0) vec4<f32> {
+// Shared lighting, preserving the original source alpha only for materials
+// explicitly routed through the transparent pipeline. CryEngine can store
+// gloss, masks and other non-opacity data in a diffuse texture's alpha.
+fn shade(input:Output)->vec4<f32> {
   let base=textureSample(albedo,tex_sampler,input.uv);
   let coverage=textureSample(authored_opacity,tex_sampler,input.uv).r;
   if (coverage < 0.5) { discard; }
@@ -51,4 +53,20 @@ fn fs_main(input:Output)->@location(0) vec4<f32> {
   }
   let sunlight=abs(dot(normalize(n),normalize(vec3<f32>(0.48,-0.46,0.75))));
   return vec4<f32>(base.rgb*(0.35+0.65*sunlight),base.a);
+}
+
+@fragment
+fn fs_opaque(input:Output)->@location(0) vec4<f32> {
+  // World geometry renders directly into the native Iced window surface.
+  // Without this alpha override, a cliff/terrain/prop using packed diffuse
+  // alpha can punch a transparent hole in the editor window and reveal the
+  // desktop or Activity window behind it, even over the opaque backdrop.
+  let color=shade(input);
+  return vec4<f32>(color.rgb,1.0);
+}
+
+@fragment
+fn fs_main(input:Output)->@location(0) vec4<f32> {
+  // Preserve real authored transparency in the separately blended pipeline.
+  return shade(input);
 }
