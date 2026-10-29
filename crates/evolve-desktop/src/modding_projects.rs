@@ -1512,6 +1512,16 @@ pub(super) fn offline_test_target(project: &ProjectRow, stage: &Path) -> Result<
     Ok(name)
 }
 
+/// Offline preparation only verifies and stages a PAK already signed by the
+/// configured backend. Do not demand a Rust private key when the official
+/// Stage 2 encoder has already produced the authenticated archive.
+fn offline_test_verification_keys(stage: &Path) -> Result<(PathBuf, PathBuf), String> {
+    Ok((
+        super::modding_keys::original_public_key(stage)?,
+        super::modding_keys::public_key(stage)?,
+    ))
+}
+
 /// Prepare a newly built signed archive for offline testing through the
 /// existing profile transaction, with all stage originals backed up BEFORE
 /// any staged PAK is replaced. The live game installation is untouched.
@@ -1525,12 +1535,15 @@ pub fn prepare_built_offline_test(
     if target.split('/').next_back() != Some(basename.as_str()) {
         return Err("Built PAK basename differs from installed stage destination".into());
     }
-    let keys = super::modding_keys::signing_keys(stage)?;
+    // This is a verification/staging operation: no private key is needed.
+    // Official Stage 2 signing stages intentionally contain the encoder and
+    // public key, but not a manager-generated private_key.pem.
+    let (original_public, public) = offline_test_verification_keys(stage)?;
     // Verify the exact built archive and stage target before persisting
     // anything. Signed member inventory differences are permitted offline.
     let lowercase = basename.to_ascii_lowercase();
-    evolve_core::inspect_signed_pak(output, &keys.public, &basename)
-        .or_else(|_| evolve_core::inspect_signed_pak(output, &keys.public, &lowercase))
+    evolve_core::inspect_signed_pak(output, &public, &basename)
+        .or_else(|_| evolve_core::inspect_signed_pak(output, &public, &lowercase))
         .map_err(|e| format!("Built offline PAK signature could not be verified: {e}"))?;
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1550,12 +1563,12 @@ pub fn prepare_built_offline_test(
             &profile.id,
             output,
             &target,
-            &keys.original_public,
-            &keys.public,
+            &original_public,
+            &public,
             &basename,
         )
         .map_err(|e| e.to_string())?;
-        evolve_core::apply_profile_stage(stage, &profile.id, &keys.original_public, &keys.public)
+        evolve_core::apply_profile_stage(stage, &profile.id, &original_public, &public)
             .map_err(|e| e.to_string())?;
         Ok(())
     })();
@@ -2353,4 +2366,23 @@ mod tests {
             "Needs review"
         );
     }
+    #[test]
+    fn official_manual_offline_test_requires_only_public_verification_keys() {
+        let temp = tempfile::tempdir().unwrap();
+        let stage = temp.path().join("staged");
+        let keys = stage.join("mykeys");
+        fs::create_dir_all(&keys).unwrap();
+        fs::write(temp.path().join("RSAKeyData.bin"), [1u8; 140]).unwrap();
+        fs::write(keys.join("public_key.bin"), [2u8; 140]).unwrap();
+
+        // Real official-tool stages have no manager-generated private PEM.
+        assert!(!keys.join("private_key.pem").exists());
+        assert!(super::modding_keys::signing_keys(&stage).is_err());
+        let (original, custom) = offline_test_verification_keys(&stage).unwrap();
+        assert_eq!(original, temp.path().join("RSAKeyData.bin"));
+        assert_eq!(custom, keys.join("public_key.bin"));
+        fs::remove_file(&custom).unwrap();
+        assert!(offline_test_verification_keys(&stage).is_err());
+    }
+
 }
