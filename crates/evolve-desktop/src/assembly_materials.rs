@@ -786,18 +786,33 @@ pub fn original_single_leaf_surface(
         index_count: 0, // filled from each *verified* mesh's index count
         visible,
         transparent: false,
-        diffuse: None, normal: None, emissive: None,
+        diffuse: None,
+        normal: None,
+        emissive: None,
         armor_emissive: None,
         emission_strength: leaf.glow_amount.unwrap_or(1.0).max(0.0),
         kala_emission_state: None,
         emissive_uv: source_decal_motion(leaf),
-        specular: None, gloss: None, opacity: None,
+        specular: None,
+        gloss: None,
+        opacity: None,
     };
-    if !visible { return Ok((surface, Vec::new())); }
+    if !visible {
+        return Ok((surface, Vec::new()));
+    }
     let (maps, warnings) = authored_maps(
-        &document, material, &material.to_string_lossy(), 0,
-        MaterialLookup {inventory, imported, build},
-        cache, &mut TextureBudget::default(), None,
+        &document,
+        material,
+        &material.to_string_lossy(),
+        0,
+        MaterialLookup {
+            inventory,
+            imported,
+            build,
+        },
+        cache,
+        &mut TextureBudget::default(),
+        None,
     )?;
     let [diffuse, normal, emissive, specular, gloss, opacity] = maps;
     surface.diffuse = diffuse;
