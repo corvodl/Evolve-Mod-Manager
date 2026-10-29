@@ -53,7 +53,7 @@ impl Camera {
         if !seconds.is_finite() || !(0.0..=0.1).contains(&seconds) { return; }
         let (forward, right, _) = basis(yaw, pitch);
         let axis = |a: char, b: char| -> f32 {
-            f32::from(keys.contains(&a)) - f32::from(keys.contains(&b))
+            if keys.contains(&a) { 1.0 } else { 0.0 } - if keys.contains(&b) { 1.0 } else { 0.0 }
         };
         let f = axis('w','s');
         let r = axis('d','a');
