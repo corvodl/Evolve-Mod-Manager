@@ -107,12 +107,15 @@ impl FlyInput {
     }
 }
 
-/// Convert the local entity's (w,x,y,z) orientation to a stable planar
-/// heading. Local +Y is forward; local +X is the perpendicular axis.
+/// Derive planar facing from the local entity's (w,x,y,z) orientation.
+/// CryEngine's local +Y is forward and +X is right.
 ///
-/// Looking almost straight up/down makes the projected +Y vector tiny and
-/// noisy, but the projected +X axis still determines yaw. Use that axis near
-/// vertical orientations instead of aborting a running hover/flight session.
+/// Projecting +Y into the XY plane is *not* a stable yaw estimate: at steep
+/// pitch it becomes almost zero, then reverses sign once pitch passes 90
+/// degrees. That makes W/S suddenly reverse and D/A change direction in
+/// mid-flight. Instead project the local +X (right) axis and rotate it 90
+/// degrees to obtain planar forward. The right axis retains yaw as the actor
+/// pitches through vertical, including when facing completely upward/downward.
 fn fly_forward(quaternion: [f32; 4]) -> Result<Position, String> {
     let [w, x, y, z] = quaternion;
     let len2 = w * w + x * x + y * y + z * z;
@@ -121,32 +124,26 @@ fn fly_forward(quaternion: [f32; 4]) -> Result<Position, String> {
     }
     let len = len2.sqrt();
     let (w, x, y, z) = (w / len, x / len, y / len, z / len);
-    let fx = 2.0 * (x * y - w * z);
-    let fy = 1.0 - 2.0 * (x * x + z * z);
-    let forward_len = (fx * fx + fy * fy).sqrt();
-    if forward_len.is_finite() && forward_len >= 0.25 {
-        return Ok(Position {
-            x: fx / forward_len,
-            y: fy / forward_len,
-            z: 0.0,
-        });
-    }
-    // Horizontal left/right remains well-defined when local forward is
-    // vertical. Recover planar forward as a 90-degree rotation of local +X.
     let right_x = 1.0 - 2.0 * (y * y + z * z);
     let right_y = 2.0 * (x * y + w * z);
     let right_len = (right_x * right_x + right_y * right_y).sqrt();
-    if right_len.is_finite() && right_len >= 0.01 {
+    if right_len.is_finite() && right_len >= 0.1 {
         return Ok(Position {
             x: -right_y / right_len,
             y: right_x / right_len,
             z: 0.0,
         });
     }
-    if forward_len.is_finite() && forward_len >= 0.01 {
+    // Extremely tilted/rolled actors can have a nearly vertical right axis.
+    // Fall back to projected forward only when there is no usable side axis.
+    // stable_fly_heading() caches the prior direction if neither axis works.
+    let forward_x = 2.0 * (x * y - w * z);
+    let forward_y = 1.0 - 2.0 * (x * x + z * z);
+    let forward_len = (forward_x * forward_x + forward_y * forward_y).sqrt();
+    if forward_len.is_finite() && forward_len >= 0.1 {
         return Ok(Position {
-            x: fx / forward_len,
-            y: fy / forward_len,
+            x: forward_x / forward_len,
+            y: forward_y / forward_len,
             z: 0.0,
         });
     }
@@ -1028,6 +1025,55 @@ mod tests {
             y: 0.0,
             z: 0.0
         }));
+    }
+
+    #[test]
+    fn horizontal_controls_do_not_reverse_when_pitch_passes_vertical() {
+        // A local +Y projection reverses beyond 90 degrees of pitch, so the
+        // original implementation unexpectedly reversed WASD mid-flight.
+        // The heading from local +X must keep its yaw at every pitch.
+        let origin = Position {
+            x: 0.0,
+            y: 0.0,
+            z: 20.0,
+        };
+        for yaw_deg in [-135.0_f32, -90.0, 0.0, 45.0, 90.0, 180.0] {
+            let yaw = yaw_deg.to_radians();
+            let (sy, cy) = (0.5 * yaw).sin_cos();
+            let expected_x = -yaw.sin();
+            let expected_y = yaw.cos();
+            for pitch_deg in [-120.0_f32, -95.0, -90.0, -80.0, 0.0, 80.0, 90.0, 95.0, 120.0] {
+                let pitch = pitch_deg.to_radians();
+                let (sp, cp) = (0.5 * pitch).sin_cos();
+                // World-Z yaw followed by local-X pitch.
+                let facing = fly_forward([cy * cp, cy * sp, sy * sp, sy * cp])
+                    .expect("heading must remain defined through vertical pitch");
+                let dot = facing.x * expected_x + facing.y * expected_y;
+                assert!(
+                    dot > 0.999,
+                    "yaw={yaw_deg}, pitch={pitch_deg}: heading={facing:?}, dot={dot}"
+                );
+                let moved = fly_step(
+                    origin,
+                    facing,
+                    FlyInput {
+                        forward: 1.0,
+                        strafe: 1.0,
+                        ..FlyInput::default()
+                    },
+                    10.0,
+                    0.02,
+                );
+                let displacement_x = moved.x - origin.x;
+                let displacement_y = moved.y - origin.y;
+                // Both W and D keep the same expected direction, including
+                // beyond vertical pitch; diagonal speed stays normalized.
+                let expected_move_x = (expected_x + expected_y) * std::f32::consts::FRAC_1_SQRT_2;
+                let expected_move_y = (expected_y - expected_x) * std::f32::consts::FRAC_1_SQRT_2;
+                assert!((displacement_x - expected_move_x * 0.2).abs() < 0.001);
+                assert!((displacement_y - expected_move_y * 0.2).abs() < 0.001);
+            }
+        }
     }
 
     #[test]
