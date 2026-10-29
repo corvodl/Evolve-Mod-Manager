@@ -114,6 +114,28 @@ impl Camera {
     }
 }
 
+/// Some window backends cannot deliver KeyReleased after Alt+Tab,
+/// focus changes, or a native popup menu. Reconcile the recorded WASDQE
+/// movement state with the actual keyboard state on Windows every frame.
+/// This only removes stale pressed keys; new movement still needs a
+/// KeyPressed event from the focused Level Editor window.
+#[cfg(target_os = "windows")]
+pub(super) fn physically_held(key: char) -> bool {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        #[link_name = "GetAsyncKeyState"]
+        fn get_async_key_state(vkey: i32) -> i16;
+    }
+    let vk = key.to_ascii_uppercase() as i32;
+    // The high bit means currently down, not merely pressed since last call.
+    unsafe { get_async_key_state(vk) < 0 }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(super) fn physically_held(_key: char) -> bool {
+    true // Native key-up and window focus events still clear the set.
+}
+
 /// World camera basis. The same yaw/pitch axes are used by the original
 /// renderer and the scene triangle picker.
 pub(super) fn basis(yaw: f32, pitch: f32) -> ([f32; 3], [f32; 3], [f32; 3]) {
@@ -142,6 +164,17 @@ mod tests {
         camera.advance(&HashSet::from(['e']), 0.0, 0.0, 0.1);
         assert!((camera.position[2] - 1.0).abs() < 0.001);
     }
+    #[test]
+    fn flight_stops_immediately_when_no_keys_remain() {
+        let mut camera = Camera::default();
+        let original = camera.position;
+        camera.advance(&HashSet::from(['w']), 0.0, 0.0, 0.05);
+        assert_ne!(camera.position, original);
+        let released_position = camera.position;
+        camera.advance(&HashSet::new(), 0.0, 0.0, 0.05);
+        assert_eq!(camera.position, released_position);
+    }
+
     #[test]
     fn camera_projects_forward_center_and_rejects_behind() {
         let camera = Camera::default();
