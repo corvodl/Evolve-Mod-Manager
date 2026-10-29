@@ -83,7 +83,9 @@ fn held_position(anchor: Position, current: Position, mode: HoldMode) -> Positio
 
 /// User-configurable world units per second for position-based flight.
 pub(super) fn parse_fly_speed(raw: &str) -> Result<f32, String> {
-    let speed = raw.trim().parse::<f32>()
+    let speed = raw
+        .trim()
+        .parse::<f32>()
         .map_err(|_| "Fly speed must be a number from 1 to 40 units/sec".to_owned())?;
     if !speed.is_finite() || !(1.0..=40.0).contains(&speed) {
         return Err("Fly speed must be between 1 and 40 units/sec".into());
@@ -119,14 +121,22 @@ fn fly_forward(quaternion: [f32; 4]) -> Result<Position, String> {
     if horizontal_len < 0.01 || !horizontal_len.is_finite() {
         return Err("Fly Mode stopped: local actor has no usable horizontal direction".into());
     }
-    Ok(Position { x: fx / horizontal_len, y: fy / horizontal_len, z: 0.0 })
+    Ok(Position {
+        x: fx / horizontal_len,
+        y: fy / horizontal_len,
+        z: 0.0,
+    })
 }
 
 /// Pure movement math, independent of Windows keyboard APIs and memory writes.
 /// W follows the actor's horizontal facing, D is local right, and Space/Ctrl
 /// control vertical movement. WASD diagonals are normalized.
 fn fly_step(anchor: Position, forward: Position, input: FlyInput, speed: f32, dt: f32) -> Position {
-    let right = Position { x: forward.y, y: -forward.x, z: 0.0 };
+    let right = Position {
+        x: forward.y,
+        y: -forward.x,
+        z: 0.0,
+    };
     let mut horizontal_x = forward.x * input.forward + right.x * input.strafe;
     let mut horizontal_y = forward.y * input.forward + right.y * input.strafe;
     let length = (horizontal_x * horizontal_x + horizontal_y * horizontal_y).sqrt();
@@ -683,11 +693,14 @@ mod windows {
                         u32_at(&handle, r.entity + 0x50)?,
                         u32_at(&handle, r.entity + 0x54)?,
                         u32_at(&handle, r.entity + 0x58)?,
-                    ].map(f32::from_bits);
+                    ]
+                    .map(f32::from_bits);
                     let forward = fly_forward(facing)?;
                     fly_anchor = fly_step(fly_anchor, forward, input, fly_speed, dt);
                     if !fly_anchor.finite() {
-                        return Err("Fly Mode reached out-of-range world coordinates; stopped".into());
+                        return Err(
+                            "Fly Mode reached out-of-range world coordinates; stopped".into()
+                        );
                     }
                 }
                 fly_anchor
@@ -865,30 +878,75 @@ mod tests {
     #[test]
     fn flight_forward_and_strafe_follow_actor_yaw() {
         let north = fly_forward([1.0, 0.0, 0.0, 0.0]).unwrap();
-        assert!(north.near(Position { x: 0.0, y: 1.0, z: 0.0 }));
-        let origin = Position { x: 10.0, y: 20.0, z: 30.0 };
-        let forward = fly_step(origin, north, FlyInput {
-            forward: 1.0, ..FlyInput::default()
-        }, 10.0, 0.1);
+        assert!(north.near(Position {
+            x: 0.0,
+            y: 1.0,
+            z: 0.0
+        }));
+        let origin = Position {
+            x: 10.0,
+            y: 20.0,
+            z: 30.0,
+        };
+        let forward = fly_step(
+            origin,
+            north,
+            FlyInput {
+                forward: 1.0,
+                ..FlyInput::default()
+            },
+            10.0,
+            0.1,
+        );
         assert!((forward.y - 20.5).abs() < 0.001);
-        let strafe = fly_step(origin, north, FlyInput {
-            strafe: 1.0, ..FlyInput::default()
-        }, 10.0, 0.05);
+        let strafe = fly_step(
+            origin,
+            north,
+            FlyInput {
+                strafe: 1.0,
+                ..FlyInput::default()
+            },
+            10.0,
+            0.05,
+        );
         assert!((strafe.x - 10.5).abs() < 0.001);
         assert!(fly_forward([0.0; 4]).is_err());
     }
 
     #[test]
     fn flight_vertical_and_diagonal_speed_are_bounded() {
-        let origin = Position { x: 0.0, y: 0.0, z: 100.0 };
-        let forward = Position { x: 0.0, y: 1.0, z: 0.0 };
-        let climb = fly_step(origin, forward, FlyInput {
-            vertical: 1.0, ..FlyInput::default()
-        }, 8.0, 0.05);
+        let origin = Position {
+            x: 0.0,
+            y: 0.0,
+            z: 100.0,
+        };
+        let forward = Position {
+            x: 0.0,
+            y: 1.0,
+            z: 0.0,
+        };
+        let climb = fly_step(
+            origin,
+            forward,
+            FlyInput {
+                vertical: 1.0,
+                ..FlyInput::default()
+            },
+            8.0,
+            0.05,
+        );
         assert!((climb.z - 100.4).abs() < 0.001);
-        let diagonal = fly_step(origin, forward, FlyInput {
-            forward: 1.0, strafe: 1.0, ..FlyInput::default()
-        }, 8.0, 0.05);
+        let diagonal = fly_step(
+            origin,
+            forward,
+            FlyInput {
+                forward: 1.0,
+                strafe: 1.0,
+                ..FlyInput::default()
+            },
+            8.0,
+            0.05,
+        );
         assert!((diagonal.x * diagonal.x + diagonal.y * diagonal.y).sqrt() <= 0.401);
     }
     #[test]
