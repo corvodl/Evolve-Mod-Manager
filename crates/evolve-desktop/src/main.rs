@@ -4570,9 +4570,22 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 state.developer_hotkey_status = "Shortcuts inactive".into();
                 return Task::none();
             };
-            // Update the runtime PID for the visible process. Full actor
-            // memory writes still need an explicitly armed Developer session.
-            if state.runtime_snapshot.as_ref().and_then(|old| old.pid) != Some(pid) {
+            // An overlay process lookup must never inherit authorization or
+            // actor pointers from a different game session.
+            let changed_game = state.runtime_snapshot.as_ref().is_none_or(|old| {
+                old.pid != snapshot.pid || old.module_base != snapshot.module_base
+            });
+            if changed_game {
+                state.live_edit_enabled = false;
+                state.armor_offline_confirmed = false;
+                state.actor_frozen.clear();
+                state.actor_freeze_generation =
+                    state.actor_freeze_generation.wrapping_add(1);
+                if let Some(cancel) = state.teleport_hold_cancel.as_ref() {
+                    cancel.store(true, Ordering::Release);
+                }
+                state.teleport_reading = None;
+                state.teleport_saved = None;
                 state.runtime_snapshot = Some(snapshot);
             }
             #[cfg(windows)]
