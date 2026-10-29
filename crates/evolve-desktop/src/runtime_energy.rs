@@ -235,7 +235,12 @@ mod tests {
         ] {
             assert!(known_monster(name), "{name}");
         }
-        for name in ["AssaultEBot", "TrackingCBot", "Actor entity 0x14 (name unresolved)", ""] {
+        for name in [
+            "AssaultEBot",
+            "TrackingCBot",
+            "Actor entity 0x14 (name unresolved)",
+            "",
+        ] {
             assert!(!known_monster(name), "{name}");
         }
     }
