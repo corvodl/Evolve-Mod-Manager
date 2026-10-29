@@ -1112,8 +1112,7 @@ mod tests {
         assert!(camera.x < -0.9, "camera aims across actor's front");
         assert!(actor.x * camera.x + actor.y * camera.y < -0.85);
 
-        let zero_yaw = fly_forward(actor_xyzw_to_wxyz([0.0, 0.0, 0.0, 1.0]))
-            .unwrap();
+        let zero_yaw = fly_forward(actor_xyzw_to_wxyz([0.0, 0.0, 0.0, 1.0])).unwrap();
         assert!(zero_yaw.near(Position {
             x: 0.0,
             y: 1.0,
