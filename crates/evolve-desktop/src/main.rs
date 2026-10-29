@@ -4359,8 +4359,9 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             if let Ok(path) = settings_path()
                 && let Err(error) = save_to(&path, &state.preferences)
             {
-                state.developer_hotkey_status =
-                    format!("Suggested shortcuts assigned for session; settings save failed: {error}");
+                state.developer_hotkey_status = format!(
+                    "Suggested shortcuts assigned for session; settings save failed: {error}"
+                );
             }
         }
         Message::DeveloperKeybindChanged(action, key) => {
