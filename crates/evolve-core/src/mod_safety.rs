@@ -24,6 +24,7 @@ const GAMEPLAY_ROOTS: &[&str] = &[
     "libs/actor/",
     "libs/abilities/",
     "libs/items/",
+    "libs/effectsets/",
     "libs/gamerules/",
     "libs/params/",
     "libs/characters/",
@@ -36,9 +37,13 @@ const GAMEPLAY_ROOTS: &[&str] = &[
     "libs/contextualcombat/",
     "libs/zookeeper/",
 ];
+/// Extensions accepted by the Gameplay values editor. `.effectset` documents
+/// describe perk/effect data and therefore carry gameplay semantics even when
+/// their authored values contain variant pipe lists.
+const GAMEPLAY_EXTENSIONS: &[&str] = &[".xml", ".actorparams", ".effectset"];
 pub fn gameplay_document(path: &str) -> bool {
     let p = path.replace('\\', "/").to_ascii_lowercase();
-    (p.ends_with(".xml") || p.ends_with(".actorparams"))
+    GAMEPLAY_EXTENSIONS.iter().any(|ext| p.ends_with(ext))
         && GAMEPLAY_ROOTS.iter().any(|root| p.starts_with(root))
 }
 pub fn model_document(path: &str) -> bool {
@@ -60,7 +65,7 @@ pub fn member_kind(path: &str) -> ModKind {
     if GAMEPLAY_ROOTS.iter().any(|root| p.starts_with(root))
         || p.ends_with(".actorparams")
         || p.ends_with(".chrparams")
-        || [".lua", ".cfg", ".ent", ".dll", ".exe"]
+        || [".lua", ".cfg", ".ent", ".dll", ".exe", ".effectset"]
             .iter()
             .any(|ext| p.ends_with(ext))
     {
@@ -153,5 +158,31 @@ mod tests {
         ] {
             assert_eq!(member_kind(p), ModKind::CosmeticCandidate);
         }
+    }
+    #[test]
+    fn effectset_perks_and_effect_sets_are_editable_gameplay() {
+        for p in [
+            "Libs/Items/Perks/Goliath/Perk_Goliath_Charge.effectset",
+            "libs/items/perks/assault/Perk_Assault_Rearm.effectset",
+            "libs/EffectSets/Characters/Monster/EffectSet.effectset",
+            "Libs\\Items\\Perks\\Windows\\Perk_Windows.effectset",
+        ] {
+            assert!(gameplay_document(p), "{p} should be indexed for editing");
+            assert_eq!(member_kind(p), ModKind::Gameplay);
+        }
+        // The suffix alone is gameplay even outside an authored root.
+        assert_eq!(
+            member_kind("objects/unexpected.effectset"),
+            ModKind::Gameplay
+        );
+        // Path traversal still wins over the recognised extension.
+        assert_eq!(member_kind("../perks/evil.effectset"), ModKind::NeedsReview);
+        // A whole changed-member inventory containing an effectset stays offline.
+        assert_eq!(
+            classify(["objects/a.dds", "libs/Items/Perks/x.effectset"], true),
+            ModKind::Gameplay
+        );
+        // Unrelated documents remain unindexed.
+        assert!(!gameplay_document("libs/Items/Perks/notes.txt"));
     }
 }
