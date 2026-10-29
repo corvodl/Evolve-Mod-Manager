@@ -727,6 +727,7 @@ enum Operation {
     InspectLevel(PathBuf),
     OpenImportedMap(evolve_core::ImportedPak, usize, SharedCache),
     OpenProjectLevel(modding_projects::ProjectRow, usize, SharedCache, PathBuf),
+    SaveProjectLevel(modding_projects::ProjectRow, PathBuf, String, Vec<(String, evolve_core::Transform)>, PathBuf),
     ExportEditedLevel(
         PathBuf,
         PathBuf,
@@ -851,6 +852,7 @@ enum Completed {
     DeclaredClip(usize, String, NativeCafMotion),
     Level(LevelScene, PathBuf, String),
     ImportedMap(Box<level_library::LoadedMap>),
+    ProjectLevelSaved(modding_projects::ProjectRow, usize, bool),
     EditedLevelExported(PathBuf, usize),
     Terrain(RenderMesh, TerrainInfo),
     SignedPak(SignedPakInfo),
@@ -1278,6 +1280,23 @@ impl Operation {
             Self::OpenProjectLevel(project, index, cache, library_root) => {
                 level_library::open_project(project, index, &cache, &library_root)
                     .map(|map| Completed::ImportedMap(Box::new(map)))
+            }
+            Self::SaveProjectLevel(project, source, expected, edits, projects_root) => {
+                let root = std::fs::canonicalize(project.workspace.join("files")).map_err(|e| e.to_string())?;
+                let source = std::fs::canonicalize(&source).map_err(|e| e.to_string())?;
+                let relative = source.strip_prefix(&root).map_err(|_| "Level is not in this editable project")?;
+                let member = relative.to_string_lossy().replace('\\', "/");
+                if expected.is_empty() || level_source_hash(&source)? != expected {
+                    return Err("Editable level source changed during editing; reopen it".into());
+                }
+                let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
+                let target = scratch.path().join("edited.lyr");
+                evolve_core::export_edited_layers(&source, &target, &edits).map_err(|e| e.to_string())?;
+                if level_source_hash(&source)? != expected {
+                    return Err("Level source changed before project import; no changes saved".into());
+                }
+                let saved = modding_projects::import_raw_member(&project, &projects_root, &member, &target)?;
+                Ok(Completed::ProjectLevelSaved(project, 0, saved))
             }
             Self::InspectLevel(source) => {
                 let checksum = level_source_hash(&source)?;
@@ -1826,6 +1845,7 @@ enum Message {
     LibraryOpenMap(usize),
     LevelMapSelect(usize),
     LevelOpenSelectedModProject,
+    LevelSaveProjectChanges,
     LevelToggleOverview,
     LibraryPreview,
     LibraryMakeModProject,
@@ -2579,6 +2599,7 @@ fn operation_label(operation: &Operation) -> &'static str {
         }
         Operation::InspectLevel(..) | Operation::InspectTerrain(..) => "Inspecting level resources",
         Operation::OpenImportedMap(..) | Operation::OpenProjectLevel(..) => "Assembling level scene",
+        Operation::SaveProjectLevel(..) => "Saving editable level project",
         Operation::ExportEditedLevel(..) => "Exporting edited level",
         Operation::InspectSignedPak(..) => "Verifying signed CryPAK",
         Operation::ExtractSignedPak(..) => "Extracting signed CryPAK",
@@ -4257,6 +4278,28 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return launch(state, Operation::OpenImportedMap(archive, 0, cache));
         }
         Message::LevelToggleOverview => state.level_show_overview = !state.level_show_overview,
+        Message::LevelSaveProjectChanges => {
+            let Some(project) = state.level_project.clone() else {
+                state.status = "Open a managed editable level project before saving.".into();
+                return Task::none();
+            };
+            if state.busy { return Task::none(); }
+            let Some(source) = state.level_source.clone() else { return Task::none(); };
+            let Some(scene) = &state.level_scene else { return Task::none(); };
+            let edits = level_pending_edits(state);
+            if edits.is_empty() || edits.len() > 128 {
+                state.status = "Nothing to save, or too many pending edits (128 maximum).".into();
+                return Task::none();
+            }
+            let ids = edits.iter().map(|(id, _)| id.as_str()).collect::<std::collections::HashSet<_>>();
+            if scene.objects.iter().filter(|obj| ids.contains(obj.id.as_str())).any(|obj| obj.kind.eq_ignore_ascii_case("Vegetation") || PathBuf::from(&state.assets_root).join(&obj.layer) != source) {
+                state.status = "Save one authored LYR layer at a time; binary vegetation instances cannot be edited through the XML layer editor.".into();
+                return Task::none();
+            }
+            let expected = state.level_source_sha.clone();
+            let root = PathBuf::from(&state.preferences.projects);
+            return launch(state, Operation::SaveProjectLevel(project, source, expected, edits, root));
+        }
         Message::LevelOpenSelectedModProject => {
             let Some(project) = state.modding_selected.and_then(|i| state.modding_projects.as_ref()?.get(i)).cloned() else {
                 state.status = "Select an editable Modding project first.".into();
@@ -11678,6 +11721,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     state.page = Some(Page::Levels);
                     state.zoom = 1.0;
                 }
+                Ok(Completed::ProjectLevelSaved(project, _, saved)) => {
+                    state.status = if saved { "Edited level saved through the verified Modding project backup/import process.".into() } else { "Project level matches its original bytes.".into() };
+                    let index = state.library_map.as_ref().map_or(0, |(_, _, index)| *index);
+                    let root = PathBuf::from(&state.library_root);
+                    let cache = state.preview_cache.clone();
+                    return launch(state, Operation::OpenProjectLevel(project, index, cache, root));
+                }
                 Ok(Completed::ImportedMap(loaded)) => {
                     let loaded = *loaded;
                     state.level_diagnostics = loaded.diagnostics.clone();
@@ -12643,7 +12693,11 @@ fn view(state: &State) -> Element<'_, Message> {
                 text(if state.level_read_only { "READ-ONLY IMPORT · create a modding project to edit" } else { "LOCAL SOURCE" }).size(12),
             ].spacing(10),
             if state.library_menu == Some("LevelFile") {
-                Element::from(design::button("Open as Modding Project").on_press_maybe(state.library_map.as_ref().map(|_| Message::LibraryMakeModProject)))
+                Element::from(column![
+                    design::button("Open as Modding Project").on_press_maybe((state.level_project.is_none() && state.library_map.is_some()).then_some(Message::LibraryMakeModProject)),
+                    design::button("Open Selected Modding Project").on_press_maybe(state.modding_selected.map(|_| Message::LevelOpenSelectedModProject)),
+                    design::button("Save Edited Project Layer").on_press_maybe((state.level_project.is_some() && state.level_dirty_count > 0).then_some(Message::LevelSaveProjectChanges)),
+                ].spacing(4))
             } else { Element::from(text("")) },
             level_workspace::view(state),
             text(if state.level_read_only { "Verified source view; no source files are changed. Vegetation instance streams and unsupported shaders remain unresolved." } else { "Read Level/LYR or Heightmap.dat without touching installed game assets." }),
