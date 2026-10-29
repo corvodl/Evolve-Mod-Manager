@@ -192,15 +192,24 @@ fn world_viewport(state: &State) -> Element<'_, Message> {
         iced::widget::shader(super::textured::Scene {
             mesh: mesh.clone(),
             surfaces: state.level_surfaces.clone(),
-            diffuse: None, normal_map: None, emissive: None,
-            specular: None, gloss: None,
-            yaw: state.yaw, pitch: state.pitch, zoom: state.zoom.max(0.2),
+            diffuse: None,
+            normal_map: None,
+            emissive: None,
+            specular: None,
+            gloss: None,
+            yaw: state.yaw,
+            pitch: state.pitch,
+            zoom: state.zoom.max(0.2),
             light_strength: state.light_strength,
             emissive_gain: state.emissive_strength,
             emissive_time: state.decal_time,
-            pan_x: state.pan_x, pan_y: state.pan_y,
+            pan_x: state.pan_x,
+            pan_y: state.pan_y,
             shift: state.keyboard_modifiers.shift(),
-        }).width(Fill).height(Length::Fixed(460.0)).into()
+        })
+        .width(Fill)
+        .height(Length::Fixed(460.0))
+        .into()
     } else {
         text("No verified level geometry loaded. Select a map PAK containing mesh or heightmap resources.")
             .size(12).color(MUTED).into()
@@ -255,14 +264,20 @@ pub(super) fn view(state: &State) -> Element<'_, Message> {
             text(format!("Status: {}", object.status))
                 .size(12)
                 .color(MUTED),
-            text(if state.level_read_only { "Imported source transforms · read-only" } else { "Edit local transform (position XYZ, rotation WXYZ, scale XYZ)" }).size(12),
+            text(if state.level_read_only {
+                "Imported source transforms · read-only"
+            } else {
+                "Edit local transform (position XYZ, rotation WXYZ, scale XYZ)"
+            })
+            .size(12),
             text_input("Position: x, y, z", &state.level_edit_position)
                 .on_input(Message::LevelEditPositionChanged),
             text_input("Rotation: w, x, y, z", &state.level_edit_rotation)
                 .on_input(Message::LevelEditRotationChanged),
             text_input("Scale: x, y, z", &state.level_edit_scale)
                 .on_input(Message::LevelEditScaleChanged),
-            button("Apply to preview").on_press_maybe((!state.level_read_only).then_some(Message::LevelApplyTransform)),
+            button("Apply to preview")
+                .on_press_maybe((!state.level_read_only).then_some(Message::LevelApplyTransform)),
         ]
         .spacing(6)
         .into()
