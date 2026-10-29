@@ -188,6 +188,25 @@ struct LevelTransformDiff {
 
 type ActorFreezeOutcome = ((u32, usize, runtime_actors::Field), Result<bool, String>);
 
+#[derive(Clone, Copy, Debug)]
+enum TeleportRequest {
+    Capture(bool),
+    Move(runtime_teleport::Destination, Option<(u32, u32)>),
+    Hold(runtime_teleport::HoldMode),
+    Preview,
+}
+
+impl TeleportRequest {
+    fn message(self) -> Message {
+        match self {
+            Self::Capture(save) => Message::TeleportCapture(save),
+            Self::Move(destination, identity) => Message::TeleportDo(destination, identity),
+            Self::Hold(mode) => Message::TeleportHold(mode),
+            Self::Preview => Message::TeleportPreviewAim,
+        }
+    }
+}
+
 #[derive(Default)]
 struct State {
     input: String,
@@ -385,6 +404,8 @@ struct State {
     teleport_saved: Option<runtime_teleport::Reading>,
     teleport_busy: bool,
     teleport_status: String,
+    teleport_detect_pending: bool,
+    teleport_detect_generation: u64,
     teleport_hold_mode: Option<runtime_teleport::HoldMode>,
     teleport_hold_cancel: Option<Arc<AtomicBool>>,
     teleport_hold_releasing: bool,
@@ -1958,6 +1979,8 @@ enum Message {
     DeveloperKeybindChanged(developer_hotkeys::Action, developer_hotkeys::Keybind),
     TeleportDo(runtime_teleport::Destination, Option<(u32, u32)>),
     TeleportMoved(Result<runtime_teleport::Reading, String>),
+    TeleportDetect(TeleportRequest),
+    TeleportAutoDetected(u64, TeleportRequest, runtime_memory::Snapshot),
     TeleportHold(runtime_teleport::HoldMode),
     TeleportHoldRelease,
     TeleportHoldFinished(u64, Result<runtime_teleport::Reading, String>),
@@ -4432,21 +4455,71 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
             };
         }
+        Message::TeleportDetect(request) => {
+            if !state.developer_unlocked || state.teleport_detect_pending {
+                return Task::none();
+            }
+            state.teleport_detect_pending = true;
+            state.teleport_detect_generation = state.teleport_detect_generation.wrapping_add(1);
+            let generation = state.teleport_detect_generation;
+            state.teleport_status = "Locating the running Evolve.exe process...".into();
+            let root = state.preferences.game_storage_root.clone();
+            return Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || runtime_memory::inspect(&root))
+                        .await
+                        .unwrap_or_else(|error| runtime_memory::Snapshot {
+                            pid: None,
+                            status: format!("Cannot detect Evolve.exe: {error}"),
+                            executable: String::new(),
+                            module_base: None,
+                        })
+                },
+                move |snapshot| Message::TeleportAutoDetected(generation, request, snapshot),
+            );
+        }
+        Message::TeleportAutoDetected(generation, request, snapshot) => {
+            if generation != state.teleport_detect_generation || !state.teleport_detect_pending {
+                return Task::none();
+            }
+            state.teleport_detect_pending = false;
+            if !state.developer_unlocked {
+                return Task::none();
+            }
+            if snapshot.pid.is_none() || snapshot.module_base.is_none() {
+                state.teleport_status = format!(
+                    "Teleport unavailable: {}. Start Evolve and use Detect Evolve.exe if the process cannot be inspected.",
+                    snapshot.status
+                );
+                return Task::none();
+            }
+            if state.runtime_snapshot.as_ref().is_some_and(|old| {
+                old.pid != snapshot.pid || old.module_base != snapshot.module_base
+            }) {
+                state.runtime_snapshot = Some(snapshot);
+                state.live_edit_enabled = false;
+                state.teleport_reading = None;
+                state.teleport_saved = None;
+                state.teleport_status =
+                    "Evolve restarted or changed. Re-enable actor memory writes before teleporting.".into();
+                return Task::none();
+            }
+            state.runtime_snapshot = Some(snapshot);
+            return Task::done(request.message());
+        }
         Message::TeleportHold(mode) => {
             if !state.developer_unlocked
-                || state.developer_online_mods
-                || !state.armor_offline_confirmed
                 || !state.live_edit_enabled
                 || state.teleport_busy
+                || state.teleport_detect_pending
                 || state.teleport_hold_cancel.is_some()
             {
                 state.teleport_hold_status =
                     "Finish other teleport operations and enable actor writes first".into();
                 return Task::none();
             }
-            let Some(snapshot) = state.runtime_snapshot.clone() else {
-                state.teleport_hold_status = "Detect Evolve.exe first".into();
-                return Task::none();
+            let Some(snapshot) = state.runtime_snapshot.clone().filter(|s| s.pid.is_some() && s.module_base.is_some()) else {
+                return Task::done(Message::TeleportDetect(TeleportRequest::Hold(mode)));
             };
             let stop = Arc::new(AtomicBool::new(false));
             state.teleport_hold_cancel = Some(stop.clone());
@@ -4566,7 +4639,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             };
             // An overlay process lookup must never inherit authorization or
             // actor pointers from a different game session.
-            let changed_game = state.runtime_snapshot.as_ref().is_none_or(|old| {
+            let changed_game = state.runtime_snapshot.as_ref().is_some_and(|old| {
                 old.pid != snapshot.pid || old.module_base != snapshot.module_base
             });
             if changed_game {
@@ -4579,8 +4652,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 }
                 state.teleport_reading = None;
                 state.teleport_saved = None;
-                state.runtime_snapshot = Some(snapshot);
             }
+            state.runtime_snapshot = Some(snapshot);
             #[cfg(windows)]
             {
                 use std::os::windows::process::CommandExt;
@@ -4664,17 +4737,14 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::TeleportPreviewAim => {
             if !state.developer_unlocked
-                || state.developer_online_mods
-                || !state.armor_offline_confirmed
-                || !state.live_edit_enabled
                 || state.teleport_aim_preview_busy
                 || state.teleport_busy
+                || state.teleport_detect_pending
             {
                 return Task::none();
             }
-            let Some(snapshot) = state.runtime_snapshot.clone() else {
-                state.teleport_status = "Detect Evolve.exe first".into();
-                return Task::none();
+            let Some(snapshot) = state.runtime_snapshot.clone().filter(|s| s.pid.is_some() && s.module_base.is_some()) else {
+                return Task::done(Message::TeleportDetect(TeleportRequest::Preview));
             };
             let raw = state.teleport_aim_distance.trim();
             let raw = if raw.is_empty() { "30" } else { raw };
@@ -4701,7 +4771,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::TeleportPreviewed(result) => {
             state.teleport_aim_preview_busy = false;
-            if !state.developer_unlocked || state.developer_online_mods {
+            if !state.developer_unlocked {
                 return Task::none();
             }
             match result {
@@ -4714,18 +4784,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::TeleportCapture(save) => {
             if !state.developer_unlocked
-                || state.developer_online_mods
-                || !state.armor_offline_confirmed
-                || !state.live_edit_enabled
                 || state.teleport_busy
+                || state.teleport_detect_pending
                 || state.teleport_hold_cancel.is_some()
             {
-                state.teleport_status = "Enable offline editing in an isolated match".into();
+                state.teleport_status = "Finish the current teleport operation first".into();
                 return Task::none();
             }
-            let Some(snapshot) = state.runtime_snapshot.clone() else {
-                state.teleport_status = "Detect Evolve.exe first".into();
-                return Task::none();
+            let Some(snapshot) = state.runtime_snapshot.clone().filter(|s| s.pid.is_some() && s.module_base.is_some()) else {
+                return Task::done(Message::TeleportDetect(TeleportRequest::Capture(save)));
             };
             state.teleport_busy = true;
             state.teleport_status = "Reading local physics coordinates...".into();
@@ -4743,11 +4810,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::TeleportCaptured(save, result) => {
             state.teleport_busy = false;
-            if !state.developer_unlocked
-                || state.developer_online_mods
-                || !state.armor_offline_confirmed
-                || !state.live_edit_enabled
-            {
+            if !state.developer_unlocked {
                 state.teleport_aim_pending = None;
                 return Task::none();
             }
@@ -4820,18 +4883,17 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::TeleportDo(destination, identity) => {
             if !state.developer_unlocked
-                || state.developer_online_mods
-                || !state.armor_offline_confirmed
                 || !state.live_edit_enabled
                 || state.teleport_busy
+                || state.teleport_detect_pending
                 || state.teleport_hold_cancel.is_some()
             {
-                state.teleport_status = "Teleport requires unlocked offline writes".into();
+                state.teleport_status =
+                    "Teleport requires enabled actor memory writes and no other teleport operation".into();
                 return Task::none();
             }
-            let Some(snapshot) = state.runtime_snapshot.clone() else {
-                state.teleport_status = "Detect Evolve.exe first".into();
-                return Task::none();
+            let Some(snapshot) = state.runtime_snapshot.clone().filter(|s| s.pid.is_some() && s.module_base.is_some()) else {
+                return Task::done(Message::TeleportDetect(TeleportRequest::Move(destination, identity)));
             };
             state.teleport_busy = true;
             state.teleport_status = "Applying one-shot physics teleport...".into();
@@ -4849,11 +4911,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
         }
         Message::TeleportMoved(result) => {
             state.teleport_busy = false;
-            if !state.developer_unlocked
-                || state.developer_online_mods
-                || !state.armor_offline_confirmed
-                || !state.live_edit_enabled
-            {
+            if !state.developer_unlocked {
                 return Task::none();
             }
             match result {
@@ -5466,6 +5524,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             }
         }
         Message::RuntimeDetect => {
+            state.teleport_detect_generation = state.teleport_detect_generation.wrapping_add(1);
+            state.teleport_detect_pending = false;
             if state.teleport_hold_cancel.is_some() {
                 state.teleport_hold_status =
                     "Unfreeze coordinates before detecting another process".into();
@@ -5718,6 +5778,8 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                     .unwrap_or_else(|error| format!("Phase 3 preview rejected: {error}"));
         }
         Message::LockDeveloper => {
+            state.teleport_detect_generation = state.teleport_detect_generation.wrapping_add(1);
+            state.teleport_detect_pending = false;
             state.teleport_overlay_generation = state.teleport_overlay_generation.wrapping_add(1);
             state.teleport_overlay_pending = false;
             if state.teleport_hold_cancel.is_some() {
