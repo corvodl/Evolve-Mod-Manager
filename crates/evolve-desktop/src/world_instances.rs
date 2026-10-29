@@ -24,6 +24,14 @@ pub(super) struct World {
     pub groups: Vec<ModelGroup>,
     pub instance_count: usize,
 }
+impl std::fmt::Debug for World {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InstancedWorld")
+            .field("unique_meshes", &self.groups.len())
+            .field("placements", &self.instance_count)
+            .finish()
+    }
+}
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
