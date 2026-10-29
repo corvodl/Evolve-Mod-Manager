@@ -52,9 +52,11 @@ impl Config {
                 .gfx_session
                 .as_ref()
                 .map(|session| session.relative.clone()),
-            Page::Models if state.model.is_some()
-                || state.texture_preview.is_some()
-                || state.character.is_some() => {
+            Page::Models
+                if state.model.is_some()
+                    || state.texture_preview.is_some()
+                    || state.character.is_some() =>
+            {
                 std::path::Path::new(&state.input)
                     .file_name()
                     .and_then(|name| name.to_str())
@@ -723,7 +725,10 @@ mod tests {
         cfg.asset_name = Some("Objects/Monsters/Goliath/Goliath.cdf".into());
         cfg.manager_action = "Model Viewer".into();
         let activity = format_activity(&cfg, None, None, 100).unwrap();
-        assert_eq!(activity["state"], "Model Viewer · Objects/Monsters/Goliath/Goliath.cdf");
+        assert_eq!(
+            activity["state"],
+            "Model Viewer · Objects/Monsters/Goliath/Goliath.cdf"
+        );
         assert_eq!(activity["assets"]["small_image"], "tab_models");
 
         // Even if an asset is visible in the manager, the in-game app keeps
