@@ -69,12 +69,53 @@ externally have **not** been established. In particular, the nearby
 `actor+0x175C` is not a verified recharge-rate field. Do not present any
 recharge setting or editable address on the strength of this trace alone.
 
+### Three-perk Behemoth comparison
+
+In a separate 1,792-frame read-only Behemoth fight capture, the player reported
+three simultaneously equipped traversal-recharge bonuses of **6%, 17%, and
+10%**. The Stage 2 marker was `0x55FA0202` for 948 frames and the Stage 3
+marker was `0x55FA0303` for 844 frames; compare the low 16 bits, not the
+entire stage word. Median decoded recharge slopes were approximately
+`6.66` energy/s at Stage 2 and `6.65` energy/s at Stage 3, versus `5.0`
+energy/s in the earlier no-perk Behemoth captures. Continuous roll drain
+remained approximately `6.0` energy/s. This is consistent with three
+additive `MonsterSpecialRechargeModifier` bonuses:
+`5.0 * (1 + 0.06 + 0.17 + 0.10) = 6.65` energy/s. It is not evidence for a
+separate editable recharge-rate field. The installed perk effect sets
+`MPerkBrawlerLowEffect.effectset`, `MPerkStaminaRegenMediumEffect.effectset`,
+and `MPerkBrawlerHighEffect.effectset` have corresponding tier-3 bonuses
+`0.06`, `0.17`, and `0.10`; individual equipped item identities were not
+independently verified from the runtime capture.
+
+## Generic damage-reduction effect (separate research)
+
+The installed `libs/Actor/Monsters/RockyA.actorparams` defines Behemoth's
+`ReactiveEffect` with `fDamageThreshold=65`, `nStackLimit=15`, and
+`sEffectSet=RockyReactiveArmorEffect`. The corresponding
+`libs/EffectSets/RockyReactiveArmorEffect.effectset` applies the generic
+`ArmorModifier` game property with value `0.03`, duration `6`, and self
+stacking. Fifteen 3% stacks would sum to 45%, but the actor capture does
+**not** establish the exact runtime damage or stacking arithmetic.
+
+This property is not Behemoth-exclusive: monster perk effect sets such as
+`MPerkBrawlerHighEffect.effectset` (tier-3 `ArmorModifier=0.08`) and
+`MPerkDamageReductionHighEffect.effectset` (`0.12`) apply it to the owner.
+Thus ordinary monster perk selection can supply damage reduction to other
+monsters. The fight capture's first `0x2400` actor bytes did not reveal a
+validated `0..15` passive-stack count or a float rising in 3% increments.
+An effective property may instead live in an effect/property component;
+neither its storage nor a game-thread effect-application API was verified.
+Do **not** copy Behemoth's reactive configuration, edit a guessed actor
+stat, substitute an item ID, or claim runtime activation on another monster
+from these observations. No activation or write was attempted.
+
 Read-only capture artifacts (temporary local evidence, **not** portable project fixtures):
 
 - `C:\Users\billn\AppData\Local\Temp\opencode\wraith-traversal-20261029-controlled\`
 - `C:\Users\billn\AppData\Local\Temp\opencode\goliath-traversal-20261029-1\`
 - `C:\Users\billn\AppData\Local\Temp\opencode\behemoth-traversal-20261029-controlled\`
 - `C:\Users\billn\AppData\Local\Temp\opencode\behemoth-traversal-20261029-stage2\`
+- `C:\Users\billn\AppData\Local\Temp\opencode\behemoth-passive-20261029-fight\`
 
 Each directory contains `meta.json` frame metadata and `actor.bin` /
 `movement.bin` snapshots. These samples identify decoded energy behavior, but
