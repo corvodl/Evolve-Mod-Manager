@@ -6,7 +6,9 @@
 //! This is a local process-memory edit, not a console command. Only use in an
 //! isolated testing session. Changes are 0 -> 1 -> 0 with bit-exact compare,
 //! readback, and PID/main-module identity checks.
-use crate::runtime_memory::{self, Snapshot};
+use crate::runtime_memory::Snapshot;
+#[cfg(windows)]
+use crate::runtime_memory;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Probe {
@@ -90,7 +92,7 @@ pub(super) fn change(
     let expected = if pause { 0 } else { 1 };
     let new = if pause { 1 } else { 0 };
     if probe.value != expected {
-        return Err(format!("Expected original Int32 {expected}; inspect the address again")).into();
+        return Err(format!("Expected original Int32 {expected}; inspect the address again"));
     }
     valid_address(probe.address)?;
     let (pid, base) = session(snapshot, root)?;
