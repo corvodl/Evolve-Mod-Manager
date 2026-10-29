@@ -43,6 +43,7 @@ pub(super) fn known_monster(name: &str) -> bool {
         "grounder",
         "rocky",
         "rockybobsicle",
+        "rockybobcicle",
         "lurker",
         "wraith",
         "gorgon",
