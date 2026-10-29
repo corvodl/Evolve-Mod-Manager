@@ -604,7 +604,7 @@ pub fn parse_world_model_parts(data: &[u8]) -> Result<Vec<RenderMesh>, ModelErro
         // vertex/normal/UV/triangle decoder.
         let header_end = 16 + selected.len() * 16;
         let mut temporary = vec![0u8; header_end];
-        temporary[..8].copy_from_slice(b"CrChF\\x07\\0\\0");
+        temporary[..8].copy_from_slice(b"CrChF\x07\0\0");
         temporary[8..12].copy_from_slice(&(selected.len() as u32).to_le_bytes());
         temporary[12..16].copy_from_slice(&16u32.to_le_bytes());
         for (index, (id, source_at, size)) in selected.iter().enumerate() {
