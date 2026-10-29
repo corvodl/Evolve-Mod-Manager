@@ -255,8 +255,12 @@ pub struct TerrainPaintMap {
 
 impl TerrainPaintMap {
     pub fn id_at(&self, x: u32, y: u32) -> Option<u8> {
-        if x >= self.width || y >= self.height { return None; }
-        self.ids.get(x as usize * self.height as usize + y as usize).copied()
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        self.ids
+            .get(x as usize * self.height as usize + y as usize)
+            .copied()
     }
 }
 
@@ -269,56 +273,80 @@ pub fn decode_terrain_paint_bytes(bytes: &[u8]) -> Result<Option<TerrainPaintMap
     }
     let xml_len = usize::from(u16::from_le_bytes([bytes[1], bytes[2]]));
     let xml_end = 3usize.checked_add(xml_len).ok_or(TerrainError::Limits)?;
-    let xml = bytes.get(3..xml_end)
+    let xml = bytes
+        .get(3..xml_end)
         .ok_or_else(|| TerrainError::Format("truncated terrain layer metadata".into()))?;
     let (width, height, _, _) = parse_metadata(xml)?;
-    let height_bytes = (width as usize).checked_mul(height as usize)
-        .and_then(|n| n.checked_mul(2)).ok_or(TerrainError::Limits)?;
-    let header = xml_end.checked_add(4 + SECTION.len()).ok_or(TerrainError::Limits)?;
+    let height_bytes = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|n| n.checked_mul(2))
+        .ok_or(TerrainError::Limits)?;
+    let header = xml_end
+        .checked_add(4 + SECTION.len())
+        .ok_or(TerrainError::Limits)?;
     if bytes.get(xml_end..header) != Some([&4u32.to_le_bytes()[..], SECTION].concat().as_slice())
         || get_u32(bytes, header)? as usize != height_bytes
         || get_u32(bytes, header + 4)? as usize != height_bytes
         || get_u32(bytes, header + 8)? != 0
     {
-        return Err(TerrainError::Format("invalid original heightmap section".into()));
+        return Err(TerrainError::Format(
+            "invalid original heightmap section".into(),
+        ));
     }
-    let next = header.checked_add(12).and_then(|p| p.checked_add(height_bytes))
+    let next = header
+        .checked_add(12)
+        .and_then(|p| p.checked_add(height_bytes))
         .ok_or(TerrainError::Limits)?;
     if bytes.get(next..next + NEXT.len()) != Some(NEXT) {
         return Err(TerrainError::Format("terrain paint marker missing".into()));
     }
     let meta = next + NEXT.len();
-    if meta == bytes.len() { return Ok(None); } // Old height-only exports
+    if meta == bytes.len() {
+        return Ok(None);
+    } // Old height-only exports
     let size = get_u32(bytes, meta)? as usize;
     if size != (width as usize * height as usize)
         || get_u32(bytes, meta + 4)? as usize != size
         || get_u32(bytes, meta + 8)? != 0
     {
-        return Err(TerrainError::Format("unexpected terrain layer bitmap layout".into()));
+        return Err(TerrainError::Format(
+            "unexpected terrain layer bitmap layout".into(),
+        ));
     }
     let start = meta + 12;
-    let ids = bytes.get(start..start + size)
+    let ids = bytes
+        .get(start..start + size)
         .ok_or_else(|| TerrainError::Format("truncated terrain layer bitmap".into()))?
         .to_vec();
     let mut names = std::collections::BTreeMap::new();
     let mut reader = Reader::from_reader(xml);
     loop {
-        match reader.read_event().map_err(|e| TerrainError::Format(e.to_string()))? {
+        match reader
+            .read_event()
+            .map_err(|e| TerrainError::Format(e.to_string()))?
+        {
             Event::Start(e) | Event::Empty(e) if e.name().as_ref() == b"Layer" => {
                 let mut id = None;
                 let mut name = None;
                 for attr in e.attributes() {
                     let attr = attr.map_err(|e| TerrainError::Format(e.to_string()))?;
                     if attr.key.as_ref() == b"LayerId" {
-                        id = attr.unescape_value().ok().and_then(|v| v.parse::<u8>().ok());
+                        id = attr
+                            .unescape_value()
+                            .ok()
+                            .and_then(|v| v.parse::<u8>().ok());
                     } else if attr.key.as_ref() == b"Name" {
                         name = attr.unescape_value().ok().map(|v| v.to_string());
                     }
                 }
                 if let (Some(id), Some(name)) = (id, name) {
-                    if name.len() <= 128 { names.insert(id, name); }
+                    if name.len() <= 128 {
+                        names.insert(id, name);
+                    }
                 }
-                if names.len() > 256 { return Err(TerrainError::Limits); }
+                if names.len() > 256 {
+                    return Err(TerrainError::Limits);
+                }
             }
             Event::DocType(_) | Event::GeneralRef(_) => {
                 return Err(TerrainError::Format("unsafe layer XML".into()));
@@ -327,7 +355,12 @@ pub fn decode_terrain_paint_bytes(bytes: &[u8]) -> Result<Option<TerrainPaintMap
             _ => (),
         }
     }
-    Ok(Some(TerrainPaintMap { width, height, layer_names: names, ids }))
+    Ok(Some(TerrainPaintMap {
+        width,
+        height,
+        layer_names: names,
+        ids,
+    }))
 }
 
 pub fn read_terrain_paint(path: &Path) -> Result<Option<TerrainPaintMap>, TerrainError> {
@@ -459,8 +492,13 @@ mod tests {
         assert_eq!(paint.id_at(1, 0), Some(1));
         assert_eq!(paint.id_at(16, 0), None);
         assert!(paint.layer_names.is_empty());
-        data[3 + br#"<Heightmap Width="16" Height="16" UnitSize="2" MaxHeight="100"/>"#.len() +
-            4 + SECTION.len() + 12 + 16 * 16 * 2 + NEXT.len()] = 0xff;
+        data[3
+            + br#"<Heightmap Width="16" Height="16" UnitSize="2" MaxHeight="100"/>"#.len()
+            + 4
+            + SECTION.len()
+            + 12
+            + 16 * 16 * 2
+            + NEXT.len()] = 0xff;
         assert!(decode_terrain_paint_bytes(&data).is_err());
     }
 
