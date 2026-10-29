@@ -1031,7 +1031,7 @@ pub(crate) mod tests {
         physics[64..68].copy_from_slice(&11u32.to_le_bytes());
         add(6, 0x0800100B, 21, &physics);
         let mut helper = vec![0u8; 84];
-        helper[..15].copy_from_slice(b"helper_attach_01");
+        helper[..16].copy_from_slice(b"helper_attach_01");
         helper[64..68].copy_from_slice(&12u32.to_le_bytes());
         add(8, 0x0800100B, 22, &helper);
         let parts = parse_world_model_parts(&data).unwrap();
