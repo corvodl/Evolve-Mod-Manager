@@ -363,6 +363,72 @@ pub fn decode_terrain_paint_bytes(bytes: &[u8]) -> Result<Option<TerrainPaintMap
     }))
 }
 
+/// Validated original CryEngine baked terrain texture package header.
+/// The tile payload/quadtree still needs exact TerrainTexture.xml mapping:
+/// this inspection intentionally cannot be mistaken for rendered terrain.
+#[derive(Clone, Debug)]
+pub struct TerrainTextureHeader {
+    pub version: u16,
+    pub flags: u16,
+    pub color_multiplier: f32,
+    pub layers: Vec<TerrainTextureLayer>,
+}
+#[derive(Clone, Debug)]
+pub struct TerrainTextureLayer {
+    pub sector_pixels: u16,
+    pub texture_format: u32,
+    pub sector_bytes: u32,
+}
+pub fn read_terrain_texture_header(path: &Path) -> Result<TerrainTextureHeader, TerrainError> {
+    use std::io::Read;
+    let meta = fs::symlink_metadata(path)?;
+    if !meta.file_type().is_file() || meta.len() < 24 || meta.len() > 2 * 1024 * 1024 * 1024 {
+        return Err(TerrainError::Limits);
+    }
+    let mut file = fs::File::open(path)?;
+    let mut header = [0u8; 16];
+    file.read_exact(&mut header)?;
+    if header[..4] != *b"CRY\0" || header[4] != 100 {
+        return Err(TerrainError::Format(
+            "Not a CryEngine baked terrain surface texture header".into()
+        ));
+    }
+    let version = u16::from_le_bytes([header[6], header[7]]);
+    if !matches!(version, 9 | 10) {
+        return Err(TerrainError::Format(format!(
+            "Unsupported terrain texture container version {version}"
+        )));
+    }
+    let count = u16::from_le_bytes([header[8], header[9]]) as usize;
+    let flags = u16::from_le_bytes([header[10], header[11]]);
+    if !(1..=8).contains(&count) || flags & 2 != 0 {
+        return Err(TerrainError::Format(
+            "Unsupported layer count or big-endian terrain surface data".into()
+        ));
+    }
+    let color_multiplier = f32::from_le_bytes(header[12..16].try_into().unwrap());
+    if !color_multiplier.is_finite() || !(0.0..=256.0).contains(&color_multiplier) {
+        return Err(TerrainError::Limits);
+    }
+    let mut layers = Vec::with_capacity(count);
+    for _ in 0..count {
+        let mut record = [0u8; 12];
+        file.read_exact(&mut record)?;
+        let sector_pixels = u16::from_le_bytes([record[0],record[1]]);
+        let reserved = u16::from_le_bytes([record[2],record[3]]);
+        let texture_format = u32::from_le_bytes(record[4..8].try_into().unwrap());
+        let sector_bytes = u32::from_le_bytes(record[8..12].try_into().unwrap());
+        if reserved != 0 || sector_pixels < 4 || sector_pixels > 8192
+            || !sector_pixels.is_power_of_two() || sector_bytes == 0
+            || sector_bytes > 64 * 1024 * 1024
+        {
+            return Err(TerrainError::Format("Invalid baked terrain layer descriptor".into()));
+        }
+        layers.push(TerrainTextureLayer { sector_pixels, texture_format, sector_bytes });
+    }
+    Ok(TerrainTextureHeader { version, flags, color_multiplier, layers })
+}
+
 pub fn read_terrain_paint(path: &Path) -> Result<Option<TerrainPaintMap>, TerrainError> {
     let meta = fs::symlink_metadata(path)?;
     if !meta.file_type().is_file() || meta.len() > MAX_TERRAIN_FILE as u64 {
