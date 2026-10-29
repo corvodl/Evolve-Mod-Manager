@@ -561,10 +561,12 @@ pub(super) fn assemble(
                 report.geometries += 1;
                 index
             };
-            models[model_index].instances.push(world_instances::Instance {
-                object_index,
-                transform: object.world,
-            });
+            models[model_index]
+                .instances
+                .push(world_instances::Instance {
+                    object_index,
+                    transform: object.world,
+                });
             report.placed += 1;
         }
         if budget_hit {
