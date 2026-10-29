@@ -64,8 +64,11 @@ impl Projection {
     fn project(&self, raw: [f32; 3]) -> [f32; 3] {
         if let Some(camera) = self.camera {
             let ndc = camera.project(
-                raw, self.yaw.to_degrees(), self.pitch.to_degrees(),
-                self.width / self.height, self.zoom,
+                raw,
+                self.yaw.to_degrees(),
+                self.pitch.to_degrees(),
+                self.width / self.height,
+                self.zoom,
             );
             return [
                 (ndc[0] + 1.0) * self.width * 0.5,
