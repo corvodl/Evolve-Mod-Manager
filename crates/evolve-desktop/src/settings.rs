@@ -79,7 +79,8 @@ pub struct Preferences {
     pub nightly_updates: bool,
     pub automatic_update_checks: bool,
     /// Non-sensitive user-selected Developer overlay hotkey presets (0=disabled).
-    pub developer_hotkeys: [u8; 9],
+    // Vector preserves existing 9-entry settings while adding the Fly toggle as slot 10.
+    pub developer_hotkeys: Vec<u8>,
     pub discord_presence_enabled: bool,
     pub discord_application_id: String,
     pub discord_show_game: bool,
@@ -148,7 +149,7 @@ impl Default for Preferences {
             experimental_updates: false,
             nightly_updates: env!("CARGO_PKG_VERSION").contains("-nightly."),
             automatic_update_checks: true,
-            developer_hotkeys: [0; 9],
+            developer_hotkeys: vec![0; 10],
             discord_presence_enabled: false,
             discord_application_id: String::new(),
             discord_show_game: true,
@@ -264,6 +265,16 @@ pub fn apply_accent_preset(prefs: &mut Preferences, preset: &str) -> bool {
 
 impl Preferences {
     pub fn validate(&mut self) -> Result<(), SettingsError> {
+        // Old installations saved nine shortcuts; retain them and add an
+        // unassigned Fly Mode binding without invalidating their settings.
+        self.developer_hotkeys.resize(10, 0);
+        self.developer_hotkeys.truncate(10);
+        let mut seen = std::collections::HashSet::new();
+        for key in &mut self.developer_hotkeys {
+            if *key > 28 || (*key != 0 && !seen.insert(*key)) {
+                *key = 0;
+            }
+        }
         if !["Compact", "Comfortable"].contains(&self.ui_density.as_str()) {
             self.ui_density = "Comfortable".into();
         }
@@ -423,6 +434,18 @@ pub fn save_to(path: &Path, prefs: &Preferences) -> Result<(), SettingsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nine_existing_hotkeys_migrate_without_losing_bindings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        fs::write(&path, r#"{"developer_hotkeys":[22,23,24,25,26,27,28,1,2]}"#).unwrap();
+        let mut prefs = load_from(&path).unwrap();
+        assert_eq!(prefs.developer_hotkeys, vec![22,23,24,25,26,27,28,1,2,0]);
+        prefs.developer_hotkeys[9] = 3;
+        save_to(&path, &prefs).unwrap();
+        assert_eq!(load_from(&path).unwrap().developer_hotkeys, vec![22,23,24,25,26,27,28,1,2,3]);
+    }
     #[test]
     fn legacy_theme_is_optional_and_restores_previous_modern_customizations() {
         let dir = tempfile::tempdir().unwrap();
