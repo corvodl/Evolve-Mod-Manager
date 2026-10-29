@@ -5,7 +5,8 @@
 use crate::{asset_cache::SharedCache, level_scene_renderer, modding_projects::ProjectRow};
 use evolve_core::{
     ImportedPak, Inventory, LevelScene, ModelInfo, RenderMesh, TerrainInfo, imported_archive_files,
-    parse_level_scene, read_terrain, read_terrain_paint, read_terrain_texture_header, scan_directory,
+    parse_level_scene, read_terrain, read_terrain_paint, read_terrain_texture_header,
+    scan_directory,
 };
 use std::collections::BTreeMap;
 use std::fs;
