@@ -1404,7 +1404,7 @@ fn actor_rows(state: &State) -> Element<'_, Message> {
 fn developer_keybind_controls(state: &State) -> Element<'_, Message> {
     let mut rows = column![
         text("Developer shortcuts").size(17),
-        text("Active while the overlay is on and Evolve has focus. No keyboard hooks.")
+        text("Registered with Windows while the overlay is on; teleport actions require live memory edits.")
             .size(12)
             .style(design::muted),
     ]
@@ -1450,7 +1450,7 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
     surface(
         column![
             text("Teleport").size(19),
-            text("Offline only · One-shot physics XYZ · No hooks or freezing")
+            text("Physics teleport and coordinate freeze · Memory writes require Developer authorization")
                 .size(12)
                 .style(design::muted),
             row![
@@ -1558,17 +1558,28 @@ fn teleport_controls(state: &State) -> Element<'_, Message> {
             ]
             .align_y(iced::Alignment::Center)
             .spacing(8),
-            iced::widget::checkbox(state.teleport_overlay.is_some())
+            iced::widget::checkbox(
+                state.teleport_overlay.is_some() || state.teleport_overlay_pending
+            )
                 .label("Show external overlay and enable shortcuts (windowed fullscreen)")
                 .on_toggle(Message::TeleportOverlayChanged),
+            text(if state.teleport_overlay_pending {
+                "Detecting running game..."
+            } else if state.teleport_status.is_empty() {
+                "Overlay preview needs only a running Evolve.exe; teleport shortcuts still require armed memory writes."
+            } else {
+                state.teleport_status.as_str()
+            })
+            .size(12)
+            .style(design::muted),
             developer_keybind_controls(state),
-            text("The overlay marks the screen center only; it is not a raycast hit location.")
+            text("Overlay appears only over Evolve while the game is in focus. The center marker is not a raycast hit location.")
                 .size(12)
                 .style(design::muted),
             text(if state.teleport_busy {
                 "Teleport operation running..."
             } else {
-                state.teleport_status.as_str()
+                ""
             })
             .size(12)
             .style(design::muted),
