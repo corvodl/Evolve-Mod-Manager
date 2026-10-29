@@ -1332,8 +1332,9 @@ fn text_viewport(state: &State) -> Element<'_, Message> {
             .style(design::muted),
         design::button("Save")
             .style(design::primary)
-            .on_press_maybe((doc.editable && doc.dirty() && !state.busy)
-                .then_some(Message::TextEditorSave)),
+            .on_press_maybe(
+                (doc.editable && doc.dirty() && !state.busy).then_some(Message::TextEditorSave)
+            ),
         design::button("Discard")
             .style(design::secondary)
             .on_press_maybe(doc.dirty().then_some(Message::TextEditorDiscard)),
