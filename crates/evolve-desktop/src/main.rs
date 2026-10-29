@@ -439,6 +439,7 @@ struct State {
     teleport_hold_status: String,
     teleport_hold_generation: u64,
     teleport_fly_speed: String,
+    teleport_movement_frame: runtime_teleport::MovementFrame,
     teleport_x: String,
     teleport_y: String,
     teleport_z: String,
@@ -2084,6 +2085,7 @@ enum Message {
     TeleportAutoDetected(u64, TeleportRequest, runtime_memory::Snapshot),
     TeleportHold(runtime_teleport::HoldMode),
     TeleportFlySpeedChanged(String),
+    TeleportMovementFrameChanged(runtime_teleport::MovementFrame),
     TeleportHoldRelease,
     TeleportHoldFinished(u64, Result<runtime_teleport::Reading, String>),
     ActorEdit(u32, usize, runtime_actors::Field, u32),
@@ -4955,6 +4957,13 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             state.runtime_snapshot = Some(snapshot);
             return Task::done(request.message());
         }
+        Message::TeleportMovementFrameChanged(frame) => {
+            // A live hold worker owns its reference frame. Never change the
+            // frame mid-flight: that would immediately reverse controls.
+            if state.developer_unlocked && state.teleport_hold_cancel.is_none() {
+                state.teleport_movement_frame = frame;
+            }
+        }
         Message::TeleportFlySpeedChanged(value) => {
             if state.developer_unlocked && state.teleport_hold_cancel.is_none() && value.len() <= 12
             {
@@ -4994,6 +5003,7 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             } else {
                 0.0
             };
+            let movement_frame = state.teleport_movement_frame;
             let stop = Arc::new(AtomicBool::new(false));
             state.teleport_hold_cancel = Some(stop.clone());
             state.teleport_hold_mode = Some(mode);
@@ -5002,11 +5012,11 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             let generation = state.teleport_hold_generation;
             state.teleport_hold_status = if mode == runtime_teleport::HoldMode::Fly {
                 format!(
-                    "Starting approximate Fly Mode at {fly_speed:.1} units/sec. Switch to Evolve and use WASD, Space, Ctrl."
+                    "Starting Fly Mode ({}) at {fly_speed:.1} units/sec. WASD moves relative to the chosen frame; Space/Ctrl control altitude.", movement_frame.label()
                 )
             } else if mode == runtime_teleport::HoldMode::Z {
                 format!(
-                    "Starting hover at {fly_speed:.1} units/sec. WASD moves X/Y explicitly; Z stays fixed even if normal airborne movement is blocked."
+                    "Starting hover ({}) at {fly_speed:.1} units/sec. WASD moves X/Y; Z stays fixed.", movement_frame.label()
                 )
             } else {
                 format!(
@@ -5018,7 +5028,15 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
             return Task::perform(
                 async move {
                     tokio::task::spawn_blocking(move || {
-                        runtime_teleport::hold(&snapshot, &root, true, mode, fly_speed, stop)
+                        runtime_teleport::hold(
+                            &snapshot,
+                            &root,
+                            true,
+                            mode,
+                            fly_speed,
+                            movement_frame,
+                            stop,
+                        )
                     })
                     .await
                     .unwrap_or_else(|e| Err(format!("Coordinate hold worker failed: {e}")))
