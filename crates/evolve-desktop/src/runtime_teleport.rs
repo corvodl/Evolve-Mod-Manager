@@ -943,12 +943,33 @@ mod tests {
 
     #[test]
     fn freeze_z_uses_explicit_xy_motion_and_never_changes_height() {
-        let anchor = Position { x: 1.0, y: 2.0, z: 50.0 };
-        let north = Position { x: 0.0, y: 1.0, z: 0.0 };
+        let anchor = Position {
+            x: 1.0,
+            y: 2.0,
+            z: 50.0,
+        };
+        let north = Position {
+            x: 0.0,
+            y: 1.0,
+            z: 0.0,
+        };
         // This is the same movement math that drives both Z hover and Fly,
         // with vertical deliberately ignored for Z hover.
-        let input = FlyInput { forward: 1.0, vertical: 1.0, ..FlyInput::default() };
-        let target = fly_step(anchor, north, FlyInput { vertical: 0.0, ..input }, 8.0, 0.05);
+        let input = FlyInput {
+            forward: 1.0,
+            vertical: 1.0,
+            ..FlyInput::default()
+        };
+        let target = fly_step(
+            anchor,
+            north,
+            FlyInput {
+                vertical: 0.0,
+                ..input
+            },
+            8.0,
+            0.05,
+        );
         assert!((target.y - 2.4).abs() < 0.001);
         assert_eq!(target.z, 50.0);
     }
