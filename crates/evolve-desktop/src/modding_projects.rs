@@ -1615,7 +1615,10 @@ pub fn save_text_member(
     replacement
         .write_all(edited.as_bytes())
         .map_err(|e| e.to_string())?;
-    replacement.as_file_mut().sync_all().map_err(|e| e.to_string())?;
+    replacement
+        .as_file_mut()
+        .sync_all()
+        .map_err(|e| e.to_string())?;
     import_raw_member_checked(
         project,
         projects_root,
