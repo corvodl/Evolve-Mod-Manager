@@ -119,6 +119,9 @@ pub(super) struct LocalActor {
     // apparently plausible offsets cannot distinguish hunters from monsters.
     pub verified_monster: bool,
     pub evolution: Option<String>,
+    /// Rounded 0–100, derived from the validated encoded evolution bar.
+    /// None for stage 3, unverified actors and failed runtime reads.
+    pub evolution_percentage: Option<u8>,
     pub health: Option<String>,
     pub armor: Option<String>,
 }
@@ -269,6 +272,20 @@ fn format_activity(
                     stats.push(format!("Armor {armor}"));
                 }
             }
+            if let Some(percent) = actor
+                .filter(|a| {
+                    a.verified_monster
+                        && a.evolution
+                            .as_deref()
+                            .and_then(presence_stage)
+                            .is_some_and(|stage| stage < 3)
+                })
+                .and_then(|a| a.evolution_percentage)
+            {
+                if cfg.show_stats {
+                    stats.push(format!("Evolution {percent}%"));
+                }
+            }
             let state = if stats.is_empty() {
                 "In match".to_owned()
             } else {
@@ -327,7 +344,7 @@ fn format_activity(
 #[cfg(windows)]
 mod windows {
     use super::*;
-    use crate::{runtime_actors, runtime_memory};
+    use crate::{runtime_actors, runtime_memory, runtime_research};
     use std::fs::{File, OpenOptions};
     use std::io::{Read, Write};
     use std::sync::{
@@ -422,6 +439,15 @@ mod windows {
                     info.evolution = Some(field.display.clone())
                 }
                 _ => {}
+            }
+        }
+        if info.verified_monster {
+            // Do not parse formatted Developer UI strings or treat a plain
+            // actor-relative Float32 as evolution. The read-only helper
+            // validates the actor, stage and session key anew.
+            if let Ok(energy) = runtime_research::inspect_evolution(snapshot, root, actor) {
+                info.evolution = Some(energy.stage.to_string());
+                info.evolution_percentage = energy.percentage();
             }
         }
         Some(info)
@@ -618,12 +644,13 @@ mod tests {
             name: Some("Goliath".into()),
             verified_monster: true,
             evolution: Some("Stage 2".into()),
+            evolution_percentage: Some(50),
             health: Some("8500".into()),
             armor: Some("1000".into()),
         };
         let act = format_activity(&sample(), Some(100), Some(&actor), 100).unwrap();
         assert_eq!(act["details"], "Playing as Goliath · Stage 2");
-        assert_eq!(act["state"], "Health 8,500 · Armor 1,000");
+        assert_eq!(act["state"], "Health 8,500 · Armor 1,000 · Evolution 50%");
         assert!(!act["state"].as_str().unwrap().contains("Stage 2"));
         assert!(act["assets"].get("small_image").is_none());
     }
@@ -635,6 +662,7 @@ mod tests {
             // These deliberately mimic false-positive monster offsets.
             armor: Some("1000".into()),
             evolution: Some("Stage 2".into()),
+            evolution_percentage: Some(50),
             ..LocalActor::default()
         };
         let activity = format_activity(&sample(), Some(123), Some(&hunter), 100).unwrap();
@@ -643,6 +671,42 @@ mod tests {
         assert_eq!(state, "Health 1,600");
         assert!(!state.contains("Armor"));
         assert!(!state.contains("Evolution"));
+    }
+
+    #[test]
+    fn monster_stage_three_keeps_stage_but_hides_percentage() {
+        let actor = LocalActor {
+            name: Some("Goliath".into()),
+            verified_monster: true,
+            evolution: Some("3".into()),
+            evolution_percentage: Some(100), // stale input must not leak.
+            health: Some("6000".into()),
+            armor: Some("200".into()),
+        };
+        let activity = format_activity(&sample(), Some(100), Some(&actor), 100).unwrap();
+        assert_eq!(activity["details"], "Playing as Goliath · Stage 3");
+        assert_eq!(activity["state"], "Health 6,000 · Armor 200");
+        assert!(!activity.to_string().contains("Evolution"));
+    }
+
+    #[test]
+    fn monster_evolution_percentage_needs_stats_and_verified_progress() {
+        let actor = LocalActor {
+            name: Some("Wraith".into()),
+            verified_monster: true,
+            evolution: Some("2".into()),
+            evolution_percentage: Some(0),
+            ..LocalActor::default()
+        };
+        let activity = format_activity(&sample(), Some(1), Some(&actor), 100).unwrap();
+        assert_eq!(activity["details"], "Playing as Wraith · Stage 2");
+        assert_eq!(activity["state"], "Evolution 0%");
+        let mut cfg = sample();
+        cfg.show_stats = false;
+        assert_eq!(format_activity(&cfg, Some(1), Some(&actor), 100).unwrap()["state"], "In match");
+
+        let unknown = LocalActor { evolution_percentage: None, ..actor };
+        assert_eq!(format_activity(&sample(), Some(1), Some(&unknown), 100).unwrap()["state"], "In match");
     }
 
     #[test]
@@ -910,12 +974,13 @@ mod tests {
             name: Some("Goliath".into()),
             verified_monster: true,
             evolution: Some("1".into()),
+            evolution_percentage: Some(75),
             health: Some("10400.000".into()),
             armor: Some("2343.978".into()),
         };
         let activity = format_activity(&sample(), Some(123), Some(&actor), 100).unwrap();
         assert_eq!(activity["details"], "Playing as Goliath · Stage 1");
-        assert_eq!(activity["state"], "Health 10,400 · Armor 2,344");
+        assert_eq!(activity["state"], "Health 10,400 · Armor 2,344 · Evolution 75%");
         assert!(!activity.to_string().contains("Stage 2"));
         assert!(!activity.to_string().contains("My Mod"));
         let mut private = sample();
@@ -928,7 +993,7 @@ mod tests {
         private.show_character = false;
         let hidden = format_activity(&private, Some(123), Some(&actor), 100).unwrap();
         assert_eq!(hidden["details"], "Playing Evolve");
-        assert_eq!(hidden["state"], "Health 10,400 · Armor 2,344");
+        assert_eq!(hidden["state"], "Health 10,400 · Armor 2,344 · Evolution 75%");
         assert!(hidden["assets"].get("large_image").is_none());
     }
     #[test]
