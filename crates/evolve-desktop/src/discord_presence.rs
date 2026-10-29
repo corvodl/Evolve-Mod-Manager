@@ -488,7 +488,7 @@ mod windows {
                 }
                 if snapshot.pid.is_some()
                     && (cfg.show_character || cfg.show_stats)
-                    && last_actor_check.elapsed() >= Duration::from_secs(20)
+                    && last_actor_check.elapsed() >= Duration::from_secs(8)
                 {
                     last_actor_check = Instant::now();
                     local_actor = actor_info(&snapshot, &cfg.game_root);
