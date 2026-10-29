@@ -38,6 +38,7 @@ mod initial_setup;
 mod launcher_bridge;
 mod level_library;
 mod level_scene_renderer;
+mod vegetation_map;
 mod level_workspace;
 mod library_picker;
 mod loading_wheel;
