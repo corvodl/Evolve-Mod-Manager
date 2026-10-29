@@ -13451,6 +13451,12 @@ impl Desktop {
                 let project_scan_done = self.state.modding_open_editor_when_scanned
                     && matches!(&message, Message::Finished(Ok(Completed::Inventory(_))));
                 let finished = matches!(&message, Message::Finished(_));
+                let opens_level = matches!(
+                    &message,
+                    Message::Finished(Ok(Completed::ImportedMap(_)
+                        | Completed::Terrain(_, _)
+                        | Completed::Level(_, _, _)))
+                );
                 let opens_model = matches!(
                     &message,
                     Message::Finished(Ok(Completed::Model(_, _)
@@ -13485,7 +13491,7 @@ impl Desktop {
                     Task::none()
                 };
                 let notice = self.open_play_notice();
-                if self.state.page == Some(Page::Levels) && self.level_id.is_none() {
+                if opens_level && self.state.page == Some(Page::Levels) && self.level_id.is_none() {
                     let open = self.open_level_editor();
                     Task::batch([command, open, activity, notice])
                 } else if opens_model && self.viewer_id.is_none() {
