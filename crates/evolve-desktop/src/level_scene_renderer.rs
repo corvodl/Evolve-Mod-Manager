@@ -11,7 +11,7 @@ use evolve_core::{
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-const MAX_ARCHIVES: usize = 256;
+const MAX_ARCHIVES: usize = 1_024;
 const MAX_MODELS: usize = 256;
 const MAX_PLACEMENTS: usize = 8_000;
 const MAX_VERTICES: usize = 1_500_000;
@@ -111,6 +111,24 @@ fn compiled_render_path(model: &str) -> String {
     }
 }
 
+/// Prefer the exact source path; compiled geometry companions are only
+/// accepted at the exact same virtual owner/stem in the same imported build.
+fn render_candidates(raw: &str) -> Vec<String> {
+    let exact = compiled_render_path(raw);
+    let path = Path::new(&exact);
+    let ext = path.extension().and_then(|ext| ext.to_str()).unwrap_or_default();
+    let mut candidates = vec![exact.clone()];
+    let compiled = match ext.to_ascii_lowercase().as_str() {
+        "cgf" => Some("cgfm"),
+        "cga" => Some("cgam"),
+        _ => None,
+    };
+    if let Some(ext) = compiled {
+        candidates.push(path.with_extension(ext).to_string_lossy().into_owned());
+    }
+    candidates
+}
+
 fn relevant_asset(path: &str) -> bool {
     [".cgf", ".cga", ".cgfm", ".cgam", ".skinm", ".chrm", ".mtl"]
         .iter()
@@ -151,7 +169,7 @@ impl Index {
         }
         if archives.len() == MAX_ARCHIVES {
             report.note(
-                "Cross-PAK index capped at 256 archives; some assets may be unavailable.".into(),
+                "Cross-PAK index capped at 1024 archives; some assets may be unavailable.".into(),
             );
         }
         // Every manifest-listed asset is checked by the existing read-only
@@ -396,7 +414,11 @@ pub(super) fn assemble(
             .filter(|o| !o.hidden && !o.model.is_empty())
         {
             if let Some(model) = safe_virtual(&compiled_render_path(&object.model)) {
-                wanted.insert(model.clone());
+                for candidate in render_candidates(&object.model) {
+                    if let Some(key) = safe_virtual(&candidate) {
+                        wanted.insert(key);
+                    }
+                }
                 if object.material.is_empty() {
                     wanted.insert(
                         Path::new(&model)
@@ -441,20 +463,32 @@ pub(super) fn assemble(
                     budget_hit = true;
                     break;
                 }
-                let source = match sources.lookup(&compiled_render_path(&object.model)) {
-                    Ok(Some(source)) => source,
-                    Ok(None) => {
-                        report.unresolved += 1;
-                        report.note(format!("Missing model {}", object.model));
-                        failures.insert(key);
-                        continue;
+                // An exact virtual-path companion is not a filename search:
+                // it inherits the original authored directory and basename.
+                // Ambiguous hits remain errors and are never bypassed by
+                // silently taking an unrelated copy.
+                let mut chosen = None;
+                let mut lookup_error = None;
+                for candidate in render_candidates(&object.model) {
+                    match sources.lookup(&candidate) {
+                        Ok(Some(hit)) => {
+                            chosen = Some(hit);
+                            break;
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            lookup_error = Some(error);
+                            break;
+                        }
                     }
-                    Err(error) => {
-                        report.unresolved += 1;
-                        report.note(error);
-                        failures.insert(key);
-                        continue;
-                    }
+                }
+                let source = if let Some(source) = chosen {
+                    source
+                } else {
+                    report.unresolved += 1;
+                    report.note(lookup_error.unwrap_or_else(|| format!("Missing exact model {}", object.model)));
+                    failures.insert(key);
+                    continue;
                 };
                 let mesh = match read_model(&source.path) {
                     Ok(mesh) => mesh,
@@ -603,6 +637,18 @@ pub(super) fn reproject_after_edit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_static_mesh_companions_do_not_search_other_folders() {
+        assert_eq!(
+            render_candidates("objects/natural/rock.cgf"),
+            vec!["objects/natural/rock.cgf", "objects/natural/rock.cgfm"]
+        );
+        assert_eq!(
+            render_candidates("objects/props/door.cga"),
+            vec!["objects/props/door.cga", "objects/props/door.cgam"]
+        );
+    }
 
     #[test]
     fn compiled_character_render_companion_stays_in_authored_folder() {
