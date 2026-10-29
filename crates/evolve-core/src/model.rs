@@ -531,7 +531,9 @@ pub fn parse_world_model_parts(data: &[u8]) -> Result<Vec<RenderMesh>, ModelErro
         return parse_model_bytes(data).map(|part| vec![part]);
     }
     const MESH: u32 = 0x08001000;
-    let mesh_chunks = chunks.iter().filter(|(ty, _, _, _)| *ty == MESH)
+    let mesh_chunks = chunks
+        .iter()
+        .filter(|(ty, _, _, _)| *ty == MESH)
         .collect::<Vec<_>>();
     if mesh_chunks.is_empty() {
         return parse_model_bytes(data).map(|part| vec![part]);
@@ -555,7 +557,9 @@ pub fn parse_world_model_parts(data: &[u8]) -> Result<Vec<RenderMesh>, ModelErro
     let mut parts = Vec::with_capacity(mesh_chunks.len());
     for (_, at, size, _) in mesh_chunks {
         if *size < 92 {
-            return Err(ModelError::Format("truncated original mesh stream references".into()));
+            return Err(ModelError::Format(
+                "truncated original mesh stream references".into(),
+            ));
         }
         let vertices = u32at(data, at + 28)?;
         let normals = u32at(data, at + 32)?;
@@ -565,8 +569,10 @@ pub fn parse_world_model_parts(data: &[u8]) -> Result<Vec<RenderMesh>, ModelErro
         let packed = u32at(data, at + 88)?;
         let expected_vertices = u32at(data, at + 8)?;
         let expected_indices = u32at(data, at + 12)?;
-        if expected_vertices < 3 || expected_vertices > MAX_VERTICES as u32
-            || expected_indices < 3 || expected_indices > MAX_INDICES as u32
+        if expected_vertices < 3
+            || expected_vertices > MAX_VERTICES as u32
+            || expected_indices < 3
+            || expected_indices > MAX_INDICES as u32
         {
             return Err(ModelError::Limits);
         }
@@ -574,27 +580,35 @@ pub fn parse_world_model_parts(data: &[u8]) -> Result<Vec<RenderMesh>, ModelErro
         // stream of the exact declared semantic type.
         let mut selected = Vec::<(u32, usize, usize)>::new();
         for (reference, semantic) in [
-            (vertices, 0u32), (packed, 15), (normals, 1),
-            (uv, 2), (indices, 5), (tangents, 6)
+            (vertices, 0u32),
+            (packed, 15),
+            (normals, 1),
+            (uv, 2),
+            (indices, 5),
+            (tangents, 6),
         ] {
             if reference == 0 || reference == u32::MAX {
                 continue;
             }
             let Some(&(kind, stream_at, stream_size)) = directory.get(&reference) else {
-                return Err(ModelError::Format("mesh references missing datastream".into()));
+                return Err(ModelError::Format(
+                    "mesh references missing datastream".into(),
+                ));
             };
-            if kind != CRCHF_STREAM || stream_size < 24
-                || u32at(data, stream_at + 4)? != semantic
-            {
-                return Err(ModelError::Format("mesh stream reference has wrong semantic".into()));
+            if kind != CRCHF_STREAM || stream_size < 24 || u32at(data, stream_at + 4)? != semantic {
+                return Err(ModelError::Format(
+                    "mesh stream reference has wrong semantic".into(),
+                ));
             }
             selected.push((reference, stream_at, stream_size));
         }
-        let has_position = selected.iter().any(|(_, offset, _)| {
-            matches!(u32at(data, offset + 4), Ok(0 | 15))
-        });
+        let has_position = selected
+            .iter()
+            .any(|(_, offset, _)| matches!(u32at(data, offset + 4), Ok(0 | 15)));
         if !has_position || indices == 0 || indices == u32::MAX {
-            return Err(ModelError::Format("mesh lacks referenced vertex/index streams".into()));
+            return Err(ModelError::Format(
+                "mesh lacks referenced vertex/index streams".into(),
+            ));
         }
         if selected.len() > 8 {
             return Err(ModelError::Limits);
@@ -610,19 +624,23 @@ pub fn parse_world_model_parts(data: &[u8]) -> Result<Vec<RenderMesh>, ModelErro
         for (index, (id, source_at, size)) in selected.iter().enumerate() {
             let new_at = temporary.len();
             let end = new_at.checked_add(*size).ok_or(ModelError::Limits)?;
-            if end > MAX_BYTES {return Err(ModelError::Limits);}
+            if end > MAX_BYTES {
+                return Err(ModelError::Limits);
+            }
             let table = 16 + index * 16;
-            temporary[table..table+4].copy_from_slice(&CRCHF_STREAM.to_le_bytes());
-            temporary[table+4..table+8].copy_from_slice(&id.to_le_bytes());
-            temporary[table+8..table+12].copy_from_slice(&(*size as u32).to_le_bytes());
-            temporary[table+12..table+16].copy_from_slice(&(new_at as u32).to_le_bytes());
-            temporary.extend_from_slice(&data[*source_at..*source_at+*size]);
+            temporary[table..table + 4].copy_from_slice(&CRCHF_STREAM.to_le_bytes());
+            temporary[table + 4..table + 8].copy_from_slice(&id.to_le_bytes());
+            temporary[table + 8..table + 12].copy_from_slice(&(*size as u32).to_le_bytes());
+            temporary[table + 12..table + 16].copy_from_slice(&(new_at as u32).to_le_bytes());
+            temporary.extend_from_slice(&data[*source_at..*source_at + *size]);
         }
         let mesh = parse_model_bytes(&temporary)?;
         if mesh.positions.len() != expected_vertices as usize
             || mesh.indices.len() != expected_indices as usize
         {
-            return Err(ModelError::Format("mesh and referenced datastream counts differ".into()));
+            return Err(ModelError::Format(
+                "mesh and referenced datastream counts differ".into(),
+            ));
         }
         parts.push(mesh);
     }
@@ -881,13 +899,13 @@ pub(crate) mod tests {
             let mut mesh = vec![0u8; 104];
             mesh[8..12].copy_from_slice(&3u32.to_le_bytes());
             mesh[12..16].copy_from_slice(&3u32.to_le_bytes());
-            mesh[28..32].copy_from_slice(&((1+i*3) as u32).to_le_bytes());
-            mesh[36..40].copy_from_slice(&((3+i*3) as u32).to_le_bytes());
-            mesh[48..52].copy_from_slice(&((2+i*3) as u32).to_le_bytes());
+            mesh[28..32].copy_from_slice(&((1 + i * 3) as u32).to_le_bytes());
+            mesh[36..40].copy_from_slice(&((3 + i * 3) as u32).to_le_bytes());
+            mesh[48..52].copy_from_slice(&((2 + i * 3) as u32).to_le_bytes());
             let offset = data.len();
-            let table = 16 + (6+i) * 16;
+            let table = 16 + (6 + i) * 16;
             data[table..table + 4].copy_from_slice(&0x08001000u32.to_le_bytes());
-            data[table + 4..table + 8].copy_from_slice(&((7+i) as u32).to_le_bytes());
+            data[table + 4..table + 8].copy_from_slice(&((7 + i) as u32).to_le_bytes());
             data[table + 8..table + 12].copy_from_slice(&(mesh.len() as u32).to_le_bytes());
             data[table + 12..table + 16].copy_from_slice(&(offset as u32).to_le_bytes());
             data.extend_from_slice(&mesh);
